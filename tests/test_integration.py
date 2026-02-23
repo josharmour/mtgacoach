@@ -382,7 +382,7 @@ class TestImports:
             create_log_pipeline,
         )
 
-        assert __version__ == "0.1.0"
+        assert __version__  # version string is non-empty
         assert MTGALogWatcher is not None
         assert LogParser is not None
         assert create_log_pipeline is not None

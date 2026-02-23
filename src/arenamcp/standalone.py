@@ -284,6 +284,11 @@ class StandaloneCoach:
         self._pending_win_plan_turns: int = 0            # N in "win-in-N"
         self._pending_win_plan_turn: int = 0             # Game turn when plan was generated
 
+        # Post-match analysis
+        self._saved_advice_history: list[dict] = []
+        self._last_match_result: Optional[str] = None
+        self._last_match_final_state: Optional[dict] = None
+
     def speak_advice(self, text: str, blocking: bool = True) -> None:
         """Speak advice using local Kokoro TTS."""
         if not text:
@@ -572,6 +577,17 @@ class StandaloneCoach:
                 if curr_match_id and curr_match_id != last_match_id:
                     if last_match_id is not None:
                         logger.info(f"New match detected via match_id change ({last_match_id} -> {curr_match_id}), resetting coaching state")
+
+                        # Save match data for post-match analysis BEFORE clearing
+                        if self._advice_history and not self._saved_advice_history:
+                            self._saved_advice_history = list(self._advice_history)
+                            self._last_match_result = self._detect_match_result()
+                            self._last_match_final_state = dict(prev_state) if prev_state else None
+                            threading.Thread(
+                                target=self._post_match_analysis_worker,
+                                daemon=True,
+                            ).start()
+
                         prev_state = {}
                         last_advice_turn = 0
                         last_advice_phase = ""
@@ -593,6 +609,17 @@ class StandaloneCoach:
                 # Detect new game (turn number decreased) — fallback for same-match restarts
                 if turn_num > 0 and turn_num < last_advice_turn:
                     logger.info(f"New game detected in coaching loop (turn {last_advice_turn} -> {turn_num}), resetting advice tracking")
+
+                    # Save match data for post-match analysis BEFORE clearing
+                    if self._advice_history and not self._saved_advice_history:
+                        self._saved_advice_history = list(self._advice_history)
+                        self._last_match_result = self._detect_match_result()
+                        self._last_match_final_state = dict(prev_state) if prev_state else None
+                        threading.Thread(
+                            target=self._post_match_analysis_worker,
+                            daemon=True,
+                        ).start()
+
                     prev_state = {}
                     last_advice_turn = 0
                     last_advice_phase = ""
@@ -1561,9 +1588,9 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
         }
         self._advice_history.append(entry)
 
-        # Keep only last 20 entries
-        if len(self._advice_history) > 20:
-            self._advice_history = self._advice_history[-20:]
+        # Keep only last 50 entries (enough for post-match analysis)
+        if len(self._advice_history) > 50:
+            self._advice_history = self._advice_history[-50:]
         
         # Also record to match recording for post-match analysis
         try:
@@ -1599,6 +1626,159 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
         # Keep only last 10 errors
         if len(self._recent_errors) > 10:
             self._recent_errors = self._recent_errors[-10:]
+
+    def _detect_match_result(self) -> str:
+        """Detect win/loss from recent game events.
+
+        Returns "win", "loss", or "unknown".
+        """
+        try:
+            game_state = self._mcp.get_game_state()
+            recent = game_state.get("recent_events", [])
+            for event in reversed(recent):
+                if event.get("type") == "game_end":
+                    return event.get("result", "unknown")
+        except Exception as e:
+            logger.debug(f"Could not detect match result: {e}")
+        return "unknown"
+
+    def _post_match_analysis_worker(self) -> None:
+        """Background worker: generate post-match strategic analysis.
+
+        Spawned when a match ends. Uses a dedicated backend to avoid
+        lock contention with real-time coaching.
+        """
+        try:
+            advice_history = self._saved_advice_history
+            match_result = self._last_match_result or "unknown"
+            final_state = self._last_match_final_state
+
+            if not advice_history:
+                logger.info("No advice history for post-match analysis")
+                return
+
+            if not self._coach:
+                logger.warning("No coach engine for post-match analysis")
+                return
+
+            logger.info(
+                f"Post-match analysis started: {len(advice_history)} entries, result={match_result}"
+            )
+            self.ui.status("ANALYSIS", "Generating post-match analysis...")
+
+            # Compute match duration from advice snapshots
+            turns = [
+                e.get("game_snapshot", {}).get("turn_number", 0)
+                for e in advice_history
+                if e.get("game_snapshot")
+            ]
+            match_duration = max(turns) if turns else 0
+
+            # Extract final life totals
+            final_life = {}
+            if final_state:
+                for p in final_state.get("players", []):
+                    final_life[p.get("seat_id")] = p.get("life_total")
+
+            # Extract opponent played cards (names from battlefield/graveyard)
+            opponent_cards = []
+            if final_state:
+                opp_cards = final_state.get("opponent_played_cards", [])
+                for card in opp_cards:
+                    name = card.get("name") if isinstance(card, dict) else str(card)
+                    if name:
+                        opponent_cards.append(name)
+
+            # Get deck strategy
+            deck_strategy = getattr(self._coach, '_deck_strategy', "") or ""
+
+            # Create dedicated backend (avoid lock contention with coaching)
+            from arenamcp.coach import create_backend
+            try:
+                analysis_backend = create_backend(self._backend_name, model=self._model_name)
+            except Exception as e:
+                logger.error(f"Failed to create analysis backend: {e}")
+                self.ui.status("ANALYSIS", "")
+                return
+
+            analysis = self._coach.generate_post_match_analysis(
+                advice_history=advice_history,
+                match_result=match_result,
+                match_duration_turns=match_duration,
+                deck_strategy=deck_strategy,
+                final_life_totals=final_life,
+                opponent_played_cards=opponent_cards,
+                backend=analysis_backend,
+            )
+
+            if hasattr(analysis_backend, 'close'):
+                analysis_backend.close()
+
+            if not analysis:
+                logger.warning("Post-match analysis returned empty")
+                self.ui.status("ANALYSIS", "")
+                return
+
+            # Split off the SPOKEN: summary for TTS
+            spoken_summary = ""
+            display_analysis = analysis
+            if "SPOKEN:" in analysis:
+                parts = analysis.rsplit("SPOKEN:", 1)
+                display_analysis = parts[0].strip()
+                spoken_summary = parts[1].strip()
+
+            # Display in TUI
+            result_label = "VICTORY" if match_result == "win" else "DEFEAT" if match_result == "loss" else "MATCH COMPLETE"
+            self.ui.log("")
+            self.ui.log(f"[bold cyan]{'═' * 50}[/]")
+            self.ui.log(f"[bold green]  POST-MATCH ANALYSIS — {result_label}[/]")
+            self.ui.log(f"[bold cyan]{'═' * 50}[/]")
+            self.ui.log(display_analysis)
+            self.ui.log(f"[bold cyan]{'═' * 50}[/]")
+            self.ui.log("")
+
+            self.ui.status("ANALYSIS", f"Match analysis complete ({match_result})")
+
+            # Speak the short summary via TTS
+            if spoken_summary:
+                self.speak_advice(spoken_summary, blocking=False)
+
+            logger.info(f"Post-match analysis complete: {len(analysis)} chars")
+
+        except Exception as e:
+            logger.error(f"Post-match analysis error: {e}", exc_info=True)
+            self.ui.status("ANALYSIS", "")
+        finally:
+            # Clear saved data
+            self._saved_advice_history = []
+            self._last_match_result = None
+            self._last_match_final_state = None
+
+    def trigger_match_analysis(self) -> None:
+        """Manually trigger post-match analysis (from Analyze Match button).
+
+        Uses current advice history (does not require match end).
+        """
+        if not self._advice_history:
+            self.ui.log("[yellow]No advice history to analyze.[/]")
+            return
+
+        if self._saved_advice_history:
+            self.ui.log("[yellow]Analysis already in progress...[/]")
+            return
+
+        self._saved_advice_history = list(self._advice_history)
+        self._last_match_result = self._detect_match_result()
+        try:
+            game_state = self._mcp.get_game_state()
+            self._last_match_final_state = game_state
+        except Exception:
+            self._last_match_final_state = None
+
+        threading.Thread(
+            target=self._post_match_analysis_worker,
+            daemon=True,
+        ).start()
 
     def _on_swap_seat_hotkey(self) -> None:
         """F8 - Swap local seat (fix wrong player detection)."""

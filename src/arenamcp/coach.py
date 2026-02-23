@@ -1284,6 +1284,22 @@ DECK_ANALYSIS_PROMPT = """Analyze this Magic: The Gathering deck list. Provide a
 
 Keep the entire analysis under 300 characters. Be specific to THIS deck, not generic advice."""
 
+POST_MATCH_ANALYSIS_PROMPT = """You are an expert Magic: The Gathering coach providing a post-match debrief.
+
+Given a chronological log of coaching advice given during the match, the match result, and game event data, provide a strategic analysis:
+
+1. RESULT: One sentence on the match outcome and how it was decided.
+2. KEY TURNING POINTS: 2-3 moments that most influenced the outcome (reference specific turns and cards).
+3. WHAT WENT WELL: 1-2 things the player did correctly.
+4. MISTAKES & IMPROVEMENTS: 1-2 concrete mistakes or missed opportunities, with what should have been done instead.
+5. OPPONENT STRATEGY: Brief assessment of the opponent's game plan and how it could be countered next time.
+6. TAKEAWAY: One actionable lesson for future games.
+
+Keep the full analysis under 400 words. Be specific — reference actual cards and turns from the match log.
+Do NOT be generic. Use the advice history to identify where the player followed or ignored coaching advice.
+
+At the very end, on its own line, add a short TTS summary prefixed with "SPOKEN:" (2-3 sentences, under 40 words). This will be read aloud."""
+
 
 # Words that tend to be overused by LLMs in coaching contexts
 OVERUSE_CANDIDATES = {
@@ -3312,6 +3328,107 @@ class CoachEngine:
             f"[TIMING] Win plan API: {api_time:.0f}ms, total: {total_time:.0f}ms, "
             f"turns={turns}, response: {len(response)} chars"
         )
+
+        return response
+
+    def generate_post_match_analysis(
+        self,
+        advice_history: list[dict[str, Any]],
+        match_result: str,
+        match_duration_turns: int,
+        deck_strategy: str = "",
+        final_life_totals: Optional[dict] = None,
+        opponent_played_cards: Optional[list[str]] = None,
+        backend: Optional[Any] = None,
+    ) -> str:
+        """Generate a post-match strategic analysis from the advice log.
+
+        Args:
+            advice_history: Chronological list of advice dicts from the match
+            match_result: "win", "loss", or "unknown"
+            match_duration_turns: Total turn count of the match
+            deck_strategy: Deck strategy summary (from analyze_deck)
+            final_life_totals: {seat_id: life} at match end
+            opponent_played_cards: Card names the opponent revealed
+            backend: Optional dedicated backend (avoids lock contention)
+
+        Returns:
+            Analysis string from the LLM, or "" on failure.
+        """
+        import time
+        import concurrent.futures
+
+        be = backend or self._backend
+
+        # Build chronological match narrative
+        lines = []
+        result_label = "VICTORY" if match_result == "win" else "DEFEAT" if match_result == "loss" else "UNKNOWN"
+        lines.append(f"MATCH RESULT: {result_label}")
+        lines.append(f"MATCH LENGTH: {match_duration_turns} turns")
+
+        if final_life_totals:
+            for seat, life in final_life_totals.items():
+                lines.append(f"Final life (Seat {seat}): {life}")
+
+        if deck_strategy:
+            lines.append(f"\nDECK STRATEGY:\n{deck_strategy}")
+
+        if opponent_played_cards:
+            lines.append(f"\nOPPONENT CARDS SEEN: {', '.join(opponent_played_cards[:30])}")
+
+        lines.append("\nCHRONOLOGICAL ADVICE LOG:")
+        for entry in advice_history:
+            snap = entry.get("game_snapshot") or {}
+            turn = snap.get("turn_number", "?")
+            phase = snap.get("phase", "?")
+            trigger = entry.get("trigger", "unknown")
+            advice_text = entry.get("advice", "")
+            ctx = entry.get("game_context", "") or ""
+            ctx_snippet = ctx[:300] + "..." if len(ctx) > 300 else ctx
+
+            lines.append(f"\n--- Turn {turn}, {phase} [{trigger}] ---")
+            if ctx_snippet:
+                lines.append(f"Context: {ctx_snippet}")
+            lines.append(f"Advice: {advice_text}")
+
+        user_message = "\n".join(lines)
+
+        # Truncate if too long
+        if len(user_message) > 12000:
+            user_message = user_message[:12000] + "\n\n[... truncated ...]"
+
+        logger.info(
+            f"[POST-MATCH] Generating analysis: {len(advice_history)} entries, "
+            f"result={match_result}, turns={match_duration_turns}, "
+            f"prompt={len(user_message)} chars"
+        )
+
+        api_timeout = 30
+        if isinstance(be, ProxyBackend):
+            api_timeout = 45
+
+        api_start = time.perf_counter()
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        if isinstance(be, ProxyBackend):
+            future = executor.submit(
+                be.complete, POST_MATCH_ANALYSIS_PROMPT, user_message, 2048
+            )
+        else:
+            future = executor.submit(
+                be.complete, POST_MATCH_ANALYSIS_PROMPT, user_message
+            )
+        try:
+            response = future.result(timeout=api_timeout)
+        except concurrent.futures.TimeoutError:
+            logger.warning(f"Post-match analysis timed out after {api_timeout}s")
+            response = ""
+        executor.shutdown(wait=False)
+
+        api_time = (time.perf_counter() - api_start) * 1000
+        logger.info(f"[POST-MATCH] API: {api_time:.0f}ms, response: {len(response)} chars")
+
+        if not response or response.startswith("Error"):
+            return ""
 
         return response
 
