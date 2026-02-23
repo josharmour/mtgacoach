@@ -266,8 +266,12 @@ class LogParser:
                     handler(payload)
                 except Exception as e:
                     logger.error(f"Handler error for {event_type}: {e}")
-        elif self._default_handler:
-            # No type-specific handler, call default
+
+        # ALWAYS call default handler (draft handler) regardless of whether
+        # type-specific handlers ran. Draft events can be wrapped inside
+        # GreToClientEvent or other registered event types, so the default
+        # handler must inspect every payload for draft-related content.
+        if self._default_handler:
             try:
                 self._default_handler(event_type, payload)
             except Exception as e:

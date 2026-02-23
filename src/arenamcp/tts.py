@@ -392,6 +392,7 @@ class VoiceOutput:
 
     def _clean_text(self, text: str) -> str:
         """Remove markdown and special characters that TTS shouldn't pronounce."""
+        import re
         # Remove asterisks (bold/italic)
         text = text.replace("**", "").replace("*", "")
         # Remove hash (headers)
@@ -400,6 +401,10 @@ class VoiceOutput:
         text = text.replace("```", "").replace("`", "")
         # Remove ellipsis to prevent "dot dot dot" or "d d d"
         text = text.replace("...", " ")
+        # Remove game-state bracket annotations like [S,NEED:1], [I,OK], [RM:creat], [T], [FLY]
+        text = re.sub(r"\[[A-Z][A-Za-z0-9_,:{}/ ]*\]", "", text)
+        # Remove warning emoji that TTS might try to pronounce
+        text = text.replace("\u26a0\ufe0f", "Warning:")
         return text
 
     def speak(self, text: str, blocking: bool = True) -> None:

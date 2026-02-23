@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "arenamcp"
-version = "0.2.9"
+version = "0.3.0"
 description = "Real-time MCP server bridging MTGA game logs to Claude for conversational game analysis"
 requires-python = ">=3.10"
 license = "MIT"

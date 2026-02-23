@@ -1108,7 +1108,10 @@ CRITICAL GAME RULES:
 
 CRITICAL MANA RULES:
 - Cards tagged [OK] or [CAN CAST] are castable RIGHT NOW with available mana - no additional mana needed!
-- Cards tagged [NEED X] CANNOT be cast - do NOT suggest them!
+- Cards tagged [NEED:{G}] need GREEN mana specifically — adding non-green sources won't help!
+- Cards tagged [NEED:{R}{R}] need TWO RED mana — check which lands produce that color.
+- Cards tagged [NEED:3] need 3 more TOTAL mana from any source.
+- Cards tagged [NEED X] CANNOT be cast - do NOT suggest or mention them! Focus only on playable options.
 - Do NOT perform your own mana calculations - trust the tags completely.
 - The "Mana: X" line shows ONLY mana from UNTAPPED LANDS ON THE BATTLEFIELD. Lands in hand are NOT mana.
 - NEVER count lands in hand as available mana. A Plains in hand produces 0 mana until played.
@@ -1139,12 +1142,19 @@ CRITICAL STRATEGY RULES:
 - CRACKBACK CHECK: Before attacking, count opponent's total power on board vs YOUR life total.
   If opponent can kill you on their next attack and you need creatures to block, do NOT attack with them.
   Holding back blockers to survive is more important than dealing a few damage.
+  The "Crackback:" line already accounts for your blockers — trust its damage-through number.
+- BLOCKING MATH: The "Best blocks → X dmg" line shows MINIMUM damage after optimal blocking. Trust this number, not the raw attacker power.
+  Use the "Best blocks" life total for survival math, not the "No blocks" total.
+  Do NOT re-derive blocking math yourself — the computed numbers already account for flying, trample, and blocker assignment.
+- IMPENDING: Cards flagged [IMPENDING] are enchantments with time counters — they are NOT creatures yet and cannot attack, block, or be counted as combat threats. Ignore them in damage/lethal math until the counters are gone.
 - Bounce/removal spells can target OPPONENT creatures too. Bouncing a blocker for lethal > saving your creature.
 - When opponent has a removal spell on the stack, weigh "save my creature" vs "ignore it and go for the kill."
 - Creatures have power/toughness (e.g. 5/5). Don't call creatures "planeswalkers."
+- ORACLE TEXT: Only reference card abilities that are explicitly shown in the game state. Do NOT guess or infer oracle text from memory — if the text isn't shown, say so.
 
 Analyze: phase (critical for timing!), board state, life totals, cards in hand, mana available.
-Output directly as the coach. No preamble, no meta-commentary."""
+Output directly as the coach. No preamble, no meta-commentary.
+Do NOT mention cards you can't cast yet due to mana — focus only on playable options. The player can see their hand."""
 
 CONCISE_SYSTEM_PROMPT = """You are an expert MTG coach giving real-time spoken advice.
 Give ONE action for the CURRENT phase only. You will be re-consulted as the turn progresses.
@@ -1172,16 +1182,19 @@ STRATEGY:
 - ONLY claim "lethal" if the combat summary line shows "Atk: ... vs LETHAL".
 - TRADE CHECK: Read "If X blocks Y:" lines. "BAD" = attacker dies for free. Don't attack into BAD trades unless it enables lethal.
 - ATTACK DEFAULT: Attack with ALL eligible creatures (listed after "can attack:" in the Atk: line) unless the trade is BAD or you need to hold back a blocker to survive crackback. Never say a creature is your "only" attacker without checking the full list.
-- CRACKBACK CHECK: Before attacking, count opponent's total power vs YOUR life. If they can kill you next turn and you need blockers to survive, do NOT attack with those creatures.
+- CRACKBACK CHECK: Before attacking, count opponent's total power vs YOUR life. If they can kill you next turn and you need blockers to survive, do NOT attack with those creatures. The "Crackback:" line already accounts for your blockers — trust its damage-through number.
+- BLOCKING MATH: The "Best blocks → X dmg" line shows MINIMUM damage after optimal blocking. Use this number for survival math, not the "No blocks" total. Do NOT re-derive blocking math yourself.
+- IMPENDING: Cards flagged [IMPENDING] are NOT creatures yet — ignore them in combat/lethal math.
 - Bounce/removal spells can target OPPONENT creatures too. Bouncing a blocker for lethal > saving your creature.
 - When opponent has a removal spell on the stack, weigh "save my creature" vs "ignore it and go for the kill."
+- ORACLE TEXT: Only reference abilities explicitly shown. Do NOT guess card text from memory.
 
 RULES:
 - The "Legal:" line lists ALL valid actions. ONLY suggest actions listed there. No exceptions!
 - NEVER suggest actions not in Legal:. If you want to "flash in" a creature, it MUST show "Cast [creature]" in Legal:.
 - Creatures tagged [SS] have SUMMONING SICKNESS — they CANNOT attack. Check "Declare Attackers:" for legal attackers.
 - Cards tagged [OK] are castable NOW with current mana - no additional mana needed! Don't waste life for more mana.
-- Cards tagged [NEED X] CANNOT be cast - do NOT suggest them!
+- Cards tagged [NEED X] CANNOT be cast - do NOT suggest or mention them! Focus only on playable options.
 - RESOURCE EFFICIENCY: If a card shows [OK], you already have enough. Don't pay extra life/mana unnecessarily.
 - LAND DROP PRIORITY: If LAND status shows 'AVAILABLE' and you have lands in hand, suggest playing a land FIRST.
 - THEN LINE: If "THEN:" appears after Legal, give the full sequence: "Play [land], then cast [spell]". Pick the land enabling the best follow-up.
@@ -1493,6 +1506,23 @@ class CoachEngine:
         # Handle nested parens if possible, but simple greedy match usually works for MTG
         # Use simple non-greedy match for multiple parens
         return re.sub(r"\(.*?\)", "", text)
+
+    @staticmethod
+    def _is_impending(card: dict) -> bool:
+        """Check if a creature is in impending state (enchantment with time counters).
+
+        When cast with impending, a card enters as an enchantment with time
+        counters.  It is NOT a creature until the last counter is removed, so
+        it should not be counted as an attacker, blocker, or combat threat.
+        """
+        counters = card.get("counters", {})
+        has_time = any("time" in k.lower() for k in counters) if counters else False
+        if not has_time:
+            return False
+        # Confirm oracle text mentions impending (avoids false positives on
+        # other cards with time counters like suspend/vanishing)
+        oracle = card.get("oracle_text", "").lower()
+        return "impending" in oracle
 
     @staticmethod
     def _get_cmc(mana_cost: str) -> int:
@@ -1891,8 +1921,8 @@ class CoachEngine:
 
         # Battlefield - grouped by owner
         battlefield = game_state.get("battlefield", [])
-        your_cards = [c for c in battlefield if c.get("owner_seat_id") == local_seat]
-        opp_cards = [c for c in battlefield if c.get("owner_seat_id") != local_seat]
+        your_cards = [c for c in battlefield if c.get("owner_seat_id") == local_seat and c.get("type_line", "").lower() != "ability"]
+        opp_cards = [c for c in battlefield if c.get("owner_seat_id") != local_seat and c.get("type_line", "").lower() != "ability"]
 
         # OPTIMIZATION: Compact mana calculation
         # Track mana sources individually to avoid misleading dual-land displays
@@ -2098,6 +2128,10 @@ class CoachEngine:
                     ):
                         flags.append("SS")
 
+                    # Impending: enchantment with time counters, not a creature yet
+                    if self._is_impending(card):
+                        flags.append("IMPENDING")
+
                     if card.get("is_attacking"):
                         flags.append("ATK")
                     if card.get("is_blocking"):
@@ -2118,6 +2152,24 @@ class CoachEngine:
 
                     flag_str = f" [{','.join(flags)}]" if flags else ""
                     lines.append(f"  {display_name}{pt}{counter_str}{flag_str}")
+
+                    # Show compact oracle text for non-vanilla permanents so the
+                    # LLM doesn't hallucinate abilities.  Skip basic lands and
+                    # cards where the keywords already capture everything.
+                    raw_oracle = card.get("oracle_text", "")
+                    if raw_oracle and not is_land:
+                        stripped = self._remove_reminder_text(raw_oracle).strip()
+                        # Skip if the oracle text is ONLY keywords already captured by flags
+                        keyword_only = all(
+                            w in {"flying", "reach", "haste", "vigilance", "trample",
+                                  "first", "strike", "double", "deathtouch", "lifelink",
+                                  "menace", "ward", "hexproof", "indestructible", "defender"}
+                            for w in stripped.lower().replace(",", " ").replace("\n", " ").split()
+                            if w
+                        )
+                        if not keyword_only and len(stripped) > 0:
+                            oracle_compact = stripped[:120] + ("..." if len(stripped) > 120 else "")
+                            lines.append(f"    {oracle_compact}")
 
             else:
                 lines.append("  (empty)")
@@ -2208,6 +2260,10 @@ class CoachEngine:
                     ):
                         flags.append("SS")
 
+                    # Impending: enchantment with time counters, not a creature yet
+                    if self._is_impending(card):
+                        flags.append("IMPENDING")
+
                     if (
                         card.get("is_attacking")
                         or card.get("instance_id") in _inferred_atk_ids
@@ -2231,6 +2287,21 @@ class CoachEngine:
 
                     flag_str = f" [{','.join(flags)}]" if flags else ""
                     lines.append(f"  {display_name}{pt}{counter_str}{flag_str}")
+
+                    # Show compact oracle text for opponent permanents too
+                    raw_oracle = card.get("oracle_text", "")
+                    if raw_oracle and "land" not in type_line:
+                        stripped = self._remove_reminder_text(raw_oracle).strip()
+                        keyword_only = all(
+                            w in {"flying", "reach", "haste", "vigilance", "trample",
+                                  "first", "strike", "double", "deathtouch", "lifelink",
+                                  "menace", "ward", "hexproof", "indestructible", "defender"}
+                            for w in stripped.lower().replace(",", " ").replace("\n", " ").split()
+                            if w
+                        )
+                        if not keyword_only and len(stripped) > 0:
+                            oracle_compact = stripped[:120] + ("..." if len(stripped) > 120 else "")
+                            lines.append(f"    {oracle_compact}")
             else:
                 lines.append("  (empty)")
 
@@ -2240,6 +2311,7 @@ class CoachEngine:
                     c
                     for c in your_cards
                     if "creature" in c.get("type_line", "").lower()
+                    and not self._is_impending(c)
                 ]
 
                 valid_attackers = [
@@ -2261,6 +2333,7 @@ class CoachEngine:
                     c
                     for c in opp_cards
                     if "creature" in c.get("type_line", "").lower()
+                    and not self._is_impending(c)
                 ]
                 opp_blockers = [c for c in opp_creatures if not c.get("is_tapped")]
                 opp_block_count = len(opp_blockers)
@@ -2358,26 +2431,66 @@ class CoachEngine:
                     non_attackers = [
                         c for c in your_creatures if c not in valid_attackers
                     ]
-                    non_attacker_power = sum(
-                        c.get("power") or 0 for c in non_attackers
-                    )
-                    # Unblocked opponent damage if only non-attackers can block
-                    unblocked_opp_dmg = max(
-                        0, opp_attack_power - non_attacker_power
-                    )
-                    life_after_allout = your_life - unblocked_opp_dmg
 
+                    # Greedy optimal blocking: compute effective damage through
+                    # if non-attackers block opponent's creatures
+                    cb_available = list(non_attackers)
+                    cb_dmg_through = 0
+                    cb_sorted_opp = sorted(
+                        opp_creatures, key=lambda c: c.get("power") or 0, reverse=True
+                    )
+                    for opp_c in cb_sorted_opp:
+                        opp_pow = opp_c.get("power") or 0
+                        opp_oracle = self._remove_reminder_text(
+                            opp_c.get("oracle_text", "")
+                        ).lower()
+                        opp_has_fly = "flying" in opp_oracle
+                        opp_has_trample = "trample" in opp_oracle
+                        cb_valid = []
+                        for i, blk in enumerate(cb_available):
+                            blk_oracle = self._remove_reminder_text(
+                                blk.get("oracle_text", "")
+                            ).lower()
+                            if opp_has_fly and "flying" not in blk_oracle and "reach" not in blk_oracle:
+                                continue
+                            cb_valid.append((i, blk))
+                        if cb_valid:
+                            if opp_has_trample:
+                                idx, blocker = max(
+                                    cb_valid, key=lambda x: x[1].get("toughness") or 0
+                                )
+                            else:
+                                idx, blocker = min(
+                                    cb_valid, key=lambda x: x[1].get("toughness") or 0
+                                )
+                            cb_available.pop(idx)
+                            if opp_has_trample:
+                                spillover = max(
+                                    0, opp_pow - (blocker.get("toughness") or 0)
+                                )
+                                cb_dmg_through += spillover
+                        else:
+                            cb_dmg_through += opp_pow
+
+                    life_after_allout = your_life - cb_dmg_through
                     life_margin = your_life - opp_attack_power
                     if life_after_allout <= 0:
                         lines.append(
-                            f"⚠️ Crackback: opp has {opp_attack_power}pwr, your life {your_life} — "
-                            f"if you attack with all, only {len(non_attackers)} blocker(s) back "
-                            f"({non_attacker_power}pwr) → LETHAL on crackback! Hold blockers!"
+                            f"⚠️ Crackback: opp {opp_attack_power}pwr, your {len(non_attackers)} blocker(s) absorb "
+                            f"{opp_attack_power - cb_dmg_through} → {cb_dmg_through} through vs {your_life} life "
+                            f"→ LETHAL on crackback! Hold blockers!"
                         )
                     elif life_margin <= 0:
-                        lines.append(
-                            f"Crackback: {opp_attack_power}pwr vs your {your_life} life — LETHAL if no blockers held!"
-                        )
+                        if cb_dmg_through < opp_attack_power and len(non_attackers) > 0:
+                            lines.append(
+                                f"Crackback: opp {opp_attack_power}pwr, but your {len(non_attackers)} blocker(s) absorb "
+                                f"{opp_attack_power - cb_dmg_through} → only {cb_dmg_through} through vs {your_life} life — "
+                                f"{'safe' if life_after_allout > 3 else 'tight'}"
+                            )
+                        else:
+                            lines.append(
+                                f"Crackback: {opp_attack_power}pwr vs your {your_life} life — LETHAL if no blockers held!"
+                            )
                     elif life_margin <= 3:
                         lines.append(
                             f"Crackback: {opp_attack_power}pwr vs your {your_life} life — DANGER (only {life_margin} margin!)"
@@ -2410,6 +2523,7 @@ class CoachEngine:
                     for c in your_cards
                     if "creature" in c.get("type_line", "").lower()
                     and not c.get("is_tapped")
+                    and not self._is_impending(c)
                 ]
 
                 flyer_blockers = [
@@ -2453,6 +2567,64 @@ class CoachEngine:
                     if dth_atk:
                         dth_names = ", ".join(c.get("name", "?") for c in dth_atk)
                         lines.append(f"⚠️ DEATHTOUCH: {dth_names} — any blocker DIES regardless of toughness!")
+
+                    # Compute minimum damage after optimal blocking
+                    available_blk = list(your_creatures)
+                    damage_through = 0
+                    # Sort attackers by power descending (block biggest threats first)
+                    sorted_atk = sorted(
+                        attacking, key=lambda c: c.get("power") or 0, reverse=True
+                    )
+                    for atk in sorted_atk:
+                        atk_pow = atk.get("power") or 0
+                        atk_oracle = self._remove_reminder_text(
+                            atk.get("oracle_text", "")
+                        ).lower()
+                        atk_has_fly = "flying" in atk_oracle
+                        atk_has_trample = "trample" in atk_oracle
+                        # Find valid blockers for this attacker
+                        valid = []
+                        for i, blk in enumerate(available_blk):
+                            blk_oracle = self._remove_reminder_text(
+                                blk.get("oracle_text", "")
+                            ).lower()
+                            if atk_has_fly and "flying" not in blk_oracle and "reach" not in blk_oracle:
+                                continue
+                            valid.append((i, blk))
+                        if valid:
+                            if atk_has_trample:
+                                # Use highest-toughness blocker to minimize trample spillover
+                                idx, blocker = max(
+                                    valid, key=lambda x: x[1].get("toughness") or 0
+                                )
+                            else:
+                                # Use smallest blocker to preserve bigger ones
+                                idx, blocker = min(
+                                    valid, key=lambda x: x[1].get("toughness") or 0
+                                )
+                            available_blk.pop(idx)
+                            if atk_has_trample:
+                                spillover = max(
+                                    0, atk_pow - (blocker.get("toughness") or 0)
+                                )
+                                damage_through += spillover
+                            # else: no damage through (blocked without trample)
+                        else:
+                            damage_through += atk_pow  # unblockable
+
+                    life_after_blocks = your_life - damage_through
+                    if damage_through < total_incoming:
+                        if life_after_blocks <= 0:
+                            lines.append(
+                                f"⚠️ Best blocks → take {damage_through} dmg → DEAD (from {your_life} life)! Not enough blockers!"
+                            )
+                        else:
+                            lines.append(
+                                f"Best blocks → take {damage_through} dmg → {life_after_blocks} life"
+                            )
+                    else:
+                        # All blockers used but no damage reduction (e.g. all trample)
+                        life_after_blocks = life_after_no_blocks
 
                     # Trade analysis: show what happens for each block
                     if your_creatures and attacking:
@@ -2508,16 +2680,17 @@ class CoachEngine:
                         c for c in opp_cards
                         if "creature" in c.get("type_line", "").lower()
                         and c not in attacking
+                        and not self._is_impending(c)
                     ]
                     opp_next_turn_power = (
                         sum(c.get("power") or 0 for c in attacking)
                         + sum(c.get("power") or 0 for c in opp_non_attacking)
                     )
-                    if opp_next_turn_power > 0 and life_after_no_blocks > 0:
-                        if opp_next_turn_power >= life_after_no_blocks:
+                    if opp_next_turn_power > 0 and life_after_blocks > 0:
+                        if opp_next_turn_power >= life_after_blocks:
                             lines.append(
                                 f"⚠️ Next turn: opp can attack for up to {opp_next_turn_power}pwr — "
-                                f"LETHAL if you're at {life_after_no_blocks} life after this combat! Preserve blockers!"
+                                f"LETHAL if you're at {life_after_blocks} life after this combat! Preserve blockers!"
                             )
         else:
             lines.append("")
@@ -2564,6 +2737,7 @@ class CoachEngine:
             c
             for c in opp_cards
             if "creature" in c.get("type_line", "").lower()
+            and not self._is_impending(c)
         ]
         opp_nonland = [
             c for c in opp_cards
@@ -2627,18 +2801,29 @@ class CoachEngine:
                     if color_ok:
                         castable = "OK"
                     else:
-                        # Missing specific color — compute real shortfall
-                        missing = sum(
-                            max(
-                                0,
-                                reqs[c] - mana_pool.get(c, 0) - mana_pool.get("Any", 0),
-                            )
-                            for c in "WUBRGC"
-                            if reqs[c] > 0
-                        )
-                        castable = f"NEED:{max(1, missing)}"
+                        # Missing specific color — show which colors are needed
+                        missing_pips = ""
+                        for c in "WUBRGC":
+                            if reqs[c] > 0:
+                                shortfall = reqs[c] - mana_pool.get(c, 0) - mana_pool.get("Any", 0)
+                                if shortfall > 0:
+                                    missing_pips += f"{{{c}}}" * shortfall
+                        castable = f"NEED:{missing_pips}" if missing_pips else f"NEED:{max(1, cmc - total_mana)}"
                 else:
-                    castable = f"NEED:{cmc - total_mana}"
+                    # Not enough total mana — also show color requirements so
+                    # the LLM knows WHICH colors are needed (e.g. NEED:2+{G}{G}
+                    # means 2 more mana including 2 green specifically)
+                    missing_pips = ""
+                    for c in "WUBRGC":
+                        if reqs[c] > 0:
+                            shortfall = reqs[c] - mana_pool.get(c, 0) - mana_pool.get("Any", 0)
+                            if shortfall > 0:
+                                missing_pips += f"{{{c}}}" * shortfall
+                    generic_short = cmc - total_mana
+                    if missing_pips:
+                        castable = f"NEED:{generic_short}+{missing_pips}"
+                    else:
+                        castable = f"NEED:{generic_short}"
 
                 # OPTIMIZATION: Terse removal analysis - show kill RANGE, not every target
                 removal_info = ""
@@ -3149,6 +3334,7 @@ class CoachEngine:
                 for c in battlefield
                 if c.get("owner_seat_id") == local_seat
                 and "creature" in c.get("type_line", "").lower()
+                and not self._is_impending(c)
             ]
 
             def _has_haste(card: dict[str, Any]) -> bool:
@@ -3172,6 +3358,7 @@ class CoachEngine:
                 for c in battlefield
                 if c.get("owner_seat_id") != local_seat
                 and "creature" in c.get("type_line", "").lower()
+                and not self._is_impending(c)
             ]
             opp_blockers = len([c for c in opp_creatures if not c.get("is_tapped")])
             opp_life = opponent_player.get("life_total", 20)

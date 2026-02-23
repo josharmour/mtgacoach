@@ -451,7 +451,10 @@ class StandaloneCoach:
                         if not in_sealed_mode:
                             in_sealed_mode = True
                             in_draft_mode = False
+                            self.draft_mode = True
                             set_code = draft_pack.get("set_code", "???")
+                            if not self.set_code:
+                                self.set_code = set_code
                             self.ui.status("SEALED", f"Detected sealed event: {set_code}")
                             self.ui.log("[SEALED] Waiting for pool to be opened...\n")
                             logger.info(f"Auto-detected sealed: {set_code}")
@@ -487,7 +490,10 @@ class StandaloneCoach:
                             if not in_draft_mode:
                                 in_draft_mode = True
                                 in_sealed_mode = False
+                                self.draft_mode = True
                                 set_code = draft_pack.get("set_code", "???")
+                                if not self.set_code:
+                                    self.set_code = set_code
                                 self.ui.status("DRAFT", f"Detected draft: {set_code}")
                                 self.ui.log("[DRAFT] Auto-switching to draft advice mode\n")
                                 logger.info(f"Auto-detected draft: {set_code}")
@@ -532,6 +538,7 @@ class StandaloneCoach:
                     in_draft_mode = False
                     in_sealed_mode = False
                     sealed_analyzed = False
+                    self.draft_mode = False
                     self.ui.log(f"\n[{mode_name.upper()}] {mode_name} complete, switching to game coaching\n")
                     logger.info(f"{mode_name} ended, resuming game coaching")
                     last_draft_pack = 0
@@ -1372,6 +1379,9 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
             # Recent log entries (last 100 lines)
             "recent_logs": self._get_recent_logs(100),
 
+            # Card enrichment failures (oracle text lookups that failed)
+            "enrichment_failures": self._get_enrichment_failures(),
+
             # Error state
             "errors": list(self._recent_errors) if hasattr(self, '_recent_errors') else [],
 
@@ -1400,11 +1410,17 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
     def _get_mtga_log_status(self) -> dict:
         """Get MTGA Player.log file status."""
         import os
-        log_path = os.environ.get(
-            "MTGA_LOG_PATH",
-            str(Path(os.environ.get("APPDATA", "")) / "LocalLow"
-                / "Wizards Of The Coast" / "MTGA" / "Player.log"),
-        )
+        # Use the same path logic as watcher.py: LOCALAPPDATA (AppData\Local)
+        # -> parent (AppData) -> LocalLow sibling
+        _local_appdata = os.environ.get("LOCALAPPDATA", "")
+        if _local_appdata:
+            default_path = str(
+                Path(os.path.dirname(_local_appdata)) / "LocalLow"
+                / "Wizards Of The Coast" / "MTGA" / "Player.log"
+            )
+        else:
+            default_path = ""
+        log_path = os.environ.get("MTGA_LOG_PATH", default_path)
         result: dict = {"path": log_path}
         try:
             p = Path(log_path)
@@ -1472,6 +1488,14 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
 
         return context
 
+    def _get_enrichment_failures(self) -> list:
+        """Get card enrichment (oracle text lookup) failures for bug reports."""
+        try:
+            from arenamcp.server import get_enrichment_failures
+            return get_enrichment_failures()
+        except Exception:
+            return []
+
     def _get_recent_logs(self, num_lines: int = 100) -> list:
         """Get recent log entries from standalone.log."""
         try:
@@ -1508,11 +1532,32 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
             except Exception:
                 pass
 
+        # Extract key game state fields for bug reports (turn, life, board snapshot)
+        game_snapshot = None
+        if game_state:
+            try:
+                turn = game_state.get("turn", {})
+                players = game_state.get("players", [])
+                game_snapshot = {
+                    "turn_number": turn.get("turn_number"),
+                    "phase": turn.get("phase"),
+                    "active_player": turn.get("active_player"),
+                    "players": [
+                        {"seat_id": p.get("seat_id"), "life_total": p.get("life_total")}
+                        for p in players
+                    ],
+                    "battlefield_count": len(game_state.get("battlefield", [])),
+                    "hand_count": len(game_state.get("hand", [])),
+                }
+            except Exception:
+                pass
+
         entry = {
             "timestamp": datetime.now().isoformat(),
             "trigger": trigger,
             "advice": advice,
-            "game_context": game_context[:2000] if game_context else None,  # Store more context
+            "game_context": game_context[:8000] if game_context else None,
+            "game_snapshot": game_snapshot,
         }
         self._advice_history.append(entry)
 

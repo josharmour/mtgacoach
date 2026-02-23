@@ -16,7 +16,7 @@ from mcp.server.fastmcp import FastMCP
 from arenamcp.coach import CoachEngine, GameStateTrigger, create_backend
 
 from arenamcp.gamestate import (
-    GameState, ZoneType, create_game_state_handler,
+    GameState, GameObjectKind, ZoneType, create_game_state_handler,
     save_match_state, load_match_state, mark_match_ended,
 )
 from arenamcp.parser import LogParser
@@ -557,6 +557,15 @@ def poll_log() -> None:
         watcher.poll()
 
 
+# Track card enrichment failures for bug reports
+_enrichment_failures: list[dict[str, Any]] = []
+
+
+def get_enrichment_failures() -> list[dict[str, Any]]:
+    """Return recent card enrichment failures for bug reports."""
+    return list(_enrichment_failures[-50:])
+
+
 def enrich_with_oracle_text(grp_id: int) -> dict[str, Any]:
     """Look up card data and return enriched dict.
 
@@ -652,6 +661,14 @@ def enrich_with_oracle_text(grp_id: int) -> dict[str, Any]:
     card = scryfall.get_card_by_arena_id(grp_id)
 
     if card is None:
+        from datetime import datetime
+        _enrichment_failures.append({
+            "timestamp": datetime.now().isoformat(),
+            "grp_id": grp_id,
+            "source": "all_lookups_failed",
+        })
+        if len(_enrichment_failures) > 100:
+            _enrichment_failures[:] = _enrichment_failures[-50:]
         return {
             "grp_id": grp_id,
             "name": f"Unknown (ID: {grp_id})",
@@ -766,7 +783,10 @@ def get_game_state() -> dict[str, Any]:
         })
 
     # Serialize zones with oracle text enrichment
-    battlefield = [_serialize_game_object(obj) for obj in game_state.battlefield]
+    battlefield = [
+        _serialize_game_object(obj) for obj in game_state.battlefield
+        if obj.object_kind != GameObjectKind.ABILITY
+    ]
     hand = [_serialize_game_object(obj) for obj in game_state.hand]
     graveyard = [_serialize_game_object(obj) for obj in game_state.graveyard]
     stack = [_serialize_game_object(obj) for obj in game_state.stack]
@@ -875,6 +895,9 @@ def get_opponent_played_cards() -> list[dict[str, Any]]:
     cards = []
     for grp_id in grp_ids:
         enriched = enrich_with_oracle_text(grp_id)
+        # Filter out ability objects (type_line == "Ability") — they aren't real cards
+        if enriched.get("type_line", "").lower() == "ability":
+            continue
         cards.append(enriched)
 
     return cards
