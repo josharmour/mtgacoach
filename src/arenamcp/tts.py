@@ -444,9 +444,10 @@ class VoiceOutput:
             if len(samples) == 0:
                 return
 
-            # Add a small amount of leading silence (200ms) to prevent cutting off the first word
-            # on some audio devices/Bluetooth that have a wake-up delay.
-            silence_len = int(sample_rate * 0.2)
+            # Add leading silence (500ms) to prevent cutting off the first word.
+            # Audio devices (especially Bluetooth/USB) need time to wake up after
+            # sd.stop() or when the stream first opens.  200ms was not enough.
+            silence_len = int(sample_rate * 0.5)
             silence = np.zeros(silence_len, dtype=np.float32)
             samples = np.concatenate([silence, samples])
 
@@ -491,8 +492,8 @@ class VoiceOutput:
         if len(samples) == 0:
             return
 
-        # Add a small amount of leading silence (200ms) to prevent cutting off the first word
-        silence_len = int(sample_rate * 0.2)
+        # Add leading silence (500ms) to prevent cutting off the first word.
+        silence_len = int(sample_rate * 0.5)
         silence = np.zeros(silence_len, dtype=np.float32)
         samples = np.concatenate([silence, samples])
 
