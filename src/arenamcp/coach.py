@@ -2426,65 +2426,79 @@ class CoachEngine:
                     local_player.get("life_total", 20) if local_player else 20
                 )
                 if opp_attack_power > 0:
-                    # Determine which of your creatures would be tapped (unavailable
-                    # to block) if you attack with all valid attackers
+                    # Helper: compute crackback damage through optimal blocking
+                    def _crackback_dmg(blockers_list):
+                        cb_avail = list(blockers_list)
+                        dmg = 0
+                        cb_sorted = sorted(
+                            opp_creatures, key=lambda c: c.get("power") or 0, reverse=True
+                        )
+                        for opp_c in cb_sorted:
+                            opp_pow = opp_c.get("power") or 0
+                            opp_oracle = self._remove_reminder_text(
+                                opp_c.get("oracle_text", "")
+                            ).lower()
+                            opp_has_fly = "flying" in opp_oracle
+                            opp_has_trample = "trample" in opp_oracle
+                            cb_valid = []
+                            for i, blk in enumerate(cb_avail):
+                                blk_oracle = self._remove_reminder_text(
+                                    blk.get("oracle_text", "")
+                                ).lower()
+                                if opp_has_fly and "flying" not in blk_oracle and "reach" not in blk_oracle:
+                                    continue
+                                cb_valid.append((i, blk))
+                            if cb_valid:
+                                if opp_has_trample:
+                                    idx, blocker = max(
+                                        cb_valid, key=lambda x: x[1].get("toughness") or 0
+                                    )
+                                else:
+                                    idx, blocker = min(
+                                        cb_valid, key=lambda x: x[1].get("toughness") or 0
+                                    )
+                                cb_avail.pop(idx)
+                                if opp_has_trample:
+                                    spillover = max(
+                                        0, opp_pow - (blocker.get("toughness") or 0)
+                                    )
+                                    dmg += spillover
+                            else:
+                                dmg += opp_pow
+                        return dmg
+
+                    # Scenario 1: All-out attack (only non-attackers can block)
                     non_attackers = [
                         c for c in your_creatures if c not in valid_attackers
                     ]
+                    allout_dmg = _crackback_dmg(non_attackers)
+                    life_after_allout = your_life - allout_dmg
 
-                    # Greedy optimal blocking: compute effective damage through
-                    # if non-attackers block opponent's creatures
-                    cb_available = list(non_attackers)
-                    cb_dmg_through = 0
-                    cb_sorted_opp = sorted(
-                        opp_creatures, key=lambda c: c.get("power") or 0, reverse=True
-                    )
-                    for opp_c in cb_sorted_opp:
-                        opp_pow = opp_c.get("power") or 0
-                        opp_oracle = self._remove_reminder_text(
-                            opp_c.get("oracle_text", "")
-                        ).lower()
-                        opp_has_fly = "flying" in opp_oracle
-                        opp_has_trample = "trample" in opp_oracle
-                        cb_valid = []
-                        for i, blk in enumerate(cb_available):
-                            blk_oracle = self._remove_reminder_text(
-                                blk.get("oracle_text", "")
-                            ).lower()
-                            if opp_has_fly and "flying" not in blk_oracle and "reach" not in blk_oracle:
-                                continue
-                            cb_valid.append((i, blk))
-                        if cb_valid:
-                            if opp_has_trample:
-                                idx, blocker = max(
-                                    cb_valid, key=lambda x: x[1].get("toughness") or 0
-                                )
-                            else:
-                                idx, blocker = min(
-                                    cb_valid, key=lambda x: x[1].get("toughness") or 0
-                                )
-                            cb_available.pop(idx)
-                            if opp_has_trample:
-                                spillover = max(
-                                    0, opp_pow - (blocker.get("toughness") or 0)
-                                )
-                                cb_dmg_through += spillover
-                        else:
-                            cb_dmg_through += opp_pow
+                    # Scenario 2: No attack (all creatures available to block)
+                    noatk_dmg = _crackback_dmg(your_creatures)
+                    life_after_noatk = your_life - noatk_dmg
 
-                    life_after_allout = your_life - cb_dmg_through
                     life_margin = your_life - opp_attack_power
                     if life_after_allout <= 0:
-                        lines.append(
-                            f"⚠️ Crackback: opp {opp_attack_power}pwr, your {len(non_attackers)} blocker(s) absorb "
-                            f"{opp_attack_power - cb_dmg_through} → {cb_dmg_through} through vs {your_life} life "
-                            f"→ LETHAL on crackback! Hold blockers!"
-                        )
+                        if life_after_noatk > 0:
+                            # All-out is lethal but holding back is safe
+                            lines.append(
+                                f"⚠️ Crackback: opp {opp_attack_power}pwr — ALL-OUT lethal "
+                                f"({allout_dmg} through vs {your_life} life), but holding all "
+                                f"{len(your_creatures)} blockers → only {noatk_dmg} through → "
+                                f"SAFE at {life_after_noatk} life. Attack selectively!"
+                            )
+                        else:
+                            lines.append(
+                                f"⚠️ Crackback: opp {opp_attack_power}pwr → LETHAL even with "
+                                f"all {len(your_creatures)} blockers ({noatk_dmg} through vs "
+                                f"{your_life} life)! Must race or remove threats!"
+                            )
                     elif life_margin <= 0:
-                        if cb_dmg_through < opp_attack_power and len(non_attackers) > 0:
+                        if allout_dmg < opp_attack_power and len(non_attackers) > 0:
                             lines.append(
                                 f"Crackback: opp {opp_attack_power}pwr, but your {len(non_attackers)} blocker(s) absorb "
-                                f"{opp_attack_power - cb_dmg_through} → only {cb_dmg_through} through vs {your_life} life — "
+                                f"{opp_attack_power - allout_dmg} → only {allout_dmg} through vs {your_life} life — "
                                 f"{'safe' if life_after_allout > 3 else 'tight'}"
                             )
                         else:
@@ -2635,6 +2649,7 @@ class CoachEngine:
                             atk_oracle = self._remove_reminder_text(
                                 atk.get("oracle_text", "")
                             ).lower()
+                            atk_has_fly = "flying" in atk_oracle
                             atk_has_dth = "deathtouch" in atk_oracle
                             atk_has_trample = "trample" in atk_oracle
                             atk_has_fs = "first strike" in atk_oracle or "double strike" in atk_oracle
@@ -2645,8 +2660,13 @@ class CoachEngine:
                                 blk_oracle = self._remove_reminder_text(
                                     blk.get("oracle_text", "")
                                 ).lower()
+                                blk_has_fly = "flying" in blk_oracle
+                                blk_has_reach = "reach" in blk_oracle
                                 blk_has_dth = "deathtouch" in blk_oracle
                                 blk_has_fs = "first strike" in blk_oracle or "double strike" in blk_oracle
+                                # Skip if blocker can't legally block (flying vs no fly/reach)
+                                if atk_has_fly and not blk_has_fly and not blk_has_reach:
+                                    continue
                                 # Determine outcomes
                                 atk_dies = (blk_pow >= atk_tgh) or blk_has_dth
                                 blk_dies = (atk_pow >= blk_tgh) or atk_has_dth
@@ -3721,6 +3741,8 @@ class GameStateTrigger:
         "Questing Beast": "Can't be chumped, damages walkers!",
         "Elder Gargaroth": "Massive value every combat.",
         "Cruelty of Gix": "3-mode saga, steals creatures!",
+        # Enchantment threats
+        "Monument to Endurance": "Grows huge with counters, gains deathtouch + indestructible!",
     }
 
     def __init__(self, life_threshold: int = 5):
