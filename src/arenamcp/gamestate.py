@@ -205,6 +205,8 @@ class GameState:
         # Recent game events from GRE annotations (ring buffer, max 50)
         self.recent_events: list[dict] = []
         self._max_recent_events: int = 50
+        # Persists across reset() so the coaching loop can read it after match ends
+        self.last_game_result: Optional[str] = None  # "win", "loss", or None
         # Cumulative damage tracking per player this game: {seat_id: total_damage_taken}
         self.damage_taken: dict[int, int] = {}
         # Cards revealed to us by opponent (from CardRevealed/InstanceRevealedToOpponent)
@@ -246,6 +248,9 @@ class GameState:
         self.recent_events = []
         self.damage_taken = {}
         self.revealed_cards = {}
+        # NOTE: last_game_result is intentionally NOT cleared here.
+        # The coaching loop reads it after reset() to detect the match outcome.
+        # It is cleared by the coaching loop once consumed.
 
     # Backward compatibility for _seat_manually_set
     @property
@@ -452,6 +457,7 @@ class GameState:
             "recent_events": self.recent_events[-10:],  # Last 10 events for display
             "damage_taken": self.damage_taken,
             "revealed_cards": revealed,
+            "last_game_result": self.last_game_result,
         }
         return snapshot
 
@@ -1201,11 +1207,14 @@ class GameState:
                     })
 
                 elif ann_type in ("AnnotationType_LossOfGame", "AnnotationType_WinTheGame"):
+                    result = "loss" if "Loss" in ann_type else "win"
                     self._add_event({
                         "type": "game_end",
-                        "result": "loss" if "Loss" in ann_type else "win",
+                        "result": result,
                         "affected_ids": affected_ids,
                     })
+                    # Persist result so it survives reset() for post-match analysis
+                    self.last_game_result = result
 
                 elif ann_type == "AnnotationType_ModifiedLife":
                     self._add_event({

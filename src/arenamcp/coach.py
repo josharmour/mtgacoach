@@ -3384,18 +3384,31 @@ class CoachEngine:
             trigger = entry.get("trigger", "unknown")
             advice_text = entry.get("advice", "")
             ctx = entry.get("game_context", "") or ""
-            ctx_snippet = ctx[:300] + "..." if len(ctx) > 300 else ctx
 
-            lines.append(f"\n--- Turn {turn}, {phase} [{trigger}] ---")
+            # Include life totals from snapshot for each entry
+            life_str = ""
+            players = snap.get("players", [])
+            if players:
+                parts = [f"Seat{p.get('seat_id')}={p.get('life_total')}" for p in players]
+                life_str = f" Life: {', '.join(parts)}"
+
+            board_info = ""
+            if snap.get("battlefield_count"):
+                board_info = f" Board:{snap['battlefield_count']} Hand:{snap.get('hand_count', '?')}"
+
+            # Include enough context for LLM to understand the board position
+            ctx_snippet = ctx[:800] + "..." if len(ctx) > 800 else ctx
+
+            lines.append(f"\n--- Turn {turn}, {phase} [{trigger}]{life_str}{board_info} ---")
             if ctx_snippet:
                 lines.append(f"Context: {ctx_snippet}")
             lines.append(f"Advice: {advice_text}")
 
         user_message = "\n".join(lines)
 
-        # Truncate if too long
-        if len(user_message) > 12000:
-            user_message = user_message[:12000] + "\n\n[... truncated ...]"
+        # Allow larger context for better analysis quality
+        if len(user_message) > 24000:
+            user_message = user_message[:24000] + "\n\n[... truncated ...]"
 
         logger.info(
             f"[POST-MATCH] Generating analysis: {len(advice_history)} entries, "
