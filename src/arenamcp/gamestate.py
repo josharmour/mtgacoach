@@ -6,6 +6,7 @@ snapshot of the current game state from parsed MTGA log events.
 
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -212,6 +213,15 @@ class GameState:
         # Cards revealed to us by opponent (from CardRevealed/InstanceRevealedToOpponent)
         self.revealed_cards: dict[int, set[int]] = {}  # seat_id -> set of grp_ids
 
+        # ── Cross-thread game-end signaling ──
+        # The parser thread sets this event when the game ends (IntermissionReq).
+        # The coaching loop checks it to detect game end immediately, even if
+        # blocked on an LLM call or in between polls.
+        self.game_ended_event: threading.Event = threading.Event()
+        # Snapshot of the full game state captured BEFORE reset(), so the
+        # post-match analysis has the final board state even after reset clears it.
+        self._pre_reset_snapshot: Optional[dict] = None
+
     def reset(self) -> None:
         """Reset the game state to essentially empty (for new match)."""
         logger.info("Resetting GameState for new match")
@@ -251,6 +261,59 @@ class GameState:
         # NOTE: last_game_result is intentionally NOT cleared here.
         # The coaching loop reads it after reset() to detect the match outcome.
         # It is cleared by the coaching loop once consumed.
+        # NOTE: game_ended_event and _pre_reset_snapshot are NOT cleared here.
+        # They are cleared by the coaching loop once consumed.
+
+    def prepare_for_game_end(self) -> None:
+        """Capture final state and infer result BEFORE reset().
+
+        Called by the IntermissionReq handler (parser thread) right before
+        ``reset()`` wipes the board.  This ensures:
+        1. ``last_game_result`` is set even if no WinTheGame/LossOfGame annotation fired
+        2. ``_pre_reset_snapshot`` preserves the final board state for analysis
+        3. ``game_ended_event`` is set so the coaching loop detects it immediately
+        """
+        # 1. Infer game result from life totals if not already set
+        if not self.last_game_result and self.local_seat_id is not None:
+            for seat_id, player in self.players.items():
+                if player.life_total <= 0:
+                    if seat_id == self.local_seat_id:
+                        self.last_game_result = "loss"
+                        logger.info(f"Inferred game result from life totals: loss (seat {seat_id} life={player.life_total})")
+                    else:
+                        self.last_game_result = "win"
+                        logger.info(f"Inferred game result from life totals: win (opponent seat {seat_id} life={player.life_total})")
+                    break  # First player at ≤0 life determines result
+
+        # 2. Save a snapshot of the full state before reset wipes it
+        try:
+            self._pre_reset_snapshot = self.to_dict()
+        except Exception as e:
+            logger.warning(f"Failed to capture pre-reset snapshot: {e}")
+            self._pre_reset_snapshot = None
+
+        # 3. Signal the coaching loop
+        self.game_ended_event.set()
+        logger.info(f"Game-end prepared: result={self.last_game_result}, snapshot={'yes' if self._pre_reset_snapshot else 'no'}")
+
+    def consume_game_end(self) -> tuple[Optional[str], Optional[dict]]:
+        """Consume the game-end signal and return (result, snapshot).
+
+        Called by the coaching loop after detecting ``game_ended_event``.
+        Clears the event and persistent fields so they don't re-trigger.
+
+        Returns:
+            Tuple of (result, pre_reset_snapshot) where result is "win",
+            "loss", or None, and snapshot is the full game state dict
+            captured before reset().
+        """
+        result = self.last_game_result
+        snapshot = self._pre_reset_snapshot
+        # Clear consumed data
+        self.last_game_result = None
+        self._pre_reset_snapshot = None
+        self.game_ended_event.clear()
+        return result, snapshot
 
     # Backward compatibility for _seat_manually_set
     @property
@@ -1505,6 +1568,8 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                 # set a Mulligan decision — the actual mulligan SubmitDeckReq will come
                 # later if a new game starts.
                 logger.info(f"IntermissionReq received (turn {game_state.turn_info.turn_number}) - game over/transition")
+                # Capture final state and infer result BEFORE reset wipes the board
+                game_state.prepare_for_game_end()
                 game_state.reset()
                 # Clear any stale decision from the finished game
                 game_state.pending_decision = None

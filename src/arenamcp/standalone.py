@@ -575,28 +575,29 @@ class StandaloneCoach:
                 curr_match_id = curr_state.get("match_id")
 
                 # ── GAME END DETECTION ──
-                # Fires as soon as the GRE sends a WinTheGame/LossOfGame annotation,
-                # BEFORE any reset() clears the state.  This is the primary trigger
-                # for post-match analysis.
-                game_result = curr_state.get("last_game_result")
-                if game_result and not self._game_end_handled and self._advice_history:
-                    self._game_end_handled = True
-                    logger.info(f"Game ended: {game_result} — launching post-match analysis")
-                    self._saved_advice_history = list(self._advice_history)
-                    self._last_match_result = game_result
-                    self._last_match_final_state = dict(curr_state)
-                    threading.Thread(
-                        target=self._post_match_analysis_worker,
-                        daemon=True,
-                    ).start()
-                    # Clear the persistent flag so it won't re-trigger
-                    try:
-                        from arenamcp.server import game_state as gs
-                        gs.last_game_result = None
-                    except Exception:
-                        pass
+                # PRIMARY: Check threading.Event set by parser thread
+                # (IntermissionReq or finalMatchResult). This fires immediately
+                # regardless of whether the coaching loop was blocked on LLM.
+                try:
+                    from arenamcp.server import game_state as gs
+                    if gs.game_ended_event.is_set() and not self._game_end_handled and self._advice_history:
+                        self._game_end_handled = True
+                        result, snapshot = gs.consume_game_end()
+                        game_result = result or "unknown"
+                        logger.info(f"Game ended (event signal): {game_result} — launching post-match analysis")
+                        self._saved_advice_history = list(self._advice_history)
+                        self._last_match_result = game_result
+                        # Use pre-reset snapshot (full final state) if available,
+                        # otherwise fall back to current (already-reset) state
+                        self._last_match_final_state = snapshot or dict(curr_state)
+                        threading.Thread(
+                            target=self._post_match_analysis_worker,
+                            daemon=True,
+                        ).start()
+                except Exception as e:
+                    logger.debug(f"Game-end event check failed: {e}")
 
-                # Detect match boundary via match_id change.
+                # SECONDARY: Detect match boundary via match_id change.
                 # Two cases:
                 #   (a) match_id goes FROM something TO a different value (new match started)
                 #   (b) match_id goes FROM something TO None (match ended, back to menu)
@@ -634,7 +635,7 @@ class StandaloneCoach:
                         logger.debug(f"turn_num=0, players={len(curr_state.get('players', []))}, battlefield={len(curr_state.get('battlefield', []))}")
                         self._last_turn0_log = time.time()
 
-                # Detect new game (turn number decreased) — fallback for same-match restarts
+                # TERTIARY: Detect new game (turn number decreased) — fallback for same-match restarts
                 if turn_num > 0 and turn_num < last_advice_turn:
                     logger.info(f"New game detected in coaching loop (turn {last_advice_turn} -> {turn_num}), resetting advice tracking")
 
@@ -1659,22 +1660,33 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
     def _detect_match_result(self) -> str:
         """Detect win/loss from game state.
 
-        Uses the persistent ``last_game_result`` field on GameState which
-        survives ``reset()`` (unlike ``recent_events``).  Falls back to
-        scanning ``recent_events`` if the persistent field isn't set.
+        Checks multiple sources in priority order:
+        1. Persistent ``last_game_result`` field on GameState (survives reset)
+        2. Pre-reset snapshot's ``last_game_result``
+        3. ``recent_events`` (may be cleared by reset)
 
         Returns "win", "loss", or "unknown".
         """
         try:
-            game_state = self._mcp.get_game_state()
+            from arenamcp.server import game_state as gs
 
             # Preferred: persistent field set when game_end annotation fires
-            persistent = game_state.get("last_game_result")
-            if persistent:
-                return persistent
+            if gs.last_game_result:
+                return gs.last_game_result
 
-            # Fallback: scan recent_events (may already be cleared by reset)
-            recent = game_state.get("recent_events", [])
+            # Fallback 1: pre-reset snapshot
+            if gs._pre_reset_snapshot:
+                snap_result = gs._pre_reset_snapshot.get("last_game_result")
+                if snap_result:
+                    return snap_result
+
+            # Fallback 2: scan recent_events from snapshot (live ones may be cleared)
+            snapshot = gs._pre_reset_snapshot or {}
+            recent = snapshot.get("recent_events", [])
+            if not recent:
+                # Try live recent_events
+                game_state_dict = self._mcp.get_game_state()
+                recent = game_state_dict.get("recent_events", [])
             for event in reversed(recent):
                 if event.get("type") == "game_end":
                     return event.get("result", "unknown")
