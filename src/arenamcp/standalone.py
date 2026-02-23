@@ -1410,11 +1410,17 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
     def _get_mtga_log_status(self) -> dict:
         """Get MTGA Player.log file status."""
         import os
-        log_path = os.environ.get(
-            "MTGA_LOG_PATH",
-            str(Path(os.environ.get("APPDATA", "")) / "LocalLow"
-                / "Wizards Of The Coast" / "MTGA" / "Player.log"),
-        )
+        # Use the same path logic as watcher.py: LOCALAPPDATA (AppData\Local)
+        # -> parent (AppData) -> LocalLow sibling
+        _local_appdata = os.environ.get("LOCALAPPDATA", "")
+        if _local_appdata:
+            default_path = str(
+                Path(os.path.dirname(_local_appdata)) / "LocalLow"
+                / "Wizards Of The Coast" / "MTGA" / "Player.log"
+            )
+        else:
+            default_path = ""
+        log_path = os.environ.get("MTGA_LOG_PATH", default_path)
         result: dict = {"path": log_path}
         try:
             p = Path(log_path)

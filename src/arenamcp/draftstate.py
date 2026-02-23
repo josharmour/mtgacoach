@@ -94,18 +94,32 @@ def create_draft_handler(draft_state: DraftState) -> Callable[[str, dict], None]
     """
 
     def handle_draft_event(event_type: str, payload: dict) -> None:
-        """Process draft-related log events and update state."""
+        """Process draft-related log events and update state.
+
+        This handler is called for ALL events (not just unhandled ones)
+        so it must bail out quickly for non-draft events like game state.
+        """
+
+        # FAST BAIL-OUT: Skip GreToClientEvent game state messages.
+        # These are the most frequent events and never contain draft data.
+        # Check the dict keys directly instead of serializing to JSON.
+        if "greToClientEvent" in payload:
+            return
 
         # Convert payload to string for pattern matching
         payload_str = json.dumps(payload)
-        
-        # DEBUG: Log all potential draft events for diagnosis
-        if any(keyword in payload_str for keyword in [
-            "Draft", "Pack", "Card", "Pick", "Sealed", "EventName"
-        ]):
-            logger.debug(f"[DRAFT_DEBUG] Event: {event_type}, Keys: {list(payload.keys())}")
-            if len(payload_str) < 500:
-                logger.debug(f"[DRAFT_DEBUG] Payload: {payload_str}")
+
+        # DRAFT-RELEVANCE CHECK: Only process payloads containing draft keywords.
+        # This prevents wasted work on match/game events.
+        _DRAFT_KEYWORDS = ("CardsInPack", "PackCards", "SelfPack", "DraftPack",
+                           "DraftStatus", "CardPool", "EventName", "GrpId")
+        if not any(kw in payload_str for kw in _DRAFT_KEYWORDS):
+            return
+
+        # DEBUG: Log draft-related events for diagnosis
+        logger.debug(f"[DRAFT_DEBUG] Event: {event_type}, Keys: {list(payload.keys())}")
+        if len(payload_str) < 500:
+            logger.debug(f"[DRAFT_DEBUG] Payload: {payload_str}")
 
         # Check for sealed pool (CardPool with InternalEventName containing Sealed)
         if "CardPool" in payload_str and "InternalEventName" in payload_str:
