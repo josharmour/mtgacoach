@@ -424,15 +424,40 @@ def stop_draft_helper() -> None:
 
 
 def _handle_match_created(payload: dict) -> None:
-    """Handle MatchCreated events to capture local seat ID.
+    """Handle MatchCreated / MatchGameRoomStateChangedEvent.
 
     The MatchCreated message contains systemSeatId which definitively
     identifies the local player's seat.
+
+    MatchGameRoomStateChangedEvent also fires at match end with result data.
+    We capture the result into ``last_game_result`` so the coaching loop can
+    detect it even if the WinTheGame/LossOfGame annotation was missed (e.g.
+    concede).
     """
-    # Try to extract match ID to detect new matches
+    # ── Match result detection (from finalMatchResult) ──
+    # MTGA sends this in MatchGameRoomStateChangedEvent when the match ends.
+    room_info = payload.get("matchGameRoomInfo", {})
+    results = room_info.get("finalMatchResult", {}).get("resultList", [])
+    if results and not game_state.last_game_result:
+        # Find our result by matching local seat_id
+        for r in results:
+            scope = r.get("scope", "")
+            seat = r.get("seatId")
+            result_str = r.get("result", "")
+            win_condition = r.get("winningTeamId", "")
+            if scope == "MatchScope_Game":
+                if seat == game_state.local_seat_id:
+                    if "Win" in result_str:
+                        game_state.last_game_result = "win"
+                        logger.info(f"Match result from finalMatchResult: win (seat {seat})")
+                    elif "Loss" in result_str:
+                        game_state.last_game_result = "loss"
+                        logger.info(f"Match result from finalMatchResult: loss (seat {seat})")
+
+    # ── Match ID tracking ──
     match_id = (
-        payload.get("matchId") or 
-        payload.get("matchGameRoomInfo", {}).get("gameRoomConfig", {}).get("matchId") or
+        payload.get("matchId") or
+        room_info.get("gameRoomConfig", {}).get("matchId") or
         payload.get("gameRoomConfig", {}).get("matchId")
     )
 
@@ -441,7 +466,7 @@ def _handle_match_created(payload: dict) -> None:
             logger.info(f"New match detected (ID: {match_id}). Resetting game state.")
             game_state.reset()
             game_state.match_id = match_id
-            
+
             # Since we reset state, notify draft helper effectively if needed
             # (though draft state is separate)
     

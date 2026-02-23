@@ -596,30 +596,34 @@ class StandaloneCoach:
                     except Exception:
                         pass
 
-                # Detect new match via match_id change (most reliable signal)
-                if curr_match_id and curr_match_id != last_match_id:
-                    if last_match_id is not None:
-                        logger.info(f"New match detected via match_id change ({last_match_id} -> {curr_match_id}), resetting coaching state")
+                # Detect match boundary via match_id change.
+                # Two cases:
+                #   (a) match_id goes FROM something TO a different value (new match started)
+                #   (b) match_id goes FROM something TO None (match ended, back to menu)
+                match_id_changed = curr_match_id != last_match_id
+                if match_id_changed and last_match_id is not None:
+                    logger.info(f"Match boundary detected ({last_match_id} -> {curr_match_id}), resetting coaching state")
 
-                        # Fallback: trigger analysis if game_end detection above missed it
-                        if self._advice_history and not self._saved_advice_history:
-                            self._saved_advice_history = list(self._advice_history)
-                            self._last_match_result = self._detect_match_result()
-                            self._last_match_final_state = dict(prev_state) if prev_state else None
-                            threading.Thread(
-                                target=self._post_match_analysis_worker,
-                                daemon=True,
-                            ).start()
+                    # Trigger analysis if game_end detection above missed it
+                    if self._advice_history and not self._saved_advice_history:
+                        self._saved_advice_history = list(self._advice_history)
+                        self._last_match_result = self._detect_match_result()
+                        self._last_match_final_state = dict(prev_state) if prev_state else None
+                        threading.Thread(
+                            target=self._post_match_analysis_worker,
+                            daemon=True,
+                        ).start()
 
-                        prev_state = {}
-                        last_advice_turn = 0
-                        last_advice_phase = ""
-                        seat_announced = False
-                        self._advice_history = []
-                        self._deck_analyzed = False
-                        self._game_end_handled = False
-                        if self._coach:
-                            self._coach.clear_deck_strategy()
+                    prev_state = {}
+                    last_advice_turn = 0
+                    last_advice_phase = ""
+                    seat_announced = False
+                    self._advice_history = []
+                    self._deck_analyzed = False
+                    self._game_end_handled = False
+                    if self._coach:
+                        self._coach.clear_deck_strategy()
+                if match_id_changed:
                     last_match_id = curr_match_id
 
                 # Debug: Log if turn_num is 0 (every 30 seconds)
