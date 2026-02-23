@@ -1138,6 +1138,7 @@ CRITICAL STRATEGY RULES:
   If you can deal lethal, go aggressive — remove a blocker or just attack. Don't play defensively!
 - ONLY claim "lethal" if the combat summary line shows "Atk: ... vs LETHAL".
 - TRADE CHECK: Read the "If X blocks Y:" lines below the Atk: summary. Lines marked "BAD" mean the attacker dies for free or bounces off. Do NOT attack into a BAD trade unless it enables lethal or a critical strategy. If every possible block is BAD, don't attack with that creature.
+- WORST-CASE BLOCKING: The opponent WILL choose the block that's best for THEM. If ANY "If X blocks Y:" line shows BAD for your attacker, assume the opponent will make that block. Don't suggest attacking because one blocker gives a GOOD trade when another blocker kills your creature — the opponent won't cooperate with your plan.
 - ATTACK DEFAULT: When declaring attackers, attack with ALL eligible creatures (listed after "can attack:" in the Atk: line) unless you have a concrete reason to hold one back (e.g., BAD trade, need it to block a lethal crackback). Do NOT suggest attacking with only one creature when multiple are available without explaining why the others should stay back.
 - CRACKBACK CHECK: Before attacking, count opponent's total power on board vs YOUR life total.
   If opponent can kill you on their next attack and you need creatures to block, do NOT attack with them.
@@ -1181,6 +1182,7 @@ STRATEGY:
   If you can deal lethal, go aggressive — remove a blocker or just attack. Don't play defensively!
 - ONLY claim "lethal" if the combat summary line shows "Atk: ... vs LETHAL".
 - TRADE CHECK: Read "If X blocks Y:" lines. "BAD" = attacker dies for free. Don't attack into BAD trades unless it enables lethal.
+- WORST-CASE BLOCKING: The opponent chooses which creature blocks. If ANY blocker gives a BAD result for your attacker, assume that's what happens — don't attack hoping the opponent picks the favorable block.
 - ATTACK DEFAULT: Attack with ALL eligible creatures (listed after "can attack:" in the Atk: line) unless the trade is BAD or you need to hold back a blocker to survive crackback. Never say a creature is your "only" attacker without checking the full list.
 - CRACKBACK CHECK: Before attacking, count opponent's total power vs YOUR life. If they can kill you next turn and you need blockers to survive, do NOT attack with those creatures. The "Crackback:" line already accounts for your blockers — trust its damage-through number.
 - BLOCKING MATH: The "Best blocks → X dmg" line shows MINIMUM damage after optimal blocking. Use this number for survival math, not the "No blocks" total. Do NOT re-derive blocking math yourself.
