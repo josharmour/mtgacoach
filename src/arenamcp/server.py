@@ -436,23 +436,36 @@ def _handle_match_created(payload: dict) -> None:
     """
     # ── Match result detection (from finalMatchResult) ──
     # MTGA sends this in MatchGameRoomStateChangedEvent when the match ends.
+    # NOTE: IntermissionReq may have already wiped local_seat_id via reset().
+    # Use the pre-reset snapshot's seat_id as fallback.
     room_info = payload.get("matchGameRoomInfo", {})
     results = room_info.get("finalMatchResult", {}).get("resultList", [])
     if results and not game_state.last_game_result:
-        # Find our result by matching local seat_id
-        for r in results:
-            scope = r.get("scope", "")
-            seat = r.get("seatId")
-            result_str = r.get("result", "")
-            win_condition = r.get("winningTeamId", "")
-            if scope == "MatchScope_Game":
-                if seat == game_state.local_seat_id:
-                    if "Win" in result_str:
-                        game_state.last_game_result = "win"
-                        logger.info(f"Match result from finalMatchResult: win (seat {seat})")
-                    elif "Loss" in result_str:
-                        game_state.last_game_result = "loss"
-                        logger.info(f"Match result from finalMatchResult: loss (seat {seat})")
+        # Determine our seat_id — may have been cleared by reset()
+        our_seat = game_state.local_seat_id
+        if our_seat is None and game_state._pre_reset_snapshot:
+            our_seat = game_state._pre_reset_snapshot.get("local_seat_id")
+        if our_seat is not None:
+            # Find our result by matching local seat_id
+            for r in results:
+                scope = r.get("scope", "")
+                seat = r.get("seatId")
+                result_str = r.get("result", "")
+                if scope == "MatchScope_Game":
+                    if seat == our_seat:
+                        if "Win" in result_str:
+                            game_state.last_game_result = "win"
+                            logger.info(f"Match result from finalMatchResult: win (seat {seat})")
+                        elif "Loss" in result_str:
+                            game_state.last_game_result = "loss"
+                            logger.info(f"Match result from finalMatchResult: loss (seat {seat})")
+                        # Signal the coaching loop if not already signaled
+                        if not game_state.game_ended_event.is_set():
+                            game_state.game_ended_event.set()
+                            logger.info("Game-end event set from finalMatchResult")
+                        break
+        else:
+            logger.warning(f"finalMatchResult received but no local seat_id available (results: {results})")
 
     # ── Match ID tracking ──
     match_id = (
