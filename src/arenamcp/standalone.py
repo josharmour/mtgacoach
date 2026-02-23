@@ -288,6 +288,7 @@ class StandaloneCoach:
         self._saved_advice_history: list[dict] = []
         self._last_match_result: Optional[str] = None
         self._last_match_final_state: Optional[dict] = None
+        self._game_end_handled: bool = False  # Prevents duplicate triggers
 
     def speak_advice(self, text: str, blocking: bool = True) -> None:
         """Speak advice using local Kokoro TTS."""
@@ -573,12 +574,34 @@ class StandaloneCoach:
                 phase = turn.get("phase", "")
                 curr_match_id = curr_state.get("match_id")
 
+                # ── GAME END DETECTION ──
+                # Fires as soon as the GRE sends a WinTheGame/LossOfGame annotation,
+                # BEFORE any reset() clears the state.  This is the primary trigger
+                # for post-match analysis.
+                game_result = curr_state.get("last_game_result")
+                if game_result and not self._game_end_handled and self._advice_history:
+                    self._game_end_handled = True
+                    logger.info(f"Game ended: {game_result} — launching post-match analysis")
+                    self._saved_advice_history = list(self._advice_history)
+                    self._last_match_result = game_result
+                    self._last_match_final_state = dict(curr_state)
+                    threading.Thread(
+                        target=self._post_match_analysis_worker,
+                        daemon=True,
+                    ).start()
+                    # Clear the persistent flag so it won't re-trigger
+                    try:
+                        from arenamcp.server import game_state as gs
+                        gs.last_game_result = None
+                    except Exception:
+                        pass
+
                 # Detect new match via match_id change (most reliable signal)
                 if curr_match_id and curr_match_id != last_match_id:
                     if last_match_id is not None:
                         logger.info(f"New match detected via match_id change ({last_match_id} -> {curr_match_id}), resetting coaching state")
 
-                        # Save match data for post-match analysis BEFORE clearing
+                        # Fallback: trigger analysis if game_end detection above missed it
                         if self._advice_history and not self._saved_advice_history:
                             self._saved_advice_history = list(self._advice_history)
                             self._last_match_result = self._detect_match_result()
@@ -594,6 +617,7 @@ class StandaloneCoach:
                         seat_announced = False
                         self._advice_history = []
                         self._deck_analyzed = False
+                        self._game_end_handled = False
                         if self._coach:
                             self._coach.clear_deck_strategy()
                     last_match_id = curr_match_id
@@ -610,7 +634,7 @@ class StandaloneCoach:
                 if turn_num > 0 and turn_num < last_advice_turn:
                     logger.info(f"New game detected in coaching loop (turn {last_advice_turn} -> {turn_num}), resetting advice tracking")
 
-                    # Save match data for post-match analysis BEFORE clearing
+                    # Fallback: trigger analysis if game_end detection above missed it
                     if self._advice_history and not self._saved_advice_history:
                         self._saved_advice_history = list(self._advice_history)
                         self._last_match_result = self._detect_match_result()
@@ -627,6 +651,7 @@ class StandaloneCoach:
                     # Clear advice history for new match
                     self._advice_history = []
                     self._deck_analyzed = False
+                    self._game_end_handled = False
                     if self._coach:
                         self._coach.clear_deck_strategy()
                     logger.info("Cleared advice history for new match")
@@ -1628,12 +1653,23 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
             self._recent_errors = self._recent_errors[-10:]
 
     def _detect_match_result(self) -> str:
-        """Detect win/loss from recent game events.
+        """Detect win/loss from game state.
+
+        Uses the persistent ``last_game_result`` field on GameState which
+        survives ``reset()`` (unlike ``recent_events``).  Falls back to
+        scanning ``recent_events`` if the persistent field isn't set.
 
         Returns "win", "loss", or "unknown".
         """
         try:
             game_state = self._mcp.get_game_state()
+
+            # Preferred: persistent field set when game_end annotation fires
+            persistent = game_state.get("last_game_result")
+            if persistent:
+                return persistent
+
+            # Fallback: scan recent_events (may already be cleared by reset)
             recent = game_state.get("recent_events", [])
             for event in reversed(recent):
                 if event.get("type") == "game_end":
