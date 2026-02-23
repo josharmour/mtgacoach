@@ -8,12 +8,23 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from pathlib import Path
 from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
 # Timeout (seconds) for git network operations
 _GIT_TIMEOUT = 5
+
+
+def _get_repo_root() -> Path:
+    """Get the git repo root for the arenamcp package.
+
+    Derives the repo root from this file's location so that git commands
+    work regardless of the process's current working directory.
+    """
+    # This file is at src/arenamcp/updater.py, repo root is 3 levels up
+    return Path(__file__).resolve().parent.parent.parent
 
 
 def check_for_update() -> Tuple[bool, str, str]:
@@ -27,11 +38,13 @@ def check_for_update() -> Tuple[bool, str, str]:
     from arenamcp import __version__ as local_version
 
     try:
+        repo_root = _get_repo_root()
         result = subprocess.run(
             ["git", "ls-remote", "--tags", "origin"],
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT,
+            cwd=str(repo_root),
         )
         if result.returncode != 0:
             logger.debug("git ls-remote failed: %s", result.stderr.strip())
@@ -85,11 +98,13 @@ def apply_update() -> Tuple[bool, str]:
         (success, message)
     """
     try:
+        repo_root = _get_repo_root()
         result = subprocess.run(
             ["git", "pull", "--ff-only", "origin", "master"],
             capture_output=True,
             text=True,
             timeout=30,
+            cwd=str(repo_root),
         )
         if result.returncode == 0:
             summary = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "Updated"
