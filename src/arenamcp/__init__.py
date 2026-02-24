@@ -23,6 +23,7 @@ from arenamcp.coach import (
     CoachEngine,
     GameStateTrigger,
     create_backend,
+    create_ollama_fallback,
     ClaudeCodeBackend,
     GeminiCliBackend,
     CodexCliBackend,
@@ -59,7 +60,7 @@ except ImportError:
 
 from arenamcp.gamestate import save_match_state, load_match_state, mark_match_ended
 
-__version__ = "0.3.8"
+__version__ = "0.4.0"
 
 
 def create_log_pipeline(
@@ -124,6 +125,7 @@ __all__ = [
     "CoachEngine",
     "GameStateTrigger",
     "create_backend",
+    "create_ollama_fallback",
     "ClaudeCodeBackend",
     "GeminiCliBackend",
     "CodexCliBackend",

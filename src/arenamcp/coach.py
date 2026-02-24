@@ -1037,6 +1037,17 @@ def create_backend(
     """
     backend_type = backend_type.lower()
 
+    # "auto" — detect the best available backend automatically
+    if backend_type == "auto":
+        from arenamcp.backend_detect import auto_select_backend
+        auto_backend, auto_model = auto_select_backend()
+        logger.info(f"Auto-selected backend: {auto_backend} (model={auto_model})")
+        return create_backend(
+            auto_backend,
+            model=model or auto_model,
+            progress_callback=progress_callback,
+        )
+
     if backend_type in (
         "claude",
         "claude-code",
@@ -1048,19 +1059,34 @@ def create_backend(
     elif backend_type in ("gemini", "gemini-cli", "gemini_cli"):
         return GeminiCliBackend(model=model, progress_callback=progress_callback)
     elif backend_type == "proxy":
-        return ProxyBackend(model=model or "claude-sonnet-4-5-20250929")
+        # Proxy requires custom endpoint config (endpoints.json) or env vars
+        from arenamcp.backend_detect import load_custom_endpoints
+        endpoints = load_custom_endpoints()
+        base_url = endpoints.get("proxy_url") if endpoints else None
+        api_key = endpoints.get("proxy_api_key") if endpoints else None
+        return ProxyBackend(
+            model=model or "claude-sonnet-4-5-20250929",
+            base_url=base_url,
+            api_key=api_key,
+        )
     elif backend_type in ("codex", "codex-cli", "codex_cli"):
         return CodexCliBackend(model=model, progress_callback=progress_callback)
     elif backend_type == "api":
-        # Generic OpenAI-compatible API endpoint
-        try:
-            from arenamcp.settings import get_settings
-            s = get_settings()
-            url = s.get("api_url") or "https://api.openai.com/v1"
-            key = s.get("api_key") or ""
-        except Exception:
-            url = "https://api.openai.com/v1"
-            key = ""
+        # Generic OpenAI-compatible API endpoint (from endpoints.json or settings)
+        from arenamcp.backend_detect import load_custom_endpoints
+        endpoints = load_custom_endpoints()
+        if endpoints and endpoints.get("api_url"):
+            url = endpoints["api_url"]
+            key = endpoints.get("api_key", "")
+        else:
+            try:
+                from arenamcp.settings import get_settings
+                s = get_settings()
+                url = s.get("api_url") or "https://api.openai.com/v1"
+                key = s.get("api_key") or ""
+            except Exception:
+                url = "https://api.openai.com/v1"
+                key = ""
         return ProxyBackend(model=model or "gpt-4o", base_url=url, api_key=key)
     elif backend_type == "ollama":
         # Ollama exposes an OpenAI-compatible API at localhost:11434/v1
@@ -1077,8 +1103,26 @@ def create_backend(
     else:
         raise ValueError(
             f"Unknown backend type: {backend_type}. "
-            "Use 'proxy', 'claude-code', 'gemini-cli', 'codex-cli', 'api', or 'ollama'"
+            "Use 'auto', 'proxy', 'claude-code', 'gemini-cli', 'codex-cli', 'api', or 'ollama'"
         )
+
+
+def create_ollama_fallback(
+    model: Optional[str] = None,
+    progress_callback: Optional[Any] = None,
+) -> "ProxyBackend":
+    """Create an Ollama backend as a fallback when other backends fail."""
+    from arenamcp.backend_detect import DEFAULT_OLLAMA_MODEL
+    try:
+        from arenamcp.settings import get_settings
+        ollama_url = get_settings().get("ollama_url") or "http://localhost:11434/v1"
+    except Exception:
+        ollama_url = "http://localhost:11434/v1"
+    return ProxyBackend(
+        model=model or DEFAULT_OLLAMA_MODEL,
+        base_url=ollama_url,
+        api_key="ollama",
+    )
 
 
 # Default MTG coach system prompt
