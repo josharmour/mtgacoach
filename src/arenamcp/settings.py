@@ -19,7 +19,7 @@ DEFAULTS = {
     "voice": "am_adam",  # American Male - Adam
     "voice_speed": 1.0,
     "muted": False,
-    "backend": "proxy",
+    "backend": "auto",  # "auto" = detect best available; falls back to ollama
     "model": None,  # None = use backend default
     "auto_speak": True,
     "voice_mode": "ptt",

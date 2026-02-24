@@ -420,14 +420,41 @@ class GameStateDisplay(Static):
 class Sidebar(Vertical):
     """Sidebar for settings and actions."""
 
-    # Populated at startup from proxy API
+    # Simple provider list — the primary options for all users.
+    # Advanced proxy/api models only show up if endpoints.json is configured.
+    SIMPLE_PROVIDERS = [
+        ("Ollama (local)", "ollama"),
+        ("Claude Code", "claude-code"),
+        ("Gemini CLI", "gemini-cli"),
+        ("Codex CLI", "codex-cli"),
+    ]
+
+    # Extended model list (populated at startup from proxy/ollama)
     MODEL_OPTIONS = []
 
     @classmethod
     def load_model_options(cls) -> None:
-        """Fetch all available models from the proxy (includes Ollama)."""
-        from arenamcp.coach import fetch_proxy_models
-        cls.MODEL_OPTIONS = fetch_proxy_models()
+        """Build the model options list.
+
+        Starts with simple providers, then appends proxy/api/ollama models
+        only if custom endpoints are configured.
+        """
+        cls.MODEL_OPTIONS = list(cls.SIMPLE_PROVIDERS)
+
+        # Check if user has advanced endpoints configured
+        from arenamcp.backend_detect import load_custom_endpoints
+        endpoints = load_custom_endpoints()
+        if endpoints:
+            # Advanced user — also fetch proxy/api models
+            try:
+                from arenamcp.coach import fetch_proxy_models
+                proxy_models = fetch_proxy_models()
+                for display, val in proxy_models:
+                    # Avoid duplicating simple providers
+                    if val not in [v for _, v in cls.SIMPLE_PROVIDERS]:
+                        cls.MODEL_OPTIONS.append((display, val))
+            except Exception:
+                pass
 
     def compose(self) -> ComposeResult:
         with Vertical(id="status-panel"):
@@ -437,7 +464,7 @@ class Sidebar(Vertical):
             yield Static("Voice: Initializing...", id="status-voice", classes="status-line")
 
         with Vertical(id="actions-panel"):
-            yield Button("Proxy: loading...", id="btn-provider", variant="primary")
+            yield Button("Provider: detecting...", id="btn-provider", variant="primary")
             yield Button("Voice: loading...", id="btn-voice-select", variant="success")
             yield Button("Mute (F5)", id="btn-mute", variant="success")
             yield Button("Speed 1.0x (F8)", id="btn-speed", variant="success")
@@ -609,6 +636,13 @@ class ArenaApp(App):
             if not known:
                 # First run — seed the list with whatever is present now
                 settings.set("known_backends", available)
+                # Show which backends are available
+                if available:
+                    backends_str = ", ".join(available)
+                    self.call_from_thread(
+                        self.write_log,
+                        f"[dim]Available backends: {backends_str}[/]",
+                    )
                 return
 
             new_backends = [b for b in available if b not in known]
@@ -616,7 +650,7 @@ class ArenaApp(App):
                 for b in new_backends:
                     self.call_from_thread(
                         self.write_log,
-                        f"[bold green]New backend detected: {b}[/] — switch via the sidebar or re-run the setup wizard.",
+                        f"[bold green]New backend detected: {b}[/] — click the Provider button to switch.",
                     )
                 settings.set("known_backends", list(set(known) | set(available)))
         except Exception as exc:
@@ -725,12 +759,12 @@ class ArenaApp(App):
         display_name = current_model or current_backend
         # Try to find a friendly display name from MODEL_OPTIONS
         for name, val in Sidebar.MODEL_OPTIONS:
-            if str(val) == combo:
+            if str(val) == combo or str(val) == current_backend:
                 display_name = name.split("(")[0].strip() if "(" in name else name
                 break
         try:
             btn = self.query_one("#btn-provider", Button)
-            btn.label = f"Proxy: {display_name}"
+            btn.label = f"Provider: {display_name}"
         except Exception:
             pass
 
@@ -909,7 +943,11 @@ class ArenaApp(App):
             self.action_read_win_plan()
 
     def _cycle_provider(self) -> None:
-        """Cycle to next provider/model on click."""
+        """Cycle to next provider on click.
+
+        Cycles through simple providers (Ollama, Claude Code, Gemini CLI, Codex CLI)
+        plus any advanced proxy/api models if configured via endpoints.json.
+        """
         options = Sidebar.MODEL_OPTIONS
         if not options:
             return
@@ -944,7 +982,7 @@ class ArenaApp(App):
         # Update button label immediately
         short_name = display_name.split("(")[0].strip() if "(" in display_name else display_name
         btn = self.query_one("#btn-provider", Button)
-        btn.label = f"Proxy: {short_name}"
+        btn.label = f"Provider: {short_name}"
 
         # Switch backend in thread
         threading.Thread(
@@ -1005,27 +1043,65 @@ class ArenaApp(App):
         try:
             game_state = self.coach._mcp.get_game_state()
             advice = self.coach._coach.get_advice(game_state, question=text)
+
+            # Check for backend auth/billing failures → auto-fallback
+            if self.coach.check_advice_for_backend_failure(advice):
+                # Retry with fallback backend
+                advice = self.coach._coach.get_advice(game_state, question=text)
+
             self.write_advice(advice, "Chat Response")
         except Exception as e:
             self.write_log(f"[red]Chat error: {e}[/]")
 
     def _verify_and_switch(self, provider, model):
-        """Verify model exists (if ollama) then switch."""
+        """Validate backend health then switch. Falls back to Ollama on failure."""
+        from arenamcp.backend_detect import validate_backend, DEFAULT_OLLAMA_MODEL
+
+        self.write_log(f"Connecting to {provider}...")
+
         if provider == "ollama":
-            self.write_log(f"Verifying {model} in ollama...")
+            # For Ollama, check model availability
+            model = model or DEFAULT_OLLAMA_MODEL
+            ok, err = validate_backend("ollama")
+            if not ok:
+                self.write_log(f"[bold red]{err}[/]")
+                return
             try:
                 import subprocess
-                result = subprocess.run(["ollama", "list"], capture_output=True, text=True, check=True)
-                if model not in result.stdout:
-                    self.write_log(f"[bold red]WARNING: Model '{model}' not found in Ollama![/]")
-                    self.write_log(f"[red]Please run: ollama pull {model}[/]")
-                else:
-                    self.write_log(f"[green]Verified {model} exists.[/]")
-            except Exception as e:
-                self.write_log(f"[red]Failed to verify ollama models: {e}[/]")
+                result = subprocess.run(
+                    ["ollama", "list"], capture_output=True, text=True, timeout=5
+                )
+                if model and model not in (result.stdout or ""):
+                    self.write_log(
+                        f"[yellow]Model '{model}' not found. "
+                        f"Run: ollama pull {model}[/]"
+                    )
+            except Exception:
+                pass
+        else:
+            # For subscription CLIs — validate before switching
+            ok, err = validate_backend(provider)
+            if not ok:
+                self.write_log(f"[bold red]{provider} unavailable: {err}[/]")
+                self.write_log(
+                    f"[yellow]Staying on current backend. "
+                    f"Fix the issue or use Ollama as fallback.[/]"
+                )
+                return
 
         # Proceed with switch
         self.coach.set_backend(provider, model)
+        # Update button label
+        display_name = provider
+        for name, val in Sidebar.MODEL_OPTIONS:
+            if str(val) == provider:
+                display_name = name.split("(")[0].strip() if "(" in name else name
+                break
+        try:
+            btn = self.query_one("#btn-provider", Button)
+            btn.label = f"Provider: {display_name}"
+        except Exception:
+            pass
 
     # --- Hotkey Actions ---
 

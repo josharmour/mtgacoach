@@ -236,7 +236,7 @@ class StandaloneCoach:
         self.settings = get_settings()
 
         # Resolve configuration (Args > Settings > Defaults)
-        self._backend_name = backend or self.settings.get("backend", "proxy")
+        self._backend_name = backend or self.settings.get("backend", "auto")
         self._model_name = model or self.settings.get("model")
         self._voice_mode = voice_mode or self.settings.get("voice_mode", "ptt")
 
@@ -389,11 +389,27 @@ class StandaloneCoach:
 
         # Pass UI subtask callback for real-time progress display
         progress_cb = self.ui.subtask if self.ui else None
+
+        # "auto" mode: detect and report which backend was selected
+        requested = self.backend_name
         llm_backend = create_backend(self.backend_name, model=self.model_name, progress_callback=progress_cb)
         actual_model = getattr(llm_backend, 'model', 'unknown')
+
+        # If auto-selected, update our backend_name to reflect the actual choice
+        if requested == "auto":
+            from arenamcp.backend_detect import auto_select_backend
+            resolved_backend, _ = auto_select_backend()
+            self._backend_name = resolved_backend
+            self.settings.set("backend", "auto", save=False)  # Keep "auto" in settings
+            self.ui.log(f"[bold green]Auto-detected backend: {resolved_backend} (model: {actual_model})[/]")
+
         logger.info(f"Created {self.backend_name} backend with model: {actual_model}")
         self._coach = CoachEngine(backend=llm_backend)
         self._trigger = GameStateTrigger()
+
+        # Track consecutive failures for automatic fallback
+        self._consecutive_errors = 0
+        self._max_errors_before_fallback = 3
 
     def _init_voice(self) -> None:
         """Initialize voice I/O components."""
@@ -1046,6 +1062,10 @@ class StandaloneCoach:
                                 logger.warning("Empty advice response (model timeout?), skipping")
                                 continue
 
+                            # Check for backend auth/billing failures → auto-fallback
+                            if self.check_advice_for_backend_failure(advice):
+                                continue  # Fallback triggered, retry with new backend
+
                             # Don't speak error/fallback messages aloud
                             if advice.startswith("Error") or "didn't catch that" in advice:
                                 logger.warning(f"Suppressing error advice from TTS: {advice[:80]}")
@@ -1148,8 +1168,11 @@ class StandaloneCoach:
                         advice = self._coach.get_advice(game_state, trigger="user_request")
 
                     logger.info(f"RESPONSE: {advice}")
-                    self.ui.advice(advice, seat_info)
-                    self.speak_advice(advice)
+
+                    # Check for backend auth/billing failures → auto-fallback
+                    if not self.check_advice_for_backend_failure(advice):
+                        self.ui.advice(advice, seat_info)
+                        self.speak_advice(advice)
 
                     # Record for debug history with the same game state
                     trigger = "voice_audio" if use_direct_audio else ("voice_question" if text else "voice_quick")
@@ -2143,12 +2166,81 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
 
             self.ui.status("PROVIDER", f"Switched to {provider.upper()} ({actual_model})")
             logger.info(f"Switched to {provider} backend, model: {actual_model}")
+            self._consecutive_errors = 0  # Reset error counter on manual switch
         except Exception as e:
             self.ui.error(f"Failed to set provider {provider}: {e}")
             logger.error(f"Set provider error: {e}")
             import traceback
             logger.debug(traceback.format_exc())
 
+    def fallback_to_ollama(self, reason: str = "") -> bool:
+        """Fall back to Ollama when the current backend fails.
+
+        Returns True if fallback succeeded, False if already on Ollama.
+        """
+        if self.backend_name == "ollama":
+            return False
+
+        from arenamcp.backend_detect import DEFAULT_OLLAMA_MODEL
+        old_backend = self.backend_name
+
+        self.ui.log(
+            f"\n[bold yellow]Backend '{old_backend}' failed"
+            f"{': ' + reason if reason else ''}.[/]"
+        )
+        self.ui.log(
+            f"[bold yellow]Falling back to Ollama ({DEFAULT_OLLAMA_MODEL})...[/]"
+        )
+
+        try:
+            from arenamcp.coach import CoachEngine, create_ollama_fallback
+            progress_cb = self.ui.subtask if self.ui else None
+            llm_backend = create_ollama_fallback(progress_callback=progress_cb)
+            self._coach = CoachEngine(backend=llm_backend)
+            self._backend_name = "ollama"
+            self._model_name = DEFAULT_OLLAMA_MODEL
+            # Don't persist "ollama" to settings — keep "auto" so next restart retries
+            self._consecutive_errors = 0
+            self.ui.status("PROVIDER", f"OLLAMA ({DEFAULT_OLLAMA_MODEL})")
+            self.ui.log(
+                "[green]Switched to Ollama. Use the sidebar to reconnect to "
+                "Claude Code, Gemini CLI, or Codex when available.[/]"
+            )
+            logger.info(f"Fallback to Ollama from {old_backend}: {reason}")
+            return True
+        except Exception as e:
+            self.ui.error(f"Ollama fallback failed: {e}")
+            logger.error(f"Ollama fallback error: {e}")
+            return False
+
+    def check_advice_for_backend_failure(self, advice: str) -> bool:
+        """Check if an advice response indicates a backend auth/billing failure.
+
+        If a retriable failure pattern is detected, increments the error counter.
+        After enough consecutive failures, triggers automatic Ollama fallback.
+
+        Returns True if a fallback was triggered.
+        """
+        if not advice:
+            return False
+
+        from arenamcp.backend_detect import is_query_failure_retriable
+
+        if advice.startswith("Error") and is_query_failure_retriable(advice):
+            self._consecutive_errors = getattr(self, '_consecutive_errors', 0) + 1
+            max_errors = getattr(self, '_max_errors_before_fallback', 3)
+            logger.warning(
+                f"Backend failure detected ({self._consecutive_errors}/{max_errors}): "
+                f"{advice[:120]}"
+            )
+
+            if self._consecutive_errors >= max_errors:
+                return self.fallback_to_ollama(reason=advice[:200])
+        else:
+            # Reset counter on successful response
+            self._consecutive_errors = 0
+
+        return False
 
     def _on_model_cycle_hotkey(self) -> None:
         """F12 - Cycle through all available provider/model combinations."""
@@ -2496,8 +2588,9 @@ Environment variables:
         """
     )
 
-    parser.add_argument("--backend", "-b", choices=["claude-code", "gemini-cli", "proxy", "ollama"],
-                        default=None, help="LLM backend (default: proxy)")
+    parser.add_argument("--backend", "-b",
+                        choices=["auto", "claude-code", "gemini-cli", "codex-cli", "proxy", "api", "ollama"],
+                        default=None, help="LLM backend (default: auto-detect)")
     parser.add_argument("--model", "-m", help="Model name override")
     parser.add_argument("--provider", help="Default proxy model (e.g., gemini-2.5-pro, claude-sonnet-4-5-20250929)")
     parser.add_argument("--voice", "-v", choices=["ptt", "vox"], default=None,
