@@ -1010,40 +1010,42 @@ class StandaloneCoach:
                             logger.info(f"ADVICE: {advice}")
 
                             # STALENESS CHECK: Re-poll game state after the LLM call.
-                            # If the turn, active player, phase, or combat step changed
-                            # while waiting for the API response (~5s), the advice is
-                            # stale and would confuse the player (e.g. "attack!" after
-                            # combat is over).
+                            # Only discard advice when the TURN changed (whole turn
+                            # advanced while waiting).  Phase/step changes within the
+                            # same turn are normal during a 5-12s LLM call and the
+                            # advice is usually still relevant (e.g. "Play X" during
+                            # Main1 is fine even if we're now in BeginCombat).
+                            # Combat-specific triggers are the exception — "attack
+                            # with X" is useless once combat is over.
                             fresh_state = self._mcp.get_game_state()
                             fresh_turn = fresh_state.get("turn", {})
                             fresh_turn_num = fresh_turn.get("turn_number", 0)
-                            fresh_active = fresh_turn.get("active_player", 0)
                             fresh_phase = fresh_turn.get("phase", "")
-                            fresh_step = fresh_turn.get("step", "")
 
-                            # For opponent_turn analysis, allow turn to advance by 1
-                            # (opponent's turn → your turn is expected progression)
                             if trigger == "opponent_turn":
+                                # Opponent analysis: allow turn to advance by 1
                                 is_stale = fresh_turn_num > pre_advice_turn + 1
-                            else:
+                            elif trigger in ("combat_attackers", "combat_blockers"):
+                                # Combat advice: stale if no longer in combat
                                 is_stale = (
                                     fresh_turn_num != pre_advice_turn
-                                    or fresh_active != pre_advice_active
-                                    or fresh_phase != pre_advice_phase
-                                    or fresh_step != pre_advice_step
+                                    or "Combat" not in fresh_phase
                                 )
+                            else:
+                                # General advice: only stale if the turn number changed
+                                is_stale = fresh_turn_num != pre_advice_turn
+
                             if is_stale:
                                 stale_label = "[STALE - discarded]"
                                 logger.info(
                                     f"Discarding stale advice: turn {pre_advice_turn}->{fresh_turn_num}, "
-                                    f"active {pre_advice_active}->{fresh_active}, phase {pre_advice_phase}->{fresh_phase}, "
-                                    f"step {pre_advice_step}->{fresh_step}"
+                                    f"phase {pre_advice_phase}->{fresh_phase}"
                                 )
                                 self._record_advice(
                                     f"{stale_label} {advice}", trigger, game_state=curr_state
                                 )
-                                last_advice_turn = turn_num
-                                last_advice_phase = phase
+                                # DON'T update last_advice_turn — stale advice shouldn't
+                                # suppress future triggers on the same turn
                                 continue
 
                             last_advice_turn = turn_num
@@ -1175,11 +1177,11 @@ class StandaloneCoach:
                     elif text and text.strip():
                         logger.info(f"QUESTION: {text}")
                         self.ui.log(f"\n[YOU] {text}")
-                        advice = self._coach.get_advice(game_state, question=text)
+                        advice = self._coach.get_advice(game_state, question=text, style=self.advice_style)
                     else:
                         logger.info("QUICK ADVICE (F4 tap)")
                         self.ui.log("\n[QUICK] Analyzing...")
-                        advice = self._coach.get_advice(game_state, trigger="user_request")
+                        advice = self._coach.get_advice(game_state, trigger="user_request", style=self.advice_style)
 
                     logger.info(f"RESPONSE: {advice}")
 

@@ -3094,7 +3094,7 @@ class CoachEngine:
         game_state: dict[str, Any],
         question: Optional[str] = None,
         trigger: Optional[str] = None,
-        style: str = "concise",
+        style: Optional[str] = None,
     ) -> str:
         """Get coaching advice for the current game state.
 
@@ -3187,9 +3187,18 @@ class CoachEngine:
         prompts = {
             "concise": CONCISE_SYSTEM_PROMPT,
             "verbose": DEFAULT_SYSTEM_PROMPT.replace(
-                "Keep responses concise (2-3 sentences max) since they'll be spoken aloud.",
-                "Provide detailed strategic reasoning (4-5 sentences). "
-                "Explain the 'why' behind your advice, discussing alternatives.",
+                "Keep responses concise (2-3 sentences max) since they'll be spoken aloud.\n"
+                "Focus ONLY on the final strategic recommendation.\n"
+                "Do NOT show your thinking process, \"reasoning\", or \"corrections\".\n"
+                "Do NOT use internal monologue tags like [plan] or [thought].\n"
+                "Do NOT second-guess yourself in the text (e.g., \"Wait, I need to check...\").\n"
+                "Be authoritative and decisive. Start your response immediately with the command.",
+
+                "Provide detailed strategic reasoning in 4-5 sentences.\n"
+                "State the recommended play, then explain WHY it's the best option.\n"
+                "Mention what alternatives you considered and why they're worse.\n"
+                "If relevant, preview the next 1-2 turns of the plan.\n"
+                "Be authoritative but educational — help the player understand the strategy.",
             ),
             "normal": DEFAULT_SYSTEM_PROMPT,
             "explain": DEFAULT_SYSTEM_PROMPT.replace(

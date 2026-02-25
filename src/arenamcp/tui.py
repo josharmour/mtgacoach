@@ -1042,12 +1042,12 @@ class ArenaApp(App):
         try:
             game_state = self.coach._mcp.get_game_state()
             self.coach._inject_library_summary_if_needed(game_state)
-            advice = self.coach._coach.get_advice(game_state, question=text)
+            advice = self.coach._coach.get_advice(game_state, question=text, style=self.coach.advice_style)
 
             # Check for backend auth/billing failures → auto-fallback
             if self.coach.check_advice_for_backend_failure(advice):
                 # Retry with fallback backend
-                advice = self.coach._coach.get_advice(game_state, question=text)
+                advice = self.coach._coach.get_advice(game_state, question=text, style=self.coach.advice_style)
 
             # Suppress raw error strings from being displayed as advice
             from arenamcp.backend_detect import is_query_failure_retriable
