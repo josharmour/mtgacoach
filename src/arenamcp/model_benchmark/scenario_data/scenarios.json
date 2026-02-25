@@ -1,0 +1,655 @@
+{
+  "scenarios": [
+    {
+      "id": "lethal_on_board_01",
+      "name": "Obvious lethal on board",
+      "category": "combat",
+      "difficulty": "basic",
+      "game_state": {
+        "turn": {
+          "turn_number": 7,
+          "active_player": 1,
+          "priority_player": 1,
+          "phase": "Phase_Main1",
+          "step": ""
+        },
+        "players": [
+          {"seat_id": 1, "is_local": true, "life_total": 12, "mana_pool": {}},
+          {"seat_id": 2, "is_local": false, "life_total": 5, "mana_pool": {}}
+        ],
+        "battlefield": {
+          "1": [
+            {"name": "Monastery Swiftspear", "power": 1, "toughness": 2, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Human", "Monk"], "grp_id": 1001, "controller_seat_id": 1, "summoning_sick": false},
+            {"name": "Goblin Guide", "power": 2, "toughness": 2, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Goblin", "Scout"], "grp_id": 1002, "controller_seat_id": 1, "summoning_sick": false},
+            {"name": "Eidolon of the Great Revel", "power": 2, "toughness": 2, "is_tapped": false, "card_types": ["Creature", "Enchantment"], "subtypes": ["Spirit"], "grp_id": 1003, "controller_seat_id": 1, "summoning_sick": false},
+            {"name": "Mountain", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Mountain"], "grp_id": 2001, "controller_seat_id": 1}
+          ],
+          "2": []
+        },
+        "hand": [
+          {"name": "Lightning Bolt", "card_types": ["Instant"], "mana_cost": "{R}", "grp_id": 3001, "castable": true}
+        ],
+        "zones": {
+          "graveyard": {"1": [], "2": []}
+        },
+        "legal_actions": "Cast Lightning Bolt [OK], Attack with Monastery Swiftspear, Attack with Goblin Guide, Attack with Eidolon of the Great Revel, Pass priority"
+      },
+      "trigger": "new_turn",
+      "correct_actions": [
+        "attack with all",
+        "attack with Monastery Swiftspear",
+        "attack with Goblin Guide",
+        "attack with Eidolon"
+      ],
+      "incorrect_actions": [
+        "pass priority",
+        "don't attack",
+        "hold back"
+      ],
+      "must_mention": [],
+      "must_not_mention": [],
+      "reasoning_notes": "Opponent is at 5 life with empty board. Attacking with all 3 creatures deals 5 damage = exactly lethal. Lightning Bolt is backup but attacking alone wins.",
+      "tags": ["lethal", "aggro", "combat_math"],
+      "weight": 1.0
+    },
+    {
+      "id": "summoning_sickness_trap_01",
+      "name": "Don't attack with summoning-sick creature",
+      "category": "combat",
+      "difficulty": "basic",
+      "game_state": {
+        "turn": {
+          "turn_number": 4,
+          "active_player": 1,
+          "priority_player": 1,
+          "phase": "Phase_Combat",
+          "step": "Step_DeclareAttack"
+        },
+        "players": [
+          {"seat_id": 1, "is_local": true, "life_total": 18, "mana_pool": {}},
+          {"seat_id": 2, "is_local": false, "life_total": 16, "mana_pool": {}}
+        ],
+        "battlefield": {
+          "1": [
+            {"name": "Grizzly Bears", "power": 2, "toughness": 2, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Bear"], "grp_id": 1010, "controller_seat_id": 1, "summoning_sick": false},
+            {"name": "Serra Angel", "power": 4, "toughness": 4, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Angel"], "grp_id": 1011, "controller_seat_id": 1, "summoning_sick": true, "abilities": ["Flying", "Vigilance"]},
+            {"name": "Plains", "power": null, "toughness": null, "is_tapped": true, "card_types": ["Land"], "subtypes": ["Plains"], "grp_id": 2010, "controller_seat_id": 1},
+            {"name": "Plains", "power": null, "toughness": null, "is_tapped": true, "card_types": ["Land"], "subtypes": ["Plains"], "grp_id": 2010, "controller_seat_id": 1},
+            {"name": "Forest", "power": null, "toughness": null, "is_tapped": true, "card_types": ["Land"], "subtypes": ["Forest"], "grp_id": 2011, "controller_seat_id": 1}
+          ],
+          "2": [
+            {"name": "Llanowar Elves", "power": 1, "toughness": 1, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Elf", "Druid"], "grp_id": 1012, "controller_seat_id": 2, "summoning_sick": false}
+          ]
+        },
+        "hand": [],
+        "zones": {
+          "graveyard": {"1": [], "2": []}
+        },
+        "legal_actions": "Declare Attackers: Grizzly Bears [can attack], Serra Angel [SS — cannot attack]. Pass priority",
+        "annotations": {"Serra Angel": "[SS] Summoning Sickness — cannot attack this turn"}
+      },
+      "trigger": "combat_attackers",
+      "correct_actions": [
+        "attack with Grizzly Bears",
+        "Grizzly Bears"
+      ],
+      "incorrect_actions": [
+        "attack with Serra Angel",
+        "attack with all",
+        "attack with both"
+      ],
+      "must_mention": [
+        "Grizzly Bears"
+      ],
+      "must_not_mention": [],
+      "reasoning_notes": "Serra Angel has summoning sickness [SS] so it cannot attack. Only Grizzly Bears can attack. Model must not suggest attacking with Serra Angel.",
+      "tags": ["summoning_sickness", "rules_knowledge"],
+      "weight": 1.0
+    },
+    {
+      "id": "play_land_first_01",
+      "name": "Play land before casting spell",
+      "category": "sequencing",
+      "difficulty": "basic",
+      "game_state": {
+        "turn": {
+          "turn_number": 3,
+          "active_player": 1,
+          "priority_player": 1,
+          "phase": "Phase_Main1",
+          "step": ""
+        },
+        "players": [
+          {"seat_id": 1, "is_local": true, "life_total": 20, "mana_pool": {}},
+          {"seat_id": 2, "is_local": false, "life_total": 18, "mana_pool": {}}
+        ],
+        "battlefield": {
+          "1": [
+            {"name": "Mountain", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Mountain"], "grp_id": 2001, "controller_seat_id": 1},
+            {"name": "Mountain", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Mountain"], "grp_id": 2001, "controller_seat_id": 1}
+          ],
+          "2": [
+            {"name": "Llanowar Elves", "power": 1, "toughness": 1, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Elf", "Druid"], "grp_id": 1012, "controller_seat_id": 2, "summoning_sick": false}
+          ]
+        },
+        "hand": [
+          {"name": "Mountain", "card_types": ["Land"], "grp_id": 2001},
+          {"name": "Lightning Strike", "card_types": ["Instant"], "mana_cost": "{1}{R}", "grp_id": 3010, "castable": false, "needs": "{1}"},
+          {"name": "Goblin Chainwhirler", "card_types": ["Creature"], "mana_cost": "{R}{R}{R}", "grp_id": 1020, "castable": false, "needs": "{R}"}
+        ],
+        "zones": {
+          "graveyard": {"1": [], "2": []}
+        },
+        "land_drop": "AVAILABLE",
+        "legal_actions": "Play Mountain [LAND DROP AVAILABLE], Pass priority. THEN: Play Mountain -> Cast Lightning Strike [OK]",
+        "mana": "2 (RR) from 2 untapped Mountains"
+      },
+      "trigger": "new_turn",
+      "correct_actions": [
+        "Play Mountain",
+        "play a land",
+        "play Mountain, then cast Lightning Strike"
+      ],
+      "incorrect_actions": [
+        "pass priority",
+        "Cast Goblin Chainwhirler"
+      ],
+      "must_mention": [
+        "Mountain"
+      ],
+      "must_not_mention": [],
+      "reasoning_notes": "Land drop is available and playing Mountain enables casting Lightning Strike (currently needs {1} more). Always play land first when available. Chainwhirler still needs {R} more even after the land.",
+      "tags": ["land_drop", "sequencing", "mana_efficiency"],
+      "weight": 1.0
+    },
+    {
+      "id": "dont_walk_into_bad_trade_01",
+      "name": "Avoid attacking into bad trade",
+      "category": "combat",
+      "difficulty": "intermediate",
+      "game_state": {
+        "turn": {
+          "turn_number": 5,
+          "active_player": 1,
+          "priority_player": 1,
+          "phase": "Phase_Combat",
+          "step": "Step_DeclareAttack"
+        },
+        "players": [
+          {"seat_id": 1, "is_local": true, "life_total": 15, "mana_pool": {}},
+          {"seat_id": 2, "is_local": false, "life_total": 14, "mana_pool": {}}
+        ],
+        "battlefield": {
+          "1": [
+            {"name": "Savannah Lions", "power": 2, "toughness": 1, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Cat"], "grp_id": 1030, "controller_seat_id": 1, "summoning_sick": false}
+          ],
+          "2": [
+            {"name": "Tarmogoyf", "power": 4, "toughness": 5, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Lhurgoyf"], "grp_id": 1031, "controller_seat_id": 2, "summoning_sick": false}
+          ]
+        },
+        "hand": [
+          {"name": "Plains", "card_types": ["Land"], "grp_id": 2010}
+        ],
+        "zones": {
+          "graveyard": {"1": [], "2": []}
+        },
+        "legal_actions": "Declare Attackers: Savannah Lions [can attack]. Pass priority",
+        "combat_analysis": "If Tarmogoyf blocks Savannah Lions: BAD — Lions die (2 power vs 5 toughness), Tarmogoyf survives (1 damage vs 5 toughness). Atk: 2 vs BLOCKED (0 dmg through)."
+      },
+      "trigger": "combat_attackers",
+      "correct_actions": [
+        "don't attack",
+        "pass priority",
+        "hold back"
+      ],
+      "incorrect_actions": [
+        "attack with Savannah Lions",
+        "attack with all"
+      ],
+      "must_mention": [],
+      "must_not_mention": [],
+      "reasoning_notes": "Savannah Lions (2/1) attacking into Tarmogoyf (4/5) is a terrible trade. Lions die, Tarmogoyf survives. No reason to throw away the creature for 0 damage.",
+      "tags": ["trade_analysis", "combat_math", "defensive"],
+      "weight": 1.0
+    },
+    {
+      "id": "removal_before_combat_01",
+      "name": "Use removal to clear blocker for lethal",
+      "category": "sequencing",
+      "difficulty": "intermediate",
+      "game_state": {
+        "turn": {
+          "turn_number": 8,
+          "active_player": 1,
+          "priority_player": 1,
+          "phase": "Phase_Main1",
+          "step": ""
+        },
+        "players": [
+          {"seat_id": 1, "is_local": true, "life_total": 8, "mana_pool": {}},
+          {"seat_id": 2, "is_local": false, "life_total": 4, "mana_pool": {}}
+        ],
+        "battlefield": {
+          "1": [
+            {"name": "Goblin Guide", "power": 2, "toughness": 2, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Goblin", "Scout"], "grp_id": 1002, "controller_seat_id": 1, "summoning_sick": false},
+            {"name": "Monastery Swiftspear", "power": 1, "toughness": 2, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Human", "Monk"], "grp_id": 1001, "controller_seat_id": 1, "summoning_sick": false, "abilities": ["Haste", "Prowess"]},
+            {"name": "Mountain", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Mountain"], "grp_id": 2001, "controller_seat_id": 1},
+            {"name": "Mountain", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Mountain"], "grp_id": 2001, "controller_seat_id": 1}
+          ],
+          "2": [
+            {"name": "Wall of Omens", "power": 0, "toughness": 4, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Wall"], "grp_id": 1040, "controller_seat_id": 2, "summoning_sick": false, "abilities": ["Defender"]}
+          ]
+        },
+        "hand": [
+          {"name": "Lightning Bolt", "card_types": ["Instant"], "mana_cost": "{R}", "grp_id": 3001, "castable": true}
+        ],
+        "zones": {
+          "graveyard": {"1": [], "2": []}
+        },
+        "legal_actions": "Cast Lightning Bolt [OK] (targets: Wall of Omens, opponent face), Attack with Goblin Guide, Attack with Monastery Swiftspear, Pass priority",
+        "land_drop": "UNAVAILABLE",
+        "mana": "2 (RR) from 2 untapped Mountains"
+      },
+      "trigger": "new_turn",
+      "correct_actions": [
+        "Cast Lightning Bolt",
+        "Lightning Bolt targeting opponent",
+        "Bolt face",
+        "Bolt the opponent"
+      ],
+      "incorrect_actions": [
+        "Lightning Bolt targeting Wall of Omens",
+        "Bolt the Wall"
+      ],
+      "must_mention": [
+        "Lightning Bolt"
+      ],
+      "must_not_mention": [],
+      "reasoning_notes": "Opponent is at 4 life. Lightning Bolt does 3 to face. Monastery Swiftspear gets +1/+1 from prowess (casting Bolt), becoming 2/3. Then attack with both: 2 (Goblin Guide) + 2 (Swiftspear w/ prowess) = 4, but Wall of Omens blocks one. Better line: Bolt face for 3, then attack — even if Wall blocks one creature, the other deals 2 and Bolt dealt 3 = 5 total, which is lethal. Wall of Omens has 4 toughness so Bolt doesn't kill it anyway.",
+      "tags": ["lethal", "removal", "sequencing", "prowess"],
+      "weight": 1.5
+    },
+    {
+      "id": "flying_block_rules_01",
+      "name": "Cannot block flyer without reach or flying",
+      "category": "combat",
+      "difficulty": "basic",
+      "game_state": {
+        "turn": {
+          "turn_number": 6,
+          "active_player": 2,
+          "priority_player": 1,
+          "phase": "Phase_Combat",
+          "step": "Step_DeclareBlock"
+        },
+        "players": [
+          {"seat_id": 1, "is_local": true, "life_total": 10, "mana_pool": {}},
+          {"seat_id": 2, "is_local": false, "life_total": 15, "mana_pool": {}}
+        ],
+        "battlefield": {
+          "1": [
+            {"name": "Grizzly Bears", "power": 2, "toughness": 2, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Bear"], "grp_id": 1010, "controller_seat_id": 1, "summoning_sick": false},
+            {"name": "Elvish Mystic", "power": 1, "toughness": 1, "is_tapped": true, "card_types": ["Creature"], "subtypes": ["Elf", "Druid"], "grp_id": 1050, "controller_seat_id": 1, "summoning_sick": false}
+          ],
+          "2": [
+            {"name": "Serra Angel", "power": 4, "toughness": 4, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Angel"], "grp_id": 1011, "controller_seat_id": 2, "summoning_sick": false, "abilities": ["Flying", "Vigilance"], "is_attacking": true},
+            {"name": "Llanowar Elves", "power": 1, "toughness": 1, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Elf", "Druid"], "grp_id": 1012, "controller_seat_id": 2, "summoning_sick": false, "is_attacking": true}
+          ]
+        },
+        "hand": [],
+        "zones": {
+          "graveyard": {"1": [], "2": []}
+        },
+        "legal_actions": "Declare Blockers: Grizzly Bears can block Llanowar Elves. Cannot block Serra Angel [FLYING — no flyers/reach]. Pass priority (take 5 damage)",
+        "combat_analysis": "Incoming: Serra Angel 4/4 [FLYING] + Llanowar Elves 1/1. Best blocks: Grizzly Bears blocks Llanowar Elves -> kills it, take 4 from Serra Angel. No blocks: take 5."
+      },
+      "trigger": "combat_blockers",
+      "correct_actions": [
+        "block Llanowar Elves with Grizzly Bears",
+        "Grizzly Bears blocks Llanowar Elves",
+        "block the Elves"
+      ],
+      "incorrect_actions": [
+        "block Serra Angel with Grizzly Bears",
+        "block the flyer",
+        "block Serra Angel"
+      ],
+      "must_mention": [],
+      "must_not_mention": [],
+      "reasoning_notes": "Serra Angel has flying. Grizzly Bears has no flying or reach, so it cannot block Serra Angel. The only legal block is Grizzly Bears blocking Llanowar Elves, trading favorably (2/2 kills 1/1). Elvish Mystic is tapped and can't block.",
+      "tags": ["flying", "blocking", "rules_knowledge"],
+      "weight": 1.0
+    },
+    {
+      "id": "mana_cant_cast_01",
+      "name": "Don't suggest cards that can't be cast",
+      "category": "mana",
+      "difficulty": "basic",
+      "game_state": {
+        "turn": {
+          "turn_number": 3,
+          "active_player": 1,
+          "priority_player": 1,
+          "phase": "Phase_Main1",
+          "step": ""
+        },
+        "players": [
+          {"seat_id": 1, "is_local": true, "life_total": 20, "mana_pool": {}},
+          {"seat_id": 2, "is_local": false, "life_total": 20, "mana_pool": {}}
+        ],
+        "battlefield": {
+          "1": [
+            {"name": "Forest", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Forest"], "grp_id": 2011, "controller_seat_id": 1},
+            {"name": "Forest", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Forest"], "grp_id": 2011, "controller_seat_id": 1}
+          ],
+          "2": []
+        },
+        "hand": [
+          {"name": "Forest", "card_types": ["Land"], "grp_id": 2011},
+          {"name": "Llanowar Elves", "card_types": ["Creature"], "mana_cost": "{G}", "grp_id": 1012, "castable": true},
+          {"name": "Elder Gargaroth", "card_types": ["Creature"], "mana_cost": "{3}{G}{G}", "grp_id": 1060, "castable": false, "needs": "{2}"},
+          {"name": "Craterhoof Behemoth", "card_types": ["Creature"], "mana_cost": "{5}{G}{G}{G}", "grp_id": 1061, "castable": false, "needs": "{5}{G}"}
+        ],
+        "zones": {
+          "graveyard": {"1": [], "2": []}
+        },
+        "land_drop": "AVAILABLE",
+        "legal_actions": "Play Forest [LAND DROP AVAILABLE], Cast Llanowar Elves [OK]. THEN: Play Forest -> Cast Llanowar Elves [OK]. Elder Gargaroth [NEED {2}], Craterhoof Behemoth [NEED {5}{G}]",
+        "mana": "2 (GG) from 2 untapped Forests"
+      },
+      "trigger": "new_turn",
+      "correct_actions": [
+        "Play Forest",
+        "Cast Llanowar Elves",
+        "Play Forest, then cast Llanowar Elves"
+      ],
+      "incorrect_actions": [
+        "Cast Elder Gargaroth",
+        "Cast Craterhoof Behemoth",
+        "Craterhoof"
+      ],
+      "must_mention": [],
+      "must_not_mention": [
+        "Craterhoof Behemoth"
+      ],
+      "reasoning_notes": "Only Forest and Llanowar Elves are playable. Elder Gargaroth needs 2 more mana. Craterhoof needs much more. Models should focus on castable cards and not suggest expensive cards that can't be cast.",
+      "tags": ["mana_efficiency", "sequencing", "land_drop"],
+      "weight": 1.0
+    },
+    {
+      "id": "hold_instant_opponents_turn_01",
+      "name": "Only suggest instants on opponent's turn",
+      "category": "timing",
+      "difficulty": "intermediate",
+      "game_state": {
+        "turn": {
+          "turn_number": 5,
+          "active_player": 2,
+          "priority_player": 1,
+          "phase": "Phase_Main1",
+          "step": ""
+        },
+        "players": [
+          {"seat_id": 1, "is_local": true, "life_total": 16, "mana_pool": {}},
+          {"seat_id": 2, "is_local": false, "life_total": 14, "mana_pool": {}}
+        ],
+        "battlefield": {
+          "1": [
+            {"name": "Snapcaster Mage", "power": 2, "toughness": 1, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Human", "Wizard"], "grp_id": 1070, "controller_seat_id": 1, "summoning_sick": false},
+            {"name": "Island", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Island"], "grp_id": 2020, "controller_seat_id": 1},
+            {"name": "Island", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Island"], "grp_id": 2020, "controller_seat_id": 1},
+            {"name": "Island", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Island"], "grp_id": 2020, "controller_seat_id": 1}
+          ],
+          "2": [
+            {"name": "Tarmogoyf", "power": 3, "toughness": 4, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Lhurgoyf"], "grp_id": 1031, "controller_seat_id": 2, "summoning_sick": false}
+          ]
+        },
+        "hand": [
+          {"name": "Counterspell", "card_types": ["Instant"], "mana_cost": "{U}{U}", "grp_id": 3020, "castable": true},
+          {"name": "Wrath of God", "card_types": ["Sorcery"], "mana_cost": "{2}{W}{W}", "grp_id": 3021, "castable": false, "needs": "{W}{W}"},
+          {"name": "Serum Visions", "card_types": ["Sorcery"], "mana_cost": "{U}", "grp_id": 3022, "castable": false, "note": "Sorcery — can only cast on your turn"}
+        ],
+        "zones": {
+          "graveyard": {"1": [], "2": []}
+        },
+        "legal_actions": "Cast Counterspell [OK] [INSTANT], Pass priority. Wrath of God [SORCERY SPEED — not your turn], Serum Visions [SORCERY SPEED — not your turn]",
+        "mana": "3 (UUU) from 3 untapped Islands"
+      },
+      "trigger": "opponent_turn",
+      "correct_actions": [
+        "pass priority",
+        "hold up Counterspell",
+        "wait"
+      ],
+      "incorrect_actions": [
+        "Cast Wrath of God",
+        "Cast Serum Visions",
+        "play Wrath"
+      ],
+      "must_mention": [],
+      "must_not_mention": [],
+      "reasoning_notes": "It's opponent's turn. Wrath of God and Serum Visions are sorceries and cannot be cast. Counterspell can be cast but there's nothing to counter right now. Best play is to pass and hold Counterspell for when opponent casts something.",
+      "tags": ["timing", "instant_speed", "control"],
+      "weight": 1.0
+    },
+    {
+      "id": "deathtouch_block_trap_01",
+      "name": "Don't block deathtouch with valuable creature",
+      "category": "combat",
+      "difficulty": "intermediate",
+      "game_state": {
+        "turn": {
+          "turn_number": 6,
+          "active_player": 2,
+          "priority_player": 1,
+          "phase": "Phase_Combat",
+          "step": "Step_DeclareBlock"
+        },
+        "players": [
+          {"seat_id": 1, "is_local": true, "life_total": 18, "mana_pool": {}},
+          {"seat_id": 2, "is_local": false, "life_total": 12, "mana_pool": {}}
+        ],
+        "battlefield": {
+          "1": [
+            {"name": "Tarmogoyf", "power": 4, "toughness": 5, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Lhurgoyf"], "grp_id": 1031, "controller_seat_id": 1, "summoning_sick": false}
+          ],
+          "2": [
+            {"name": "Typhoid Rats", "power": 1, "toughness": 1, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Rat"], "grp_id": 1080, "controller_seat_id": 2, "summoning_sick": false, "abilities": ["Deathtouch"], "is_attacking": true}
+          ]
+        },
+        "hand": [],
+        "zones": {
+          "graveyard": {"1": [], "2": []}
+        },
+        "legal_actions": "Declare Blockers: Tarmogoyf can block Typhoid Rats [DTH — DEATHTOUCH]. Pass priority (take 1 damage)",
+        "combat_analysis": "Incoming: Typhoid Rats 1/1 [DEATHTOUCH]. If Tarmogoyf blocks Typhoid Rats: Tarmogoyf DIES (deathtouch), Rats die. BAD trade — lose 4/5 to kill a 1/1. No blocks: take 1 damage."
+      },
+      "trigger": "combat_blockers",
+      "correct_actions": [
+        "don't block",
+        "take the damage",
+        "take 1",
+        "no blocks",
+        "pass"
+      ],
+      "incorrect_actions": [
+        "block with Tarmogoyf",
+        "Tarmogoyf blocks"
+      ],
+      "must_mention": [],
+      "must_not_mention": [],
+      "reasoning_notes": "Typhoid Rats has deathtouch. Blocking with Tarmogoyf (4/5) kills both creatures — terrible trade. Better to take 1 damage and keep the 4/5.",
+      "tags": ["deathtouch", "trade_analysis", "combat_math"],
+      "weight": 1.0
+    },
+    {
+      "id": "crackback_lethal_hold_01",
+      "name": "Hold back blockers to survive crackback",
+      "category": "combat",
+      "difficulty": "advanced",
+      "game_state": {
+        "turn": {
+          "turn_number": 9,
+          "active_player": 1,
+          "priority_player": 1,
+          "phase": "Phase_Combat",
+          "step": "Step_DeclareAttack"
+        },
+        "players": [
+          {"seat_id": 1, "is_local": true, "life_total": 5, "mana_pool": {}},
+          {"seat_id": 2, "is_local": false, "life_total": 8, "mana_pool": {}}
+        ],
+        "battlefield": {
+          "1": [
+            {"name": "Goblin Guide", "power": 2, "toughness": 2, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Goblin", "Scout"], "grp_id": 1002, "controller_seat_id": 1, "summoning_sick": false},
+            {"name": "Eidolon of the Great Revel", "power": 2, "toughness": 2, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Spirit"], "grp_id": 1003, "controller_seat_id": 1, "summoning_sick": false},
+            {"name": "Monastery Swiftspear", "power": 1, "toughness": 2, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Human", "Monk"], "grp_id": 1001, "controller_seat_id": 1, "summoning_sick": false}
+          ],
+          "2": [
+            {"name": "Siege Rhino", "power": 4, "toughness": 5, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Rhino"], "grp_id": 1090, "controller_seat_id": 2, "summoning_sick": false, "abilities": ["Trample"]},
+            {"name": "Courser of Kruphix", "power": 2, "toughness": 4, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Centaur"], "grp_id": 1091, "controller_seat_id": 2, "summoning_sick": false}
+          ]
+        },
+        "hand": [],
+        "zones": {
+          "graveyard": {"1": [], "2": []}
+        },
+        "legal_actions": "Declare Attackers: Goblin Guide, Eidolon of the Great Revel, Monastery Swiftspear [all can attack]. Pass priority",
+        "combat_analysis": "Atk: 2+2+1=5 vs opp 8 life. NOT lethal. Crackback: Siege Rhino 4 [TRAMPLE] + Courser of Kruphix 2 = 6 total. If you attack with all, no blockers. Crackback: 6 damage vs your 5 life = YOU DIE. If you hold back 1 creature to block Courser, Rhino tramples for 2 through a 2-toughness blocker. Still take 2+2=4, survive at 1."
+      },
+      "trigger": "combat_attackers",
+      "correct_actions": [
+        "hold back",
+        "don't attack with all",
+        "keep a blocker"
+      ],
+      "incorrect_actions": [
+        "attack with all",
+        "attack with everything",
+        "all-out attack"
+      ],
+      "must_mention": [],
+      "must_not_mention": [],
+      "reasoning_notes": "At 5 life facing 6 power on crackback (Siege Rhino 4 trample + Courser 2). Attacking with all = 0 blockers = die on crackback. Need to hold at least one creature back to block and survive. Attack deals only 5 which isn't lethal vs 8 life anyway.",
+      "tags": ["crackback", "survival", "combat_math", "trample"],
+      "weight": 1.5
+    },
+    {
+      "id": "scry_decision_flood_01",
+      "name": "Bottom a land when flooding",
+      "category": "decision",
+      "difficulty": "intermediate",
+      "game_state": {
+        "turn": {
+          "turn_number": 8,
+          "active_player": 1,
+          "priority_player": 1,
+          "phase": "Phase_Main1",
+          "step": ""
+        },
+        "players": [
+          {"seat_id": 1, "is_local": true, "life_total": 14, "mana_pool": {}},
+          {"seat_id": 2, "is_local": false, "life_total": 10, "mana_pool": {}}
+        ],
+        "battlefield": {
+          "1": [
+            {"name": "Mountain", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Mountain"], "grp_id": 2001, "controller_seat_id": 1},
+            {"name": "Mountain", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Mountain"], "grp_id": 2001, "controller_seat_id": 1},
+            {"name": "Mountain", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Mountain"], "grp_id": 2001, "controller_seat_id": 1},
+            {"name": "Mountain", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Mountain"], "grp_id": 2001, "controller_seat_id": 1},
+            {"name": "Mountain", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Mountain"], "grp_id": 2001, "controller_seat_id": 1},
+            {"name": "Mountain", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Mountain"], "grp_id": 2001, "controller_seat_id": 1}
+          ],
+          "2": [
+            {"name": "Tarmogoyf", "power": 3, "toughness": 4, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Lhurgoyf"], "grp_id": 1031, "controller_seat_id": 2}
+          ]
+        },
+        "hand": [
+          {"name": "Mountain", "card_types": ["Land"], "grp_id": 2001}
+        ],
+        "zones": {
+          "graveyard": {"1": [], "2": []}
+        },
+        "pending_decision": "Scry",
+        "decision_context": {
+          "type": "scry",
+          "cards": [{"name": "Mountain", "card_types": ["Land"], "grp_id": 2001}],
+          "count": 1
+        },
+        "legal_actions": "Scry 1: Keep Mountain on top, or Bottom Mountain"
+      },
+      "trigger": "decision_required",
+      "correct_actions": [
+        "Bottom",
+        "put it on the bottom",
+        "bottom the Mountain"
+      ],
+      "incorrect_actions": [
+        "Keep",
+        "keep it on top"
+      ],
+      "must_mention": [],
+      "must_not_mention": [],
+      "reasoning_notes": "Already have 6 Mountains in play and 1 in hand. Drawing another land is terrible — need to find action. Bottom the Mountain to dig for spells.",
+      "tags": ["scry", "mana_flood", "decision"],
+      "weight": 1.0
+    },
+    {
+      "id": "bounce_blocker_for_lethal_01",
+      "name": "Bounce opponent's blocker to enable lethal",
+      "category": "sequencing",
+      "difficulty": "advanced",
+      "game_state": {
+        "turn": {
+          "turn_number": 7,
+          "active_player": 1,
+          "priority_player": 1,
+          "phase": "Phase_Main1",
+          "step": ""
+        },
+        "players": [
+          {"seat_id": 1, "is_local": true, "life_total": 6, "mana_pool": {}},
+          {"seat_id": 2, "is_local": false, "life_total": 5, "mana_pool": {}}
+        ],
+        "battlefield": {
+          "1": [
+            {"name": "Delver of Secrets", "power": 3, "toughness": 2, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Human", "Insect"], "grp_id": 1100, "controller_seat_id": 1, "summoning_sick": false, "abilities": ["Flying"], "name_display": "Insectile Aberration"},
+            {"name": "Snapcaster Mage", "power": 2, "toughness": 1, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Human", "Wizard"], "grp_id": 1070, "controller_seat_id": 1, "summoning_sick": false},
+            {"name": "Island", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Island"], "grp_id": 2020, "controller_seat_id": 1},
+            {"name": "Island", "power": null, "toughness": null, "is_tapped": false, "card_types": ["Land"], "subtypes": ["Island"], "grp_id": 2020, "controller_seat_id": 1}
+          ],
+          "2": [
+            {"name": "Restoration Angel", "power": 3, "toughness": 4, "is_tapped": false, "card_types": ["Creature"], "subtypes": ["Angel"], "grp_id": 1101, "controller_seat_id": 2, "summoning_sick": false, "abilities": ["Flying", "Flash"]}
+          ]
+        },
+        "hand": [
+          {"name": "Vapor Snag", "card_types": ["Instant"], "mana_cost": "{U}", "grp_id": 3030, "castable": true, "oracle_text": "Return target creature to its owner's hand. Its controller loses 1 life."}
+        ],
+        "zones": {
+          "graveyard": {"1": [], "2": []}
+        },
+        "legal_actions": "Cast Vapor Snag [OK] [INSTANT] (targets: Restoration Angel, Delver of Secrets, Snapcaster Mage), Attack with Delver of Secrets [FLYING], Attack with Snapcaster Mage, Pass priority",
+        "mana": "2 (UU) from 2 untapped Islands"
+      },
+      "trigger": "new_turn",
+      "correct_actions": [
+        "Cast Vapor Snag targeting Restoration Angel",
+        "Vapor Snag the Restoration Angel",
+        "bounce Restoration Angel"
+      ],
+      "incorrect_actions": [
+        "Vapor Snag your own creature",
+        "bounce Snapcaster",
+        "bounce Delver",
+        "pass priority"
+      ],
+      "must_mention": [
+        "Vapor Snag"
+      ],
+      "must_not_mention": [],
+      "reasoning_notes": "Opponent at 5 life. Vapor Snag bounces Restoration Angel (the only flyer that can block Delver) AND deals 1 life loss = opponent to 4. Then attack with Delver (3 flying, unblockable) + Snapcaster (2) = 5 damage. Total: 1 (Snag) + 5 (attacks) = 6, which is lethal even if they block Snapcaster.",
+      "tags": ["lethal", "bounce", "sequencing", "flying"],
+      "weight": 1.5
+    }
+  ]
+}
