@@ -1069,9 +1069,30 @@ class StandaloneCoach:
                                                  and not c.get("is_tapped"))
                             seat_info = f"Seat {local_seat}|{untapped_lands} mana|{self.backend_name}" if local_seat else "Seat ?"
 
-                            # Skip empty responses (e.g. from timeout)
+                            # Skip empty responses (e.g. from timeout/lock busy)
                             if not advice or not advice.strip():
-                                logger.warning("Empty advice response (model timeout?), skipping")
+                                self._consecutive_errors = getattr(self, '_consecutive_errors', 0) + 1
+                                max_errors = getattr(self, '_max_errors_before_fallback', 3)
+                                logger.warning(
+                                    f"Empty advice response ({self._consecutive_errors}/{max_errors}) — "
+                                    "model timeout or backend hung"
+                                )
+                                if self._consecutive_errors >= max_errors:
+                                    # Try restarting the backend process first
+                                    logger.warning("Too many empty responses, restarting backend...")
+                                    self.ui.log("\n[BACKEND] Restarting (too many empty responses)...")
+                                    try:
+                                        be = self._coach._backend
+                                        if hasattr(be, 'close'):
+                                            be.close()
+                                        self._reinit_coach()
+                                        self._consecutive_errors = 0
+                                        self.ui.log("[BACKEND] Restarted successfully\n")
+                                    except Exception as e:
+                                        logger.error(f"Backend restart failed: {e}")
+                                        # Final fallback — switch to Ollama
+                                        if self.fallback_to_ollama(reason="Backend hung (empty responses)"):
+                                            continue
                                 continue
 
                             # Check for backend auth/billing failures → auto-fallback
@@ -2381,6 +2402,8 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
         Returns True if a fallback was triggered.
         """
         if not advice:
+            # Empty responses are handled separately in the advice loop
+            # (counted as errors there), not here.
             return False
 
         from arenamcp.backend_detect import is_query_failure_retriable
