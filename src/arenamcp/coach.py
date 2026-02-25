@@ -144,6 +144,7 @@ class ClaudeCodeBackend:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
                 bufsize=1,
                 env=env,
                 creationflags=creationflags,
@@ -595,6 +596,7 @@ class GeminiCliBackend:
                 args,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=self.timeout_s,
                 env=env,
                 creationflags=creationflags,
@@ -701,6 +703,7 @@ class CodexCliBackend:
                 args,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=self.timeout_s,
                 creationflags=creationflags,
                 env=env,
@@ -3576,7 +3579,7 @@ class CoachEngine:
         api_time = (time.perf_counter() - api_start) * 1000
 
         # POST-PROCESSING: Validate and fix common LLM issues (especially for smaller models)
-        response = self._postprocess_advice(response, game_state)
+        response = self._postprocess_advice(response, game_state, style=style_key)
 
         self._word_tracker.record(response, exclude_words=card_words)
 
@@ -3787,16 +3790,51 @@ class CoachEngine:
 
         return response
 
-    def _postprocess_advice(self, advice: str, game_state: dict[str, Any]) -> str:
+    def _postprocess_advice(self, advice: str, game_state: dict[str, Any], style: str = "concise") -> str:
         """Post-process LLM advice to fix common issues with smaller models.
 
-        1. Remove 'Play [Land]' suggestions when no land is in hand
-        2. Fix typos in card names using fuzzy matching
+        1. Strip markdown formatting (headers, bold, bullets) for spoken output
+        2. Truncate overly long responses when style is concise
+        3. Remove 'Play [Land]' suggestions when no land is in hand
+        4. Fix typos in card names using fuzzy matching
         """
         if not advice:
             return ""
 
         import re
+
+        # 0a. Strip markdown formatting — this is spoken aloud, not rendered
+        # Remove headers (# Header or ##Header — with or without space)
+        advice = re.sub(r"^#{1,6}\s*", "", advice, flags=re.MULTILINE)
+        # Remove bold/italic markers
+        advice = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", advice)
+        # Remove bullet markers at start of line (•, -, *)
+        advice = re.sub(r"^\s*[•\-\*]\s+", "", advice, flags=re.MULTILINE)
+        # Remove inline bullet characters (•)
+        advice = advice.replace("•", "")
+        # Collapse multiple newlines into single space
+        advice = re.sub(r"\n+", " ", advice)
+        # Clean up resulting whitespace
+        advice = re.sub(r"\s+", " ", advice).strip()
+
+        # 0b. Enforce length limit for concise style
+        # The prompt says "under 30 words" but models often ignore this.
+        # Hard-cap at ~3 sentences to keep it useful but not overwhelming.
+        if style == "concise" and len(advice.split()) > 60:
+            # Keep the first 2-3 sentences (up to ~50 words)
+            sentences = re.split(r'(?<=[.!?])\s+', advice)
+            truncated = []
+            word_count = 0
+            for sent in sentences:
+                words = sent.split()
+                if word_count + len(words) > 50 and truncated:
+                    break
+                truncated.append(sent)
+                word_count += len(words)
+            advice = " ".join(truncated)
+            # Ensure it ends with punctuation
+            if advice and advice[-1] not in ".!?":
+                advice += "."
 
         def _combat_attack_summary() -> Optional[tuple[int, int, int]]:
             """Return (attack_power, opp_life, opp_blockers) if computable."""
