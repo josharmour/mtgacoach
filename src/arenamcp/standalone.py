@@ -949,7 +949,10 @@ class StandaloneCoach:
 
                         # NOISE SUPPRESSION: Skip LLM call when player has no meaningful options.
                         # Saves ~3-5s API call + TTS for obvious "pass priority" situations.
-                        QUIET_TRIGGERS = {"stack_spell_yours", "stack_spell_opponent", "priority_gained", "spell_resolved", "opponent_turn"}
+                        # NOTE: "opponent_turn" is excluded — it's strategic analysis about the
+                        # opponent's board/plan, not a "can you respond?" check. Players always
+                        # benefit from knowing what the opponent is doing.
+                        QUIET_TRIGGERS = {"stack_spell_yours", "stack_spell_opponent", "priority_gained", "spell_resolved"}
                         if trigger in QUIET_TRIGGERS:
                             has_instants = self._trigger._has_castable_instants(curr_state)
                             stack = curr_state.get("stack", [])
@@ -995,6 +998,9 @@ class StandaloneCoach:
                             pre_advice_active = active_seat
                             pre_advice_phase = phase
                             pre_advice_step = turn.get("step", "")
+
+                            # Inject library targets when a tutor spell is in hand
+                            self._inject_library_summary_if_needed(curr_state)
 
                             advice = self._coach.get_advice(
                                 curr_state,
@@ -1067,7 +1073,12 @@ class StandaloneCoach:
                                 continue  # Fallback triggered, retry with new backend
 
                             # Don't speak error/fallback messages aloud
-                            if advice.startswith("Error") or "didn't catch that" in advice:
+                            from arenamcp.backend_detect import is_query_failure_retriable as _is_err
+                            if (
+                                advice.startswith("Error")
+                                or "didn't catch that" in advice
+                                or (_is_err(advice) and len(advice) < 200)
+                            ):
                                 logger.warning(f"Suppressing error advice from TTS: {advice[:80]}")
                                 self.ui.error(advice)
                             else:
@@ -1138,6 +1149,9 @@ class StandaloneCoach:
                         hasattr(self._coach._backend, 'complete_with_audio')
                     )
 
+                    # Inject library targets when a tutor spell is in hand
+                    self._inject_library_summary_if_needed(game_state)
+
                     if use_direct_audio:
                         # Direct audio to Gemini - skip local transcription
                         logger.info(f"AUDIO INPUT: {len(audio_data)} samples -> Gemini")
@@ -1170,9 +1184,18 @@ class StandaloneCoach:
                     logger.info(f"RESPONSE: {advice}")
 
                     # Check for backend auth/billing failures → auto-fallback
-                    if not self.check_advice_for_backend_failure(advice):
+                    from arenamcp.backend_detect import is_query_failure_retriable as _is_err2
+                    is_error_response = (
+                        advice.startswith("Error")
+                        or "didn't catch that" in advice
+                        or (_is_err2(advice) and len(advice) < 200)
+                    )
+                    if not self.check_advice_for_backend_failure(advice) and not is_error_response:
                         self.ui.advice(advice, seat_info)
                         self.speak_advice(advice)
+                    elif is_error_response:
+                        logger.warning(f"Suppressing error advice from voice TTS: {advice[:80]}")
+                        self.ui.error(advice)
 
                     # Record for debug history with the same game state
                     trigger = "voice_audio" if use_direct_audio else ("voice_question" if text else "voice_quick")
@@ -1353,7 +1376,11 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
                 raw_path = tmp_file or ""
 
                 if backend_lower == "gemini-cli":
-                    vision_backend = create_backend("gemini-cli", model=self.model_name)
+                    from arenamcp.coach import GeminiCliBackend
+                    vision_backend = GeminiCliBackend(
+                        model=self.model_name,
+                        persistent=False,  # One-shot avoids --prompt-interactive stdin conflict
+                    )
                     vision_backend.timeout_s = float(os.environ.get("VISION_TIMEOUT_S", "20"))
                     vision_msg = (
                         f"{system_prompt}\n\n"
@@ -1967,6 +1994,132 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
 
         return "\n".join(lines)
 
+    def _has_tutor_in_hand(self, game_state: dict) -> bool:
+        """Check if any card in hand is a tutor/search spell."""
+        for card in game_state.get("hand", []):
+            oracle = card.get("oracle_text", "").lower()
+            if "search your library" in oracle:
+                return True
+        return False
+
+    def _compute_tutor_library_targets(self, game_state: dict) -> str:
+        """Compute library targets grouped by mana value for tutor spells.
+
+        When a tutor/search spell is in hand, the LLM needs to know what
+        creatures (and other cards) are available in the library and at
+        what mana values, so it can recommend specific X values and targets.
+        """
+        import re
+
+        deck_cards = game_state.get("deck_cards", [])
+        if not deck_cards:
+            return ""
+
+        # Get local player seat
+        players = game_state.get("players", [])
+        local_player = next((p for p in players if p.get("is_local")), None)
+        local_seat = local_player.get("seat_id") if local_player else 1
+
+        # Collect grp_ids of visible cards owned by local player
+        visible_grp_ids = []
+        for zone in ["hand", "battlefield", "graveyard", "exile", "stack", "command"]:
+            for card in game_state.get(zone, []):
+                if card.get("owner_seat_id") == local_seat:
+                    grp_id = card.get("grp_id", 0)
+                    if grp_id:
+                        visible_grp_ids.append(grp_id)
+
+        # Remove visible cards from deck list
+        remaining = list(deck_cards)
+        for grp_id in visible_grp_ids:
+            try:
+                remaining.remove(grp_id)
+            except ValueError:
+                pass
+
+        if not remaining:
+            return ""
+
+        # Look up card info for remaining library cards
+        card_info_cache: dict[int, dict] = {}
+        for grp_id in remaining:
+            if grp_id not in card_info_cache:
+                try:
+                    card_info_cache[grp_id] = self._mcp.get_card_info(grp_id)
+                except Exception:
+                    card_info_cache[grp_id] = {"name": f"Unknown({grp_id})"}
+
+        # Group non-land cards by CMC
+        by_cmc: dict[int, list[str]] = {}
+        for grp_id in remaining:
+            info = card_info_cache.get(grp_id, {})
+            type_line = info.get("type_line", "").lower()
+            # Skip basic lands (not useful tutor targets)
+            if "basic" in type_line and "land" in type_line:
+                continue
+            name = info.get("name", f"Unknown({grp_id})")
+            mana_cost = info.get("mana_cost", "")
+
+            # Calculate CMC
+            cmc = 0
+            if mana_cost:
+                generic = re.findall(r"\{(\d+)\}", mana_cost)
+                cmc += sum(int(g) for g in generic)
+                for color in "WUBRGC":
+                    cmc += len(re.findall(rf"\{{{color}\}}", mana_cost))
+                hybrid = re.findall(r"\{[^}]+/[^}]+\}", mana_cost)
+                cmc += len(hybrid)
+
+            # Build compact descriptor
+            is_creature = "creature" in type_line
+            power = info.get("power", "")
+            toughness = info.get("toughness", "")
+            pt = f" ({power}/{toughness})" if is_creature and power and toughness else ""
+
+            # Type indicator for non-creatures
+            type_tag = ""
+            if not is_creature:
+                if "instant" in type_line:
+                    type_tag = " [instant]"
+                elif "sorcery" in type_line:
+                    type_tag = " [sorcery]"
+                elif "enchantment" in type_line:
+                    type_tag = " [enchant]"
+                elif "artifact" in type_line:
+                    type_tag = " [artifact]"
+                elif "planeswalker" in type_line:
+                    type_tag = " [PW]"
+                elif "land" in type_line:
+                    type_tag = " [land]"
+
+            descriptor = f"{name}{pt}{type_tag}"
+            if cmc not in by_cmc:
+                by_cmc[cmc] = []
+            # Avoid duplicate names at same CMC
+            if descriptor not in by_cmc[cmc]:
+                by_cmc[cmc].append(descriptor)
+
+        if not by_cmc:
+            return ""
+
+        # Build compact summary grouped by CMC
+        lines = [f"LIBRARY SEARCH TARGETS (~{len(remaining)} cards):"]
+        for cmc in sorted(by_cmc.keys()):
+            cards = by_cmc[cmc]
+            lines.append(f"  MV {cmc}: {', '.join(cards)}")
+
+        return "\n".join(lines)
+
+    def _inject_library_summary_if_needed(self, game_state: dict) -> None:
+        """If hand has a tutor/search spell, inject library targets into game_state."""
+        if self._has_tutor_in_hand(game_state):
+            try:
+                summary = self._compute_tutor_library_targets(game_state)
+                if summary:
+                    game_state["library_summary"] = summary
+            except Exception as e:
+                logger.debug(f"Library summary computation failed: {e}")
+
     def _on_win_plan_hotkey(self, turns: int) -> None:
         """Handle win-in-N-turns hotkey press (keys 2-8)."""
         if not self._coach or not self._mcp:
@@ -2165,6 +2318,8 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
                 logger.info(f"Voice transcription enabled: {enable_transcription}")
 
             self.ui.status("PROVIDER", f"Switched to {provider.upper()} ({actual_model})")
+            model_display = f"{provider}/{actual_model}" if actual_model else provider
+            self.ui.status("MODEL", model_display)
             logger.info(f"Switched to {provider} backend, model: {actual_model}")
             self._consecutive_errors = 0  # Reset error counter on manual switch
         except Exception as e:
@@ -2202,6 +2357,7 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
             # Don't persist "ollama" to settings — keep "auto" so next restart retries
             self._consecutive_errors = 0
             self.ui.status("PROVIDER", f"OLLAMA ({DEFAULT_OLLAMA_MODEL})")
+            self.ui.status("MODEL", f"ollama/{DEFAULT_OLLAMA_MODEL}")
             self.ui.log(
                 "[green]Switched to Ollama. Use the sidebar to reconnect to "
                 "Claude Code, Gemini CLI, or Codex when available.[/]"
@@ -2226,7 +2382,13 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
 
         from arenamcp.backend_detect import is_query_failure_retriable
 
-        if advice.startswith("Error") and is_query_failure_retriable(advice):
+        # Detect backend errors — either prefixed "Error …" from the backend wrapper,
+        # or raw short error text (e.g. "Credit balance is too low") that the CLI
+        # returns as normal assistant text.  The len<200 guard prevents false
+        # positives on real advice that incidentally contains words like "account".
+        if is_query_failure_retriable(advice) and (
+            advice.startswith("Error") or len(advice) < 200
+        ):
             self._consecutive_errors = getattr(self, '_consecutive_errors', 0) + 1
             max_errors = getattr(self, '_max_errors_before_fallback', 3)
             logger.warning(

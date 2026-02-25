@@ -98,6 +98,13 @@ class ClaudeCodeBackend:
         if self._base_system_prompt:
             args += ["--system-prompt", self._base_system_prompt]
 
+        # Strip API-key env vars so the CLI always uses subscription auth.
+        # If ANTHROPIC_API_KEY is set (e.g. from other dev work), the CLI
+        # silently switches from subscription to API-key billing, which can
+        # produce "Credit balance is too low" errors.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY")}
+
         try:
             self._proc = subprocess.Popen(
                 args,
@@ -106,6 +113,7 @@ class ClaudeCodeBackend:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                env=env,
             )
         except FileNotFoundError:
             raise FileNotFoundError(
@@ -371,6 +379,12 @@ class GeminiCliBackend:
         if self.model:
             args += ["--model", self.model]
 
+        # Strip API-key env vars so the CLI always uses subscription auth.
+        # GOOGLE_API_KEY / GEMINI_API_KEY cause the CLI to switch from
+        # subscription to API-key billing, which can produce billing errors.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GOOGLE_API_KEY", "GEMINI_API_KEY")}
+
         try:
             # OPTIMIZATION: Use CREATE_NO_WINDOW to hide the console window on Windows
             # and ensure UTF-8 encoding for reliable IPC.
@@ -387,6 +401,7 @@ class GeminiCliBackend:
                 bufsize=1,
                 encoding="utf-8",
                 creationflags=creationflags,
+                env=env,
             )
         except FileNotFoundError:
             raise FileNotFoundError(
@@ -541,12 +556,17 @@ class GeminiCliBackend:
         if self.progress_callback:
             self.progress_callback("Thinking (one-shot)...")
 
+        # Strip API-key env vars so the CLI uses subscription auth.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GOOGLE_API_KEY", "GEMINI_API_KEY")}
+
         try:
             result = subprocess.run(
                 args,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_s,
+                env=env,
             )
         except FileNotFoundError:
             if self.progress_callback:
@@ -644,6 +664,10 @@ class CodexCliBackend:
         if self.progress_callback:
             self.progress_callback("Thinking (codex)...")
 
+        # Strip API-key env vars so the CLI uses subscription auth.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("OPENAI_API_KEY",)}
+
         try:
             creationflags = 0
             if os.name == "nt":
@@ -655,6 +679,7 @@ class CodexCliBackend:
                 text=True,
                 timeout=self.timeout_s,
                 creationflags=creationflags,
+                env=env,
             )
         except FileNotFoundError:
             if self.progress_callback:
@@ -1527,13 +1552,18 @@ class CoachEngine:
                 strategy = be.complete(DECK_ANALYSIS_PROMPT, user_message)
 
             # Don't store error/fallback messages as deck strategy
+            if not strategy:
+                logger.warning("Deck analysis returned empty response")
+                return None
+            # Check for backend auth/billing errors (e.g. "Credit balance is too low")
+            from arenamcp.backend_detect import is_query_failure_retriable
             if (
-                not strategy
-                or strategy.startswith("Error")
+                strategy.startswith("Error")
                 or "didn't catch that" in strategy
+                or is_query_failure_retriable(strategy)
             ):
                 logger.warning(
-                    f"Deck analysis returned error-like response: {strategy[:80] if strategy else 'empty'}"
+                    f"Deck analysis returned error-like response: {strategy[:80]}"
                 )
                 return None
 
@@ -2230,7 +2260,7 @@ class CoachEngine:
                             if w
                         )
                         if not keyword_only and len(stripped) > 0:
-                            oracle_compact = stripped[:120] + ("..." if len(stripped) > 120 else "")
+                            oracle_compact = stripped[:200] + ("..." if len(stripped) > 200 else "")
                             lines.append(f"    {oracle_compact}")
 
             else:
@@ -2362,7 +2392,7 @@ class CoachEngine:
                             if w
                         )
                         if not keyword_only and len(stripped) > 0:
-                            oracle_compact = stripped[:120] + ("..." if len(stripped) > 120 else "")
+                            oracle_compact = stripped[:200] + ("..." if len(stripped) > 200 else "")
                             lines.append(f"    {oracle_compact}")
             else:
                 lines.append("  (empty)")
@@ -3065,6 +3095,12 @@ class CoachEngine:
         if command:
             cmd_names = [c.get("name", "Unknown") for c in command]
             lines.append(f"CMD: {', '.join(cmd_names)}")
+
+        # Library search targets (injected when hand has tutor/search spells)
+        library_summary = game_state.get("library_summary", "")
+        if library_summary:
+            lines.append("")
+            lines.append(library_summary)
 
         return "\n".join(lines)
 

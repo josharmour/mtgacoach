@@ -484,75 +484,79 @@ class VoiceOutput:
         if not text or not text.strip():
             return
 
-        # Stop any existing playback
-        self.stop()
+        # Use speak lock to prevent two threads from both synthesizing
+        # and starting playback concurrently (race condition: both call
+        # stop() before either starts, then both play simultaneously).
+        with self._speak_lock:
+            # Stop any existing playback
+            self.stop()
 
-        # Synthesize
-        samples, sample_rate = self._tts_engine.synthesize(text)
-        if len(samples) == 0:
-            return
+            # Synthesize
+            samples, sample_rate = self._tts_engine.synthesize(text)
+            if len(samples) == 0:
+                return
 
-        # Add leading silence (500ms) to prevent cutting off the first word.
-        silence_len = int(sample_rate * 0.5)
-        silence = np.zeros(silence_len, dtype=np.float32)
-        samples = np.concatenate([silence, samples])
+            # Add leading silence (500ms) to prevent cutting off the first word.
+            silence_len = int(sample_rate * 0.5)
+            silence = np.zeros(silence_len, dtype=np.float32)
+            samples = np.concatenate([silence, samples])
 
-        def _playback_worker():
-            with self._lock:
-                self._is_speaking = True
-                self._stop_requested = False
+            def _playback_worker():
+                with self._lock:
+                    self._is_speaking = True
+                    self._stop_requested = False
 
-            try:
-                # Use callback-based playback for async
-                idx = [0]  # Mutable container for closure
-                finished = threading.Event()
+                try:
+                    # Use callback-based playback for async
+                    idx = [0]  # Mutable container for closure
+                    finished = threading.Event()
 
-                def callback(outdata, frames, time_info, status):
-                    with self._lock:
-                        if self._stop_requested:
-                            outdata.fill(0)
+                    def callback(outdata, frames, time_info, status):
+                        with self._lock:
+                            if self._stop_requested:
+                                outdata.fill(0)
+                                raise sd.CallbackStop()
+
+                        start = idx[0]
+                        end = min(start + frames, len(samples))
+                        out_frames = end - start
+
+                        if out_frames > 0:
+                            outdata[:out_frames, 0] = samples[start:end]
+                        if out_frames < frames:
+                            outdata[out_frames:] = 0
                             raise sd.CallbackStop()
 
-                    start = idx[0]
-                    end = min(start + frames, len(samples))
-                    out_frames = end - start
+                        idx[0] = end
 
-                    if out_frames > 0:
-                        outdata[:out_frames, 0] = samples[start:end]
-                    if out_frames < frames:
-                        outdata[out_frames:] = 0
-                        raise sd.CallbackStop()
+                    def finished_callback():
+                        finished.set()
 
-                    idx[0] = end
+                    with sd.OutputStream(
+                        samplerate=sample_rate,
+                        channels=1,
+                        callback=callback,
+                        finished_callback=finished_callback,
+                        device=self._device_index,
+                    ):
+                        logger.info(f"Speaking async (device={self._device_index}): {text[:50]}...")
+                        finished.wait()
 
-                def finished_callback():
-                    finished.set()
+                except sd.PortAudioError as e:
+                    # No audio device - fail gracefully
+                    logger.error(f"Audio playback failed: {e}")
+                finally:
+                    with self._lock:
+                        self._is_speaking = False
+                        self._playback_thread = None
 
-                with sd.OutputStream(
-                    samplerate=sample_rate,
-                    channels=1,
-                    callback=callback,
-                    finished_callback=finished_callback,
-                    device=self._device_index,
-                ):
-                    logger.info(f"Speaking async (device={self._device_index}): {text[:50]}...")
-                    finished.wait()
-
-            except sd.PortAudioError as e:
-                # No audio device - fail gracefully
-                logger.error(f"Audio playback failed: {e}")
-            finally:
-                with self._lock:
-                    self._is_speaking = False
-                    self._playback_thread = None
-
-        # Start playback in background thread
-        with self._lock:
-            self._playback_thread = threading.Thread(
-                target=_playback_worker,
-                daemon=True,
-            )
-            self._playback_thread.start()
+            # Start playback in background thread
+            with self._lock:
+                self._playback_thread = threading.Thread(
+                    target=_playback_worker,
+                    daemon=True,
+                )
+                self._playback_thread.start()
 
     def stop(self) -> None:
         """Stop any ongoing playback.

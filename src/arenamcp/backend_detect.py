@@ -12,6 +12,7 @@ Priority order for auto-selection:
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import urllib.request
@@ -19,6 +20,19 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _which_cli(name: str) -> Optional[str]:
+    """Find a CLI binary, trying Windows shim variants (.cmd, .ps1) if needed."""
+    found = shutil.which(name)
+    if found:
+        return found
+    if os.name == "nt":
+        for ext in (".cmd", ".ps1", ".bat", ".exe"):
+            found = shutil.which(f"{name}{ext}")
+            if found:
+                return found
+    return None
 
 # Where advanced custom-endpoint config lives
 CUSTOM_ENDPOINTS_FILE = Path.home() / ".arenamcp" / "endpoints.json"
@@ -50,10 +64,10 @@ def detect_backends_quick() -> dict[str, bool]:
             pass
     results["ollama"] = ollama_bin or ollama_http
 
-    # CLI-based backends
-    results["claude-code"] = shutil.which("claude") is not None
-    results["gemini-cli"] = shutil.which("gemini") is not None
-    results["codex-cli"] = shutil.which("codex") is not None
+    # CLI-based backends (try Windows shim variants too)
+    results["claude-code"] = _which_cli("claude") is not None
+    results["gemini-cli"] = _which_cli("gemini") is not None
+    results["codex-cli"] = _which_cli("codex") is not None
 
     return results
 
@@ -103,11 +117,12 @@ def _validate_ollama() -> tuple[bool, str]:
 
 def _validate_claude_code() -> tuple[bool, str]:
     """Check claude CLI is available and can respond."""
-    if not shutil.which("claude"):
+    resolved = _which_cli("claude")
+    if not resolved:
         return False, "claude CLI not found on PATH"
     try:
         result = subprocess.run(
-            ["claude", "--version"],
+            [resolved, "--version"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
@@ -126,11 +141,12 @@ def _validate_claude_code() -> tuple[bool, str]:
 
 def _validate_gemini_cli() -> tuple[bool, str]:
     """Check gemini CLI is available."""
-    if not shutil.which("gemini"):
+    resolved = _which_cli("gemini")
+    if not resolved:
         return False, "gemini CLI not found on PATH"
     try:
         result = subprocess.run(
-            ["gemini", "--version"],
+            [resolved, "--version"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
@@ -146,11 +162,12 @@ def _validate_gemini_cli() -> tuple[bool, str]:
 
 def _validate_codex_cli() -> tuple[bool, str]:
     """Check codex CLI is available."""
-    if not shutil.which("codex"):
+    resolved = _which_cli("codex")
+    if not resolved:
         return False, "codex CLI not found on PATH"
     try:
         result = subprocess.run(
-            ["codex", "--version"],
+            [resolved, "--version"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
