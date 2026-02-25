@@ -3099,11 +3099,33 @@ class CoachEngine:
             if your_gy > 0 or opp_gy > 0:
                 lines.append(f"GY: Y={your_gy} O={opp_gy}")
 
-        # Command zone (Commander/Brawl)
+        # Command zone (Commander/Brawl) — show full card details so
+        # the LLM knows what each commander does and costs to cast.
         command = game_state.get("command", [])
         if command:
-            cmd_names = [c.get("name", "Unknown") for c in command]
-            lines.append(f"CMD: {', '.join(cmd_names)}")
+            your_cmds = [c for c in command if c.get("owner_seat_id") == local_seat]
+            opp_cmds = [c for c in command if c.get("owner_seat_id") != local_seat]
+            cmd_parts = []
+            for c in your_cmds:
+                name = c.get("name", "Unknown")
+                cost = c.get("mana_cost", "")
+                oracle = c.get("oracle_text", "")
+                oracle_stripped = oracle.replace("\n", " ").strip() if oracle else ""
+                cost_str = f" {cost}" if cost else ""
+                cmd_parts.append(f"  YOUR CMD: {name}{cost_str}")
+                if oracle_stripped:
+                    cmd_parts.append(f"    {oracle_stripped}")
+            for c in opp_cmds:
+                name = c.get("name", "Unknown")
+                cost = c.get("mana_cost", "")
+                oracle = c.get("oracle_text", "")
+                oracle_stripped = oracle.replace("\n", " ").strip() if oracle else ""
+                cost_str = f" {cost}" if cost else ""
+                cmd_parts.append(f"  OPP CMD: {name}{cost_str}")
+                if oracle_stripped:
+                    cmd_parts.append(f"    {oracle_stripped}")
+            lines.append("COMMAND ZONE:")
+            lines.extend(cmd_parts)
 
         # Library search targets (injected when hand has tutor/search spells)
         library_summary = game_state.get("library_summary", "")
