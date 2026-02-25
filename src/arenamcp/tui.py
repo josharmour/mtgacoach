@@ -979,12 +979,11 @@ class ArenaApp(App):
             new_provider = selection
             new_model = None
 
-        # Update button label immediately
-        short_name = display_name.split("(")[0].strip() if "(" in display_name else display_name
+        # Show "switching..." while verifying in background
         btn = self.query_one("#btn-provider", Button)
-        btn.label = f"Provider: {short_name}"
+        btn.label = f"Provider: switching..."
 
-        # Switch backend in thread
+        # Switch backend in thread (button label updated on success/failure)
         threading.Thread(
             target=self._verify_and_switch,
             args=(new_provider, new_model),
@@ -1042,6 +1041,7 @@ class ArenaApp(App):
     def _process_chat(self, text: str):
         try:
             game_state = self.coach._mcp.get_game_state()
+            self.coach._inject_library_summary_if_needed(game_state)
             advice = self.coach._coach.get_advice(game_state, question=text)
 
             # Check for backend auth/billing failures → auto-fallback
@@ -1049,22 +1049,35 @@ class ArenaApp(App):
                 # Retry with fallback backend
                 advice = self.coach._coach.get_advice(game_state, question=text)
 
-            self.write_advice(advice, "Chat Response")
+            # Suppress raw error strings from being displayed as advice
+            from arenamcp.backend_detect import is_query_failure_retriable
+            if (
+                advice.startswith("Error")
+                or "didn't catch that" in advice
+                or (is_query_failure_retriable(advice) and len(advice) < 200)
+            ):
+                self.call_from_thread(self.write_log, f"[red]Backend error: {advice}[/]")
+            else:
+                self.call_from_thread(self.write_advice, advice, "Chat Response")
         except Exception as e:
-            self.write_log(f"[red]Chat error: {e}[/]")
+            self.call_from_thread(self.write_log, f"[red]Chat error: {e}[/]")
 
     def _verify_and_switch(self, provider, model):
-        """Validate backend health then switch. Falls back to Ollama on failure."""
+        """Validate backend health then switch. Falls back to Ollama on failure.
+
+        Runs in a background thread — all UI updates go through call_from_thread.
+        """
         from arenamcp.backend_detect import validate_backend, DEFAULT_OLLAMA_MODEL
 
-        self.write_log(f"Connecting to {provider}...")
+        self.call_from_thread(self.write_log, f"Connecting to {provider}...")
 
         if provider == "ollama":
             # For Ollama, check model availability
             model = model or DEFAULT_OLLAMA_MODEL
             ok, err = validate_backend("ollama")
             if not ok:
-                self.write_log(f"[bold red]{err}[/]")
+                self.call_from_thread(self.write_log, f"[bold red]{err}[/]")
+                self.call_from_thread(self._revert_provider_button)
                 return
             try:
                 import subprocess
@@ -1072,9 +1085,10 @@ class ArenaApp(App):
                     ["ollama", "list"], capture_output=True, text=True, timeout=5
                 )
                 if model and model not in (result.stdout or ""):
-                    self.write_log(
+                    self.call_from_thread(
+                        self.write_log,
                         f"[yellow]Model '{model}' not found. "
-                        f"Run: ollama pull {model}[/]"
+                        f"Run: ollama pull {model}[/]",
                     )
             except Exception:
                 pass
@@ -1082,19 +1096,47 @@ class ArenaApp(App):
             # For subscription CLIs — validate before switching
             ok, err = validate_backend(provider)
             if not ok:
-                self.write_log(f"[bold red]{provider} unavailable: {err}[/]")
-                self.write_log(
-                    f"[yellow]Staying on current backend. "
-                    f"Fix the issue or use Ollama as fallback.[/]"
+                self.call_from_thread(
+                    self.write_log,
+                    f"[bold red]{provider} unavailable: {err}[/]",
                 )
+                self.call_from_thread(
+                    self.write_log,
+                    f"[yellow]Staying on current backend. "
+                    f"Fix the issue or use Ollama as fallback.[/]",
+                )
+                self.call_from_thread(self._revert_provider_button)
                 return
 
         # Proceed with switch
         self.coach.set_backend(provider, model)
-        # Update button label
+        # Update button label AND model status on the main thread
         display_name = provider
         for name, val in Sidebar.MODEL_OPTIONS:
             if str(val) == provider:
+                display_name = name.split("(")[0].strip() if "(" in name else name
+                break
+        # Build model display string from actual coach state
+        actual_backend = self.coach.backend_name
+        actual_model = self.coach.model_name
+        model_display = f"{actual_backend}/{actual_model}" if actual_model else actual_backend
+        def _update_btn():
+            try:
+                btn = self.query_one("#btn-provider", Button)
+                btn.label = f"Provider: {display_name}"
+                self.update_status("MODEL", model_display)
+            except Exception:
+                pass
+        self.call_from_thread(_update_btn)
+
+    def _revert_provider_button(self):
+        """Revert the Provider button label to the current active backend."""
+        if not self.coach:
+            return
+        current = self.coach.backend_name
+        display_name = current
+        for name, val in Sidebar.MODEL_OPTIONS:
+            if str(val) == current:
                 display_name = name.split("(")[0].strip() if "(" in name else name
                 break
         try:
@@ -1408,6 +1450,96 @@ class ArenaApp(App):
             self.coach.stop()
         self.exit()
 
+def _set_console_icon():
+    """Set the Windows console window icon and ungroup from other terminals.
+
+    Does two things:
+    1. Sets a unique AppUserModelID so Windows treats this as a separate app
+       in the taskbar (not grouped with cmd.exe / Terminal windows).
+    2. Loads the custom .ico file and sets it as the window icon (title bar,
+       alt-tab, and taskbar).
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        import ctypes.wintypes
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        # --- 1. Set unique AppUserModelID to ungroup from terminal ---
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "ArenaMCP.Coach.TUI"
+            )
+        except Exception:
+            pass
+
+        # --- 2. Find and load the icon ---
+        icon_path = Path(__file__).parent.parent.parent / "icon.ico"
+        if not icon_path.exists():
+            icon_path = Path(__file__).parent.parent.parent / "mtga_coach.ico"
+        if not icon_path.exists():
+            return
+
+        # Copy to local temp if on a network/UNC path
+        # (LoadImageW doesn't handle UNC paths reliably)
+        icon_str = str(icon_path.resolve())
+        if icon_str.startswith("\\\\"):
+            tmp = Path(tempfile.gettempdir()) / "arenamcp_icon.ico"
+            shutil.copy2(icon_path, tmp)
+            icon_str = str(tmp)
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        hwnd = kernel32.GetConsoleWindow()
+        if not hwnd:
+            return
+
+        # LoadImageW with proper arg/return types for 64-bit
+        user32.LoadImageW.restype = ctypes.wintypes.HANDLE
+        user32.LoadImageW.argtypes = [
+            ctypes.wintypes.HINSTANCE,
+            ctypes.wintypes.LPCWSTR,
+            ctypes.wintypes.UINT,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.wintypes.UINT,
+        ]
+        user32.SendMessageW.restype = ctypes.c_long
+        user32.SendMessageW.argtypes = [
+            ctypes.wintypes.HWND,
+            ctypes.wintypes.UINT,
+            ctypes.wintypes.WPARAM,
+            ctypes.wintypes.LPARAM,
+        ]
+
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x0010
+        LR_DEFAULTSIZE = 0x0040
+
+        # Big icon (32x32 for alt-tab / taskbar)
+        icon_big = user32.LoadImageW(
+            None, icon_str, IMAGE_ICON, 32, 32, LR_LOADFROMFILE,
+        )
+        # Small icon (16x16 for title bar)
+        icon_small = user32.LoadImageW(
+            None, icon_str, IMAGE_ICON, 16, 16, LR_LOADFROMFILE,
+        )
+
+        WM_SETICON = 0x0080
+        ICON_SMALL = 0
+        ICON_BIG = 1
+        if icon_big:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, icon_big)
+        if icon_small:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, icon_small)
+    except Exception:
+        pass  # Non-critical — just skip if anything fails
+
+
 def run_tui(args):
     """Run the TUI application with restart support.
 
@@ -1419,6 +1551,8 @@ def run_tui(args):
     Otherwise, it loops and re-creates the app in-process.
     """
     import os
+
+    _set_console_icon()
 
     # Check if running under the launcher
     under_launcher = os.environ.get("ARENAMCP_LAUNCHER") == "1"
@@ -1439,5 +1573,7 @@ def run_tui(args):
                 os.execv(python, [python, "-m", "arenamcp.standalone"] + sys.argv[1:])
                 # execv replaces the process, so this line is never reached
         else:
-            # Normal exit
-            sys.exit(0)
+            # Normal exit — use os._exit() to force-kill all daemon threads
+            # and child subprocesses (claude CLI, gemini CLI, etc.) that may
+            # outlive a normal sys.exit() when blocked in I/O.
+            os._exit(0)

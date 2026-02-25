@@ -98,6 +98,13 @@ class ClaudeCodeBackend:
         if self._base_system_prompt:
             args += ["--system-prompt", self._base_system_prompt]
 
+        # Strip API-key env vars so the CLI always uses subscription auth.
+        # If ANTHROPIC_API_KEY is set (e.g. from other dev work), the CLI
+        # silently switches from subscription to API-key billing, which can
+        # produce "Credit balance is too low" errors.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY")}
+
         try:
             self._proc = subprocess.Popen(
                 args,
@@ -106,6 +113,7 @@ class ClaudeCodeBackend:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                env=env,
             )
         except FileNotFoundError:
             raise FileNotFoundError(
@@ -371,6 +379,12 @@ class GeminiCliBackend:
         if self.model:
             args += ["--model", self.model]
 
+        # Strip API-key env vars so the CLI always uses subscription auth.
+        # GOOGLE_API_KEY / GEMINI_API_KEY cause the CLI to switch from
+        # subscription to API-key billing, which can produce billing errors.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GOOGLE_API_KEY", "GEMINI_API_KEY")}
+
         try:
             # OPTIMIZATION: Use CREATE_NO_WINDOW to hide the console window on Windows
             # and ensure UTF-8 encoding for reliable IPC.
@@ -387,6 +401,7 @@ class GeminiCliBackend:
                 bufsize=1,
                 encoding="utf-8",
                 creationflags=creationflags,
+                env=env,
             )
         except FileNotFoundError:
             raise FileNotFoundError(
@@ -541,12 +556,17 @@ class GeminiCliBackend:
         if self.progress_callback:
             self.progress_callback("Thinking (one-shot)...")
 
+        # Strip API-key env vars so the CLI uses subscription auth.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GOOGLE_API_KEY", "GEMINI_API_KEY")}
+
         try:
             result = subprocess.run(
                 args,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_s,
+                env=env,
             )
         except FileNotFoundError:
             if self.progress_callback:
@@ -644,6 +664,10 @@ class CodexCliBackend:
         if self.progress_callback:
             self.progress_callback("Thinking (codex)...")
 
+        # Strip API-key env vars so the CLI uses subscription auth.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("OPENAI_API_KEY",)}
+
         try:
             creationflags = 0
             if os.name == "nt":
@@ -655,6 +679,7 @@ class CodexCliBackend:
                 text=True,
                 timeout=self.timeout_s,
                 creationflags=creationflags,
+                env=env,
             )
         except FileNotFoundError:
             if self.progress_callback:
@@ -1294,32 +1319,19 @@ Answer: "Choose mode [X]" with brief reason (1 sentence).
 """,
 }
 
-WIN_PLAN_PROMPT = """You are a Magic: The Gathering strategic planner. Given the current board state, hand, mana, and library summary, create a concrete turn-by-turn plan to win in exactly {n} turns.
+WIN_PLAN_PROMPT = """You are a Magic: The Gathering strategic planner. Given the board state, hand, mana, and library summary, outline a concrete plan to win in {n} turns.
 
-For each turn, specify:
-- Which land to play (if any)
-- Which spells to cast and in what order
-- Combat attacks and expected blocks
-- Key interactions or responses to hold up
+Be EXTREMELY concise — the plan must be speakable in under 20 seconds (~50 words max).
+Use shorthand: "T1:" for Turn 1, card names only (no mana costs), "swing all" for full attack.
+Skip land drops and obvious plays. Focus ONLY on the key sequencing that wins.
 
-Consider:
-- Mana growth trajectory (current lands + land drops)
-- High-impact draws from the library summary
-- How the opponent might respond (removal, blockers, counterspells)
-- Combo potential or synergies between cards
-- Whether to race or control the board
-
-CRITICAL: Only reference card abilities that are explicitly shown in the provided game state or library summary.
-Do NOT invent or guess what a card does — if no oracle text is provided for a card, refer to it only by name and mana cost.
-
-Be specific with card names and mana costs. If the plan requires drawing specific cards, note the probability.
-Keep the plan speakable in about 60 seconds — be concise but precise.
+CRITICAL: Only reference cards shown in the provided game state or library summary.
 
 Start your response with exactly one of:
-  VIABLE: YES — if this plan can realistically win in {n} turns using mostly cards already in hand/on board
-  VIABLE: NO — if it requires specific draws, opponent misplays, or is highly speculative
+  VIABLE: YES — if this plan can realistically win in {n} turns using mostly cards in hand/on board
+  VIABLE: NO — if it requires specific draws or opponent misplays
 
-Then provide the plan."""
+Then give the plan in 2-4 short lines max."""
 
 DECK_ANALYSIS_PROMPT = """Analyze this Magic: The Gathering deck list. Provide a brief strategic summary:
 1. ARCHETYPE: One-line description (e.g. "Mono-Red Aggro", "Dimir Control")
@@ -1502,10 +1514,7 @@ class CoachEngine:
                 oracle = oracle_by_name.get(name, "")
                 is_basic = "basic" in (card_type or "").lower()
                 if oracle and not is_basic:
-                    # Strip reminder text and truncate for token budget
                     oracle_short = self._remove_reminder_text(oracle).strip()
-                    if len(oracle_short) > 120:
-                        oracle_short = oracle_short[:117] + "..."
                     if oracle_short:
                         line += f" — {oracle_short}"
                 deck_lines.append(line)
@@ -1527,19 +1536,20 @@ class CoachEngine:
                 strategy = be.complete(DECK_ANALYSIS_PROMPT, user_message)
 
             # Don't store error/fallback messages as deck strategy
+            if not strategy:
+                logger.warning("Deck analysis returned empty response")
+                return None
+            # Check for backend auth/billing errors (e.g. "Credit balance is too low")
+            from arenamcp.backend_detect import is_query_failure_retriable
             if (
-                not strategy
-                or strategy.startswith("Error")
+                strategy.startswith("Error")
                 or "didn't catch that" in strategy
+                or is_query_failure_retriable(strategy)
             ):
                 logger.warning(
-                    f"Deck analysis returned error-like response: {strategy[:80] if strategy else 'empty'}"
+                    f"Deck analysis returned error-like response: {strategy[:80]}"
                 )
                 return None
-
-            # Truncate if too long
-            if len(strategy) > 400:
-                strategy = strategy[:397] + "..."
 
             self._deck_strategy = strategy
             elapsed = (time.perf_counter() - start) * 1000
@@ -1648,13 +1658,10 @@ class CoachEngine:
                 from arenamcp.rules_engine import RulesEngine
 
                 valid_moves = RulesEngine.get_legal_actions(game_state)
-                # OPTIMIZATION: Join inline instead of list, limit to 8 most important
                 if not valid_moves:
                     valid_moves_str = 'NONE — say "pass priority"'
                 else:
-                    valid_moves_str = ", ".join(valid_moves[:8])
-                    if len(valid_moves) > 8:
-                        valid_moves_str += f"... (+{len(valid_moves) - 8})"
+                    valid_moves_str = ", ".join(valid_moves)
             except Exception as e:
                 logger.error(f"RulesEngine error: {e}")
                 valid_moves = []
@@ -2230,8 +2237,7 @@ class CoachEngine:
                             if w
                         )
                         if not keyword_only and len(stripped) > 0:
-                            oracle_compact = stripped[:120] + ("..." if len(stripped) > 120 else "")
-                            lines.append(f"    {oracle_compact}")
+                            lines.append(f"    {stripped}")
 
             else:
                 lines.append("  (empty)")
@@ -2362,8 +2368,7 @@ class CoachEngine:
                             if w
                         )
                         if not keyword_only and len(stripped) > 0:
-                            oracle_compact = stripped[:120] + ("..." if len(stripped) > 120 else "")
-                            lines.append(f"    {oracle_compact}")
+                            lines.append(f"    {stripped}")
             else:
                 lines.append("  (empty)")
 
@@ -2992,15 +2997,11 @@ class CoachEngine:
                     or name in ["Plains", "Island", "Swamp", "Mountain", "Forest"]
                 )
                 is_aura = "enchantment" in type_line and "aura" in type_line
-                # Auras ALWAYS show oracle text — targeting (own vs opponent) depends on effect
-                # Check length AFTER removing reminder text so cards with long keyword
-                # reminders (e.g. Harmonize) aren't wrongly hidden
+                # Always show oracle text for non-basic-land cards (truncated if long).
+                # Hiding oracle entirely causes the LLM to miss critical abilities
+                # (e.g. Mockingbird being a clone, X-cost tutor effects).
                 oracle_stripped = self._remove_reminder_text(oracle_text) if oracle_text else ""
-                show_oracle = (
-                    oracle_text
-                    and not is_basic_land
-                    and (is_aura or len(oracle_stripped) < 200)
-                )
+                show_oracle = bool(oracle_text) and not is_basic_land
 
                 # Type tag for non-creature, non-land cards so LLM knows what it is
                 type_tag = ""
@@ -3028,15 +3029,10 @@ class CoachEngine:
                     f"  {display_name}{type_tag} {cost} [{timing},{castable}]{removal_info}"
                 )
                 if show_oracle:
-                    # Use pre-stripped text (reminder text already removed above)
-                    oracle_compact = oracle_stripped
-                    if is_aura:
-                        # Auras: show full text (targeting depends on knowing effect)
-                        if len(oracle_compact) > 160:
-                            oracle_compact = oracle_compact[:157] + "..."
-                    elif len(oracle_compact) > 150:
-                        oracle_compact = oracle_compact[:147] + "..."
-                    lines.append(f"    {oracle_compact}")
+                    # Full oracle text (reminder text already removed above).
+                    # No truncation — game context is a few KB total, well within
+                    # any model's context window. Truncating hides critical abilities.
+                    lines.append(f"    {oracle_stripped}")
         else:
             lines.append("  (empty)")
 
@@ -3065,6 +3061,12 @@ class CoachEngine:
         if command:
             cmd_names = [c.get("name", "Unknown") for c in command]
             lines.append(f"CMD: {', '.join(cmd_names)}")
+
+        # Library search targets (injected when hand has tutor/search spells)
+        library_summary = game_state.get("library_summary", "")
+        if library_summary:
+            lines.append("")
+            lines.append(library_summary)
 
         return "\n".join(lines)
 
@@ -3122,18 +3124,6 @@ class CoachEngine:
 
         # Build dynamic system prompt
         system_prompt = self._system_prompt
-
-        # Adjust for style
-        if style == "verbose":
-            system_prompt = system_prompt.replace(
-                "Keep responses concise (2-3 sentences max)",
-                "Provide detailed strategic reasoning (4-5 sentences)",
-            )
-            # Remove "Be direct... no 'consider'" constraint for verbose mode to allow more nuance
-            system_prompt = system_prompt.replace(
-                'Be direct and specific - tell the player exactly what to do, not what to "consider".',
-                "Explain the 'why' behind your advice, discussing alternatives if relevant.",
-            )
 
         if blacklisted:
             avoid_list = ", ".join(blacklisted)
@@ -3196,6 +3186,11 @@ class CoachEngine:
         # Define style prompts (lazy loaded or defined here)
         prompts = {
             "concise": CONCISE_SYSTEM_PROMPT,
+            "verbose": DEFAULT_SYSTEM_PROMPT.replace(
+                "Keep responses concise (2-3 sentences max) since they'll be spoken aloud.",
+                "Provide detailed strategic reasoning (4-5 sentences). "
+                "Explain the 'why' behind your advice, discussing alternatives.",
+            ),
             "normal": DEFAULT_SYSTEM_PROMPT,
             "explain": DEFAULT_SYSTEM_PROMPT.replace(
                 "Keep responses concise (2-3 sentences max)",
@@ -3442,8 +3437,7 @@ class CoachEngine:
             if snap.get("battlefield_count"):
                 board_info = f" Board:{snap['battlefield_count']} Hand:{snap.get('hand_count', '?')}"
 
-            # Include enough context for LLM to understand the board position
-            ctx_snippet = ctx[:800] + "..." if len(ctx) > 800 else ctx
+            ctx_snippet = ctx
 
             lines.append(f"\n--- Turn {turn}, {phase} [{trigger}]{life_str}{board_info} ---")
             if ctx_snippet:
@@ -3452,9 +3446,8 @@ class CoachEngine:
 
         user_message = "\n".join(lines)
 
-        # Allow larger context for better analysis quality
-        if len(user_message) > 24000:
-            user_message = user_message[:24000] + "\n\n[... truncated ...]"
+        # No truncation — post-match analysis benefits from full context
+        # and all backends have large enough context windows.
 
         logger.info(
             f"[POST-MATCH] Generating analysis: {len(advice_history)} entries, "
