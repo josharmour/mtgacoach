@@ -1467,6 +1467,49 @@ class CoachEngine:
         self._deck_strategy_pending = False
         self._rules_db: Optional["RulesDB"] = None
 
+    def get_backend_info(self) -> dict[str, Any]:
+        """Return diagnostic info about the current LLM backend.
+
+        Returns:
+            Dict with backend_type, model, status, and other details.
+        """
+        be = self._backend
+        info: dict[str, Any] = {
+            "backend_type": type(be).__name__,
+            "model": getattr(be, "model", None) or "(default)",
+        }
+
+        if isinstance(be, ClaudeCodeBackend):
+            info["backend_name"] = "claude-code"
+            info["command"] = be.command
+            info["timeout_s"] = be.timeout_s
+            info["max_turns"] = be.max_turns
+            proc = getattr(be, "_proc", None)
+            info["status"] = "alive" if proc and proc.poll() is None else "not started"
+            info["session_id"] = getattr(be, "_session_id", None)
+        elif isinstance(be, GeminiCliBackend):
+            info["backend_name"] = "gemini-cli"
+            info["command"] = be.command
+            info["timeout_s"] = be.timeout_s
+            info["persistent"] = getattr(be, "persistent", True)
+            proc = getattr(be, "_proc", None)
+            info["status"] = "alive" if proc and proc.poll() is None else "not started"
+            info["turns_used"] = getattr(be, "_turns", 0)
+        elif isinstance(be, CodexCliBackend):
+            info["backend_name"] = "codex-cli"
+            info["command"] = be.command
+            info["timeout_s"] = be.timeout_s
+        elif isinstance(be, ProxyBackend):
+            info["backend_name"] = "proxy"
+            info["base_url"] = getattr(be, "base_url", None)
+            is_ollama = getattr(be, "_api_key", None) == "ollama"
+            if is_ollama:
+                info["backend_name"] = "ollama"
+        else:
+            info["backend_name"] = "unknown"
+
+        return info
+
     def clear_deck_strategy(self) -> None:
         """Reset deck strategy for a new match."""
         self._deck_strategy = None
@@ -3140,35 +3183,70 @@ class CoachEngine:
                 logger.debug(f"Injected decision prompt for type: {dec_type}")
 
         # Build user message
+        # Priority: explicit arg > object property > default
+        selected_style = style if style else getattr(self, "advice_style", "concise")
+        style_key = selected_style.lower()
+        is_verbose = style_key == "verbose"
+
         if question:
-            user_message = f"{context}\n\nThe player asks: {question}"
+            if is_verbose:
+                user_message = f"{context}\n\nThe player asks: {question}\nProvide a thorough answer with reasoning."
+            else:
+                user_message = f"{context}\n\nThe player asks: {question}"
         elif trigger:
-            trigger_descriptions = {
-                "new_turn": "Your turn just started (Main 1). What is the ONE best play right now?",
-                "opponent_turn": (
-                    "Opponent's turn just started. Briefly analyze their board and strategy. "
-                    "What is their game plan? What threats should we prepare for? "
-                    "What should we do on our next turn to counter them? "
-                    "Keep it to 2-3 sentences focused on opponent's strategy and your plan."
-                ),
-                "land_played": "A land was just played. What is the ONE next play?",
-                "spell_resolved": "A spell just resolved. What is the ONE next play?",
-                "priority_gained": "You have priority. Respond or pass?",
-                "combat_attackers": "Combat: Declare attackers. Which creatures should attack? Default: attack with ALL eligible creatures unless you have a specific reason to hold one back (e.g., need a blocker to survive crackback).",
-                "combat_blockers": "Combat: Opponent is attacking. How should you block?",
-                "low_life": "Your life is dangerously low! What's the survival plan?",
-                "opponent_low_life": "Opponent's life is low — can you finish them?",
-                "stack_spell": "Something was just cast. Respond or let it resolve?",
-                "stack_spell_yours": "Your spell is on the stack. Pass priority or hold?",
-                "stack_spell_opponent": "Opponent just cast something. Respond or let it resolve?",
-                "user_request": "Give quick strategic advice for this moment.",
-                "decision_required": "Decision required (scry, discard, target, mulligan, etc). What should the player choose?",
-                "threat_detected": "ALERT: A dangerous card just hit the battlefield!",
-            }
+            if is_verbose:
+                trigger_descriptions = {
+                    "new_turn": "Your turn just started (Main 1). What is the best play and why? Consider alternatives.",
+                    "opponent_turn": (
+                        "Opponent's turn just started. Analyze their board, strategy, and game plan. "
+                        "What threats should we prepare for? "
+                        "What should we do on our next turn to counter them? "
+                        "Explain your reasoning."
+                    ),
+                    "land_played": "A land was just played. What is the best next play? Explain why.",
+                    "spell_resolved": "A spell just resolved. What is the best next play? Explain why.",
+                    "priority_gained": "You have priority. Should you respond or pass? Explain your reasoning.",
+                    "combat_attackers": "Combat: Declare attackers. Which creatures should attack and why? Default: attack with ALL eligible creatures unless you have a specific reason to hold one back (e.g., need a blocker to survive crackback). Explain the combat math.",
+                    "combat_blockers": "Combat: Opponent is attacking. How should you block and why? Explain the trade-offs.",
+                    "low_life": "Your life is dangerously low! What's the survival plan? Explain the reasoning.",
+                    "opponent_low_life": "Opponent's life is low — can you finish them? Explain the line.",
+                    "stack_spell": "Something was just cast. Should you respond or let it resolve? Explain why.",
+                    "stack_spell_yours": "Your spell is on the stack. Pass priority or hold? Explain your reasoning.",
+                    "stack_spell_opponent": "Opponent just cast something. Should you respond or let it resolve? Explain why.",
+                    "user_request": "Give detailed strategic advice for this moment with reasoning.",
+                    "decision_required": "Decision required (scry, discard, target, mulligan, etc). What should the player choose and why?",
+                    "threat_detected": "ALERT: A dangerous card just hit the battlefield! Explain the threat and how to deal with it.",
+                }
+            else:
+                trigger_descriptions = {
+                    "new_turn": "Your turn just started (Main 1). What is the ONE best play right now?",
+                    "opponent_turn": (
+                        "Opponent's turn just started. Briefly analyze their board and strategy. "
+                        "What is their game plan? What threats should we prepare for? "
+                        "What should we do on our next turn to counter them? "
+                        "Keep it to 2-3 sentences focused on opponent's strategy and your plan."
+                    ),
+                    "land_played": "A land was just played. What is the ONE next play?",
+                    "spell_resolved": "A spell just resolved. What is the ONE next play?",
+                    "priority_gained": "You have priority. Respond or pass?",
+                    "combat_attackers": "Combat: Declare attackers. Which creatures should attack? Default: attack with ALL eligible creatures unless you have a specific reason to hold one back (e.g., need a blocker to survive crackback).",
+                    "combat_blockers": "Combat: Opponent is attacking. How should you block?",
+                    "low_life": "Your life is dangerously low! What's the survival plan?",
+                    "opponent_low_life": "Opponent's life is low — can you finish them?",
+                    "stack_spell": "Something was just cast. Respond or let it resolve?",
+                    "stack_spell_yours": "Your spell is on the stack. Pass priority or hold?",
+                    "stack_spell_opponent": "Opponent just cast something. Respond or let it resolve?",
+                    "user_request": "Give quick strategic advice for this moment.",
+                    "decision_required": "Decision required (scry, discard, target, mulligan, etc). What should the player choose?",
+                    "threat_detected": "ALERT: A dangerous card just hit the battlefield!",
+                }
             trigger_desc = trigger_descriptions.get(trigger, f"Trigger: {trigger}")
             user_message = f"{context}\n\n{trigger_desc}"
         else:
-            user_message = f"{context}\n\nWhat's the best play right now?"
+            if is_verbose:
+                user_message = f"{context}\n\nWhat's the best play right now? Explain your reasoning."
+            else:
+                user_message = f"{context}\n\nWhat's the best play right now?"
 
         # OPTIMIZATION: Log prompt size with token estimate
         prompt_chars = len(system_prompt) + len(user_message)
@@ -3178,15 +3256,18 @@ class CoachEngine:
             f"[PROMPT] {context_lines} lines, {prompt_chars} chars, ~{prompt_tokens_est} tokens | context: {context_time:.1f}ms"
         )
 
-        # Select system prompt based on style
-        # Priority: explicit arg > object property > default
-        selected_style = style if style else getattr(self, "advice_style", "concise")
-        style_key = selected_style.lower()
+        # Log backend diagnostics
+        backend_info = self.get_backend_info()
+        logger.info(
+            f"[BACKEND] {backend_info['backend_name']} | model={backend_info['model']} | style={style_key}"
+        )
 
-        # Define style prompts (lazy loaded or defined here)
-        prompts = {
-            "concise": CONCISE_SYSTEM_PROMPT,
-            "verbose": DEFAULT_SYSTEM_PROMPT.replace(
+        # style_key and is_verbose were already computed above for trigger descriptions
+
+        # Build verbose prompt with ALL terse instructions replaced
+        _verbose_prompt = (
+            DEFAULT_SYSTEM_PROMPT
+            .replace(
                 "Keep responses concise (2-3 sentences max) since they'll be spoken aloud.\n"
                 "Focus ONLY on the final strategic recommendation.\n"
                 "Do NOT show your thinking process, \"reasoning\", or \"corrections\".\n"
@@ -3199,7 +3280,17 @@ class CoachEngine:
                 "Mention what alternatives you considered and why they're worse.\n"
                 "If relevant, preview the next 1-2 turns of the plan.\n"
                 "Be authoritative but educational — help the player understand the strategy.",
-            ),
+            )
+            .replace(
+                "Output directly as the coach. No preamble, no meta-commentary.",
+                "Output as the coach. Include strategic reasoning and brief explanation.",
+            )
+        )
+
+        # Define style prompts
+        prompts = {
+            "concise": CONCISE_SYSTEM_PROMPT,
+            "verbose": _verbose_prompt,
             "normal": DEFAULT_SYSTEM_PROMPT,
             "explain": DEFAULT_SYSTEM_PROMPT.replace(
                 "Keep responses concise (2-3 sentences max)",

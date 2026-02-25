@@ -405,6 +405,10 @@ class StandaloneCoach:
 
         logger.info(f"Created {self.backend_name} backend with model: {actual_model}")
         self._coach = CoachEngine(backend=llm_backend)
+        # Log full backend diagnostics at startup
+        backend_info = self._coach.get_backend_info()
+        logger.info(f"[BACKEND-DIAG] {backend_info}")
+        self.ui.log(f"  Backend: {backend_info['backend_name']} | Model: {backend_info['model']}")
         self._trigger = GameStateTrigger()
 
         # Track consecutive failures for automatic fallback
