@@ -220,7 +220,7 @@ class ClaudeCodeBackend:
             logger.warning(
                 "[CLAUDE-CLI] Lock busy (another call in progress), skipping"
             )
-            return ""
+            return "Error: Backend busy (previous call still in progress)"
         try:
             if self._turns >= self.max_turns:
                 logger.info(
@@ -464,9 +464,9 @@ class GeminiCliBackend:
 
         if not self._lock.acquire(timeout=3.0):
             logger.warning(
-                "[GEMINI-CLI] Lock busy (another call in progress), skipping"
+                "[GEMINI-CLI] Lock busy (previous call still in progress), skipping"
             )
-            return ""
+            return "Error: Backend busy (previous call still in progress)"
         try:
             if self._turns >= self.max_turns:
                 logger.info(
@@ -3536,16 +3536,21 @@ class CoachEngine:
         except Exception as e:
             logger.warning(f"Rules RAG error (non-fatal): {e}")
 
-        # Get response with timeout to prevent hanging on slow models
-        # Gemini CLI uses a subprocess which has startup overhead
-        if isinstance(self._backend, GeminiCliBackend):
-            api_timeout = 20
-        elif isinstance(self._backend, ProxyBackend) and getattr(self._backend, '_api_key', None) == "ollama":
-            api_timeout = 45  # Local Ollama models need much more time
+        # Get response with timeout to prevent hanging on slow models.
+        # IMPORTANT: The external timeout MUST be longer than the backend's
+        # internal timeout (timeout_s) so the backend releases its lock first.
+        # If the external timeout fires first, the backend thread still holds
+        # the lock, causing cascading lock-busy failures on subsequent calls
+        # which triggers unnecessary restarts.
+        backend_timeout = getattr(self._backend, 'timeout_s', 12.0)
+        if isinstance(self._backend, ProxyBackend) and getattr(self._backend, '_api_key', None) == "ollama":
+            api_timeout = max(backend_timeout + 5, 45)  # Local models need more time
         elif isinstance(self._backend, ProxyBackend):
-            api_timeout = 15  # Proxy adds ~1-2s overhead to upstream calls
+            api_timeout = max(backend_timeout + 5, 15)
         else:
-            api_timeout = 12
+            # CLI backends (claude-code, gemini-cli, codex-cli): always give
+            # 5s buffer beyond the backend's own timeout
+            api_timeout = backend_timeout + 5
         api_start = time.perf_counter()
         import concurrent.futures
 
@@ -3561,7 +3566,9 @@ class CoachEngine:
             logger.warning(
                 f"LLM API call timed out after {api_timeout}s (model may be too slow for real-time coaching){hint}"
             )
-            response = ""
+            # Return error string (not empty) to avoid triggering the
+            # consecutive-empty-response restart counter in standalone.py
+            response = f"Error: LLM timed out after {api_timeout}s"
         # Don't wait for thread completion — shutdown(wait=True) would block
         # until the backend call finishes, defeating the timeout entirely.
         # The backend's own timeout will clean up the subprocess.
