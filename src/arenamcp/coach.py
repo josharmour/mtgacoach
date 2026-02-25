@@ -1319,32 +1319,19 @@ Answer: "Choose mode [X]" with brief reason (1 sentence).
 """,
 }
 
-WIN_PLAN_PROMPT = """You are a Magic: The Gathering strategic planner. Given the current board state, hand, mana, and library summary, create a concrete turn-by-turn plan to win in exactly {n} turns.
+WIN_PLAN_PROMPT = """You are a Magic: The Gathering strategic planner. Given the board state, hand, mana, and library summary, outline a concrete plan to win in {n} turns.
 
-For each turn, specify:
-- Which land to play (if any)
-- Which spells to cast and in what order
-- Combat attacks and expected blocks
-- Key interactions or responses to hold up
+Be EXTREMELY concise — the plan must be speakable in under 20 seconds (~50 words max).
+Use shorthand: "T1:" for Turn 1, card names only (no mana costs), "swing all" for full attack.
+Skip land drops and obvious plays. Focus ONLY on the key sequencing that wins.
 
-Consider:
-- Mana growth trajectory (current lands + land drops)
-- High-impact draws from the library summary
-- How the opponent might respond (removal, blockers, counterspells)
-- Combo potential or synergies between cards
-- Whether to race or control the board
-
-CRITICAL: Only reference card abilities that are explicitly shown in the provided game state or library summary.
-Do NOT invent or guess what a card does — if no oracle text is provided for a card, refer to it only by name and mana cost.
-
-Be specific with card names and mana costs. If the plan requires drawing specific cards, note the probability.
-Keep the plan speakable in about 60 seconds — be concise but precise.
+CRITICAL: Only reference cards shown in the provided game state or library summary.
 
 Start your response with exactly one of:
-  VIABLE: YES — if this plan can realistically win in {n} turns using mostly cards already in hand/on board
-  VIABLE: NO — if it requires specific draws, opponent misplays, or is highly speculative
+  VIABLE: YES — if this plan can realistically win in {n} turns using mostly cards in hand/on board
+  VIABLE: NO — if it requires specific draws or opponent misplays
 
-Then provide the plan."""
+Then give the plan in 2-4 short lines max."""
 
 DECK_ANALYSIS_PROMPT = """Analyze this Magic: The Gathering deck list. Provide a brief strategic summary:
 1. ARCHETYPE: One-line description (e.g. "Mono-Red Aggro", "Dimir Control")
@@ -3159,18 +3146,6 @@ class CoachEngine:
         # Build dynamic system prompt
         system_prompt = self._system_prompt
 
-        # Adjust for style
-        if style == "verbose":
-            system_prompt = system_prompt.replace(
-                "Keep responses concise (2-3 sentences max)",
-                "Provide detailed strategic reasoning (4-5 sentences)",
-            )
-            # Remove "Be direct... no 'consider'" constraint for verbose mode to allow more nuance
-            system_prompt = system_prompt.replace(
-                'Be direct and specific - tell the player exactly what to do, not what to "consider".',
-                "Explain the 'why' behind your advice, discussing alternatives if relevant.",
-            )
-
         if blacklisted:
             avoid_list = ", ".join(blacklisted)
             system_prompt += f"\n\nIMPORTANT: Avoid using these overused words: {avoid_list}. Use different phrasing."
@@ -3232,6 +3207,11 @@ class CoachEngine:
         # Define style prompts (lazy loaded or defined here)
         prompts = {
             "concise": CONCISE_SYSTEM_PROMPT,
+            "verbose": DEFAULT_SYSTEM_PROMPT.replace(
+                "Keep responses concise (2-3 sentences max) since they'll be spoken aloud.",
+                "Provide detailed strategic reasoning (4-5 sentences). "
+                "Explain the 'why' behind your advice, discussing alternatives.",
+            ),
             "normal": DEFAULT_SYSTEM_PROMPT,
             "explain": DEFAULT_SYSTEM_PROMPT.replace(
                 "Keep responses concise (2-3 sentences max)",
