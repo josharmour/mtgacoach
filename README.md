@@ -10,7 +10,7 @@ An AI-powered coach for Magic: The Gathering Arena that watches your live games 
 - **Voice input** - Push-to-talk (F4) to ask questions mid-game
 - **Win plan detection** - Background analysis finds lethal lines and alerts you with a sound
 - **Draft helper** - 17lands stats + composite scoring for draft picks
-- **Multiple LLM backends** - Claude Code CLI, Gemini CLI, cli-api-proxy, or local Ollama
+- **Auto-detect LLM backends** - Automatically finds the best available backend (Claude Code, Gemini CLI, Codex CLI, or Ollama). Switch providers with F11, models with F12
 - **Card lookup** - Scryfall integration with oracle text and rulings
 
 ## Quick Start (Windows)
@@ -36,10 +36,11 @@ See [INSTALL.md](INSTALL.md) for detailed instructions, including sending to som
 | F4 | Push-to-talk voice input |
 | F5 | Mute/unmute TTS |
 | F6 | Cycle TTS voice |
-| F8 | Cycle TTS speed |
-| F9 | Toggle AFK mode |
-| Numpad 2 | Cycle LLM model |
-| Numpad 0 | Read win plan aloud |
+| F8 | Swap seat (fix wrong player) |
+| F10 | Cycle TTS speed |
+| F11 | Cycle LLM provider (Claude Code → Gemini → Codex → Ollama) |
+| F12 | Cycle model within current provider |
+| Ctrl+0 | Read win plan aloud |
 | Ctrl+Q | Quit |
 
 ## Standalone Mode
@@ -50,17 +51,13 @@ The primary way to use the coach. No MCP client needed:
 # Activate venv first
 venv\Scripts\activate
 
-# With cli-api-proxy (recommended)
-python -m arenamcp.standalone --backend proxy
+# Auto-detect best backend (recommended — just launch and go)
+python -m arenamcp.standalone
 
-# With local Ollama (free, offline)
-python -m arenamcp.standalone --backend ollama --model llama3.2
-
-# With Claude Code CLI (uses subscription, no API key)
+# Or force a specific backend
 python -m arenamcp.standalone --backend claude-code
-
-# With Gemini CLI
 python -m arenamcp.standalone --backend gemini-cli
+python -m arenamcp.standalone --backend ollama --model llama3.2
 
 # With a specific language (Dutch STT + English TTS)
 python -m arenamcp.standalone --backend ollama --model llama3.2 --language nl
@@ -69,7 +66,20 @@ python -m arenamcp.standalone --backend ollama --model llama3.2 --language nl
 python -m arenamcp.standalone --draft --set MH3
 ```
 
-The setup wizard (`install.bat`) auto-detects available backends and saves your choice to `~/.arenamcp/settings.json`, so after initial setup you can just run `coach.bat` without any flags.
+### Auto-Detection
+
+On launch, the coach scans for available backends in priority order:
+
+1. **Claude Code CLI** (`claude`) — uses your Anthropic subscription, no API key needed
+2. **Gemini CLI** (`gemini`) — uses your Google subscription
+3. **Codex CLI** (`codex`) — uses your OpenAI subscription
+4. **Ollama** (local) — free, offline fallback
+
+The best available backend is selected automatically. If a backend fails mid-game (auth error, quota, timeout), it automatically falls back to Ollama.
+
+Switch providers live with **F11**, switch models within a provider with **F12**. In the TUI, use the **Provider** and **Model** buttons.
+
+Your choice is saved to `~/.arenamcp/settings.json` and remembered across sessions.
 
 ## MCP Server Mode
 
@@ -109,7 +119,7 @@ The primary configuration file. Created by the setup wizard or on first launch.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `backend` | LLM backend: `proxy`, `ollama`, `claude-code`, `gemini-cli` | `proxy` |
+| `backend` | LLM backend: `auto`, `claude-code`, `gemini-cli`, `codex-cli`, `ollama` | `auto` |
 | `model` | Model name override (null = backend default) | `null` |
 | `language` | Language for TTS + STT (`en`, `nl`, `es`, `fr`, `de`, `ja`, etc.) | `en` |
 | `ollama_url` | Ollama API endpoint | `http://localhost:11434/v1` |
@@ -172,7 +182,8 @@ arenamcp.standalone  (main app)
     |       +-- 17lands Stats (draft ratings)
     |
     +-- CoachEngine (LLM advice generation)
-    |       +-- Claude Code / Gemini CLI / Proxy / Ollama backends
+    |       +-- Claude Code / Gemini CLI / Codex CLI / Ollama backends
+    |       +-- Auto-detection + fallback (backend_detect.py)
     |       +-- GameStateTrigger (event -> advice routing)
     |       +-- Win Plan Worker (background lethal detection)
     |
