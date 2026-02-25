@@ -2331,7 +2331,11 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
         self._running = False
 
     def set_backend(self, provider: str, model: Optional[str] = None) -> None:
-        """Explicitly set the backend provider."""
+        """Explicitly set the backend provider.
+
+        Fast path: when only the model changes (same provider), swap the model
+        on the existing backend instead of recreating everything.
+        """
         if self.draft_mode:
             self.ui.status("PROVIDER", "Not available in draft mode")
             return
@@ -2339,21 +2343,33 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
         try:
             from arenamcp.coach import CoachEngine, create_backend
 
-            # Update backend
+            same_provider = provider == self.backend_name and self._coach is not None
+            old_backend = self._coach._backend if self._coach else None
+
+            if same_provider and old_backend is not None:
+                # Fast path: just swap the model on the existing backend.
+                # Close persistent session so next call starts with new model.
+                if hasattr(old_backend, 'close'):
+                    old_backend.close()
+                old_backend.model = model
+                old_backend._turns = 0
+                actual_model = model or 'default'
+            else:
+                # Full switch: close old backend, create new one
+                if old_backend and hasattr(old_backend, 'close'):
+                    old_backend.close()
+                progress_cb = self.ui.subtask if self.ui else None
+                llm_backend = create_backend(provider, model=model, progress_callback=progress_cb)
+                self._coach = CoachEngine(backend=llm_backend)
+                actual_model = getattr(llm_backend, 'model', 'default')
+
+                # Reconfigure voice input if needed
+                if self._voice_input:
+                    self._voice_input.transcription_enabled = True
+                    logger.info("Voice transcription enabled: True")
+
             self.backend_name = provider
             self.model_name = model
-            progress_cb = self.ui.subtask if self.ui else None
-            llm_backend = create_backend(provider, model=model, progress_callback=progress_cb)
-            self._coach = CoachEngine(backend=llm_backend)
-
-            actual_model = getattr(llm_backend, 'model', 'default')
-
-            # Reconfigure voice input if needed
-            if self._voice_input:
-                enable_transcription = True
-                self._voice_input.transcription_enabled = enable_transcription
-                logger.info(f"Voice transcription enabled: {enable_transcription}")
-
             self.ui.status("PROVIDER", f"Switched to {provider.upper()} ({actual_model})")
             model_display = f"{provider}/{actual_model}" if actual_model else provider
             self.ui.status("MODEL", model_display)

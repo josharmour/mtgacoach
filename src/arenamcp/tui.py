@@ -1018,14 +1018,20 @@ class ArenaApp(App):
         next_idx = (idx + 1) % len(models)
         display_name, new_model = models[next_idx]
 
-        btn = self.query_one("#btn-model", Button)
-        btn.label = f"Model: switching..."
+        # Fast path: skip validation when cycling models within the same
+        # provider — the provider is already validated and running.
+        self.coach.set_backend(provider, new_model)
 
-        threading.Thread(
-            target=self._verify_and_switch,
-            args=(provider, new_model),
-            daemon=True,
-        ).start()
+        model_label = new_model or "(default)"
+        model_display = f"{provider}/{new_model}" if new_model else provider
+        self._model_list_for = None  # invalidate cache
+        def _update():
+            try:
+                self.query_one("#btn-model", Button).label = f"Model: {model_label}"
+                self.update_status("MODEL", model_display)
+            except Exception:
+                pass
+        self.call_from_thread(_update)
 
     def _cycle_voice_select(self) -> None:
         """Cycle to next TTS voice on click."""
