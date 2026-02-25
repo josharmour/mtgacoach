@@ -256,6 +256,12 @@ class StandaloneCoach:
         self.draft_mode = draft_mode
         self.set_code = set_code.upper() if set_code else None
 
+        # Autopilot
+        self._autopilot_enabled = autopilot
+        self._autopilot_dry_run = dry_run
+        self._autopilot_afk = afk
+        self._autopilot: Optional[Any] = None  # AutopilotEngine instance
+
         # State
         self.advice_style = "verbose"
         self._advice_frequency = self.settings.get("advice_frequency", "start_of_turn")
@@ -427,6 +433,51 @@ class StandaloneCoach:
         # Track consecutive failures for automatic fallback
         self._consecutive_errors = 0
         self._max_errors_before_fallback = 3
+
+    def _init_autopilot(self) -> None:
+        """Initialize autopilot components (requires LLM backend + MCP)."""
+        try:
+            from arenamcp.autopilot import AutopilotEngine, AutopilotConfig
+            from arenamcp.action_planner import ActionPlanner
+            from arenamcp.screen_mapper import ScreenMapper
+            from arenamcp.input_controller import InputController
+
+            backend = self._coach._backend if self._coach else None
+            if not backend:
+                self.ui.log("[red]Autopilot: no LLM backend available[/]")
+                return
+
+            config = AutopilotConfig(
+                dry_run=self._autopilot_dry_run,
+                afk_mode=self._autopilot_afk,
+                enable_tts_preview=True,
+            )
+
+            planner = ActionPlanner(backend)
+            mapper = ScreenMapper()
+            controller = InputController(dry_run=self._autopilot_dry_run)
+
+            self._autopilot = AutopilotEngine(
+                planner=planner,
+                mapper=mapper,
+                controller=controller,
+                get_game_state=self._mcp.get_game_state,
+                config=config,
+                speak_fn=self.speak_advice,
+                ui_advice_fn=self.ui.advice if self.ui else None,
+            )
+
+            mode = "DRY-RUN" if self._autopilot_dry_run else "LIVE"
+            afk = " (AFK)" if self._autopilot_afk else ""
+            self.ui.log(f"[bold green]Autopilot initialized: {mode}{afk}[/]")
+            logger.info(f"Autopilot initialized: {mode}{afk}")
+        except ImportError as e:
+            self.ui.log(f"[red]Autopilot unavailable (missing deps): {e}[/]")
+            self._autopilot_enabled = False
+        except Exception as e:
+            self.ui.log(f"[red]Autopilot init failed: {e}[/]")
+            logger.error(f"Autopilot init failed: {e}", exc_info=True)
+            self._autopilot_enabled = False
 
     def _init_voice(self) -> None:
         """Initialize voice I/O components."""
@@ -1008,6 +1059,21 @@ class StandaloneCoach:
                             self.ui.advice(advice, "THREAT")
                             self.speak_advice(advice)
                             continue  # Don't send to LLM
+
+                        # AUTOPILOT: If enabled, route trigger through autopilot
+                        # before (or instead of) the LLM coaching call.
+                        if self._autopilot_enabled and self._autopilot:
+                            try:
+                                handled = self._autopilot.process_trigger(
+                                    curr_state, trigger
+                                )
+                                if handled:
+                                    last_advice_turn = turn_num
+                                    last_advice_phase = phase
+                                    continue  # Autopilot handled it, skip coaching
+                            except Exception as e:
+                                logger.error(f"Autopilot error: {e}", exc_info=True)
+                                # Fall through to normal coaching
 
                         if self._coach:
                             # Snapshot turn state BEFORE the (slow) LLM call
@@ -2638,6 +2704,10 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
             if self._coach and hasattr(self._coach, '_backend'):
                 actual_model = getattr(self._coach._backend, 'model', self.model_name)
 
+            # Initialize autopilot if enabled
+            if self._autopilot_enabled:
+                self._init_autopilot()
+
             # Start coaching and voice threads
             logger.info(f"Starting threads for backend: {self.backend_name}")
             logger.info("Starting PTT voice loop + coaching loop")
@@ -2663,7 +2733,12 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
             self.ui.log(f"Set: {self.set_code or 'auto-detect'}")
             self.ui.log("Using MCP server's draft evaluation")
         else:
-            self.ui.log("MTGA STANDALONE COACH")
+            if self._autopilot_enabled:
+                mode = "DRY-RUN" if self._autopilot_dry_run else "LIVE"
+                afk = " AFK" if self._autopilot_afk else ""
+                self.ui.log(f"MTGA AUTOPILOT ({mode}{afk})")
+            else:
+                self.ui.log("MTGA STANDALONE COACH")
             self.ui.log("="*50)
             self.ui.status("BACKEND", f"{self.backend_name} ({actual_model or 'default'})")
             self.ui.status("VOICE", f"PTT (F4) + Kokoro")
@@ -2687,6 +2762,13 @@ BE DECISIVE. Start with your recommendation immediately. Keep it to 1-2 sentence
 
         logger.info("Stopping coach - beginning cleanup...")
         self._running = False
+
+        # 0. Abort autopilot if active
+        if self._autopilot:
+            try:
+                self._autopilot.on_abort()
+            except Exception:
+                pass
 
         # 1. Unregister hotkeys first to prevent new events
         self._unregister_hotkeys()
