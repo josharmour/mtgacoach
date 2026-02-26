@@ -1474,9 +1474,6 @@ class StandaloneCoach:
                                 # suppress future triggers on the same turn
                                 continue
 
-                            last_advice_turn = turn_num
-                            last_advice_phase = phase
-
                             # Build seat info for display
                             local_seat = None
                             for p in curr_state.get("players", []):
@@ -1492,6 +1489,8 @@ class StandaloneCoach:
                             seat_info = f"Seat {local_seat}|{untapped_lands} mana|{self.backend_name}" if local_seat else "Seat ?"
 
                             # Skip empty responses (e.g. from timeout/lock busy)
+                            # NOTE: Do NOT update last_advice_turn before this check.
+                            # Empty responses should not suppress future triggers.
                             if not advice or not advice.strip():
                                 self._consecutive_errors = getattr(self, '_consecutive_errors', 0) + 1
                                 max_errors = getattr(self, '_max_errors_before_fallback', 3)
@@ -1531,6 +1530,10 @@ class StandaloneCoach:
                                 logger.warning(f"Suppressing error advice from TTS: {advice[:80]}")
                                 self.ui.error(advice)
                             else:
+                                # Advice was successfully generated — NOW update dedup state
+                                # so only real, delivered advice suppresses future triggers.
+                                last_advice_turn = turn_num
+                                last_advice_phase = phase
                                 self._record_advice(advice, trigger, game_state=curr_state)
                                 self.ui.advice(advice, seat_info)
                                 # Non-blocking TTS: lets the loop poll for new

@@ -3050,6 +3050,14 @@ class CoachEngine:
             c for c in opp_cards
             if "land" not in c.get("type_line", "").lower()
         ]
+        # All creatures on board (both sides) — needed for bounce target checks
+        all_creatures = [
+            c for c in battlefield
+            if c.get("power") is not None
+            and "land" not in c.get("type_line", "").lower()
+        ]
+
+        no_target_card_names = set()
 
         if hand:
             import re
@@ -3156,6 +3164,15 @@ class CoachEngine:
                     or "exile target artifact" in oracle_lower
                     or "exile target enchantment" in oracle_lower
                 )
+                # Bounce effects (return to hand/top of library)
+                is_bounce_creature = (
+                    "return target creature" in oracle_lower
+                    or ("put target creature" in oracle_lower and "top" in oracle_lower)
+                )
+                is_bounce_permanent = (
+                    "return target nonland permanent" in oracle_lower
+                    or "return target permanent" in oracle_lower
+                )
 
                 if (
                     damage_match
@@ -3165,8 +3182,12 @@ class CoachEngine:
                     or is_destroy_permanent
                     or is_destroy_art_ench
                     or is_exile_permanent
+                    or is_bounce_creature
+                    or is_bounce_permanent
                 ):
-                    if is_destroy_permanent or is_exile_permanent:
+                    if is_bounce_creature or is_bounce_permanent:
+                        removal_info = " [RM:bounce]"
+                    elif is_destroy_permanent or is_exile_permanent:
                         removal_info = " [RM:perm]"
                     elif is_destroy_art_ench:
                         removal_info = " [RM:art/ench]"
@@ -3182,13 +3203,23 @@ class CoachEngine:
                     # Target availability check: warn if no valid targets exist
                     targets_nonland = "nonland" in oracle_lower
                     targets_creature = is_destroy_creature or is_exile_creature
+                    targets_bounce_creature = is_bounce_creature
+                    targets_bounce_permanent = is_bounce_permanent
                     targets_art_ench = is_destroy_art_ench
                     # Check MV restriction (e.g., "mana value 2 or less")
                     mv_match = re.search(r"mana value (\d+) or less", oracle_lower)
                     mv_limit = int(mv_match.group(1)) if mv_match else None
 
                     # Determine the valid target pool
-                    if targets_creature:
+                    if targets_bounce_creature:
+                        target_pool = all_creatures  # bounce hits ANY creature (either side)
+                    elif targets_bounce_permanent:
+                        # Any nonland permanent on either side
+                        target_pool = [
+                            c for c in battlefield
+                            if "land" not in c.get("type_line", "").lower()
+                        ]
+                    elif targets_creature:
                         target_pool = opp_creatures
                     elif targets_nonland or is_destroy_permanent or is_exile_permanent:
                         target_pool = opp_nonland
@@ -3210,6 +3241,7 @@ class CoachEngine:
 
                     if not target_pool:
                         removal_info += " [NO TARGETS]"
+                        no_target_card_names.add(name)
 
                 # OPTIMIZATION: Only show oracle text for non-basic, non-land cards with relevant text
                 is_basic_land = "land" in type_line and (
@@ -3255,6 +3287,22 @@ class CoachEngine:
                     lines.append(f"    {oracle_stripped}")
         else:
             lines.append("  (empty)")
+
+        # Post-filter: Remove [NO TARGETS] cards from the Legal line
+        # so the LLM cannot suggest casting spells with no valid targets.
+        if no_target_card_names and valid_moves:
+            filtered_moves = [
+                m for m in valid_moves
+                if not any(f"Cast {nt}" in m for nt in no_target_card_names)
+            ]
+            if filtered_moves != valid_moves:
+                if not filtered_moves:
+                    new_legal = 'NONE — say "pass priority"'
+                else:
+                    new_legal = ", ".join(filtered_moves[:8])
+                    if len(filtered_moves) > 8:
+                        new_legal += f"... (+{len(filtered_moves) - 8})"
+                lines[1] = f"Legal: {new_legal}"
 
         # OPTIMIZATION: Compact stack display
         stack = game_state.get("stack", [])

@@ -1974,6 +1974,36 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                     "raw": {k: v for k, v in req.items()},
                 }
 
+            elif msg_type == "GREMessageType_OptionalActionMessage":
+                # "May" abilities — optional triggered/activated abilities
+                import time
+                opt = msg.get("optionalActionMessage", msg.get("prompt", {}))
+                prompt_text = ""
+                if isinstance(opt, dict):
+                    prompt_text = (
+                        opt.get("prompt", {}).get("text", "")
+                        if isinstance(opt.get("prompt"), dict)
+                        else str(opt.get("prompt", ""))
+                    )
+                logger.info(f"Captured Decision: Optional Action ({prompt_text[:60]})")
+                game_state.pending_decision = "Optional Action"
+                game_state.decision_timestamp = time.time()
+                game_state.decision_context = {
+                    "type": "optional_action",
+                    "prompt": prompt_text,
+                    "raw": {k: v for k, v in msg.items() if k != "type"},
+                }
+
+            elif msg_type == "GREMessageType_QueuedGameStateMessage":
+                # Queued state updates that arrive during animations/resolution
+                game_state_msg = msg.get("gameStateMessage")
+                if game_state_msg:
+                    game_state.update_from_message(game_state_msg)
+
+            elif msg_type == "GREMessageType_UIMessage":
+                # Hover/highlight UI events — safe to ignore
+                pass
+
             # --- Fallback for truly unknown Req types ---
 
             elif msg_type.endswith("Req") and msg_type not in (
