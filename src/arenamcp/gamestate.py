@@ -1512,9 +1512,21 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                     # Auto-clear stale decisions whose source is no longer on the stack.
                     # Client→server responses (SelectTargetsResp etc.) never reach this
                     # handler, so we detect resolution by checking if the source left the stack.
+                    #
+                    # IMPORTANT: Enforce a minimum hold time before auto-clearing.
+                    # ETB triggers (e.g. Mockingbird clone) cause a SelectTargetsReq
+                    # whose source immediately leaves the stack (it resolved onto the
+                    # battlefield). Without a hold window, the decision is cleared
+                    # before the coaching loop (1.5s poll) ever sees it.
+                    MIN_DECISION_HOLD_S = 5  # seconds — must survive at least 2 poll cycles
                     if (game_state.pending_decision
                             and game_state.pending_decision != "Mulligan"
                             and game_state.decision_context):
+                        import time
+                        decision_age = (
+                            time.time() - game_state.decision_timestamp
+                            if game_state.decision_timestamp else 999
+                        )
                         source_id = game_state.decision_context.get("source_id")
                         should_clear = False
                         if source_id is not None:
@@ -1522,21 +1534,25 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                                 obj.instance_id == source_id for obj in game_state.stack
                             )
                             if not still_on_stack:
-                                should_clear = True
-                                logger.info(
-                                    f"Auto-clearing stale decision '{game_state.pending_decision}' "
-                                    f"(source {source_id} no longer on stack)"
-                                )
+                                if decision_age >= MIN_DECISION_HOLD_S:
+                                    should_clear = True
+                                    logger.info(
+                                        f"Auto-clearing stale decision '{game_state.pending_decision}' "
+                                        f"(source {source_id} no longer on stack, age={decision_age:.1f}s)"
+                                    )
+                                else:
+                                    logger.debug(
+                                        f"Decision '{game_state.pending_decision}' source left stack "
+                                        f"but holding ({decision_age:.1f}s < {MIN_DECISION_HOLD_S}s)"
+                                    )
                         elif game_state.decision_timestamp:
                             # Decisions without source_id (prompt, scry, etc.):
                             # clear after 15s — player has certainly responded by then
-                            import time
-                            age = time.time() - game_state.decision_timestamp
-                            if age > 15:
+                            if decision_age > 15:
                                 should_clear = True
                                 logger.info(
                                     f"Auto-clearing stale decision '{game_state.pending_decision}' "
-                                    f"(no source_id, age={age:.0f}s)"
+                                    f"(no source_id, age={decision_age:.0f}s)"
                                 )
                         if should_clear:
                             game_state.pending_decision = None
@@ -2040,6 +2056,8 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                     "GREMessageType_SubmitTargetsResp",
                     "GREMessageType_SelectNResp",
                     "GREMessageType_GroupOptionResp",
+                    "GREMessageType_GroupResp",
+                    "GREMessageType_OptionalActionResp",
                     "GREMessageType_SubmitDeckResp",  # Mulligan
                     "GREMessageType_PromptResp",
                     "GREMessageType_SubmitAttackersResp",
