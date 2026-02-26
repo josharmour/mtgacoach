@@ -3441,6 +3441,8 @@ Environment variables:
                         help="Language code for voice (e.g., en, nl, es, fr, de, ja)")
     parser.add_argument("--cli", action="store_true",
                         help="Run in legacy CLI mode (default is TUI)")
+    parser.add_argument("--diagnose", action="store_true",
+                        help="Run diagnostic checks and exit")
 
     args = parser.parse_args()
 
@@ -3456,6 +3458,11 @@ Environment variables:
     if args.language:
         settings = get_settings()
         settings.set("language", args.language)
+
+    # --diagnose: run diagnostic checks and exit
+    if args.diagnose:
+        from arenamcp.diagnose import run_diagnostics
+        sys.exit(run_diagnostics())
 
     # Launch TUI unless CLI mode requested or show-log
     if not args.cli and not args.show_log:
