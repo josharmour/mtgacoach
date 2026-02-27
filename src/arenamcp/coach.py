@@ -3408,15 +3408,21 @@ class CoachEngine:
                 stack_items.append(f"{owner}:{name}")
             lines.append(f"Stack: {' > '.join(stack_items)}")
 
-        # OPTIMIZATION: Compact graveyard counts
+        # Graveyard: show counts AND card names so the LLM knows what died
+        # (prevents counting dead permanents as still on board)
         graveyard = game_state.get("graveyard", [])
         if graveyard:
-            your_gy = len(
-                [c for c in graveyard if c.get("owner_seat_id") == local_seat]
-            )
-            opp_gy = len([c for c in graveyard if c.get("owner_seat_id") != local_seat])
-            if your_gy > 0 or opp_gy > 0:
-                lines.append(f"GY: Y={your_gy} O={opp_gy}")
+            your_gy = [c for c in graveyard if c.get("owner_seat_id") == local_seat]
+            opp_gy = [c for c in graveyard if c.get("owner_seat_id") != local_seat]
+            if your_gy or opp_gy:
+                your_names = ", ".join(c.get("name", "?") for c in your_gy[:8])
+                opp_names = ", ".join(c.get("name", "?") for c in opp_gy[:8])
+                gy_parts = []
+                if your_gy:
+                    gy_parts.append(f"Y={len(your_gy)} ({your_names})")
+                if opp_gy:
+                    gy_parts.append(f"O={len(opp_gy)} ({opp_names})")
+                lines.append(f"GY: {' '.join(gy_parts)}")
 
         # Command zone (Commander/Brawl) — show full card details so
         # the LLM knows what each commander does and costs to cast.
