@@ -410,6 +410,19 @@ class StandaloneCoach:
         self._recent_gre_log: list[str] = []  # Ring buffer of recent GRE/decision log lines
         self._recent_gre_log_max = 30
 
+    @staticmethod
+    def _is_garbled(text: str, threshold: float = 0.4) -> bool:
+        """Detect garbled VLM output (e.g. non-vision model processing image tokens).
+
+        Returns True if the text has an abnormally high ratio of punctuation
+        and special characters relative to alphanumeric + space content.
+        """
+        if not text or len(text) < 20:
+            return False
+        alnum_space = sum(1 for c in text if c.isalnum() or c.isspace())
+        ratio = alnum_space / len(text)
+        return ratio < threshold
+
     def speak_advice(self, text: str, blocking: bool = True) -> None:
         """Speak advice using local Kokoro TTS."""
         if not text:
@@ -546,7 +559,7 @@ class StandaloneCoach:
             from arenamcp.vision_mapper import VisionMapper
             backend = self._coach._backend if self._coach else None
             mapper = VisionMapper(
-                ollama_model="qwen2.5vl:3b",
+                ollama_model="qwen2.5-vl:3b",
                 enable_local_vlm=True,
                 enable_cloud_vlm=True,
             )
@@ -1990,6 +2003,12 @@ class StandaloneCoach:
 
                     if hasattr(vision_backend, 'close'):
                         vision_backend.close()
+
+            # Detect garbled VLM output (non-vision model processing image tokens)
+            if advice and self._is_garbled(advice):
+                logger.warning(f"VLM returned garbled response ({len(advice)} chars), discarding")
+                self.ui.log("[red]VLM returned garbled output — is the Ollama model a vision model?[/]")
+                advice = None
 
             if advice and not advice.startswith("Error"):
                 self.ui.advice(advice, "Visual Analysis")
