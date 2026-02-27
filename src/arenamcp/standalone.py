@@ -394,6 +394,9 @@ class StandaloneCoach:
         self._pending_win_plan_turns: int = 0            # N in "win-in-N"
         self._pending_win_plan_turn: int = 0             # Game turn when plan was generated
 
+        # Match tracking for LLM context
+        self._match_number: int = 0  # Incremented on each new match
+
         # Post-match analysis
         self._saved_advice_history: list[dict] = []
         self._saved_missed_decisions: list[dict] = []
@@ -943,7 +946,8 @@ class StandaloneCoach:
                 #   (b) match_id goes FROM something TO None (match ended, back to menu)
                 match_id_changed = curr_match_id != last_match_id
                 if match_id_changed and last_match_id is not None:
-                    logger.info(f"Match boundary detected ({last_match_id} -> {curr_match_id}), resetting coaching state")
+                    self._match_number += 1
+                    logger.info(f"Match boundary detected ({last_match_id} -> {curr_match_id}), match #{self._match_number}, resetting coaching state")
 
                     # Trigger analysis if game_end detection above missed it
                     if self._advice_history and not self._saved_advice_history:
@@ -983,7 +987,8 @@ class StandaloneCoach:
 
                 # TERTIARY: Detect new game (turn number decreased) — fallback for same-match restarts
                 if turn_num > 0 and turn_num < last_advice_turn:
-                    logger.info(f"New game detected in coaching loop (turn {last_advice_turn} -> {turn_num}), resetting advice tracking")
+                    self._match_number += 1
+                    logger.info(f"New game detected in coaching loop (turn {last_advice_turn} -> {turn_num}), match #{self._match_number}, resetting advice tracking")
 
                     # Fallback: trigger analysis if game_end detection above missed it
                     if self._advice_history and not self._saved_advice_history:
@@ -1540,6 +1545,10 @@ class StandaloneCoach:
 
                             # Inject library targets when a tutor spell is in hand
                             self._inject_library_summary_if_needed(curr_state)
+
+                            # Inject match identifier so persistent backends
+                            # know when a new game starts and reset context
+                            curr_state["_match_number"] = self._match_number
 
                             advice = self._coach.get_advice(
                                 curr_state,

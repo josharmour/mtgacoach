@@ -1338,6 +1338,7 @@ Do NOT second-guess yourself in the text (e.g., "Wait, I need to check...").
 Be authoritative and decisive. Start your response immediately with the command.
 
 CRITICAL GAME RULES:
+- "=== NEW GAME ===" means a brand new match started. FORGET all previous board state, cards, and strategies from prior games. Only reference what is shown in the current game state.
 - The "Legal:" line lists ALL valid actions. ONLY suggest actions listed there.
 - NEVER suggest actions not in the Legal: line. If you want to cast a spell, it MUST appear as "Cast [card name]" in Legal:.
 - Do NOT hallucinate actions like "flash in" or "hold up" unless they are explicitly legal actions.
@@ -1932,7 +1933,15 @@ class CoachEngine:
                 valid_moves_str = "Error"
 
         lines = []
-        lines.append("=== GAME ===")
+        # Match identifier helps persistent backends (claude-code) detect
+        # new games and avoid carrying stale board knowledge across matches.
+        match_num = game_state.get("_match_number")
+        match_id = game_state.get("match_id") or ""
+        match_tag = ""
+        if match_num is not None:
+            short_id = match_id[:8] if match_id else "?"
+            match_tag = f" [Match #{match_num} id={short_id}]"
+        lines.append(f"=== NEW GAME ==={match_tag}" if turn_num <= 1 and match_tag else f"=== GAME ==={match_tag}")
         lines.append(f"Legal: {valid_moves_str}")
 
         # POST-LAND PLANNING: When land drop is available, show what spells
