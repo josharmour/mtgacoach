@@ -62,7 +62,7 @@ except ImportError:
 
 from arenamcp.gamestate import save_match_state, load_match_state, mark_match_ended
 
-__version__ = "0.5.3"
+__version__ = "0.5.4"
 
 
 def create_log_pipeline(

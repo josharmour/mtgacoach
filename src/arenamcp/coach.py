@@ -3885,7 +3885,15 @@ class CoachEngine:
             if snap.get("battlefield_count"):
                 board_info = f" Board:{snap['battlefield_count']} Hand:{snap.get('hand_count', '?')}"
 
+            # Strip library search targets and trim context for post-match
+            # analysis — the full board state per turn is useful but the
+            # 90+ card library list bloats the prompt for no analytic value.
             ctx_snippet = ctx
+            if "\nLIBRARY SEARCH TARGETS" in ctx_snippet:
+                ctx_snippet = ctx_snippet[:ctx_snippet.index("\nLIBRARY SEARCH TARGETS")]
+            # Cap each entry's context to avoid huge prompts in long games
+            if len(ctx_snippet) > 2000:
+                ctx_snippet = ctx_snippet[:2000] + "\n[...truncated]"
 
             lines.append(f"\n--- Turn {turn}, {phase} [{trigger}]{life_str}{board_info} ---")
             if ctx_snippet:
@@ -3906,18 +3914,18 @@ class CoachEngine:
 
         user_message = "\n".join(lines)
 
-        # No truncation — post-match analysis benefits from full context
-        # and all backends have large enough context windows.
-
         logger.info(
             f"[POST-MATCH] Generating analysis: {len(advice_history)} entries, "
             f"result={match_result}, turns={match_duration_turns}, "
             f"prompt={len(user_message)} chars"
         )
 
-        api_timeout = 30
+        # Scale timeout with prompt size — Opus on large prompts needs time
+        api_timeout = 60
         if isinstance(be, ProxyBackend):
-            api_timeout = 45
+            api_timeout = 90
+        if len(user_message) > 30000:
+            api_timeout = max(api_timeout, 120)
 
         api_start = time.perf_counter()
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)

@@ -2418,6 +2418,8 @@ class StandaloneCoach:
 
             if not analysis:
                 logger.warning("Post-match analysis returned empty")
+                self.ui.log("[yellow]Post-match analysis failed (timeout or empty response). "
+                            "Try 'Analyze Match' button to retry.[/]")
                 self.ui.status("ANALYSIS", "")
                 return
 
