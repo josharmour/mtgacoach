@@ -975,11 +975,21 @@ class ArenaApp(App):
         if not self.coach:
             return
 
-        btn_id = event.button.id
+        try:
+            btn_id = event.button.id
+        except Exception:
+            return
+
         if btn_id == "btn-mode":
-            self._cycle_mode()
+            try:
+                self._cycle_mode()
+            except Exception as e:
+                logger.error(f"Mode cycle crash: {e}")
         elif btn_id == "btn-model":
-            self._cycle_model()
+            try:
+                self._cycle_model()
+            except Exception as e:
+                logger.error(f"Model cycle crash: {e}")
         elif btn_id == "btn-voice-select":
             self._cycle_voice_select()
         elif btn_id == "btn-mute":
@@ -1023,50 +1033,58 @@ class ArenaApp(App):
 
     def _cycle_model(self) -> None:
         """Cycle to next model within the current mode."""
-        from arenamcp.coach import get_models_for_mode
+        try:
+            from arenamcp.coach import get_models_for_mode
 
-        mode = self.coach.backend_name
+            mode = self.coach.backend_name
+            # Normalize old backend names to new mode names
+            if mode not in ("online", "local"):
+                mode = "local"
 
-        if getattr(self, '_model_list_for', None) != mode:
-            self._model_list = get_models_for_mode(mode)
-            self._model_list_for = mode
+            if getattr(self, '_model_list_for', None) != mode:
+                self._model_list = get_models_for_mode(mode)
+                self._model_list_for = mode
 
-        models = self._model_list
-        if len(models) <= 1:
-            self.call_from_thread(
-                self.write_log,
-                f"[yellow]Only one model for {mode}[/]",
-            )
-            return
+            models = self._model_list
+            if len(models) <= 1:
+                self.write_log(f"[yellow]Only one model for {mode}[/]")
+                return
 
-        current_model = self.coach.model_name
+            current_model = self.coach.model_name
 
-        idx = -1
-        for i, (_, mid) in enumerate(models):
-            if mid == current_model:
-                idx = i
-                break
-        if idx == -1 and current_model is None:
+            idx = -1
             for i, (_, mid) in enumerate(models):
-                if mid is None:
+                if mid == current_model:
                     idx = i
                     break
+            if idx == -1 and current_model is None:
+                for i, (_, mid) in enumerate(models):
+                    if mid is None:
+                        idx = i
+                        break
 
-        next_idx = (idx + 1) % len(models)
-        display_name, new_model = models[next_idx]
+            next_idx = (idx + 1) % len(models)
+            display_name, new_model = models[next_idx]
 
-        # Fast path: skip validation when cycling models within the same
-        # mode — the mode is already validated and running.
-        self.coach.set_backend(mode, new_model)
+            # Run backend switch in a thread (it may make HTTP calls)
+            def _do_switch():
+                self.coach.set_backend(mode, new_model)
+                model_label = self._model_button_label(new_model)
+                model_display = f"{mode}/{new_model}" if new_model else mode
+                self._model_list_for = None
+                def _update():
+                    try:
+                        self.query_one("#btn-model", Button).label = model_label
+                        self.update_status("MODEL", model_display)
+                    except Exception:
+                        pass
+                self.call_from_thread(_update)
 
-        model_label = self._model_button_label(new_model)
-        model_display = f"{mode}/{new_model}" if new_model else mode
-        self._model_list_for = None  # invalidate cache
-        try:
-            self.query_one("#btn-model", Button).label = model_label
-            self.update_status("MODEL", model_display)
-        except Exception:
-            pass
+            threading.Thread(target=_do_switch, daemon=True).start()
+
+        except Exception as e:
+            logger.error(f"Model cycle error: {e}")
+            self.write_log(f"[red]Error cycling model: {e}[/]")
 
     def _cycle_voice_select(self) -> None:
         """Cycle to next TTS voice on click."""
