@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "arenamcp"
+version = "1.0.0"
+description = "Real-time MCP server bridging MTGA game logs to Claude for conversational game analysis"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "mcp>=1.0.0",
+    "watchdog>=3.0.0",
+    "requests>=2.28.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+    "keyboard>=0.13.5",
+]
+
+[project.optional-dependencies]
+voice = [
+    "faster-whisper>=1.0.0",
+    "kokoro>=0.3.0",
+    "soundfile>=0.12.0",
+]
+llm = [
+    "google-genai>=1.0.0",
+    "anthropic>=0.18.0",
+    "ollama>=0.1.0",
+    "openai>=1.0.0",
+]
+tui = [
+    "textual>=0.47.0",
+]
+autopilot = [
+    "pyautogui>=0.9.54",
+    "pydirectinput-rgx>=1.0.0",
+    "Pillow>=10.0.0",
+]
+scraping = [
+    "beautifulsoup4>=4.12.0",
+    "pyedhrec>=0.0.2",
+    "lxml>=5.0.0",
+    "networkx>=3.0",
+]
+full = [
+    "arenamcp[voice,llm,tui,autopilot,scraping]",
+    "websocket-client>=1.6.0",
+    "scipy>=1.10.0",
+]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/arenamcp"]

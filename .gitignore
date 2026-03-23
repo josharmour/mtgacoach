@@ -1,0 +1,33 @@
+.env
+.env.*
+!.env.example
+tmpclaude-*
+__pycache__/
+*.pyc
+debug_log.txt
+log_tail.txt
+last_match_event.txt
+build/
+dist/
+*.egg-info/
+.codex/
+.claude/
+re-output/
+nul
+@eaDir/
+*.planning/
+bug_reports/
+# Server-side proxy (not public)
+proxy-server/
+# Synology/deployment configs
+docker-compose.yml
+config.yaml
+*.db
+data/
+# Dev-only (not for public repo)
+tests/
+tools/
+docs/
+CLAUDE.md
+*.spec
+venv/
