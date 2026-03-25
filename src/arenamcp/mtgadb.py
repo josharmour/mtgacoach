@@ -165,15 +165,19 @@ class MTGADatabase:
 
             # Query all text IDs at once, preserving original order
             placeholders = ",".join("?" * len(text_ids))
-            # Build ORDER BY CASE with parameterized values to avoid SQL injection
-            case_whens = " ".join(f"WHEN ? THEN {i}" for i in range(len(text_ids)))
+            # Embed integer IDs directly in CASE WHEN — SQLite doesn't support
+            # parameterized ? placeholders in CASE expressions (causes MISUSE error).
+            # Safe because text_ids are validated ints parsed on line 159 above.
+            case_whens = " ".join(
+                f"WHEN {tid} THEN {i}" for i, tid in enumerate(text_ids)
+            )
             cursor = self._conn.execute(f"""
                 SELECT Loc FROM Localizations_enUS
                 WHERE LocId IN ({placeholders})
                 ORDER BY CASE LocId
                     {case_whens}
                 END
-            """, text_ids + text_ids)  # first set for IN, second for CASE
+            """, text_ids)
 
             texts = [row["Loc"] for row in cursor.fetchall() if row["Loc"]]
             return "\n".join(texts)
@@ -221,6 +225,7 @@ class MTGADatabase:
                     import re
                     name = re.sub(r"<[^>]+>", "", name)
 
+                self._error_count = 0
                 return MTGACard(
                     grp_id=row["GrpId"],
                     name=name,
@@ -236,7 +241,7 @@ class MTGADatabase:
             self._error_count += 1
             if self._error_count <= 3:
                 logger.error(f"Database query error for grp_id {grp_id}: {e}")
-            if self._error_count == 5:
+            if self._error_count >= 5:
                 logger.warning("MTGA database: too many errors, attempting reconnect")
                 self._connect()
 
