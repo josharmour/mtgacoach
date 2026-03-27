@@ -102,6 +102,18 @@ namespace MtgaCoachBridge
                     pipe.WaitForConnection();
                     _log.LogInfo("Pipe client connected");
 
+                    // Check if client is actually alive before spawning handler.
+                    // MTGA or other processes may probe the pipe and disconnect
+                    // immediately, leaving a broken pipe. Handle inline to avoid
+                    // wasting a thread and blocking the accept loop.
+                    if (!pipe.IsConnected)
+                    {
+                        _log.LogInfo("Pipe client already disconnected (probe), recycling");
+                        pipe.Dispose();
+                        pipe = null;
+                        continue;
+                    }
+
                     // Handle client on a separate thread so this loop can
                     // immediately accept the next connection.
                     var clientPipe = pipe;
