@@ -97,26 +97,29 @@ namespace MtgaCoachBridge
                     pipe.WaitForConnection();
                     _log.LogInfo("Pipe client connected");
 
-                    // Use a watchdog thread to kill the pipe if no data arrives
-                    // within 200ms. This detects mystery clients (likely MTGA
-                    // internals) that connect but never send data.
-                    // Unity Mono's async pipe I/O doesn't work reliably.
-                    var watchdogPipe = pipe;
-                    var gotData = new int[] { 0 }; // shared flag: 0=no data, 1=got data
-                    var watchdog = new Thread(() =>
+                    // Only use watchdog on first iteration — the mystery client
+                    // (MTGA internals) always grabs the first pipe instance.
+                    // Subsequent iterations are real mtgacoach clients.
+                    int[] gotData = null;
+                    if (iteration == 1)
                     {
-                        Thread.Sleep(200);
-                        if (gotData[0] == 0)
+                        var watchdogPipe = pipe;
+                        gotData = new int[] { 0 };
+                        var watchdog = new Thread(() =>
                         {
-                            _log.LogInfo("Watchdog: no data in 200ms, disconnecting mystery client");
-                            try { watchdogPipe.Dispose(); } catch { }
-                        }
-                    })
-                    {
-                        IsBackground = true,
-                        Name = "MtgaCoachBridge-Watchdog"
-                    };
-                    watchdog.Start();
+                            Thread.Sleep(200);
+                            if (gotData[0] == 0)
+                            {
+                                _log.LogInfo("Watchdog: no data in 200ms, disconnecting mystery client");
+                                try { watchdogPipe.Dispose(); } catch { }
+                            }
+                        })
+                        {
+                            IsBackground = true,
+                            Name = "MtgaCoachBridge-Watchdog"
+                        };
+                        watchdog.Start();
+                    }
 
                     HandleClient(pipe, gotData);
                 }
