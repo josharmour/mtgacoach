@@ -1506,10 +1506,14 @@ class GameState:
         """
         for ann in annotations:
             ann_types = ann.get("type", [])
-            if isinstance(ann_types, str):
-                ann_types = [ann_types]
+            if isinstance(ann_types, (str, int)):
+                ann_types = [str(ann_types)]
+            elif isinstance(ann_types, list):
+                ann_types = [str(t) for t in ann_types]
             details = ann.get("details", [])
             affected_ids = ann.get("affectedIds", [])
+            if isinstance(affected_ids, int):
+                affected_ids = [affected_ids]
             # Build a quick detail lookup
             # GRE protobuf repeated fields (valueInt32, valueInt64) may arrive
             # as lists instead of scalars — unwrap single-element lists.
