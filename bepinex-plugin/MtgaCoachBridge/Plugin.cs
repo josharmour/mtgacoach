@@ -77,8 +77,11 @@ namespace MtgaCoachBridge
 
         private void PipeServerLoop()
         {
+            int iteration = 0;
             while (_running)
             {
+                iteration++;
+                _log.LogInfo($"Pipe server loop iteration {iteration}");
                 NamedPipeServerStream pipe = null;
                 try
                 {
