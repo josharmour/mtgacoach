@@ -1684,7 +1684,7 @@ class GameState:
                         "turn": self.turn_info.turn_number,
                         "phase": self.turn_info.phase,
                         "seat": seat,
-                        "action": action_type.replace("ActionType_", "") if action_type else "unknown",
+                        "action": str(action_type).replace("ActionType_", "") if action_type else "unknown",
                         "card": card_name,
                     }
                     self.action_history.append(history_entry)
