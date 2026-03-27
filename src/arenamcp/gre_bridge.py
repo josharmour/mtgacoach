@@ -613,6 +613,8 @@ class BridgeDecisionPoller:
                 if self._was_connected:
                     self._was_connected = False
                     logger.info("Bridge disconnected, falling back to log-based detection")
+                # NOT connected yet — don't count as error, just wait.
+                # The bridge may not exist yet (MTGA still starting).
                 return None
 
         if not self._was_connected:
@@ -623,8 +625,11 @@ class BridgeDecisionPoller:
         resp = self._bridge.get_pending_actions()
         if resp is None:
             self._consecutive_errors += 1
-            if self._consecutive_errors >= self._MAX_CONSECUTIVE_ERRORS:
+            # Only enter fallback if we WERE connected and lost the connection.
+            # Don't give up during initial connection attempts.
+            if self._was_connected and self._consecutive_errors >= self._MAX_CONSECUTIVE_ERRORS:
                 self._fallback_mode = True
+                self._was_connected = False
                 logger.warning(
                     f"Bridge polling failed {self._consecutive_errors}x consecutively, "
                     "entering fallback mode"
