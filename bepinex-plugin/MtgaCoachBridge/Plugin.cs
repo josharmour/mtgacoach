@@ -12,6 +12,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using GreClient.Rules;
+using GreClient.CardData;
 using Wotc.Mtgo.Gre.External.Messaging;
 
 namespace MtgaCoachBridge
@@ -357,7 +358,7 @@ namespace MtgaCoachBridge
             {
                 ["ok"] = true,
                 ["has_pending"] = true,
-                ["request_type"] = request.Type.ToString(),
+                ["request_type"] = request.TimerType.ToString(),
                 ["can_cancel"] = request.CanCancel,
                 ["allow_undo"] = request.AllowUndo
             };
@@ -568,14 +569,20 @@ namespace MtgaCoachBridge
                             pObj["commander_ids"] = cmdIds;
                         }
                         // Dungeon
-                        if (p.DungeonState != null)
+                        // DungeonData is a struct — check via GrpId
+                        try
                         {
-                            pObj["dungeon"] = new JObject
+                            var ds = p.DungeonState;
+                            if (ds.DungeonGrpId != 0)
                             {
-                                ["dungeon_id"] = (int)(p.DungeonState.DungeonId ?? 0),
-                                ["room_id"] = (int)(p.DungeonState.RoomId ?? 0),
-                            };
+                                pObj["dungeon"] = new JObject
+                                {
+                                    ["dungeon_grp_id"] = (int)ds.DungeonGrpId,
+                                    ["room_grp_id"] = (int)ds.CurrentRoomGrpId,
+                                };
+                            }
                         }
+                        catch { }
                         // Designations (monarch, initiative, etc.)
                         if (p.Designations != null && p.Designations.Count > 0)
                         {
@@ -604,7 +611,11 @@ namespace MtgaCoachBridge
                 {
                     var blocks = new JObject();
                     foreach (var kvp in gs.BlockInfo)
-                        blocks[kvp.Key.ToString()] = kvp.Value.AttackerId.ToString();
+                    {
+                        var ids = new JArray();
+                        try { foreach (var aid in kvp.Value.AttackerIds) ids.Add((int)aid); } catch { }
+                        blocks[kvp.Key.ToString()] = ids;
+                    }
                     resp["block_info"] = blocks;
                 }
 
@@ -617,7 +628,7 @@ namespace MtgaCoachBridge
                         desigs.Add(new JObject
                         {
                             ["type"] = d.Type.ToString(),
-                            ["player_id"] = (int)d.PlayerId,
+                            ["affected_id"] = (int)d.AffectedId,
                         });
                     }
                     resp["designations"] = desigs;
@@ -697,9 +708,9 @@ namespace MtgaCoachBridge
             // Power/toughness
             try
             {
-                if (card.Power != null)
+                if (card.Power.DefinedValue.HasValue)
                     obj["power"] = card.Power.Value;
-                if (card.Toughness != null)
+                if (card.Toughness.DefinedValue.HasValue)
                     obj["toughness"] = card.Toughness.Value;
             }
             catch { }
@@ -814,8 +825,8 @@ namespace MtgaCoachBridge
                 obj["revealed_to_opponent"] = true;
 
             // Face down
-            if (card.FaceDownState != FaceDownState.None)
-                obj["face_down"] = card.FaceDownState.ToString();
+            if (card.FaceDownState != null && card.FaceDownState.IsFaceDown)
+                obj["face_down"] = true;
 
             // Crewed/saddled
             if (card.CrewedAndSaddledByIds != null && card.CrewedAndSaddledByIds.Count > 0)
@@ -867,10 +878,10 @@ namespace MtgaCoachBridge
                         {
                             arr.Add(new JObject
                             {
-                                ["timer_id"] = (int)t.Id,
-                                ["type"] = t.Type.ToString(),
-                                ["duration_sec"] = (int)t.DurationSec,
-                                ["elapsed_sec"] = (int)t.ElapsedSec,
+                                ["timer_id"] = (int)t.TimerId,
+                                ["type"] = t.TimerType.ToString(),
+                                ["duration_sec"] = (int)t.TotalDuration,
+                                ["elapsed_sec"] = (int)t.ElapsedTime,
                                 ["running"] = t.Running,
                                 ["behavior"] = t.Behavior.ToString(),
                             });
@@ -893,13 +904,13 @@ namespace MtgaCoachBridge
                 var t = kvp.Value;
                 result[kvp.Key.ToString()] = new JObject
                 {
-                    ["timer_id"] = (int)t.Id,
-                    ["type"] = t.Type.ToString(),
-                    ["duration_sec"] = (int)t.DurationSec,
-                    ["elapsed_sec"] = (int)t.ElapsedSec,
+                    ["timer_id"] = (int)t.TimerId,
+                    ["type"] = t.TimerType.ToString(),
+                    ["duration_sec"] = (int)t.TotalDuration,
+                    ["elapsed_sec"] = (int)t.ElapsedTime,
                     ["running"] = t.Running,
                     ["behavior"] = t.Behavior.ToString(),
-                    ["warning_threshold"] = (int)t.WarningThresholdSec,
+                    ["warning_threshold"] = (int)t.WarningThreshold,
                 };
             }
             return result;
@@ -1069,7 +1080,7 @@ namespace MtgaCoachBridge
             }
 
             // Highlight (tells UI what to emphasize)
-            if (action.Highlight != HighlightType.None)
+            if ((int)action.Highlight != 0)
                 obj["highlight"] = action.Highlight.ToString();
 
             // ShouldStop flag

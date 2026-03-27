@@ -59,6 +59,10 @@
       <HintPath>$(MtgaManagedDir)/Newtonsoft.Json.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="Google.Protobuf">
+      <HintPath>$(MtgaManagedDir)/Google.Protobuf.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
 </Project>
