@@ -31,3 +31,6 @@ docs/
 CLAUDE.md
 *.spec
 venv/
+# BepInEx plugin build artifacts
+bepinex-plugin/**/bin/
+bepinex-plugin/**/obj/

@@ -184,6 +184,11 @@ def _handle_event_start(draft_state: DraftState, payload: dict) -> None:
     """Handle draft/sealed event start with EventName."""
     event_name = _find_nested_value(payload, "EventName")
     if event_name and ("Draft" in event_name or "Sealed" in event_name):
+        # Don't reset state if this is the same ongoing draft —
+        # Quick Draft sends EventName with every pack event.
+        if event_name == draft_state.event_name and draft_state.is_active:
+            return
+
         draft_state.event_name = event_name
         draft_state.set_code = extract_set_code(event_name)
         draft_state.is_active = True

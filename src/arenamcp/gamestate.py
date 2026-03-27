@@ -2259,7 +2259,17 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
                 except Exception: pass
             legal_list.append(f"Cast {name}")
         elif atype == "ActionType_Activate":
-            legal_list.append("Activate Ability")
+            name = ""
+            if action.get("grpId"):
+                try:
+                    from arenamcp import server
+                    info = server.get_card_info(action["grpId"])
+                    name = info.get("name", "")
+                except Exception: pass
+            if name:
+                legal_list.append(f"Activate Ability: {name}")
+            else:
+                legal_list.append("Activate Ability")
         else:
             legal_list.append(f"Action: {atype.replace('ActionType_', '')}")
 

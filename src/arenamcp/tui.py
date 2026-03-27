@@ -1124,6 +1124,12 @@ class ArenaApp(App):
             threading.Thread(target=self._do_submit_bugreport, args=(user_msg,), daemon=True).start()
             return
 
+        # Handle /chance command — win probability estimate
+        if text.lower() in ("/chance", "/winrate", "/odds"):
+            self.write_log(f"\n[bold cyan]YOU: {text}[/]")
+            threading.Thread(target=self._do_win_probability, daemon=True).start()
+            return
+
         # Handle /deck-strategy command
         if text.lower() in ("/deck-strategy", "/deckstrategy", "/deck"):
             self.write_log(f"\n[bold cyan]YOU: {text}[/]")
@@ -1402,6 +1408,28 @@ class ArenaApp(App):
                 self.call_from_thread(self.write_log, "[yellow]Coach not available for debug report[/]")
         finally:
             self.call_from_thread(setattr, self, "_debug_report_in_progress", False)
+
+    def _do_win_probability(self):
+        """Estimate win probability and display/speak it."""
+        if not self.coach or not self.coach._coach:
+            self.call_from_thread(self.write_log, "[yellow]Coach not available[/]")
+            return
+
+        self.call_from_thread(self.write_log, "[dim]Evaluating win probability...[/]")
+        try:
+            game_state = self.coach._mcp.get_game_state()
+            self.coach._inject_library_summary_if_needed(game_state)
+            opp_cards = getattr(self.coach, '_opponent_played_cards', None)
+            if opp_cards is None:
+                opp_cards = game_state.get("_match_context", {}).get("opponent_played_cards", [])
+            result = self.coach._coach.generate_win_probability(game_state, opp_cards)
+            if result:
+                self.call_from_thread(self.write_advice, result, "Win Probability")
+                self.coach.speak_advice(result, blocking=False)
+            else:
+                self.call_from_thread(self.write_log, "[yellow]Could not estimate win probability.[/]")
+        except Exception as e:
+            self.call_from_thread(self.write_log, f"[red]Win probability error: {e}[/]")
 
     def _do_deck_strategy(self):
         """Generate or recall the deck strategy and display/speak it."""

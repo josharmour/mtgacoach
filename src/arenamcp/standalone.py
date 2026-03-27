@@ -1123,7 +1123,7 @@ class StandaloneCoach:
         # Critical triggers that always fire regardless of frequency setting
         # Combat triggers removed - too noisy for "start_of_turn" mode
         # decision_required added - scry, discard, target choices need immediate advice
-        CRITICAL_PRIORITY = {"stack_spell", "stack_spell_yours", "stack_spell_opponent", "low_life", "opponent_low_life", "decision_required", "threat_detected"}
+        CRITICAL_PRIORITY = {"stack_spell", "stack_spell_yours", "stack_spell_opponent", "low_life", "opponent_low_life", "decision_required", "threat_detected", "losing_badly"}
 
         # Match ID tracking — reset coaching state when match changes
         last_match_id = None
@@ -1605,6 +1605,7 @@ class StandaloneCoach:
                         "stack_spell": 10,
                         "stack_spell_yours": 10,
                         "stack_spell_opponent": 10,
+                        "losing_badly": 9,
                         "low_life": 9,
                         "opponent_low_life": 8,
                         "land_played": 7,      # After land drop, what's next?
@@ -1828,6 +1829,19 @@ class StandaloneCoach:
                                 continue
 
                         # THREAT DETECTION: Direct speaking for instant response (no LLM needed)
+                        if trigger == "losing_badly" and self._coach:
+                            logger.info("Proactive win probability check (losing badly)")
+                            self._inject_library_summary_if_needed(curr_state)
+                            opp_cards = self._match_context.get("opponent_played_cards", [])
+                            prob = self._coach.generate_win_probability(curr_state, opp_cards)
+                            if prob:
+                                self._record_advice(prob, trigger, game_state=curr_state)
+                                last_advice_turn = turn_num
+                                last_advice_phase = phase
+                                self.ui.advice(prob, "WIN PROBABILITY")
+                                self.speak_advice(prob)
+                            continue
+
                         if trigger == "threat_detected" and hasattr(self._trigger, '_last_threat'):
                             threat = self._trigger._last_threat
                             advice = f"Warning! {threat['name']}. {threat['warning']}"
@@ -2780,18 +2794,9 @@ class StandaloneCoach:
             # Get deck strategy
             deck_strategy = getattr(self._coach, '_deck_strategy', "") or ""
 
-            # Create dedicated backend (avoid lock contention with coaching).
-            # Uses whatever backend the user currently has set (which may be
-            # Ollama if a failure fallback is active).
-            from arenamcp.coach import create_backend
-            try:
-                analysis_backend = create_backend(self._backend_name, model=self._model_name)
-            except Exception as e:
-                logger.error(f"Failed to create analysis backend: {e}")
-                self.ui.log(f"[red]Post-match analysis failed: could not create backend: {e}[/]")
-                self.ui.status("ANALYSIS", "")
-                return
-
+            # Reuse the existing coaching backend — the match is over so
+            # there's no lock contention risk, and the warm connection
+            # avoids cold-start timeouts on the proxy server.
             analysis = self._coach.generate_post_match_analysis(
                 advice_history=advice_history,
                 match_result=match_result,
@@ -2799,18 +2804,15 @@ class StandaloneCoach:
                 deck_strategy=deck_strategy,
                 final_life_totals=final_life,
                 opponent_played_cards=opponent_cards,
-                backend=analysis_backend,
                 missed_decisions=self._saved_missed_decisions,
             )
-
-            if hasattr(analysis_backend, 'close'):
-                analysis_backend.close()
 
             if not analysis:
                 logger.warning("Post-match analysis returned empty")
                 self.ui.log("[yellow]Post-match analysis failed (timeout or empty response). "
                             "Try 'Analyze Match' button to retry.[/]")
                 self.ui.status("ANALYSIS", "")
+                # Don't clear saved data so manual retry can use it
                 return
 
             # Split off the SPOKEN: summary for TTS
@@ -2852,16 +2854,16 @@ class StandaloneCoach:
             # Offer to file GH issue for missed decisions detected by vision watchdog
             self._offer_missed_decision_issue()
 
-        except Exception as e:
-            logger.error(f"Post-match analysis error: {e}", exc_info=True)
-            self.ui.log(f"[red]Post-match analysis failed: {e}[/]")
-            self.ui.status("ANALYSIS", "")
-        finally:
-            # Clear saved data
+            # Clear saved data only on success
             self._saved_advice_history = []
             self._saved_missed_decisions = []
             self._last_match_result = None
             self._last_match_final_state = None
+
+        except Exception as e:
+            logger.error(f"Post-match analysis error: {e}", exc_info=True)
+            self.ui.log(f"[red]Post-match analysis failed: {e}[/]")
+            self.ui.status("ANALYSIS", "")
 
     def _offer_missed_decision_issue(self) -> None:
         """Offer to file a GH issue if vision detected missed decisions this match."""
@@ -3000,18 +3002,25 @@ class StandaloneCoach:
     def trigger_match_analysis(self) -> None:
         """Manually trigger post-match analysis (from Analyze Match button).
 
-        Uses current advice history (does not require match end).
+        Uses current advice history, or falls back to saved history from a
+        previous failed analysis attempt (e.g. after timeout).
         """
-        if not self._advice_history:
+        has_current = bool(self._advice_history)
+        has_saved = bool(self._saved_advice_history)
+
+        if not has_current and not has_saved:
             self.ui.log("[yellow]No advice history to analyze.[/]")
             return
 
-        if self._saved_advice_history:
+        if has_saved and not has_current:
+            # Retry with saved data from a previous failed analysis
+            self.ui.log("[cyan]Retrying with saved match data...[/]")
+        elif has_saved:
             self.ui.log("[yellow]Analysis already in progress...[/]")
             return
-
-        self._saved_advice_history = list(self._advice_history)
-        self._saved_missed_decisions = list(self._missed_decisions)
+        else:
+            self._saved_advice_history = list(self._advice_history)
+            self._saved_missed_decisions = list(self._missed_decisions)
         self._last_match_result = self._detect_match_result()
         try:
             game_state = self._mcp.get_game_state()

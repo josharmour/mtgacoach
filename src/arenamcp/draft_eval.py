@@ -239,6 +239,25 @@ def evaluate_pack(
     deck_colors = get_deck_colors(picked_cards, scryfall)
     evaluations = []
 
+    # Pre-compute graph synergy recommendations once for the whole pack
+    graph_rec_dict: dict[str, float] = {}
+    try:
+        from arenamcp.synergy import get_synergy_graph
+        sg = get_synergy_graph()
+        if sg is not None and picked_cards:
+            picked_names = []
+            for pid in picked_cards:
+                pc = scryfall.get_card_by_arena_id(pid)
+                if pc:
+                    picked_names.append(pc.name)
+            if picked_names:
+                recs = sg.get_cluster_recommendations(picked_names, top_n=30)
+                graph_rec_dict = dict(recs)
+    except ImportError:
+        pass  # networkx not installed
+    except Exception as e:
+        logger.debug(f"Graph synergy lookup error: {e}")
+
     for grp_id in cards_in_pack:
         # Try to get card data from Scryfall
         card = scryfall.get_card_by_arena_id(grp_id)
@@ -318,30 +337,12 @@ def evaluate_pack(
                 score += syn_score
                 reasons.append(syn_reason)
 
-            # Graph-based synergy bonus (SynergyGraph if available)
-            try:
-                from arenamcp.synergy import get_synergy_graph
-                sg = get_synergy_graph()
-                if sg is not None and picked_cards:
-                    # Resolve picked card names for graph lookup
-                    picked_names = []
-                    for pid in picked_cards:
-                        pc = scryfall.get_card_by_arena_id(pid)
-                        if pc:
-                            picked_names.append(pc.name)
-                    if picked_names:
-                        recs = sg.get_cluster_recommendations(picked_names, top_n=30)
-                        rec_dict = dict(recs)
-                        graph_score = rec_dict.get(card_name, 0.0)
-                        if graph_score > 0:
-                            # Cap at +15 points
-                            bonus = min(graph_score * 15, 15.0)
-                            score += bonus
-                            reasons.append(f"graph synergy +{bonus:.0f}")
-            except ImportError:
-                pass  # networkx not installed
-            except Exception as e:
-                logger.debug(f"Graph synergy error for {card_name}: {e}")
+            # Graph-based synergy bonus (pre-computed above)
+            graph_score = graph_rec_dict.get(card_name, 0.0)
+            if graph_score > 0:
+                bonus = min(graph_score * 15, 15.0)
+                score += bonus
+                reasons.append(f"graph synergy +{bonus:.0f}")
 
         # Pick best reason (most specific)
         best_reason = reasons[-1] if reasons else ""

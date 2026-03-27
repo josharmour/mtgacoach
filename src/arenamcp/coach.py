@@ -925,10 +925,10 @@ class CoachEngine:
     # Helpers extracted from _format_game_context
     # ------------------------------------------------------------------
 
-    def _compute_combat_trade(self, atk: dict, blk: dict) -> Optional[str]:
+    def _compute_combat_trade(self, atk: dict, blk: dict) -> Optional[tuple[str, bool, bool]]:
         """Compute the combat trade result between an attacker and a blocker.
 
-        Returns a human-readable result string, or None if the blocker
+        Returns (result_string, atk_dies, blk_dies), or None if the blocker
         cannot legally block the attacker (e.g. flying vs no fly/reach).
         """
         atk_name = atk.get("name", "?")
@@ -962,18 +962,18 @@ class CoachEngine:
                 blk_dies = False
 
         if atk_dies and blk_dies:
-            return "TRADE (both die)"
+            return "TRADE (both die)", True, True
         elif atk_dies:
-            return f"{atk_name} dies, {blk_name} lives ({blk_tgh - atk_pow} left)"
+            return f"{atk_name} dies, {blk_name} lives ({blk_tgh - atk_pow} left)", True, False
         elif blk_dies:
             trample_note = ""
             if atk_has_trample:
                 spillover = atk_pow - blk_tgh
                 if spillover > 0:
                     trample_note = f", {spillover} trample through"
-            return f"{blk_name} dies, {atk_name} lives ({atk_tgh - blk_pow} left){trample_note}"
+            return f"{blk_name} dies, {atk_name} lives ({atk_tgh - blk_pow} left){trample_note}", False, True
         else:
-            return "both live"
+            return "both live", False, False
 
     def _compute_optimal_blocking_damage(self, attackers: list[dict],
                                          blockers: list[dict]) -> int:
@@ -1449,16 +1449,17 @@ class CoachEngine:
             if valid_attackers and opp_blockers:
                 for atk in valid_attackers:
                     for blk in opp_blockers:
-                        result = self._compute_combat_trade(atk, blk)
-                        if result is None:
+                        trade = self._compute_combat_trade(atk, blk)
+                        if trade is None:
                             continue
+                        result, atk_dies, blk_dies = trade
                         atk_name = atk.get("name", "?"); atk_pow = atk.get("power") or 0; atk_tgh = atk.get("toughness") or 0
                         blk_name = blk.get("name", "?"); blk_pow = blk.get("power") or 0; blk_tgh = blk.get("toughness") or 0
-                        if "TRADE" in result or "both live" in result:
+                        if atk_dies and blk_dies:
                             display_result = result
-                        elif f"{atk_name} dies" in result:
+                        elif atk_dies:
                             display_result = f"BAD \u2014 {result}"
-                        elif f"{blk_name} dies" in result:
+                        elif blk_dies:
                             display_result = f"GOOD \u2014 {result}"
                         else:
                             display_result = result
@@ -1551,9 +1552,10 @@ class CoachEngine:
         if your_creatures and attacking:
             for atk in attacking:
                 for blk in your_creatures:
-                    result = self._compute_combat_trade(atk, blk)
-                    if result is None:
+                    trade = self._compute_combat_trade(atk, blk)
+                    if trade is None:
                         continue
+                    result, _atk_dies, _blk_dies = trade
                     atk_name = atk.get("name", "?"); atk_pow = atk.get("power") or 0; atk_tgh = atk.get("toughness") or 0
                     blk_name = blk.get("name", "?"); blk_pow = blk.get("power") or 0; blk_tgh = blk.get("toughness") or 0
                     lines.append(f"  If {blk_name} {blk_pow}/{blk_tgh} blocks {atk_name} {atk_pow}/{atk_tgh}: {result}")
@@ -1637,11 +1639,12 @@ class CoachEngine:
                            total_mana: int, mana_pool: dict[str, int],
                            opp_cards: list[dict], battlefield: list[dict],
                            is_my_turn: bool, phase: str, turn_num: int,
-                           valid_moves: list[str]) -> tuple[list[str], set[str]]:
-        """Format the hand section. Returns (lines, no_target_card_names)."""
+                           valid_moves: list[str]) -> tuple[list[str], set[str], set[str]]:
+        """Format the hand section. Returns (lines, no_target_card_names, uncastable_card_names)."""
         import re
         lines: list[str] = []
         no_target_card_names: set[str] = set()
+        uncastable_card_names: set[str] = set()
         hand = game_state.get("hand", [])
         lines.append("")
         lines.append("HAND:")
@@ -1652,7 +1655,7 @@ class CoachEngine:
 
         if not hand:
             lines.append("  (empty)")
-            return lines, no_target_card_names
+            return lines, no_target_card_names, uncastable_card_names
 
         local_player = next((p for p in game_state.get("players", []) if p.get("is_local")), None)
         lands_played = local_player.get("lands_played", 0) if local_player else 0
@@ -1683,6 +1686,10 @@ class CoachEngine:
                 cmc += len(hybrid)
 
             castable = self._check_castability(type_line, cost, cmc, reqs, total_mana, mana_pool, can_play_land)
+
+            # Track cards the player can't afford so they're filtered from Legal
+            if castable.startswith("NEED"):
+                uncastable_card_names.add(name)
 
             # Flag X-cost spells where X would be 0 — usually worthless
             has_x = "{X}" in cost or "{x}" in cost
@@ -1733,7 +1740,7 @@ class CoachEngine:
             lines.append(f"  {display_name}{type_tag} {cost} [{timing},{castable}]{removal_info}")
             if show_oracle:
                 lines.append(f"    {oracle_stripped}")
-        return lines, no_target_card_names
+        return lines, no_target_card_names, uncastable_card_names
 
     def _format_zones_and_events(self, game_state: dict[str, Any], local_seat: int, opp_seat: Optional[int]) -> list[str]:
         """Format recent events, revealed cards, stack, graveyard, command zone, and library."""
@@ -1983,15 +1990,19 @@ class CoachEngine:
         lines.extend(self._format_zones_and_events(game_state, local_seat, opp_seat))
 
         # Hand cards
-        hand_lines, no_target_card_names = self._format_hand_cards(
+        hand_lines, no_target_card_names, uncastable_card_names = self._format_hand_cards(
             game_state, local_seat, total_mana, mana_pool,
             opp_cards, battlefield, is_my_turn, phase, turn_num, valid_moves
         )
         lines.extend(hand_lines)
 
-        # Post-filter: Remove [NO TARGETS] cards from Legal and LegalGRE lines
-        if no_target_card_names and valid_moves:
-            filtered_moves = [m for m in valid_moves if not any(f"Cast {nt}" in m for nt in no_target_card_names)]
+        # Post-filter: Remove [NO TARGETS] and [NEED:...] cards from Legal line
+        # The GRE may report spells as legal (since it considers potential mana
+        # abilities), but if our mana analysis says NEED, filter them out to
+        # avoid the LLM suggesting unaffordable spells.
+        cards_to_filter = no_target_card_names | uncastable_card_names
+        if cards_to_filter and valid_moves:
+            filtered_moves = [m for m in valid_moves if not any(f"Cast {nt}" in m for nt in cards_to_filter)]
             if filtered_moves != valid_moves:
                 if not filtered_moves:
                     new_legal = 'NONE \u2014 say "pass priority"'
@@ -2187,6 +2198,7 @@ class CoachEngine:
                     "user_request": "Give detailed strategic advice for this moment with reasoning.",
                     "decision_required": "Decision required (scry, discard, target, mulligan, etc). What should the player choose and why?",
                     "threat_detected": "ALERT: A dangerous card just hit the battlefield! Explain the threat and how to deal with it.",
+                    "losing_badly": "The board state looks very bad. Assess honestly: can we come back, or should we concede and save time?",
                 }
             else:
                 trigger_descriptions = {
@@ -2210,6 +2222,7 @@ class CoachEngine:
                     "user_request": "Give quick strategic advice for this moment.",
                     "decision_required": "Decision required (scry, discard, target, mulligan, etc). What should the player choose?",
                     "threat_detected": "ALERT: A dangerous card just hit the battlefield!",
+                    "losing_badly": "Board looks dire. Can we come back or should we concede?",
                 }
             trigger_desc = trigger_descriptions.get(trigger, f"Trigger: {trigger}")
             user_message = f"{context}\n\n{trigger_desc}"
@@ -2596,6 +2609,61 @@ class CoachEngine:
 
         return response
 
+    def generate_win_probability(self, game_state: dict[str, Any],
+                                  opponent_played_cards: list[dict] = None) -> str:
+        """Estimate win probability based on current board state.
+
+        Returns a short analysis with a win percentage and recommendation.
+        If loss probability exceeds 75%, includes a concede suggestion.
+        """
+        be = self._backend
+        if be is None:
+            return ""
+
+        context = self._format_game_context(game_state)
+
+        system_prompt = (
+            "You are an expert MTG analyst. Evaluate the current game state and estimate "
+            "the probability that the local player wins this game.\n\n"
+            "Consider:\n"
+            "- Board presence: creature count, total power/toughness, keywords\n"
+            "- Life totals and life trajectory\n"
+            "- Cards in hand vs opponent's likely hand size\n"
+            "- Mana development (lands in play)\n"
+            "- Opponent's revealed cards and likely strategy\n"
+            "- Tempo and card advantage\n"
+            "- Whether the local player is the beatdown or the control\n\n"
+            "Output format (STRICT — follow exactly):\n"
+            "Line 1: WIN: XX% (a single integer 0-100)\n"
+            "Line 2-3: Brief explanation (2 sentences max) of why.\n"
+            "Line 4: If WIN is 25% or below, add: RECOMMEND: Concede — [1-sentence reason]\n\n"
+            "Be realistic, not optimistic. A hopeless board is 5-15%, not 30%."
+        )
+
+        opp_cards_str = ""
+        if opponent_played_cards:
+            names = [c.get("name", "?") for c in opponent_played_cards if c.get("name")]
+            if names:
+                opp_cards_str = f"\nOpponent's revealed cards this game: {', '.join(names)}"
+
+        user_message = f"{context}{opp_cards_str}\n\nEstimate win probability."
+
+        import concurrent.futures
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(be.complete, system_prompt, user_message, 200)
+        try:
+            response = future.result(timeout=30)
+        except concurrent.futures.TimeoutError:
+            logger.warning("Win probability timed out")
+            response = ""
+        executor.shutdown(wait=False)
+
+        if not response or response.startswith("Error"):
+            return ""
+
+        logger.info(f"[WIN-PROB] {response[:100]}")
+        return response
+
     def _postprocess_advice(self, advice: str, game_state: dict[str, Any], style: str = "concise") -> str:
         """Post-process LLM advice to fix common issues with smaller models.
 
@@ -2828,6 +2896,18 @@ class CoachEngine:
 
             # If this card costs more than we can have, remove Cast suggestions for it
             if cmc > potential_mana:
+                # Remove "then [cast] Card" sequences (e.g. "Play land then Earthbender Ascension")
+                then_pattern = re.compile(
+                    rf",?\s*then\s+(?:cast\s+)?{re.escape(card_name)}[.,]?\s*",
+                    re.IGNORECASE,
+                )
+                if then_pattern.search(advice):
+                    advice = then_pattern.sub(". ", advice).strip()
+                    logger.debug(
+                        f"Removed uncastable 'then' sequence: {card_name} (needs {cmc}, have {potential_mana})"
+                    )
+                    continue
+
                 # Remove "Cast [Card Name]" as a standalone command (e.g. "Cast X." or "Cast X,")
                 # but NOT when the card name appears mid-sentence (e.g. "find mana to cast X or Y")
                 # to avoid leaving garbled text like "find mana to or Y"
@@ -3199,6 +3279,9 @@ class GameStateTrigger:
         self.life_threshold = life_threshold
         # Track threats we've already warned about (by instance_id)
         self._seen_threats: set[int] = set()
+        # Track whether we've already fired the losing_badly trigger this game
+        self._losing_badly_fired = False
+        self._last_threat: Optional[dict] = None
 
     def _get_local_player(self, state: dict[str, Any]) -> Optional[dict]:
         """Get the local player dict from game state."""
@@ -3551,5 +3634,64 @@ class GameStateTrigger:
                     }
                     logger.info(f"Threat detected (planeswalker): {card_name}")
                     triggers.append("threat_detected")
+
+        # LOSING BADLY detection — proactive concede suggestion
+        # Fires once per game when multiple signals indicate a hopeless position.
+        # Only check on new turns to avoid spamming during combat math.
+        if (
+            not self._losing_badly_fired
+            and curr_local and curr_opp
+            and curr_turn_num >= 4  # too early to judge before turn 4
+            and "new_turn" in triggers
+        ):
+            your_life = curr_local.get("life_total", 20)
+            opp_life = curr_opp.get("life_total", 20)
+            curr_bf = curr_state.get("battlefield", [])
+            your_creatures = [
+                c for c in curr_bf
+                if (c.get("controller_seat_id") or c.get("owner_seat_id")) == local_seat
+                and c.get("power") is not None
+                and "land" not in c.get("type_line", "").lower()
+            ]
+            opp_creatures = [
+                c for c in curr_bf
+                if (c.get("controller_seat_id") or c.get("owner_seat_id")) != local_seat
+                and c.get("power") is not None
+                and "land" not in c.get("type_line", "").lower()
+            ]
+            your_power = sum(c.get("power") or 0 for c in your_creatures)
+            opp_power = sum(c.get("power") or 0 for c in opp_creatures)
+            hand_size = len(curr_state.get("hand", []))
+
+            # Heuristic: multiple bad signals stacking up
+            signals = 0
+            if your_life <= 5:
+                signals += 2
+            elif your_life <= 10 and opp_life >= 15:
+                signals += 1
+            if opp_power >= your_life:  # opponent can lethal us
+                signals += 2
+            if len(opp_creatures) >= len(your_creatures) + 3:
+                signals += 1
+            if opp_power >= your_power + 8:
+                signals += 1
+            if hand_size == 0 and len(your_creatures) <= 1:
+                signals += 1
+            if your_life <= 3 and opp_power > 0:
+                signals += 2  # almost certainly dead
+
+            if signals >= 4:
+                self._losing_badly_fired = True
+                triggers.append("losing_badly")
+                logger.info(
+                    f"Losing badly detected: life={your_life} vs {opp_life}, "
+                    f"power={your_power} vs {opp_power}, "
+                    f"creatures={len(your_creatures)} vs {len(opp_creatures)}, "
+                    f"hand={hand_size}, signals={signals}"
+                )
+
+        # Reset losing_badly flag on new game (turn resets to 0/1)
+        if curr_turn_num <= 1 and prev_turn_num > 1:
+            self._losing_badly_fired = False
 
         return triggers

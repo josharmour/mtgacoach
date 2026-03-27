@@ -19,6 +19,7 @@ from typing import Any, Callable, Optional
 from PIL import ImageGrab
 
 from arenamcp.action_planner import ActionPlan, ActionPlanner, ActionType, GameAction
+from arenamcp.gre_bridge import GREBridge, GREBridgeError, get_bridge
 from arenamcp.input_controller import ClickResult, InputController
 from arenamcp.screen_mapper import ScreenCoord, ScreenMapper
 
@@ -132,6 +133,10 @@ class AutopilotEngine:
 
         # Vision scan: track if mapper supports layout scanning
         self._has_vision_scan = hasattr(self._mapper, 'scan_layout')
+
+        # GRE bridge for direct action submission (bypasses mouse clicks)
+        self._gre_bridge: GREBridge = get_bridge()
+        self._gre_bridge_failed_this_plan: bool = False
 
         # Execution path tracking
         self._path_stats: dict[str, int] = {}
@@ -286,6 +291,7 @@ class AutopilotEngine:
             "current_action_idx": self._current_action_idx,
             "land_drop_last_turn": self._land_drop_last_turn,
             "has_vision_scan": self._has_vision_scan,
+            "gre_bridge_connected": self._gre_bridge.connected,
         }
 
         # Current plan details
@@ -480,6 +486,11 @@ class AutopilotEngine:
             if pending == "Priority (Pass Only)":
                 logger.info("Autopilot: auto-passing (pass-only priority)")
                 if not self._config.dry_run:
+                    # Try GRE bridge first (faster, no window focus needed)
+                    if self._gre_bridge.connected or self._gre_bridge.connect():
+                        if self._gre_bridge.submit_pass():
+                            self._log_execution_path(ExecutionPath.GRE_AWARE, "auto-pass via GRE bridge")
+                            return True
                     self._controller.focus_mtga_window()
                     time.sleep(0.06)
                 self._exec_pass_priority()
@@ -750,9 +761,10 @@ class AutopilotEngine:
 
             # --- 3. EXECUTING ---
             self._state = AutopilotState.EXECUTING
+            self._gre_bridge_failed_this_plan = False
 
-            # Focus MTGA now — no more user input expected
-            if not self._config.dry_run:
+            # Focus MTGA now — no more user input expected (skip if GRE bridge is active)
+            if not self._config.dry_run and not self._gre_bridge.connected:
                 self._controller.focus_mtga_window()
                 time.sleep(0.06)
 
@@ -1332,10 +1344,89 @@ class AutopilotEngine:
 
     # --- Action Execution Handlers ---
 
+    def _try_gre_bridge(self, action: GameAction) -> Optional[ClickResult]:
+        """Try to execute an action via the GRE bridge (direct submission).
+
+        Returns a ClickResult if the bridge handled it, or None to fall
+        through to mouse-click execution.
+        """
+        if self._gre_bridge_failed_this_plan:
+            return None
+
+        if not self._gre_bridge.connect():
+            return None
+
+        gre_ref = getattr(action, 'gre_action_ref', None)
+
+        # PASS / RESOLVE — use bridge submit_pass
+        if action.action_type in (ActionType.PASS_PRIORITY, ActionType.RESOLVE, ActionType.CLICK_BUTTON):
+            if self._gre_bridge.submit_pass():
+                self._log_execution_path(
+                    ExecutionPath.GRE_AWARE,
+                    f"{action.action_type.value}: submitted via GRE bridge (pass)"
+                )
+                return ClickResult(True, 0, 0, "pass", "GRE bridge")
+            logger.info("GRE bridge pass failed, falling back to mouse click")
+            self._gre_bridge_failed_this_plan = True
+            return None
+
+        # For actions with a GRE ref, match by identity fields
+        if gre_ref is not None:
+            action_type = gre_ref.action_type if hasattr(gre_ref, 'action_type') else ""
+            grp_id = gre_ref.grp_id if hasattr(gre_ref, 'grp_id') else 0
+            instance_id = gre_ref.instance_id if hasattr(gre_ref, 'instance_id') else 0
+            ability_grp_id = gre_ref.ability_grp_id if hasattr(gre_ref, 'ability_grp_id') else 0
+
+            if self._gre_bridge.submit_action_by_match(
+                action_type=action_type,
+                grp_id=grp_id,
+                instance_id=instance_id,
+                ability_grp_id=ability_grp_id,
+                auto_pass=self._config.auto_pass_priority,
+            ):
+                self._log_execution_path(
+                    ExecutionPath.GRE_AWARE,
+                    f"{action.action_type.value}: '{action.card_name}' submitted via GRE bridge"
+                )
+                return ClickResult(True, 0, 0, action.card_name or str(action), "GRE bridge")
+
+            logger.info(f"GRE bridge match failed for {action.action_type.value}, falling back to mouse")
+            self._gre_bridge_failed_this_plan = True
+            return None
+
+        # No GRE ref but bridge is connected — try matching by game action type
+        from arenamcp.gre_action_matcher import ACTION_TYPE_MAP
+        gre_type = ACTION_TYPE_MAP.get(action.action_type)
+        if gre_type:
+            # Try to find matching action by type + card name via pending actions
+            pending = self._gre_bridge.get_pending_actions()
+            if pending and pending.get("has_pending") and pending.get("actions"):
+                bridge_actions = pending["actions"]
+                # Find matching action by GRE type and grpId
+                for idx, ba in enumerate(bridge_actions):
+                    ba_type = ba.get("actionType", "")
+                    # Normalize comparison
+                    if ba_type == gre_type or f"ActionType_{ba_type}" == gre_type or ba_type == gre_type.replace("ActionType_", ""):
+                        # For named actions, try to verify card identity via game_objects
+                        if self._gre_bridge.submit_action_by_index(
+                            idx, auto_pass=self._config.auto_pass_priority
+                        ):
+                            self._log_execution_path(
+                                ExecutionPath.GRE_AWARE,
+                                f"{action.action_type.value}: '{action.card_name}' submitted via GRE bridge (type match)"
+                            )
+                            return ClickResult(True, 0, 0, action.card_name or str(action), "GRE bridge")
+
+        return None
+
     def _execute_action(
         self, action: GameAction, game_state: dict[str, Any]
     ) -> ClickResult:
         """Route an action to the appropriate execution handler.
+
+        Tries the GRE bridge first for direct submission (no mouse clicks).
+        Falls back to screen-mapped mouse/keyboard input if the bridge is
+        unavailable or fails.
 
         Args:
             action: The GameAction to execute.
@@ -1344,12 +1435,18 @@ class AutopilotEngine:
         Returns:
             ClickResult from the execution.
         """
-        # Check for GRE action reference (Phase 1 adds gre_action_ref to GameAction)
+        # Try GRE bridge first (direct action submission, no mouse needed)
+        if not self._config.dry_run:
+            gre_result = self._try_gre_bridge(action)
+            if gre_result is not None:
+                return gre_result
+
+        # GRE bridge not available — fall back to mouse-click execution
         gre_ref = getattr(action, 'gre_action_ref', None)
         if gre_ref is not None:
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE,
-                f"{action.action_type.value}: {action.card_name or action} (gre_ref={gre_ref})"
+                f"{action.action_type.value}: {action.card_name or action} (gre_ref={gre_ref}, bridge unavailable)"
             )
 
         handlers = {

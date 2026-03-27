@@ -1157,6 +1157,13 @@ def evaluate_draft_pack_for_standalone() -> dict[str, Any]:
     _draft_stats = _get_draft_stats()
     _mtga = _get_mtgadb()
 
+    # Ensure synergy graph is built (auto-builds on first draft if missing)
+    try:
+        from arenamcp.synergy import ensure_synergy_graph
+        ensure_synergy_graph(_scryfall)
+    except Exception as e:
+        logger.debug(f"Synergy graph init: {e}")
+
     evaluations = evaluate_pack(
         cards_in_pack=draft_state.cards_in_pack,
         picked_cards=draft_state.picked_cards,

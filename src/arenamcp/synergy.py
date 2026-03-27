@@ -465,26 +465,62 @@ class SynergyGraph:
 
 # Lazy singleton
 _synergy_graph: Optional[SynergyGraph] = None
+_synergy_graph_checked: bool = False
 
 
 def get_synergy_graph() -> Optional[SynergyGraph]:
     """Get or create the singleton SynergyGraph instance.
 
-    Loads from disk cache if available. Returns None if no graph exists
-    (call build_from_scryfall to create one).
+    Loads from disk cache if available. Returns None if no graph exists.
+    Caches the negative result so we only attempt disk load once per session.
     """
-    global _synergy_graph
-    if _synergy_graph is None:
-        logger.info("Initializing SynergyGraph singleton...")
-        instance = SynergyGraph()
-        if instance.load():
-            _synergy_graph = instance
-            stats = _synergy_graph.stats()
-            logger.info(
-                f"SynergyGraph ready ({stats['num_cards']} cards, "
-                f"{stats['num_synergies']} synergies)"
-            )
-        else:
-            logger.info("SynergyGraph not found on disk. Build with build_from_scryfall().")
-            return None
+    global _synergy_graph, _synergy_graph_checked
+    if _synergy_graph is not None:
+        return _synergy_graph
+    if _synergy_graph_checked:
+        return None
+    _synergy_graph_checked = True
+    logger.info("Initializing SynergyGraph singleton...")
+    instance = SynergyGraph()
+    if instance.load():
+        _synergy_graph = instance
+        stats = _synergy_graph.stats()
+        logger.info(
+            f"SynergyGraph ready ({stats['num_cards']} cards, "
+            f"{stats['num_synergies']} synergies)"
+        )
+    else:
+        logger.info("SynergyGraph not found on disk, will auto-build when draft starts.")
     return _synergy_graph
+
+
+def ensure_synergy_graph(scryfall: Any) -> Optional[SynergyGraph]:
+    """Get the synergy graph, building it from Scryfall data if missing.
+
+    Called once at draft start to ensure the graph is available.
+    """
+    global _synergy_graph, _synergy_graph_checked
+    existing = get_synergy_graph()
+    if existing is not None:
+        return existing
+
+    # Check that scryfall has data to build from
+    if not hasattr(scryfall, '_arena_index') or not scryfall._arena_index:
+        logger.warning("Cannot build SynergyGraph: Scryfall cache has no data.")
+        return None
+
+    logger.info("Auto-building SynergyGraph from Scryfall data...")
+    instance = SynergyGraph()
+    try:
+        instance.build_from_scryfall(scryfall)
+        _synergy_graph = instance
+        _synergy_graph_checked = True
+        stats = _synergy_graph.stats()
+        logger.info(
+            f"SynergyGraph built ({stats['num_cards']} cards, "
+            f"{stats['num_synergies']} synergies)"
+        )
+        return _synergy_graph
+    except Exception as e:
+        logger.error(f"Failed to build SynergyGraph: {e}")
+        return None

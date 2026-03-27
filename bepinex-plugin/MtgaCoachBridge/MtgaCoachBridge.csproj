@@ -1,0 +1,64 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <AssemblyName>MtgaCoachBridge</AssemblyName>
+    <RootNamespace>MtgaCoachBridge</RootNamespace>
+    <LangVersion>9.0</LangVersion>
+    <Description>BepInEx plugin that bridges mtgacoach autopilot to MTGA's GRE action system via named pipe</Description>
+  </PropertyGroup>
+
+  <!--
+    MTGA and BepInEx paths — set these to your MTGA install.
+    Default: C:\Program Files\Wizards of the Coast\MTGA\
+  -->
+  <PropertyGroup>
+    <MtgaDir Condition="'$(MtgaDir)' == ''">/mnt/c/Program Files/Wizards of the Coast/MTGA</MtgaDir>
+    <MtgaManagedDir>$(MtgaDir)/MTGA_Data/Managed</MtgaManagedDir>
+    <BepInExDir>$(MtgaDir)/BepInEx/core</BepInExDir>
+  </PropertyGroup>
+
+  <!-- BepInEx 5.x — reference local install -->
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>$(BepInExDir)/BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(BepInExDir)/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(MtgaManagedDir)/Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Core">
+      <HintPath>$(MtgaManagedDir)/Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SharedClientCore">
+      <HintPath>$(MtgaManagedDir)/SharedClientCore.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Wizards.MDN.GreProtobuf">
+      <HintPath>$(MtgaManagedDir)/Wizards.MDN.GreProtobuf.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(MtgaManagedDir)/UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(MtgaManagedDir)/UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(MtgaManagedDir)/Newtonsoft.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

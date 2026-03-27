@@ -28,7 +28,7 @@ class ProxyBackend:
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-5-20250929",
+        model: str = "gpt-5.4",
         enable_thinking: bool = False,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
@@ -46,7 +46,7 @@ class ProxyBackend:
     def create_online(cls, model: Optional[str] = None, license_key: str = "") -> "ProxyBackend":
         """Create a backend configured for online mode (mtgacoach.com)."""
         return cls(
-            model=model or "claude-sonnet-4-5-20250929",
+            model=model or "gpt-5.4",
             base_url=ONLINE_BASE_URL,
             api_key=license_key,
         )
