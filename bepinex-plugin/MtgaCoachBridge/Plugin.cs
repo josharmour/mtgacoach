@@ -82,14 +82,13 @@ namespace MtgaCoachBridge
                 NamedPipeServerStream pipe = null;
                 try
                 {
-                    // Allow 2 server instances so a new client can connect even if
-                    // a stale client from a previous session is still lingering.
-                    // Use synchronous mode (not Asynchronous) so ReadTimeout works
-                    // for detecting dead clients.
+                    // Allow multiple server instances so we can immediately loop
+                    // back to accept the next client while handling the current one.
+                    // This prevents stale/mystery clients from blocking new connections.
                     pipe = new NamedPipeServerStream(
                         "mtgacoach_gre",
                         PipeDirection.InOut,
-                        2,
+                        NamedPipeServerStream.MaxAllowedServerInstances,
                         PipeTransmissionMode.Byte,
                         PipeOptions.None
                     );
@@ -98,7 +97,31 @@ namespace MtgaCoachBridge
                     pipe.WaitForConnection();
                     _log.LogInfo("Pipe client connected");
 
-                    HandleClient(pipe);
+                    // Handle client on a separate thread so this loop can
+                    // immediately accept the next connection.
+                    var clientPipe = pipe;
+                    pipe = null; // prevent finally from disposing
+                    var clientThread = new Thread(() =>
+                    {
+                        try
+                        {
+                            HandleClient(clientPipe);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.LogWarning($"Client handler error: {ex.Message}");
+                        }
+                        finally
+                        {
+                            try { clientPipe.Dispose(); } catch { }
+                            _log.LogInfo("Pipe client disconnected and cleaned up");
+                        }
+                    })
+                    {
+                        IsBackground = true,
+                        Name = "MtgaCoachBridge-Client"
+                    };
+                    clientThread.Start();
                 }
                 catch (Exception ex)
                 {
@@ -111,7 +134,7 @@ namespace MtgaCoachBridge
                 }
 
                 if (_running)
-                    Thread.Sleep(500);
+                    Thread.Sleep(100);
             }
         }
 
