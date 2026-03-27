@@ -84,12 +84,14 @@ namespace MtgaCoachBridge
                 {
                     // Allow 2 server instances so a new client can connect even if
                     // a stale client from a previous session is still lingering.
+                    // Use synchronous mode (not Asynchronous) so ReadTimeout works
+                    // for detecting dead clients.
                     pipe = new NamedPipeServerStream(
                         "mtgacoach_gre",
                         PipeDirection.InOut,
                         2,
                         PipeTransmissionMode.Byte,
-                        PipeOptions.Asynchronous
+                        PipeOptions.None
                     );
 
                     _log.LogInfo("Pipe server waiting for connection on \\\\.\\pipe\\mtgacoach_gre");
@@ -133,9 +135,9 @@ namespace MtgaCoachBridge
                 {
                     line = reader.ReadLine();
                 }
-                catch (TimeoutException)
+                catch (IOException)
                 {
-                    // Client hasn't sent anything in 30s — check if still alive
+                    // ReadTimeout expired or pipe broken — check if still alive
                     if (!pipe.IsConnected) break;
                     continue;
                 }
