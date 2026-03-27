@@ -85,10 +85,12 @@ namespace MtgaCoachBridge
                     // Allow multiple server instances so we can immediately loop
                     // back to accept the next client while handling the current one.
                     // This prevents stale/mystery clients from blocking new connections.
+                    // Use explicit count (not MaxAllowedServerInstances which is -1 and
+                    // may not be supported by Unity's Mono runtime).
                     pipe = new NamedPipeServerStream(
                         "mtgacoach_gre",
                         PipeDirection.InOut,
-                        NamedPipeServerStream.MaxAllowedServerInstances,
+                        4,
                         PipeTransmissionMode.Byte,
                         PipeOptions.None
                     );
@@ -126,7 +128,7 @@ namespace MtgaCoachBridge
                 catch (Exception ex)
                 {
                     if (_running)
-                        _log.LogWarning($"Pipe error: {ex.Message}");
+                        _log.LogWarning($"Pipe server loop error: {ex.GetType().Name}: {ex.Message}");
                 }
                 finally
                 {
