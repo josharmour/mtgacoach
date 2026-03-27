@@ -80,6 +80,32 @@ class GameObject:
     object_kind: GameObjectKind = GameObjectKind.UNKNOWN
     # Counters on this object: {"counter_type": count}
     counters: dict[str, int] = field(default_factory=dict)
+    # ── Phase 1 turbo-charge fields (from GRE annotations) ──
+    # Modified stats (actual values after continuous effects)
+    modified_power: Optional[int] = None
+    modified_toughness: Optional[int] = None
+    modified_cost: Optional[str] = None
+    modified_colors: Optional[list[str]] = None
+    modified_types: Optional[list[str]] = None
+    modified_name: Optional[str] = None
+    # Granted/lost abilities
+    granted_abilities: list[str] = field(default_factory=list)
+    removed_abilities: list[str] = field(default_factory=list)
+    # Turn-specific state
+    damaged_this_turn: bool = False
+    crewed_this_turn: bool = False
+    saddled_this_turn: bool = False
+    # Phasing
+    is_phased_out: bool = False
+    # Class/Saga level
+    class_level: Optional[int] = None
+    # Copy source
+    copied_from_grp_id: Optional[int] = None
+    # Targeting info: list of instance_ids this object is targeting
+    targeting: list[int] = field(default_factory=list)
+    # Color production (mana abilities)
+    color_production: list[str] = field(default_factory=list)
+
     def to_dict(self) -> dict:
         """Convert to simple dict for snapshot serialization."""
         result = {
@@ -103,6 +129,39 @@ class GameObject:
             result["counters"] = self.counters
         if self.parent_instance_id is not None:
             result["parent_instance_id"] = self.parent_instance_id
+        # Phase 1 turbo-charge fields — only include when set to keep payloads lean
+        if self.modified_power is not None:
+            result["modified_power"] = self.modified_power
+        if self.modified_toughness is not None:
+            result["modified_toughness"] = self.modified_toughness
+        if self.modified_cost is not None:
+            result["modified_cost"] = self.modified_cost
+        if self.modified_colors:
+            result["modified_colors"] = self.modified_colors
+        if self.modified_types:
+            result["modified_types"] = self.modified_types
+        if self.modified_name:
+            result["modified_name"] = self.modified_name
+        if self.granted_abilities:
+            result["granted_abilities"] = self.granted_abilities
+        if self.removed_abilities:
+            result["removed_abilities"] = self.removed_abilities
+        if self.damaged_this_turn:
+            result["damaged_this_turn"] = True
+        if self.crewed_this_turn:
+            result["crewed_this_turn"] = True
+        if self.saddled_this_turn:
+            result["saddled_this_turn"] = True
+        if self.is_phased_out:
+            result["is_phased_out"] = True
+        if self.class_level is not None:
+            result["class_level"] = self.class_level
+        if self.copied_from_grp_id is not None:
+            result["copied_from_grp_id"] = self.copied_from_grp_id
+        if self.targeting:
+            result["targeting"] = self.targeting
+        if self.color_production:
+            result["color_production"] = self.color_production
         return result
 
 
@@ -225,6 +284,17 @@ class GameState:
         "recent_events": list,
         "damage_taken": dict,
         "revealed_cards": dict,
+        # ── Phase 1 turbo-charge state ──
+        # Designations: seat_id -> set of active designations (monarch, initiative, city's blessing, day/night)
+        "designations": dict,
+        # Dungeon status: seat_id -> {"dungeon": name, "room": room_name}
+        "dungeon_status": dict,
+        # Action history: rolling buffer of recent player actions
+        "action_history": list,
+        # Timer state from GRE
+        "timer_state": dict,
+        # Sideboard cards (populated between BO3 games from SubmitDeckReq)
+        "sideboard_cards": list,
     }
 
     def _apply_field_defaults(self) -> None:
@@ -737,6 +807,12 @@ class GameState:
             "revealed_cards": revealed,
             "last_game_result": self.last_game_result,
             "deck_cards": list(self.deck_cards),
+            # ── Phase 1 turbo-charge fields ──
+            "designations": {seat: list(desigs) for seat, desigs in self.designations.items()} if self.designations else {},
+            "dungeon_status": dict(self.dungeon_status) if self.dungeon_status else {},
+            "timer_state": dict(self.timer_state) if self.timer_state else {},
+            "action_history": list(self.action_history[-20:]) if self.action_history else [],
+            "sideboard_cards": list(self.sideboard_cards) if self.sideboard_cards else [],
         }
 
     def publish_snapshot(self) -> None:
@@ -1592,12 +1668,29 @@ class GameState:
                     })
 
                 elif ann_type == "AnnotationType_UserActionTaken":
-                    # Player took an action (fixes "can't see what player chose" gap)
-                    self._add_event({
+                    # Player took an action — also record in action history buffer
+                    event = {
                         "type": "user_action",
                         "details": detail_map,
                         "affected_ids": affected_ids,
-                    })
+                    }
+                    self._add_event(event)
+                    # Build a concise action history entry
+                    action_type = detail_map.get("actionType", "")
+                    grp_id = detail_map.get("grpId", 0)
+                    seat = detail_map.get("seatId", 0)
+                    card_name = self._resolve_card_name(grp_id) if grp_id else ""
+                    history_entry = {
+                        "turn": self.turn_info.turn_number,
+                        "phase": self.turn_info.phase,
+                        "seat": seat,
+                        "action": action_type.replace("ActionType_", "") if action_type else "unknown",
+                        "card": card_name,
+                    }
+                    self.action_history.append(history_entry)
+                    # Cap at 50 entries
+                    if len(self.action_history) > 50:
+                        self.action_history = self.action_history[-50:]
 
                 elif ann_type == "AnnotationType_Scry":
                     self._add_event({
@@ -1644,6 +1737,333 @@ class GameState:
                         "affected_ids": affected_ids,
                         "details": detail_map,
                     })
+
+                # ── Phase 1 turbo-charge: new annotation handlers ──
+
+                elif ann_type == "AnnotationType_TargetSpec":
+                    # Spell/ability targeting — links source to target instance IDs
+                    source_id = detail_map.get("sourceId", 0)
+                    target_ids = detail_map.get("targetIds", affected_ids)
+                    if isinstance(target_ids, int):
+                        target_ids = [target_ids]
+                    source_obj = self.game_objects.get(source_id)
+                    if source_obj:
+                        source_obj.targeting = list(target_ids)
+                    target_names = []
+                    for tid in target_ids:
+                        tobj = self.game_objects.get(tid)
+                        if tobj:
+                            target_names.append(self._resolve_card_name(tobj.grp_id))
+                        else:
+                            # Target might be a player seat
+                            target_names.append(f"Player#{tid}" if tid in self.players else f"#{tid}")
+                    self._add_event({
+                        "type": "target_spec",
+                        "source": self._resolve_card_name(source_obj.grp_id) if source_obj else f"#{source_id}",
+                        "source_id": source_id,
+                        "targets": target_names,
+                        "target_ids": list(target_ids),
+                    })
+
+                elif ann_type == "AnnotationType_PredictedDirectDamage":
+                    # GRE's own combat damage prediction
+                    self._add_event({
+                        "type": "predicted_damage",
+                        "affected_ids": affected_ids,
+                        "details": detail_map,
+                    })
+
+                elif ann_type == "AnnotationType_ModifiedPower":
+                    # Actual power after continuous effects
+                    new_power = detail_map.get("value", detail_map.get("power"))
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj and new_power is not None:
+                            obj.modified_power = int(new_power) if not isinstance(new_power, int) else new_power
+
+                elif ann_type == "AnnotationType_ModifiedCost":
+                    cost_str = detail_map.get("value", detail_map.get("cost", ""))
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj and cost_str:
+                            obj.modified_cost = str(cost_str)
+
+                elif ann_type == "AnnotationType_ModifiedColor":
+                    colors = detail_map.get("colors", detail_map.get("value", []))
+                    if isinstance(colors, str):
+                        colors = [colors]
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj and colors:
+                            obj.modified_colors = list(colors)
+
+                elif ann_type == "AnnotationType_ModifiedType":
+                    types = detail_map.get("types", detail_map.get("value", []))
+                    if isinstance(types, str):
+                        types = [types]
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj and types:
+                            obj.modified_types = list(types)
+
+                elif ann_type == "AnnotationType_ModifiedName":
+                    name = detail_map.get("value", detail_map.get("name", ""))
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj and name:
+                            obj.modified_name = str(name)
+
+                elif ann_type == "AnnotationType_LayeredEffect":
+                    # Active continuous effect (anthem, debuff, etc.)
+                    self._add_event({
+                        "type": "layered_effect",
+                        "affected_ids": affected_ids,
+                        "details": detail_map,
+                    })
+
+                elif ann_type in ("AnnotationType_AddAbility", "AnnotationType_DynamicAbility"):
+                    ability = detail_map.get("abilityGrpId", detail_map.get("ability", ""))
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj and ability:
+                            ability_str = str(ability)
+                            if ability_str not in obj.granted_abilities:
+                                obj.granted_abilities.append(ability_str)
+                    self._add_event({
+                        "type": "ability_added",
+                        "affected_ids": affected_ids,
+                        "ability": str(ability),
+                    })
+
+                elif ann_type == "AnnotationType_RemoveAbility":
+                    ability = detail_map.get("abilityGrpId", detail_map.get("ability", ""))
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj and ability:
+                            ability_str = str(ability)
+                            if ability_str not in obj.removed_abilities:
+                                obj.removed_abilities.append(ability_str)
+                    self._add_event({
+                        "type": "ability_removed",
+                        "affected_ids": affected_ids,
+                        "ability": str(ability),
+                    })
+
+                elif ann_type == "AnnotationType_DamagedThisTurn":
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj:
+                            obj.damaged_this_turn = True
+
+                elif ann_type == "AnnotationType_CrewedThisTurn":
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj:
+                            obj.crewed_this_turn = True
+
+                elif ann_type == "AnnotationType_SaddledThisTurn":
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj:
+                            obj.saddled_this_turn = True
+
+                elif ann_type == "AnnotationType_PhasedOut":
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj:
+                            obj.is_phased_out = True
+                    self._add_event({
+                        "type": "phased_out",
+                        "affected_ids": affected_ids,
+                    })
+
+                elif ann_type == "AnnotationType_PhasedIn":
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj:
+                            obj.is_phased_out = False
+                    self._add_event({
+                        "type": "phased_in",
+                        "affected_ids": affected_ids,
+                    })
+
+                elif ann_type == "AnnotationType_ClassLevel":
+                    level = detail_map.get("level", detail_map.get("value", 1))
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj:
+                            obj.class_level = int(level) if not isinstance(level, int) else level
+                    self._add_event({
+                        "type": "class_level",
+                        "affected_ids": affected_ids,
+                        "level": level,
+                    })
+
+                elif ann_type == "AnnotationType_DungeonStatus":
+                    dungeon = detail_map.get("dungeon", "")
+                    room = detail_map.get("room", "")
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        owner = obj.owner_seat_id if obj else (affected_ids[0] if affected_ids else 0)
+                        if owner:
+                            self.dungeon_status[owner] = {"dungeon": dungeon, "room": room}
+                    self._add_event({
+                        "type": "dungeon_status",
+                        "dungeon": dungeon,
+                        "room": room,
+                        "affected_ids": affected_ids,
+                    })
+
+                elif ann_type == "AnnotationType_SuspendLike":
+                    # Cards in exile with time counters (suspend, foretell, etc.)
+                    self._add_event({
+                        "type": "suspend_like",
+                        "affected_ids": affected_ids,
+                        "details": detail_map,
+                    })
+
+                elif ann_type in ("AnnotationType_LinkedDamage", "AnnotationType_DamageSource"):
+                    # Damage attribution — which source dealt what
+                    source_id = detail_map.get("sourceId", 0)
+                    source_obj = self.game_objects.get(source_id)
+                    self._add_event({
+                        "type": "damage_attribution",
+                        "sub_type": ann_type.replace("AnnotationType_", ""),
+                        "source": self._resolve_card_name(source_obj.grp_id) if source_obj else f"#{source_id}",
+                        "source_id": source_id,
+                        "affected_ids": affected_ids,
+                        "details": detail_map,
+                    })
+
+                elif ann_type == "AnnotationType_SupplementalText":
+                    self._add_event({
+                        "type": "supplemental_text",
+                        "affected_ids": affected_ids,
+                        "details": detail_map,
+                    })
+
+                elif ann_type == "AnnotationType_ColorProduction":
+                    colors = detail_map.get("colors", detail_map.get("value", []))
+                    if isinstance(colors, str):
+                        colors = [colors]
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj and colors:
+                            obj.color_production = list(colors)
+
+                elif ann_type == "AnnotationType_CopiedObject":
+                    source_grp = detail_map.get("sourceGrpId", detail_map.get("grpId", 0))
+                    for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj and source_grp:
+                            obj.copied_from_grp_id = int(source_grp)
+                    self._add_event({
+                        "type": "copied_object",
+                        "affected_ids": affected_ids,
+                        "source_grp_id": source_grp,
+                    })
+
+                elif ann_type in ("AnnotationType_Designation", "AnnotationType_GainDesignation"):
+                    designation = detail_map.get("designation", detail_map.get("value", ""))
+                    for obj_id in affected_ids:
+                        # Designations apply to players (seat IDs)
+                        seat = obj_id if obj_id in self.players else None
+                        if seat is None:
+                            obj = self.game_objects.get(obj_id)
+                            seat = obj.controller_seat_id if obj else None
+                        if seat:
+                            if seat not in self.designations:
+                                self.designations[seat] = set()
+                            self.designations[seat].add(str(designation))
+                    self._add_event({
+                        "type": "designation_gained",
+                        "designation": designation,
+                        "affected_ids": affected_ids,
+                    })
+
+                elif ann_type == "AnnotationType_LoseDesignation":
+                    designation = detail_map.get("designation", detail_map.get("value", ""))
+                    for obj_id in affected_ids:
+                        seat = obj_id if obj_id in self.players else None
+                        if seat is None:
+                            obj = self.game_objects.get(obj_id)
+                            seat = obj.controller_seat_id if obj else None
+                        if seat and seat in self.designations:
+                            self.designations[seat].discard(str(designation))
+                    self._add_event({
+                        "type": "designation_lost",
+                        "designation": designation,
+                        "affected_ids": affected_ids,
+                    })
+
+                elif ann_type == "AnnotationType_BoonInfo":
+                    self._add_event({
+                        "type": "boon",
+                        "affected_ids": affected_ids,
+                        "details": detail_map,
+                    })
+
+                elif ann_type == "AnnotationType_Vote":
+                    self._add_event({
+                        "type": "vote",
+                        "affected_ids": affected_ids,
+                        "details": detail_map,
+                    })
+
+                elif ann_type == "AnnotationType_Shuffle":
+                    self._add_event({
+                        "type": "shuffle",
+                        "affected_ids": affected_ids,
+                    })
+
+                elif ann_type == "AnnotationType_DieRoll":
+                    self._add_event({
+                        "type": "die_roll",
+                        "affected_ids": affected_ids,
+                        "details": detail_map,
+                    })
+
+                elif ann_type == "AnnotationType_ObjectIdChanged":
+                    self._add_event({
+                        "type": "object_id_changed",
+                        "affected_ids": affected_ids,
+                        "details": detail_map,
+                    })
+
+                elif ann_type == "AnnotationType_NewTurnStarted":
+                    # Reset turn-specific flags on all game objects
+                    for obj in self.game_objects.values():
+                        obj.damaged_this_turn = False
+                        obj.crewed_this_turn = False
+                        obj.saddled_this_turn = False
+                        obj.targeting.clear()
+
+                elif ann_type in (
+                    "AnnotationType_None",
+                    "AnnotationType_Attachment",
+                    "AnnotationType_ObjectsSelected",
+                    "AnnotationType_PendingEffect",
+                    "AnnotationType_Qualification",
+                    "AnnotationType_Haunt",
+                    "AnnotationType_LoopCount",
+                    "AnnotationType_GroupedIds",
+                    "AnnotationType_SyntheticEvent",
+                    "AnnotationType_TurnPermanent",
+                    "AnnotationType_LinkInfo",
+                    "AnnotationType_CopyException",
+                    "AnnotationType_AbilityExhausted",
+                    "AnnotationType_ManaDetails",
+                    "AnnotationType_RemoveAttachment",
+                    "AnnotationType_ShouldntPlay",
+                    "AnnotationType_TextChange",
+                    "AnnotationType_AssignDamageConfirmation",
+                ):
+                    # Known but not actionable for coaching — skip silently
+                    pass
+
+                else:
+                    logger.debug("Unhandled annotation type: %s (affected: %s, details: %s)",
+                                 ann_type, affected_ids, detail_map)
 
     def _update_turn_info(self, turn_data: dict) -> None:
         """Update turn info from message data.
@@ -1917,6 +2337,14 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
         if game_state.turn_info.turn_number > 1:
             logger.info(f"Mulligan Request detected at Turn {game_state.turn_info.turn_number} -> Resetting Ghost State.")
             game_state.reset()
+        # ── Phase 1: Extract sideboard from SubmitDeckReq (BO3 between games) ──
+        if msg_type == "GREMessageType_SubmitDeckReq":
+            submit_req = msg.get("submitDeckReq", {})
+            deck_data = submit_req.get("deck", {})
+            sideboard = deck_data.get("sideboardCards", deck_data.get("sideboard", []))
+            if sideboard:
+                game_state.sideboard_cards = list(sideboard)
+                logger.info(f"Captured sideboard: {len(sideboard)} cards")
         game_state.pending_decision = "Mulligan"
         game_state.decision_seat_id = game_state.local_seat_id
         game_state.decision_timestamp = _time.time()
@@ -2233,7 +2661,57 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
     import time as _time
     req = msg.get("actionsAvailableReq", {})
     raw_actions = req.get("actions", [])
-    game_state.legal_actions_raw = copy.deepcopy(raw_actions) if raw_actions else []
+
+    # ── Phase 1: Enrich raw actions with AutoTap + ability metadata ──
+    enriched_actions = []
+    for action in raw_actions:
+        enriched = copy.deepcopy(action)
+        # Extract AutoTap castability — the game engine's own mana solver
+        autotap = action.get("autoTapSolution")
+        if autotap is not None:
+            enriched["_castable"] = True
+            # Parse tap actions if present
+            tap_actions = autotap.get("autoTapActions", [])
+            if tap_actions:
+                enriched["_autotap_lands"] = [
+                    {"instanceId": ta.get("instanceId"), "mana": ta.get("manaProduced", "")}
+                    for ta in tap_actions
+                ]
+        elif action.get("actionType") in ("ActionType_Cast", "ActionType_Activate"):
+            # No autotap solution but it's a spell/ability — may need manual mana
+            enriched["_castable"] = action.get("assumeCanBePaidFor", False)
+
+        # Extract ability metadata
+        if action.get("abilityGrpId"):
+            enriched["_ability_grp_id"] = action["abilityGrpId"]
+        if action.get("sourceId"):
+            enriched["_source_id"] = action["sourceId"]
+        if action.get("alternativeGrpId"):
+            enriched["_alternative_grp_id"] = action["alternativeGrpId"]
+
+        # Mana cost structured extraction
+        mana_cost = action.get("manaCost", [])
+        if mana_cost:
+            _MANA_ABBREV = {
+                "ManaColor_White": "W", "ManaColor_Blue": "U",
+                "ManaColor_Black": "B", "ManaColor_Red": "R",
+                "ManaColor_Green": "G", "ManaColor_Colorless": "C",
+                "ManaColor_Any": "X",
+            }
+            cost_parts = []
+            for mc in mana_cost:
+                colors = mc.get("color", [])
+                count = mc.get("count", 1)
+                if colors:
+                    symbols = [_MANA_ABBREV.get(c, c) for c in colors]
+                    cost_parts.append(f"{count}{''.join(symbols)}")
+                else:
+                    cost_parts.append(str(count))
+            enriched["_mana_cost_str"] = "".join(cost_parts)
+
+        enriched_actions.append(enriched)
+
+    game_state.legal_actions_raw = enriched_actions
 
     legal_list = []
     for action in raw_actions:
@@ -2257,7 +2735,10 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
                     info = server.get_card_info(action["grpId"])
                     name = info.get("name", "Spell")
                 except Exception: pass
-            legal_list.append(f"Cast {name}")
+            # Include castability from AutoTap
+            castable = action.get("autoTapSolution") is not None
+            suffix = " [OK]" if castable else ""
+            legal_list.append(f"Cast {name}{suffix}")
         elif atype == "ActionType_Activate":
             name = ""
             if action.get("grpId"):
@@ -2355,7 +2836,22 @@ def _handle_pay_costs(game_state: GameState, msg: dict) -> bool:
             mana_parts.append(f"{count}")
     mana_str = ", ".join(mana_parts) if mana_parts else "unknown"
 
-    has_autotap = bool(req.get("autoTapActionsReq", {}).get("autoTapSolutions"))
+    # ── Phase 1: Extract full AutoTap solution ──
+    autotap_req = req.get("autoTapActionsReq", {})
+    autotap_solutions = autotap_req.get("autoTapSolutions", [])
+    has_autotap = bool(autotap_solutions)
+    autotap_info = None
+    if has_autotap and isinstance(autotap_solutions, list) and autotap_solutions:
+        first_solution = autotap_solutions[0]
+        tap_actions = first_solution.get("autoTapActions", [])
+        autotap_info = {
+            "lands_to_tap": [
+                {"instanceId": ta.get("instanceId"), "mana": ta.get("manaProduced", "")}
+                for ta in tap_actions
+            ],
+            "num_lands": len(tap_actions),
+        }
+
     logger.info(f"Captured Decision: Pay Costs (source: {source_name}, mana: {mana_str}, autotap={has_autotap})")
     game_state.pending_decision = "Pay Costs"
     game_state.decision_timestamp = _time.time()
@@ -2363,6 +2859,7 @@ def _handle_pay_costs(game_state: GameState, msg: dict) -> bool:
         "type": "pay_costs", "source_card": source_name,
         "source_id": source_id if source_id else None,
         "mana_cost": mana_str, "has_autotap": has_autotap,
+        "autotap_solution": autotap_info,
     }
     return False
 
@@ -2470,7 +2967,34 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                 pass  # Hover/highlight UI events
 
             elif msg_type == "GREMessageType_TimerStateMessage":
-                pass
+                # ── Phase 1: Parse chess clock / timer data ──
+                timer_msg = msg.get("timerStateMessage", msg.get("timerState", {}))
+                if timer_msg:
+                    timers = timer_msg.get("timers", [])
+                    timer_data = {}
+                    for timer in timers:
+                        player_id = timer.get("playerId", timer.get("seatId", 0))
+                        timer_type = timer.get("type", timer.get("timerType", ""))
+                        remaining = timer.get("timeRemainingMs", timer.get("durationMs", 0))
+                        behavior = timer.get("behavior", "")
+                        if player_id:
+                            timer_data[player_id] = {
+                                "time_remaining_ms": remaining,
+                                "timer_type": timer_type,
+                                "behavior": behavior,
+                                "is_ticking": timer.get("isTicking", False),
+                            }
+                    # Also check for top-level fields
+                    if not timer_data:
+                        for key in ("player1Timer", "player2Timer"):
+                            t = timer_msg.get(key, {})
+                            if t:
+                                timer_data[key] = {
+                                    "time_remaining_ms": t.get("timeRemainingMs", 0),
+                                    "timer_type": t.get("type", ""),
+                                }
+                    if timer_data:
+                        game_state.timer_state = timer_data
 
             # Fallback for unknown Req types
             elif msg_type.endswith("Req") and msg_type not in _KNOWN_REQ_TYPES:

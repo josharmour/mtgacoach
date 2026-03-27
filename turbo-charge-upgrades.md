@@ -6,6 +6,28 @@ cross-referenced against the current codebase architecture.
 
 **Date:** 2026-03-26
 
+### Phase 1 Status: COMPLETE (2026-03-26)
+
+All Phase 1 items (1.1-1.4) and quick wins (6.1-6.3) implemented in branch
+`worktree-phase1-parse-missing-gre-data`. Changes to `gamestate.py` and `server.py`:
+
+- **25+ new annotation handlers** — TargetSpec, Modified*, Designations, PhasedIn/Out,
+  ClassLevel, DungeonStatus, SuspendLike, LinkedDamage, ColorProduction, AddAbility,
+  CopiedObject, BoonInfo, CrewedThisTurn, SaddledThisTurn, DamagedThisTurn, Shuffle,
+  Vote, DieRoll, PredictedDirectDamage, LayeredEffect, SupplementalText, NewTurnStarted
+- **16 new fields on GameObject** — modified_power/toughness/cost/colors/types/name,
+  granted_abilities, removed_abilities, damaged/crewed/saddled_this_turn, is_phased_out,
+  class_level, copied_from_grp_id, targeting, color_production
+- **5 new game-level state fields** — designations, dungeon_status, timer_state,
+  action_history, sideboard_cards
+- **AutoTap mana solver data** parsed per-action with castability flags and tap sequences
+- **Ability metadata** extracted (abilityGrpId, sourceId, alternativeGrpId, mana cost string)
+- **Timer state** parsed from GREMessageType_TimerStateMessage (chess clock, rope)
+- **Sideboard tracking** from SubmitDeckReq in BO3
+- **Action history buffer** (rolling 50-entry buffer from UserActionTaken annotations)
+- **Debug else clause** logs all unhandled annotation types at DEBUG level
+- **Known-but-skippable** annotation types explicitly listed (no false positives in debug log)
+
 ---
 
 ## Phase 1: Parse Missing GRE Data (Low Effort, High Impact)
@@ -415,23 +437,23 @@ annotations and zone transfers). Expose as `recent_actions` in game state.
 
 ## Implementation Priority
 
-| # | Upgrade | Effort | Impact | Dependencies |
-|---|---------|--------|--------|-------------|
-| 1 | 6.1 Debug log dropped annotations | 30 min | Low (diagnostic) | None |
-| 2 | 1.1 Add missing annotations (TargetSpec, Modified*, Designations) | 1-2 days | High | None |
-| 3 | 1.2 Parse AutoTap/mana solver data | 1 day | High | None |
-| 4 | 1.3 Extract ability metadata | 0.5 day | Medium | None |
-| 5 | 1.4 Parse timer state | 0.5 day | Medium | None |
-| 6 | 6.2 Track sideboard | 0.5 day | Medium | None |
-| 7 | 6.3 Action history buffer | 0.5 day | Medium | None |
-| 8 | 6.4 Opponent archetype detection | 1 day | Medium | None |
-| 9 | 2.3 Plugin: serialize AutoTap solutions | 1 day | High | BepInEx rebuild |
-| 10 | 2.2 Plugin: rich interaction detail | 2 days | High | BepInEx rebuild |
-| 11 | 2.1 Plugin: get_game_state from MatchManager | 3-5 days | **Transformative** | BepInEx rebuild, reflection exploration |
-| 12 | 2.4-2.5 Plugin: timer + match info | 1 day | Medium | BepInEx rebuild |
-| 13 | 3.1 Hook replay recorder | 2-3 days | High | BepInEx, replay format RE |
-| 14 | 3.2 Match history database | 2 days | High | 3.1 |
-| 15 | 4.2 Advisability flags | 0.5 day | Medium | None (from log) |
+| # | Upgrade | Effort | Impact | Dependencies | Status |
+|---|---------|--------|--------|-------------|--------|
+| 1 | 6.1 Debug log dropped annotations | 30 min | Low (diagnostic) | None | **DONE** (2026-03-26) |
+| 2 | 1.1 Add missing annotations (TargetSpec, Modified*, Designations) | 1-2 days | High | None | **DONE** (2026-03-26) |
+| 3 | 1.2 Parse AutoTap/mana solver data | 1 day | High | None | **DONE** (2026-03-26) |
+| 4 | 1.3 Extract ability metadata | 0.5 day | Medium | None | **DONE** (2026-03-26) |
+| 5 | 1.4 Parse timer state | 0.5 day | Medium | None | **DONE** (2026-03-26) |
+| 6 | 6.2 Track sideboard | 0.5 day | Medium | None | **DONE** (2026-03-26) |
+| 7 | 6.3 Action history buffer | 0.5 day | Medium | None | **DONE** (2026-03-26) |
+| 8 | 6.4 Opponent archetype detection | 1 day | Medium | None | Pending |
+| 9 | 2.3 Plugin: serialize AutoTap solutions | 1 day | High | BepInEx rebuild | Pending |
+| 10 | 2.2 Plugin: rich interaction detail | 2 days | High | BepInEx rebuild | Pending |
+| 11 | 2.1 Plugin: get_game_state from MatchManager | 3-5 days | **Transformative** | BepInEx rebuild, reflection exploration | Pending |
+| 12 | 2.4-2.5 Plugin: timer + match info | 1 day | Medium | BepInEx rebuild | Pending |
+| 13 | 3.1 Hook replay recorder | 2-3 days | High | BepInEx, replay format RE | Pending |
+| 14 | 3.2 Match history database | 2 days | High | 3.1 | Pending |
+| 15 | 4.2 Advisability flags | 0.5 day | Medium | None (from log) | Pending |
 | 16 | 4.1 GRE prediction engine | 3-5 days | **Transformative** | BepInEx, protocol RE |
 | 17 | 5.1-5.4 Social/tournament/draft | Weeks | Future | All above |
 

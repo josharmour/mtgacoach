@@ -899,6 +899,16 @@ def get_game_state() -> dict[str, Any]:
         }
         if obj.get("parent_instance_id") is not None:
             result["parent_instance_id"] = obj.get("parent_instance_id")
+        # ── Phase 1 turbo-charge fields (only include when set) ──
+        for key in ("modified_power", "modified_toughness", "modified_cost",
+                     "modified_colors", "modified_types", "modified_name",
+                     "granted_abilities", "removed_abilities",
+                     "damaged_this_turn", "crewed_this_turn", "saddled_this_turn",
+                     "is_phased_out", "class_level", "copied_from_grp_id",
+                     "targeting", "color_production"):
+            val = obj.get(key)
+            if val:  # Only include truthy values
+                result[key] = val
         return result
 
     battlefield = [
@@ -938,6 +948,12 @@ def get_game_state() -> dict[str, Any]:
         "legal_actions_raw": legal_actions_raw,
         "deck_cards": list(snap.get("deck_cards", [])),
         "damage_taken": dict(snap.get("damage_taken", {})),
+        # ── Phase 1 turbo-charge fields ──
+        "designations": snap.get("designations", {}),
+        "dungeon_status": snap.get("dungeon_status", {}),
+        "timer_state": snap.get("timer_state", {}),
+        "action_history": snap.get("action_history", []),
+        "sideboard_cards": snap.get("sideboard_cards", []),
     }
 
 def clear_pending_combat_steps() -> None:
