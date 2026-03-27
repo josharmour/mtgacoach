@@ -129,7 +129,7 @@ namespace MtgaCoachBridge
             {
                 AutoFlush = true
             };
-            int readTimeoutMs = 500; // Short first-read timeout
+            int readTimeoutMs = 200; // Short first-read timeout to detect mystery clients
 
             while (_running && pipe.IsConnected)
             {
