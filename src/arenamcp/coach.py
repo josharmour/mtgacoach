@@ -1123,6 +1123,14 @@ class CoachEngine:
 
         if decision_context:
             dec_type = decision_context.get("type", "unknown")
+            # Bridge request type can disambiguate generic decision types
+            # (e.g., "group_selection" might be scry, surveil, or mulligan_bottom)
+            bridge_req = game_state.get("_bridge_request_type")
+            if dec_type == "unknown_req" and bridge_req:
+                from arenamcp.gre_bridge import _BRIDGE_REQUEST_TO_DECISION_TYPE
+                mapped = _BRIDGE_REQUEST_TO_DECISION_TYPE.get(bridge_req)
+                if mapped:
+                    dec_type = mapped
             _simple = {
                 "mulligan_bottom": lambda ctx: [
                     f"!!! DECISION: MULLIGAN - PUT {max(1, 7 - len(game_state.get('hand', [])) + 1)} CARD(S) ON BOTTOM !!!",
@@ -1840,9 +1848,14 @@ class CoachEngine:
             match_tag = f" [Match #{match_num} id={short_id}]"
         lines.append(f"=== NEW GAME ==={match_tag}" if turn_num <= 1 and match_tag else f"=== GAME ==={match_tag}")
         lines.append(f"Legal: {valid_moves_str}")
-        raw_legal_actions = game_state.get("legal_actions_raw") or []
+        # Prefer bridge actions (fresher castability/autotap data) over log-parsed
+        raw_legal_actions = game_state.get("_bridge_actions") or game_state.get("legal_actions_raw") or []
         if raw_legal_actions:
             lines.append("LegalGRE: " + _format_legal_actions_raw_for_prompt(raw_legal_actions))
+        # Bridge request type: authoritative decision classification from GRE
+        bridge_req = game_state.get("_bridge_request_type")
+        if bridge_req:
+            lines.append(f"GRE_Request: {bridge_req}")
 
         # Post-land planning
         lines.extend(self._format_post_land_planning(game_state, local_seat, valid_moves, is_my_turn, phase))

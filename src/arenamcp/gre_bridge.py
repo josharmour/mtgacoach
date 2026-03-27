@@ -5,10 +5,15 @@ GRE actions directly to MTGA without mouse clicks.
 
 The bridge is the primary execution backend for autopilot when available,
 falling back to mouse/keyboard input when disconnected.
+
+Also provides BridgeDecisionPoller for proactive decision detection —
+polling the bridge to know immediately when a game decision is pending
+and what the valid options are, replacing reactive log-diff detection.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import struct
@@ -466,8 +471,286 @@ class GREBridge:
         return best_idx
 
 
+# -------------------------------------------------------------------
+# Bridge request type → decision_context type mapping
+# -------------------------------------------------------------------
+
+# Maps Plugin.cs request.Type.ToString() values to the decision_context
+# "type" strings that coach.py _format_decision_lines() already handles.
+_BRIDGE_REQUEST_TO_DECISION_TYPE: dict[str, str] = {
+    "ActionsAvailableRequest": "actions_available",
+    "SelectTargetsReq": "target_selection",
+    "MulliganReq": "mulligan",
+    "GroupReq": "group_selection",
+    "GroupOptionReq": "modal_choice",
+    "DeclareAttackersReq": "declare_attackers",
+    "DeclareBlockersReq": "declare_blockers",
+    "SearchReq": "search",
+    "DistributionReq": "distribution",
+    "NumericInputReq": "numeric_input",
+    "PromptReq": "prompt",
+    "PayCostsReq": "pay_costs",
+    "AssignDamageReq": "assign_damage",
+    "OrderCombatDamageReq": "order_combat_damage",
+    "SelectNReq": "selection_generic",
+    "ChooseStartingPlayerReq": "choose_starting_player",
+    "SelectReplacementReq": "select_replacement",
+    "SelectCountersReq": "select_counters",
+    "OrderReq": "order_triggers",
+    "OptionalActionMessage": "optional_action",
+    "CastingTimeOptionsReq": "casting_time_options",
+    "SelectNGroupReq": "select_n_group",
+    "SelectFromGroupsReq": "select_from_groups",
+    "SearchFromGroupsReq": "search_from_groups",
+    "GatherReq": "gather",
+    "RevealHandReq": "reveal_hand",
+}
+
+# Reverse mapping for human-readable pending_decision labels
+_BRIDGE_REQUEST_TO_LABEL: dict[str, str] = {
+    "ActionsAvailableRequest": "Action Required",
+    "SelectTargetsReq": "Select Targets",
+    "MulliganReq": "Mulligan",
+    "GroupReq": "Group Selection",
+    "GroupOptionReq": "Choose Mode",
+    "DeclareAttackersReq": "Declare Attackers",
+    "DeclareBlockersReq": "Declare Blockers",
+    "SearchReq": "Search Library",
+    "DistributionReq": "Distribute",
+    "NumericInputReq": "Choose Number",
+    "PromptReq": "Prompt",
+    "PayCostsReq": "Pay Costs",
+    "AssignDamageReq": "Assign Damage",
+    "OrderCombatDamageReq": "Order Damage",
+    "SelectNReq": "Select Cards",
+    "ChooseStartingPlayerReq": "Play or Draw",
+    "SelectReplacementReq": "Order Replacement",
+    "SelectCountersReq": "Select Counters",
+    "OrderReq": "Order Triggers",
+    "OptionalActionMessage": "Optional Action",
+    "CastingTimeOptionsReq": "Casting Option",
+}
+
+
+class BridgeDecisionPoller:
+    """Polls GRE bridge for decision state changes.
+
+    Detects when a new game decision is pending (or cleared) by polling
+    get_pending_actions() and comparing to previous state. When connected,
+    this replaces the reactive log-diff trigger detection for decisions.
+
+    Usage in the coaching loop:
+        poller = BridgeDecisionPoller(bridge)
+        # Each iteration:
+        trigger = poller.poll()
+        if trigger:
+            poller.enrich_snapshot(curr_state)
+    """
+
+    _MAX_CONSECUTIVE_ERRORS = 3
+
+    def __init__(self, bridge: GREBridge):
+        self._bridge = bridge
+        self._last_request_type: Optional[str] = None
+        self._last_action_sig: Optional[str] = None
+        self._last_has_pending: bool = False
+        self._last_poll_result: Optional[dict[str, Any]] = None
+        self._consecutive_errors: int = 0
+        self._fallback_mode: bool = False
+        self._was_connected: bool = False
+
+    @property
+    def connected(self) -> bool:
+        """Whether bridge polling is active (connected and not in fallback)."""
+        return self._bridge.connected and not self._fallback_mode
+
+    def poll(self) -> Optional[dict[str, Any]]:
+        """Poll bridge for decision state changes.
+
+        Returns a trigger dict when the decision state changes, None otherwise.
+
+        Returns:
+            None if no change, or a dict:
+            {
+                "trigger": "decision_required" | "decision_cleared",
+                "request_type": str | None,
+                "decision_type": str | None,  # mapped decision_context type
+                "has_pending": bool,
+                "actions": list[dict],  # full action data (ActionsAvailable only)
+                "can_pass": bool,
+                "can_cancel": bool,
+            }
+        """
+        if self._fallback_mode:
+            # Periodically try to recover (every ~10 polls from caller)
+            if self._bridge.connected or self._bridge.connect():
+                self._fallback_mode = False
+                self._consecutive_errors = 0
+                logger.info("Bridge decision polling recovered from fallback")
+            else:
+                return None
+
+        # Ensure connection
+        if not self._bridge.connected:
+            if not self._bridge.connect():
+                if self._was_connected:
+                    self._was_connected = False
+                    logger.info("Bridge disconnected, falling back to log-based detection")
+                return None
+
+        if not self._was_connected:
+            self._was_connected = True
+            logger.info("Bridge decision detection active")
+
+        # Poll
+        resp = self._bridge.get_pending_actions()
+        if resp is None:
+            self._consecutive_errors += 1
+            if self._consecutive_errors >= self._MAX_CONSECUTIVE_ERRORS:
+                self._fallback_mode = True
+                logger.warning(
+                    f"Bridge polling failed {self._consecutive_errors}x consecutively, "
+                    "entering fallback mode"
+                )
+            return None
+
+        self._consecutive_errors = 0
+        self._last_poll_result = resp
+
+        has_pending = resp.get("has_pending", False)
+        request_type = resp.get("request_type") if has_pending else None
+        actions = resp.get("actions", [])
+        action_sig = self._compute_action_sig(actions) if actions else None
+
+        # Detect state change
+        changed = False
+        trigger_name: Optional[str] = None
+
+        if has_pending and not self._last_has_pending:
+            # New decision appeared
+            changed = True
+            trigger_name = "decision_required"
+        elif not has_pending and self._last_has_pending:
+            # Decision was cleared
+            changed = True
+            trigger_name = "decision_cleared"
+        elif has_pending and request_type != self._last_request_type:
+            # Different request type (e.g., ActionsAvailable → SelectTargets)
+            changed = True
+            trigger_name = "decision_required"
+        elif has_pending and action_sig != self._last_action_sig:
+            # Same request type but different actions (new legal actions set)
+            changed = True
+            trigger_name = "decision_required"
+
+        # Update tracked state
+        self._last_has_pending = has_pending
+        self._last_request_type = request_type
+        self._last_action_sig = action_sig
+
+        if not changed:
+            return None
+
+        decision_type = _BRIDGE_REQUEST_TO_DECISION_TYPE.get(request_type or "")
+
+        result = {
+            "trigger": trigger_name,
+            "request_type": request_type,
+            "decision_type": decision_type,
+            "has_pending": has_pending,
+            "actions": actions,
+            "can_pass": resp.get("can_pass", False),
+            "can_cancel": resp.get("can_cancel", False),
+            "allow_undo": resp.get("allow_undo", False),
+        }
+
+        if trigger_name == "decision_required":
+            label = _BRIDGE_REQUEST_TO_LABEL.get(request_type or "", request_type or "Unknown")
+            logger.info(
+                f"Bridge detected decision: {label} "
+                f"(type={request_type}, actions={len(actions)})"
+            )
+        else:
+            logger.info(f"Bridge detected decision cleared (was: {self._last_request_type})")
+
+        return result
+
+    def enrich_snapshot(self, snapshot: dict[str, Any]) -> None:
+        """Overlay bridge decision data onto a game state snapshot dict.
+
+        Adds bridge metadata fields and enriches decision/action data
+        when bridge provides fresher information than log parsing.
+
+        Modifies the snapshot dict in-place.
+        """
+        snapshot["_bridge_connected"] = self.connected
+
+        poll = self._last_poll_result
+        if poll is None:
+            return
+
+        has_pending = poll.get("has_pending", False)
+        request_type = poll.get("request_type")
+        actions = poll.get("actions", [])
+
+        snapshot["_bridge_request_type"] = request_type if has_pending else None
+        snapshot["_bridge_actions"] = actions if actions else None
+        snapshot["_bridge_can_pass"] = poll.get("can_pass", False)
+
+        if not has_pending:
+            return
+
+        # Enrich pending_decision if log hasn't caught up yet
+        if not snapshot.get("pending_decision") and request_type:
+            label = _BRIDGE_REQUEST_TO_LABEL.get(request_type, request_type)
+            snapshot["pending_decision"] = label
+            logger.debug(f"Bridge set pending_decision: {label}")
+
+        # Enrich decision_context type from bridge's authoritative request_type
+        decision_type = _BRIDGE_REQUEST_TO_DECISION_TYPE.get(request_type or "")
+        if decision_type:
+            existing_ctx = snapshot.get("decision_context") or {}
+            existing_type = existing_ctx.get("type")
+            # Bridge request type is authoritative — update if missing or generic
+            if not existing_type or existing_type == "unknown_req":
+                snapshot["decision_context"] = {
+                    **existing_ctx,
+                    "type": decision_type,
+                    "_bridge_source": True,
+                }
+                logger.debug(
+                    f"Bridge enriched decision_context: {existing_type} → {decision_type}"
+                )
+
+        # Enrich legal_actions_raw with bridge action data when available
+        # Bridge actions have the latest castability flags + autotap solutions
+        if actions:
+            snapshot["_bridge_actions"] = actions
+
+    @staticmethod
+    def _compute_action_sig(actions: list[dict[str, Any]]) -> str:
+        """Compute a signature for an action list to detect changes."""
+        # Use a lightweight hash of action types + grpIds + instanceIds
+        parts = []
+        for a in actions:
+            parts.append(
+                f"{a.get('actionType', '')}:{a.get('grpId', 0)}:"
+                f"{a.get('instanceId', 0)}:{a.get('abilityGrpId', 0)}"
+            )
+        sig_str = "|".join(parts)
+        return hashlib.md5(sig_str.encode()).hexdigest()[:12]
+
+    def reset(self) -> None:
+        """Reset tracked state (e.g., on match start/end)."""
+        self._last_request_type = None
+        self._last_action_sig = None
+        self._last_has_pending = False
+        self._last_poll_result = None
+
+
 # Module-level singleton for convenience
 _bridge: Optional[GREBridge] = None
+_poller: Optional[BridgeDecisionPoller] = None
 
 
 def get_bridge() -> GREBridge:
@@ -476,3 +759,11 @@ def get_bridge() -> GREBridge:
     if _bridge is None:
         _bridge = GREBridge()
     return _bridge
+
+
+def get_poller() -> BridgeDecisionPoller:
+    """Get or create the module-level bridge decision poller singleton."""
+    global _poller
+    if _poller is None:
+        _poller = BridgeDecisionPoller(get_bridge())
+    return _poller

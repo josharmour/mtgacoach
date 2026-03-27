@@ -954,6 +954,9 @@ def get_game_state() -> dict[str, Any]:
         "timer_state": snap.get("timer_state", {}),
         "action_history": snap.get("action_history", []),
         "sideboard_cards": snap.get("sideboard_cards", []),
+        # ── Bridge decision detection fields ──
+        "bridge_connected": snap.get("_bridge_connected", False),
+        "bridge_request_type": snap.get("_bridge_request_type"),
     }
 
 def clear_pending_combat_steps() -> None:

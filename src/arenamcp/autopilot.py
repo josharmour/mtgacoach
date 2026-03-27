@@ -137,6 +137,7 @@ class AutopilotEngine:
         # GRE bridge for direct action submission (bypasses mouse clicks)
         self._gre_bridge: GREBridge = get_bridge()
         self._gre_bridge_failed_this_plan: bool = False
+        self._bridge_preloaded_actions: Optional[list[dict[str, Any]]] = None
 
         # Execution path tracking
         self._path_stats: dict[str, int] = {}
@@ -453,6 +454,14 @@ class AutopilotEngine:
                 return False
 
             self._clear_events()
+
+            # --- BRIDGE PRELOAD: stash bridge actions for execution phase ---
+            # When the trigger was bridge-detected, actions are already fetched.
+            # Avoids redundant get_pending_actions() call in _try_gre_bridge().
+            bridge_trigger = game_state.get("_bridge_trigger")
+            self._bridge_preloaded_actions = (
+                bridge_trigger.get("actions") if bridge_trigger else None
+            )
 
             # --- VISION PREFETCH: only in vision-heavy mode ---
             if self._should_prefetch_vision(game_state, trigger):
@@ -1398,10 +1407,16 @@ class AutopilotEngine:
         from arenamcp.gre_action_matcher import ACTION_TYPE_MAP
         gre_type = ACTION_TYPE_MAP.get(action.action_type)
         if gre_type:
-            # Try to find matching action by type + card name via pending actions
-            pending = self._gre_bridge.get_pending_actions()
-            if pending and pending.get("has_pending") and pending.get("actions"):
-                bridge_actions = pending["actions"]
+            # Use preloaded bridge actions if available (from bridge trigger detection),
+            # otherwise query the bridge fresh
+            bridge_actions = None
+            if self._bridge_preloaded_actions:
+                bridge_actions = self._bridge_preloaded_actions
+            else:
+                pending = self._gre_bridge.get_pending_actions()
+                if pending and pending.get("has_pending") and pending.get("actions"):
+                    bridge_actions = pending["actions"]
+            if bridge_actions:
                 # Find matching action by GRE type and grpId
                 for idx, ba in enumerate(bridge_actions):
                     ba_type = ba.get("actionType", "")

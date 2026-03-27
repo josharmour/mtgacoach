@@ -453,6 +453,10 @@ class StandaloneCoach:
         self._last_forced_decision_sig: Optional[str] = None
         self._last_forced_decision_ts: float = 0.0
 
+        # Bridge decision poller: proactive decision detection via BepInEx plugin
+        from arenamcp.gre_bridge import get_poller
+        self._bridge_poller = get_poller()
+
     def _set_backend_status(self, status: str) -> None:
         """Update backend status in UI only when the value actually changes."""
         if status == self._last_backend_status:
@@ -1066,6 +1070,7 @@ class StandaloneCoach:
             logger.info(f"Voice input disabled (mode={self._voice_mode})")
 
     # --- Urgency-aware polling intervals ---
+    _POLL_BRIDGE = 0.15     # Bridge connected with pending decision (fast)
     _POLL_URGENT = 0.5      # Pending decision, mulligan, stack interaction
     _POLL_ACTIVE = 1.0      # Our turn with priority, combat phase
     _POLL_NORMAL = 1.5      # Opponent's turn, calm board state
@@ -1090,7 +1095,10 @@ class StandaloneCoach:
             return self._POLL_IDLE
 
         # Pending decision — urgent (player must act)
+        # Use faster bridge polling when bridge is providing decision data
         if game_state.get("pending_decision"):
+            if self._bridge_poller.connected:
+                return self._POLL_BRIDGE
             return self._POLL_URGENT
 
         # Stack has items — something is resolving, need quick updates
@@ -1363,6 +1371,7 @@ class StandaloneCoach:
                     self._recent_gre_log.clear()
                     self._vlm_card_cache.clear()
                     self._vlm_card_failures.clear()
+                    self._bridge_poller.reset()
                     if self._coach:
                         self._coach.clear_deck_strategy()
                 if match_id_changed:
@@ -1419,6 +1428,7 @@ class StandaloneCoach:
                     self._recent_gre_log.clear()
                     self._vlm_card_cache.clear()
                     self._vlm_card_failures.clear()
+                    self._bridge_poller.reset()
                     if self._coach:
                         self._coach.clear_deck_strategy()
                     logger.info("Cleared advice history for new match")
@@ -1532,37 +1542,62 @@ class StandaloneCoach:
                     except Exception as e:
                         logger.debug(f"Draft detection error: {e}")
 
+                    # --- Bridge-first decision detection ---
+                    # Poll the GRE bridge BEFORE log-based triggers. When the
+                    # bridge is connected, it authoritatively detects decision
+                    # state changes (new pending interaction, cleared, or
+                    # action list changed) — no log-diff heuristics needed.
+                    bridge_trigger = None
+                    if self._bridge_poller:
+                        bridge_trigger = self._bridge_poller.poll()
+                        if bridge_trigger:
+                            self._bridge_poller.enrich_snapshot(curr_state)
+                        elif self._bridge_poller.connected:
+                            # No change, but still enrich snapshot with latest bridge data
+                            self._bridge_poller.enrich_snapshot(curr_state)
+
                     triggers = self._trigger.check_triggers(prev_state, curr_state)
+
+                    # Bridge-detected decision takes priority over log-based detection
+                    if bridge_trigger and bridge_trigger["trigger"] == "decision_required":
+                        if "decision_required" not in triggers:
+                            triggers.insert(0, "decision_required")
+                        # Attach bridge data for downstream consumers (autopilot, prompts)
+                        curr_state["_bridge_trigger"] = bridge_trigger
 
                     # BACKSTOP: Force decision_required for pending decisions
                     # that trigger detection may have missed (short-lived scry,
                     # autopilot continuation, malformed GRE chunks).
+                    # Only needed when bridge is NOT providing decision detection.
+                    bridge_active = self._bridge_poller and self._bridge_poller.connected
                     pending_now = curr_state.get("pending_decision")
-                    if pending_now and "decision_required" not in triggers:
-                        # Scry/surveil are time-critical — always force trigger
-                        if pending_now in ("Group Selection", "Order Cards"):
-                            triggers.append("decision_required")
-                            logger.info(f"Forced decision_required for {pending_now}")
 
-                    if self._autopilot_enabled and self._autopilot and pending_now:
-                        if "decision_required" not in triggers:
-                            dec_ctx = curr_state.get("decision_context") or {}
-                            dec_type = dec_ctx.get("type", "")
-                            legal = curr_state.get("legal_actions", []) or []
-                            sig = f"{pending_now}|{dec_type}|{len(legal)}"
-                            now = time.time()
-                            if (
-                                sig != self._last_forced_decision_sig
-                                or (now - self._last_forced_decision_ts) > 2.0
-                            ):
+                    if not bridge_active:
+                        if pending_now and "decision_required" not in triggers:
+                            # Scry/surveil are time-critical — always force trigger
+                            if pending_now in ("Group Selection", "Order Cards"):
                                 triggers.append("decision_required")
-                                self._last_forced_decision_sig = sig
-                                self._last_forced_decision_ts = now
-                                logger.info(
-                                    f"Autopilot backstop: forced decision_required for '{pending_now}'"
-                                )
-                    else:
-                        self._last_forced_decision_sig = None
+                                logger.info(f"Forced decision_required for {pending_now}")
+
+                        if self._autopilot_enabled and self._autopilot and pending_now:
+                            if "decision_required" not in triggers:
+                                dec_ctx = curr_state.get("decision_context") or {}
+                                dec_type = dec_ctx.get("type", "")
+                                legal = curr_state.get("legal_actions", []) or []
+                                sig = f"{pending_now}|{dec_type}|{len(legal)}"
+                                now = time.time()
+                                if (
+                                    sig != self._last_forced_decision_sig
+                                    or (now - self._last_forced_decision_ts) > 2.0
+                                ):
+                                    triggers.append("decision_required")
+                                    self._last_forced_decision_sig = sig
+                                    self._last_forced_decision_ts = now
+                                    logger.info(
+                                        f"Autopilot backstop: forced decision_required for '{pending_now}'"
+                                    )
+                        else:
+                            self._last_forced_decision_sig = None
 
                     # Debug: Log trigger results
                     if triggers:
@@ -1686,7 +1721,9 @@ class StandaloneCoach:
 
                         # DELAY BUFFER: For mulligan decisions, wait for hand zone to populate.
                         # SubmitDeckReq arrives before the GameStateMessage with hand cards.
-                        if trigger == "decision_required" and curr_state.get("pending_decision") == "Mulligan":
+                        # Skip when bridge detected the decision — bridge data is already live.
+                        bridge_detected = curr_state.get("_bridge_trigger") is not None
+                        if trigger == "decision_required" and curr_state.get("pending_decision") == "Mulligan" and not bridge_detected:
                             time.sleep(0.5)  # 500ms to allow hand zone update
                             try:
                                 self._mcp.poll_log()

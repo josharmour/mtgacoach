@@ -210,7 +210,8 @@ class ActionPlanner:
                 plan = fallback
 
         # Attach GRE action refs if raw actions are available
-        raw = legal_actions_raw or game_state.get("legal_actions_raw")
+        # Prefer bridge actions (freshest data from live game state)
+        raw = legal_actions_raw or game_state.get("_bridge_actions") or game_state.get("legal_actions_raw")
         if raw and plan.actions:
             self._attach_gre_refs(plan, raw, game_state)
 
@@ -316,6 +317,11 @@ class ActionPlanner:
 
         if decision_context:
             parts.append(f"\nDecision: {json.dumps(decision_context, indent=2)}")
+
+        # Bridge request type helps the LLM understand the exact GRE request
+        bridge_req = game_state.get("_bridge_request_type")
+        if bridge_req:
+            parts.append(f"\nGRE Request Type: {bridge_req}")
 
         parts.append("\nRespond with ONLY a JSON action plan matching the schema.")
 
