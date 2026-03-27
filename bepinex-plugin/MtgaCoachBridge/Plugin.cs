@@ -118,23 +118,25 @@ namespace MtgaCoachBridge
 
         private void HandleClient(NamedPipeServerStream pipe)
         {
-            // Read with a timeout: accumulate bytes until newline or 10s idle.
-            // Named pipes don't support ReadTimeout, so we poll with short reads
-            // and check elapsed time between data. This detects mystery clients
-            // that connect but never send anything.
+            // Read with a timeout: accumulate bytes until newline or timeout.
+            // Named pipes don't support ReadTimeout, so we use async BeginRead
+            // with a deadline. First read uses 500ms to quickly detect mystery
+            // clients that connect but never send data. Subsequent reads use
+            // 30s since a real client may be idle between commands.
             var buf = new byte[4096];
             var lineBuffer = new System.IO.MemoryStream();
             var writer = new StreamWriter(pipe, Encoding.UTF8, 4096, leaveOpen: true)
             {
                 AutoFlush = true
             };
+            int readTimeoutMs = 500; // Short first-read timeout
 
             while (_running && pipe.IsConnected)
             {
                 string line;
                 try
                 {
-                    line = ReadLineWithTimeout(pipe, lineBuffer, buf, 10000);
+                    line = ReadLineWithTimeout(pipe, lineBuffer, buf, readTimeoutMs);
                 }
                 catch
                 {
@@ -147,6 +149,9 @@ namespace MtgaCoachBridge
                 line = line.Trim();
                 if (string.IsNullOrEmpty(line))
                     continue;
+
+                // First real data received — switch to long timeout for subsequent reads
+                readTimeoutMs = 30000;
 
                 try
                 {
