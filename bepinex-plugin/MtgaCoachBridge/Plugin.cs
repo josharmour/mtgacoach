@@ -117,11 +117,6 @@ namespace MtgaCoachBridge
 
         private void HandleClient(NamedPipeServerStream pipe)
         {
-            // Set read timeout so we detect dead clients within 30s instead of
-            // blocking forever on ReadLine(). A healthy client sends pings or
-            // commands regularly; a stale process goes silent.
-            pipe.ReadTimeout = 30000;
-
             using var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, leaveOpen: true);
             using var writer = new StreamWriter(pipe, Encoding.UTF8, 4096, leaveOpen: true)
             {
@@ -134,12 +129,6 @@ namespace MtgaCoachBridge
                 try
                 {
                     line = reader.ReadLine();
-                }
-                catch (IOException)
-                {
-                    // ReadTimeout expired or pipe broken — check if still alive
-                    if (!pipe.IsConnected) break;
-                    continue;
                 }
                 catch
                 {
