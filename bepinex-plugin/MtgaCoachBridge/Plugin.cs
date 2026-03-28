@@ -97,32 +97,31 @@ namespace MtgaCoachBridge
                     pipe.WaitForConnection();
                     _log.LogInfo("Pipe client connected");
 
-                    // Only use watchdog on first iteration — the mystery client
-                    // (MTGA internals) always grabs the first pipe instance.
-                    // Subsequent iterations are real mtgacoach clients.
-                    int[] gotData = null;
+                    // First iteration: the mystery client (MTGA internals) grabs
+                    // the pipe instantly but never sends data. Don't enter
+                    // HandleClient (blocking ReadLine can't be interrupted on Mono).
+                    // Instead, wait 200ms and check if any data arrived.
                     if (iteration == 1)
                     {
-                        var watchdogPipe = pipe;
-                        gotData = new int[] { 0 };
-                        var watchdog = new Thread(() =>
+                        Thread.Sleep(200);
+                        // NumberOfBytesAvailable via PeekNamedPipe isn't available
+                        // on NamedPipeServerStream. Just check IsConnected — if the
+                        // mystery client disconnected, great. If still connected but
+                        // silent, dispose and move on.
+                        if (pipe.IsConnected)
                         {
-                            Thread.Sleep(200);
-                            if (gotData[0] == 0)
-                            {
-                                _log.LogInfo("Watchdog: no data in 200ms, disconnecting mystery client");
-                                try { watchdogPipe.Dispose(); } catch { }
-                            }
-                        })
+                            _log.LogInfo("Iteration 1: client sent no data in 200ms, disposing (mystery client)");
+                        }
+                        else
                         {
-                            IsBackground = true,
-                            Name = "MtgaCoachBridge-Watchdog"
-                        };
-                        watchdog.Start();
+                            _log.LogInfo("Iteration 1: client already disconnected (mystery client)");
+                        }
+                        // Skip HandleClient entirely — dispose and loop to iteration 2
+                        continue;
                     }
 
-                    HandleClient(pipe, gotData);
-                    _log.LogInfo($"HandleClient returned, loop continuing (iteration {iteration})");
+                    HandleClient(pipe);
+                    _log.LogInfo($"HandleClient returned (iteration {iteration})");
                 }
                 catch (Exception ex)
                 {
@@ -139,7 +138,7 @@ namespace MtgaCoachBridge
             }
         }
 
-        private void HandleClient(NamedPipeServerStream pipe, int[] gotDataFlag = null)
+        private void HandleClient(NamedPipeServerStream pipe)
         {
             using var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, leaveOpen: true);
             using var writer = new StreamWriter(pipe, Encoding.UTF8, 4096, leaveOpen: true)
@@ -165,10 +164,6 @@ namespace MtgaCoachBridge
                 line = line.Trim();
                 if (string.IsNullOrEmpty(line))
                     continue;
-
-                // Signal watchdog that we got real data — cancel the kill timer
-                if (gotDataFlag != null)
-                    gotDataFlag[0] = 1;
 
                 try
                 {
