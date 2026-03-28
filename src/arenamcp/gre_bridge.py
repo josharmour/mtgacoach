@@ -23,7 +23,10 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 # Named pipe path (Windows named pipe)
-PIPE_NAME = r"\\.\pipe\mtgacoach_bridge_v1"
+# Python is the SERVER, BepInEx plugin is the CLIENT.
+# This avoids MTGA internals grabbing the pipe and scene transitions
+# killing the pipe server inside the game process.
+PIPE_NAME = r"\\.\pipe\mtgacoach_bridge_v2"
 PIPE_TIMEOUT_MS = 3000
 COMMAND_TIMEOUT = 5.0
 
@@ -45,16 +48,22 @@ class GREBridge:
         self._connected = False
         self._last_connect_attempt = 0.0
         self._reconnect_cooldown = 2.0  # seconds between reconnect attempts
+        self._server_pipe_handle = None  # Raw HANDLE for the server pipe (created once)
+        self._pipe_created = False  # Whether the server pipe exists
 
     @property
     def connected(self) -> bool:
         return self._connected
 
     def connect(self) -> bool:
-        """Attempt to connect to the GRE bridge pipe.
+        """Create a named pipe SERVER and wait for the BepInEx plugin to connect.
 
-        Returns True if connected, False if the pipe is not available.
-        Respects a cooldown between reconnect attempts.
+        Python owns the pipe (server). The BepInEx plugin connects as client.
+        This avoids MTGA-internal issues (mystery clients, scene transitions,
+        MonoBehaviour lifecycle) since the pipe lives in the Python process.
+
+        Two-phase: first call creates the pipe, subsequent calls check if a
+        client connected. Non-blocking — safe to call from the polling loop.
         """
         if self._connected:
             return True
@@ -69,55 +78,82 @@ class GREBridge:
             import ctypes
             import ctypes.wintypes
 
-            GENERIC_READ = 0x80000000
-            GENERIC_WRITE = 0x40000000
-            OPEN_EXISTING = 3
-            INVALID_HANDLE_VALUE = ctypes.wintypes.HANDLE(-1).value
-
-            # Use WinDLL with use_last_error=True so ctypes captures
-            # GetLastError() immediately after each call (before Python
-            # or other threads can clobber it). ctypes.windll doesn't
-            # support use_last_error reliably.
             kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel32.CreateNamedPipeW.restype = ctypes.wintypes.HANDLE
+            kernel32.ConnectNamedPipe.restype = ctypes.wintypes.BOOL
+            kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
 
-            # Set correct restype so handle comparison works on 64-bit Windows.
-            # Default restype is c_int (32-bit) but HANDLE is pointer-sized (64-bit).
-            kernel32.CreateFileW.restype = ctypes.wintypes.HANDLE
+            PIPE_ACCESS_DUPLEX = 0x00000003
+            FILE_FLAG_OVERLAPPED = 0x40000000
+            PIPE_TYPE_BYTE = 0x00000000
+            PIPE_READMODE_BYTE = 0x00000000
+            PIPE_NOWAIT = 0x00000001
+            INVALID_HANDLE_VALUE = ctypes.wintypes.HANDLE(-1).value
+            BUFFER_SIZE = 4096
+            ERROR_PIPE_CONNECTED = 535
+            ERROR_PIPE_LISTENING = 536
+            ERROR_NO_DATA = 232
 
-            handle = kernel32.CreateFileW(
-                PIPE_NAME,
-                GENERIC_READ | GENERIC_WRITE,
-                0,  # no sharing
-                None,  # default security
-                OPEN_EXISTING,
-                0,  # default attributes
-                None,
-            )
+            # Phase 1: Create the pipe if it doesn't exist yet
+            if not self._pipe_created:
+                handle = kernel32.CreateNamedPipeW(
+                    PIPE_NAME,
+                    PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT,
+                    1,           # max instances
+                    BUFFER_SIZE,
+                    BUFFER_SIZE,
+                    0,           # default timeout
+                    None,        # default security
+                )
 
-            if handle == INVALID_HANDLE_VALUE:
-                err = ctypes.get_last_error()
-                # 2 = ERROR_FILE_NOT_FOUND (pipe doesn't exist / plugin not loaded)
-                # 231 = ERROR_PIPE_BUSY (another client has the pipe)
-                if err == 231:
-                    logger.warning(
-                        "GRE bridge pipe busy — another process holds the connection. "
-                        "Kill stale python processes or restart MTGA."
-                    )
-                elif err == 2:
-                    logger.info("GRE bridge pipe not found (BepInEx plugin not loaded?)")
+                if handle == INVALID_HANDLE_VALUE:
+                    err = ctypes.get_last_error()
+                    logger.debug(f"GRE bridge CreateNamedPipe failed (error {err})")
+                    return False
+
+                self._server_pipe_handle = handle
+                self._pipe_created = True
+                logger.info(f"GRE bridge pipe server created: {PIPE_NAME}")
+
+                # Initiate non-blocking ConnectNamedPipe
+                kernel32.ConnectNamedPipe(handle, None)
+                # With PIPE_NOWAIT, this returns immediately.
+                # Check error: LISTENING means waiting, CONNECTED means ready.
+
+            # Phase 2: Check if a client connected
+            handle = self._server_pipe_handle
+            result = kernel32.ConnectNamedPipe(handle, None)
+            err = ctypes.get_last_error()
+
+            if not result:
+                if err == ERROR_PIPE_CONNECTED:
+                    pass  # Client already connected — success!
+                elif err == ERROR_NO_DATA:
+                    pass  # Client connected (NOWAIT mode)
+                elif err == ERROR_PIPE_LISTENING:
+                    # Still waiting for client — not connected yet
+                    return False
                 else:
-                    logger.info(f"GRE bridge pipe not available (error {err})")
-                return False
+                    logger.debug(f"GRE bridge ConnectNamedPipe check: error {err}")
+                    return False
 
-            # Wrap the raw handle in a Python file object
+            # Client connected! Wrap handle in a file object.
+            # Switch pipe back to blocking mode for normal I/O
+            PIPE_WAIT = 0x00000000
+            mode = ctypes.wintypes.DWORD(PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT)
+            kernel32.SetNamedPipeHandleState(handle, ctypes.byref(mode), None, None)
+
             import msvcrt
             import os
             fd = msvcrt.open_osfhandle(handle, 0)
             self._pipe_handle = handle
             self._pipe_fd = fd
-            # Open for binary read/write
             self._pipe_file = os.fdopen(fd, "r+b", buffering=0)
             self._connected = True
+            self._pipe_created = False  # Reset so next disconnect creates fresh
+
+            logger.info("GRE bridge: plugin connected to our pipe server")
 
             # Verify with ping
             try:
@@ -135,25 +171,33 @@ class GREBridge:
                 return False
 
         except ImportError:
-            # Not on Windows — named pipes not available
             logger.debug("GRE bridge requires Windows (named pipes)")
-            self._reconnect_cooldown = 60.0  # Don't spam on non-Windows
+            self._reconnect_cooldown = 60.0
             return False
         except Exception as e:
             logger.info(f"GRE bridge connect error: {e}")
             return False
 
     def disconnect(self):
-        """Close the pipe connection."""
+        """Close the pipe connection and server handle."""
         self._connected = False
+        self._pipe_created = False
         try:
             if self._pipe_file:
                 self._pipe_file.close()
         except Exception:
             pass
+        # If server pipe was created but no file wrapper, close raw handle
+        if self._server_pipe_handle and not self._pipe_file:
+            try:
+                import ctypes
+                ctypes.WinDLL('kernel32').CloseHandle(self._server_pipe_handle)
+            except Exception:
+                pass
         self._pipe_file = None
         self._pipe_fd = None
         self._pipe_handle = None
+        self._server_pipe_handle = None
 
     def _send_command(self, cmd: dict[str, Any]) -> dict[str, Any]:
         """Send a JSON command and read the JSON response.

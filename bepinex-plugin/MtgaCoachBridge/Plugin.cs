@@ -36,14 +36,10 @@ namespace MtgaCoachBridge
         {
             _log = Logger;
             _log.LogInfo($"MtgaCoachBridge v{PluginInfo.Version} loaded");
-
-            // Survive scene transitions (loading → menu → match).
-            // Without this, Unity destroys the MonoBehaviour on scene change,
-            // setting _running=false and killing the pipe server thread.
             DontDestroyOnLoad(gameObject);
 
             _running = true;
-            _pipeThread = new Thread(PipeServerLoop)
+            _pipeThread = new Thread(PipeClientLoop)
             {
                 IsBackground = true,
                 Name = "MtgaCoachBridge-Pipe"
@@ -53,11 +49,7 @@ namespace MtgaCoachBridge
 
         private void OnDestroy()
         {
-            // Do NOT set _running = false here.
-            // MTGA scene transitions call OnDestroy even with DontDestroyOnLoad
-            // in some cases. The pipe thread must survive scene changes.
-            // The thread is IsBackground=true so it dies with the process.
-            _log.LogInfo("OnDestroy called (scene transition?) — pipe thread continues");
+            _log.LogInfo("OnDestroy called — pipe thread continues (IsBackground)");
         }
 
         private void Update()
@@ -81,77 +73,50 @@ namespace MtgaCoachBridge
         }
 
         // -------------------------------------------------------------------
-        // Named pipe server
+        // Named pipe CLIENT — connects to Python-owned server pipe.
+        // Reversed architecture: Python creates the pipe, plugin connects.
+        // This avoids MTGA internals grabbing the pipe and scene transitions
+        // killing the server.
         // -------------------------------------------------------------------
 
-        private void PipeServerLoop()
+        private void PipeClientLoop()
         {
-            int iteration = 0;
-            while (_running)
+            while (true)
             {
-                iteration++;
-                _log.LogInfo($"Pipe server loop iteration {iteration}");
-                NamedPipeServerStream pipe = null;
+                NamedPipeClientStream pipe = null;
                 try
                 {
-                    pipe = new NamedPipeServerStream(
-                        "mtgacoach_bridge_v1",
-                        PipeDirection.InOut,
-                        2,
-                        PipeTransmissionMode.Byte,
-                        PipeOptions.None
+                    pipe = new NamedPipeClientStream(
+                        ".",
+                        "mtgacoach_bridge_v2",
+                        PipeDirection.InOut
                     );
 
-                    _log.LogInfo("Pipe server waiting for connection on \\\\.\\pipe\\mtgacoach_bridge_v1");
-                    pipe.WaitForConnection();
-                    _log.LogInfo("Pipe client connected");
-
-                    // First iteration: the mystery client (MTGA internals) grabs
-                    // the pipe instantly but never sends data. Don't enter
-                    // HandleClient (blocking ReadLine can't be interrupted on Mono).
-                    // Instead, wait 200ms and check if any data arrived.
-                    if (iteration == 1)
-                    {
-                        Thread.Sleep(200);
-                        // NumberOfBytesAvailable via PeekNamedPipe isn't available
-                        // on NamedPipeServerStream. Just check IsConnected — if the
-                        // mystery client disconnected, great. If still connected but
-                        // silent, dispose and move on.
-                        if (pipe.IsConnected)
-                        {
-                            _log.LogInfo("Iteration 1: client sent no data in 200ms, disposing (mystery client)");
-                        }
-                        else
-                        {
-                            _log.LogInfo("Iteration 1: client already disconnected (mystery client)");
-                        }
-                        // Skip HandleClient entirely — dispose and loop to iteration 2
-                        continue;
-                    }
+                    _log.LogInfo("Pipe client connecting to \\\\.\\pipe\\mtgacoach_bridge_v2...");
+                    pipe.Connect(2000); // 2s timeout — retry if Python isn't up yet
+                    _log.LogInfo("Pipe client connected to Python server");
 
                     HandleClient(pipe);
-                    _log.LogInfo($"HandleClient returned (iteration {iteration})");
+                    _log.LogInfo("HandleClient returned, will reconnect");
+                }
+                catch (TimeoutException)
+                {
+                    // Python server not ready yet — retry
                 }
                 catch (Exception ex)
                 {
-                    if (_running)
-                        _log.LogError($"Pipe server loop error (iteration {iteration}): {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+                    _log.LogWarning($"Pipe client error: {ex.GetType().Name}: {ex.Message}");
                 }
                 finally
                 {
                     try { pipe?.Dispose(); } catch { }
-                    _log.LogInfo($"Pipe server loop: finally block done (iteration {iteration}), will sleep then retry");
                 }
 
-                if (_running)
-                {
-                    _log.LogInfo($"Pipe server loop: sleeping 100ms before iteration {iteration + 1}");
-                    Thread.Sleep(100);
-                }
+                Thread.Sleep(1000); // Wait before reconnect attempt
             }
         }
 
-        private void HandleClient(NamedPipeServerStream pipe)
+        private void HandleClient(PipeStream pipe)
         {
             using var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, leaveOpen: true);
             using var writer = new StreamWriter(pipe, Encoding.UTF8, 4096, leaveOpen: true)
@@ -159,7 +124,7 @@ namespace MtgaCoachBridge
                 AutoFlush = true
             };
 
-            while (_running && pipe.IsConnected)
+            while (pipe.IsConnected)
             {
                 string line;
                 try
