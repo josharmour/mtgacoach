@@ -181,6 +181,22 @@ namespace MtgaCoachBridge
                 try
                 {
                     var json = JObject.Parse(line);
+                    string action = json.Value<string>("action") ?? "";
+
+                    // Handle ping directly on pipe thread — doesn't need Unity main thread.
+                    // This is critical because Update() stops after OnDestroy (scene transitions).
+                    if (action == "ping")
+                    {
+                        var pingResp = new JObject
+                        {
+                            ["ok"] = true,
+                            ["version"] = PluginInfo.Version
+                        };
+                        writer.WriteLine(pingResp.ToString(Formatting.None));
+                        continue;
+                    }
+
+                    // All other commands need Unity main thread (GameManager access)
                     var cmd = new PipeCommand(json);
                     _pendingCommands.Enqueue(cmd);
 
