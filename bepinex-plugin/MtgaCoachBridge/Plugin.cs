@@ -126,15 +126,19 @@ namespace MtgaCoachBridge
                 catch (Exception ex)
                 {
                     if (_running)
-                        _log.LogWarning($"Pipe server loop error (iteration {iteration}): {ex.GetType().Name}: {ex.Message}");
+                        _log.LogError($"Pipe server loop error (iteration {iteration}): {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
                 }
                 finally
                 {
                     try { pipe?.Dispose(); } catch { }
+                    _log.LogInfo($"Pipe server loop: finally block done (iteration {iteration}), will sleep then retry");
                 }
 
                 if (_running)
+                {
+                    _log.LogInfo($"Pipe server loop: sleeping 100ms before iteration {iteration + 1}");
                     Thread.Sleep(100);
+                }
             }
         }
 
