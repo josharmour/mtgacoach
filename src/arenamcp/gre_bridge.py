@@ -222,7 +222,9 @@ class GREBridge:
                     break
                 response_bytes += chunk
 
-            return json.loads(response_bytes.decode("utf-8"))
+            # Strip UTF-8 BOM if present (C# StreamWriter may emit one)
+            text = response_bytes.decode("utf-8-sig")
+            return json.loads(text)
 
         except (BrokenPipeError, OSError, IOError) as e:
             self.disconnect()

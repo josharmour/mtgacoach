@@ -119,7 +119,7 @@ namespace MtgaCoachBridge
         private void HandleClient(PipeStream pipe)
         {
             using var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, leaveOpen: true);
-            using var writer = new StreamWriter(pipe, Encoding.UTF8, 4096, leaveOpen: true)
+            using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true)
             {
                 AutoFlush = true
             };
