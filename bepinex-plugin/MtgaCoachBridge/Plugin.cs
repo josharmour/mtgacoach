@@ -53,7 +53,11 @@ namespace MtgaCoachBridge
 
         private void OnDestroy()
         {
-            _running = false;
+            // Do NOT set _running = false here.
+            // MTGA scene transitions call OnDestroy even with DontDestroyOnLoad
+            // in some cases. The pipe thread must survive scene changes.
+            // The thread is IsBackground=true so it dies with the process.
+            _log.LogInfo("OnDestroy called (scene transition?) — pipe thread continues");
         }
 
         private void Update()
