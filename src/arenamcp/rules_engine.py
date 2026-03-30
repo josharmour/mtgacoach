@@ -147,6 +147,13 @@ class RulesEngine:
             "mana_value_le": None,
         }
 
+        if "earthbend" in text:
+            req["types"].add("land")
+            req["permanent_target"] = True
+            req["must_control"] = "you"
+            req["zones"].add("battlefield")
+            return req
+
         if "target opponent" in text:
             req["player_target"] = True
             req["must_control"] = "opponent"
@@ -345,6 +352,8 @@ class RulesEngine:
             score += 5
         if "creature" in type_line:
             score += 2
+        if "land" in type_line and not card.get("is_tapped"):
+            score += 2
         if "flying" in (card.get("oracle_text") or "").lower():
             score += 1
         score += int(power) + int(toughness)
@@ -360,11 +369,15 @@ class RulesEngine:
 
         source_id = decision_context.get("source_id")
         source_card = decision_context.get("source_card") or "spell"
-        source_oracle = ""
+        source_oracle = str(
+            decision_context.get("source_oracle_text")
+            or decision_context.get("source_card_oracle_text")
+            or ""
+        )
         for obj in game_state.get("stack", []):
             if obj.get("instance_id") == source_id:
-                source_oracle = obj.get("oracle_text", "")
-                source_card = obj.get("name", source_card)
+                source_oracle = source_oracle or obj.get("oracle_text", "")
+                source_card = decision_context.get("source_card") or obj.get("name", source_card)
                 break
 
         req = RulesEngine._infer_target_requirements(source_oracle)

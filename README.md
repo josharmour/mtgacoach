@@ -16,13 +16,23 @@ Real-time AI coaching for Magic: The Gathering Arena. Watches your live games an
 
 ### Option 1: Installer
 
-Download [**ArenaMCP-Setup.exe**](https://github.com/josharmour/mtgacoach/releases/latest/download/ArenaMCP-Setup.exe) from the latest release.
+Download [**mtgacoach-Setup.exe**](https://github.com/josharmour/mtgacoach/releases/latest/download/mtgacoach-Setup.exe) from the latest release.
 
 ### Option 2: Manual
 
 1. Install [Python 3.10+](https://python.org) (check "Add Python to PATH")
 2. Double-click **`install.bat`** and follow the setup wizard
-3. Double-click **`coach.bat`** to launch
+3. Double-click **`launch.bat`** to open the launcher
+4. Use **Launch Coach** or **Launch Autopilot** from the GUI
+
+`launch.bat` is the single Windows launcher entrypoint for repo/manual installs.
+Installed builds should create one Start Menu entry and one desktop shortcut that
+launch the same surface with the proper icon.
+
+The Windows launcher keeps mutable runtime files under `%LOCALAPPDATA%\mtgacoach`
+so the installed app can live safely under `Program Files`. Installed builds should
+create a single Start Menu entry and desktop shortcut that launch this same entrypoint
+with the proper icon.
 
 See [INSTALL.md](INSTALL.md) for details.
 
@@ -66,6 +76,8 @@ Switch between modes anytime in the TUI.
 - **Wrong player / advice is backwards** — Press F8 to swap seat
 - **No voice output** — TTS models download automatically on first launch (~340MB)
 - **Ollama connection refused** — Make sure Ollama is running: `ollama serve`
+- **BepInEx / bridge plugin missing** — Open `launch.bat` and use the Repair tab
+- **Launcher says setup required** — Run `install.bat` to create the per-user runtime under `%LOCALAPPDATA%\mtgacoach`
 - **Run diagnostics** — `python -m arenamcp.diagnose`
 
 ## License

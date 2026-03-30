@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "arenamcp"
-version = "1.6.1"
+version = "1.7.0"
 description = "Real-time MCP server bridging MTGA game logs to Claude for conversational game analysis"
 requires-python = ">=3.10"
 license = "MIT"
@@ -20,7 +20,7 @@ dependencies = [
 [project.optional-dependencies]
 voice = [
     "faster-whisper>=1.0.0",
-    "kokoro>=0.3.0",
+    "kokoro-onnx",
     "soundfile>=0.12.0",
 ]
 llm = [

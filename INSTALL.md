@@ -9,6 +9,8 @@
   - During installation, **check "Add Python to PATH"**
 - **MTGA** installed and launched at least once
   - In MTGA Settings, enable **"Detailed Logs (Plugin Support)"**
+- **BepInEx + MtgaCoachBridge plugin**
+  - The new GUI launcher / future installer is intended to detect and repair this for you
 
 ### AI Backend (pick one)
 
@@ -45,7 +47,23 @@ The setup wizard will:
 5. Voice input mode (push-to-talk, voice activation, or disabled)
 6. Save everything to `~/.arenamcp/settings.json`
 
-### 4. Set up your AI backend
+### 4. Open the GUI launcher
+
+Double-click **`launch.bat`**.
+
+The launcher will:
+- detect MTGA
+- verify the per-user runtime under `%LOCALAPPDATA%\mtgacoach`
+- check whether BepInEx is installed
+- check whether `MtgaCoachBridge.dll` is installed
+- offer repair actions for the bridge stack
+- launch Coach or Autopilot
+
+`launch.bat` is the canonical Windows entrypoint for repo/manual installs.
+Installed builds should point their Start Menu and desktop shortcuts at the same
+launcher surface through the installer.
+
+### 5. Set up your AI backend
 
 #### Option A: Online (mtgacoach.com subscription)
 
@@ -63,11 +81,15 @@ ollama pull gemma3:12b    # Better quality, 8GB VRAM
 ```
 3. In the coach TUI, type: `/local ollama`
 
-### 5. Launch the coach
+### 6. Launch the coach
 
-Double-click **`coach.bat`**.
+Use **Launch Coach** or **Launch Autopilot** from the launcher.
 
-Start an MTGA game and the coach will begin tracking automatically.
+The current GUI is the single launcher / repair surface. The main coaching runtime still
+opens the existing app UI after launch.
+
+For installed builds, the app files can live under `Program Files` while the setup
+wizard creates the Python runtime and mutable support files under `%LOCALAPPDATA%\mtgacoach`.
 
 ---
 

@@ -2533,17 +2533,26 @@ class StandaloneCoach:
     @staticmethod
     def _get_package_versions() -> dict[str, str]:
         """Get versions of key installed packages."""
-        packages = [
-            "textual", "openai", "mcp", "watchdog", "requests",
-            "faster_whisper", "kokoro", "anthropic", "google.genai",
-        ]
+        import importlib
+
         versions: dict[str, str] = {}
-        for pkg in packages:
+        package_imports = {
+            "textual": "textual",
+            "openai": "openai",
+            "mcp": "mcp",
+            "watchdog": "watchdog",
+            "requests": "requests",
+            "faster_whisper": "faster_whisper",
+            "kokoro-onnx": "kokoro_onnx",
+            "anthropic": "anthropic",
+            "google.genai": "google.genai",
+        }
+        for display_name, import_name in package_imports.items():
             try:
-                mod = __import__(pkg)
-                versions[pkg] = getattr(mod, "__version__", "installed")
+                mod = importlib.import_module(import_name)
+                versions[display_name] = getattr(mod, "__version__", "installed")
             except ImportError:
-                versions[pkg] = "not installed"
+                versions[display_name] = "not installed"
         return versions
 
     def _get_mtga_log_status(self) -> dict:

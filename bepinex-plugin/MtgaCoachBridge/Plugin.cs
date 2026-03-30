@@ -463,6 +463,19 @@ namespace MtgaCoachBridge
                 resp["decision_context"] = BuildCastingTimeOptionDecisionContext(entries);
             }
 
+            var requestPayload = BuildPendingRequestPayload(request);
+            if (requestPayload.Count > 0)
+            {
+                resp["request_payload"] = requestPayload;
+            }
+
+            if (resp["decision_context"] == null)
+            {
+                var decisionContext = BuildPendingRequestDecisionContext(request, requestPayload);
+                if (decisionContext != null && decisionContext.Count > 0)
+                    resp["decision_context"] = decisionContext;
+            }
+
             cmd.SetResponse(resp);
         }
 
@@ -617,6 +630,80 @@ namespace MtgaCoachBridge
             }
         }
 
+        private static JObject BuildPendingRequestPayload(BaseUserRequest request)
+        {
+            var payload = new JObject();
+            var requestType = request.Type.ToString();
+            payload["requestType"] = requestType;
+            payload["requestClass"] = request.GetType().Name;
+
+            foreach (var prop in request.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (!prop.CanRead || prop.GetIndexParameters().Length != 0)
+                    continue;
+
+                if (ShouldSkipPendingRequestProperty(requestType, prop.Name))
+                    continue;
+
+                object value;
+                try
+                {
+                    value = prop.GetValue(request, null);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (IsNullOrEmptyValue(value) || !IsInterestingPendingRequestProperty(prop.Name, value))
+                    continue;
+
+                var token = SerializePendingRequestValue(value, 0);
+                if (token != null)
+                    payload[ToCamelCase(prop.Name)] = token;
+            }
+
+            return payload;
+        }
+
+        private static JObject BuildPendingRequestDecisionContext(BaseUserRequest request, JObject requestPayload)
+        {
+            var requestType = request.Type.ToString();
+            var context = new JObject
+            {
+                ["requestType"] = requestType,
+                ["requestClass"] = request.GetType().Name
+            };
+
+            var mappedType = MapRequestTypeToDecisionType(requestType);
+            if (!string.IsNullOrEmpty(mappedType))
+                context["type"] = mappedType;
+
+            CopyFieldIfPresent(requestPayload, context, "prompt", "promptText", "message", "messageText", "help", "helpText");
+            CopyFieldIfPresent(requestPayload, context, "sourceId", "grpId", "abilityGrpId", "zoneId");
+            CopyFieldIfPresent(requestPayload, context, "count", "min", "max", "minCount", "maxCount", "amount", "total");
+            CopyFieldIfPresent(
+                requestPayload,
+                context,
+                "ids",
+                "options",
+                "targets",
+                "validTargets",
+                "targetsToSelect",
+                "qualifiedTargets",
+                "attackers",
+                "qualifiedAttackers",
+                "blockers",
+                "qualifiedBlockers",
+                "groups",
+                "counterTypes");
+
+            if (context.Count <= 2)
+                return null;
+
+            return context;
+        }
+
         private static JObject BuildCastingTimeOptionDecisionContext(IReadOnlyList<CastingTimeOptionEntry> entries)
         {
             var options = new JArray();
@@ -677,6 +764,268 @@ namespace MtgaCoachBridge
 
             if (costs.Count > 0)
                 payload["manaCost"] = costs;
+        }
+
+        private static bool ShouldSkipPendingRequestProperty(string requestType, string propertyName)
+        {
+            switch (propertyName)
+            {
+                case "Type":
+                case "CanCancel":
+                case "AllowUndo":
+                    return true;
+            }
+
+            if (requestType == "ActionsAvailableReq" && propertyName == "Actions")
+                return true;
+
+            if (requestType == "CastingTimeOptionsReq" && propertyName == "ChildRequests")
+                return true;
+
+            return false;
+        }
+
+        private static bool IsInterestingPendingRequestProperty(string propertyName, object value)
+        {
+            if (value == null)
+                return false;
+
+            var type = value.GetType();
+            if (type == typeof(string))
+                return !string.IsNullOrWhiteSpace((string)value);
+
+            if (IsSimpleSerializableType(type))
+                return HasInterestingPendingRequestName(propertyName);
+
+            if (value is System.Collections.IEnumerable && !(value is string))
+                return HasInterestingPendingRequestName(propertyName);
+
+            return HasInterestingPendingRequestName(propertyName)
+                || HasInterestingPendingRequestName(type.Name);
+        }
+
+        private static bool HasInterestingPendingRequestName(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return false;
+
+            string lower = name.ToLowerInvariant();
+            string[] keywords =
+            {
+                "prompt", "help", "message", "label", "text", "context",
+                "target", "option", "choice", "select", "group", "search",
+                "source", "zone", "attack", "block", "counter",
+                "id", "count", "min", "max", "amount", "total", "value"
+            };
+
+            for (int i = 0; i < keywords.Length; i++)
+            {
+                if (lower.Contains(keywords[i]))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsNullOrEmptyValue(object value)
+        {
+            if (value == null)
+                return true;
+
+            if (value is string s)
+                return string.IsNullOrWhiteSpace(s);
+
+            if (value is System.Collections.ICollection collection)
+                return collection.Count == 0;
+
+            return false;
+        }
+
+        private static JToken SerializePendingRequestValue(object value, int depth)
+        {
+            if (value == null)
+                return null;
+
+            if (depth > 3)
+                return new JValue(value.ToString());
+
+            if (value is JToken token)
+                return token.DeepClone();
+
+            var type = value.GetType();
+            if (IsSimpleSerializableType(type))
+            {
+                if (type.IsEnum)
+                    return new JValue(value.ToString());
+
+                try
+                {
+                    return JToken.FromObject(value);
+                }
+                catch
+                {
+                    return new JValue(value.ToString());
+                }
+            }
+
+            if (value is System.Collections.IDictionary dictionary)
+            {
+                var obj = new JObject();
+                int count = 0;
+                foreach (System.Collections.DictionaryEntry entry in dictionary)
+                {
+                    if (count++ >= 32)
+                    {
+                        obj["_truncated"] = true;
+                        break;
+                    }
+
+                    if (entry.Key == null)
+                        continue;
+
+                    var child = SerializePendingRequestValue(entry.Value, depth + 1);
+                    if (child != null)
+                        obj[entry.Key.ToString()] = child;
+                }
+
+                return obj.Count > 0 ? obj : null;
+            }
+
+            if (value is System.Collections.IEnumerable enumerable && !(value is string))
+            {
+                var arr = new JArray();
+                int count = 0;
+                foreach (var item in enumerable)
+                {
+                    if (count++ >= 64)
+                    {
+                        arr.Add(new JObject { ["_truncated"] = true });
+                        break;
+                    }
+
+                    var child = SerializePendingRequestValue(item, depth + 1);
+                    arr.Add(child ?? JValue.CreateNull());
+                }
+
+                return arr.Count > 0 ? arr : null;
+            }
+
+            if (!string.IsNullOrEmpty(type.Namespace) && type.Namespace.StartsWith("UnityEngine", StringComparison.Ordinal))
+                return new JValue(value.ToString());
+
+            var result = new JObject();
+            int propertyCount = 0;
+            foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (!prop.CanRead || prop.GetIndexParameters().Length != 0)
+                    continue;
+
+                object propValue;
+                try
+                {
+                    propValue = prop.GetValue(value, null);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (IsNullOrEmptyValue(propValue))
+                    continue;
+
+                if (propertyCount++ >= 24)
+                {
+                    result["_truncated"] = true;
+                    break;
+                }
+
+                var child = SerializePendingRequestValue(propValue, depth + 1);
+                if (child != null)
+                    result[ToCamelCase(prop.Name)] = child;
+            }
+
+            return result.Count > 0 ? result : new JValue(value.ToString());
+        }
+
+        private static bool IsSimpleSerializableType(Type type)
+        {
+            if (type.IsEnum || type.IsPrimitive)
+                return true;
+
+            return type == typeof(string)
+                || type == typeof(decimal)
+                || type == typeof(DateTime)
+                || type == typeof(Guid)
+                || type == typeof(TimeSpan);
+        }
+
+        private static string ToCamelCase(string name)
+        {
+            if (string.IsNullOrEmpty(name) || !char.IsUpper(name[0]))
+                return name;
+
+            if (name.Length == 1)
+                return char.ToLowerInvariant(name[0]).ToString();
+
+            return char.ToLowerInvariant(name[0]) + name.Substring(1);
+        }
+
+        private static void CopyFieldIfPresent(JObject source, JObject destination, params string[] propertyNames)
+        {
+            if (source == null || destination == null || propertyNames == null)
+                return;
+
+            for (int i = 0; i < propertyNames.Length; i++)
+            {
+                var token = source[propertyNames[i]];
+                if (token != null && token.Type != JTokenType.Null)
+                    destination[propertyNames[i]] = token.DeepClone();
+            }
+        }
+
+        private static string MapRequestTypeToDecisionType(string requestType)
+        {
+            switch (requestType)
+            {
+                case "SelectTargetsReq":
+                    return "target_selection";
+                case "SearchReq":
+                    return "search";
+                case "DistributionReq":
+                    return "distribution";
+                case "NumericInputReq":
+                    return "numeric_input";
+                case "SelectNReq":
+                    return "select_n";
+                case "GroupReq":
+                    return "group_selection";
+                case "GroupOptionReq":
+                    return "modal_choice";
+                case "DeclareAttackersReq":
+                    return "declare_attackers";
+                case "DeclareBlockersReq":
+                    return "declare_blockers";
+                case "PayCostsReq":
+                    return "pay_costs";
+                case "ChooseStartingPlayerReq":
+                    return "choose_starting_player";
+                case "SelectReplacementReq":
+                    return "select_replacement";
+                case "SelectNGroupReq":
+                    return "select_n_group";
+                case "SelectFromGroupsReq":
+                    return "select_from_groups";
+                case "SearchFromGroupsReq":
+                    return "search_from_groups";
+                case "SelectCountersReq":
+                    return "select_counters";
+                case "OrderReq":
+                    return "order_triggers";
+                case "GatherReq":
+                    return "gather";
+                default:
+                    return null;
+            }
         }
 
         private List<CastingTimeOptionEntry> BuildCastingTimeOptionEntries(CastingTimeOptionRequest request)
@@ -1626,6 +1975,6 @@ namespace MtgaCoachBridge
     {
         public const string GUID = "com.mtgacoach.grebridge";
         public const string Name = "MtgaCoach GRE Bridge";
-        public const string Version = "0.4.0";
+        public const string Version = "0.5.0";
     }
 }

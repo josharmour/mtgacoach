@@ -484,12 +484,19 @@ class AutopilotEngine:
                 and pending != "Action Required"
                 and pending != "Priority (Pass Only)"
             )
+            bridge_request_type = game_state.get("_bridge_request_type") or ""
+            bridge_request_class = game_state.get("_bridge_request_class") or ""
             turn = game_state.get("turn", {})
             local_seat = None
             for p in game_state.get("players", []):
                 if p.get("is_local"):
                     local_seat = p.get("seat_id")
             is_my_turn = turn.get("active_player") == local_seat if local_seat else False
+
+            if pending == "Intermission" or bridge_request_type.startswith("Intermission") or bridge_request_class.startswith("Intermission"):
+                logger.info("Autopilot: ignoring non-actionable intermission request")
+                self._state = AutopilotState.IDLE
+                return True
 
             # "Priority (Pass Only)" means only Pass is legal — auto-pass immediately
             # without LLM planning. MTGA may also auto-pass these, so speed is key.
@@ -1867,7 +1874,7 @@ class AutopilotEngine:
             return ClickResult(False, 0, 0, target_name, "MTGA window not found")
 
         # Search both sides of the battlefield, using instance_id when available
-        for owner in [opp_seat, local_seat]:
+        for owner in self._get_target_owner_order(game_state, local_seat, opp_seat):
             if owner is None:
                 continue
             instance_id = self._find_instance_id(target_name, battlefield, owner)
@@ -2364,6 +2371,33 @@ class AutopilotEngine:
 
     # --- Instance ID Helpers ---
 
+    @staticmethod
+    def _get_target_owner_order(
+        game_state: dict[str, Any],
+        local_seat: Optional[int],
+        opp_seat: Optional[int],
+    ) -> list[int]:
+        """Prefer the correct battlefield side for target selection."""
+        decision = game_state.get("decision_context") or {}
+        source_oracle = str(
+            decision.get("source_oracle_text")
+            or decision.get("source_card_oracle_text")
+            or ""
+        )
+        if source_oracle:
+            try:
+                from arenamcp.rules_engine import RulesEngine
+
+                req = RulesEngine._infer_target_requirements(source_oracle)
+                if req.get("must_control") == "you":
+                    return [seat for seat in (local_seat, opp_seat) if seat is not None]
+                if req.get("must_control") == "opponent":
+                    return [seat for seat in (opp_seat, local_seat) if seat is not None]
+            except Exception as exc:
+                logger.debug(f"target owner preference inference failed: {exc}")
+
+        return [seat for seat in (opp_seat, local_seat) if seat is not None]
+
     def _find_instance_id(
         self, card_name: str, battlefield: list[dict[str, Any]], owner_seat: int
     ) -> Optional[int]:
@@ -2381,14 +2415,21 @@ class AutopilotEngine:
         Returns:
             instance_id if found, None otherwise.
         """
-        card_lower = card_name.lower()
-        for card in battlefield:
-            if card.get("owner_seat_id") != owner_seat:
-                continue
-            name = card.get("name", "")
-            if name.lower() == card_lower:
-                return card.get("instance_id")
-        return None
+        match = re.match(r"^(.*?)(?:\s+#(\d+))?$", card_name.strip())
+        base_name = (match.group(1) if match else card_name).strip().lower()
+        ordinal = int(match.group(2)) if match and match.group(2) else 1
+
+        matches = [
+            card for card in battlefield
+            if card.get("owner_seat_id") == owner_seat
+            and card.get("name", "").strip().lower() == base_name
+        ]
+        if not matches:
+            return None
+
+        matches.sort(key=lambda card: int(card.get("instance_id", 0) or 0))
+        index = max(0, min(ordinal - 1, len(matches) - 1))
+        return matches[index].get("instance_id")
 
     def _build_attacker_id_map(self, game_state: dict[str, Any]) -> dict[str, int]:
         """Build a name -> instance_id map from the attacker decision context.

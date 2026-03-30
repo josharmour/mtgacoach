@@ -82,6 +82,131 @@ def _format_legal_actions_raw_for_prompt(
     return json.dumps(compact_actions, separators=(",", ":")) + suffix
 
 
+_ACTIONS_AVAILABLE_BRIDGE_REQUESTS = {
+    "ActionsAvailable",
+    "ActionsAvailableReq",
+    "ActionsAvailableRequest",
+}
+
+
+def _compact_prompt_value(
+    value: Any,
+    *,
+    max_depth: int = 4,
+    max_list_items: int = 10,
+    max_dict_items: int = 16,
+    max_string_length: int = 240,
+    _depth: int = 0,
+) -> Any:
+    """Compact nested JSON-like data into a bounded prompt-friendly structure."""
+    if _depth >= max_depth:
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        text = value if isinstance(value, str) else repr(value)
+        return text if len(text) <= max_string_length else text[: max_string_length - 3] + "..."
+
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+
+    if isinstance(value, str):
+        return value if len(value) <= max_string_length else value[: max_string_length - 3] + "..."
+
+    if isinstance(value, dict):
+        compact: dict[str, Any] = {}
+        for idx, (key, child) in enumerate(value.items()):
+            if idx >= max_dict_items:
+                compact["_truncated"] = True
+                break
+            compact[str(key)] = _compact_prompt_value(
+                child,
+                max_depth=max_depth,
+                max_list_items=max_list_items,
+                max_dict_items=max_dict_items,
+                max_string_length=max_string_length,
+                _depth=_depth + 1,
+            )
+        return compact
+
+    if isinstance(value, (list, tuple)):
+        compact = [
+            _compact_prompt_value(
+                child,
+                max_depth=max_depth,
+                max_list_items=max_list_items,
+                max_dict_items=max_dict_items,
+                max_string_length=max_string_length,
+                _depth=_depth + 1,
+            )
+            for child in value[:max_list_items]
+        ]
+        if len(value) > max_list_items:
+            compact.append({"_truncated": True})
+        return compact
+
+    text = repr(value)
+    return text if len(text) <= max_string_length else text[: max_string_length - 3] + "..."
+
+
+def _format_bounded_json_for_prompt(
+    value: Any,
+    *,
+    max_chars: int = 5000,
+) -> str:
+    """Format bounded JSON data into a single prompt line."""
+    text = json.dumps(_compact_prompt_value(value), separators=(",", ":"))
+    return text if len(text) <= max_chars else text[: max_chars - 3] + "..."
+
+
+def _format_raw_gre_events_for_prompt(
+    events: list[dict[str, Any]],
+    *,
+    max_events: int = 4,
+) -> str:
+    """Format a bounded tail of raw GRE events for richer online prompts."""
+    if not events:
+        return "[]"
+
+    compact_events: list[dict[str, Any]] = []
+    for event in events[-max_events:]:
+        compact: dict[str, Any] = {}
+        for key in ("seq", "type", "turn", "phase", "seat_id", "message_index", "payload_truncated"):
+            value = event.get(key)
+            if value not in (None, "", [], {}):
+                compact[key] = value
+        payload = event.get("payload")
+        if payload not in (None, "", [], {}):
+            compact["payload"] = _compact_prompt_value(payload, max_depth=3, max_list_items=8, max_dict_items=12)
+        if compact:
+            compact_events.append(compact)
+
+    return json.dumps(compact_events, separators=(",", ":"))
+
+
+def _build_bridge_context_lines(
+    game_state: dict[str, Any],
+    raw_legal_actions: list[dict[str, Any]],
+) -> list[str]:
+    """Render bounded bridge/GRE context into prompt lines."""
+    lines: list[str] = []
+    bridge_req = game_state.get("_bridge_request_type")
+    bridge_request_class = game_state.get("_bridge_request_class")
+    bridge_request_payload = game_state.get("_bridge_request_payload")
+    raw_gre_events = game_state.get("raw_gre_events") or []
+
+    if raw_legal_actions:
+        lines.append("LegalGRE: " + _format_legal_actions_raw_for_prompt(raw_legal_actions))
+    if bridge_req:
+        lines.append(f"GRE_Request: {bridge_req}")
+    if bridge_request_class and bridge_request_class != bridge_req:
+        lines.append(f"GRE_RequestClass: {bridge_request_class}")
+    if bridge_request_payload:
+        lines.append("GRE_RequestPayload: " + _format_bounded_json_for_prompt(bridge_request_payload))
+    if raw_gre_events:
+        lines.append("GRE_Recent: " + _format_raw_gre_events_for_prompt(raw_gre_events))
+
+    return lines
+
+
 # LLM Backend Protocol and Implementations
 from arenamcp.backends import (  # noqa: E402
     LLMBackend,
@@ -1850,18 +1975,20 @@ class CoachEngine:
         lines.append(f"Legal: {valid_moves_str}")
         # Bridge request type: authoritative decision classification from GRE
         bridge_req = game_state.get("_bridge_request_type")
+        bridge_request_class = game_state.get("_bridge_request_class")
         # Prefer bridge actions (fresher castability/autotap data) over log-parsed.
         # For non-ActionsAvailable bridge requests, an empty bridge action list is
         # authoritative and must not fall back to stale priority actions.
         bridge_actions = game_state.get("_bridge_actions")
-        if bridge_req and bridge_req != "ActionsAvailableReq":
+        is_actions_available_bridge_request = (
+            bridge_req in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+            or bridge_request_class in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+        )
+        if bridge_req and not is_actions_available_bridge_request:
             raw_legal_actions = bridge_actions or []
         else:
             raw_legal_actions = bridge_actions or game_state.get("legal_actions_raw") or []
-        if raw_legal_actions:
-            lines.append("LegalGRE: " + _format_legal_actions_raw_for_prompt(raw_legal_actions))
-        if bridge_req:
-            lines.append(f"GRE_Request: {bridge_req}")
+        lines.extend(_build_bridge_context_lines(game_state, raw_legal_actions))
 
         # Post-land planning
         lines.extend(self._format_post_land_planning(game_state, local_seat, valid_moves, is_my_turn, phase))

@@ -87,6 +87,124 @@ def _coerce_str_list(value: Any) -> list[str]:
     return [str(item) for item in _ensure_list(value) if item not in (None, "")]
 
 
+def _bounded_gre_copy(
+    value: Any,
+    *,
+    max_depth: int = 6,
+    max_list_items: int = 24,
+    max_dict_items: int = 32,
+    max_string_length: int = 400,
+    _depth: int = 0,
+) -> tuple[Any, bool]:
+    """Create a bounded copy of raw GRE payload data for snapshots/debugging."""
+    if _depth >= max_depth:
+        if value is None or isinstance(value, (bool, int, float)):
+            return value, False
+        text = value if isinstance(value, str) else repr(value)
+        if len(text) > max_string_length:
+            return text[: max_string_length - 3] + "...", True
+        return text, True
+
+    if value is None or isinstance(value, (bool, int, float)):
+        return value, False
+
+    if isinstance(value, str):
+        if len(value) > max_string_length:
+            return value[: max_string_length - 3] + "...", True
+        return value, False
+
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        truncated = False
+        items = list(value.items())
+        for idx, (key, item) in enumerate(items):
+            if idx >= max_dict_items:
+                truncated = True
+                break
+            copied, child_truncated = _bounded_gre_copy(
+                item,
+                max_depth=max_depth,
+                max_list_items=max_list_items,
+                max_dict_items=max_dict_items,
+                max_string_length=max_string_length,
+                _depth=_depth + 1,
+            )
+            result[str(key)] = copied
+            truncated = truncated or child_truncated
+        return result, truncated or len(items) > max_dict_items
+
+    if isinstance(value, (list, tuple)):
+        result = []
+        truncated = False
+        items = list(value)
+        for idx, item in enumerate(items):
+            if idx >= max_list_items:
+                truncated = True
+                break
+            copied, child_truncated = _bounded_gre_copy(
+                item,
+                max_depth=max_depth,
+                max_list_items=max_list_items,
+                max_dict_items=max_dict_items,
+                max_string_length=max_string_length,
+                _depth=_depth + 1,
+            )
+            result.append(copied)
+            truncated = truncated or child_truncated
+        return result, truncated or len(items) > max_list_items
+
+    text = repr(value)
+    if len(text) > max_string_length:
+        return text[: max_string_length - 3] + "...", True
+    return text, False
+
+
+def _collect_text_fragments(value: Any, *, max_items: int = 12) -> list[str]:
+    """Extract candidate human-readable text fragments from nested GRE payloads."""
+    results: list[str] = []
+    seen: set[str] = set()
+    text_keys = {"text", "message", "label", "title", "header", "body", "prompt"}
+
+    def visit(node: Any) -> None:
+        if len(results) >= max_items:
+            return
+        if isinstance(node, dict):
+            for key, child in node.items():
+                if len(results) >= max_items:
+                    return
+                if isinstance(child, str) and key.lower() in text_keys:
+                    text = child.strip()
+                    if text and text not in seen:
+                        seen.add(text)
+                        results.append(text)
+                else:
+                    visit(child)
+        elif isinstance(node, (list, tuple)):
+            for child in node:
+                visit(child)
+                if len(results) >= max_items:
+                    return
+
+    visit(value)
+    return results
+
+
+def _detect_ui_message_kind(value: Any) -> Optional[str]:
+    """Best-effort classification of a raw UI GRE message."""
+    blob = json.dumps(value, sort_keys=True, default=str).lower()
+    if "onhover" in blob or "\"hover\"" in blob:
+        return "hover"
+    if "tooltip" in blob:
+        return "tooltip"
+    if "toast" in blob or "notification" in blob:
+        return "toast"
+    if "alert" in blob or "warning" in blob:
+        return "alert"
+    if "prompt" in blob:
+        return "prompt"
+    return None
+
+
 class ZoneType(Enum):
     """Zone types in MTGA."""
     BATTLEFIELD = "ZoneType_Battlefield"
@@ -352,6 +470,7 @@ class GameState:
         "deck_cards": list,
         # Annotation-derived event tracking
         "recent_events": list,
+        "raw_gre_events": list,
         "damage_taken": dict,
         "revealed_cards": dict,
         # ── Phase 1 turbo-charge state ──
@@ -388,6 +507,9 @@ class GameState:
         # Non-resettable fields (survive across matches)
         self.turn_info: TurnInfo = TurnInfo()
         self._max_recent_events: int = 50
+        self._max_raw_gre_events: int = 40
+        self._max_snapshot_raw_gre_events: int = 20
+        self._raw_gre_sequence: int = 0
 
         # Persists across reset() so the coaching loop can read it after
         # match ends.  Cleared only by consume_game_end().
@@ -422,6 +544,7 @@ class GameState:
         logger.info("Resetting GameState for new match")
         self._apply_field_defaults()
         self.turn_info = TurnInfo()
+        self._raw_gre_sequence = 0
         self.publish_snapshot()
 
     def prepare_for_game_end(self) -> None:
@@ -873,6 +996,8 @@ class GameState:
             "legal_actions_raw": copy.deepcopy(self.legal_actions_raw),
             "pending_combat_steps": self._pending_combat_steps.copy(),
             "recent_events": self.recent_events[-10:],
+            "raw_gre_events": copy.deepcopy(self.raw_gre_events[-self._max_snapshot_raw_gre_events:]),
+            "raw_gre_event_count": len(self.raw_gre_events),
             "damage_taken": dict(self.damage_taken),
             "revealed_cards": revealed,
             "last_game_result": self.last_game_result,
@@ -1553,6 +1678,62 @@ class GameState:
         self.recent_events.append(event)
         if len(self.recent_events) > self._max_recent_events:
             self.recent_events.pop(0)
+
+    def _record_raw_gre_message(
+        self,
+        msg: dict[str, Any],
+        *,
+        seat_hint: Optional[int] = None,
+        message_index: Optional[int] = None,
+    ) -> None:
+        """Retain a bounded, sanitized raw GRE message history for debugging/prompts."""
+        msg_type = str(msg.get("type", ""))
+        payload = {k: v for k, v in msg.items() if k != "type"}
+        bounded_payload, payload_truncated = _bounded_gre_copy(payload)
+        self._raw_gre_sequence += 1
+
+        entry: dict[str, Any] = {
+            "seq": self._raw_gre_sequence,
+            "type": msg_type,
+            "turn": self.turn_info.turn_number,
+            "phase": self.turn_info.phase,
+            "payload": bounded_payload,
+        }
+        if seat_hint is not None:
+            entry["seat_id"] = seat_hint
+        if message_index is not None:
+            entry["message_index"] = message_index
+        if payload_truncated:
+            entry["payload_truncated"] = True
+
+        self.raw_gre_events.append(entry)
+        if len(self.raw_gre_events) > self._max_raw_gre_events:
+            self.raw_gre_events.pop(0)
+
+    def _record_ui_message_event(self, msg: dict[str, Any]) -> bool:
+        """Capture a summarized recent-event entry for GRE UI messages when useful."""
+        ui_payload = msg.get("uiMessage", {})
+        if not isinstance(ui_payload, dict):
+            ui_payload = {}
+
+        texts = _collect_text_fragments(ui_payload)
+        kind = _detect_ui_message_kind(ui_payload)
+
+        if kind == "hover" and not texts:
+            return False
+        if not texts and not kind:
+            return False
+
+        event: dict[str, Any] = {"type": "ui_message"}
+        if kind:
+            event["ui_kind"] = kind
+        if texts:
+            event["text"] = texts[0]
+            if len(texts) > 1:
+                event["texts"] = texts[:5]
+
+        self._add_event(event)
+        return True
 
     def _resolve_card_name(self, grp_id: int) -> str:
         """Resolve a grp_id to a card name, with fallback."""
@@ -2403,6 +2584,65 @@ def _set_simple_decision(game_state: GameState, label: str, dec_type: str,
     game_state.decision_context = ctx
 
 
+def _resolve_request_source_context(game_state: GameState, source_id: int) -> dict[str, Any]:
+    """Resolve source-card and oracle context for a pending GRE request."""
+    if not source_id:
+        return {}
+
+    stack_obj = next(
+        (obj for obj in game_state.stack if obj.instance_id == source_id),
+        None,
+    )
+    if stack_obj is None:
+        stack_obj = game_state.game_objects.get(source_id)
+    if stack_obj is None:
+        return {}
+
+    resolved: dict[str, Any] = {}
+    if stack_obj.parent_instance_id is not None:
+        resolved["source_parent_instance_id"] = stack_obj.parent_instance_id
+        parent_obj = game_state.game_objects.get(stack_obj.parent_instance_id)
+        if parent_obj is not None:
+            resolved["source_card"] = game_state._resolve_card_name(parent_obj.grp_id)
+            try:
+                from arenamcp import server
+
+                parent_info = server.enrich_with_oracle_text(parent_obj.grp_id)
+                parent_oracle = str(parent_info.get("oracle_text", "") or "")
+                if parent_oracle:
+                    resolved["source_card_oracle_text"] = parent_oracle
+            except Exception:
+                pass
+
+    try:
+        from arenamcp import server
+
+        source_info = server.enrich_with_oracle_text(stack_obj.grp_id)
+        source_name = str(source_info.get("name", "") or "")
+        source_type = str(source_info.get("type_line", "") or "")
+        source_oracle = str(source_info.get("oracle_text", "") or "")
+
+        if source_oracle:
+            resolved["source_oracle_text"] = source_oracle
+
+        if (
+            not resolved.get("source_card")
+            and source_name
+            and not source_name.lower().startswith("unknown")
+            and source_type.lower() != "ability"
+        ):
+            resolved["source_card"] = source_name
+    except Exception:
+        pass
+
+    if not resolved.get("source_card"):
+        resolved_name = game_state._resolve_card_name(stack_obj.grp_id)
+        if resolved_name and not resolved_name.startswith("Card#"):
+            resolved["source_card"] = resolved_name
+
+    return resolved
+
+
 def _handle_decision_message(game_state: GameState, msg_type: str,
                              msg: dict) -> bool:
     """Handle a GRE decision message. Returns True if snapshot_dirty should be set."""
@@ -2453,25 +2693,19 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
 
     elif msg_type == "GREMessageType_SelectTargetsReq":
         req = msg.get("selectTargetsReq", {})
-        source_id = req.get("sourceId")
-        source_card = None
-        if source_id:
-            for obj in game_state.stack:
-                if obj.instance_id == source_id:
-                    try:
-                        from arenamcp import server
-                        card_info = server.get_card_info(obj.grp_id)
-                        source_card = card_info.get("name", f"Unknown ({obj.grp_id})")
-                    except Exception:
-                        source_card = f"Unknown ({obj.grp_id})"
-                    break
-        logger.info(f"Captured Decision: Select Targets (source: {source_card or 'unknown'})")
+        source_id = _coerce_int(req.get("sourceId", 0), 0)
+        source_ctx = _resolve_request_source_context(game_state, source_id)
+        source_card = source_ctx.get("source_card") or (
+            f"Ability #{source_id}" if source_id else "spell"
+        )
+        logger.info(f"Captured Decision: Select Targets (source: {source_card})")
         game_state.pending_decision = "Select Targets"
         game_state.decision_timestamp = _time.time()
         game_state.decision_context = {
             "type": "target_selection",
             "source_card": source_card,
             "source_id": source_id,
+            **source_ctx,
         }
         return False
 
@@ -3036,7 +3270,7 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
             game_state.update_from_message(msg_payload)
             snapshot_dirty = False
 
-        for msg in messages:
+        for idx, msg in enumerate(messages):
             if not isinstance(msg, dict):
                 continue
             msg_type = msg.get("type", "")
@@ -3053,6 +3287,17 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                 )
             ):
                 game_state.set_local_seat_id(seat_hint, source=2)
+
+            game_state._record_raw_gre_message(
+                msg,
+                seat_hint=seat_hint,
+                message_index=idx,
+            )
+            if msg_type not in (
+                "GREMessageType_GameStateMessage",
+                "GREMessageType_QueuedGameStateMessage",
+            ):
+                snapshot_dirty = True
 
             if (
                 msg_type.endswith("Req")
@@ -3080,7 +3325,8 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                     apply_game_state_update(game_state_msg)
 
             elif msg_type == "GREMessageType_UIMessage":
-                pass  # Hover/highlight UI events
+                if game_state._record_ui_message_event(msg):
+                    snapshot_dirty = True
 
             elif msg_type == "GREMessageType_TimerStateMessage":
                 # ── Phase 1: Parse chess clock / timer data ──

@@ -15,6 +15,13 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
+_ACTIONS_AVAILABLE_BRIDGE_REQUESTS = {
+    "ActionsAvailable",
+    "ActionsAvailableReq",
+    "ActionsAvailableRequest",
+}
+
+
 class ActionType(Enum):
     """Types of actions the autopilot can execute in MTGA."""
     PLAY_LAND = "play_land"
@@ -230,9 +237,14 @@ class ActionPlanner:
             return legal_actions_raw
 
         bridge_request = game_state.get("_bridge_request_type")
+        bridge_request_class = game_state.get("_bridge_request_class")
         bridge_actions = game_state.get("_bridge_actions")
 
-        if bridge_request and bridge_request != "ActionsAvailableReq":
+        if (
+            bridge_request
+            and bridge_request not in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+            and bridge_request_class not in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+        ):
             return bridge_actions or []
 
         return bridge_actions or game_state.get("legal_actions_raw") or []
@@ -291,13 +303,19 @@ class ActionPlanner:
         """
         # Import and use CoachEngine's formatter for consistency
         try:
-            from arenamcp.coach import CoachEngine
+            from arenamcp.coach import (
+                CoachEngine,
+                _format_bounded_json_for_prompt,
+                _format_raw_gre_events_for_prompt,
+            )
             # Create a temporary instance just for formatting
             formatter = CoachEngine.__new__(CoachEngine)
             context = formatter._format_game_context(game_state)
         except Exception as e:
             logger.warning(f"Failed to use CoachEngine formatter: {e}")
             context = self._fallback_format(game_state)
+            _format_bounded_json_for_prompt = None
+            _format_raw_gre_events_for_prompt = None
 
         # Build trigger description
         trigger_descriptions = {
@@ -341,6 +359,23 @@ class ActionPlanner:
         bridge_req = game_state.get("_bridge_request_type")
         if bridge_req:
             parts.append(f"\nGRE Request Type: {bridge_req}")
+        bridge_request_class = game_state.get("_bridge_request_class")
+        if bridge_request_class and bridge_request_class != bridge_req:
+            parts.append(f"\nGRE Request Class: {bridge_request_class}")
+        bridge_request_payload = game_state.get("_bridge_request_payload")
+        if bridge_request_payload:
+            if _format_bounded_json_for_prompt is not None:
+                payload_text = _format_bounded_json_for_prompt(bridge_request_payload)
+            else:
+                payload_text = json.dumps(bridge_request_payload, separators=(",", ":"))
+            parts.append(f"\nGRE Request Payload: {payload_text}")
+        raw_gre_events = game_state.get("raw_gre_events") or []
+        if raw_gre_events:
+            if _format_raw_gre_events_for_prompt is not None:
+                raw_events_text = _format_raw_gre_events_for_prompt(raw_gre_events)
+            else:
+                raw_events_text = json.dumps(raw_gre_events[-3:], separators=(",", ":"))
+            parts.append(f"\nRecent GRE: {raw_events_text}")
 
         parts.append("\nRespond with ONLY a JSON action plan matching the schema.")
 

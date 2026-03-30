@@ -189,13 +189,13 @@ def check_voice_deps() -> list[str]:
         _fix("Check PortAudio installation: pip install sounddevice")
         missing.append("sounddevice")
 
-    # kokoro TTS
+    # kokoro-onnx TTS
     try:
-        import kokoro
-        _check(f"kokoro TTS", PASS)
+        import kokoro_onnx  # type: ignore
+        _check("kokoro-onnx TTS", PASS)
     except ImportError:
-        _check("kokoro TTS", SKIP, "Not installed (TTS disabled)")
-        missing.append("kokoro")
+        _check("kokoro-onnx TTS", SKIP, "Not installed (TTS disabled)")
+        missing.append("kokoro_onnx")
 
     # Kokoro model files
     model_dir = Path.home() / ".cache" / "kokoro"
@@ -204,7 +204,7 @@ def check_voice_deps() -> list[str]:
     if model_file.exists() and voice_file.exists():
         model_mb = model_file.stat().st_size / (1024 * 1024)
         _check(f"Kokoro model files ({model_mb:.0f} MB)", PASS, str(model_dir))
-    elif "kokoro" not in missing:
+    elif "kokoro_onnx" not in missing:
         _check("Kokoro model files", WARN, f"Not found in {model_dir}")
         _fix("Models download automatically on first TTS use (~300 MB)")
 

@@ -1,4 +1,4 @@
-"""Lightweight launcher for MTGA Coach with auto-restart support.
+"""Internal TUI runtime launcher for mtgacoach.
 
 This launcher:
 - Runs the TUI in a subprocess so it can be cleanly restarted
@@ -6,11 +6,9 @@ This launcher:
 - Can optionally watch for code changes during development
 - Handles zombie process cleanup properly
 
-Usage from command line:
-    python launcher.py
-    python launcher.py --watch  # Auto-restart on .py file changes
-
-The desktop shortcut should point to coach.bat which calls this.
+This is not intended to be the main Windows user-facing entrypoint. The
+user-facing launcher surface is `launch.bat`, which opens the launcher GUI
+by default and can dispatch to this TUI runtime when requested.
 """
 
 import os
@@ -25,6 +23,7 @@ from pathlib import Path
 # Constants
 REPO_DIR = Path(__file__).parent
 SRC_DIR = REPO_DIR / "src" / "arenamcp"
+PACKAGE_SRC_DIR = REPO_DIR / "src"
 RESTART_EXIT_CODE = 42  # Special exit code meaning "please restart"
 WATCH_EXTENSIONS = {".py"}
 WATCH_DEBOUNCE_MS = 500
@@ -32,6 +31,11 @@ LOCK_DIR = Path.home() / ".arenamcp"
 LOCK_FILE = LOCK_DIR / "launcher.lock"
 DEFAULT_PLAYER_LOG_MAX_MB = 64
 DEFAULT_PLAYER_LOG_KEEP_MB = 8
+RUNTIME_ENV_VAR = "MTGACOACH_RUNTIME_ROOT"
+SHOW_INTERNAL_UI_ENV_VAR = "ARENAMCP_SHOW_INTERNAL_LAUNCHER"
+
+if str(PACKAGE_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(PACKAGE_SRC_DIR))
 
 
 class SingleInstanceGuard:
@@ -152,6 +156,20 @@ def notify_already_running(owner: str | None = None) -> None:
 def get_python_executable():
     """Get the Python executable path."""
     return sys.executable
+
+
+def get_runtime_root() -> Path:
+    """Resolve the mutable runtime root used by installed Windows builds."""
+    raw = os.environ.get(RUNTIME_ENV_VAR, "").strip()
+    if raw:
+        return Path(os.path.expandvars(os.path.expanduser(raw)))
+
+    if os.name == "nt":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        if local_appdata:
+            return Path(local_appdata) / "mtgacoach"
+
+    return REPO_DIR
 
 
 def get_mtga_log_path() -> Path:
@@ -326,6 +344,13 @@ def run_coach(extra_args=None):
     # Set environment to signal we're in launcher mode
     env = os.environ.copy()
     env["ARENAMCP_LAUNCHER"] = "1"
+    env.setdefault(RUNTIME_ENV_VAR, str(get_runtime_root()))
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        str(PACKAGE_SRC_DIR)
+        if not existing_pythonpath
+        else str(PACKAGE_SRC_DIR) + os.pathsep + existing_pythonpath
+    )
 
     proc = None
     try:
@@ -393,6 +418,12 @@ def print_banner(restart_count=0, autopilot=False):
     print("  Ctrl+C = Exit | F9 in app = Restart")
     print("=" * 50)
     print()
+
+
+def should_show_internal_ui(args) -> bool:
+    """Return True when the internal restart wrapper should stay visible."""
+    raw = os.environ.get(SHOW_INTERNAL_UI_ENV_VAR, "").strip().lower()
+    return args.watch or raw in {"1", "true", "yes", "on"}
 
 
 def _register_windows_close_handler(instance_guard: SingleInstanceGuard) -> None:
@@ -474,13 +505,15 @@ def main():
             print("[Launcher] Warning: watchdog not installed, --watch disabled")
 
     restart_count = 0
+    show_internal_ui = should_show_internal_ui(args)
 
     try:
         while True:
             trim_status = trim_player_log_if_needed()
-            clear_screen()
-            print_banner(restart_count, autopilot=args.autopilot)
-            if trim_status.startswith("trimmed:"):
+            if show_internal_ui:
+                clear_screen()
+                print_banner(restart_count, autopilot=args.autopilot)
+            if show_internal_ui and trim_status.startswith("trimmed:"):
                 print(f"[Launcher] Player.log {trim_status}")
                 print()
 
@@ -489,17 +522,16 @@ def main():
 
             # Check why it exited
             if exit_code == RESTART_EXIT_CODE:
-                # Explicit restart request from F9
-                print("\n[Launcher] Restart requested...")
                 restart_count += 1
-                time.sleep(0.5)
+                time.sleep(0.15)
                 continue
 
             elif check_changed():
                 # Code changed during execution
-                print("\n[Launcher] Code changed, restarting...")
+                if show_internal_ui:
+                    print("\n[Launcher] Code changed, restarting...")
                 restart_count += 1
-                time.sleep(0.5)
+                time.sleep(0.15)
                 continue
 
             elif exit_code != 0:
@@ -514,18 +546,16 @@ def main():
                     break
             else:
                 # Normal exit (Ctrl+Q from app)
-                print("\n[Launcher] Coach exited normally.")
                 break
 
     except KeyboardInterrupt:
-        print("\n[Launcher] Interrupted, exiting...")
+        pass
     finally:
         if observer:
             observer.stop()
             observer.join()
         instance_guard.release()
 
-    print("\nGoodbye!")
     return 0
 
 

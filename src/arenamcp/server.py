@@ -829,6 +829,444 @@ def _serialize_game_object(obj) -> dict[str, Any]:
     return result
 
 
+def _coerce_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+    """Best-effort integer coercion for mixed GRE / JSON payloads."""
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _copy_list(value: Any) -> list[Any]:
+    """Return a shallow-copied list for scalar-or-list GRE fields."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def _normalize_object_kind(raw_kind: Any, fallback_kind: str = "UNKNOWN") -> str:
+    kind = str(raw_kind or fallback_kind or "UNKNOWN")
+    return kind.upper()
+
+
+def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
+    """Serialize a published-snapshot object with oracle text enrichment."""
+    grp_id = int(obj.get("grp_id", 0) or 0)
+    enriched = enrich_with_oracle_text(grp_id)
+    result = {
+        "instance_id": obj.get("instance_id"),
+        "grp_id": grp_id,
+        "name": enriched.get("name") or f"Unknown ({grp_id})",
+        "oracle_text": enriched.get("oracle_text") or "",
+        "type_line": enriched.get("type_line") or "",
+        "mana_cost": enriched.get("mana_cost") or "",
+        "owner_seat_id": obj.get("owner_seat_id"),
+        "controller_seat_id": obj.get("controller_seat_id"),
+        "power": obj.get("power"),
+        "toughness": obj.get("toughness"),
+        "is_tapped": obj.get("is_tapped", False),
+        "turn_entered_battlefield": obj.get("turn_entered_battlefield", -1),
+        "is_attacking": obj.get("is_attacking", False),
+        "is_blocking": obj.get("is_blocking", False),
+        "card_types": obj.get("card_types", []),
+        "subtypes": obj.get("subtypes", []),
+        "object_kind": obj.get("object_kind", "UNKNOWN"),
+        "counters": obj.get("counters", {}),
+    }
+    if obj.get("parent_instance_id") is not None:
+        result["parent_instance_id"] = obj.get("parent_instance_id")
+    # ── Phase 1 turbo-charge fields (only include when set) ──
+    for key in ("modified_power", "modified_toughness", "modified_cost",
+                "modified_colors", "modified_types", "modified_name",
+                "granted_abilities", "removed_abilities",
+                "damaged_this_turn", "crewed_this_turn", "saddled_this_turn",
+                "is_phased_out", "class_level", "copied_from_grp_id",
+                "targeting", "color_production"):
+        val = obj.get(key)
+        if val:  # Only include truthy values
+            result[key] = copy.deepcopy(val)
+    return result
+
+
+def _build_snapshot_object_lookup(zones: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """Index current snapshot objects by instance id for bridge overlay fallbacks."""
+    lookup: dict[int, dict[str, Any]] = {}
+    for zone_name in ("battlefield", "my_hand", "graveyard", "stack", "exile", "command"):
+        for obj in zones.get(zone_name, []) or []:
+            instance_id = _coerce_int(obj.get("instance_id"))
+            if instance_id is not None:
+                lookup[instance_id] = obj
+    return lookup
+
+
+def _serialize_bridge_card(
+    card: dict[str, Any],
+    snapshot_lookup: dict[int, dict[str, Any]],
+) -> dict[str, Any]:
+    """Normalize a bridge card payload to the public server schema."""
+    instance_id = _coerce_int(card.get("instance_id"))
+    fallback = snapshot_lookup.get(instance_id, {}) if instance_id is not None else {}
+
+    fallback_grp_id = _coerce_int(fallback.get("grp_id"), 0) or 0
+    grp_id = _coerce_int(card.get("grp_id"), fallback_grp_id) or 0
+    enriched = enrich_with_oracle_text(grp_id)
+
+    result = {
+        "instance_id": instance_id,
+        "grp_id": grp_id,
+        "name": enriched.get("name") or fallback.get("name") or f"Unknown ({grp_id})",
+        "oracle_text": enriched.get("oracle_text") or fallback.get("oracle_text") or "",
+        "type_line": enriched.get("type_line") or fallback.get("type_line") or "",
+        "mana_cost": enriched.get("mana_cost") or fallback.get("mana_cost") or "",
+        "owner_seat_id": _coerce_int(card.get("owner_id"), fallback.get("owner_seat_id")),
+        "controller_seat_id": _coerce_int(card.get("controller_id"), fallback.get("controller_seat_id")),
+        "power": _coerce_int(card.get("power"), fallback.get("power")),
+        "toughness": _coerce_int(card.get("toughness"), fallback.get("toughness")),
+        "is_tapped": bool(card.get("is_tapped", fallback.get("is_tapped", False))),
+        "turn_entered_battlefield": _coerce_int(fallback.get("turn_entered_battlefield"), -1),
+        "is_attacking": bool(card.get("is_attacking", fallback.get("is_attacking", False))),
+        "is_blocking": bool(card.get("is_blocking", fallback.get("is_blocking", False))),
+        "card_types": _copy_list(card.get("card_types") or fallback.get("card_types")),
+        "subtypes": _copy_list(card.get("subtypes") or fallback.get("subtypes")),
+        "object_kind": _normalize_object_kind(card.get("object_type"), fallback.get("object_kind", "UNKNOWN")),
+        "counters": dict(card.get("counters") or fallback.get("counters") or {}),
+    }
+
+    if card.get("parent_instance_id") is not None or fallback.get("parent_instance_id") is not None:
+        result["parent_instance_id"] = _coerce_int(
+            card.get("parent_instance_id"),
+            fallback.get("parent_instance_id"),
+        )
+
+    targeting = _copy_list(card.get("target_ids") or fallback.get("targeting"))
+    if targeting:
+        result["targeting"] = [value for value in targeting if value is not None]
+
+    for key in ("modified_power", "modified_toughness", "modified_cost",
+                "modified_colors", "modified_types", "modified_name",
+                "granted_abilities", "removed_abilities",
+                "damaged_this_turn", "crewed_this_turn", "saddled_this_turn",
+                "is_phased_out", "class_level", "copied_from_grp_id",
+                "color_production"):
+        fallback_value = fallback.get(key)
+        if fallback_value:
+            result[key] = copy.deepcopy(fallback_value)
+
+    if card.get("loyalty") is not None:
+        result["loyalty"] = _coerce_int(card.get("loyalty"))
+    if card.get("defense") is not None:
+        result["defense"] = _coerce_int(card.get("defense"))
+    if card.get("damage") is not None:
+        result["damage"] = _coerce_int(card.get("damage"))
+    if card.get("attack_target_id") is not None:
+        result["attack_target_id"] = _coerce_int(card.get("attack_target_id"))
+
+    colors = _copy_list(card.get("colors") or fallback.get("colors"))
+    if colors:
+        result["colors"] = colors
+
+    color_production = _copy_list(card.get("color_production"))
+    if color_production:
+        result["color_production"] = color_production
+
+    attached_to_id = _coerce_int(card.get("attached_to_id"))
+    if attached_to_id:
+        result["attached_to_id"] = attached_to_id
+
+    attached_with_ids = _copy_list(card.get("attached_with_ids"))
+    if attached_with_ids:
+        result["attached_with_ids"] = [value for value in attached_with_ids if value is not None]
+
+    visibility = card.get("visibility")
+    if visibility:
+        result["visibility"] = visibility
+    if card.get("summoning_sickness"):
+        result["summoning_sickness"] = True
+    if card.get("revealed_to_opponent"):
+        result["revealed_to_opponent"] = True
+    if card.get("face_down"):
+        result["face_down"] = True
+
+    return result
+
+
+def _normalize_bridge_turn(bridge_turn: dict[str, Any], fallback_turn: dict[str, Any]) -> dict[str, Any]:
+    """Map the bridge turn payload into the public server turn schema."""
+    turn = {
+        "turn_number": _coerce_int(bridge_turn.get("turn_number"), fallback_turn.get("turn_number", 0)) or 0,
+        "active_player": _coerce_int(bridge_turn.get("active_player"), fallback_turn.get("active_player", 0)) or 0,
+        "priority_player": _coerce_int(
+            bridge_turn.get("deciding_player", bridge_turn.get("priority_player")),
+            fallback_turn.get("priority_player", 0),
+        ) or 0,
+        "phase": bridge_turn.get("phase") or fallback_turn.get("phase", ""),
+        "step": bridge_turn.get("step") or fallback_turn.get("step", ""),
+        "pending_combat_steps": list(fallback_turn.get("pending_combat_steps", [])),
+    }
+    stage = bridge_turn.get("stage")
+    if stage:
+        turn["stage"] = stage
+    return turn
+
+
+def _normalize_bridge_players(
+    bridge_players: list[dict[str, Any]],
+    snapshot_players: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge bridge player data over the published snapshot players list."""
+    snapshot_by_seat = {
+        _coerce_int(player.get("seat_id")): dict(player)
+        for player in snapshot_players
+        if _coerce_int(player.get("seat_id")) is not None
+    }
+
+    normalized: list[dict[str, Any]] = []
+    for player in bridge_players:
+        seat_id = _coerce_int(player.get("seat_id"))
+        merged = dict(snapshot_by_seat.get(seat_id, {}))
+        if seat_id is not None:
+            merged["seat_id"] = seat_id
+        if player.get("life_total") is not None:
+            merged["life_total"] = _coerce_int(player.get("life_total"), merged.get("life_total", 0)) or 0
+        if "is_local" in player:
+            merged["is_local"] = bool(player.get("is_local"))
+
+        mana_pool = player.get("mana_pool")
+        if isinstance(mana_pool, dict):
+            merged["mana_pool"] = dict(mana_pool)
+        elif "mana_pool" not in merged:
+            merged["mana_pool"] = {}
+
+        for key in ("status", "mulligan_count", "timeout_count", "team_id", "lands_played"):
+            if player.get(key) is not None:
+                merged[key] = copy.deepcopy(player.get(key))
+
+        if player.get("commander_ids"):
+            merged["commander_ids"] = list(player.get("commander_ids", []))
+        if player.get("dungeon"):
+            merged["dungeon"] = copy.deepcopy(player.get("dungeon"))
+        if player.get("designations"):
+            merged["designations"] = list(player.get("designations", []))
+
+        normalized.append(merged)
+
+    return normalized
+
+
+def _derive_seat_ids(
+    bridge_state: dict[str, Any],
+    players: list[dict[str, Any]],
+    fallback_local_seat_id: Optional[int],
+    fallback_opponent_seat_id: Optional[int],
+) -> tuple[Optional[int], Optional[int]]:
+    """Derive local/opponent seat ids from bridge state with snapshot fallback."""
+    local_seat_id = _coerce_int(bridge_state.get("local_seat_id"), fallback_local_seat_id)
+    opponent_seat_id = _coerce_int(bridge_state.get("opponent_seat_id"), fallback_opponent_seat_id)
+
+    if local_seat_id is None:
+        for player in players:
+            if player.get("is_local"):
+                local_seat_id = _coerce_int(player.get("seat_id"))
+                if local_seat_id is not None:
+                    break
+
+    if opponent_seat_id is None:
+        for player in players:
+            seat_id = _coerce_int(player.get("seat_id"))
+            if seat_id is not None and seat_id != local_seat_id:
+                opponent_seat_id = seat_id
+                break
+
+    return local_seat_id, opponent_seat_id
+
+
+def _normalize_bridge_timer_state(bridge_timer_state: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """Map bridge player timer payloads to the snapshot timer_state schema."""
+    normalized: dict[int, dict[str, Any]] = {}
+    player_timers = bridge_timer_state.get("player_timers")
+    if not isinstance(player_timers, dict):
+        return normalized
+
+    for seat_key, timers in player_timers.items():
+        seat_id = _coerce_int(seat_key)
+        if seat_id is None:
+            continue
+        timer_entries = [entry for entry in _copy_list(timers) if isinstance(entry, dict)]
+        if not timer_entries:
+            continue
+
+        chosen = next((entry for entry in timer_entries if entry.get("running")), timer_entries[0])
+        duration_sec = _coerce_int(chosen.get("duration_sec"), 0) or 0
+        elapsed_sec = _coerce_int(chosen.get("elapsed_sec"), 0) or 0
+        remaining_ms = max(0, (duration_sec - elapsed_sec) * 1000)
+
+        normalized[seat_id] = {
+            "time_remaining_ms": remaining_ms,
+            "timer_type": chosen.get("type") or chosen.get("timer_type") or "",
+            "behavior": chosen.get("behavior") or "",
+            "is_ticking": bool(chosen.get("running", chosen.get("is_ticking", False))),
+        }
+
+    return normalized
+
+
+def _build_public_zones(
+    *,
+    battlefield: list[dict[str, Any]],
+    hand: list[dict[str, Any]],
+    graveyard: list[dict[str, Any]],
+    stack: list[dict[str, Any]],
+    exile: list[dict[str, Any]],
+    command: list[dict[str, Any]],
+    opponent_hand_count: Any,
+    library_count: Any,
+    local_graveyard: Optional[list[dict[str, Any]]] = None,
+    opponent_graveyard: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """Build the nested zones payload used by older consumers."""
+    zones = {
+        "battlefield": battlefield,
+        "my_hand": hand,
+        "hand": hand,
+        "graveyard": graveyard,
+        "stack": stack,
+        "exile": exile,
+        "command": command,
+        "opponent_hand_count": opponent_hand_count,
+        "library_count": library_count,
+    }
+    if local_graveyard is not None:
+        zones["local_graveyard"] = local_graveyard
+    if opponent_graveyard is not None:
+        zones["opponent_graveyard"] = opponent_graveyard
+    return zones
+
+
+def _get_bridge_overlay(
+    fallback_turn: dict[str, Any],
+    fallback_players: list[dict[str, Any]],
+    fallback_zones: dict[str, Any],
+    fallback_local_seat_id: Optional[int],
+    fallback_opponent_seat_id: Optional[int],
+) -> dict[str, Any]:
+    """Return bridge-authoritative visible state that can safely overlay the snapshot."""
+    try:
+        from arenamcp.gre_bridge import get_bridge
+    except Exception:
+        return {}
+
+    bridge = get_bridge()
+    bridge_state = bridge.get_game_state()
+
+    overlay = {
+        "bridge_connected": bool(getattr(bridge, "connected", False)),
+    }
+
+    if not bridge_state:
+        return overlay
+
+    snapshot_lookup = _build_snapshot_object_lookup(fallback_zones)
+    overlay["bridge_connected"] = True
+
+    bridge_players = [
+        player for player in _copy_list(bridge_state.get("players"))
+        if isinstance(player, dict)
+    ]
+    normalized_players = _normalize_bridge_players(bridge_players, fallback_players) if bridge_players else []
+    local_seat_id, opponent_seat_id = _derive_seat_ids(
+        bridge_state,
+        normalized_players or fallback_players,
+        fallback_local_seat_id,
+        fallback_opponent_seat_id,
+    )
+
+    bridge_zones = bridge_state.get("zones") if isinstance(bridge_state.get("zones"), dict) else {}
+
+    def _bridge_zone_cards(name: str) -> list[dict[str, Any]]:
+        zone = bridge_zones.get(name, {})
+        if not isinstance(zone, dict):
+            return []
+        cards = zone.get("cards")
+        return [
+            _serialize_bridge_card(card, snapshot_lookup)
+            for card in _copy_list(cards)
+            if isinstance(card, dict)
+        ]
+
+    battlefield = [
+        card for card in _bridge_zone_cards("battlefield")
+        if card.get("object_kind") != "ABILITY"
+    ]
+    hand = _bridge_zone_cards("local_hand")
+    local_graveyard = _bridge_zone_cards("local_graveyard")
+    opponent_graveyard = _bridge_zone_cards("opponent_graveyard")
+    graveyard = local_graveyard + opponent_graveyard
+    stack = _bridge_zone_cards("stack")
+    exile = _bridge_zone_cards("exile")
+    command = _bridge_zone_cards("command")
+
+    timer_state = {}
+    bridge_timer_state = bridge.get_timer_state()
+    if bridge_timer_state:
+        timer_state = _normalize_bridge_timer_state(bridge_timer_state)
+
+    opponent_hand_zone = bridge_zones.get("opponent_hand", {})
+    local_library_zone = bridge_zones.get("local_library", {})
+    opponent_hand_count = (
+        opponent_hand_zone.get("total_count")
+        if isinstance(opponent_hand_zone, dict) and opponent_hand_zone.get("total_count") is not None
+        else fallback_zones.get("opponent_hand_count", 0)
+    )
+    library_count = (
+        local_library_zone.get("total_count")
+        if isinstance(local_library_zone, dict) and local_library_zone.get("total_count") is not None
+        else fallback_zones.get("library_count", "?")
+    )
+
+    overlay.update(
+        {
+            "turn": _normalize_bridge_turn(
+                bridge_state.get("turn") if isinstance(bridge_state.get("turn"), dict) else {},
+                fallback_turn,
+            ),
+            "players": normalized_players or fallback_players,
+            "battlefield": battlefield,
+            "hand": hand,
+            "graveyard": graveyard,
+            "stack": stack,
+            "exile": exile,
+            "command": command,
+            "local_seat_id": local_seat_id,
+            "opponent_seat_id": opponent_seat_id,
+            "zones": _build_public_zones(
+                battlefield=battlefield,
+                hand=hand,
+                graveyard=graveyard,
+                stack=stack,
+                exile=exile,
+                command=command,
+                opponent_hand_count=opponent_hand_count,
+                library_count=library_count,
+                local_graveyard=local_graveyard,
+                opponent_graveyard=opponent_graveyard,
+            ),
+        }
+    )
+    if timer_state:
+        overlay["timer_state"] = timer_state
+    pending_interaction = bridge_state.get("pending_interaction")
+    if pending_interaction:
+        overlay["bridge_pending_interaction"] = pending_interaction
+
+    return overlay
+
+
 # MCP Tools
 
 @mcp.tool()
@@ -863,7 +1301,7 @@ def get_game_state() -> dict[str, Any]:
     snap = game_state.get_published_snapshot(deep_copy=False)
     turn_info = snap.get("turn_info", {})
     zones = snap.get("zones", {})
-    players = [dict(p) for p in snap.get("players", [])]
+    players = copy.deepcopy(snap.get("players", []))
 
     turn = {
         "turn_number": turn_info.get("turn_number", 0),
@@ -873,43 +1311,6 @@ def get_game_state() -> dict[str, Any]:
         "step": turn_info.get("step", ""),
         "pending_combat_steps": list(snap.get("pending_combat_steps", [])),
     }
-
-    def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
-        grp_id = int(obj.get("grp_id", 0) or 0)
-        enriched = enrich_with_oracle_text(grp_id)
-        result = {
-            "instance_id": obj.get("instance_id"),
-            "grp_id": grp_id,
-            "name": enriched.get("name") or f"Unknown ({grp_id})",
-            "oracle_text": enriched.get("oracle_text") or "",
-            "type_line": enriched.get("type_line") or "",
-            "mana_cost": enriched.get("mana_cost") or "",
-            "owner_seat_id": obj.get("owner_seat_id"),
-            "controller_seat_id": obj.get("controller_seat_id"),
-            "power": obj.get("power"),
-            "toughness": obj.get("toughness"),
-            "is_tapped": obj.get("is_tapped", False),
-            "turn_entered_battlefield": obj.get("turn_entered_battlefield", -1),
-            "is_attacking": obj.get("is_attacking", False),
-            "is_blocking": obj.get("is_blocking", False),
-            "card_types": obj.get("card_types", []),
-            "subtypes": obj.get("subtypes", []),
-            "object_kind": obj.get("object_kind", "UNKNOWN"),
-            "counters": obj.get("counters", {}),
-        }
-        if obj.get("parent_instance_id") is not None:
-            result["parent_instance_id"] = obj.get("parent_instance_id")
-        # ── Phase 1 turbo-charge fields (only include when set) ──
-        for key in ("modified_power", "modified_toughness", "modified_cost",
-                     "modified_colors", "modified_types", "modified_name",
-                     "granted_abilities", "removed_abilities",
-                     "damaged_this_turn", "crewed_this_turn", "saddled_this_turn",
-                     "is_phased_out", "class_level", "copied_from_grp_id",
-                     "targeting", "color_production"):
-            val = obj.get(key)
-            if val:  # Only include truthy values
-                result[key] = val
-        return result
 
     battlefield = [
         _serialize_snapshot_obj(o)
@@ -926,15 +1327,16 @@ def get_game_state() -> dict[str, Any]:
     _save_match_state_if_needed()
 
     local_seat_id = snap.get("local_seat_id")
+    opponent_seat_id = snap.get("opponent_seat_id")
     decision_seat_id = snap.get("decision_seat_id")
-    if decision_seat_id is None and snap.get("pending_decision"):
-        decision_seat_id = local_seat_id
     decision_context = snap.get("decision_context")
     if decision_context is not None:
         decision_context = copy.deepcopy(decision_context)
     legal_actions_raw = copy.deepcopy(snap.get("legal_actions_raw", []))
+    recent_events = copy.deepcopy(snap.get("recent_events", []))
+    raw_gre_events = copy.deepcopy(snap.get("raw_gre_events", []))
 
-    return {
+    response = {
         "match_id": snap.get("match_id"),
         "turn": turn,
         "players": players,
@@ -944,22 +1346,67 @@ def get_game_state() -> dict[str, Any]:
         "stack": stack,
         "exile": exile,
         "command": command,
-        "pending_decision": snap.get("pending_decision") if decision_seat_id == local_seat_id else None,
-        "decision_context": decision_context if decision_seat_id == local_seat_id else None,
+        "local_seat_id": local_seat_id,
+        "opponent_seat_id": opponent_seat_id,
+        "zones": _build_public_zones(
+            battlefield=battlefield,
+            hand=hand,
+            graveyard=graveyard,
+            stack=stack,
+            exile=exile,
+            command=command,
+            opponent_hand_count=zones.get("opponent_hand_count", 0),
+            library_count=zones.get("library_count", "?"),
+        ),
+        "pending_decision": None,
+        "decision_context": None,
+        "decision_seat_id": decision_seat_id,
+        "last_cleared_decision": snap.get("last_cleared_decision"),
         "legal_actions": list(snap.get("legal_actions", [])),
         "legal_actions_raw": legal_actions_raw,
+        "recent_events": recent_events,
+        "raw_gre_events": raw_gre_events,
+        "raw_gre_event_count": snap.get("raw_gre_event_count", len(raw_gre_events)),
         "deck_cards": list(snap.get("deck_cards", [])),
         "damage_taken": dict(snap.get("damage_taken", {})),
         # ── Phase 1 turbo-charge fields ──
-        "designations": snap.get("designations", {}),
-        "dungeon_status": snap.get("dungeon_status", {}),
-        "timer_state": snap.get("timer_state", {}),
-        "action_history": snap.get("action_history", []),
-        "sideboard_cards": snap.get("sideboard_cards", []),
+        "designations": copy.deepcopy(snap.get("designations", {})),
+        "dungeon_status": copy.deepcopy(snap.get("dungeon_status", {})),
+        "timer_state": copy.deepcopy(snap.get("timer_state", {})),
+        "action_history": copy.deepcopy(snap.get("action_history", [])),
+        "sideboard_cards": copy.deepcopy(snap.get("sideboard_cards", [])),
         # ── Bridge decision detection fields ──
         "bridge_connected": snap.get("_bridge_connected", False),
         "bridge_request_type": snap.get("_bridge_request_type"),
+        "_bridge_connected": snap.get("_bridge_connected", False),
+        "_bridge_request_type": snap.get("_bridge_request_type"),
+        "_bridge_request_class": snap.get("_bridge_request_class"),
+        "_bridge_actions": copy.deepcopy(snap.get("_bridge_actions")),
+        "_bridge_can_pass": snap.get("_bridge_can_pass"),
+        "_bridge_can_cancel": snap.get("_bridge_can_cancel"),
+        "_bridge_allow_undo": snap.get("_bridge_allow_undo"),
+        "_bridge_request_payload": copy.deepcopy(snap.get("_bridge_request_payload")),
     }
+
+    bridge_overlay = _get_bridge_overlay(
+        fallback_turn=turn,
+        fallback_players=players,
+        fallback_zones=zones,
+        fallback_local_seat_id=local_seat_id,
+        fallback_opponent_seat_id=opponent_seat_id,
+    )
+    if bridge_overlay:
+        response.update(bridge_overlay)
+        response["_bridge_connected"] = response["bridge_connected"]
+
+    effective_local_seat_id = response.get("local_seat_id")
+    if decision_seat_id is None and snap.get("pending_decision"):
+        decision_seat_id = effective_local_seat_id
+    if decision_seat_id == effective_local_seat_id:
+        response["pending_decision"] = snap.get("pending_decision")
+        response["decision_context"] = decision_context
+
+    return response
 
 def clear_pending_combat_steps() -> None:
     """Clear pending combat steps after they've been processed.

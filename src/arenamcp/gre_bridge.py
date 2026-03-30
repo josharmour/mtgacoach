@@ -542,58 +542,193 @@ class GREBridge:
 # Maps Plugin.cs request.Type.ToString() values to the decision_context
 # "type" strings that coach.py _format_decision_lines() already handles.
 _BRIDGE_REQUEST_TO_DECISION_TYPE: dict[str, str] = {
+    "ActionsAvailable": "actions_available",
+    "ActionsAvailableReq": "actions_available",
     "ActionsAvailableRequest": "actions_available",
+    "SelectTargets": "target_selection",
     "SelectTargetsReq": "target_selection",
+    "SelectTargetsRequest": "target_selection",
+    "Mulligan": "mulligan",
     "MulliganReq": "mulligan",
+    "MulliganRequest": "mulligan",
+    "Group": "group_selection",
     "GroupReq": "group_selection",
+    "GroupRequest": "group_selection",
+    "GroupOption": "modal_choice",
     "GroupOptionReq": "modal_choice",
+    "GroupOptionRequest": "modal_choice",
+    "DeclareAttackers": "declare_attackers",
     "DeclareAttackersReq": "declare_attackers",
+    "DeclareAttackersRequest": "declare_attackers",
+    "DeclareBlockers": "declare_blockers",
     "DeclareBlockersReq": "declare_blockers",
+    "DeclareBlockersRequest": "declare_blockers",
+    "Search": "search",
     "SearchReq": "search",
+    "SearchRequest": "search",
+    "Distribution": "distribution",
     "DistributionReq": "distribution",
+    "DistributionRequest": "distribution",
+    "NumericInput": "numeric_input",
     "NumericInputReq": "numeric_input",
+    "NumericInputRequest": "numeric_input",
+    "Prompt": "prompt",
     "PromptReq": "prompt",
+    "PromptRequest": "prompt",
+    "PayCosts": "pay_costs",
     "PayCostsReq": "pay_costs",
+    "PayCostsRequest": "pay_costs",
+    "AssignDamage": "assign_damage",
     "AssignDamageReq": "assign_damage",
+    "AssignDamageRequest": "assign_damage",
+    "OrderCombatDamage": "order_combat_damage",
     "OrderCombatDamageReq": "order_combat_damage",
+    "OrderCombatDamageRequest": "order_combat_damage",
+    "SelectN": "selection_generic",
     "SelectNReq": "selection_generic",
+    "SelectNRequest": "selection_generic",
+    "ChooseStartingPlayer": "choose_starting_player",
     "ChooseStartingPlayerReq": "choose_starting_player",
+    "ChooseStartingPlayerRequest": "choose_starting_player",
+    "SelectReplacement": "select_replacement",
     "SelectReplacementReq": "select_replacement",
+    "SelectReplacementRequest": "select_replacement",
+    "SelectCounters": "select_counters",
     "SelectCountersReq": "select_counters",
+    "SelectCountersRequest": "select_counters",
+    "Order": "order_triggers",
     "OrderReq": "order_triggers",
+    "OrderRequest": "order_triggers",
     "OptionalActionMessage": "optional_action",
+    "CastingTimeOptions": "casting_time_options",
     "CastingTimeOptionsReq": "casting_time_options",
+    "CastingTimeOptionRequest": "casting_time_options",
+    "SelectNGroup": "select_n_group",
     "SelectNGroupReq": "select_n_group",
+    "SelectNGroupRequest": "select_n_group",
+    "SelectFromGroups": "select_from_groups",
     "SelectFromGroupsReq": "select_from_groups",
+    "SelectFromGroupsRequest": "select_from_groups",
+    "SearchFromGroups": "search_from_groups",
     "SearchFromGroupsReq": "search_from_groups",
+    "SearchFromGroupsRequest": "search_from_groups",
+    "Gather": "gather",
     "GatherReq": "gather",
+    "GatherRequest": "gather",
+    "RevealHand": "reveal_hand",
     "RevealHandReq": "reveal_hand",
+    "RevealHandRequest": "reveal_hand",
 }
 
 # Reverse mapping for human-readable pending_decision labels
 _BRIDGE_REQUEST_TO_LABEL: dict[str, str] = {
+    "ActionsAvailable": "Action Required",
+    "ActionsAvailableReq": "Action Required",
     "ActionsAvailableRequest": "Action Required",
+    "SelectTargets": "Select Targets",
     "SelectTargetsReq": "Select Targets",
+    "SelectTargetsRequest": "Select Targets",
+    "Mulligan": "Mulligan",
     "MulliganReq": "Mulligan",
+    "MulliganRequest": "Mulligan",
+    "Group": "Group Selection",
     "GroupReq": "Group Selection",
+    "GroupRequest": "Group Selection",
+    "GroupOption": "Choose Mode",
     "GroupOptionReq": "Choose Mode",
+    "GroupOptionRequest": "Choose Mode",
+    "DeclareAttackers": "Declare Attackers",
     "DeclareAttackersReq": "Declare Attackers",
+    "DeclareAttackersRequest": "Declare Attackers",
+    "DeclareBlockers": "Declare Blockers",
     "DeclareBlockersReq": "Declare Blockers",
+    "DeclareBlockersRequest": "Declare Blockers",
+    "Search": "Search Library",
     "SearchReq": "Search Library",
+    "SearchRequest": "Search Library",
+    "Distribution": "Distribute",
     "DistributionReq": "Distribute",
+    "DistributionRequest": "Distribute",
+    "NumericInput": "Choose Number",
     "NumericInputReq": "Choose Number",
+    "NumericInputRequest": "Choose Number",
+    "Prompt": "Prompt",
     "PromptReq": "Prompt",
+    "PromptRequest": "Prompt",
+    "PayCosts": "Pay Costs",
     "PayCostsReq": "Pay Costs",
+    "PayCostsRequest": "Pay Costs",
+    "AssignDamage": "Assign Damage",
     "AssignDamageReq": "Assign Damage",
+    "AssignDamageRequest": "Assign Damage",
+    "OrderCombatDamage": "Order Damage",
     "OrderCombatDamageReq": "Order Damage",
+    "OrderCombatDamageRequest": "Order Damage",
+    "SelectN": "Select Cards",
     "SelectNReq": "Select Cards",
+    "SelectNRequest": "Select Cards",
+    "ChooseStartingPlayer": "Play or Draw",
     "ChooseStartingPlayerReq": "Play or Draw",
+    "ChooseStartingPlayerRequest": "Play or Draw",
+    "SelectReplacement": "Order Replacement",
     "SelectReplacementReq": "Order Replacement",
+    "SelectReplacementRequest": "Order Replacement",
+    "SelectCounters": "Select Counters",
     "SelectCountersReq": "Select Counters",
+    "SelectCountersRequest": "Select Counters",
+    "Order": "Order Triggers",
     "OrderReq": "Order Triggers",
+    "OrderRequest": "Order Triggers",
     "OptionalActionMessage": "Optional Action",
+    "CastingTimeOptions": "Casting Option",
     "CastingTimeOptionsReq": "Casting Option",
+    "CastingTimeOptionRequest": "Casting Option",
 }
+
+_ACTIONS_AVAILABLE_BRIDGE_REQUESTS = {
+    "ActionsAvailable",
+    "ActionsAvailableReq",
+    "ActionsAvailableRequest",
+}
+
+_NON_ACTIONABLE_BRIDGE_REQUESTS = {
+    "Intermission",
+    "IntermissionReq",
+    "IntermissionRequest",
+}
+
+
+def _get_bridge_decision_type(
+    request_type: Optional[str],
+    request_class: Optional[str] = None,
+) -> Optional[str]:
+    return (
+        _BRIDGE_REQUEST_TO_DECISION_TYPE.get(request_type or "")
+        or _BRIDGE_REQUEST_TO_DECISION_TYPE.get(request_class or "")
+    )
+
+
+def _get_bridge_request_label(
+    request_type: Optional[str],
+    request_class: Optional[str] = None,
+) -> str:
+    return (
+        _BRIDGE_REQUEST_TO_LABEL.get(request_type or "")
+        or _BRIDGE_REQUEST_TO_LABEL.get(request_class or "")
+        or request_type
+        or request_class
+        or "Unknown"
+    )
+
+
+def _is_non_actionable_bridge_request(
+    request_type: Optional[str],
+    request_class: Optional[str] = None,
+) -> bool:
+    return (
+        (request_type or "") in _NON_ACTIONABLE_BRIDGE_REQUESTS
+        or (request_class or "") in _NON_ACTIONABLE_BRIDGE_REQUESTS
+    )
 
 
 class BridgeDecisionPoller:
@@ -686,9 +821,19 @@ class BridgeDecisionPoller:
         self._consecutive_errors = 0
         self._last_poll_result = resp
 
-        has_pending = resp.get("has_pending", False)
-        request_type = resp.get("request_type") if has_pending else None
+        raw_has_pending = resp.get("has_pending", False)
+        request_type = resp.get("request_type") if raw_has_pending else None
+        request_class = resp.get("request_class") if raw_has_pending else None
         actions = resp.get("actions", [])
+        ignored_request = _is_non_actionable_bridge_request(request_type, request_class)
+        has_pending = raw_has_pending and not ignored_request
+        if ignored_request:
+            logger.debug(
+                f"Bridge ignoring non-actionable request: {request_type or request_class}"
+            )
+            request_type = None
+            request_class = None
+            actions = []
         action_sig = self._compute_action_sig(actions) if actions else None
 
         # Detect state change
@@ -720,21 +865,24 @@ class BridgeDecisionPoller:
         if not changed:
             return None
 
-        decision_type = _BRIDGE_REQUEST_TO_DECISION_TYPE.get(request_type or "")
+        decision_type = _get_bridge_decision_type(request_type, request_class)
 
         result = {
             "trigger": trigger_name,
             "request_type": request_type,
+            "request_class": request_class,
             "decision_type": decision_type,
             "has_pending": has_pending,
             "actions": actions,
             "can_pass": resp.get("can_pass", False),
             "can_cancel": resp.get("can_cancel", False),
             "allow_undo": resp.get("allow_undo", False),
+            "request_payload": resp.get("request_payload") if has_pending else None,
+            "decision_context": resp.get("decision_context") if has_pending else None,
         }
 
         if trigger_name == "decision_required":
-            label = _BRIDGE_REQUEST_TO_LABEL.get(request_type or "", request_type or "Unknown")
+            label = _get_bridge_request_label(request_type, request_class)
             logger.info(
                 f"Bridge detected decision: {label} "
                 f"(type={request_type}, actions={len(actions)})"
@@ -760,27 +908,51 @@ class BridgeDecisionPoller:
 
         has_pending = poll.get("has_pending", False)
         request_type = poll.get("request_type")
+        request_class = poll.get("request_class")
         actions = poll.get("actions", [])
+        request_payload = poll.get("request_payload")
+        bridge_decision_context = poll.get("decision_context") or {}
+
+        if has_pending and _is_non_actionable_bridge_request(request_type, request_class):
+            has_pending = False
+            request_type = None
+            request_class = None
+            actions = []
+            request_payload = None
+            bridge_decision_context = {}
 
         snapshot["_bridge_request_type"] = request_type if has_pending else None
+        snapshot["_bridge_request_class"] = request_class if has_pending else None
         snapshot["_bridge_actions"] = actions if actions else None
         snapshot["_bridge_can_pass"] = poll.get("can_pass", False)
+        snapshot["_bridge_can_cancel"] = poll.get("can_cancel", False)
+        snapshot["_bridge_allow_undo"] = poll.get("allow_undo", False)
+        snapshot["_bridge_request_payload"] = (
+            request_payload if has_pending and request_payload else None
+        )
 
         if not has_pending:
             return
 
         # Enrich pending_decision if log hasn't caught up yet
         if not snapshot.get("pending_decision") and request_type:
-            label = _BRIDGE_REQUEST_TO_LABEL.get(request_type, request_type)
+            label = _get_bridge_request_label(request_type, request_class)
             snapshot["pending_decision"] = label
             logger.debug(f"Bridge set pending_decision: {label}")
 
         # Enrich decision_context type from bridge's authoritative request_type
-        decision_type = _BRIDGE_REQUEST_TO_DECISION_TYPE.get(request_type or "")
+        decision_type = _get_bridge_decision_type(request_type, request_class)
+        existing_ctx = snapshot.get("decision_context") or {}
+        if bridge_decision_context:
+            snapshot["decision_context"] = {
+                **existing_ctx,
+                **bridge_decision_context,
+                "_bridge_source": True,
+            }
+            existing_ctx = snapshot["decision_context"]
+
         if decision_type:
-            existing_ctx = snapshot.get("decision_context") or {}
             existing_type = existing_ctx.get("type")
-            # Bridge request type is authoritative — update if missing or generic
             if not existing_type or existing_type == "unknown_req":
                 snapshot["decision_context"] = {
                     **existing_ctx,
