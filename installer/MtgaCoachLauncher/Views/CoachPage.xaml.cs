@@ -195,8 +195,10 @@ public partial class CoachPage : Page
     {
         _dispatcher.TryEnqueue(() =>
         {
-            AppendLog($"--- Coach process exited (code {exitCode}) ---");
+            AppendLog("Restarting coach...");
             DetachProcess();
+            // Auto-restart the coach process
+            _mainPage?.RestartCoach(false, false, false);
         });
     }
 

@@ -10,17 +10,44 @@ NOTE: Model files must be downloaded manually (~300MB total):
 Place files in ~/.cache/kokoro/ or specify paths explicitly.
 """
 
+import io
 import os
+import struct
 import subprocess
+import sys
 import threading
+import wave
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import sounddevice as sd
 import logging
 
+# Use winsound on Windows (no PortAudio dependency), sounddevice elsewhere
+_USE_WINSOUND = sys.platform == "win32"
+sd = None  # lazy import, only if needed
+if _USE_WINSOUND:
+    import winsound
+else:
+    try:
+        import sounddevice as sd
+    except ImportError:
+        sd = None
+
 logger = logging.getLogger(__name__)
+
+
+def _samples_to_wav_bytes(samples: np.ndarray, sample_rate: int) -> bytes:
+    """Convert float32 numpy samples to WAV bytes in memory."""
+    # Convert float32 [-1, 1] to int16
+    int_samples = np.clip(samples * 32767, -32768, 32767).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(sample_rate)
+        wf.writeframes(int_samples.tobytes())
+    return buf.getvalue()
 
 
 # Default model cache location
@@ -62,8 +89,6 @@ class KokoroTTS:
         tts = KokoroTTS()
         # First call loads model (~300MB)
         samples, sample_rate = tts.synthesize("Hello, how can I help?")
-        sd.play(samples, sample_rate)
-        sd.wait()
 
     Note:
         Model files must be downloaded manually. See module docstring
@@ -275,7 +300,7 @@ class VoiceOutput:
         self._speak_lock = threading.Lock()  # Prevents overlapping speech
         self._is_speaking = False
         self._stop_requested = False
-        self._stream: Optional[sd.OutputStream] = None
+        self._stream = None
         self._playback_thread: Optional[threading.Thread] = None
         self._windows_tts_proc: Optional[subprocess.Popen] = None
         self._fallback_tts_error_logged = False
@@ -498,6 +523,14 @@ class VoiceOutput:
         # Skip if muted
         if self._muted:
             return
+
+        # SAPI-only mode (pipe/WinUI) — use Windows built-in TTS directly
+        if getattr(self, '_sapi_only', False):
+            if not text or not text.strip():
+                return
+            text = self._clean_for_tts(text)
+            self._try_windows_tts_fallback(text, blocking=blocking)
+            return
             
         text = self._clean_text(text)
 
@@ -538,12 +571,16 @@ class VoiceOutput:
                 self._stop_requested = False
 
             try:
-                # Play with sounddevice (blocking)
                 logger.info(f"Speaking (device={self._device_index}): {text[:50]}...")
-                sd.play(samples, sample_rate, device=self._device_index)
-                sd.wait()
-            except sd.PortAudioError as e:
-                # No audio device - fail gracefully
+                if _USE_WINSOUND:
+                    wav_data = _samples_to_wav_bytes(samples, sample_rate)
+                    winsound.PlaySound(wav_data, winsound.SND_MEMORY)
+                elif sd is not None:
+                    sd.play(samples, sample_rate, device=self._device_index)
+                    sd.wait()
+                else:
+                    logger.error("No audio backend available")
+            except Exception as e:
                 logger.error(f"Audio playback failed: {e}")
             finally:
                 with self._lock:
@@ -595,43 +632,19 @@ class VoiceOutput:
                     self._stop_requested = False
 
                 try:
-                    # Use callback-based playback for async
-                    idx = [0]  # Mutable container for closure
-                    finished = threading.Event()
+                    logger.info(f"Speaking async (device={self._device_index}): {text[:50]}...")
+                    if _USE_WINSOUND:
+                        wav_data = _samples_to_wav_bytes(samples, sample_rate)
+                        # SND_MEMORY plays from bytes, SND_ASYNC not used here
+                        # because we're already in a background thread
+                        winsound.PlaySound(wav_data, winsound.SND_MEMORY)
+                    elif sd is not None:
+                        sd.play(samples, sample_rate, device=self._device_index)
+                        sd.wait()
+                    else:
+                        logger.error("No audio backend available")
 
-                    def callback(outdata, frames, time_info, status):
-                        with self._lock:
-                            if self._stop_requested:
-                                outdata.fill(0)
-                                raise sd.CallbackStop()
-
-                        start = idx[0]
-                        end = min(start + frames, len(samples))
-                        out_frames = end - start
-
-                        if out_frames > 0:
-                            outdata[:out_frames, 0] = samples[start:end]
-                        if out_frames < frames:
-                            outdata[out_frames:] = 0
-                            raise sd.CallbackStop()
-
-                        idx[0] = end
-
-                    def finished_callback():
-                        finished.set()
-
-                    with sd.OutputStream(
-                        samplerate=sample_rate,
-                        channels=1,
-                        callback=callback,
-                        finished_callback=finished_callback,
-                        device=self._device_index,
-                    ):
-                        logger.info(f"Speaking async (device={self._device_index}): {text[:50]}...")
-                        finished.wait()
-
-                except sd.PortAudioError as e:
-                    # No audio device - fail gracefully
+                except Exception as e:
                     logger.error(f"Audio playback failed: {e}")
                 finally:
                     with self._lock:
@@ -657,8 +670,14 @@ class VoiceOutput:
             win_proc = self._windows_tts_proc
             self._windows_tts_proc = None
 
-        # Stop sounddevice blocking playback
-        sd.stop()
+        # Stop audio playback
+        if _USE_WINSOUND:
+            try:
+                winsound.PlaySound(None, winsound.SND_PURGE)
+            except Exception:
+                pass
+        elif sd is not None:
+            sd.stop()
 
         if win_proc is not None and win_proc.poll() is None:
             try:

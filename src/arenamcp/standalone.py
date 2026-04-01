@@ -61,6 +61,71 @@ WATCHDOG_SCREENSHOT_MAX = 20  # Keep last N screenshots (pruned at match end)
 logger = logging.getLogger(__name__)
 
 
+class _SAPIVoice:
+    """Lightweight Windows SAPI TTS — no numpy, no sounddevice, no PortAudio.
+
+    Uses PowerShell's System.Speech.Synthesis for speech output.
+    Drop-in replacement for VoiceOutput in pipe mode.
+    """
+
+    def __init__(self):
+        self._proc: subprocess.Popen | None = None
+        self._muted = False
+
+    @property
+    def current_voice(self) -> tuple[str, str]:
+        return ("sapi", "Windows SAPI")
+
+    def speak(self, text: str, blocking: bool = True) -> None:
+        if self._muted or not text or not text.strip():
+            return
+        # Clean markup
+        import re
+        text = text.replace("**", "").replace("*", "").replace("#", "")
+        text = text.replace("```", "").replace("`", "").replace("...", " ")
+        text = re.sub(r"\[[A-Z][A-Za-z0-9_,:{}/ ]*\]", "", text)
+        # Escape for PowerShell
+        safe = text.replace("'", "''").replace('"', '\\"')
+        cmd = (
+            'Add-Type -AssemblyName System.Speech; '
+            '$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; '
+            f"$s.Speak('{safe}')"
+        )
+        try:
+            self.stop()
+            self._proc = subprocess.Popen(
+                ["powershell", "-NoProfile", "-Command", cmd],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
+            )
+            if blocking:
+                self._proc.wait(timeout=30)
+        except Exception:
+            pass
+
+    def stop(self) -> None:
+        if self._proc and self._proc.poll() is None:
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=0.5)
+            except Exception:
+                pass
+        self._proc = None
+
+    @property
+    def is_speaking(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def toggle_mute(self) -> bool:
+        self._muted = not self._muted
+        return self._muted
+
+    def next_voice(self):
+        pass  # SAPI uses system default
+
+
 def _probe_sounddevice_import(timeout_seconds: float = 8.0) -> tuple[bool, str]:
     """Probe sounddevice import in a subprocess.
 
@@ -1029,12 +1094,10 @@ class StandaloneCoach:
         """
         logger.info(f"_init_voice called, backend_name={self.backend_name}")
 
-        # In pipe mode (native GUI), run voice init in background so it doesn't
-        # block the coaching loop from starting.
+        # In pipe mode (native GUI), defer voice init to after the coaching loop
+        # starts. Set a flag that the coaching loop checks on first iteration.
         if hasattr(self.ui, 'emit_game_state'):
-            import threading
-            threading.Thread(target=self._init_voice_background, daemon=True,
-                             name="voice-init").start()
+            self._pipe_voice_pending = True
             return
 
         sd_ok, sd_reason = _probe_sounddevice_import(timeout_seconds=8.0)
@@ -1178,6 +1241,15 @@ class StandaloneCoach:
 
         while self._running:
             try:
+                # Deferred voice init for pipe mode — use a lightweight
+                # SAPI wrapper that doesn't import numpy/sounddevice/onnx.
+                if getattr(self, '_pipe_voice_pending', False):
+                    self._pipe_voice_pending = False
+                    self._voice_output = _SAPIVoice()
+                    logger.info("TTS ready (Windows SAPI)")
+                    self.ui.status("VOICE", "Windows SAPI")
+                    self.ui.log("TTS ready (Windows SAPI)")
+
                 # Poll for new log content (watchdog backup - Windows often misses events)
                 self._mcp.poll_log()
 
