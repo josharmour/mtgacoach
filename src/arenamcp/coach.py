@@ -3233,9 +3233,38 @@ class CoachEngine:
 
                 return action
 
+            def _get_legal_pass_action(actions: list[str]) -> Optional[str]:
+                """Return the concrete legal Pass action when available."""
+                for action in actions:
+                    if action.strip().lower() == "pass":
+                        return action
+                return None
+
+            def _has_pass_intent(text: str) -> bool:
+                """Detect advice that means "do nothing now and let play proceed"."""
+                lead_clause = re.split(r"(?<=[.!?;])\s+", text.strip(), maxsplit=1)[0].lower()
+                pass_intent_patterns = (
+                    r"\blet (?:it|that|this|them) resolve\b",
+                    r"\bpass priority\b",
+                    r"^\s*pass\b",
+                    r"^\s*wait\b",
+                    r"\bno response\b",
+                    r"\bdon['’]?t respond\b",
+                    r"\bdo not respond\b",
+                    r"\blet them have it\b",
+                    r"\bnothing to do\b",
+                )
+                return any(re.search(pattern, lead_clause) for pattern in pass_intent_patterns)
+
             advice_lower = advice.lower()
             legal_lower = [a.lower() for a in legal_actions]
             matches = any(l in advice_lower for l in legal_lower)
+            legal_pass_action = _get_legal_pass_action(legal_actions)
+
+            if not matches and legal_pass_action and _has_pass_intent(advice):
+                advice = legal_pass_action
+                advice_lower = advice.lower()
+                matches = True
 
             # "Don't attack", "don't block", "pass priority", "no attacks" are
             # always valid strategic choices — the player can decline to act.
@@ -3243,6 +3272,9 @@ class CoachEngine:
                 "don't attack", "don\u2019t attack", "do not attack", "no attack",
                 "don't block", "don\u2019t block", "do not block", "no block",
                 "pass priority", "take the damage",
+                "let it resolve", "let them resolve", "let that resolve",
+                "wait", "no response", "don't respond", "don\u2019t respond",
+                "nothing to do", "pass", "resolve",
             ]
             if not matches and any(p in advice_lower for p in PASSTHROUGH_PHRASES):
                 matches = True

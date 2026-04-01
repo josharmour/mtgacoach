@@ -217,6 +217,36 @@ class PipeAdapter:
         coach = self._coach
         if coach is None:
             return
-        threading.Thread(
-            target=coach._do_cycle_model, daemon=True
-        ).start()
+
+        try:
+            from arenamcp.coach import get_models_for_mode
+
+            mode = coach.backend_name
+            if mode not in ("online", "local"):
+                mode = "local"
+
+            models = get_models_for_mode(mode)
+            if len(models) <= 1:
+                self.log(f"Only one model for {mode}")
+                return
+
+            current = coach.model_name
+            idx = -1
+            for i, (_, mid) in enumerate(models):
+                if mid == current:
+                    idx = i
+                    break
+
+            next_idx = (idx + 1) % len(models)
+            next_name, next_id = models[next_idx]
+            self.log(f"Switching model to {next_name}...")
+
+            def _do_switch():
+                try:
+                    coach._verify_and_switch(mode, next_id)
+                except Exception as e:
+                    self.error(f"Model switch failed: {e}")
+
+            threading.Thread(target=_do_switch, daemon=True).start()
+        except Exception as e:
+            self.error(f"Cycle model failed: {e}")
