@@ -1094,10 +1094,36 @@ class StandaloneCoach:
         """
         logger.info(f"_init_voice called, backend_name={self.backend_name}")
 
-        # In pipe mode (native GUI), defer voice init to after the coaching loop
-        # starts. Set a flag that the coaching loop checks on first iteration.
+        # In pipe mode (native GUI), try Kokoro directly with a hard timeout.
+        # If it hangs (numpy/PortAudio DLL issues), fall back to Windows SAPI.
         if hasattr(self.ui, 'emit_game_state'):
-            self._pipe_voice_pending = True
+            self.ui.log("Initializing TTS...")
+            kokoro_ok = False
+            kokoro_result = [None]  # mutable container for thread result
+
+            def _try_kokoro():
+                try:
+                    from arenamcp.tts import VoiceOutput
+                    kokoro_result[0] = VoiceOutput()
+                except Exception as e:
+                    logger.error(f"Kokoro init failed: {e}")
+
+            t = threading.Thread(target=_try_kokoro, daemon=True)
+            t.start()
+            t.join(timeout=10.0)
+
+            if kokoro_result[0] is not None:
+                self._voice_output = kokoro_result[0]
+                voice_id, voice_desc = self._voice_output.current_voice
+                logger.info(f"TTS voice (Kokoro): {voice_desc}")
+                self.ui.status("VOICE", f"{voice_desc}")
+                self.ui.log(f"TTS ready: {voice_desc}")
+            else:
+                reason = "timeout" if t.is_alive() else "init failed"
+                logger.warning(f"Kokoro unavailable ({reason}), using Windows SAPI")
+                self._voice_output = _SAPIVoice()
+                self.ui.status("VOICE", "Windows SAPI")
+                self.ui.log(f"Kokoro unavailable ({reason}) — using Windows SAPI")
             return
 
         sd_ok, sd_reason = _probe_sounddevice_import(timeout_seconds=8.0)
@@ -1241,15 +1267,6 @@ class StandaloneCoach:
 
         while self._running:
             try:
-                # Deferred voice init for pipe mode — use a lightweight
-                # SAPI wrapper that doesn't import numpy/sounddevice/onnx.
-                if getattr(self, '_pipe_voice_pending', False):
-                    self._pipe_voice_pending = False
-                    self._voice_output = _SAPIVoice()
-                    logger.info("TTS ready (Windows SAPI)")
-                    self.ui.status("VOICE", "Windows SAPI")
-                    self.ui.log("TTS ready (Windows SAPI)")
-
                 # Poll for new log content (watchdog backup - Windows often misses events)
                 self._mcp.poll_log()
 

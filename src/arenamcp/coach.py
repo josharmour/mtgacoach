@@ -3181,9 +3181,16 @@ class CoachEngine:
                 if "block with" in act and "declare blockers" in pending_decision:
                     score += 120
 
+                # Strongly prefer actions confirmed castable by the game engine
+                if "[ok]" in act:
+                    score += 50
+
                 # Casting is generally higher priority than activating
                 if act.startswith("cast "):
-                    score += 60
+                    if "[ok]" in act:
+                        score += 60  # confirmed castable
+                    else:
+                        score += 10  # may not have mana — low priority
                 if act.startswith("activate "):
                     score += 40
                 if act.startswith("activate ") and (
@@ -3258,7 +3265,16 @@ class CoachEngine:
 
             advice_lower = advice.lower()
             legal_lower = [a.lower() for a in legal_actions]
-            matches = any(l in advice_lower for l in legal_lower)
+            # Strip [OK], [NEED:x], etc. markers before matching so
+            # "Cast Destiny Spinner" matches "Cast Destiny Spinner [OK]"
+            legal_lower_stripped = [
+                re.sub(r'\s*\[(?:OK|NEED:\d+|NO TARGETS)\]', '', a).strip()
+                for a in legal_lower
+            ]
+            matches = (
+                any(l in advice_lower for l in legal_lower)
+                or any(l in advice_lower for l in legal_lower_stripped)
+            )
             legal_pass_action = _get_legal_pass_action(legal_actions)
 
             if not matches and legal_pass_action and _has_pass_intent(advice):

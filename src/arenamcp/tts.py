@@ -20,8 +20,16 @@ import wave
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import logging
+
+# Lazy numpy import — module-level import hangs in WinUI subprocess
+np = None
+
+def _ensure_numpy():
+    global np
+    if np is None:
+        import numpy
+        np = numpy
 
 # Use winsound on Windows (no PortAudio dependency), sounddevice elsewhere
 _USE_WINSOUND = sys.platform == "win32"
@@ -37,9 +45,9 @@ else:
 logger = logging.getLogger(__name__)
 
 
-def _samples_to_wav_bytes(samples: np.ndarray, sample_rate: int) -> bytes:
+def _samples_to_wav_bytes(samples, sample_rate: int) -> bytes:
     """Convert float32 numpy samples to WAV bytes in memory."""
-    # Convert float32 [-1, 1] to int16
+    _ensure_numpy()
     int_samples = np.clip(samples * 32767, -32768, 32767).astype(np.int16)
     buf = io.BytesIO()
     with wave.open(buf, 'wb') as wf:
@@ -193,21 +201,14 @@ class KokoroTTS:
                 str(self._voices_path),
             )
 
-    def synthesize(self, text: str) -> tuple[np.ndarray, int]:
+    def synthesize(self, text: str):
         """Synthesize text to audio samples.
-
-        Args:
-            text: Text to synthesize. Should be reasonable length
-                 (sentences, not paragraphs) for best quality.
 
         Returns:
             Tuple of (samples, sample_rate) where samples is a numpy
             array of float32 audio data and sample_rate is always 24000.
-
-        Raises:
-            FileNotFoundError: If model files are not found.
-            ImportError: If kokoro-onnx is not installed.
         """
+        _ensure_numpy()
         self._ensure_model_loaded()
 
         if not text or not text.strip():
@@ -563,6 +564,7 @@ class VoiceOutput:
             # Audio devices (especially Bluetooth/USB) need time to wake up after
             # sd.stop() or when the stream first opens.  200ms was not enough.
             silence_len = int(sample_rate * 0.5)
+            _ensure_numpy()
             silence = np.zeros(silence_len, dtype=np.float32)
             samples = np.concatenate([silence, samples])
 
@@ -623,6 +625,7 @@ class VoiceOutput:
 
             # Add leading silence (500ms) to prevent cutting off the first word.
             silence_len = int(sample_rate * 0.5)
+            _ensure_numpy()
             silence = np.zeros(silence_len, dtype=np.float32)
             samples = np.concatenate([silence, samples])
 
