@@ -66,6 +66,7 @@ def _probe_sounddevice_import(timeout_seconds: float = 8.0) -> tuple[bool, str]:
 
     Importing sounddevice can block inside PortAudio initialization when an audio
     driver is misbehaving. Probing in a subprocess keeps the main process safe.
+    stdin=DEVNULL prevents inheriting the parent's pipe when running under a GUI.
     """
     cmd = [sys.executable, "-c", "import sounddevice"]
     try:
@@ -75,6 +76,7 @@ def _probe_sounddevice_import(timeout_seconds: float = 8.0) -> tuple[bool, str]:
             text=True,
             timeout=timeout_seconds,
             check=False,
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         return False, f"timeout after {int(timeout_seconds)}s"
@@ -1027,7 +1029,16 @@ class StandaloneCoach:
         """
         logger.info(f"_init_voice called, backend_name={self.backend_name}")
 
+        # In pipe mode (native GUI), run voice init in background so it doesn't
+        # block the coaching loop from starting.
+        if hasattr(self.ui, 'emit_game_state'):
+            import threading
+            threading.Thread(target=self._init_voice_background, daemon=True,
+                             name="voice-init").start()
+            return
+
         sd_ok, sd_reason = _probe_sounddevice_import(timeout_seconds=8.0)
+
         if not sd_ok:
             logger.error(f"sounddevice probe failed - disabling voice: {sd_reason}")
             self.ui.status("VOICE", "Audio init failed - voice disabled")
@@ -1068,6 +1079,27 @@ class StandaloneCoach:
                 self._voice_input = None
         else:
             logger.info(f"Voice input disabled (mode={self._voice_mode})")
+
+    def _init_voice_background(self) -> None:
+        """Initialize voice in a background thread (pipe mode only).
+
+        No probe — just import VoiceOutput directly. If PortAudio hangs during
+        device enumeration, this daemon thread hangs forever but the coaching
+        loop keeps running unaffected.
+        """
+        try:
+            from arenamcp.tts import VoiceOutput
+            logger.info("Initializing TTS (pipe mode)...")
+            self.ui.log("Initializing TTS...")
+            self._voice_output = VoiceOutput()
+            voice_id, voice_desc = self._voice_output.current_voice
+            logger.info(f"TTS voice: {voice_desc}")
+            self.ui.status("VOICE", f"{voice_desc}")
+            self.ui.log(f"TTS ready: {voice_desc}")
+        except Exception as e:
+            logger.error(f"Voice init failed: {e}")
+            self.ui.status("VOICE", "TTS init failed")
+            self.ui.log(f"TTS unavailable: {e}")
 
     # --- Urgency-aware polling intervals ---
     _POLL_BRIDGE = 0.15     # Bridge connected with pending decision (fast)
@@ -1274,6 +1306,11 @@ class StandaloneCoach:
                         # and deck_cards arrive via ConnectResp.
 
                 curr_state = self._normalize_turn_snapshot(self._mcp.get_game_state())
+
+                # Emit game state to pipe adapter (native GUI)
+                if hasattr(self.ui, 'emit_game_state'):
+                    self.ui.emit_game_state(curr_state)
+
                 turn = curr_state.get("turn", {})
                 turn_num = turn.get("turn_number", 0)
                 phase = turn.get("phase", "")
@@ -3855,8 +3892,10 @@ class StandaloneCoach:
 
         self._running = True
 
-        # Initialize components
+        # Initialize components — emit progress to pipe so GUI shows what's happening
+        self.ui.log("Initializing game state tracker...")
         self._init_mcp()
+        self.ui.log("Initializing voice (background)...")
         self._init_voice()
 
         # Track actual model name for display
@@ -3869,12 +3908,15 @@ class StandaloneCoach:
             logger.info(f"Draft helper: {result}")
         else:
             # Initialize LLM for coaching
+            self.ui.log("Connecting to LLM backend...")
             self._init_llm()
+            self.ui.log("LLM backend ready.")
             # Get actual model name from backend
             if self._coach and hasattr(self._coach, '_backend'):
                 actual_model = getattr(self._coach._backend, 'model', self.model_name)
 
             # Initialize VisionMapper (shared: watchdog + autopilot)
+            self.ui.log("Initializing vision mapper...")
             self._init_vision_mapper()
 
             # Initialize autopilot if enabled
@@ -4116,6 +4158,8 @@ Examples:
                         help="Language code for voice (e.g., en, nl, es, fr, de, ja)")
     parser.add_argument("--cli", action="store_true",
                         help="Run in legacy CLI mode (default is TUI)")
+    parser.add_argument("--pipe", action="store_true",
+                        help="Headless mode: JSON lines on stdout/stdin (for native GUI)")
     parser.add_argument("--diagnose", action="store_true",
                         help="Run diagnostic checks and exit")
 
@@ -4134,6 +4178,44 @@ Examples:
     if args.diagnose:
         from arenamcp.diagnose import run_diagnostics
         sys.exit(run_diagnostics())
+
+    # Pipe mode: headless JSON lines for native GUI frontend
+    if args.pipe:
+        from arenamcp.pipe_adapter import PipeAdapter
+        pipe = PipeAdapter()
+        coach = StandaloneCoach(
+            backend=args.backend,
+            model=args.model,
+            voice_mode=args.voice,
+            draft_mode=args.draft,
+            set_code=args.set_code,
+            ui_adapter=pipe,
+            register_hotkeys=False,
+            autopilot=args.autopilot,
+            dry_run=args.dry_run,
+            afk=getattr(args, 'afk', False),
+        )
+        pipe.bind_coach(coach)
+        # Start stdin reader AFTER coach.start() is called inside run_forever()
+        # to avoid a race where stdin EOF kills the coach before it starts.
+        import threading
+        def _delayed_stdin():
+            # Wait for coach to be running before reading stdin
+            for _ in range(50):
+                if coach._running:
+                    break
+                time.sleep(0.1)
+            pipe.start_stdin_reader()
+        threading.Thread(target=_delayed_stdin, daemon=True).start()
+        try:
+            coach.run_forever()
+        except KeyboardInterrupt:
+            coach.stop()
+        except Exception as e:
+            logger.error(f"Fatal: {e}")
+            pipe.error(str(e))
+            sys.exit(1)
+        return
 
     # Launch TUI unless CLI mode requested or show-log
     if not args.cli and not args.show_log:

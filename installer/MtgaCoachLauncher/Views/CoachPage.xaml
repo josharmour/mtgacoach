@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<Page
+    x:Class="MtgaCoachLauncher.Views.CoachPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:MtgaCoachLauncher.Views">
+
+    <Grid Padding="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />   <!-- Status bar -->
+            <RowDefinition Height="Auto" />   <!-- Game state panel -->
+            <RowDefinition Height="*" />      <!-- Advice log -->
+            <RowDefinition Height="Auto" />   <!-- Button bar -->
+            <RowDefinition Height="Auto" />   <!-- Chat input -->
+        </Grid.RowDefinitions>
+
+        <!-- Status Bar -->
+        <Border Grid.Row="0" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                CornerRadius="4" Padding="12,8" Margin="0,0,0,8">
+            <StackPanel Orientation="Horizontal" Spacing="20">
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                    <TextBlock Text="Seat:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <TextBlock x:Name="StatusSeat" Text="--" VerticalAlignment="Center" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                    <TextBlock Text="Backend:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <TextBlock x:Name="StatusBackend" Text="--" VerticalAlignment="Center" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                    <TextBlock Text="Model:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <TextBlock x:Name="StatusModel" Text="--" VerticalAlignment="Center" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                    <TextBlock Text="Bridge:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <TextBlock x:Name="StatusBridge" Text="--" VerticalAlignment="Center" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Game State Panel -->
+        <Border Grid.Row="1" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                CornerRadius="4" Padding="12,8" Margin="0,0,0,8"
+                MinHeight="60">
+            <TextBlock x:Name="GameStateText"
+                       FontFamily="Consolas" FontSize="12"
+                       TextWrapping="Wrap" IsTextSelectionEnabled="True"
+                       Text="Waiting for MTGA..." />
+        </Border>
+
+        <!-- Advice Log -->
+        <Border Grid.Row="2" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                CornerRadius="4" Margin="0,0,0,8">
+            <ScrollViewer x:Name="AdviceScroller" VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="LogPanel" Spacing="0" />
+            </ScrollViewer>
+        </Border>
+
+        <!-- Button Bar -->
+        <Border Grid.Row="3" Margin="0,0,0,8">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <Button x:Name="BtnMode" Content="Online" Click="Mode_Click"
+                        Style="{StaticResource AccentButtonStyle}" />
+                <Button x:Name="BtnModel" Content="Model" Click="Model_Click"
+                        Style="{StaticResource AccentButtonStyle}" />
+                <Button x:Name="BtnMute" Content="Mute" Click="Mute_Click" />
+                <Button x:Name="BtnAutopilot" Content="AP:OFF" Click="Autopilot_Click" />
+                <Button Content="Screen" Click="Screen_Click" />
+                <Button Content="Copy Debug Logs" Click="CopyDebug_Click" />
+                <Button Content="Restart" Click="Restart_Click" />
+            </StackPanel>
+        </Border>
+
+        <!-- Chat Input -->
+        <Grid Grid.Row="4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBox x:Name="ChatInput" Grid.Column="0"
+                     PlaceholderText="Ask the coach a question..."
+                     KeyDown="ChatInput_KeyDown" />
+            <Button Grid.Column="1" Content="Send" Click="ChatSend_Click"
+                    Margin="8,0,0,0" Style="{StaticResource AccentButtonStyle}" />
+        </Grid>
+    </Grid>
+</Page>

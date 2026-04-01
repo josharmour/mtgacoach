@@ -1024,14 +1024,15 @@ def main() -> int:
                 return 1
             print()
             print("    " + "=" * 44)
-            print("    Update complete! Launch mtgacoach with:")
-            print("      launch.vbs  (double-click / shortcut)")
-            print("      launch.bat  (from a console)")
+            print("    Update complete!")
+            print("    Close this window and use the mtgacoach")
+            print("    app to launch the coach.")
             print("    " + "=" * 44)
             print()
             return 0
 
-    # -- Full setup --
+    # -- Full setup (environment bootstrap only) --
+    # Backend/model/voice/language config is handled in the GUI.
 
     # Step 1: Python
     if not step_check_python():
@@ -1049,38 +1050,18 @@ def main() -> int:
     if not step_install_dependencies():
         return 1
 
-    # Step 5: Mode + model
-    mode, model = step_detect_and_choose_backend(settings)
-    settings["mode"] = mode
-    if model:
-        settings["model"] = model
-        if mode == "local":
-            settings["local_model"] = model
-
-    # Step 6: Language
-    lang = step_language(settings)
-    settings["language"] = lang
-
-    # Step 7: Voice mode
-    voice_mode = step_voice_mode(settings)
-    settings["voice_mode"] = voice_mode
-
-    # Also write voice mode to .env for backward compat
-    if voice_mode != "none":
-        env = read_env(ENV_FILE)
-        env["VOICE_MODE"] = voice_mode
-        write_env(ENV_FILE, env)
-
-    # Save everything to settings.json
-    info("\nSaving configuration...")
+    # Save paths to settings
     save_settings(settings)
-    ok(f"Settings saved to {SETTINGS_FILE}")
 
-    # Step 8: Verify
-    step_verify(settings)
-
-    # Step 9: Desktop shortcut
-    step_desktop_shortcut()
+    print()
+    print("    " + "=" * 44)
+    print("    Setup complete!")
+    print(f"      Runtime: {RUNTIME_ROOT}")
+    print()
+    print("    Close this window and use the mtgacoach")
+    print("    app to configure and launch the coach.")
+    print("    " + "=" * 44)
+    print()
 
     return 0
 

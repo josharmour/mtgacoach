@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "MtgaCoachLauncher (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "MtgaCoachLauncher (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
