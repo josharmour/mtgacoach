@@ -723,9 +723,9 @@ namespace MtgaCoachBridge
 
         private void HandleSubmitBlockers(PipeCommand cmd)
         {
-            BaseUserRequest request;
-            lock (_interactionLock) { request = _lastKnownRequest; }
-            if (request == null) request = FindPendingInteraction();
+            // Always get fresh reference — cached _lastKnownRequest may have
+            // a stale OnSubmit callback that the workflow no longer listens to.
+            var request = FindPendingInteraction();
             if (request == null)
             {
                 cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "No pending interaction" });
@@ -778,9 +778,7 @@ namespace MtgaCoachBridge
 
         private void HandleSubmitAttackers(PipeCommand cmd)
         {
-            BaseUserRequest request;
-            lock (_interactionLock) { request = _lastKnownRequest; }
-            if (request == null) request = FindPendingInteraction();
+            var request = FindPendingInteraction();
             if (request == null)
             {
                 cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "No pending interaction" });
@@ -855,7 +853,7 @@ namespace MtgaCoachBridge
 
         private void HandleSubmitMulligan(PipeCommand cmd)
         {
-            var request = _lastKnownRequest ?? FindPendingInteraction();
+            var request = FindPendingInteraction();
             if (request is MulliganRequest mulliganReq)
             {
                 bool keep = cmd.Json.Value<bool>("keep");
@@ -880,7 +878,7 @@ namespace MtgaCoachBridge
 
         private void HandleSubmitChooseStartingPlayer(PipeCommand cmd)
         {
-            var request = _lastKnownRequest ?? FindPendingInteraction();
+            var request = FindPendingInteraction();
             if (request is ChooseStartingPlayerRequest chooseReq)
             {
                 uint seatId = (uint)cmd.Json.Value<int>("seat_id");
@@ -897,7 +895,7 @@ namespace MtgaCoachBridge
 
         private void HandleSubmitSelection(PipeCommand cmd)
         {
-            var request = _lastKnownRequest ?? FindPendingInteraction();
+            var request = FindPendingInteraction();
 
             if (request is SelectNRequest selectNReq)
             {
@@ -936,7 +934,7 @@ namespace MtgaCoachBridge
 
         private void HandleSubmitGroup(PipeCommand cmd)
         {
-            var request = _lastKnownRequest ?? FindPendingInteraction();
+            var request = FindPendingInteraction();
             if (request is GroupRequest groupReq)
             {
                 var groupsArr = cmd.Json["groups"] as JArray;
@@ -965,7 +963,7 @@ namespace MtgaCoachBridge
 
         private void HandleSubmitOptional(PipeCommand cmd)
         {
-            var request = _lastKnownRequest ?? FindPendingInteraction();
+            var request = FindPendingInteraction();
             if (request is OptionalActionMessageRequest optionalReq)
             {
                 bool accept = cmd.Json.Value<bool>("accept");
@@ -983,7 +981,7 @@ namespace MtgaCoachBridge
 
         private void HandleSubmitNumeric(PipeCommand cmd)
         {
-            var request = _lastKnownRequest ?? FindPendingInteraction();
+            var request = FindPendingInteraction();
             if (request is NumericInputRequest numericReq)
             {
                 uint value = (uint)cmd.Json.Value<int>("value");
@@ -1000,7 +998,7 @@ namespace MtgaCoachBridge
 
         private void HandleSubmitTargets(PipeCommand cmd)
         {
-            var request = _lastKnownRequest ?? FindPendingInteraction();
+            var request = FindPendingInteraction();
             if (request is SelectTargetsRequest targetsReq)
             {
                 // For now: submit targets as-is (the client's target selections
