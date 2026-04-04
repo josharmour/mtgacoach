@@ -810,8 +810,10 @@ namespace MtgaCoachBridge
                         if (dr != null)
                         {
                             var recipient = new DamageRecipient();
-                            var drType = dr.Value<string>("type");
-                            if (!string.IsNullOrEmpty(drType) && System.Enum.TryParse<DamageRecType>(drType, out var parsed))
+                            var drType = dr.Value<string>("type") ?? "";
+                            // Handle both "Player" and "DamageRecType_Player" formats
+                            var normalizedType = drType.Replace("DamageRecType_", "");
+                            if (!string.IsNullOrEmpty(normalizedType) && System.Enum.TryParse<DamageRecType>(normalizedType, true, out var parsed))
                                 recipient.Type = parsed;
                             // Set the appropriate oneof field
                             if (dr["playerSystemSeatId"] != null)
@@ -824,7 +826,13 @@ namespace MtgaCoachBridge
                         }
                         attackers.Add(attacker);
                     }
-                    _log.LogInfo($"Submitting attackers: {attackers.Count} attackers");
+                    foreach (var att in attackers)
+                    {
+                        var drInfo = att.SelectedDamageRecipient != null
+                            ? $"type={att.SelectedDamageRecipient.Type}, idCase={att.SelectedDamageRecipient.IdCase}, seatId={att.SelectedDamageRecipient.PlayerSystemSeatId}"
+                            : "null";
+                        _log.LogInfo($"Submitting attacker: instanceId={att.AttackerInstanceId}, damageRecipient=[{drInfo}]");
+                    }
                     attackerReq.UpdateAttacker(attackers.ToArray());
                 }
 
