@@ -1369,11 +1369,6 @@ class StandaloneCoach:
                             time.sleep(0.5)
                             continue
 
-                    # Inactive draft/sealed
-                    if time.time() - last_inactive_log > 10.0:
-                        logger.info("Draft inactive (waiting for event entry...)")
-                        last_inactive_log = time.time()
-
                 # Not in draft/sealed - regular game coaching
                 if in_draft_mode or in_sealed_mode:
                     mode_name = "Sealed" if in_sealed_mode else "Draft"
