@@ -1026,12 +1026,40 @@ namespace MtgaCoachBridge
             var request = FindPendingInteraction();
             if (request is SelectTargetsRequest targetsReq)
             {
-                // For now: submit targets as-is (the client's target selections
-                // are already set by the game UI or prior interactions).
-                _log.LogInfo("Submitting targets");
-                targetsReq.SubmitTargets();
+                var targetInstanceId = (uint)cmd.Json.Value<int>("target_instance_id");
+
+                // Find the target in the request's own TargetSelections
+                // Each TargetSelection has a TargetIdx and a list of legal Targets
+                bool found = false;
+                foreach (var ts in targetsReq.TargetSelections)
+                {
+                    foreach (var t in ts.Targets)
+                    {
+                        if (t.TargetInstanceId == targetInstanceId)
+                        {
+                            _log.LogInfo($"UpdateTarget: instanceId={targetInstanceId}, targetIdx={ts.TargetIdx}");
+                            targetsReq.UpdateTarget(t, ts.TargetIdx);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found) break;
+                }
+
+                if (!found)
+                {
+                    // Target not in legal targets — log what is available
+                    var legalIds = new List<string>();
+                    foreach (var ts in targetsReq.TargetSelections)
+                        foreach (var t in ts.Targets)
+                            legalIds.Add($"{t.TargetInstanceId}");
+                    _log.LogWarning($"Target instanceId={targetInstanceId} not found in legal targets: [{string.Join(",", legalIds)}]");
+                    cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = $"Target {targetInstanceId} not in legal targets" });
+                    return;
+                }
+
                 lock (_interactionLock) { _lastKnownRequest = null; }
-                cmd.SetResponse(new JObject { ["ok"] = true, ["submitted_type"] = "SelectTargets" });
+                cmd.SetResponse(new JObject { ["ok"] = true, ["submitted_type"] = "SelectTargets", ["target_instance_id"] = (int)targetInstanceId });
             }
             else
             {

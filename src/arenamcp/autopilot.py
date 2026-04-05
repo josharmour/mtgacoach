@@ -1669,10 +1669,10 @@ class AutopilotEngine:
         return None
 
     def _try_gre_bridge_select_target(self, action: GameAction) -> Optional[ClickResult]:
-        """Submit target selection via bridge using SelectN/Search submission.
+        """Submit target selection via bridge.
 
-        The target names from the LLM plan are resolved to instance IDs
-        and submitted as a selection.
+        Uses submit_targets (SelectTargetsRequest) or submit_selection
+        (SelectNRequest) depending on the pending request type.
         """
         pending = self._gre_bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
@@ -1682,32 +1682,35 @@ class AutopilotEngine:
         game_state = self._get_game_state()
         battlefield = game_state.get("battlefield", [])
 
-        # Resolve target names to instance IDs
-        target_ids = []
-        for name in (action.target_names or [action.card_name] if action.card_name else []):
+        # Resolve target name to instance ID
+        target_names = action.target_names or ([action.card_name] if action.card_name else [])
+        target_id = None
+        for name in target_names:
             for card in battlefield:
                 if card.get("name", "").lower() == name.lower():
                     iid = card.get("instance_id")
                     if iid:
-                        target_ids.append(iid)
+                        target_id = iid
                         break
-            # Also check players
-            for p in game_state.get("players", []):
-                if name.lower() in ("opponent", "player", p.get("name", "").lower()):
-                    sid = p.get("seat_id")
-                    if sid:
-                        target_ids.append(sid)
-                        break
+            if target_id:
+                break
 
-        if not target_ids:
-            logger.info(f"GRE bridge select_target: can't resolve IDs for {action.target_names or [action.card_name]}, falling back")
+        if target_id is None:
+            logger.info(f"GRE bridge select_target: can't resolve ID for {target_names}, falling back")
             return None
 
-        if self._gre_bridge.submit_selection(target_ids):
-            names = ", ".join(action.target_names or [action.card_name])
+        # Use the right bridge method based on request type
+        success = False
+        if "SelectTargets" in req_class:
+            success = self._gre_bridge.submit_targets(target_id)
+        else:
+            success = self._gre_bridge.submit_selection([target_id])
+
+        if success:
+            names = ", ".join(target_names)
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE,
-                f"select_target: {names} (ids={target_ids}) via GRE bridge"
+                f"select_target: {names} (id={target_id}) via GRE bridge"
             )
             return ClickResult(True, 0, 0, "select_target", "GRE bridge")
 

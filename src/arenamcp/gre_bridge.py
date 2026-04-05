@@ -512,12 +512,15 @@ class GREBridge:
             logger.warning(f"GRE bridge submit_numeric error: {e}")
         return False
 
-    def submit_targets(self) -> bool:
-        """Submit current target selections."""
+    def submit_targets(self, target_instance_id: int) -> bool:
+        """Submit target selection by instance ID."""
         try:
-            resp = self._send_safe({"action": "submit_targets"})
+            resp = self._send_safe({
+                "action": "submit_targets",
+                "target_instance_id": target_instance_id,
+            })
             if resp.get("ok"):
-                logger.info("GRE bridge submitted targets")
+                logger.info(f"GRE bridge submitted target: instance_id={target_instance_id}")
                 return True
             logger.warning(f"GRE bridge submit_targets failed: {resp.get('error')}")
         except GREBridgeError as e:
