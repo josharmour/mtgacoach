@@ -451,9 +451,16 @@ class AutopilotEngine:
         Returns:
             True if plan was fully executed, False otherwise.
         """
-        if not self._lock.acquire(blocking=False):
-            logger.debug(f"Autopilot: already processing a trigger, skipping {trigger}")
-            return False
+        if not self._lock.acquire(timeout=10.0):
+            # Lock held for >10 seconds — force release (previous call is hung)
+            logger.warning(f"Autopilot: lock held >10s, force-releasing for {trigger}")
+            try:
+                self._lock.release()
+            except RuntimeError:
+                pass
+            if not self._lock.acquire(blocking=False):
+                logger.error(f"Autopilot: could not acquire lock even after force-release")
+                return False
 
         try:
             if self._abort_event.is_set():
