@@ -752,10 +752,14 @@ class AutopilotEngine:
                     )
 
                 if not plan.actions:
-                    # If there are no legal actions at all, auto-pass rather
-                    # than returning False (which drops to coaching).  This
-                    # handles unknown decision types, prompts, and optional
-                    # actions that the planner can't parse.
+                    # Planner couldn't produce actions. Try auto_respond
+                    # (MTGA's built-in default response) as universal fallback.
+                    if not self._config.dry_run and (self._gre_bridge.connected or self._gre_bridge.connect()):
+                        if self._gre_bridge.auto_respond():
+                            self._log_execution_path(ExecutionPath.GRE_AWARE, "auto_respond (planner empty)")
+                            self._state = AutopilotState.IDLE
+                            return True
+                    # Last resort: try pass
                     meaningful = [
                         a for a in (legal_actions or [])
                         if a.lower() not in {"pass", "action: activate_mana", "action: floatmana"}
@@ -763,12 +767,6 @@ class AutopilotEngine:
                     ]
                     if not meaningful:
                         logger.info("Autopilot: auto-passing (planner empty, no meaningful actions)")
-                        if not self._config.dry_run:
-                            if self._gre_bridge.connected or self._gre_bridge.connect():
-                                if self._gre_bridge.submit_pass():
-                                    self._log_execution_path(ExecutionPath.GRE_AWARE, "auto-pass via GRE bridge (planner empty)")
-                                    self._state = AutopilotState.IDLE
-                                    return True
                         self._exec_pass_priority()
                         self._state = AutopilotState.IDLE
                         return True

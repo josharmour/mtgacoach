@@ -319,6 +319,10 @@ namespace MtgaCoachBridge
                     HandleSubmitTargets(cmd);
                     break;
 
+                case "auto_respond":
+                    HandleAutoRespond(cmd);
+                    break;
+
                 case "get_game_state":
                     HandleGetGameState(cmd);
                     break;
@@ -1064,6 +1068,22 @@ namespace MtgaCoachBridge
             else
             {
                 cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = $"Pending is {request?.GetType().Name ?? "null"}, not SelectTargetsRequest" });
+            }
+        }
+
+        private void HandleAutoRespond(PipeCommand cmd)
+        {
+            var request = FindPendingInteraction();
+            if (request != null)
+            {
+                _log.LogInfo($"AutoRespond on {request.GetType().Name}");
+                request.AutoRespond();
+                lock (_interactionLock) { _lastKnownRequest = null; }
+                cmd.SetResponse(new JObject { ["ok"] = true, ["submitted_type"] = "AutoRespond", ["request_class"] = request.GetType().Name });
+            }
+            else
+            {
+                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "No pending interaction" });
             }
         }
 

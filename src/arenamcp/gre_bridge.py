@@ -528,6 +528,23 @@ class GREBridge:
             logger.warning(f"GRE bridge submit_targets error: {e}")
         return False
 
+    def auto_respond(self) -> bool:
+        """Send AutoRespond on whatever request is currently pending.
+
+        This is MTGA's built-in "do the default" response — works for ANY
+        request type. Use as a universal fallback when we can't handle a
+        specific request type (pay costs, X values, casting options, etc.).
+        """
+        try:
+            resp = self._send_safe({"action": "auto_respond"})
+            if resp.get("ok"):
+                logger.info(f"GRE bridge auto_respond: {resp.get('request_class', '?')}")
+                return True
+            logger.warning(f"GRE bridge auto_respond failed: {resp.get('error')}")
+        except GREBridgeError as e:
+            logger.warning(f"GRE bridge auto_respond error: {e}")
+        return False
+
     # -------------------------------------------------------------------
     # Phase 2: new game state commands
     # -------------------------------------------------------------------
