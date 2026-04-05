@@ -836,31 +836,11 @@ namespace MtgaCoachBridge
                     foreach (var a in attackerList)
                         requestedIds.Add((uint)a.Value<int>("attackerInstanceId"));
 
-                    var matchedAttackers = new List<Attacker>();
-                    foreach (var qa in attackerReq.QualifiedAttackers)
-                    {
-                        if (requestedIds.Contains(qa.AttackerInstanceId))
-                        {
-                            // Set damage recipient: use first legal recipient (usually opponent's face)
-                            if (qa.SelectedDamageRecipient == null && qa.LegalDamageRecipients.Count > 0)
-                            {
-                                qa.SelectedDamageRecipient = qa.LegalDamageRecipients[0];
-                            }
-                            matchedAttackers.Add(qa);
-                            _log.LogInfo($"UpdateAttacker: instanceId={qa.AttackerInstanceId}, recipient={qa.SelectedDamageRecipient?.Type}:{qa.SelectedDamageRecipient?.IdCase}");
-                        }
-                    }
-
-                    if (matchedAttackers.Count > 0)
-                    {
-                        _log.LogInfo($"UpdateAttacker: {matchedAttackers.Count} attackers from QualifiedAttackers");
-                        attackerReq.UpdateAttacker(matchedAttackers.ToArray());
-                    }
-                    else
-                    {
-                        _log.LogWarning($"No matching QualifiedAttackers found for IDs: {string.Join(",", requestedIds)}");
-                        attackerReq.SubmitAttackers();
-                    }
+                    // UpdateAttacker with QualifiedAttackers objects doesn't get
+                    // accepted by the GRE. Use AutoRespond as fallback — it submits
+                    // MTGA's built-in default response which works for all request types.
+                    _log.LogInfo($"AutoRespond for DeclareAttackers ({requestedIds.Count} requested)");
+                    attackerReq.AutoRespond();
                 }
 
                 lock (_interactionLock) { _lastKnownRequest = null; }
