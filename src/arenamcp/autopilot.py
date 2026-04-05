@@ -504,23 +504,37 @@ class AutopilotEngine:
                 self._state = AutopilotState.IDLE
                 return True
 
-            # "Done (confirm attackers/blockers)" as only option — auto-submit
-            # MTGA auto-selected creatures; just confirm via bridge pass.
-            if has_decision:
-                legal = self._get_legal_actions(game_state)
-                done_only = (
-                    len(legal) == 1
-                    and legal[0].lower().startswith("done (confirm")
-                )
-                if done_only:
-                    logger.info(f"Autopilot: auto-confirming '{legal[0]}' via bridge pass")
-                    if not self._config.dry_run:
-                        if self._gre_bridge.connected or self._gre_bridge.connect():
-                            if self._gre_bridge.submit_pass():
-                                self._log_execution_path(ExecutionPath.GRE_AWARE, f"auto-confirm: {legal[0]}")
-                                return True
-                    self._exec_pass_priority()
-                    return True
+            # "Done (confirm attackers/blockers)" — auto-submit when it's
+            # the only meaningful action. MTGA auto-selected creatures;
+            # just confirm via bridge SubmitAttackers/SubmitBlockers.
+            legal = self._get_legal_actions(game_state)
+            legal = self._get_legal_actions(game_state)
+            has_done_confirm = any(a.lower().startswith("done (confirm") for a in legal)
+            meaningful_non_done = [
+                a for a in legal
+                if not a.lower().startswith("done (confirm")
+                and a.lower() not in {"pass", "action: activate_mana", "action: floatmana"}
+                and "Wait" not in a
+            ]
+            if has_done_confirm and not meaningful_non_done:
+                done_action = next(a for a in legal if a.lower().startswith("done (confirm"))
+                logger.info(f"Autopilot: auto-confirming '{done_action}'")
+                if not self._config.dry_run and (self._gre_bridge.connected or self._gre_bridge.connect()):
+                    # Use the right submit method based on request type
+                    if "attacker" in done_action.lower():
+                        if self._gre_bridge.submit_attackers([]):
+                            self._log_execution_path(ExecutionPath.GRE_AWARE, f"auto-confirm: {done_action}")
+                            return True
+                    elif "blocker" in done_action.lower():
+                        if self._gre_bridge.submit_blockers([]):
+                            self._log_execution_path(ExecutionPath.GRE_AWARE, f"auto-confirm: {done_action}")
+                            return True
+                    # Fallback to pass
+                    if self._gre_bridge.submit_pass():
+                        self._log_execution_path(ExecutionPath.GRE_AWARE, f"auto-confirm: {done_action}")
+                        return True
+                self._click_fixed("done")
+                return True
 
             # Optional actions with no legal actions — auto-decline via pass
             if (
