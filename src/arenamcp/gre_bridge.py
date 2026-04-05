@@ -430,6 +430,7 @@ class GREBridge:
                 "action": "submit_attackers",
                 "attackers": attackers,
             })
+            logger.info(f"GRE bridge submit_attackers response: {resp}")
             if resp.get("ok"):
                 logger.info(f"GRE bridge submitted {len(attackers)} attackers")
                 return True
