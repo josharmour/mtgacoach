@@ -1505,13 +1505,14 @@ class AutopilotEngine:
             self._gre_bridge_failed_methods.add(method)
             return None
 
-        # DECLARE BLOCKERS — submit blocker assignments via bridge
-        if action.action_type == ActionType.DECLARE_BLOCKERS:
-            return self._try_gre_bridge_blockers(action)
-
-        # DECLARE ATTACKERS — submit attacker list via bridge
-        if action.action_type == ActionType.DECLARE_ATTACKERS:
-            return self._try_gre_bridge_attackers(action)
+        # DECLARE BLOCKERS / ATTACKERS — skip bridge, use clicks.
+        # UpdateAttacker, DeclareAllAttackers, SubmitAttackers, and
+        # AutoRespond all fail to declare attackers/blockers via the GRE.
+        # The only reliable path is clicking creatures in the UI.
+        # TODO: investigate why programmatic attacker/blocker submission
+        # is rejected by the GRE — may need OnSubmit callback wiring.
+        if action.action_type in (ActionType.DECLARE_ATTACKERS, ActionType.DECLARE_BLOCKERS):
+            return None  # Fall through to click handler
 
         # MULLIGAN — submit keep/mulligan via bridge
         if action.action_type in (ActionType.MULLIGAN_KEEP, ActionType.MULLIGAN_MULL):
