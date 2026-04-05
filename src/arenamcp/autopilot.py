@@ -504,6 +504,17 @@ class AutopilotEngine:
                 self._state = AutopilotState.IDLE
                 return True
 
+            # "Auto-pay" in legal actions — just pass to accept autotap
+            if any(a.lower() == "auto-pay" for a in legal):
+                logger.info("Autopilot: auto-paying (accepting autotap)")
+                if not self._config.dry_run:
+                    if self._gre_bridge.connected or self._gre_bridge.connect():
+                        if self._gre_bridge.submit_pass():
+                            self._log_execution_path(ExecutionPath.GRE_AWARE, "auto-pay via bridge")
+                            return True
+                self._exec_pass_priority()
+                return True
+
             # "Done (confirm attackers/blockers)" — auto-submit when it's
             # the only meaningful action. MTGA auto-selected creatures;
             # just confirm via bridge SubmitAttackers/SubmitBlockers.
