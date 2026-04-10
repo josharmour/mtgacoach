@@ -1258,6 +1258,8 @@ def _get_bridge_overlay(
             ),
         }
     )
+    if bridge_state.get("game_state_id") is not None:
+        overlay["_bridge_game_state_id"] = _coerce_int(bridge_state.get("game_state_id"), 0) or 0
     if timer_state:
         overlay["timer_state"] = timer_state
     pending_interaction = bridge_state.get("pending_interaction")
@@ -1373,6 +1375,8 @@ def get_game_state() -> dict[str, Any]:
         "designations": copy.deepcopy(snap.get("designations", {})),
         "dungeon_status": copy.deepcopy(snap.get("dungeon_status", {})),
         "timer_state": copy.deepcopy(snap.get("timer_state", {})),
+        "game_engine_busy": bool(snap.get("game_engine_busy", False)),
+        "engine_busy": copy.deepcopy(snap.get("engine_busy", {})),
         "action_history": copy.deepcopy(snap.get("action_history", [])),
         "sideboard_cards": copy.deepcopy(snap.get("sideboard_cards", [])),
         # ── Bridge decision detection fields ──
@@ -1386,6 +1390,7 @@ def get_game_state() -> dict[str, Any]:
         "_bridge_can_cancel": snap.get("_bridge_can_cancel"),
         "_bridge_allow_undo": snap.get("_bridge_allow_undo"),
         "_bridge_request_payload": copy.deepcopy(snap.get("_bridge_request_payload")),
+        "_bridge_game_state_id": snap.get("_bridge_game_state_id", 0),
     }
 
     bridge_overlay = _get_bridge_overlay(

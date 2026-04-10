@@ -20,6 +20,7 @@ namespace MtgaCoachBridge
     [BepInPlugin(PluginInfo.GUID, PluginInfo.Name, PluginInfo.Version)]
     public class Plugin : BaseUnityPlugin
     {
+        private const int UnityCommandTimeoutMs = 15000;
         private static ManualLogSource _log;
         private Thread _pipeThread;
         private volatile bool _running;
@@ -220,7 +221,7 @@ namespace MtgaCoachBridge
 
                     // All other commands need Unity main thread (GameManager access)
                     var cmd = new PipeCommand(json);
-                    var response = DispatchCommandToUnityThread(cmd, 5000);
+                    var response = DispatchCommandToUnityThread(cmd, UnityCommandTimeoutMs);
                     writer.WriteLine(response.ToString(Formatting.None));
                 }
                 catch (Exception ex)
@@ -321,6 +322,10 @@ namespace MtgaCoachBridge
 
                 case "auto_respond":
                     HandleAutoRespond(cmd);
+                    break;
+
+                case "cancel_action":
+                    HandleCancelAction(cmd);
                     break;
 
                 case "get_game_state":
@@ -816,35 +821,60 @@ namespace MtgaCoachBridge
 
             if (request is DeclareAttackerRequest attackerReq)
             {
-                // Parse attacker list: array of {attackerInstanceId, damageRecipient: {type, seatId, instanceId}}
                 var attackerList = cmd.Json["attackers"] as JArray;
                 if (attackerList == null || attackerList.Count == 0)
                 {
-                    // No attackers — submit with no attacks (like Goldfish bot)
-                    _log.LogInfo("SubmitAttackers: no attacks");
+                    // No attackers specified — finalize (submit current declarations).
+                    // This is the second step of the two-step flow, or "attack with nobody".
+                    _log.LogInfo("SubmitAttackers: finalizing (no new attackers)");
                     attackerReq.SubmitAttackers();
+                    lock (_interactionLock) { _lastKnownRequest = null; }
+                    cmd.SetResponse(new JObject { ["ok"] = true, ["submitted_type"] = "DeclareAttackersSubmit" });
                 }
                 else
                 {
-                    // Find the matching Attacker objects from the REQUEST's own
-                    // QualifiedAttackers list — we must use these exact objects
-                    // (with their internal state) and set SelectedDamageRecipient
-                    // from their own LegalDamageRecipients. Creating new Attacker
-                    // objects doesn't work — the GRE ignores them.
-                    // (Pattern from DeclareAttackerRequestRandomHandler in SharedClientCore)
+                    // Two-step attacker declaration (matches DeclareAttackerRequestNPEHandler):
+                    // Step 1: Find attackers in request.Attackers (NOT QualifiedAttackers),
+                    //         set SelectedDamageRecipient, call UpdateAttacker.
+                    // Step 2: Python calls again with empty list → SubmitAttackers() to finalize.
                     var requestedIds = new HashSet<uint>();
                     foreach (var a in attackerList)
                         requestedIds.Add((uint)a.Value<int>("attackerInstanceId"));
 
-                    // UpdateAttacker with QualifiedAttackers objects doesn't get
-                    // accepted by the GRE. Use AutoRespond as fallback — it submits
-                    // MTGA's built-in default response which works for all request types.
-                    _log.LogInfo($"AutoRespond for DeclareAttackers ({requestedIds.Count} requested)");
-                    attackerReq.AutoRespond();
-                }
+                    var matched = new System.Collections.Generic.List<Attacker>();
+                    foreach (var a in attackerReq.Attackers)
+                    {
+                        if (requestedIds.Contains(a.AttackerInstanceId)
+                            && a.SelectedDamageRecipient == null
+                            && a.LegalDamageRecipients.Count > 0)
+                        {
+                            a.SelectedDamageRecipient = a.LegalDamageRecipients[0];
+                            matched.Add(a);
+                        }
+                    }
 
-                lock (_interactionLock) { _lastKnownRequest = null; }
-                cmd.SetResponse(new JObject { ["ok"] = true, ["submitted_type"] = "DeclareAttackers" });
+                    if (matched.Count > 0)
+                    {
+                        _log.LogInfo($"UpdateAttacker: declaring {matched.Count} attackers (needs finalize)");
+                        attackerReq.UpdateAttacker(matched.ToArray());
+                        lock (_interactionLock) { _lastKnownRequest = null; }
+                        cmd.SetResponse(new JObject
+                        {
+                            ["ok"] = true,
+                            ["submitted_type"] = "DeclareAttackersUpdate",
+                            ["needs_finalize"] = true,
+                            ["declared_count"] = matched.Count
+                        });
+                    }
+                    else
+                    {
+                        // Requested IDs not found or already declared — finalize
+                        _log.LogInfo($"SubmitAttackers: requested IDs already declared or not found, finalizing");
+                        attackerReq.SubmitAttackers();
+                        lock (_interactionLock) { _lastKnownRequest = null; }
+                        cmd.SetResponse(new JObject { ["ok"] = true, ["submitted_type"] = "DeclareAttackersSubmit" });
+                    }
+                }
             }
             else
             {
@@ -1060,6 +1090,32 @@ namespace MtgaCoachBridge
                 request.AutoRespond();
                 lock (_interactionLock) { _lastKnownRequest = null; }
                 cmd.SetResponse(new JObject { ["ok"] = true, ["submitted_type"] = "AutoRespond", ["request_class"] = request.GetType().Name });
+            }
+            else
+            {
+                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "No pending interaction" });
+            }
+        }
+
+        private void HandleCancelAction(PipeCommand cmd)
+        {
+            var request = FindPendingInteraction();
+            if (request != null)
+            {
+                if (request.CanCancel)
+                {
+                    _log.LogInfo($"Cancel on {request.GetType().Name}");
+                    request.Cancel();
+                    lock (_interactionLock) { _lastKnownRequest = null; }
+                    cmd.SetResponse(new JObject { ["ok"] = true, ["cancelled"] = true, ["request_class"] = request.GetType().Name });
+                }
+                else
+                {
+                    _log.LogInfo($"Cancel not allowed on {request.GetType().Name}, using AutoRespond");
+                    request.AutoRespond();
+                    lock (_interactionLock) { _lastKnownRequest = null; }
+                    cmd.SetResponse(new JObject { ["ok"] = true, ["cancelled"] = false, ["request_class"] = request.GetType().Name });
+                }
             }
             else
             {
@@ -2227,29 +2283,361 @@ namespace MtgaCoachBridge
         // Phase 3: Replay recording commands
         // -------------------------------------------------------------------
 
+        private object _cachedReplayRecorder;
+        private float _lastReplayRecorderLookup;
+
+        /// <summary>
+        /// Find the live TimedReplayRecorder instance.
+        ///
+        /// The recorder lives on the PAPA MonoBehaviour (the game's root singleton):
+        ///   PAPA._instance  (private static)
+        ///   PAPA.TimedReplayRecorder  (public property, type TimedReplayRecorder)
+        ///
+        /// TimedReplayRecorder is a plain C# class (NOT a MonoBehaviour), so
+        /// FindObjectOfType will never find it.  We must go through PAPA.
+        /// </summary>
+        private object FindReplayRecorder()
+        {
+            float now = Time.unscaledTime;
+            if (_cachedReplayRecorder != null && now - _lastReplayRecorderLookup < 5f)
+                return _cachedReplayRecorder;
+            _lastReplayRecorderLookup = now;
+            _cachedReplayRecorder = null;
+
+            try
+            {
+                var papa = FindPAPA();
+                if (papa == null)
+                {
+                    _log.LogDebug("FindReplayRecorder: PAPA instance not found");
+                    return null;
+                }
+
+                // PAPA.TimedReplayRecorder is a public auto-property
+                var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+                var prop = papa.GetType().GetProperty("TimedReplayRecorder", flags);
+                if (prop != null)
+                {
+                    var val = prop.GetValue(papa);
+                    if (val != null)
+                    {
+                        _log.LogDebug($"Found TimedReplayRecorder via PAPA property ({val.GetType().FullName})");
+                        _cachedReplayRecorder = val;
+                        return val;
+                    }
+                    _log.LogDebug("PAPA.TimedReplayRecorder property exists but value is null");
+                }
+                else
+                {
+                    _log.LogDebug("PAPA type does not have TimedReplayRecorder property");
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning($"FindReplayRecorder error: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Gets the PAPA singleton instance via its private static _instance field.
+        /// PAPA is a MonoBehaviour so we can also fall back to FindObjectOfType.
+        /// </summary>
+        private object FindPAPA()
+        {
+            try
+            {
+                // Strategy 1: find the PAPA type and read its static _instance field
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    Type papaType = null;
+                    try { papaType = asm.GetType("PAPA"); } catch { continue; }
+                    if (papaType == null) continue;
+
+                    var instanceField = papaType.GetField("_instance",
+                        BindingFlags.NonPublic | BindingFlags.Static);
+                    if (instanceField != null)
+                    {
+                        var inst = instanceField.GetValue(null);
+                        if (inst != null) return inst;
+                    }
+
+                    // Fallback: PAPA is a MonoBehaviour, search the scene
+                    var found = FindObjectOfType(papaType);
+                    if (found != null) return found;
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogDebug($"FindPAPA error: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// TimedReplayRecorder has no IsRecording property.
+        /// Recording is active when the private _activeReplay (ReplayWriter) field is non-null.
+        /// </summary>
+        private bool IsRecorderRecording(object recorder)
+        {
+            if (recorder == null) return false;
+            try
+            {
+                var field = recorder.GetType().GetField("_activeReplay",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                if (field != null)
+                    return field.GetValue(recorder) != null;
+            }
+            catch (Exception ex)
+            {
+                _log.LogDebug($"IsRecorderRecording error: {ex.Message}");
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Gets the file path of the active replay being written.
+        /// Path: TimedReplayRecorder._activeReplay (ReplayWriter) -> _writer (StreamWriter)
+        ///       -> BaseStream (FileStream) -> Name
+        /// </summary>
+        private string GetRecorderFilePath(object recorder)
+        {
+            if (recorder == null) return null;
+            try
+            {
+                var flags = BindingFlags.NonPublic | BindingFlags.Instance;
+                var replayField = recorder.GetType().GetField("_activeReplay", flags);
+                if (replayField == null) return null;
+                var replayWriter = replayField.GetValue(recorder);
+                if (replayWriter == null) return null;
+
+                var writerField = replayWriter.GetType().GetField("_writer", flags);
+                if (writerField == null) return null;
+                var streamWriter = writerField.GetValue(replayWriter) as System.IO.StreamWriter;
+                if (streamWriter == null) return null;
+
+                var baseStream = streamWriter.BaseStream as System.IO.FileStream;
+                if (baseStream != null)
+                    return baseStream.Name;
+            }
+            catch (Exception ex)
+            {
+                _log.LogDebug($"GetRecorderFilePath error: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Sets the SaveDSReplay preference using CachedPlayerPrefs (via reflection)
+        /// so that the in-memory cache stays in sync.  Falls back to raw PlayerPrefs.
+        /// MDNPlayerPrefs.SaveDSReplays reads from CachedPlayerPrefs, so writing
+        /// directly to PlayerPrefs would leave the cache stale.
+        /// </summary>
+        private void SetSaveDSReplayPref(bool enabled)
+        {
+            try
+            {
+                Type cachedPrefsType = null;
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    try
+                    {
+                        cachedPrefsType = asm.GetType("Core.Code.Utils.PlayerPrefsUtils.CachedPlayerPrefs");
+                        if (cachedPrefsType != null) break;
+                    }
+                    catch { }
+                }
+
+                if (cachedPrefsType != null)
+                {
+                    var setInt = cachedPrefsType.GetMethod("SetInt",
+                        BindingFlags.Public | BindingFlags.Static,
+                        null, new[] { typeof(string), typeof(int) }, null);
+                    if (setInt != null)
+                    {
+                        setInt.Invoke(null, new object[] { "SaveDSReplay", enabled ? 1 : 0 });
+                        _log.LogInfo($"Set CachedPlayerPrefs SaveDSReplay = {enabled}");
+                    }
+                    else
+                    {
+                        PlayerPrefs.SetInt("SaveDSReplay", enabled ? 1 : 0);
+                        _log.LogInfo($"CachedPlayerPrefs.SetInt not found, fell back to PlayerPrefs");
+                    }
+                }
+                else
+                {
+                    PlayerPrefs.SetInt("SaveDSReplay", enabled ? 1 : 0);
+                    _log.LogInfo($"CachedPlayerPrefs type not found, fell back to PlayerPrefs");
+                }
+                PlayerPrefs.Save();
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning($"SetSaveDSReplayPref error: {ex.Message}");
+                PlayerPrefs.SetInt("SaveDSReplay", enabled ? 1 : 0);
+                PlayerPrefs.Save();
+            }
+        }
+
+        /// <summary>
+        /// Sets the ReplayName preference using CachedPlayerPrefs so the cache stays in sync.
+        /// </summary>
+        private void SetReplayNamePref(string name)
+        {
+            try
+            {
+                Type cachedPrefsType = null;
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    try
+                    {
+                        cachedPrefsType = asm.GetType("Core.Code.Utils.PlayerPrefsUtils.CachedPlayerPrefs");
+                        if (cachedPrefsType != null) break;
+                    }
+                    catch { }
+                }
+
+                if (cachedPrefsType != null)
+                {
+                    var setString = cachedPrefsType.GetMethod("SetString",
+                        BindingFlags.Public | BindingFlags.Static,
+                        null, new[] { typeof(string), typeof(string) }, null);
+                    if (setString != null)
+                    {
+                        setString.Invoke(null, new object[] { "ReplayName", name ?? "" });
+                        return;
+                    }
+                }
+                PlayerPrefs.SetString("ReplayName", name ?? "");
+                PlayerPrefs.Save();
+            }
+            catch (Exception ex)
+            {
+                _log.LogDebug($"SetReplayNamePref error: {ex.Message}");
+                PlayerPrefs.SetString("ReplayName", name ?? "");
+                PlayerPrefs.Save();
+            }
+        }
+
+        /// <summary>
+        /// Reads MDNPlayerPrefs.SaveDSReplays via reflection (it checks CachedPlayerPrefs).
+        /// Falls back to raw PlayerPrefs if the type can't be found.
+        /// </summary>
+        private bool GetSaveDSReplayPref()
+        {
+            try
+            {
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    Type mdnType = null;
+                    try { mdnType = asm.GetType("MDNPlayerPrefs"); } catch { continue; }
+                    if (mdnType == null) continue;
+
+                    var prop = mdnType.GetProperty("SaveDSReplays",
+                        BindingFlags.Public | BindingFlags.Static);
+                    if (prop != null && prop.PropertyType == typeof(bool))
+                        return (bool)prop.GetValue(null);
+                }
+            }
+            catch { }
+            return PlayerPrefs.GetInt("SaveDSReplay", 0) == 1;
+        }
+
+        /// <summary>
+        /// Attempts to trigger recording on the current match by calling
+        /// TimedReplayRecorder.StartMatch(MatchManager) via reflection.
+        /// This is the same method MTGA calls when a match begins.
+        /// The recorder's StartMatch checks MDNPlayerPrefs.SaveDSReplays internally,
+        /// so the pref must be set to true before calling this.
+        /// </summary>
+        private bool TryStartRecordingOnCurrentMatch(object recorder)
+        {
+            if (recorder == null) return false;
+            try
+            {
+                var gm = GetGameManager();
+                if (gm == null) return false;
+                var mm = gm.MatchManager;
+                if (mm == null) return false;
+
+                // Call StartMatch(MatchManager) via reflection
+                var startMatch = recorder.GetType().GetMethod("StartMatch",
+                    BindingFlags.Public | BindingFlags.Instance);
+                if (startMatch != null)
+                {
+                    startMatch.Invoke(recorder, new object[] { mm });
+                    _log.LogInfo("Called TimedReplayRecorder.StartMatch(MatchManager)");
+                    return true;
+                }
+                else
+                {
+                    _log.LogDebug("StartMatch method not found on TimedReplayRecorder");
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning($"TryStartRecordingOnCurrentMatch error: {ex.Message}");
+            }
+            return false;
+        }
+
         private void HandleEnableReplay(PipeCommand cmd)
         {
             try
             {
-                // Set the PlayerPrefs flag that TimedReplayRecorder checks
-                PlayerPrefs.SetInt("SaveDSReplay", 1);
-                PlayerPrefs.Save();
-
-                // Set replay name prefix if provided
                 string prefix = cmd.Json.Value<string>("replay_name");
+
+                // Set prefs via CachedPlayerPrefs so in-memory cache + PlayerPrefs stay in sync.
+                // MDNPlayerPrefs.SaveDSReplays reads from CachedPlayerPrefs, so if we only
+                // write to raw PlayerPrefs the recorder's StartMatch guard would still see false.
+                SetSaveDSReplayPref(true);
+
                 if (!string.IsNullOrEmpty(prefix))
+                    SetReplayNamePref(prefix);
+
+                var resp = new JObject
                 {
-                    PlayerPrefs.SetString("ReplayName", prefix);
-                    PlayerPrefs.Save();
+                    ["ok"] = true,
+                    ["replay_folder"] = GetReplayFolder(),
+                    ["prefs_enabled"] = GetSaveDSReplayPref(),
+                };
+
+                // Try to start recording on the current live match
+                var recorder = FindReplayRecorder();
+                if (recorder != null)
+                {
+                    bool alreadyRecording = IsRecorderRecording(recorder);
+                    resp["recorder_found"] = true;
+                    resp["recorder_type"] = recorder.GetType().Name;
+
+                    if (alreadyRecording)
+                    {
+                        resp["recording"] = true;
+                        resp["replay_file"] = GetRecorderFilePath(recorder);
+                        _log.LogInfo("Replay recorder already recording");
+                    }
+                    else
+                    {
+                        // Call TimedReplayRecorder.StartMatch(MatchManager) -- the same
+                        // entry point MTGA uses when Matchmaking fires MatchManagerInitialized.
+                        // StartMatch internally checks MDNPlayerPrefs.SaveDSReplays (set above).
+                        bool started = TryStartRecordingOnCurrentMatch(recorder);
+                        resp["recording"] = started && IsRecorderRecording(recorder);
+                        resp["replay_file"] = GetRecorderFilePath(recorder);
+                        if (!started)
+                            resp["note"] = "Pref set; recording will begin on next match start";
+                    }
+                }
+                else
+                {
+                    resp["recorder_found"] = false;
+                    resp["recording"] = false;
+                    resp["note"] = "TimedReplayRecorder not found (PAPA not ready?); pref set for next match";
+                    _log.LogInfo("No TimedReplayRecorder found -- prefs set for next match");
                 }
 
                 _log.LogInfo($"Replay recording enabled (prefix: {prefix ?? "default"})");
-                cmd.SetResponse(new JObject
-                {
-                    ["ok"] = true,
-                    ["enabled"] = true,
-                    ["replay_folder"] = GetReplayFolder(),
-                });
+                cmd.SetResponse(resp);
             }
             catch (Exception ex)
             {
@@ -2261,10 +2649,40 @@ namespace MtgaCoachBridge
         {
             try
             {
-                PlayerPrefs.SetInt("SaveDSReplay", 0);
-                PlayerPrefs.Save();
+                // Disable the pref so future matches won't auto-record
+                SetSaveDSReplayPref(false);
+
+                // Stop any active recording by calling CompleteMatch() on the recorder.
+                // CompleteMatch is private, so we use reflection.
+                var recorder = FindReplayRecorder();
+                bool wasStopped = false;
+                if (recorder != null)
+                {
+                    try
+                    {
+                        var completeMatch = recorder.GetType().GetMethod("CompleteMatch",
+                            BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (completeMatch != null)
+                        {
+                            completeMatch.Invoke(recorder, null);
+                            wasStopped = true;
+                            _log.LogInfo("Called CompleteMatch() on TimedReplayRecorder");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogDebug($"CompleteMatch call failed: {ex.Message}");
+                    }
+                }
+
                 _log.LogInfo("Replay recording disabled");
-                cmd.SetResponse(new JObject { ["ok"] = true, ["enabled"] = false });
+                cmd.SetResponse(new JObject
+                {
+                    ["ok"] = true,
+                    ["enabled"] = false,
+                    ["recording_stopped"] = wasStopped,
+                    ["prefs_enabled"] = GetSaveDSReplayPref(),
+                });
             }
             catch (Exception ex)
             {
@@ -2276,16 +2694,19 @@ namespace MtgaCoachBridge
         {
             try
             {
-                bool enabled = PlayerPrefs.GetInt("SaveDSReplay", 0) == 1;
-                string replayName = PlayerPrefs.GetString("ReplayName", "");
                 string folder = GetReplayFolder();
+                var recorder = FindReplayRecorder();
+                bool recording = recorder != null && IsRecorderRecording(recorder);
 
                 var resp = new JObject
                 {
                     ["ok"] = true,
-                    ["recording_enabled"] = enabled,
-                    ["replay_name"] = replayName,
+                    ["recording"] = recording,
+                    ["recorder_found"] = recorder != null,
+                    ["recorder_type"] = recorder?.GetType().Name,
                     ["replay_folder"] = folder,
+                    ["replay_file"] = recording ? GetRecorderFilePath(recorder) : null,
+                    ["prefs_enabled"] = GetSaveDSReplayPref(),
                 };
 
                 // Count existing replays
@@ -2297,13 +2718,32 @@ namespace MtgaCoachBridge
                         resp["replay_count"] = files.Length;
                         if (files.Length > 0)
                         {
-                            // Most recent replay
                             Array.Sort(files);
                             resp["latest_replay"] = System.IO.Path.GetFileName(files[files.Length - 1]);
                         }
                     }
                 }
                 catch { }
+
+                // Dump recorder type info for debugging
+                if (recorder != null)
+                {
+                    var methods = new JArray();
+                    var fields = new JArray();
+                    var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+                    foreach (var m in recorder.GetType().GetMethods(flags))
+                    {
+                        if (m.DeclaringType == recorder.GetType())
+                            methods.Add(m.Name);
+                    }
+                    foreach (var f in recorder.GetType().GetFields(flags))
+                    {
+                        if (f.DeclaringType == recorder.GetType())
+                            fields.Add($"{f.Name} ({f.FieldType.Name})");
+                    }
+                    resp["_debug_methods"] = methods;
+                    resp["_debug_fields"] = fields;
+                }
 
                 cmd.SetResponse(resp);
             }

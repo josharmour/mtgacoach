@@ -20,7 +20,12 @@ from typing import Any, Callable, Optional
 from PIL import ImageGrab
 
 from arenamcp.action_planner import ActionPlan, ActionPlanner, ActionType, GameAction
-from arenamcp.gre_bridge import GREBridge, GREBridgeError, get_bridge
+from arenamcp.gre_bridge import (
+    GREBridge,
+    UNMAPPED_INTERACTION_TYPE,
+    enrich_snapshot_from_pending_response,
+    get_bridge,
+)
 from arenamcp.input_controller import ClickResult, InputController
 from arenamcp.screen_mapper import ScreenCoord, ScreenMapper
 
@@ -81,6 +86,29 @@ class AutopilotEngine:
     """
 
     _MAX_CONTINUATION_DEPTH: int = 5
+    _CRITICAL_DECISION_TYPES: frozenset[str] = frozenset({
+        UNMAPPED_INTERACTION_TYPE,
+        "declare_attackers",
+        "declare_blockers",
+        "modal_choice",
+        "target_selection",
+        "select_n",
+        "search",
+        "distribution",
+        "numeric_input",
+        "choose_starting_player",
+        "select_replacement",
+        "select_counters",
+        "casting_time_options",
+        "order_triggers",
+        "select_n_group",
+        "select_from_groups",
+        "search_from_groups",
+        "gather",
+        "assign_damage",
+        "order_combat_damage",
+        "pay_costs",
+    })
 
     def __init__(
         self,
@@ -106,7 +134,7 @@ class AutopilotEngine:
         self._planner = planner
         self._mapper = mapper
         self._controller = controller
-        self._get_game_state = get_game_state
+        self._game_state_fn = get_game_state
         self._config = config or AutopilotConfig()
         self._speak_fn = speak_fn
         self._ui_advice_fn = ui_advice_fn
@@ -154,6 +182,10 @@ class AutopilotEngine:
 
         # Post-plan continuation depth (prevents runaway recursion)
         self._continuation_depth: int = 0
+
+        # Retry suppression for actions that failed to advance the GRE state
+        self._blocked_action_keys: set[tuple[Any, ...]] = set()
+        self._blocked_action_window_sig: Optional[tuple[Any, ...]] = None
 
     @property
     def afk_mode(self) -> bool:
@@ -294,6 +326,7 @@ class AutopilotEngine:
             "land_drop_last_turn": self._land_drop_last_turn,
             "has_vision_scan": self._has_vision_scan,
             "gre_bridge_connected": self._gre_bridge.connected,
+            "blocked_actions": [list(key) for key in self._blocked_action_keys],
         }
 
         # Current plan details
@@ -344,6 +377,166 @@ class AutopilotEngine:
             info["planner_diagnostics"] = []
 
         return info
+
+    @staticmethod
+    def _decision_type(game_state: dict[str, Any]) -> str:
+        """Return the normalized decision type for the current state."""
+        ctx = game_state.get("decision_context") or {}
+        dec_type = str(ctx.get("type", "") or "")
+        if dec_type:
+            return dec_type
+        if game_state.get("pending_decision") == "Manual Required":
+            return UNMAPPED_INTERACTION_TYPE
+        return ""
+
+    @staticmethod
+    def _priority_window_signature(game_state: dict[str, Any]) -> tuple[Any, ...]:
+        """Build a signature for the current bridge priority window."""
+        turn = game_state.get("turn", {}) or {}
+        return (
+            int(game_state.get("_bridge_game_state_id", 0) or 0),
+            game_state.get("_bridge_request_type"),
+            game_state.get("_bridge_request_class"),
+            game_state.get("pending_decision"),
+            turn.get("turn_number", 0),
+            turn.get("phase", ""),
+            turn.get("step", ""),
+        )
+
+    def _refresh_blocked_action_window(self, game_state: dict[str, Any]) -> None:
+        """Reset blocked-action suppression when the priority window changes."""
+        sig = self._priority_window_signature(game_state)
+        if sig != self._blocked_action_window_sig:
+            self._blocked_action_window_sig = sig
+            self._blocked_action_keys.clear()
+
+    def _action_block_key(self, action: GameAction, game_state: dict[str, Any]) -> tuple[Any, ...]:
+        """Return a stable key for suppressing reattempts in one window."""
+        gre_ref = getattr(action, "gre_action_ref", None)
+        instance_id = 0
+        grp_id = 0
+        ability_grp_id = 0
+        if gre_ref is not None:
+            instance_id = int(getattr(gre_ref, "instance_id", 0) or 0)
+            grp_id = int(getattr(gre_ref, "grp_id", 0) or 0)
+            ability_grp_id = int(getattr(gre_ref, "ability_grp_id", 0) or 0)
+
+        if not instance_id and action.action_type == ActionType.PAY_COSTS:
+            instance_id = int(((game_state.get("decision_context") or {}).get("source_id")) or 0)
+
+        target_names = tuple(sorted(name.lower() for name in (action.target_names or [])))
+        attacker_names = tuple(sorted(name.lower() for name in (action.attacker_names or [])))
+        blocker_assignments = tuple(
+            sorted((blocker.lower(), attacker.lower()) for blocker, attacker in (action.blocker_assignments or {}).items())
+        )
+        selection_names = tuple(sorted(name.lower() for name in (action.select_card_names or [])))
+        distribution = tuple(sorted((name.lower(), amount) for name, amount in (action.distribution or {}).items()))
+
+        return (
+            action.action_type.value,
+            instance_id,
+            grp_id,
+            ability_grp_id,
+            action.card_name.lower() if action.card_name else "",
+            target_names,
+            attacker_names,
+            blocker_assignments,
+            selection_names,
+            distribution,
+            action.modal_index,
+            action.numeric_value,
+            action.play_or_draw.lower() if action.play_or_draw else "",
+        )
+
+    def _mark_action_blocked(self, action: GameAction, game_state: dict[str, Any], reason: str) -> None:
+        """Block an action from being retried in the current priority window."""
+        key = self._action_block_key(action, game_state)
+        self._blocked_action_keys.add(key)
+        logger.warning("Blocking action for current window: %s (%s)", action, reason)
+
+    def _is_action_blocked(self, action: GameAction, game_state: dict[str, Any]) -> bool:
+        """Whether this action already failed to advance the current window."""
+        return self._action_block_key(action, game_state) in self._blocked_action_keys
+
+    def _pause_for_manual(self, reason: str, game_state: Optional[dict[str, Any]] = None) -> None:
+        """Pause the autopilot and surface that manual input is required."""
+        self._state = AutopilotState.PAUSED
+        details = ""
+        if game_state:
+            details = (
+                f" pending={game_state.get('pending_decision')!r}"
+                f" bridge={game_state.get('_bridge_request_type') or game_state.get('_bridge_request_class')!r}"
+            )
+        logger.warning("Autopilot manual required: %s%s", reason, details)
+        self._notify("AUTOPILOT", f"MANUAL REQUIRED: {reason}")
+
+    def _is_critical_decision_state(
+        self,
+        game_state: dict[str, Any],
+        action: Optional[GameAction] = None,
+    ) -> bool:
+        """Whether the current state should never fall back to auto_respond."""
+        if self._decision_type(game_state) in self._CRITICAL_DECISION_TYPES:
+            return True
+
+        if action and action.action_type in {
+            ActionType.DECLARE_ATTACKERS,
+            ActionType.DECLARE_BLOCKERS,
+            ActionType.MODAL_CHOICE,
+            ActionType.SELECT_TARGET,
+            ActionType.SELECT_N,
+            ActionType.PAY_COSTS,
+            ActionType.SEARCH_LIBRARY,
+            ActionType.DISTRIBUTE,
+            ActionType.NUMERIC_INPUT,
+            ActionType.CHOOSE_STARTING_PLAYER,
+            ActionType.SELECT_REPLACEMENT,
+            ActionType.SELECT_COUNTERS,
+            ActionType.CASTING_OPTIONS,
+            ActionType.ORDER_TRIGGERS,
+            ActionType.ASSIGN_DAMAGE,
+            ActionType.ORDER_COMBAT_DAMAGE,
+        }:
+            return True
+
+        return False
+
+    def _should_allow_auto_respond(
+        self,
+        game_state: dict[str, Any],
+        action: Optional[GameAction] = None,
+    ) -> bool:
+        """Return True when auto_respond is a safe fallback."""
+        if self._is_critical_decision_state(game_state, action):
+            return False
+        return self._decision_type(game_state) == "optional_action"
+
+    def _get_game_state(self) -> dict[str, Any]:
+        """Fetch a fresh game state and enrich it with live bridge metadata."""
+        state = self._game_state_fn() or {}
+        if not isinstance(state, dict):
+            state = {}
+
+        state.setdefault("_bridge_connected", False)
+        state.setdefault("_bridge_game_state_id", int(state.get("_bridge_game_state_id", 0) or 0))
+        state.setdefault("game_engine_busy", False)
+        state.setdefault("engine_busy", {})
+
+        bridge_connected = self._gre_bridge.connected or self._gre_bridge.connect()
+        if bridge_connected:
+            pending = self._gre_bridge.get_pending_actions()
+            enrich_snapshot_from_pending_response(
+                state,
+                pending,
+                bridge_connected=self._gre_bridge.connected,
+            )
+            has_pending = bool(pending and pending.get("has_pending"))
+            state["_bridge_has_pending"] = has_pending
+        else:
+            state["_bridge_has_pending"] = False
+
+        self._refresh_blocked_action_window(state)
+        return state
 
     def _log_execution_path(self, path: str, action_desc: str) -> None:
         """Log which execution path was used for an action."""
@@ -476,6 +669,67 @@ class AutopilotEngine:
             self._bridge_preloaded_actions = (
                 bridge_trigger.get("actions") if bridge_trigger else None
             )
+            self._refresh_blocked_action_window(game_state)
+
+            if game_state.get("game_engine_busy"):
+                logger.info("Autopilot: engine busy resolving internal loop/synthetic event")
+                self._state = AutopilotState.IDLE
+                return False
+
+            bridge_connected = bool(
+                game_state.get("_bridge_connected")
+                or game_state.get("bridge_connected")
+                or self._gre_bridge.connected
+            )
+            bridge_has_pending = bool(
+                game_state.get("_bridge_has_pending")
+                or game_state.get("_bridge_request_type")
+                or game_state.get("_bridge_request_class")
+                or game_state.get("bridge_pending_interaction")
+                or (bridge_trigger and bridge_trigger.get("has_pending"))
+            )
+            if bridge_connected and not bridge_has_pending:
+                # The bridge plugin polls Unity's main thread, which can lag
+                # behind GRE log messages by hundreds of milliseconds.  Retry
+                # once after a short delay before giving up on the trigger.
+                time.sleep(0.35)
+                retry_pending = self._gre_bridge.get_pending_actions()
+                if retry_pending and retry_pending.get("has_pending"):
+                    bridge_has_pending = True
+                    enrich_snapshot_from_pending_response(
+                        game_state,
+                        retry_pending,
+                        bridge_connected=self._gre_bridge.connected,
+                    )
+                    game_state["_bridge_has_pending"] = True
+                    logger.info(
+                        "Autopilot: bridge caught up on retry — proceeding with trigger '%s'",
+                        trigger,
+                    )
+                else:
+                    # Bridge still idle.  If the log already captured real
+                    # game data (legal actions, a pending decision) trust it
+                    # rather than silently dropping the trigger.
+                    log_has_data = bool(
+                        game_state.get("pending_decision")
+                        or game_state.get("legal_actions")
+                    )
+                    if log_has_data:
+                        logger.info(
+                            "Autopilot: bridge idle but log has data; proceeding with trigger '%s'",
+                            trigger,
+                        )
+                    else:
+                        logger.info(
+                            "Autopilot: bridge connected but idle; refusing non-authoritative trigger '%s'",
+                            trigger,
+                        )
+                        self._state = AutopilotState.IDLE
+                        return False
+
+            if self._decision_type(game_state) == UNMAPPED_INTERACTION_TYPE:
+                self._pause_for_manual("Unmapped GRE interaction", game_state)
+                return False
 
             # --- VISION PREFETCH: only in vision-heavy mode ---
             if self._should_prefetch_vision(game_state, trigger):
@@ -514,16 +768,38 @@ class AutopilotEngine:
             # Fetch legal actions once for all shortcut checks below
             legal = self._get_legal_actions(game_state)
 
-            # "Auto-pay" in legal actions — just pass to accept autotap
-            if any(a.lower() == "auto-pay" for a in legal):
-                logger.info("Autopilot: auto-paying (accepting autotap)")
+            # PayCostsRequest — accept autotap if available, otherwise only
+            # cancel when we genuinely have no resolvable payment route.
+            if (
+                bridge_request_type in ("PayCosts", "PayCostsReq", "pay_costs")
+                or bridge_request_class in ("PayCostsRequest",)
+                or (game_state.get("decision_context") or {}).get("type") == "pay_costs"
+            ):
+                if any(a.lower() == "auto-pay" for a in legal):
+                    logger.info("Autopilot: auto-paying (accepting autotap)")
+                    if not self._config.dry_run:
+                        if self._gre_bridge.connected or self._gre_bridge.connect():
+                            if self._gre_bridge.submit_pass():
+                                self._log_execution_path(ExecutionPath.GRE_AWARE, "auto-pay via bridge")
+                                return True
+                    self._exec_pass_priority()
+                    return True
+
+                # MTGA usually auto-taps and just asks for confirmation.
+                # Accept the autotap solution by submitting pass.
+                logger.info("Autopilot: accepting autotap for PayCostsRequest")
                 if not self._config.dry_run:
                     if self._gre_bridge.connected or self._gre_bridge.connect():
                         if self._gre_bridge.submit_pass():
-                            self._log_execution_path(ExecutionPath.GRE_AWARE, "auto-pay via bridge")
+                            self._log_execution_path(ExecutionPath.GRE_AWARE, "accept autotap PayCosts")
                             return True
-                self._exec_pass_priority()
-                return True
+                        # Pass failed — try cancelling instead
+                        logger.info("Autopilot: autotap accept failed, cancelling PayCostsRequest")
+                        if self._gre_bridge.cancel_action():
+                            self._log_execution_path(ExecutionPath.GRE_AWARE, "cancel PayCosts")
+                            return True
+                self._pause_for_manual("Pay Costs requires manual payment", game_state)
+                return False
 
             # "Done (confirm attackers/blockers)" — auto-submit when it's
             # the only meaningful action. MTGA auto-selected creatures;
@@ -760,9 +1036,17 @@ class AutopilotEngine:
                     )
 
                 if not plan.actions:
-                    # Planner couldn't produce actions. Try auto_respond
-                    # (MTGA's built-in default response) as universal fallback.
-                    if not self._config.dry_run and (self._gre_bridge.connected or self._gre_bridge.connect()):
+                    if self._is_critical_decision_state(game_state):
+                        self._pause_for_manual("Planner produced no safe action", game_state)
+                        return False
+
+                    # Planner couldn't produce actions. Try auto_respond only
+                    # for explicitly safe low-risk fallback cases.
+                    if (
+                        not self._config.dry_run
+                        and self._should_allow_auto_respond(game_state)
+                        and (self._gre_bridge.connected or self._gre_bridge.connect())
+                    ):
                         if self._gre_bridge.auto_respond():
                             self._log_execution_path(ExecutionPath.GRE_AWARE, "auto_respond (planner empty)")
                             logger.warning(
@@ -845,7 +1129,13 @@ class AutopilotEngine:
 
             self._notify("AUTOPILOT", plan_text)
             if self._config.enable_tts_preview and self._speak_fn:
-                self._speak_fn(plan.overall_strategy, False)
+                # Run TTS in a background thread so synthesis/model-load
+                # never blocks the execution countdown.
+                threading.Thread(
+                    target=self._speak_fn,
+                    args=(plan.voice_advice or plan.overall_strategy, False),
+                    daemon=True,
+                ).start()
 
             # Auto-execute countdown: executes after delay unless user cancels
             if self._config.confirm_plan:
@@ -893,6 +1183,39 @@ class AutopilotEngine:
             except Exception as e:
                 logger.error(f"Pre-execution recheck failed: {e}")
 
+            # --- LEGAL ACTIONS GUARDRAIL ---
+            # Reject cast/play actions the LLM hallucinated — if the card
+            # isn't in MTGA's legal actions list, it can't be played.
+            fresh_legal = self._get_legal_actions(game_state) or []
+            if fresh_legal and plan.actions:
+                validated = []
+                for action in plan.actions:
+                    if action.action_type in (ActionType.CAST_SPELL, ActionType.PLAY_LAND):
+                        card = (action.card_name or "").lower().strip()
+                        # Check if any legal action mentions this card
+                        legal_match = any(
+                            card and card in la.lower()
+                            for la in fresh_legal
+                            if la.lower() not in {"pass", "action: activate_mana", "action: floatmana"}
+                        )
+                        if not legal_match and card:
+                            logger.warning(
+                                f"Rejecting hallucinated action: {action.action_type.value} "
+                                f"'{action.card_name}' not in legal actions: {fresh_legal[:5]}"
+                            )
+                            self._notify("AUTOPILOT", f"Rejected: {action.card_name} (not legal)")
+                            continue
+                    validated.append(action)
+                if len(validated) < len(plan.actions):
+                    logger.info(
+                        f"Legal actions guardrail: {len(plan.actions)} planned -> "
+                        f"{len(validated)} valid"
+                    )
+                    plan = ActionPlan(
+                        actions=validated,
+                        overall_strategy=plan.overall_strategy,
+                    )
+
             # --- 3. EXECUTING ---
             self._state = AutopilotState.EXECUTING
             self._gre_bridge_failed_methods = set()
@@ -928,6 +1251,10 @@ class AutopilotEngine:
 
                 action_text = f"[{i+1}/{len(plan.actions)}] {action}"
                 self._notify("AUTOPILOT", action_text)
+
+                if self._is_action_blocked(action, game_state):
+                    self._pause_for_manual("Blocked action repeated in the same priority window", game_state)
+                    return False
 
                 # Per-action staleness check: verify game hasn't advanced
                 # between multi-step actions (e.g., declare attackers then done)
@@ -1067,7 +1394,10 @@ class AutopilotEngine:
 
             return True
         finally:
-            self._lock.release()
+            try:
+                self._lock.release()
+            except RuntimeError:
+                pass  # Lock was externally released (e.g. toggle off/on)
 
     def _deterministic_fallback(
         self,
@@ -1478,13 +1808,28 @@ class AutopilotEngine:
 
     # --- Action Execution Handlers ---
 
-    def _try_gre_bridge(self, action: GameAction) -> Optional[ClickResult]:
+    def _try_gre_bridge(
+        self,
+        action: GameAction,
+        game_state: dict[str, Any],
+    ) -> Optional[ClickResult]:
         """Try to execute an action via the GRE bridge (direct submission).
 
         Returns a ClickResult if the bridge handled it, or None to fall
         through to mouse-click execution.
         """
+        if game_state.get("game_engine_busy"):
+            return None
+
         if not self._gre_bridge.connect():
+            return None
+
+        if game_state.get("_bridge_connected") and not (
+            game_state.get("_bridge_request_type")
+            or game_state.get("_bridge_request_class")
+            or game_state.get("_bridge_has_pending")
+        ):
+            logger.info("GRE bridge execution skipped: bridge is connected but reports no pending window")
             return None
 
         method = action.action_type.value
@@ -1505,13 +1850,14 @@ class AutopilotEngine:
             self._gre_bridge_failed_methods.add(method)
             return None
 
-        # DECLARE BLOCKERS / ATTACKERS — skip bridge, use clicks.
-        # UpdateAttacker, DeclareAllAttackers, SubmitAttackers, and
-        # AutoRespond all fail to declare attackers/blockers via the GRE.
-        # The only reliable path is clicking creatures in the UI.
-        # TODO: investigate why programmatic attacker/blocker submission
-        # is rejected by the GRE — may need OnSubmit callback wiring.
-        if action.action_type in (ActionType.DECLARE_ATTACKERS, ActionType.DECLARE_BLOCKERS):
+        # DECLARE ATTACKERS — two-step bridge flow (NPE handler pattern):
+        # Step 1: UpdateAttacker with selected attackers (sets SelectedDamageRecipient)
+        # Step 2: SubmitAttackers to finalize (after GRE sends new DeclareAttackersReq)
+        if action.action_type == ActionType.DECLARE_ATTACKERS:
+            return self._try_bridge_declare_attackers(action)
+
+        # DECLARE BLOCKERS — still click-based (bridge not yet implemented)
+        if action.action_type == ActionType.DECLARE_BLOCKERS:
             return None  # Fall through to click handler
 
         # MULLIGAN — submit keep/mulligan via bridge
@@ -1529,7 +1875,6 @@ class AutopilotEngine:
 
         # CHOOSE STARTING PLAYER — submit play/draw via bridge
         if action.action_type == ActionType.CHOOSE_STARTING_PLAYER:
-            game_state = self._get_game_state()
             local_seat = None
             opp_seat = None
             for p in game_state.get("players", []):
@@ -1607,6 +1952,74 @@ class AutopilotEngine:
                             return ClickResult(True, 0, 0, action.card_name or str(action), "GRE bridge")
 
         return None
+
+    def _try_bridge_declare_attackers(self, action: GameAction) -> Optional[ClickResult]:
+        """Submit attacker declarations via GRE bridge (two-step NPE handler pattern).
+
+        Step 1: UpdateAttacker — sets SelectedDamageRecipient on each attacker
+        Step 2: SubmitAttackers — finalizes the declaration
+
+        Returns ClickResult if bridge handled it, None to fall through to clicks.
+        """
+        if not self._gre_bridge.connect():
+            return None
+
+        # Verify the bridge has a DeclareAttackers request pending
+        pending = self._gre_bridge.get_pending_actions()
+        if not pending or not pending.get("has_pending"):
+            return None
+        req_class = pending.get("request_class", "")
+        if "DeclareAttacker" not in req_class:
+            logger.info(f"Bridge declare_attackers: pending is {req_class}, not DeclareAttacker")
+            return None
+
+        # Build name→instanceId map from decision context
+        game_state = self._get_game_state()
+        attacker_id_map = self._build_attacker_id_map(game_state)
+        battlefield = game_state.get("battlefield", [])
+        local_seat = next(
+            (p.get("seat_id") for p in game_state.get("players", []) if p.get("is_local")),
+            None,
+        )
+
+        # Resolve attacker names to instance IDs
+        attacker_entries = []
+        for name in action.attacker_names:
+            iid = attacker_id_map.get(name)
+            if iid is None:
+                iid = self._find_instance_id(name, battlefield, local_seat)
+            if iid is not None:
+                attacker_entries.append({"attackerInstanceId": iid})
+            else:
+                logger.warning(f"Bridge declare_attackers: can't resolve '{name}' to instance ID")
+
+        if not attacker_entries:
+            logger.warning("Bridge declare_attackers: no attacker IDs resolved, falling back to clicks")
+            return None
+
+        # Step 1: UpdateAttacker (declare attackers with damage recipients)
+        resp = self._gre_bridge.submit_attackers_raw(attacker_entries)
+        if not resp or not resp.get("ok"):
+            logger.warning(f"Bridge declare_attackers step 1 failed: {resp}")
+            return None
+
+        if resp.get("needs_finalize"):
+            # Step 2: Wait for GRE to process, then finalize with SubmitAttackers
+            time.sleep(0.4)
+            resp2 = self._gre_bridge.submit_attackers_raw([])
+            if not resp2 or not resp2.get("ok"):
+                logger.warning(f"Bridge declare_attackers step 2 (finalize) failed: {resp2}")
+                # Step 1 succeeded, so attackers are declared even if finalize fails
+                # The game may auto-advance or we can retry
+            else:
+                logger.info("Bridge declare_attackers: finalized successfully")
+
+        names_str = ", ".join(action.attacker_names)
+        self._log_execution_path(
+            ExecutionPath.GRE_AWARE,
+            f"declare_attackers: [{names_str}] via GRE bridge"
+        )
+        return ClickResult(True, 0, 0, "attackers", "GRE bridge")
 
     def _try_gre_bridge_blockers(self, action: GameAction) -> Optional[ClickResult]:
         """Submit blocker assignments via the GRE bridge.
@@ -1794,7 +2207,7 @@ class AutopilotEngine:
         """
         # Try GRE bridge first (direct action submission, no mouse needed)
         if not self._config.dry_run:
-            gre_result = self._try_gre_bridge(action)
+            gre_result = self._try_gre_bridge(action, game_state)
             if gre_result is not None:
                 return gre_result
 
@@ -1841,14 +2254,19 @@ class AutopilotEngine:
             result = handler()
             if result.success:
                 return result
-            # Click handler failed — try auto_respond as universal fallback
+            # Click handler failed — only allow auto_respond for safe cases.
             logger.warning(
                 f"Action handler failed for {action.action_type.value}: {result.error}. "
-                "Trying auto_respond fallback."
+                "Evaluating safe fallback."
             )
+        else:
+            result = ClickResult(False, 0, 0, str(action), f"No handler for {action.action_type}")
 
-        # Universal fallback: auto_respond unblocks any GRE request
-        if not self._config.dry_run and (self._gre_bridge.connected or self._gre_bridge.connect()):
+        if (
+            not self._config.dry_run
+            and self._should_allow_auto_respond(game_state, action)
+            and (self._gre_bridge.connected or self._gre_bridge.connect())
+        ):
             if self._gre_bridge.auto_respond():
                 self._log_execution_path(
                     ExecutionPath.GRE_AWARE,
@@ -1872,8 +2290,10 @@ class AutopilotEngine:
                 )
                 return ClickResult(True, 0, 0, action.card_name or str(action), "auto_respond fallback")
 
-        if not handler:
-            return ClickResult(False, 0, 0, str(action), f"No handler for {action.action_type}")
+        if self._is_critical_decision_state(game_state, action):
+            self._pause_for_manual(f"No safe automatic fallback for {action.action_type.value}", game_state)
+            return ClickResult(False, 0, 0, action.card_name or str(action), "manual required")
+
         return result
 
     def _click_fixed(self, name: str) -> ClickResult:
@@ -2882,12 +3302,28 @@ class AutopilotEngine:
         poll_interval = 0.15
 
         card_name = action.card_name.lower() if action.card_name else ""
-
         pre_pending = pre_state.get("pending_decision")
+        pre_bridge_state_id = int(pre_state.get("_bridge_game_state_id", 0) or 0)
+        bridge_state_authoritative = pre_bridge_state_id > 0
+        last_post_state: Optional[dict[str, Any]] = None
 
         while time.time() < deadline:
             try:
                 post_state = self._get_game_state()
+                last_post_state = post_state
+
+                post_bridge_state_id = int(post_state.get("_bridge_game_state_id", 0) or 0)
+                if post_bridge_state_id and pre_bridge_state_id and post_bridge_state_id != pre_bridge_state_id:
+                    logger.info(
+                        "Action verified: bridge game_state_id advanced (%s -> %s)",
+                        pre_bridge_state_id,
+                        post_bridge_state_id,
+                    )
+                    return True
+
+                if bridge_state_authoritative:
+                    time.sleep(poll_interval)
+                    continue
 
                 # 0. New pending decision appeared (ETB choices, mana payments, etc.)
                 # This means the action was processed and MTGA is waiting for a
@@ -2976,6 +3412,20 @@ class AutopilotEngine:
                 logger.error(f"Verification poll error: {e}")
 
             time.sleep(poll_interval)
+
+        if last_post_state and last_post_state.get("game_engine_busy"):
+            logger.warning(
+                "Action verification timed out while the engine was still busy; not blocking action yet"
+            )
+            return False
+
+        post_bridge_state_id = int((last_post_state or {}).get("_bridge_game_state_id", 0) or 0)
+        if pre_bridge_state_id and post_bridge_state_id == pre_bridge_state_id:
+            self._mark_action_blocked(
+                action,
+                pre_state,
+                f"bridge game_state_id stayed at {pre_bridge_state_id}",
+            )
 
         logger.warning(f"Action verification timed out after {self._config.verification_timeout}s")
         return False

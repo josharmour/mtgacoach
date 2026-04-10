@@ -100,9 +100,10 @@ class ValidationError(SerializationError):
 def _serialize_action(raw_action: dict[str, Any]) -> dict[str, Any]:
     """Serialize a raw GRE action dict into the PerformActionResp.Action format.
 
-    The GRE expects a minimal Action message: only fields with non-default
-    values should be included.  Zero-valued uint32 fields and False booleans
-    are omitted to match protobuf serialization conventions.
+    Preserve the GRE-provided action payload as faithfully as possible for
+    execution.  Unlike the earlier minimalist serializer, explicit zero/default
+    values are retained when the GRE included them so complex mechanics keep
+    their original shape.
 
     Args:
         raw_action: A raw GRE action dict as stored in ``legal_actions_raw``.
@@ -158,10 +159,13 @@ def _serialize_action(raw_action: dict[str, Any]) -> dict[str, Any]:
 
 
 def _copy_uint(key: str, src: dict, dst: dict) -> None:
-    """Copy a uint field if present and non-zero."""
-    val = src.get(key, 0)
-    if val:
-        dst[key] = int(val)
+    """Copy a uint field whenever GRE provided it, including zero values."""
+    if key not in src:
+        return
+    val = src.get(key)
+    if val is None:
+        return
+    dst[key] = int(val)
 
 
 def _serialize_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:

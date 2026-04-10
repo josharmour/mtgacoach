@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 PIPE_NAME = r"\\.\pipe\mtgacoach_bridge_v2"
 PIPE_TIMEOUT_MS = 3000
 COMMAND_TIMEOUT = 5.0
+UNMAPPED_INTERACTION_TYPE = "unmapped_interaction"
 
 
 class GREBridgeError(Exception):
@@ -441,6 +442,26 @@ class GREBridge:
             logger.warning(f"GRE bridge submit_attackers error: {e}")
             return False
 
+    def submit_attackers_raw(
+        self,
+        attackers: list[dict[str, Any]],
+    ) -> Optional[dict[str, Any]]:
+        """Submit attacker declarations and return full response dict.
+
+        Unlike submit_attackers(), returns the full response so callers can
+        check needs_finalize for the two-step UpdateAttacker/SubmitAttackers flow.
+        """
+        try:
+            resp = self._send_safe({
+                "action": "submit_attackers",
+                "attackers": attackers,
+            })
+            logger.info(f"GRE bridge submit_attackers_raw response: {resp}")
+            return resp
+        except GREBridgeError as e:
+            logger.warning(f"GRE bridge submit_attackers_raw error: {e}")
+            return None
+
     def submit_mulligan(self, keep: bool) -> bool:
         """Submit mulligan decision (keep or mulligan)."""
         try:
@@ -543,6 +564,23 @@ class GREBridge:
             logger.warning(f"GRE bridge auto_respond failed: {resp.get('error')}")
         except GREBridgeError as e:
             logger.warning(f"GRE bridge auto_respond error: {e}")
+        return False
+
+    def cancel_action(self) -> bool:
+        """Cancel the current pending action (undo the cast/activation).
+
+        Only works when the request has CanCancel=true (e.g. PayCostsRequest
+        with AllowCancel_Abort). Falls back to AutoRespond if cancel not allowed.
+        """
+        try:
+            resp = self._send_safe({"action": "cancel_action"})
+            if resp.get("ok"):
+                cancelled = resp.get("cancelled", False)
+                logger.info(f"GRE bridge cancel_action: cancelled={cancelled}, {resp.get('request_class', '?')}")
+                return True
+            logger.warning(f"GRE bridge cancel_action failed: {resp.get('error')}")
+        except GREBridgeError as e:
+            logger.warning(f"GRE bridge cancel_action error: {e}")
         return False
 
     # -------------------------------------------------------------------
@@ -770,6 +808,9 @@ _BRIDGE_REQUEST_TO_DECISION_TYPE: dict[str, str] = {
     "Order": "order_triggers",
     "OrderReq": "order_triggers",
     "OrderRequest": "order_triggers",
+    "OrderTriggers": "order_triggers",
+    "OrderTriggersReq": "order_triggers",
+    "OrderTriggersRequest": "order_triggers",
     "OptionalActionMessage": "optional_action",
     "CastingTimeOptions": "casting_time_options",
     "CastingTimeOptionsReq": "casting_time_options",
@@ -850,10 +891,28 @@ _BRIDGE_REQUEST_TO_LABEL: dict[str, str] = {
     "Order": "Order Triggers",
     "OrderReq": "Order Triggers",
     "OrderRequest": "Order Triggers",
+    "OrderTriggers": "Order Triggers",
+    "OrderTriggersReq": "Order Triggers",
+    "OrderTriggersRequest": "Order Triggers",
     "OptionalActionMessage": "Optional Action",
     "CastingTimeOptions": "Casting Option",
     "CastingTimeOptionsReq": "Casting Option",
     "CastingTimeOptionRequest": "Casting Option",
+    "SelectNGroup": "Select From Group",
+    "SelectNGroupReq": "Select From Group",
+    "SelectNGroupRequest": "Select From Group",
+    "SelectFromGroups": "Select From Groups",
+    "SelectFromGroupsReq": "Select From Groups",
+    "SelectFromGroupsRequest": "Select From Groups",
+    "SearchFromGroups": "Search From Groups",
+    "SearchFromGroupsReq": "Search From Groups",
+    "SearchFromGroupsRequest": "Search From Groups",
+    "Gather": "Gather",
+    "GatherReq": "Gather",
+    "GatherRequest": "Gather",
+    "RevealHand": "Reveal Hand",
+    "RevealHandReq": "Reveal Hand",
+    "RevealHandRequest": "Reveal Hand",
 }
 
 _ACTIONS_AVAILABLE_BRIDGE_REQUESTS = {
@@ -873,16 +932,23 @@ def _get_bridge_decision_type(
     request_type: Optional[str],
     request_class: Optional[str] = None,
 ) -> Optional[str]:
-    return (
+    mapped = (
         _BRIDGE_REQUEST_TO_DECISION_TYPE.get(request_type or "")
         or _BRIDGE_REQUEST_TO_DECISION_TYPE.get(request_class or "")
     )
+    if mapped:
+        return mapped
+    if request_type or request_class:
+        return UNMAPPED_INTERACTION_TYPE
+    return None
 
 
 def _get_bridge_request_label(
     request_type: Optional[str],
     request_class: Optional[str] = None,
 ) -> str:
+    if _get_bridge_decision_type(request_type, request_class) == UNMAPPED_INTERACTION_TYPE:
+        return "Manual Required"
     return (
         _BRIDGE_REQUEST_TO_LABEL.get(request_type or "")
         or _BRIDGE_REQUEST_TO_LABEL.get(request_class or "")
@@ -890,6 +956,103 @@ def _get_bridge_request_label(
         or request_class
         or "Unknown"
     )
+
+
+def enrich_snapshot_from_pending_response(
+    snapshot: dict[str, Any],
+    poll: Optional[dict[str, Any]],
+    *,
+    bridge_connected: Optional[bool] = None,
+) -> None:
+    """Overlay a raw get_pending_actions() response onto a snapshot dict."""
+    if bridge_connected is not None:
+        snapshot["_bridge_connected"] = bridge_connected
+
+    if poll is None:
+        return
+
+    has_pending = poll.get("has_pending", False)
+    request_type = poll.get("request_type")
+    request_class = poll.get("request_class")
+    actions = poll.get("actions", [])
+    request_payload = poll.get("request_payload")
+    bridge_decision_context = poll.get("decision_context") or {}
+
+    if has_pending and _is_non_actionable_bridge_request(request_type, request_class):
+        has_pending = False
+        request_type = None
+        request_class = None
+        actions = []
+        request_payload = None
+        bridge_decision_context = {}
+
+    snapshot["_bridge_request_type"] = request_type if has_pending else None
+    snapshot["_bridge_request_class"] = request_class if has_pending else None
+    snapshot["_bridge_actions"] = actions if actions else None
+    snapshot["_bridge_can_pass"] = poll.get("can_pass", False)
+    snapshot["_bridge_can_cancel"] = poll.get("can_cancel", False)
+    snapshot["_bridge_allow_undo"] = poll.get("allow_undo", False)
+    snapshot["_bridge_request_payload"] = (
+        request_payload if has_pending and request_payload else None
+    )
+
+    if not has_pending:
+        if bridge_connected:
+            snapshot["pending_decision"] = None
+            snapshot["decision_context"] = None
+            if "legal_actions" in snapshot:
+                snapshot["legal_actions"] = []
+            if "legal_actions_raw" in snapshot:
+                snapshot["legal_actions_raw"] = []
+        return
+
+    label = _get_bridge_request_label(request_type, request_class)
+    existing = snapshot.get("pending_decision")
+    if not existing:
+        snapshot["pending_decision"] = label
+        logger.debug(f"Bridge set pending_decision: {label}")
+    elif existing != label:
+        logger.info(
+            f"Bridge overriding stale pending_decision: "
+            f"{existing!r} → {label!r}"
+        )
+        snapshot["pending_decision"] = label
+
+    decision_type = _get_bridge_decision_type(request_type, request_class)
+    existing_ctx = snapshot.get("decision_context") or {}
+    if bridge_decision_context:
+        snapshot["decision_context"] = {
+            **existing_ctx,
+            **bridge_decision_context,
+            "_bridge_source": True,
+        }
+        existing_ctx = snapshot["decision_context"]
+
+    if request_type and "requestType" not in existing_ctx:
+        existing_ctx = {
+            **existing_ctx,
+            "requestType": request_type,
+        }
+    if request_class and "requestClass" not in existing_ctx:
+        existing_ctx = {
+            **existing_ctx,
+            "requestClass": request_class,
+        }
+
+    if decision_type:
+        existing_type = existing_ctx.get("type")
+        if not existing_type or existing_type in {"unknown_req", UNMAPPED_INTERACTION_TYPE}:
+            existing_ctx = {
+                **existing_ctx,
+                "type": decision_type,
+                "_bridge_source": True,
+            }
+            logger.debug(
+                f"Bridge enriched decision_context: {existing_type} → {decision_type}"
+            )
+
+    if existing_ctx:
+        snapshot["decision_context"] = existing_ctx
 
 
 def _is_non_actionable_bridge_request(
@@ -1074,81 +1237,11 @@ class BridgeDecisionPoller:
         snapshot["_bridge_connected"] = self.connected
 
         poll = self._last_poll_result
-        if poll is None:
-            return
-
-        has_pending = poll.get("has_pending", False)
-        request_type = poll.get("request_type")
-        request_class = poll.get("request_class")
-        actions = poll.get("actions", [])
-        request_payload = poll.get("request_payload")
-        bridge_decision_context = poll.get("decision_context") or {}
-
-        if has_pending and _is_non_actionable_bridge_request(request_type, request_class):
-            has_pending = False
-            request_type = None
-            request_class = None
-            actions = []
-            request_payload = None
-            bridge_decision_context = {}
-
-        snapshot["_bridge_request_type"] = request_type if has_pending else None
-        snapshot["_bridge_request_class"] = request_class if has_pending else None
-        snapshot["_bridge_actions"] = actions if actions else None
-        snapshot["_bridge_can_pass"] = poll.get("can_pass", False)
-        snapshot["_bridge_can_cancel"] = poll.get("can_cancel", False)
-        snapshot["_bridge_allow_undo"] = poll.get("allow_undo", False)
-        snapshot["_bridge_request_payload"] = (
-            request_payload if has_pending and request_payload else None
+        enrich_snapshot_from_pending_response(
+            snapshot,
+            poll,
+            bridge_connected=self.connected,
         )
-
-        if not has_pending:
-            return
-
-        # Enrich pending_decision from bridge.  Override the log-parsed
-        # value when the bridge reports a *different* request — the bridge is
-        # authoritative and the log parser may lag behind (e.g. player chose
-        # play/draw but log hasn't processed MulliganReq yet).
-        if request_type:
-            label = _get_bridge_request_label(request_type, request_class)
-            existing = snapshot.get("pending_decision")
-            if not existing:
-                snapshot["pending_decision"] = label
-                logger.debug(f"Bridge set pending_decision: {label}")
-            elif existing != label:
-                logger.info(
-                    f"Bridge overriding stale pending_decision: "
-                    f"{existing!r} → {label!r}"
-                )
-                snapshot["pending_decision"] = label
-
-        # Enrich decision_context type from bridge's authoritative request_type
-        decision_type = _get_bridge_decision_type(request_type, request_class)
-        existing_ctx = snapshot.get("decision_context") or {}
-        if bridge_decision_context:
-            snapshot["decision_context"] = {
-                **existing_ctx,
-                **bridge_decision_context,
-                "_bridge_source": True,
-            }
-            existing_ctx = snapshot["decision_context"]
-
-        if decision_type:
-            existing_type = existing_ctx.get("type")
-            if not existing_type or existing_type == "unknown_req":
-                snapshot["decision_context"] = {
-                    **existing_ctx,
-                    "type": decision_type,
-                    "_bridge_source": True,
-                }
-                logger.debug(
-                    f"Bridge enriched decision_context: {existing_type} → {decision_type}"
-                )
-
-        # Enrich legal_actions_raw with bridge action data when available
-        # Bridge actions have the latest castability flags + autotap solutions
-        if actions:
-            snapshot["_bridge_actions"] = actions
 
     @staticmethod
     def _compute_action_sig(actions: list[dict[str, Any]]) -> str:

@@ -188,6 +188,7 @@ class PipeAdapter:
                 if coach._autopilot:
                     coach._autopilot._afk = not coach._autopilot._afk
                     state = "ON" if coach._autopilot._afk else "OFF"
+                    self.status("AFK", state)
                     self.log(f"AFK mode: {state}")
             elif action == "toggle_land_only":
                 if coach._autopilot:
@@ -195,6 +196,7 @@ class PipeAdapter:
                         coach._autopilot, "_land_only", False
                     )
                     state = "ON" if coach._autopilot._land_only else "OFF"
+                    self.status("LAND_ONLY", state)
                     self.log(f"Land-only mode: {state}")
             elif action == "autopilot_cancel":
                 if coach._autopilot:
@@ -208,7 +210,7 @@ class PipeAdapter:
                 ).start()
             elif action == "debug_report":
                 threading.Thread(
-                    target=coach._save_debug_report, daemon=True
+                    target=self._handle_debug_report, daemon=True
                 ).start()
             elif action == "read_win_plan":
                 coach._on_read_win_plan()
@@ -226,6 +228,20 @@ class PipeAdapter:
         except Exception as e:
             logger.error("Command dispatch error (%s): %s", action, e)
             self.error(f"Command failed: {action}: {e}")
+
+    def _handle_debug_report(self) -> None:
+        """Save a bug report and notify the GUI of the path."""
+        coach = self._coach
+        if coach is None:
+            return
+        try:
+            bug_path = coach.save_bug_report("Launcher Debug Report", announce=False)
+            if bug_path:
+                self.log(f"Bug report saved: {bug_path}")
+            else:
+                self.error("Failed to save bug report")
+        except Exception as e:
+            self.error(f"Bug report failed: {e}")
 
     def _handle_chat(self, text: str) -> None:
         """Process a chat message from the GUI."""

@@ -10,7 +10,8 @@ Real-time AI coaching for Magic: The Gathering Arena. Watches your live games an
 - **Voice input** — Push-to-talk to ask questions mid-game
 - **Win plan detection** — Background analysis finds lethal lines and alerts you
 - **Draft helper** — 17lands stats + composite scoring for draft picks
-- **Autopilot** — AI plays for you when you're AFK
+- **Autopilot** — AI plays for you with bridge-verified action execution
+- **Replay recording** — Automatic match recording for debugging and post-game analysis
 - **Post-match analysis** — Detailed review after each game
 - **Local model support** — Run with Ollama or LM Studio for free, offline play
 
@@ -46,17 +47,24 @@ Switch between modes using the **Online/Local** button in the app.
 
 ## App Controls
 
-| Button | Action |
-|--------|--------|
-| Online/Local | Switch AI backend |
-| Model | Cycle available models |
-| Voice | Cycle TTS voice (Adam, Michael, Heart, Bella, Nicole, Sarah, Sky) |
-| Speed | Cycle TTS speed (1.0x / 1.2x / 1.4x) |
-| Mute | Toggle voice output |
-| AP:OFF/ON | Toggle autopilot |
-| Screen | Analyze current screenshot |
-| Copy Debug Logs | Copy all logs to clipboard for support |
-| Restart | Restart the coaching engine |
+| Button | Key | Action |
+|--------|-----|--------|
+| Online/Local | | Switch AI backend |
+| Model | | Cycle available models |
+| Style | F2 | Toggle advice frequency (Concise/Verbose) |
+| Screen | F3 | Analyze current screenshot via VLM |
+| Mute | F5 | Toggle voice output |
+| Voice | F6 | Cycle TTS voice (Adam, Michael, Heart, Bella, Nicole, Sarah, Sky) |
+| Debug | F7 | Save bug report (JSON with replay, autopilot, bridge state) |
+| Speed | F8 | Cycle TTS speed (1.0x / 1.2x / 1.4x) |
+| Restart | | Restart the coaching engine |
+| **Autopilot** | | |
+| AP:OFF/ON | F12 | Toggle autopilot |
+| AP Cancel | F1 | Cancel current autopilot plan |
+| AP Abort | F4 | Abort autopilot execution immediately |
+| AFK | F9 | Toggle AFK mode (auto-pass everything) |
+| Land Only | F10 | Toggle land-only mode (auto-play lands) |
+| Win Plan | | Read current win probability |
 
 ## Chat Commands
 
@@ -73,7 +81,7 @@ Type in the chat box at the bottom of the Coach tab:
 - **Ollama connection refused** — Make sure Ollama is running: `ollama serve`
 - **BepInEx / bridge plugin missing** — Open the Repair tab and use Install BepInEx + Install Plugin
 - **Run diagnostics** — `python -m arenamcp.diagnose`
-- **Copy debug logs** — Click "Copy Debug Logs" in the app and paste to support
+- **Copy debug logs** — Press F7 or click "Debug" to save a bug report with full game state, replay data, and autopilot diagnostics
 
 ## Development
 

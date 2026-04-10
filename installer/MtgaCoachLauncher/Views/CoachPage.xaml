@@ -3,14 +3,15 @@
     x:Class="MtgaCoachLauncher.Views.CoachPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:local="using:MtgaCoachLauncher.Views">
+    xmlns:local="using:MtgaCoachLauncher.Views"
+>
 
-    <Grid Padding="16">
+    <Grid Padding="16" KeyDown="Grid_KeyDown">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />   <!-- Status bar -->
             <RowDefinition Height="Auto" />   <!-- Game state panel -->
             <RowDefinition Height="*" />      <!-- Advice log -->
-            <RowDefinition Height="Auto" />   <!-- Button bar -->
+            <RowDefinition Height="Auto" />   <!-- Button bar (two rows) -->
             <RowDefinition Height="Auto" />   <!-- Chat input -->
         </Grid.RowDefinitions>
 
@@ -55,20 +56,47 @@
             </ScrollViewer>
         </Border>
 
-        <!-- Button Bar -->
+        <!-- Button Bar (two rows) -->
         <Border Grid.Row="3" Margin="0,0,0,8">
-            <StackPanel Orientation="Horizontal" Spacing="6">
-                <Button x:Name="BtnMode" Content="Online" Click="Mode_Click"
-                        Style="{StaticResource AccentButtonStyle}" />
-                <Button x:Name="BtnModel" Content="Model" Click="Model_Click"
-                        Style="{StaticResource AccentButtonStyle}" />
-                <Button x:Name="BtnVoice" Content="Voice" Click="Voice_Click" />
-                <Button x:Name="BtnSpeed" Content="1.0x" Click="Speed_Click" />
-                <Button x:Name="BtnMute" Content="Mute" Click="Mute_Click" />
-                <Button x:Name="BtnAutopilot" Content="AP:OFF" Click="Autopilot_Click" />
-                <Button Content="Screen" Click="Screen_Click" />
-                <Button Content="Copy Debug Logs" Click="CopyDebug_Click" />
-                <Button Content="Restart" Click="Restart_Click" />
+            <StackPanel Spacing="4">
+                <!-- Row 1: Core controls -->
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <Button x:Name="BtnMode" Content="Online" Click="Mode_Click"
+                            ToolTipService.ToolTip="Cycle backend (Online/Local)"
+                            Style="{StaticResource AccentButtonStyle}" />
+                    <Button x:Name="BtnModel" Content="Model" Click="Model_Click"
+                            ToolTipService.ToolTip="Cycle LLM model"
+                            Style="{StaticResource AccentButtonStyle}" />
+                    <Button x:Name="BtnStyle" Content="Style [F2]" Click="Style_Click"
+                            ToolTipService.ToolTip="F2: Toggle advice frequency (Concise/Verbose)" />
+                    <Button x:Name="BtnVoice" Content="Voice [F6]" Click="Voice_Click"
+                            ToolTipService.ToolTip="F6: Cycle TTS voice" />
+                    <Button x:Name="BtnSpeed" Content="1.0x [F8]" Click="Speed_Click"
+                            ToolTipService.ToolTip="F8: Cycle speech speed" />
+                    <Button x:Name="BtnMute" Content="Mute [F5]" Click="Mute_Click"
+                            ToolTipService.ToolTip="F5: Toggle voice mute" />
+                    <Button Content="Screen [F3]" Click="Screen_Click"
+                            ToolTipService.ToolTip="F3: Analyze screen via VLM" />
+                    <Button Content="Debug [F7]" Click="CopyDebug_Click"
+                            ToolTipService.ToolTip="F7: Copy debug logs + save bug report" />
+                    <Button Content="Restart" Click="Restart_Click"
+                            ToolTipService.ToolTip="Restart coach process" />
+                </StackPanel>
+                <!-- Row 2: Autopilot controls -->
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <Button x:Name="BtnAutopilot" Content="AP:OFF [F12]" Click="Autopilot_Click"
+                            ToolTipService.ToolTip="F12: Toggle autopilot on/off" />
+                    <Button Content="AP Cancel [F1]" Click="AutopilotCancel_Click"
+                            ToolTipService.ToolTip="F1: Cancel current autopilot plan" />
+                    <Button Content="AP Abort [F4]" Click="AutopilotAbort_Click"
+                            ToolTipService.ToolTip="F4: Abort autopilot execution immediately" />
+                    <Button x:Name="BtnAfk" Content="AFK [F9]" Click="Afk_Click"
+                            ToolTipService.ToolTip="F9: Toggle AFK mode (auto-pass everything)" />
+                    <Button x:Name="BtnLandOnly" Content="Land Only [F10]" Click="LandOnly_Click"
+                            ToolTipService.ToolTip="F10: Toggle land-only mode (auto-play lands)" />
+                    <Button Content="Win Plan" Click="WinPlan_Click"
+                            ToolTipService.ToolTip="Ctrl+0: Read current win probability" />
+                </StackPanel>
             </StackPanel>
         </Border>
 

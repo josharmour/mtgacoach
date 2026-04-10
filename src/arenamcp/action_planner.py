@@ -92,6 +92,7 @@ class ActionPlan:
     """A complete plan of actions to execute."""
     actions: list[GameAction] = field(default_factory=list)
     overall_strategy: str = ""
+    voice_advice: str = ""
     trigger: str = ""
     turn_number: int = 0
 
@@ -118,7 +119,8 @@ ACTION_SCHEMA = """{
     "play_or_draw": "play|draw",
     "reasoning": "string (brief explanation)"
   }],
-  "overall_strategy": "string (1-sentence strategy summary)"
+  "overall_strategy": "string (1-sentence strategy summary)",
+  "voice_advice": "string (1-2 sentence spoken coaching advice for the player, concise and actionable)"
 }"""
 
 
@@ -388,13 +390,43 @@ class ActionPlanner:
         ]
 
         if legal_actions:
-            # Filter out spells that can't be cast (no [OK] marker).
-            # Keep non-cast actions (Play Land, Pass, Activate, etc.) as-is.
+            # Filter out spells that can't be cast.
+            # Primary: [OK] marker (MTGA's autoTapSolution).
+            # Secondary: rules_engine mana check (catches cases where
+            # autoTapSolution is present but mana is actually insufficient).
             filtered = []
+            mana_pool = None  # lazy-init
             for a in legal_actions:
                 lower = a.lower()
-                if lower.startswith("cast ") and "[ok]" not in lower:
-                    continue  # Skip uncastable spells
+                if lower.startswith("cast "):
+                    if "[ok]" not in lower:
+                        continue  # No autoTap solution — skip
+                    # Secondary check: verify mana pool can actually pay
+                    if mana_pool is None:
+                        try:
+                            from arenamcp.rules_engine import RulesEngine
+                            local_seat = next(
+                                (p.get("seat_id") for p in game_state.get("players", [])
+                                 if p.get("is_local")), None
+                            )
+                            if local_seat is not None:
+                                mana_pool = RulesEngine._get_mana_pool(game_state, local_seat)
+                            else:
+                                mana_pool = {}  # Can't check — allow through
+                        except Exception:
+                            mana_pool = {}  # Can't check — allow through
+                    if mana_pool:
+                        # Extract card name, find its cost in hand
+                        card_name = a.split("[")[0].replace("Cast ", "").strip()
+                        hand = game_state.get("hand", [])
+                        card_cost = ""
+                        for c in hand:
+                            if c.get("name", "").lower() == card_name.lower():
+                                card_cost = c.get("mana_cost", "")
+                                break
+                        if card_cost and not RulesEngine._can_afford(card_cost, mana_pool):
+                            logger.info(f"Filtering unaffordable spell: {card_name} (cost={card_cost})")
+                            continue
                 filtered.append(a)
             parts.append(f"\nLegal: {', '.join(filtered or legal_actions)}")
 
@@ -520,8 +552,9 @@ class ActionPlanner:
             logger.debug(f"Raw response: {response[:500]}")
             return plan
 
-        # Extract overall strategy
+        # Extract overall strategy and voice advice
         plan.overall_strategy = data.get("overall_strategy", "")
+        plan.voice_advice = data.get("voice_advice", "")
 
         # Parse actions
         for action_data in data.get("actions", []):

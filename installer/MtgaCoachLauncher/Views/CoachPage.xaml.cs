@@ -49,6 +49,65 @@ public partial class CoachPage : Page
         }
     }
 
+    // ── F-key handler ───────────────────────────────────────────────
+
+    private void Grid_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        // Don't intercept keys while typing in the chat box
+        if (ChatInput.FocusState != Microsoft.UI.Xaml.FocusState.Unfocused)
+            return;
+
+        switch (e.Key)
+        {
+            case Windows.System.VirtualKey.F1:
+                _process?.SendCommand("autopilot_cancel");
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.F2:
+                _process?.SendCommand("toggle_style");
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.F3:
+                _process?.SendCommand("analyze_screen");
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.F4:
+                _process?.SendCommand("autopilot_abort");
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.F5:
+                _process?.SendCommand("toggle_mute");
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.F6:
+                _process?.SendCommand("cycle_voice");
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.F7:
+                CopyDebug_Click(sender, new RoutedEventArgs());
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.F8:
+                _process?.SendCommand("cycle_speed");
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.F9:
+                _process?.SendCommand("toggle_afk");
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.F10:
+                _process?.SendCommand("toggle_land_only");
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.F12:
+                _process?.SendCommand("toggle_autopilot");
+                e.Handled = true;
+                break;
+        }
+    }
+
+    // ── Event handling ──────────────────────────────────────────────
+
     private void OnEvent(JsonElement evt)
     {
         _dispatcher.TryEnqueue(() => HandleEvent(evt));
@@ -150,16 +209,25 @@ public partial class CoachPage : Page
                 break;
             case "BRIDGE": case "GRE": StatusBridge.Text = value; break;
             case "VOICE": case "VOICE_ID":
-                BtnVoice.Content = string.IsNullOrEmpty(value) ? "Voice" : value;
+                BtnVoice.Content = string.IsNullOrEmpty(value) ? "Voice [F6]" : $"{value} [F6]";
                 break;
             case "SPEED":
-                BtnSpeed.Content = string.IsNullOrEmpty(value) ? "1.0x" : value;
+                BtnSpeed.Content = string.IsNullOrEmpty(value) ? "1.0x [F8]" : $"{value} [F8]";
                 break;
             case "AUTOPILOT":
-                BtnAutopilot.Content = value;
+                BtnAutopilot.Content = $"{value} [F12]";
                 break;
             case "MUTE":
-                BtnMute.Content = value.Contains("Muted") ? "Unmute" : "Mute";
+                BtnMute.Content = value.Contains("Muted") ? "Unmute [F5]" : "Mute [F5]";
+                break;
+            case "STYLE":
+                BtnStyle.Content = $"{value} [F2]";
+                break;
+            case "AFK":
+                BtnAfk.Content = $"AFK:{value} [F9]";
+                break;
+            case "LAND_ONLY":
+                BtnLandOnly.Content = $"Land:{value} [F10]";
                 break;
         }
     }
@@ -168,13 +236,19 @@ public partial class CoachPage : Page
     {
         var sb = new StringBuilder();
 
+        // --- Header: Turn / Phase / Life ---
+        int localSeat = 0;
         if (data.TryGetProperty("turn", out var turn))
         {
             var turnNum = turn.TryGetProperty("turn_number", out var tn) ? tn.GetInt32() : 0;
             var phase = turn.TryGetProperty("phase", out var ph) ? ph.GetString() : "";
             var step = turn.TryGetProperty("step", out var st) ? st.GetString() : "";
+            var activePlayer = turn.TryGetProperty("active_player", out var ap) ? ap.GetInt32() : 0;
             sb.Append($"Turn {turnNum}  {phase}");
             if (!string.IsNullOrEmpty(step)) sb.Append($" / {step}");
+            if (data.TryGetProperty("local_seat_id", out var ls))
+                localSeat = ls.GetInt32();
+            sb.Append(activePlayer == localSeat ? "  (your turn)" : "  (opp turn)");
         }
 
         if (data.TryGetProperty("players", out var players) && players.ValueKind == JsonValueKind.Array)
@@ -200,20 +274,119 @@ public partial class CoachPage : Page
 
         if (data.TryGetProperty("zones", out var zones))
         {
+            // --- Hand (with mana costs) ---
             if (zones.TryGetProperty("my_hand", out var hand) && hand.ValueKind == JsonValueKind.Array)
             {
                 var cards = new List<string>();
                 foreach (var c in hand.EnumerateArray())
                 {
                     var name = c.TryGetProperty("name", out var n) ? n.GetString() : "?";
-                    cards.Add(name ?? "?");
+                    var cost = c.TryGetProperty("mana_cost", out var mc) ? mc.GetString() : "";
+                    cards.Add(!string.IsNullOrEmpty(cost) ? $"{name} ({cost})" : name ?? "?");
                 }
                 if (cards.Count > 0)
                     sb.AppendLine($"Hand ({cards.Count}): {string.Join(", ", cards)}");
             }
 
+            // --- Battlefield (detailed per-card) ---
             if (zones.TryGetProperty("battlefield", out var bf) && bf.ValueKind == JsonValueKind.Array)
-                sb.Append($"Battlefield: {bf.GetArrayLength()} permanents");
+            {
+                var yours = new List<string>();
+                var opps = new List<string>();
+                foreach (var card in bf.EnumerateArray())
+                {
+                    var name = card.TryGetProperty("name", out var n) ? n.GetString() ?? "?" : "?";
+                    var owner = card.TryGetProperty("owner_seat_id", out var o) ? o.GetInt32() : 0;
+                    var tapped = card.TryGetProperty("is_tapped", out var t) && t.GetBoolean();
+                    var typeLine = card.TryGetProperty("type_line", out var tl) ? tl.GetString() ?? "" : "";
+                    var parts = new List<string> { name };
+
+                    if (typeLine.Contains("Creature", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var pow = card.TryGetProperty("power", out var pw) ? pw.GetInt32() : 0;
+                        var tou = card.TryGetProperty("toughness", out var to2) ? to2.GetInt32() : 0;
+                        parts.Add($"{pow}/{tou}");
+                    }
+                    if (typeLine.Contains("Planeswalker", StringComparison.OrdinalIgnoreCase) &&
+                        card.TryGetProperty("counters", out var pctrs) && pctrs.ValueKind == JsonValueKind.Object &&
+                        pctrs.TryGetProperty("Loyalty", out var loy))
+                        parts.Add($"Loy:{loy.GetInt32()}");
+
+                    if (tapped) parts.Add("T");
+
+                    if (card.TryGetProperty("counters", out var counters) && counters.ValueKind == JsonValueKind.Object)
+                        foreach (var ctr in counters.EnumerateObject())
+                            if (ctr.Name != "Loyalty") parts.Add($"+{ctr.Value.GetInt32()} {ctr.Name}");
+
+                    if (card.TryGetProperty("is_attacking", out var atk) && atk.GetBoolean()) parts.Add("ATK");
+                    if (card.TryGetProperty("is_blocking", out var blk) && blk.GetBoolean()) parts.Add("BLK");
+
+                    (owner == localSeat ? yours : opps).Add(string.Join(" ", parts));
+                }
+                sb.AppendLine($"Your Board ({yours.Count}): {string.Join(", ", yours)}");
+                if (opps.Count > 0)
+                    sb.AppendLine($"Opp Board ({opps.Count}): {string.Join(", ", opps)}");
+            }
+
+            // --- Stack ---
+            if (zones.TryGetProperty("stack", out var stack) && stack.ValueKind == JsonValueKind.Array && stack.GetArrayLength() > 0)
+            {
+                var items = new List<string>();
+                foreach (var s in stack.EnumerateArray())
+                    items.Add(s.TryGetProperty("name", out var n) ? n.GetString() ?? "?" : "?");
+                sb.AppendLine($"Stack: {string.Join(" -> ", items)}");
+            }
+
+            // --- Graveyard ---
+            if (zones.TryGetProperty("graveyard", out var gy) && gy.ValueKind == JsonValueKind.Array && gy.GetArrayLength() > 0)
+            {
+                var yours = new List<string>();
+                var opps = new List<string>();
+                foreach (var card in gy.EnumerateArray())
+                {
+                    var name = card.TryGetProperty("name", out var n) ? n.GetString() ?? "?" : "?";
+                    var owner = card.TryGetProperty("owner_seat_id", out var o) ? o.GetInt32() : 0;
+                    (owner == localSeat ? yours : opps).Add(name);
+                }
+                if (yours.Count > 0) sb.AppendLine($"Your GY ({yours.Count}): {string.Join(", ", yours)}");
+                if (opps.Count > 0) sb.AppendLine($"Opp GY ({opps.Count}): {string.Join(", ", opps)}");
+            }
+
+            // --- Exile ---
+            if (zones.TryGetProperty("exile", out var ex) && ex.ValueKind == JsonValueKind.Array && ex.GetArrayLength() > 0)
+            {
+                var items = new List<string>();
+                foreach (var card in ex.EnumerateArray())
+                    items.Add(card.TryGetProperty("name", out var n) ? n.GetString() ?? "?" : "?");
+                sb.AppendLine($"Exile ({items.Count}): {string.Join(", ", items)}");
+            }
+
+            // --- Command zone ---
+            if (zones.TryGetProperty("command", out var cmd) && cmd.ValueKind == JsonValueKind.Array && cmd.GetArrayLength() > 0)
+            {
+                var items = new List<string>();
+                foreach (var card in cmd.EnumerateArray())
+                    items.Add(card.TryGetProperty("name", out var n) ? n.GetString() ?? "?" : "?");
+                sb.AppendLine($"Command: {string.Join(", ", items)}");
+            }
+
+            // --- Library count ---
+            if (zones.TryGetProperty("library_count", out var lib))
+                sb.AppendLine($"Library: {lib} cards");
+        }
+
+        // --- Legal actions (non-trivial only) ---
+        if (data.TryGetProperty("legal_actions", out var la) && la.ValueKind == JsonValueKind.Array && la.GetArrayLength() > 0)
+        {
+            var actions = new List<string>();
+            foreach (var a in la.EnumerateArray())
+            {
+                var s = a.GetString();
+                if (s != null && s != "Pass" && !s.StartsWith("Action: Activate_Mana") && !s.StartsWith("Action: FloatMana"))
+                    actions.Add(s);
+            }
+            if (actions.Count > 0)
+                sb.AppendLine($"Legal ({actions.Count}): {string.Join(", ", actions)}");
         }
 
         var text = sb.ToString().TrimEnd();
@@ -238,6 +411,8 @@ public partial class CoachPage : Page
         => _process?.SendCommand("cycle_mode");
     private void Model_Click(object sender, RoutedEventArgs e)
         => _process?.SendCommand("cycle_model");
+    private void Style_Click(object sender, RoutedEventArgs e)
+        => _process?.SendCommand("toggle_style");
     private void Voice_Click(object sender, RoutedEventArgs e)
         => _process?.SendCommand("cycle_voice");
     private void Speed_Click(object sender, RoutedEventArgs e)
@@ -246,8 +421,18 @@ public partial class CoachPage : Page
         => _process?.SendCommand("toggle_mute");
     private void Autopilot_Click(object sender, RoutedEventArgs e)
         => _process?.SendCommand("toggle_autopilot");
+    private void AutopilotCancel_Click(object sender, RoutedEventArgs e)
+        => _process?.SendCommand("autopilot_cancel");
+    private void AutopilotAbort_Click(object sender, RoutedEventArgs e)
+        => _process?.SendCommand("autopilot_abort");
+    private void Afk_Click(object sender, RoutedEventArgs e)
+        => _process?.SendCommand("toggle_afk");
+    private void LandOnly_Click(object sender, RoutedEventArgs e)
+        => _process?.SendCommand("toggle_land_only");
     private void Screen_Click(object sender, RoutedEventArgs e)
         => _process?.SendCommand("analyze_screen");
+    private void WinPlan_Click(object sender, RoutedEventArgs e)
+        => _process?.SendCommand("read_win_plan");
     private void Restart_Click(object sender, RoutedEventArgs e)
         => _process?.SendCommand("restart");
 
@@ -316,6 +501,9 @@ public partial class CoachPage : Page
         var dp = new DataPackage();
         dp.SetText(debugText);
         Clipboard.SetContent(dp);
+
+        // Also trigger Python-side bug report (includes replay, autopilot, bridge state)
+        _process?.SendCommand("debug_report");
 
         AppendLog($"Debug logs copied to clipboard and saved to {debugFile}");
     }

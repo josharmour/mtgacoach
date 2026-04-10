@@ -566,6 +566,12 @@ class StandaloneCoach:
         if not isinstance(turn, dict):
             return game_state
 
+        # When the bridge is connected, the turn payload already comes from
+        # MtgGameState and priority is sourced from deciding_player.
+        # Do not overwrite that authoritative engine state with heuristics.
+        if game_state.get("_bridge_connected") or game_state.get("bridge_connected"):
+            return game_state
+
         local_seat = cls._get_local_seat_from_state(game_state)
         if local_seat is None:
             return game_state
@@ -1087,6 +1093,10 @@ class StandaloneCoach:
                         self._autopilot._lock.release()
                     except RuntimeError:
                         pass  # Lock wasn't held by this thread
+                # Clear abort/skip/confirm events from previous session —
+                # on_abort() sets _abort_event which persists across toggles
+                # and causes process_trigger() to bail out immediately.
+                self._autopilot._clear_events()
                 self._autopilot_enabled = True
                 logger.info("Autopilot toggled ON")
                 return True
@@ -1590,6 +1600,8 @@ class StandaloneCoach:
                             self.ui.status("GAME", f"Detected as Seat {seat_id} - press F8 if this is wrong")
                             logger.info(f"Game detected, local seat = {seat_id}")
                             seat_announced = True
+                            # Auto-enable replay recording for debug reports
+                            self._enable_replay_recording()
                             break
 
                 # Deck strategy analysis (once per match)
@@ -2109,11 +2121,26 @@ class StandaloneCoach:
                             # know when a new game starts and reset context
                             curr_state["_match_number"] = self._match_number
 
-                            advice = self._coach.get_advice(
-                                curr_state,
-                                trigger=trigger,
-                                style=self.advice_style
-                            )
+                            # Unified advice path: use the action planner for
+                            # both autopilot actions AND coaching advice. The
+                            # planner constrains itself to legal actions only.
+                            if self._autopilot and hasattr(self._autopilot, '_planner'):
+                                legal_actions = self._autopilot._get_legal_actions(curr_state)
+                                decision_context = curr_state.get("decision_context")
+                                plan = self._autopilot._planner.plan_actions(
+                                    curr_state, trigger, legal_actions, decision_context
+                                )
+                                advice = plan.voice_advice or plan.overall_strategy
+                                if not advice and plan.actions:
+                                    advice = str(plan.actions[0])
+                                if not advice:
+                                    advice = "No actionable play right now."
+                            else:
+                                advice = self._coach.get_advice(
+                                    curr_state,
+                                    trigger=trigger,
+                                    style=self.advice_style
+                                )
                             logger.info(f"ADVICE: {advice}")
 
                             # STALENESS CHECK: Re-poll game state after the LLM call.
@@ -2686,6 +2713,9 @@ class StandaloneCoach:
 
             # BepInEx plugin log (for bridge debugging)
             "bepinex_log": self._read_bepinex_log(),
+
+            # Replay recording state
+            "replay": self._collect_replay_info(),
         }
 
         return report
@@ -2741,6 +2771,73 @@ class StandaloneCoach:
             return info
         except Exception as e:
             return {"available": True, "error": str(e)}
+
+    def _enable_replay_recording(self) -> None:
+        """Auto-enable MTGA replay recording at match start."""
+        def _try_enable():
+            import time
+            # Bridge may not be connected yet at seat detection time —
+            # retry for up to 5 seconds.
+            for attempt in range(10):
+                try:
+                    bridge = self._bridge_poller._bridge if self._bridge_poller else None
+                    if bridge and bridge.connected:
+                        status = bridge.get_replay_status()
+                        if status and status.get("recording"):
+                            logger.debug("Replay recording already active")
+                            return
+                        result = bridge.enable_replay("mtgacoach")
+                        if result:
+                            folder = result.get("replay_folder", "unknown")
+                            recording = result.get("recording", False)
+                            recorder_type = result.get("recorder_type", "none")
+                            logger.info(
+                                f"Replay recording enabled: {folder} "
+                                f"(recording={recording}, recorder={recorder_type})"
+                            )
+                        else:
+                            logger.debug("enable_replay returned None (plugin may not support it)")
+                        return
+                except Exception as e:
+                    logger.debug(f"Replay enable attempt {attempt + 1} failed: {e}")
+                time.sleep(0.5)
+            logger.debug("Replay enable: bridge never connected after 5s")
+
+        import threading
+        threading.Thread(target=_try_enable, daemon=True).start()
+
+    def _collect_replay_info(self) -> dict:
+        """Collect replay recording state for bug reports."""
+        info: dict = {"available": False}
+        try:
+            bridge = self._bridge_poller._bridge if self._bridge_poller else None
+            if not bridge or not bridge.connected:
+                return info
+            info["available"] = True
+            status = bridge.get_replay_status()
+            if status:
+                info["recording"] = status.get("recording", False)
+                info["recorder_found"] = status.get("recorder_found", False)
+                info["recorder_type"] = status.get("recorder_type")
+                info["replay_folder"] = status.get("replay_folder")
+                info["replay_file"] = status.get("replay_file")
+                info["message_count"] = status.get("message_count")
+                info["prefs_enabled"] = status.get("prefs_enabled")
+                if status.get("_debug_methods"):
+                    info["_debug_methods"] = status.get("_debug_methods")
+                if status.get("_debug_fields"):
+                    info["_debug_fields"] = status.get("_debug_fields")
+            replays = bridge.list_replays()
+            if replays:
+                replay_list = replays.get("replays", [])
+                info["recent_replays"] = replay_list[:5]
+                info["total_replays"] = len(replay_list)
+                # Include path to most recent replay for easy attachment
+                if replay_list:
+                    info["latest_replay_path"] = replay_list[0].get("path")
+        except Exception as e:
+            info["error"] = str(e)
+        return info
 
     @staticmethod
     def _get_package_versions() -> dict[str, str]:

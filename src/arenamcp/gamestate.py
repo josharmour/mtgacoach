@@ -482,6 +482,9 @@ class GameState:
         "action_history": list,
         # Timer state from GRE
         "timer_state": dict,
+        # Temporary engine-busy signals from obscure GRE annotations
+        "engine_busy_flags": dict,
+        "engine_busy_until": 0.0,
         # Sideboard cards (populated between BO3 games from SubmitDeckReq)
         "sideboard_cards": list,
     }
@@ -955,11 +958,61 @@ class GameState:
         snap = self.get_published_snapshot(deep_copy=False)
         return list(snap.get("pending_combat_steps", []))
 
+    def _prune_engine_busy_locked(self) -> None:
+        """Drop expired engine-busy markers.
+
+        Must be called with ``self._state_lock`` held.
+        """
+        if not self.engine_busy_flags:
+            self.engine_busy_until = 0.0
+            return
+
+        now = time.time()
+        remaining: dict[str, dict[str, Any]] = {}
+        next_expiry = 0.0
+        for key, payload in self.engine_busy_flags.items():
+            if not isinstance(payload, dict):
+                continue
+            expires_at = float(payload.get("expires_at", 0.0) or 0.0)
+            if expires_at > now:
+                remaining[key] = payload
+                if expires_at > next_expiry:
+                    next_expiry = expires_at
+
+        self.engine_busy_flags = remaining
+        self.engine_busy_until = next_expiry
+
+    def _mark_engine_busy(
+        self,
+        busy_type: str,
+        detail_map: dict[str, Any],
+        affected_ids: list[int],
+        *,
+        duration: float,
+    ) -> None:
+        """Mark the game engine as briefly busy resolving internal work."""
+        now = time.time()
+        expires_at = now + max(duration, 0.1)
+        self.engine_busy_flags[busy_type] = {
+            "details": copy.deepcopy(detail_map),
+            "affected_ids": list(affected_ids),
+            "seen_at": now,
+            "expires_at": expires_at,
+        }
+        self.engine_busy_until = max(self.engine_busy_until, expires_at)
+        self._add_event({
+            "type": "engine_busy",
+            "busy_type": busy_type,
+            "affected_ids": affected_ids,
+            "details": detail_map,
+        })
+
     def _build_raw_snapshot_locked(self) -> dict:
         """Build a complete serializable snapshot from mutable state.
 
         Must be called with ``self._state_lock`` held.
         """
+        self._prune_engine_busy_locked()
         opponent_seat = self.opponent_seat_id
 
         players_list = []
@@ -1006,6 +1059,8 @@ class GameState:
             "designations": {seat: list(desigs) for seat, desigs in self.designations.items()} if self.designations else {},
             "dungeon_status": dict(self.dungeon_status) if self.dungeon_status else {},
             "timer_state": dict(self.timer_state) if self.timer_state else {},
+            "game_engine_busy": self.engine_busy_until > time.time(),
+            "engine_busy": copy.deepcopy(self.engine_busy_flags) if self.engine_busy_flags else {},
             "action_history": list(self.action_history[-20:]) if self.action_history else [],
             "sideboard_cards": list(self.sideboard_cards) if self.sideboard_cards else [],
         }
@@ -1024,6 +1079,8 @@ class GameState:
                 reference for fast internal reads.
         """
         with self._state_lock:
+            if self.engine_busy_flags and self.engine_busy_until <= time.time():
+                self._published_snapshot = self._build_raw_snapshot_locked()
             if deep_copy:
                 return copy.deepcopy(self._published_snapshot)
             return self._published_snapshot
@@ -2294,6 +2351,22 @@ class GameState:
                         obj.saddled_this_turn = False
                         obj.targeting.clear()
 
+                elif ann_type == "AnnotationType_LoopCount":
+                    self._mark_engine_busy(
+                        "loop_count",
+                        detail_map,
+                        affected_ids,
+                        duration=2.0,
+                    )
+
+                elif ann_type == "AnnotationType_SyntheticEvent":
+                    self._mark_engine_busy(
+                        "synthetic_event",
+                        detail_map,
+                        affected_ids,
+                        duration=1.5,
+                    )
+
                 elif ann_type in (
                     "AnnotationType_None",
                     "AnnotationType_Attachment",
@@ -2301,9 +2374,7 @@ class GameState:
                     "AnnotationType_PendingEffect",
                     "AnnotationType_Qualification",
                     "AnnotationType_Haunt",
-                    "AnnotationType_LoopCount",
                     "AnnotationType_GroupedIds",
-                    "AnnotationType_SyntheticEvent",
                     "AnnotationType_TurnPermanent",
                     "AnnotationType_LinkInfo",
                     "AnnotationType_CopyException",
@@ -3074,31 +3145,9 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
         game_state.legal_actions = legal_list
         logger.info(f"Captured {len(legal_list)} legal actions from GRE: {legal_list}")
 
-    # Correct priority/active player
-    if raw_actions and game_state.local_seat_id is not None:
-        local = game_state.local_seat_id
-        action_types = {a.get("actionType", "") for a in raw_actions}
-        # Only correct active_player when GRE offers ActionType_Play (land drop).
-        # Land drops are strictly sorcery-speed and main-phase-only, so they
-        # reliably indicate it's our turn.  ActionType_Cast is NOT reliable
-        # because the GRE sends it for instants too (e.g. responding to an
-        # opponent's spell on THEIR turn).  Using Cast here caused bug #49:
-        # the system flipped active_player to local when we only had instant-
-        # speed responses, making the coach suggest sorceries on opp's turn.
-        has_land_play = "ActionType_Play" in action_types
-        stack_empty = not game_state.get_objects_in_zone(ZoneType.STACK)
-        if has_land_play and stack_empty:
-            if game_state.turn_info.active_player != local:
-                logger.warning(
-                    f"Active player correction: GRE offered land play "
-                    f"but active_player={game_state.turn_info.active_player} "
-                    f"(local={local}). Correcting to {local}."
-                )
-                game_state.turn_info.active_player = local
-        if game_state.turn_info.priority_player != local:
-            game_state.turn_info.priority_player = local
-
     if raw_actions:
+        if game_state.local_seat_id is not None:
+            game_state.decision_seat_id = game_state.local_seat_id
         action_types = {a.get("actionType", "") for a in raw_actions}
         if action_types == {"ActionType_Pass"}:
             decision_label = "Priority (Pass Only)"
