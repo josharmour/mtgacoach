@@ -76,6 +76,7 @@ C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe -m pytest Z:\Aren
 - Desktop UI log: `%LOCALAPPDATA%\mtgacoach\desktop.log`
 - Desktop launcher log: `%LOCALAPPDATA%\mtgacoach\desktop-launch.log`
 - Coach runtime log: `%USERPROFILE%\.arenamcp\standalone.log`
+- Saved bug reports: `%USERPROFILE%\.arenamcp\bug_reports\bug_*.json`
 - BepInEx log: `<MTGA>\BepInEx\LogOutput.log`
 
 ## Notes

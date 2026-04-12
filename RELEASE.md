@@ -57,4 +57,14 @@ Behavior:
 3. Falls back to `gh issue create` if GitHub CLI is available
 4. Falls back again to opening a prefilled GitHub issue in the browser
 
+Saved report path:
+
+- `%USERPROFILE%\.arenamcp\bug_reports\bug_*.json`
+
+Support policy:
+
+- Do not ship your personal GitHub token inside the customer installer.
+- One-click automatic issue creation is safe on your own support machines where `MTGACOACH_GITHUB_TOKEN` or `gh auth login` is configured.
+- Customer installs should use the browser fallback unless you later add your own relay service for anonymous submissions.
+
 The full local report stays on disk so you can request it from the reporter if the GitHub issue body is not enough.
