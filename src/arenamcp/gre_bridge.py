@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import struct
 import threading
 import time
@@ -31,11 +32,89 @@ PIPE_NAME = r"\\.\pipe\mtgacoach_bridge_v2"
 PIPE_TIMEOUT_MS = 3000
 COMMAND_TIMEOUT = 5.0
 UNMAPPED_INTERACTION_TYPE = "unmapped_interaction"
+_GENERIC_SELECTION_TYPES = {"group_selection", "selection_generic", "select_n"}
+_GENERIC_SELECTION_LABELS = {"Group Selection", "Order Cards", "Select Cards"}
 
 
 class GREBridgeError(Exception):
     """Error communicating with the GRE bridge plugin."""
     pass
+
+
+def _infer_specific_decision_type(
+    existing_ctx: dict[str, Any],
+    request_payload: Any,
+    request_type: Optional[str],
+    request_class: Optional[str],
+) -> Optional[str]:
+    """Infer a concrete decision type from generic bridge selection payloads."""
+    values: list[str] = []
+    for key in (
+        "prompt",
+        "promptText",
+        "message",
+        "messageText",
+        "help",
+        "helpText",
+        "context",
+        "contextRaw",
+        "label",
+        "text",
+    ):
+        value = existing_ctx.get(key)
+        if value:
+            values.append(str(value))
+
+    if request_payload:
+        try:
+            values.append(json.dumps(request_payload, ensure_ascii=False, default=str))
+        except Exception:
+            values.append(str(request_payload))
+
+    if request_type:
+        values.append(str(request_type))
+    if request_class:
+        values.append(str(request_class))
+
+    haystack = " ".join(values).lower()
+    if not haystack:
+        return None
+
+    if re.search(r"\bsurveil\b", haystack):
+        return "surveil"
+    if re.search(r"\bscry\b", haystack):
+        return "scry"
+    if re.search(r"\bdiscard\b", haystack):
+        return "discard"
+    if re.search(r"\bmill\b", haystack):
+        return "mill"
+    if re.search(r"\bexplore\b", haystack):
+        return "explore"
+    if re.search(r"\bsacrifice\b", haystack):
+        return "sacrifice"
+    if re.search(r"\bexile\b", haystack):
+        return "exile"
+    if re.search(r"\bdestroy\b", haystack):
+        return "destroy"
+    if re.search(r"\breturn\b", haystack):
+        return "return"
+    return None
+
+
+def _label_for_decision_type(decision_type: str, count: Any = None) -> Optional[str]:
+    if decision_type == "scry":
+        suffix = f" {count}" if count not in (None, "", 1) else ""
+        return f"Scry{suffix}"
+    if decision_type == "surveil":
+        suffix = f" {count}" if count not in (None, "", 1) else ""
+        return f"Surveil{suffix}"
+    if decision_type == "discard":
+        return "Discard"
+    if decision_type == "mill":
+        return "Mill"
+    if decision_type == "explore":
+        return "Explore"
+    return None
 
 
 class GREBridge:
@@ -1053,6 +1132,30 @@ def enrich_snapshot_from_pending_response(
             }
             logger.debug(
                 f"Bridge enriched decision_context: {existing_type} → {decision_type}"
+            )
+
+    current_type = str(existing_ctx.get("type") or "")
+    if current_type in _GENERIC_SELECTION_TYPES or decision_type in _GENERIC_SELECTION_TYPES:
+        inferred_type = _infer_specific_decision_type(
+            existing_ctx,
+            request_payload,
+            request_type,
+            request_class,
+        )
+        if inferred_type:
+            existing_ctx = {
+                **existing_ctx,
+                "type": inferred_type,
+                "_bridge_source": True,
+            }
+            if snapshot.get("pending_decision") in _GENERIC_SELECTION_LABELS:
+                better_label = _label_for_decision_type(inferred_type, existing_ctx.get("count"))
+                if better_label:
+                    snapshot["pending_decision"] = better_label
+            logger.debug(
+                "Bridge inferred specific decision type: %s → %s",
+                current_type or decision_type,
+                inferred_type,
             )
 
     if existing_ctx:

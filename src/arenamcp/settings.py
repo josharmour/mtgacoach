@@ -22,6 +22,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, Optional
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,8 @@ DEFAULTS = {
     "auto_post_match_analysis": False,
     "voice_mode": "ptt",
     "device_index": None,
+    "desktop_theme": "system",
+    "desktop_debug_logging": False,
     # Language for TTS and STT (e.g., "en", "nl", "es", "fr", "de", "ja")
     "language": "en",
     # Two-mode backend: "online" or "local"
@@ -59,6 +62,11 @@ _OLD_KEYS = {
     "backend", "ollama_url", "lmstudio_url", "proxy_url", "proxy_api_key",
     "api_url", "api_key", "known_backends",
 }
+
+
+def _generate_install_id() -> str:
+    """Return a stable opaque identifier for this local install."""
+    return f"inst_{uuid4().hex}"
 
 
 def _migrate_settings(data: dict) -> bool:
@@ -107,6 +115,8 @@ class Settings:
         """Initialize settings, loading from disk if available."""
         self._data: dict[str, Any] = DEFAULTS.copy()
         self._load()
+        if self._ensure_install_id():
+            self.save()
 
     def _load(self) -> None:
         """Load settings from disk, migrating old format if needed."""
@@ -129,6 +139,14 @@ class Settings:
             logger.debug(f"Loaded settings from {SETTINGS_FILE}")
         except Exception as e:
             logger.warning(f"Failed to load settings: {e}")
+
+    def _ensure_install_id(self) -> bool:
+        """Ensure a generated install ID exists for this installation."""
+        current = self._data.get("install_id")
+        if isinstance(current, str) and current.strip():
+            return False
+        self._data["install_id"] = _generate_install_id()
+        return True
 
     def save(self) -> None:
         """Save settings to disk."""

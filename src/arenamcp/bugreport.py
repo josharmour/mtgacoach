@@ -24,6 +24,10 @@ def build_issue_payload(
     game_state = report_data.get("game_state", {}) or {}
     turn = game_state.get("turn", {}) if isinstance(game_state, dict) else {}
     match_context = report_data.get("match_context", {}) or {}
+    reporter = report_data.get("reporter", {}) or {}
+    settings = report_data.get("settings", {}) or {}
+    post_match_feedback = report_data.get("post_match_feedback", {}) or {}
+    install_id = reporter.get("install_id") or settings.get("install_id")
 
     note = user_message.strip()
     title_suffix = note if note else timestamp.replace("T", " ").split(".")[0]
@@ -33,6 +37,7 @@ def build_issue_payload(
 
     excerpt = {
         "config": config,
+        "reporter": {"install_id": install_id},
         "voice": voice,
         "match_context": match_context,
         "bridge_state": report_data.get("bridge_state"),
@@ -55,8 +60,12 @@ def build_issue_payload(
         f"- Timestamp: `{timestamp}`",
         f"- Local report: `{report_path}`",
     ]
+    if install_id:
+        lines.append(f"- Install ID: `{install_id}`")
     if note:
         lines.append(f"- Reporter note: {note}")
+    if post_match_feedback.get("source"):
+        lines.append(f"- Feedback source: `{post_match_feedback.get('source')}`")
 
     lines.extend(
         [
@@ -86,6 +95,31 @@ def build_issue_payload(
             lines.append(f"- `{entry.get('timestamp', '?')}` {entry.get('context', '')}: {entry.get('error', '')}")
     else:
         lines.append("- No recent recorded errors.")
+
+    if post_match_feedback:
+        lines.extend(["", "## Coaching Feedback", ""])
+        match_result = str(post_match_feedback.get("match_result") or "").strip()
+        if match_result:
+            lines.append(f"- Match result: `{match_result}`")
+        user_feedback = str(post_match_feedback.get("user_feedback") or "").strip()
+        if user_feedback:
+            lines.append(f"- User feedback: {user_feedback}")
+        analysis = str(post_match_feedback.get("analysis") or "").strip()
+        if analysis:
+            trimmed_analysis = analysis
+            if len(trimmed_analysis) > 4000:
+                trimmed_analysis = trimmed_analysis[:3900].rstrip() + "\n... truncated ..."
+            lines.extend(
+                [
+                    "",
+                    "<details>",
+                    "<summary>Post-match analysis attached</summary>",
+                    "",
+                    trimmed_analysis,
+                    "",
+                    "</details>",
+                ]
+            )
 
     lines.extend(
         [

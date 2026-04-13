@@ -1,4 +1,6 @@
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml.Navigation;
+using MtgaCoachLauncher.Services;
 
 namespace MtgaCoachLauncher.Views;
 
@@ -13,11 +15,14 @@ public partial class MainPage : Page
         this.InitializeComponent();
         _dispatcher = DispatcherQueue.GetForCurrentThread();
         this.Loaded += MainPage_Loaded;
+        ContentFrame.Navigated += ContentFrame_Navigated;
     }
 
     private async void MainPage_Loaded(object sender, RoutedEventArgs e)
     {
         _state = RuntimeDetector.DetectRuntimeState();
+        CrashLogger.LogBreadcrumb(
+            $"MainPage loaded. AppRoot={RuntimeDetector.GetAppRoot()} Python={_state?.PythonExe ?? "missing"} Source={_state?.PythonSource ?? "unknown"}");
 
         // Delay navigation slightly to let XAML type system finish initialization.
         // This avoids a race in CoreMessagingXP.dll during page activation.
@@ -33,30 +38,55 @@ public partial class MainPage : Page
         if (args.SelectedItem is NavigationViewItem item)
         {
             var tag = item.Tag?.ToString();
+            if ((tag == "coach" && ContentFrame.Content is CoachPage) ||
+                (tag == "repair" && ContentFrame.Content is RepairPage))
+                return;
+
             // Defer navigation to a fresh dispatcher tick so XAML activation
             // doesn't collide with the SelectionChanged callback stack.
             _dispatcher.TryEnqueue(DispatcherQueuePriority.Normal, () =>
             {
                 try
                 {
+                    if (ContentFrame.Content is CoachPage currentCoachPage)
+                        currentCoachPage.DetachProcess();
+
                     switch (tag)
                     {
                         case "coach":
-                            ContentFrame.Navigate(typeof(CoachPage), this);
-                            if (_coachProcess is not null && ContentFrame.Content is CoachPage cp)
-                                cp.AttachProcess(_coachProcess);
+                            CrashLogger.LogBreadcrumb("Navigating to CoachPage");
+                            ContentFrame.Navigate(typeof(CoachPage));
                             break;
                         case "repair":
-                            ContentFrame.Navigate(typeof(RepairPage), this);
+                            CrashLogger.LogBreadcrumb("Navigating to RepairPage");
+                            ContentFrame.Navigate(typeof(RepairPage));
                             break;
                     }
                 }
                 catch (Exception ex)
                 {
+                    CrashLogger.LogException("MainPage.NavView_SelectionChanged", ex);
                     System.Diagnostics.Debug.WriteLine($"Navigation failed: {ex.Message}");
                     SummaryText.Text = $"Coach page failed to load: {ex.Message}";
                 }
             });
+        }
+    }
+
+    private void ContentFrame_Navigated(object sender, NavigationEventArgs e)
+    {
+        switch (ContentFrame.Content)
+        {
+            case CoachPage coachPage:
+                coachPage.AttachMainPage(this);
+                if (_coachProcess is not null)
+                    coachPage.AttachProcess(_coachProcess);
+                break;
+            case RepairPage repairPage:
+                repairPage.AttachMainPage(this);
+                if (_state is not null)
+                    repairPage.UpdateState(_state);
+                break;
         }
     }
 
@@ -95,6 +125,7 @@ public partial class MainPage : Page
         }
         catch (Exception ex)
         {
+            CrashLogger.LogException("MainPage.AutoStartCoach", ex);
             SummaryText.Text = $"Coach failed to start: {ex.Message}";
             var dialog = new ContentDialog
             {
@@ -116,6 +147,8 @@ public partial class MainPage : Page
         _coachProcess = new CoachProcess();
         _coachProcess.Start(autopilot, dryRun, afk);
         SummaryText.Text = "Coach is running.";
+        if (ContentFrame.Content is CoachPage coachPage)
+            coachPage.AttachProcess(_coachProcess);
         NavView.SelectedItem = NavView.MenuItems[0]; // Coach tab
     }
 }

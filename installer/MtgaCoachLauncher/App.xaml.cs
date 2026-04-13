@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using MtgaCoachLauncher.Services;
 
 namespace MtgaCoachLauncher;
 
@@ -19,6 +20,7 @@ public partial class App : Application
     public App()
     {
         this.InitializeComponent();
+        CrashLogger.Initialize();
         this.UnhandledException += App_UnhandledException;
 
         // Allocate a hidden console so child processes (Python) inherit it.
@@ -27,31 +29,26 @@ public partial class App : Application
         var consoleWnd = GetConsoleWindow();
         if (consoleWnd != IntPtr.Zero)
             ShowWindow(consoleWnd, 0); // SW_HIDE
+
+        CrashLogger.LogBreadcrumb("App initialized.");
     }
 
     private void App_UnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
     {
-        var crashLog = System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "mtgacoach", "crash.log");
-        try
-        {
-            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(crashLog)!);
-            System.IO.File.AppendAllText(crashLog,
-                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {e.Exception}\n\n");
-        }
-        catch { }
-        e.Handled = true;
+        CrashLogger.LogException("App.UnhandledException", e.Exception);
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs e)
     {
+        CrashLogger.LogBreadcrumb("OnLaunched starting.");
         _window = new Window
         {
             Title = $"mtgacoach v{RuntimeDetector.ReadVersion()}",
         };
 
         _window.Content = new MainPage();
+        _window.Activated += (_, args) =>
+            CrashLogger.LogBreadcrumb($"Window activated: {args.WindowActivationState}");
 
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(_window);
         var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hwnd);
@@ -59,5 +56,7 @@ public partial class App : Application
         appWindow.Resize(new Windows.Graphics.SizeInt32(1000, 780));
 
         _window.Activate();
+        CrashLogger.LogBreadcrumb(
+            $"Main window activated. Title={_window.Title}; AppRoot={RuntimeDetector.GetAppRoot()}");
     }
 }

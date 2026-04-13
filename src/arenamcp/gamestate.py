@@ -1099,17 +1099,38 @@ class GameState:
             if grp_id:
                 try:
                     from arenamcp import server
-                    card_info = server.get_card_info(grp_id)
+                    card_info = server.enrich_with_oracle_text(grp_id)
                     enriched["name"] = card_info.get("name", f"Unknown ({grp_id})")
                     enriched["type_line"] = card_info.get("type_line", "")
                     enriched["mana_cost"] = card_info.get("mana_cost", "")
+                    enriched["oracle_text"] = card_info.get("oracle_text", "")
+
+                    parent_instance_id = enriched.get("parent_instance_id")
+                    if parent_instance_id is not None:
+                        parent_obj = self.game_objects.get(int(parent_instance_id))
+                        if parent_obj is not None:
+                            source_info = server.enrich_with_oracle_text(parent_obj.grp_id)
+                            source_name = source_info.get("name", "") or f"Card#{parent_obj.grp_id}"
+                            enriched["source_card"] = {
+                                "instance_id": parent_obj.instance_id,
+                                "grp_id": parent_obj.grp_id,
+                                "name": source_name,
+                                "oracle_text": source_info.get("oracle_text", ""),
+                            }
+                            if (
+                                enriched.get("type_line") == "Ability"
+                                and enriched.get("name", "").startswith("Ability (ID:")
+                            ):
+                                enriched["name"] = f"{source_name} ability"
                 except Exception as e:
                     logger.debug(f"Card info lookup failed for grp_id={grp_id}: {e}")
                     enriched["name"] = f"Unknown ({grp_id})"
                     enriched["type_line"] = ""
+                    enriched.setdefault("oracle_text", "")
             else:
                 enriched.setdefault("name", "Unknown")
                 enriched.setdefault("type_line", "")
+                enriched.setdefault("oracle_text", "")
             return enriched
 
         zones = raw.get("zones", {})

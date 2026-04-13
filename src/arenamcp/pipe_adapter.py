@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Regex to strip Textual/Rich markup tags like [bold], [red], [/], [link=...]
 _MARKUP_RE = re.compile(r"\[/?[a-zA-Z_][a-zA-Z0-9_ =.:#/\"'-]*\]|\[/\]")
+_ISSUE_URL_RE = re.compile(r"/issues/(\d+)(?:$|[?#])")
 
 
 def strip_markup(text: str) -> str:
@@ -149,6 +151,15 @@ class PipeAdapter:
         """Emit a game state snapshot to the GUI."""
         self._emit({"type": "game_state", "data": snapshot})
 
+    def emit_post_match_feedback_request(self, analysis: str, match_result: str) -> None:
+        self._emit(
+            {
+                "type": "post_match_feedback_request",
+                "analysis": strip_markup(analysis),
+                "match_result": match_result,
+            }
+        )
+
     # ── Internal ─────────────────────────────────────────────────────
 
     def _emit(self, event: dict[str, Any]) -> None:
@@ -177,6 +188,94 @@ class PipeAdapter:
                 self._write_queue.put_nowait(line)
             except queue.Full:
                 pass
+
+    def _copy_to_clipboard(self, text: str) -> bool:
+        """Copy text to the clipboard without depending on UI thread state."""
+        try:
+            import pyperclip
+
+            pyperclip.copy(text)
+            return True
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug("pyperclip failed in pipe adapter: %s", e)
+
+        try:
+            process = subprocess.Popen(["clip"], stdin=subprocess.PIPE, shell=True)
+            process.communicate(input=text.encode("utf-8"), timeout=2)
+            return process.returncode == 0
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except Exception:
+                pass
+            logger.debug("clip command timed out in pipe adapter")
+            return False
+        except Exception as e:
+            logger.debug("clip command failed in pipe adapter: %s", e)
+            return False
+
+    @staticmethod
+    def _subprocess_kwargs_for_detached_io(*, capture_output: bool = False) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "stdin": subprocess.DEVNULL,
+        }
+        if capture_output:
+            kwargs.update(
+                {
+                    "stdout": subprocess.PIPE,
+                    "stderr": subprocess.PIPE,
+                    "text": True,
+                }
+            )
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        return kwargs
+
+    def _get_github_token(self) -> str:
+        token = (
+            os.environ.get("MTGACOACH_GITHUB_TOKEN", "").strip()
+            or os.environ.get("GITHUB_TOKEN", "").strip()
+        )
+        if token:
+            return token
+
+        import shutil
+
+        gh = shutil.which("gh")
+        if not gh:
+            return ""
+
+        try:
+            result = subprocess.run(
+                [gh, "auth", "token"],
+                timeout=5,
+                **self._subprocess_kwargs_for_detached_io(capture_output=True),
+            )
+            if result.returncode == 0:
+                return (result.stdout or "").strip()
+            logger.warning("gh auth token failed: %s", (result.stderr or "").strip())
+        except Exception as e:
+            logger.warning("Unable to read GitHub token from gh: %s", e)
+        return ""
+
+    def _format_issue_success_message(
+        self,
+        *,
+        url: str,
+        issue_number: int | None = None,
+    ) -> str:
+        if issue_number is None:
+            match = _ISSUE_URL_RE.search(url)
+            if match:
+                try:
+                    issue_number = int(match.group(1))
+                except Exception:
+                    issue_number = None
+        if issue_number is not None:
+            return f"Bug report submitted: #{issue_number} {url}"
+        return f"Bug report submitted: {url}"
 
     def _stdout_loop(self) -> None:
         """Background thread that drains the write queue to stdout.
@@ -249,6 +348,8 @@ class PipeAdapter:
                     muted = coach._voice_output.toggle_mute()
                     self.status("MUTE", "Muted" if muted else "Unmuted")
                     self.log(f"Voice {'muted' if muted else 'unmuted'}")
+            elif action == "sync_voice_preferences":
+                self._handle_sync_voice_preferences(cmd)
             elif action == "cycle_mode":
                 self._cycle_mode()
             elif action == "cycle_model":
@@ -258,12 +359,7 @@ class PipeAdapter:
             elif action == "cycle_speed":
                 coach._on_speed_hotkey()
             elif action == "toggle_style":
-                freq = coach._advice_frequency
-                coach._advice_frequency = (
-                    "every_priority" if freq == "start_of_turn" else "start_of_turn"
-                )
-                label = "VERBOSE" if coach._advice_frequency == "every_priority" else "CONCISE"
-                self.status("STYLE", label)
+                coach._on_style_toggle_hotkey()
             elif action == "toggle_afk":
                 if coach._autopilot:
                     coach._autopilot._afk = not coach._autopilot._afk
@@ -304,8 +400,14 @@ class PipeAdapter:
                 ).start()
             elif action == "bugreport":
                 msg = cmd.get("text", "")
+                extra_context = {
+                    "source": cmd.get("source", ""),
+                    "analysis": cmd.get("analysis", ""),
+                    "match_result": cmd.get("match_result", ""),
+                    "user_feedback": msg,
+                }
                 threading.Thread(
-                    target=self._handle_bugreport, args=(msg,), daemon=True
+                    target=self._handle_bugreport, args=(msg, extra_context), daemon=True
                 ).start()
             elif action == "subscribe":
                 threading.Thread(
@@ -369,6 +471,59 @@ class PipeAdapter:
                 coach.speak_advice(response)
         except Exception as e:
             self.error(f"Chat failed: {e}")
+
+    def _handle_sync_voice_preferences(self, cmd: dict[str, Any]) -> None:
+        coach = self._coach
+        if coach is None or coach.settings is None:
+            return
+
+        voice_id = str(cmd.get("voice", "") or "").strip()
+        speed_value = cmd.get("voice_speed")
+        muted_value = cmd.get("muted")
+
+        if voice_id:
+            coach.settings.set("voice", voice_id)
+        if speed_value is not None:
+            try:
+                coach.settings.set("voice_speed", float(speed_value))
+            except (TypeError, ValueError):
+                pass
+        if muted_value is not None:
+            coach.settings.set("muted", bool(muted_value))
+
+        voice_output = coach._voice_output
+        if voice_output is None:
+            return
+
+        if voice_id:
+            try:
+                voice_output.set_voice(voice_id)
+            except Exception as e:
+                logger.warning("Failed to sync voice preference %s: %s", voice_id, e)
+
+        if speed_value is not None:
+            try:
+                applied_speed = voice_output.set_speed(float(speed_value))
+                self.status("SPEED", f"{applied_speed:.1f}x")
+            except (TypeError, ValueError):
+                pass
+            except Exception as e:
+                logger.warning("Failed to sync voice speed %s: %s", speed_value, e)
+
+        if muted_value is not None:
+            try:
+                should_mute = bool(muted_value)
+                if bool(getattr(voice_output, "muted", False)) != should_mute:
+                    voice_output.toggle_mute()
+                self.status("MUTE", "Muted" if should_mute else "Unmuted")
+            except Exception as e:
+                logger.warning("Failed to sync mute preference: %s", e)
+
+        try:
+            _voice_id, voice_name = voice_output.current_voice
+            self.status("VOICE", voice_name)
+        except Exception:
+            pass
 
     def _cycle_mode(self) -> None:
         """Cycle between online and local backends."""
@@ -519,17 +674,33 @@ class PipeAdapter:
         self.log("Generating deck strategy...")
         coach._generate_deck_strategy_brief()
 
-    def _handle_bugreport(self, user_message: str = "") -> None:
+    def _handle_bugreport(
+        self,
+        user_message: str = "",
+        extra_context: dict[str, Any] | None = None,
+    ) -> None:
         """Save and submit a bug report to GitHub."""
         coach = self._coach
         if not coach:
             self.error("Coach not available")
             return
 
+        self.log("Preparing debug report...")
+
         # Auto-save a bug report
         report_path = None
         if hasattr(coach, 'save_bug_report'):
-            report_path = coach.save_bug_report("/bugreport", announce=False)
+            report_path = coach.save_bug_report(
+                f"/bugreport {user_message}".strip(),
+                announce=False,
+                progress_cb=self.log,
+                extra_context=extra_context,
+            )
+        if report_path:
+            self.log(f"Bug report saved: {report_path}")
+        else:
+            self.error("Failed to save bug report.")
+            return
 
         from arenamcp.logging_config import LOG_DIR
         from arenamcp.bugreport import GITHUB_REPO, build_issue_payload, build_issue_url
@@ -556,8 +727,9 @@ class PipeAdapter:
         try:
             import requests
 
-            token = os.environ.get("MTGACOACH_GITHUB_TOKEN", "").strip() or os.environ.get("GITHUB_TOKEN", "").strip()
+            token = self._get_github_token()
             if token:
+                self.log("Submitting bug report to GitHub API...")
                 response = requests.post(
                     f"https://api.github.com/repos/{GITHUB_REPO}/issues",
                     headers={
@@ -566,12 +738,20 @@ class PipeAdapter:
                         "X-GitHub-Api-Version": "2022-11-28",
                     },
                     json={"title": title, "body": body, "labels": ["bug"]},
-                    timeout=30,
+                    timeout=12,
                 )
                 if response.ok:
                     payload = response.json()
                     url = str(payload.get("html_url", "")).strip()
-                    self.log(f"Bug report submitted: {url}")
+                    issue_number = payload.get("number")
+                    self.log(
+                        self._format_issue_success_message(
+                            url=url,
+                            issue_number=int(issue_number) if issue_number is not None else None,
+                        )
+                    )
+                    if url and self._copy_to_clipboard(url):
+                        self.log("GitHub issue URL copied to clipboard.")
                     return
                 self.error(f"GitHub API issue creation failed: {response.status_code} {response.text[:240]}")
         except Exception as e:
@@ -581,24 +761,36 @@ class PipeAdapter:
         gh = shutil.which("gh")
         if gh:
             try:
-                import subprocess
+                self.log("GitHub API unavailable. Trying GitHub CLI...")
                 result = subprocess.run(
                     [gh, "issue", "create", "--repo", GITHUB_REPO, "--title", title, "--body", body],
-                    capture_output=True, text=True, timeout=30,
+                    timeout=10,
+                    **self._subprocess_kwargs_for_detached_io(capture_output=True),
                 )
                 if result.returncode == 0:
                     url = result.stdout.strip()
-                    self.log(f"Bug report submitted: {url}")
+                    self.log(self._format_issue_success_message(url=url))
+                    if url and self._copy_to_clipboard(url):
+                        self.log("GitHub issue URL copied to clipboard.")
                     return
-                logger.warning("gh issue create failed: %s", result.stderr.strip())
+                stderr = (result.stderr or "").strip()
+                logger.warning("gh issue create failed: %s", stderr)
+                if stderr:
+                    self.log(f"GitHub CLI issue creation failed: {stderr}")
             except Exception as e:
                 logger.warning("gh issue submission failed: %s", e)
+                self.log(f"GitHub CLI issue creation failed: {e}")
 
         issue_url = build_issue_url(title, body)
-        self.log(f"Bug report saved: {report_path}")
-        self.log("Opened a prefilled GitHub issue in the browser. Submit it there if prompted.")
+        self.log("Direct submission unavailable. Opening a prefilled GitHub issue in the browser...")
+        if self._copy_to_clipboard(issue_url):
+            self.log("Prefilled GitHub issue URL copied to clipboard.")
         try:
-            webbrowser.open(issue_url)
+            opened = webbrowser.open(issue_url)
+            if opened:
+                self.log("Browser opened with prefilled issue draft.")
+            else:
+                self.log("Browser launch was not confirmed. Open the saved report and submit manually if needed.")
         except Exception as e:
             self.error(f"Bug report submission failed: {e}")
 

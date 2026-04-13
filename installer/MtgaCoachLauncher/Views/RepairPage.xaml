@@ -49,8 +49,28 @@
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             </StackPanel>
 
-            <!-- Repair Actions -->
-            <TextBlock Text="Repair Actions" Style="{StaticResource SubtitleTextBlockStyle}"
+            <!-- Fix Everything -->
+            <TextBlock Text="Fix Everything" Style="{StaticResource SubtitleTextBlockStyle}"
+                       Margin="0,4,0,0" />
+            <StackPanel Spacing="6">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button x:Name="BtnFixAll" Content="Fix Everything"
+                            Style="{StaticResource AccentButtonStyle}"
+                            Click="FixEverything_Click"
+                            ToolTipService.ToolTip="Auto-detect and fix all issues: runtime, BepInEx, plugin, and version sync" />
+                    <ProgressRing x:Name="FixProgress" IsActive="False"
+                                  Width="20" Height="20" VerticalAlignment="Center" />
+                    <TextBlock x:Name="FixStatus" VerticalAlignment="Center"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+                <TextBlock x:Name="FixLog" TextWrapping="Wrap"
+                           FontFamily="Consolas" FontSize="11"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Visibility="Collapsed" />
+            </StackPanel>
+
+            <!-- Individual Repairs -->
+            <TextBlock Text="Individual Repairs" Style="{StaticResource SubtitleTextBlockStyle}"
                        Margin="0,4,0,0" />
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <Button Content="Provision Runtime" Click="ProvisionRuntime_Click" />

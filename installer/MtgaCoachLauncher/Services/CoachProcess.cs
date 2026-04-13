@@ -37,6 +37,8 @@ public sealed class CoachProcess : IDisposable
         var srcDir = Path.Combine(appRoot, "src");
 
         LastError = $"Launching: {pythonExe} ({pythonSource})\nArgs: {string.Join(" ", args)}\nWorkDir: {appRoot}\nPYTHONPATH: {srcDir}";
+        CrashLogger.LogBreadcrumb(
+            $"CoachProcess.Start python={pythonExe} source={pythonSource} workdir={appRoot} pythonpath={srcDir}");
 
         var psi = new ProcessStartInfo(pythonExe, string.Join(" ", args))
         {
@@ -56,6 +58,7 @@ public sealed class CoachProcess : IDisposable
 
         _process = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start Python coach process");
+        CrashLogger.LogBreadcrumb($"CoachProcess started pid={_process.Id}");
 
         _running = true;
 
@@ -85,6 +88,7 @@ public sealed class CoachProcess : IDisposable
         _running = false;
         if (_process is not null && !_process.HasExited)
         {
+            CrashLogger.LogBreadcrumb($"CoachProcess stopping pid={_process.Id}");
             try
             {
                 _process.StandardInput.Close();
@@ -131,6 +135,7 @@ public sealed class CoachProcess : IDisposable
             _running = false;
             var exitCode = -1;
             try { exitCode = _process?.ExitCode ?? -1; } catch { }
+            CrashLogger.LogBreadcrumb($"CoachProcess exited code={exitCode}");
             Exited?.Invoke(exitCode);
         }
     }

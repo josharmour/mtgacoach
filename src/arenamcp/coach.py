@@ -859,6 +859,216 @@ class CoachEngine:
 
         return info
 
+    def _zone_cards(self, game_state: dict[str, Any], zone_name: str) -> list[dict[str, Any]]:
+        zones = game_state.get("zones")
+        if isinstance(zones, dict):
+            zone_value = zones.get(zone_name)
+            if isinstance(zone_value, list):
+                return zone_value
+
+        zone_value = game_state.get(zone_name)
+        return zone_value if isinstance(zone_value, list) else []
+
+    def _get_local_seat_id(self, game_state: dict[str, Any]) -> Optional[int]:
+        for player in game_state.get("players", []):
+            if player.get("is_local"):
+                return player.get("seat_id")
+        return None
+
+    def _parse_mana_value(self, mana_cost: str) -> int:
+        import re
+
+        cmc = 0
+        for symbol in re.findall(r"\{([^}]+)\}", mana_cost or ""):
+            if symbol.isdigit():
+                cmc += int(symbol)
+            elif "/" in symbol:
+                cmc += 1
+            elif symbol.upper() in {"W", "U", "B", "R", "G", "C", "X"}:
+                cmc += 1 if symbol.upper() != "X" else 0
+        return cmc
+
+    def _available_mana_now(self, game_state: dict[str, Any]) -> int:
+        local_seat = self._get_local_seat_id(game_state)
+        if local_seat is None:
+            return 0
+
+        available = 0
+        for card in self._zone_cards(game_state, "battlefield"):
+            controller = card.get("controller_seat_id") or card.get("owner_seat_id")
+            if controller != local_seat:
+                continue
+            if "land" not in str(card.get("type_line", "")).lower():
+                continue
+            if card.get("is_tapped"):
+                continue
+            available += 1
+        return available
+
+    def _summarize_threat_card(self, threat: dict[str, Any]) -> str:
+        card = threat.get("card") if isinstance(threat.get("card"), dict) else threat
+        if not isinstance(card, dict):
+            return ""
+
+        parts: list[str] = []
+        type_line = str(card.get("type_line", "") or "").strip()
+        if type_line:
+            parts.append(type_line)
+
+        power = card.get("power")
+        toughness = card.get("toughness")
+        if power not in (None, "") and toughness not in (None, ""):
+            parts.append(f"{power}/{toughness}")
+
+        loyalty = card.get("counters", {}).get("Loyalty") if isinstance(card.get("counters"), dict) else None
+        if loyalty not in (None, ""):
+            parts.append(f"Loyalty {loyalty}")
+
+        oracle_text = str(card.get("oracle_text", "") or "").replace("\n", " ").strip()
+        if oracle_text:
+            parts.append(oracle_text[:220] + ("..." if len(oracle_text) > 220 else ""))
+
+        return " | ".join(parts)
+
+    def _identify_threat_answers(
+        self,
+        game_state: dict[str, Any],
+        threat: dict[str, Any],
+    ) -> list[str]:
+        threat_card = threat.get("card") if isinstance(threat.get("card"), dict) else threat
+        threat_type = str(threat_card.get("type_line", "") or "").lower()
+        threat_name = str(threat.get("name", threat_card.get("name", "that threat")) or "that threat")
+        available_mana = self._available_mana_now(game_state)
+
+        answers: list[str] = []
+        for card in self._zone_cards(game_state, "hand"):
+            name = str(card.get("name", "") or "").strip()
+            if not name:
+                continue
+
+            mana_cost = str(card.get("mana_cost", "") or "")
+            if mana_cost and self._parse_mana_value(mana_cost) > available_mana:
+                continue
+
+            oracle = str(card.get("oracle_text", "") or "").lower()
+            if not oracle:
+                continue
+
+            reason = ""
+            if "creature" in threat_type:
+                if (
+                    "destroy target creature" in oracle
+                    or "destroy target nonartifact creature" in oracle
+                    or "destroy target attacking creature" in oracle
+                    or "exile target creature" in oracle
+                ):
+                    reason = "clean creature removal"
+                elif "target creature gets -" in oracle or "deals" in oracle and "target creature" in oracle:
+                    reason = "can kill or shrink it"
+                elif "fight target creature" in oracle:
+                    reason = "can fight it off the board"
+            elif "planeswalker" in threat_type:
+                if "target planeswalker" in oracle or "any target" in oracle or "target permanent" in oracle:
+                    reason = "can answer the planeswalker directly"
+            elif "artifact" in threat_type or "enchantment" in threat_type:
+                if "target artifact" in oracle or "target enchantment" in oracle or "target nonland permanent" in oracle or "target permanent" in oracle:
+                    reason = "can remove that permanent type"
+
+            if not reason and ("target permanent" in oracle or "target nonland permanent" in oracle):
+                reason = f"can answer {threat_name}"
+
+            if reason:
+                answers.append(f"{name} ({reason})")
+
+        return answers[:4]
+
+    def _threat_pressure_summary(self, game_state: dict[str, Any], threat: dict[str, Any]) -> str:
+        local_seat = self._get_local_seat_id(game_state)
+        if local_seat is None:
+            return ""
+
+        attackers: list[str] = []
+        total_power = 0
+        for card in self._zone_cards(game_state, "battlefield"):
+            controller = card.get("controller_seat_id") or card.get("owner_seat_id")
+            if controller != local_seat:
+                continue
+            if card.get("is_tapped"):
+                continue
+            if "creature" not in str(card.get("type_line", "")).lower():
+                continue
+            name = str(card.get("name", "") or "?")
+            power = card.get("power")
+            toughness = card.get("toughness")
+            if power not in (None, ""):
+                try:
+                    total_power += int(power)
+                except (TypeError, ValueError):
+                    pass
+            attackers.append(f"{name} ({power}/{toughness})" if power not in (None, "") and toughness not in (None, "") else name)
+
+        if not attackers:
+            return "No untapped creatures available to pressure it right now."
+        return f"Untapped pressure available: {', '.join(attackers[:4])} | total power {total_power}."
+
+    def _build_threat_trigger_description(
+        self,
+        game_state: dict[str, Any],
+        threat: dict[str, Any],
+        *,
+        is_verbose: bool,
+    ) -> str:
+        name = str(threat.get("name", "that threat") or "that threat")
+        warning = str(threat.get("warning", "") or "").strip()
+        summary = self._summarize_threat_card(threat)
+        answers = self._identify_threat_answers(game_state, threat)
+        pressure = self._threat_pressure_summary(game_state, threat)
+
+        lines = [
+            f"THREAT ALERT: {name}",
+            "Requirements:",
+            f"- Name {name} explicitly in the first sentence.",
+            "- Explain why it matters in this exact board state, not in general.",
+            "- Give the best concrete line using our current hand, battlefield, and deck plan.",
+            "- If removal is available now, say which card answers it.",
+            "- If removal is not available, give the best containment plan for this turn.",
+            "- Do not give generic lines like 'consider attacking it' without naming attackers or the actual plan.",
+        ]
+        if warning:
+            lines.append(f"Threat note: {warning}")
+        if summary:
+            lines.append(f"Threat details: {summary}")
+        if answers:
+            lines.append("Available answers now: " + ", ".join(answers))
+        else:
+            lines.append("Available answers now: none obvious in hand.")
+        if pressure:
+            lines.append(pressure)
+
+        if is_verbose:
+            lines.append("Explain the trade-off if the best line is to race, block, or hold interaction.")
+
+        return "\n".join(lines)
+
+    def _build_threat_fallback(self, game_state: dict[str, Any], threat: dict[str, Any]) -> str:
+        name = str(threat.get("name", "That card") or "That card")
+        warning = str(threat.get("warning", "") or "").strip()
+        answers = self._identify_threat_answers(game_state, threat)
+        pressure = self._threat_pressure_summary(game_state, threat)
+        threat_card = threat.get("card") if isinstance(threat.get("card"), dict) else threat
+        threat_type = str(threat_card.get("type_line", "") or "").lower()
+
+        if answers:
+            return f"{name} is the key threat. Best line: use {answers[0].split(' (', 1)[0]} on it now, because {warning.lower() if warning else 'it will snowball if it stays in play'}."
+
+        if "planeswalker" in threat_type and "No untapped creatures" not in pressure:
+            return f"{name} is the problem. Attack it this turn with the creatures you can spare and keep it from snowballing. {pressure}"
+
+        if "creature" in threat_type:
+            return f"{name} is the threat to plan around. You do not have clean instant removal up, so preserve blockers, avoid bad attacks into it, and dig toward an answer."
+
+        return f"{name} is the card to answer. {warning if warning else 'It will generate value if left alone.'} If you cannot remove it now, play to contain it and protect your life total."
+
     def clear_deck_strategy(self) -> None:
         """Reset deck strategy for a new match."""
         self._deck_strategy = None
@@ -2376,6 +2586,7 @@ class CoachEngine:
         question: Optional[str] = None,
         trigger: Optional[str] = None,
         style: Optional[str] = None,
+        threat: Optional[dict[str, Any]] = None,
     ) -> str:
         """Get coaching advice for the current game state.
 
@@ -2480,7 +2691,14 @@ class CoachEngine:
                     "threat_detected": "ALERT: A dangerous card just hit the battlefield!",
                     "losing_badly": "Board looks dire. Can we come back or should we concede?",
                 }
-            trigger_desc = trigger_descriptions.get(trigger, f"Trigger: {trigger}")
+            if trigger == "threat_detected" and threat:
+                trigger_desc = self._build_threat_trigger_description(
+                    game_state,
+                    threat,
+                    is_verbose=is_verbose,
+                )
+            else:
+                trigger_desc = trigger_descriptions.get(trigger, f"Trigger: {trigger}")
             user_message = f"{context}\n\n{trigger_desc}"
         else:
             if is_verbose:
@@ -2618,8 +2836,16 @@ class CoachEngine:
         executor.shutdown(wait=False)
         api_time = (time.perf_counter() - api_start) * 1000
 
+        if trigger == "threat_detected" and threat and (not response or response.startswith("Error")):
+            response = self._build_threat_fallback(game_state, threat)
+
         # POST-PROCESSING: Validate and fix common LLM issues (especially for smaller models)
         response = self._postprocess_advice(response, game_state, style=style_key)
+
+        if trigger == "threat_detected" and threat:
+            threat_name = str(threat.get("name", "") or "").strip()
+            if threat_name and threat_name.lower() not in response.lower():
+                response = f"{threat_name} is the key threat. {response}"
 
         self._word_tracker.record(response, exclude_words=card_words)
 
@@ -3926,6 +4152,15 @@ class GameStateTrigger:
                     self._last_threat = {
                         "name": card_name,
                         "warning": self.THREAT_CARDS[card_name],
+                        "card": {
+                            "name": card.get("name"),
+                            "type_line": card.get("type_line"),
+                            "oracle_text": card.get("oracle_text"),
+                            "power": card.get("power"),
+                            "toughness": card.get("toughness"),
+                            "mana_cost": card.get("mana_cost"),
+                            "counters": card.get("counters"),
+                        },
                     }
                     logger.info(
                         f"Threat detected: {card_name} - {self.THREAT_CARDS[card_name]}"
@@ -3942,6 +4177,15 @@ class GameStateTrigger:
                     self._last_threat = {
                         "name": card_name,
                         "warning": f"Opponent played planeswalker {card_name} — generates value every turn, consider attacking it.",
+                        "card": {
+                            "name": card.get("name"),
+                            "type_line": card.get("type_line"),
+                            "oracle_text": card.get("oracle_text"),
+                            "power": card.get("power"),
+                            "toughness": card.get("toughness"),
+                            "mana_cost": card.get("mana_cost"),
+                            "counters": card.get("counters"),
+                        },
                     }
                     logger.info(f"Threat detected (planeswalker): {card_name}")
                     triggers.append("threat_detected")

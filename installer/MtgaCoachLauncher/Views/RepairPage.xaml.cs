@@ -3,7 +3,6 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.UI;
 using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Navigation;
 using MtgaCoachLauncher.Models;
 using Windows.Storage.Pickers;
 
@@ -28,10 +27,9 @@ public partial class RepairPage : Page
         BuildStatusRows();
     }
 
-    protected override void OnNavigatedTo(NavigationEventArgs e)
+    public void AttachMainPage(MainPage mainPage)
     {
-        base.OnNavigatedTo(e);
-        _mainPage = e.Parameter as MainPage;
+        _mainPage = mainPage;
         if (_mainPage?.State is not null)
             UpdateState(_mainPage.State);
     }
@@ -152,6 +150,229 @@ public partial class RepairPage : Page
         if (!string.IsNullOrEmpty(text)) return text;
         if (_state?.MtgaDir is not null) return _state.MtgaDir;
         throw new InvalidOperationException("MTGA install folder is not set");
+    }
+
+    // ── Fix Everything ────────────────────────────────────────────
+
+    private async void FixEverything_Click(object sender, RoutedEventArgs e)
+    {
+        BtnFixAll.IsEnabled = false;
+        FixProgress.IsActive = true;
+        FixLog.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+        var log = new List<string>();
+
+        void SetStep(string msg)
+        {
+            FixStatus.Text = msg;
+            DispatcherQueue.TryEnqueue(() => { });
+        }
+
+        void Log(string msg)
+        {
+            log.Add(msg);
+            FixLog.Text = string.Join("\n", log);
+        }
+
+        try
+        {
+            // ── 1. Detect current state ─────────────────────────────
+            SetStep("Scanning...");
+            var state = RuntimeDetector.DetectRuntimeState();
+            var mtgaDir = state.MtgaDir ?? GetSelectedMtgaDir();
+
+            if (state.Issues.Count == 0 && state.IsFullyProvisioned)
+            {
+                Log("[ok] System is fully provisioned — nothing to fix");
+                SetStep("All good");
+                return;
+            }
+
+            Log($"[..] Found {state.Issues.Count} issue(s): {string.Join(", ", state.Issues)}");
+
+            // ── 2. Python / venv ────────────────────────────────────
+            if (state.PythonExe is null)
+            {
+                Log("[!!] No Python found — cannot auto-fix. Use 'Provision Runtime' manually.");
+                SetStep("Blocked: no Python");
+                return;
+            }
+
+            if (!state.RuntimeVenvExists)
+            {
+                SetStep("Provisioning Python venv...");
+                Log("[..] Creating runtime venv...");
+                var wizard = ProcessLauncher.RunSetupWizard();
+                await Task.Run(() => wizard.WaitForExit(120_000));
+                state = RuntimeDetector.DetectRuntimeState();
+
+                if (state.RuntimeVenvExists)
+                    Log("[ok] Runtime venv created");
+                else
+                    Log("[!!] Venv setup may still be running — continue anyway");
+            }
+            else
+            {
+                Log("[ok] Python venv already exists");
+            }
+
+            // ── 3. MTGA location ────────────────────────────────────
+            if (state.MtgaDir is null)
+            {
+                Log("[!!] MTGA install not detected — set the path above and retry");
+                SetStep("Blocked: no MTGA path");
+                return;
+            }
+            else
+            {
+                Log($"[ok] MTGA at {state.MtgaDir}");
+            }
+
+            // ── 4. MTGA running check ───────────────────────────────
+            if (RuntimeDetector.IsMtgaRunning())
+            {
+                SetStep("Waiting for MTGA to close...");
+                Log("[..] MTGA is running — close it to continue bridge repair");
+                var result = await new ContentDialog
+                {
+                    Title = "MTGA is running",
+                    Content = "BepInEx and the bridge plugin can only be installed while MTGA is closed.\n\nClose MTGA and click Retry, or Skip to finish without bridge repair.",
+                    PrimaryButtonText = "Retry",
+                    SecondaryButtonText = "Skip",
+                    CloseButtonText = "Cancel",
+                    XamlRoot = this.XamlRoot,
+                }.ShowAsync();
+
+                if (result == ContentDialogResult.Secondary)
+                {
+                    Log("[--] Skipped bridge repair (MTGA still running)");
+                    goto Done;
+                }
+                if (result == ContentDialogResult.None)
+                {
+                    Log("[--] Cancelled");
+                    SetStep("Cancelled");
+                    return;
+                }
+
+                // User clicked Retry — recheck
+                if (RuntimeDetector.IsMtgaRunning())
+                {
+                    Log("[!!] MTGA is still running — skipping bridge repair");
+                    goto Done;
+                }
+            }
+
+            // ── 5. BepInEx ──────────────────────────────────────────
+            state = RuntimeDetector.DetectRuntimeState();
+            if (!state.BepinexInstalled)
+            {
+                if (state.BepinexBundle is null)
+                {
+                    Log("[!!] No BepInEx bundle found in assets/ or third_party/ — cannot install");
+                }
+                else
+                {
+                    SetStep("Installing BepInEx...");
+                    var target = ProcessLauncher.InstallBepInEx(mtgaDir);
+                    Log($"[ok] BepInEx installed at {target}");
+                }
+            }
+            else
+            {
+                Log("[ok] BepInEx already installed");
+            }
+
+            // ── 6. Bridge plugin ────────────────────────────────────
+            state = RuntimeDetector.DetectRuntimeState();
+            if (!state.PluginInstalled)
+            {
+                if (!state.PluginBuilt)
+                {
+                    Log("[!!] Plugin DLL not built — build it first (dotnet build -c Release)");
+                }
+                else
+                {
+                    SetStep("Installing bridge plugin...");
+                    var target = ProcessLauncher.InstallPlugin(mtgaDir);
+                    Log($"[ok] Plugin installed at {target}");
+                }
+            }
+            else
+            {
+                // Even if installed, re-copy if a newer build exists
+                if (state.PluginBuilt && state.PluginBuildPath is not null && state.PluginInstallPath is not null)
+                {
+                    var buildTime = File.GetLastWriteTimeUtc(state.PluginBuildPath);
+                    var installTime = File.GetLastWriteTimeUtc(state.PluginInstallPath);
+                    if (buildTime > installTime)
+                    {
+                        SetStep("Updating bridge plugin...");
+                        var target = ProcessLauncher.InstallPlugin(mtgaDir);
+                        Log($"[ok] Plugin updated (build was newer)");
+                    }
+                    else
+                    {
+                        Log("[ok] Bridge plugin already installed and up to date");
+                    }
+                }
+                else
+                {
+                    Log("[ok] Bridge plugin already installed");
+                }
+            }
+
+            // ── 7. Version sync check ───────────────────────────────
+            SetStep("Checking version sync...");
+            try
+            {
+                using var http = new HttpClient();
+                http.DefaultRequestHeaders.UserAgent.ParseAdd("mtgacoach-launcher/1.0");
+                var json = await http.GetStringAsync(
+                    "https://api.github.com/repos/josharmour/mtgacoach/releases/latest");
+                using var doc = JsonDocument.Parse(json);
+                var latestTag = doc.RootElement.GetProperty("tag_name").GetString() ?? "";
+                var currentVersion = "v" + RuntimeDetector.ReadVersion();
+
+                if (latestTag == currentVersion)
+                    Log($"[ok] Version {currentVersion} matches latest release");
+                else
+                    Log($"[!!] Version mismatch: installed {currentVersion}, latest {latestTag} — use Check for Updates");
+            }
+            catch
+            {
+                Log("[--] Could not check version (offline?)");
+            }
+
+        Done:
+            // ── Final state refresh ─────────────────────────────────
+            _mainPage?.RefreshState();
+            state = RuntimeDetector.DetectRuntimeState();
+            if (state.IsFullyProvisioned)
+            {
+                SetStep("All fixed");
+                Log("\n[ok] System is fully provisioned and ready to launch");
+            }
+            else if (state.IsLaunchable)
+            {
+                SetStep("Launchable (with caveats)");
+                Log($"\n[ok] System is launchable. Remaining: {string.Join(", ", state.Issues)}");
+            }
+            else
+            {
+                SetStep("Some issues remain");
+                Log($"\n[!!] Still not launchable. Issues: {string.Join(", ", state.Issues)}");
+            }
+        }
+        catch (Exception ex)
+        {
+            SetStep("Error");
+            Log($"\n[!!] Fix failed: {ex.Message}");
+        }
+        finally
+        {
+            BtnFixAll.IsEnabled = true;
+            FixProgress.IsActive = false;
+        }
     }
 
     // ── Button handlers ─────────────────────────────────────────────

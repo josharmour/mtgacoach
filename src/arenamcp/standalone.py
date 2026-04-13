@@ -582,10 +582,37 @@ class StandaloneCoach:
         # causes missed trigger edges after an executed action.
         self._last_forced_decision_sig: Optional[str] = None
         self._last_forced_decision_ts: float = 0.0
+        self._last_advised_decision_sig: Optional[str] = None
 
         # Bridge decision poller: proactive decision detection via BepInEx plugin
         from arenamcp.gre_bridge import get_poller
         self._bridge_poller = get_poller()
+
+    @staticmethod
+    def _build_pending_decision_signature(game_state: dict[str, Any]) -> Optional[str]:
+        pending = str(game_state.get("pending_decision") or "").strip()
+        if not pending:
+            return None
+
+        decision_context = game_state.get("decision_context") or {}
+        decision_type = str(decision_context.get("type") or "").strip()
+        source_card = str(decision_context.get("source_card") or "").strip()
+        source_id = decision_context.get("source_id")
+        option_cards = decision_context.get("option_cards") or []
+        legal_actions = game_state.get("legal_actions") or []
+
+        if pending == "Action Required":
+            return f"{pending}|{decision_type}|{len(legal_actions)}"
+
+        parts = [
+            pending,
+            decision_type,
+            source_card,
+            str(source_id or ""),
+            "|".join(str(card) for card in option_cards[:8]),
+            "|".join(str(action) for action in legal_actions[:8]),
+        ]
+        return "||".join(parts)
 
     def _set_backend_status(self, status: str) -> None:
         """Update backend status in UI only when the value actually changes."""
@@ -1356,6 +1383,43 @@ class StandaloneCoach:
             self.ui.status("VOICE", "TTS init failed")
             self.ui.log(f"TTS unavailable: {e}")
 
+    def _emit_control_status_snapshot(self, actual_model: Optional[str]) -> None:
+        """Emit the current control-state snapshot for GUI frontends."""
+        model_value = actual_model or self.model_name or "default"
+        self.ui.status("MODEL", str(model_value))
+        self.ui.status("STYLE", self.advice_style.upper())
+        self.ui.status("AUTOPILOT", "AP:ON" if self._autopilot_enabled else "AP:OFF")
+
+        afk_enabled = self._autopilot_afk
+        if self._autopilot is not None:
+            afk_enabled = bool(getattr(self._autopilot, "_afk", afk_enabled))
+        self.ui.status("AFK", "ON" if afk_enabled else "OFF")
+
+        land_only = False
+        if self._autopilot is not None:
+            land_only = bool(getattr(self._autopilot, "_land_only", False))
+        self.ui.status("LAND_ONLY", "ON" if land_only else "OFF")
+
+        voice_output = self._voice_output
+        if voice_output is not None:
+            try:
+                _voice_id, voice_desc = voice_output.current_voice
+                self.ui.status("VOICE", voice_desc)
+            except Exception:
+                pass
+
+            try:
+                speed = float(getattr(voice_output, "speed"))
+                self.ui.status("SPEED", f"{speed:.1f}x")
+            except Exception:
+                pass
+
+            try:
+                muted = bool(getattr(voice_output, "muted"))
+                self.ui.status("MUTE", "Muted" if muted else "Unmuted")
+            except Exception:
+                pass
+
     # --- Urgency-aware polling intervals ---
     _POLL_BRIDGE = 0.15     # Bridge connected with pending decision (fast)
     _POLL_URGENT = 0.5      # Pending decision, mulligan, stack interaction
@@ -1912,6 +1976,8 @@ class StandaloneCoach:
                     # Only needed when bridge is NOT providing decision detection.
                     bridge_active = self._bridge_poller and self._bridge_poller.connected
                     pending_now = curr_state.get("pending_decision")
+                    if not pending_now:
+                        self._last_advised_decision_sig = None
 
                     if not bridge_active:
                         if pending_now and "decision_required" not in triggers:
@@ -2077,13 +2143,38 @@ class StandaloneCoach:
                         # game state — only visible on screen.
                         if trigger == "decision_required":
                             pending = curr_state.get("pending_decision") or ""
-                            if pending in ("Group Selection", "Order Cards"):
-                                logger.info(f"Scry/Surveil detected ({pending}) — triggering screenshot analysis")
-                                threading.Thread(
-                                    target=self.take_screenshot_analysis,
-                                    daemon=True,
-                                ).start()
-                                continue  # Skip text-only coaching for this trigger
+                            decision_context = curr_state.get("decision_context") or {}
+                            decision_type = str(decision_context.get("type") or "").lower()
+                            if pending in ("Group Selection", "Order Cards", "Select Cards"):
+                                # Give log/GRE state a brief chance to resolve the generic
+                                # bridge request into a concrete scry/surveil decision first.
+                                time.sleep(0.2)
+                                try:
+                                    self._mcp.poll_log()
+                                except Exception as e:
+                                    logger.debug(f"poll_log failed before generic selection refresh: {e}")
+                                try:
+                                    curr_state = self._normalize_turn_snapshot(self._mcp.get_game_state())
+                                except Exception as e:
+                                    logger.debug(f"Failed to refresh generic selection state: {e}")
+
+                                pending = curr_state.get("pending_decision") or pending
+                                decision_context = curr_state.get("decision_context") or {}
+                                decision_type = str(decision_context.get("type") or "").lower()
+                                if decision_type in ("scry", "surveil"):
+                                    logger.info(
+                                        "Resolved generic selection to %s without vision",
+                                        decision_type,
+                                    )
+                                else:
+                                    logger.info(
+                                        f"Generic selection still unresolved ({pending}/{decision_type or 'unknown'}) — triggering screenshot analysis"
+                                    )
+                                    threading.Thread(
+                                        target=self.take_screenshot_analysis,
+                                        daemon=True,
+                                    ).start()
+                                    continue  # Skip text-only coaching for this trigger
 
                         # DELAY BUFFER: For mulligan decisions, wait for hand zone to populate.
                         # SubmitDeckReq arrives before the GameStateMessage with hand cards.
@@ -2146,6 +2237,11 @@ class StandaloneCoach:
                         # If so, suppress step-by-step "what's next" triggers until decision resolves
                         pending_decision = curr_state.get("pending_decision")
                         has_pending_decision = pending_decision is not None
+                        pending_decision_sig = (
+                            self._build_pending_decision_signature(curr_state)
+                            if has_pending_decision
+                            else None
+                        )
 
                         # Step-by-step triggers: land_played, spell_resolved, and combat
                         # BUT suppress if there's a pending decision - wait for it to resolve first
@@ -2178,6 +2274,19 @@ class StandaloneCoach:
                         should_advise = is_critical or is_new_turn or is_opponent_turn or is_step_by_step or is_frequent
 
                         if not should_advise:
+                            continue
+
+                        if (
+                            has_pending_decision
+                            and pending_decision != "Action Required"
+                            and pending_decision_sig
+                            and pending_decision_sig == self._last_advised_decision_sig
+                        ):
+                            logger.info(
+                                "Suppressing duplicate unresolved decision advice: %s via %s",
+                                pending_decision,
+                                trigger,
+                            )
                             continue
 
                         logger.info(f"TRIGGER: {trigger}")
@@ -2231,7 +2340,7 @@ class StandaloneCoach:
                                 logger.info(f"Quiet: {trigger} (no instant-speed responses)")
                                 continue
 
-                        # THREAT DETECTION: Direct speaking for instant response (no LLM needed)
+                        # THREAT DETECTION: fast targeted coaching for dangerous permanents.
                         if trigger == "losing_badly" and self._coach:
                             logger.info("Proactive win probability check (losing badly)")
                             self._inject_library_summary_if_needed(curr_state)
@@ -2247,7 +2356,12 @@ class StandaloneCoach:
 
                         if trigger == "threat_detected" and hasattr(self._trigger, '_last_threat'):
                             threat = self._trigger._last_threat
-                            advice = f"Warning! {threat['name']}. {threat['warning']}"
+                            advice = self._coach.get_advice(
+                                curr_state,
+                                trigger="threat_detected",
+                                style=self.advice_style,
+                                threat=threat,
+                            ) if self._coach else f"Warning! {threat['name']}. {threat['warning']}"
                             logger.info(f"THREAT ALERT: {advice}")
                             self._record_advice(advice, trigger, game_state=curr_state)
                             last_advice_turn = turn_num
@@ -2429,6 +2543,7 @@ class StandaloneCoach:
                                 # so only real, delivered advice suppresses future triggers.
                                 last_advice_turn = turn_num
                                 last_advice_phase = phase
+                                self._last_advised_decision_sig = pending_decision_sig
                                 self._record_advice(advice, trigger, game_state=curr_state)
                                 self._mark_backend_healthy()
                                 self.ui.advice(advice, seat_info)
@@ -2603,6 +2718,8 @@ class StandaloneCoach:
         reason: str = "User Request",
         *,
         announce: bool = True,
+        progress_cb=None,
+        extra_context: Optional[dict[str, Any]] = None,
     ) -> Optional["Path"]:
         """Save comprehensive bug report and return path.
 
@@ -2618,7 +2735,10 @@ class StandaloneCoach:
 
         try:
             # Collect comprehensive debug info
-            report = self._collect_debug_info()
+            report = self._collect_debug_info(
+                progress_cb=progress_cb,
+                extra_context=extra_context,
+            )
             report["reason"] = reason
 
             with open(bug_file, "w") as f:
@@ -2805,90 +2925,119 @@ class StandaloneCoach:
             self.ui.subtask("")
             self._screenshot_analysis_in_progress = False
 
-    def _collect_debug_info(self) -> dict:
+    def _collect_debug_info(
+        self,
+        progress_cb=None,
+        extra_context: Optional[dict[str, Any]] = None,
+    ) -> dict:
         """Collect comprehensive debug information for bug reports."""
         import platform
         from arenamcp import __version__
 
+        def _progress(message: str) -> None:
+            if progress_cb is None:
+                return
+            try:
+                progress_cb(message)
+            except Exception:
+                logger.debug("Bug report progress callback failed", exc_info=True)
+
         report = {
             "timestamp": datetime.now().isoformat(),
             "version": __version__,
-
-            # System info
-            "system": {
-                "platform": platform.platform(),
-                "python_version": platform.python_version(),
-                "machine": platform.machine(),
-                "packages": self._get_package_versions(),
+            "reporter": {
+                "install_id": self.settings.get("install_id") if self.settings else None,
             },
-
-            # Coach configuration
-            "config": {
-                "backend": self.backend_name,
-                "model": self.model_name,
-                "voice_mode": self.voice_mode,
-                "advice_style": self.advice_style,
-                "advice_frequency": self.advice_frequency,
-                "draft_mode": self.draft_mode,
-                "set_code": self.set_code,
-                "auto_speak": self._auto_speak,
-            },
-
-            # Settings from disk
-            "settings": dict(self.settings._data) if self.settings else {},
-
-            # MTGA log file status
-            "mtga_log": self._get_mtga_log_status(),
-
-            # Current game state
-            "game_state": self._mcp.get_game_state() if self._mcp else {},
-
-            # Match context
-            "match_context": self._get_match_context(),
-
-            # Draft state if active
-            "draft_state": self._mcp.get_draft_pack() if self._mcp else {},
-
-            # Voice state
-            "voice": {
-                "tts_enabled": self._voice_output is not None,
-                "tts_muted": self._voice_output._muted if self._voice_output else None,
-                "tts_voice": self._voice_output.current_voice if self._voice_output else None,
-                "stt_enabled": self._voice_input is not None,
-            },
-
-            # Recent advice history
-            "advice_history": list(self._advice_history) if hasattr(self, '_advice_history') else [],
-
-            # LLM context (what the coach sees)
-            "llm_context": self._get_llm_context(),
-
-            # Recent log entries (last 100 lines)
-            "recent_logs": self._get_recent_logs(100),
-
-            # Card enrichment failures (oracle text lookups that failed)
-            "enrichment_failures": self._get_enrichment_failures(),
-
-            # Autopilot state
-            "autopilot": self._collect_autopilot_info(),
-
-            # Bridge poller state (last poll result, connection, request type)
-            "bridge_state": self._collect_bridge_state(),
-
-            # Error state
-            "errors": list(self._recent_errors) if hasattr(self, '_recent_errors') else [],
-
-            # Uptime
-            "uptime_seconds": (datetime.now() - self._start_time).total_seconds() if hasattr(self, '_start_time') else None,
-
-            # BepInEx plugin log (for bridge debugging)
-            "bepinex_log": self._read_bepinex_log(),
-
-            # Replay recording state
-            "replay": self._collect_replay_info(),
         }
 
+        _progress("Collecting system info...")
+        report["system"] = {
+            "platform": platform.platform(),
+            "python_version": platform.python_version(),
+            "machine": platform.machine(),
+            "packages": self._get_package_versions(),
+        }
+
+        report["config"] = {
+            "backend": self.backend_name,
+            "model": self.model_name,
+            "voice_mode": self.voice_mode,
+            "advice_style": self.advice_style,
+            "advice_frequency": self.advice_frequency,
+            "draft_mode": self.draft_mode,
+            "set_code": self.set_code,
+            "auto_speak": self._auto_speak,
+        }
+        report["settings"] = dict(self.settings._data) if self.settings else {}
+        report["mtga_log"] = self._get_mtga_log_status()
+
+        _progress("Capturing current game state...")
+        report["game_state"] = self._mcp.get_game_state() if self._mcp else {}
+        report["draft_state"] = self._mcp.get_draft_pack() if self._mcp else {}
+
+        _progress("Collecting match context...")
+        report["match_context"] = self._get_match_context()
+        report["voice"] = {
+            "tts_enabled": self._voice_output is not None,
+            "tts_muted": self._voice_output._muted if self._voice_output else None,
+            "tts_voice": self._voice_output.current_voice if self._voice_output else None,
+            "stt_enabled": self._voice_input is not None,
+        }
+        report["post_match_feedback"] = self._collect_post_match_feedback(extra_context=extra_context)
+        report["advice_history"] = (
+            list(self._advice_history) if hasattr(self, '_advice_history') else []
+        )
+        report["llm_context"] = self._get_llm_context()
+
+        _progress("Collecting logs and diagnostics...")
+        report["recent_logs"] = self._get_recent_logs(100)
+        report["enrichment_failures"] = self._get_enrichment_failures()
+        report["autopilot"] = self._collect_autopilot_info()
+        report["bridge_state"] = self._collect_bridge_state()
+        report["errors"] = list(self._recent_errors) if hasattr(self, '_recent_errors') else []
+        report["uptime_seconds"] = (
+            (datetime.now() - self._start_time).total_seconds()
+            if hasattr(self, '_start_time') else None
+        )
+
+        _progress("Collecting bridge and replay info...")
+        report["bepinex_log"] = self._read_bepinex_log()
+        report["replay"] = self._collect_replay_info(include_recent_replays=False)
+
         return report
+
+    def _collect_post_match_feedback(
+        self,
+        *,
+        extra_context: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any] | None:
+        context = dict(extra_context or {})
+        analysis = str(
+            context.get("analysis")
+            or self._pending_post_match_analysis
+            or ""
+        ).strip()
+        feedback = str(context.get("user_feedback") or "").strip()
+        match_result = str(
+            context.get("match_result")
+            or self._pending_post_match_result
+            or ""
+        ).strip()
+        source = str(context.get("source") or "").strip()
+
+        if not any((analysis, feedback, match_result, source)):
+            return None
+
+        payload: dict[str, Any] = {}
+        if source:
+            payload["source"] = source
+        if match_result:
+            payload["match_result"] = match_result
+        if analysis:
+            payload["analysis"] = analysis
+        if feedback:
+            payload["user_feedback"] = feedback
+        return payload
 
     def _collect_autopilot_info(self) -> dict:
         """Collect autopilot state for bug reports."""
@@ -2976,7 +3125,7 @@ class StandaloneCoach:
         import threading
         threading.Thread(target=_try_enable, daemon=True).start()
 
-    def _collect_replay_info(self) -> dict:
+    def _collect_replay_info(self, *, include_recent_replays: bool = True) -> dict:
         """Collect replay recording state for bug reports."""
         info: dict = {"available": False}
         try:
@@ -2997,14 +3146,16 @@ class StandaloneCoach:
                     info["_debug_methods"] = status.get("_debug_methods")
                 if status.get("_debug_fields"):
                     info["_debug_fields"] = status.get("_debug_fields")
-            replays = bridge.list_replays()
-            if replays:
-                replay_list = replays.get("replays", [])
-                info["recent_replays"] = replay_list[:5]
-                info["total_replays"] = len(replay_list)
-                # Include path to most recent replay for easy attachment
-                if replay_list:
-                    info["latest_replay_path"] = replay_list[0].get("path")
+            if info.get("replay_file"):
+                info["latest_replay_path"] = info.get("replay_file")
+            if include_recent_replays:
+                replays = bridge.list_replays()
+                if replays:
+                    replay_list = replays.get("replays", [])
+                    info["recent_replays"] = replay_list[:5]
+                    info["total_replays"] = len(replay_list)
+                    if replay_list and not info.get("latest_replay_path"):
+                        info["latest_replay_path"] = replay_list[0].get("path")
         except Exception as e:
             info["error"] = str(e)
         return info
@@ -3032,26 +3183,27 @@ class StandaloneCoach:
     @staticmethod
     def _get_package_versions() -> dict[str, str]:
         """Get versions of key installed packages."""
-        import importlib
+        import importlib.metadata
 
         versions: dict[str, str] = {}
-        package_imports = {
+        package_names = {
             "textual": "textual",
             "openai": "openai",
             "mcp": "mcp",
             "watchdog": "watchdog",
             "requests": "requests",
-            "faster_whisper": "faster_whisper",
-            "kokoro-onnx": "kokoro_onnx",
+            "faster_whisper": "faster-whisper",
+            "kokoro-onnx": "kokoro-onnx",
             "anthropic": "anthropic",
-            "google.genai": "google.genai",
+            "google.genai": "google-genai",
         }
-        for display_name, import_name in package_imports.items():
+        for display_name, package_name in package_names.items():
             try:
-                mod = importlib.import_module(import_name)
-                versions[display_name] = getattr(mod, "__version__", "installed")
-            except ImportError:
+                versions[display_name] = importlib.metadata.version(package_name)
+            except importlib.metadata.PackageNotFoundError:
                 versions[display_name] = "not installed"
+            except Exception as e:
+                versions[display_name] = f"error: {e}"
         return versions
 
     def _get_mtga_log_status(self) -> dict:
@@ -3533,7 +3685,11 @@ class StandaloneCoach:
             # Store analysis for inclusion in /bugreport
             self._pending_post_match_analysis = display_analysis
             self._pending_post_match_result = match_result
-            self.ui.log("[bold yellow]Type /bugreport to file coaching improvements to GitHub[/]")
+            emit_feedback_request = getattr(self.ui, "emit_post_match_feedback_request", None)
+            if callable(emit_feedback_request):
+                emit_feedback_request(display_analysis, match_result)
+            else:
+                self.ui.log("[bold yellow]Type /bugreport to file coaching improvements to GitHub[/]")
 
             # Offer to file GH issue for missed decisions detected by vision watchdog
             self._offer_missed_decision_issue()
@@ -4527,8 +4683,10 @@ class StandaloneCoach:
         # Print status
         _is_pipe = hasattr(self.ui, 'emit_game_state')
 
+        self._emit_control_status_snapshot(actual_model)
+
         if _is_pipe:
-            # Pipe mode: minimal status for GUI
+            # Pipe mode: status snapshot is already emitted above.
             self.ui.status("BACKEND", f"{self.backend_name} ({actual_model or 'default'})")
             self.ui.log("Waiting for MTGA...")
         else:

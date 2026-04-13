@@ -47,3 +47,22 @@ def test_build_issue_url_truncates_long_body() -> None:
 
     assert len(url) < 4000
     assert "browser+draft+truncated" in url
+
+
+def test_build_issue_payload_includes_post_match_feedback(tmp_path: Path) -> None:
+    report_path = tmp_path / "bug.json"
+    report = _sample_report()
+    report["post_match_feedback"] = {
+        "source": "post_match_analysis",
+        "match_result": "win",
+        "analysis": "The coach overcommitted to the aura line and missed a safer attack.",
+        "user_feedback": "It should have mentioned the crack-back risk before recommending all-in.",
+    }
+
+    _title, body = build_issue_payload(report, report_path, "")
+
+    assert "## Coaching Feedback" in body
+    assert "Feedback source: `post_match_analysis`" in body
+    assert "Match result: `win`" in body
+    assert "crack-back risk" in body
+    assert "Post-match analysis attached" in body

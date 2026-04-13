@@ -103,6 +103,12 @@ class CoachProcess(QObject):
         payload = {"cmd": command}
         if text is not None:
             payload["text"] = text
+        self.send_payload(payload)
+
+    def send_payload(self, payload: dict[str, object]) -> None:
+        if self._process is None or self._process.state() == QProcess.NotRunning:
+            return
+
         line = json.dumps(payload, ensure_ascii=False) + "\n"
         self._process.write(line.encode("utf-8", errors="replace"))
 

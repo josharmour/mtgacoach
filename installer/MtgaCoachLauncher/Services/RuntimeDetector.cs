@@ -26,17 +26,49 @@ public static class RuntimeDetector
 
     public static string GetAppRoot()
     {
-        // Walk up from the exe to find pyproject.toml
-        var dir = AppContext.BaseDirectory;
-        for (int i = 0; i < 6; i++)
+        var envVal = Environment.GetEnvironmentVariable("MTGACOACH_APP_ROOT");
+        if (IsAppRoot(envVal))
+            return Path.GetFullPath(envVal!);
+
+        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var start in new[]
         {
-            if (File.Exists(Path.Combine(dir, "pyproject.toml")))
-                return dir;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
+            AppContext.BaseDirectory,
+            Environment.CurrentDirectory,
+        })
+        {
+            if (string.IsNullOrWhiteSpace(start))
+                continue;
+
+            var dir = new DirectoryInfo(Path.GetFullPath(start));
+            while (dir is not null && candidates.Add(dir.FullName))
+            {
+                if (IsAppRoot(dir.FullName))
+                    return dir.FullName;
+                dir = dir.Parent;
+            }
         }
-        return AppContext.BaseDirectory;
+
+        return Path.GetFullPath(AppContext.BaseDirectory);
+    }
+
+    private static bool IsAppRoot(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+            return false;
+
+        var pyproject = Path.Combine(path, "pyproject.toml");
+        var srcDir = Path.Combine(path, "src", "arenamcp");
+        var launcherDir = Path.Combine(path, "installer", "MtgaCoachLauncher");
+        var bridgeDir = Path.Combine(path, "bepinex-plugin", "MtgaCoachBridge");
+
+        if (File.Exists(pyproject) && Directory.Exists(srcDir))
+            return true;
+
+        if (Directory.Exists(srcDir) && (Directory.Exists(launcherDir) || Directory.Exists(bridgeDir)))
+            return true;
+
+        return false;
     }
 
     public static string GetRuntimeRoot()

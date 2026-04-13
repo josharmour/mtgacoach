@@ -362,6 +362,88 @@ class RulesEngine:
         return score
 
     @staticmethod
+    def _extract_explicit_target_instance_ids(decision_context: Dict[str, Any]) -> List[int]:
+        """Extract legal target instance ids from bridge-enriched decision context."""
+        ids: list[int] = []
+
+        def _collect(value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, int):
+                ids.append(value)
+                return
+            if isinstance(value, list):
+                for item in value:
+                    _collect(item)
+                return
+            if isinstance(value, dict):
+                for key in (
+                    "instanceId",
+                    "instance_id",
+                    "targetInstanceId",
+                    "target_instance_id",
+                    "cardInstanceId",
+                    "objectInstanceId",
+                ):
+                    raw = value.get(key)
+                    if isinstance(raw, int):
+                        ids.append(raw)
+                        return
+                for key in ("target", "card", "object"):
+                    child = value.get(key)
+                    if isinstance(child, (dict, list, int)):
+                        _collect(child)
+
+        for key in (
+            "validTargets",
+            "qualifiedTargets",
+            "targetsToSelect",
+            "options",
+        ):
+            _collect(decision_context.get(key))
+
+        deduped: list[int] = []
+        seen: set[int] = set()
+        for instance_id in ids:
+            if instance_id > 0 and instance_id not in seen:
+                seen.add(instance_id)
+                deduped.append(instance_id)
+        return deduped
+
+    @staticmethod
+    def _lookup_target_cards_by_instance_ids(
+        game_state: Dict[str, Any],
+        instance_ids: List[int],
+    ) -> List[Dict[str, Any]]:
+        """Resolve legal target instance ids to visible objects across zones."""
+        if not instance_ids:
+            return []
+
+        zones: list[Any] = [
+            game_state.get("battlefield", []),
+            game_state.get("stack", []),
+            game_state.get("graveyard", []),
+            game_state.get("exile", []),
+        ]
+        by_id: Dict[int, Dict[str, Any]] = {}
+        for zone in zones:
+            if not isinstance(zone, list):
+                continue
+            for item in zone:
+                if not isinstance(item, dict):
+                    continue
+                instance_id = item.get("instance_id")
+                if isinstance(instance_id, int):
+                    by_id[instance_id] = item
+
+        resolved: List[Dict[str, Any]] = []
+        for instance_id in instance_ids:
+            card = by_id.get(instance_id)
+            if card is not None:
+                resolved.append(card)
+        return resolved
+
+    @staticmethod
     def _get_target_selection_actions(game_state: Dict[str, Any]) -> List[str]:
         decision_context = game_state.get("decision_context") or {}
         if decision_context.get("type") != "target_selection":
@@ -399,28 +481,32 @@ class RulesEngine:
             else:
                 actions.extend(["Select target: Opponent", "Select target: You"])
 
-        matches = []
+        explicit_target_ids = RulesEngine._extract_explicit_target_instance_ids(decision_context)
+        matches = RulesEngine._lookup_target_cards_by_instance_ids(game_state, explicit_target_ids)
         if not req["zones"] or "battlefield" in req["zones"]:
             battlefield = game_state.get("battlefield", [])
-            matches.extend(
-                RulesEngine._match_battlefield_targets(
-                    battlefield, local_seat, opponent_seat, req
+            if not matches:
+                matches.extend(
+                    RulesEngine._match_battlefield_targets(
+                        battlefield, local_seat, opponent_seat, req
+                    )
                 )
-            )
 
         if "stack" in req["zones"]:
             stack = game_state.get("stack", [])
-            matches.extend(
-                RulesEngine._match_stack_targets(stack, local_seat, opponent_seat, req)
-            )
+            if not matches:
+                matches.extend(
+                    RulesEngine._match_stack_targets(stack, local_seat, opponent_seat, req)
+                )
 
         if "graveyard" in req["zones"]:
             graveyard = game_state.get("graveyard", [])
-            matches.extend(
-                RulesEngine._match_graveyard_targets(
-                    graveyard, local_seat, opponent_seat, req
+            if not matches:
+                matches.extend(
+                    RulesEngine._match_graveyard_targets(
+                        graveyard, local_seat, opponent_seat, req
+                    )
                 )
-            )
 
         if matches:
             prefer_opponent = req["must_control"] in (None, "opponent")

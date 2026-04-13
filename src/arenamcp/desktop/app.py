@@ -74,10 +74,12 @@ def main() -> int:
 
     _configure_logging()
     from .main_window import MainWindow
+    from .theme import apply_theme, load_saved_theme
 
     app = QApplication(sys.argv)
     app.setApplicationName("mtgacoach")
     app.setOrganizationName("mtgacoach")
+    apply_theme(app, load_saved_theme())
     window = MainWindow()
     window.show()
     return app.exec()
