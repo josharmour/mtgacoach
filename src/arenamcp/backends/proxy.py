@@ -8,6 +8,8 @@ import logging
 import threading
 from typing import Optional
 
+from arenamcp.client_metadata import get_client_headers
+
 logger = logging.getLogger(__name__)
 
 # Online mode: hardcoded API endpoint
@@ -73,8 +75,13 @@ class ProxyBackend:
 
                 url = self._base_url or DEFAULT_LOCAL_URL
                 key = self._api_key or "ollama"
+                client_headers = get_client_headers() if url == ONLINE_BASE_URL else None
 
-                self._client = OpenAI(base_url=url, api_key=key)
+                self._client = OpenAI(
+                    base_url=url,
+                    api_key=key,
+                    default_headers=client_headers,
+                )
             except ImportError:
                 raise ImportError("openai package required: pip install openai")
         return self._client

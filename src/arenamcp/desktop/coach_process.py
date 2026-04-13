@@ -55,6 +55,7 @@ class CoachProcess(QObject):
         env = QProcessEnvironment.systemEnvironment()
         env.insert("PYTHONPATH", src_dir)
         env.insert("MTGACOACH_RUNTIME_ROOT", runtime_root)
+        env.insert("MTGACOACH_FRONTEND", "pyside")
         env.insert("PYTHONUNBUFFERED", "1")
         env.insert("PYTHONIOENCODING", "utf-8")
         process.setProcessEnvironment(env)

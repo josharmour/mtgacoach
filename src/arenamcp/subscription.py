@@ -12,6 +12,8 @@ import urllib.error
 from pathlib import Path
 from typing import Optional
 
+from .client_metadata import get_client_headers
+
 logger = logging.getLogger(__name__)
 
 # API base URL for subscription validation
@@ -89,14 +91,15 @@ def check_subscription(license_key: str, force: bool = False) -> SubscriptionSta
     # Call the API
     try:
         payload = json.dumps({"license_key": license_key}).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {license_key}",
+        }
+        headers.update(get_client_headers())
         req = urllib.request.Request(
             f"{API_BASE}/v1/subscription/check",
             data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {license_key}",
-                "User-Agent": "mtgacoach-client/1.0",
-            },
+            headers=headers,
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -153,12 +156,13 @@ def get_service_messages(license_key: str) -> list[dict]:
         return []
 
     try:
+        headers = {
+            "Authorization": f"Bearer {license_key}",
+        }
+        headers.update(get_client_headers())
         req = urllib.request.Request(
             f"{API_BASE}/v1/subscription/messages",
-            headers={
-                "Authorization": f"Bearer {license_key}",
-                "User-Agent": "mtgacoach-client/1.0",
-            },
+            headers=headers,
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())

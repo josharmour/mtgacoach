@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - mtgacoach.com</title>
+    <style>
+        :root {
+            --bg: #0a0a0f; --surface: #12121a; --border: #2a2a3a;
+            --text: #e0e0e8; --muted: #888; --accent: #6366f1;
+            --green: #22c55e; --red: #ef4444; --yellow: #f59e0b;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+        nav { border-bottom: 1px solid var(--border); padding: 16px 0; }
+        nav .container { display: flex; justify-content: space-between; align-items: center; }
+        .logo { font-size: 1.4rem; font-weight: 700; color: var(--accent); text-decoration: none; }
+
+        h2 { margin: 32px 0 16px; font-size: 1.4rem; }
+
+        /* Login */
+        #login-panel { max-width: 400px; margin: 80px auto; text-align: center; }
+        #login-panel input { width: 100%; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 1rem; margin-bottom: 12px; }
+        #login-panel input:focus { outline: none; border-color: var(--accent); }
+
+        /* Panels */
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        /* Table */
+        table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+        th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+        th { color: var(--muted); font-weight: 600; background: var(--surface); }
+        tr:hover { background: rgba(99, 102, 241, 0.05); }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+        .badge.active { background: rgba(34, 197, 94, 0.15); color: var(--green); }
+        .badge.expired { background: rgba(245, 158, 11, 0.15); color: var(--yellow); }
+        .badge.revoked { background: rgba(239, 68, 68, 0.15); color: var(--red); }
+        .badge.trial { background: rgba(99, 102, 241, 0.15); color: var(--accent); }
+        .key-cell { font-family: monospace; font-size: 0.8rem; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+        .key-cell:hover { color: var(--accent); }
+
+        /* Buttons */
+        .btn { padding: 6px 14px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 500; }
+        .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-danger { background: var(--red); color: white; }
+        .btn-success { background: var(--green); color: white; }
+        .btn-warning { background: var(--yellow); color: #000; }
+        .btn:hover { opacity: 0.9; }
+
+        /* Forms */
+        .inline-form { display: flex; gap: 8px; margin-bottom: 24px; flex-wrap: wrap; }
+        .inline-form input, .inline-form select { padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.9rem; }
+        .inline-form input:focus { outline: none; border-color: var(--accent); }
+        textarea { width: 100%; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.9rem; min-height: 60px; resize: vertical; }
+
+        /* Tabs */
+        .tabs { display: flex; gap: 4px; margin-bottom: 24px; }
+        .tab { padding: 8px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px 8px 0 0; cursor: pointer; color: var(--muted); font-size: 0.9rem; }
+        .tab.active { background: var(--bg); border-bottom-color: var(--bg); color: var(--accent); font-weight: 600; }
+
+        /* Stats */
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 32px; }
+        .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; text-align: center; }
+        .stat .number { font-size: 2rem; font-weight: 700; color: var(--accent); }
+        .stat .label { color: var(--muted); font-size: 0.85rem; }
+
+        .msg-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+        .msg-card h4 { margin-bottom: 4px; }
+        .msg-card p { color: var(--muted); font-size: 0.9rem; }
+
+        .log-viewer { background: #000; color: #0f0; font-family: monospace; font-size: 0.8rem; padding: 16px; border-radius: 8px; max-height: 600px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+        .log-controls { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+        .log-controls select, .log-controls input { padding: 6px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.85rem; }
+        .msg-card .meta { font-size: 0.8rem; color: var(--muted); margin-top: 8px; }
+    </style>
+</head>
+<body>
+    <nav>
+        <div class="container">
+            <a href="/" class="logo">mtgacoach admin</a>
+        </div>
+    </nav>
+
+    <!-- Login -->
+    <div id="login-panel">
+        <h2>Admin Login</h2>
+        <input type="password" id="admin-key" placeholder="Admin password" onkeypress="if(event.key==='Enter')login()">
+        <button class="btn btn-primary" onclick="login()">Login</button>
+    </div>
+
+    <!-- Dashboard -->
+    <div id="dashboard" class="panel container">
+        <div class="tabs">
+            <div class="tab active" onclick="showTab('subscribers')">Subscribers</div>
+            <div class="tab" onclick="showTab('messages')">Messages</div>
+            <div class="tab" onclick="showTab('usage')">Usage</div>
+            <div class="tab" onclick="showTab('logs')">Logs</div>
+        </div>
+
+        <!-- Subscribers tab -->
+        <div id="tab-subscribers" class="panel active">
+            <div class="stats" id="stats"></div>
+
+            <h2>Create Subscriber</h2>
+            <div class="inline-form">
+                <input type="email" id="new-email" placeholder="Email">
+                <input type="text" id="new-name" placeholder="Name">
+                <input type="number" id="new-days" placeholder="Days" value="30" style="width:80px">
+                <button class="btn btn-primary" onclick="createSubscriber()">Create</button>
+            </div>
+
+            <h2>Subscribers</h2>
+            <table>
+                <thead>
+                    <tr><th>Key</th><th>Email</th><th>Name</th><th>Status</th><th>Latest Frontend</th><th>Latest Version</th><th>Installs (30d)</th><th>Last Seen</th><th>Requests (30d)</th><th>Tokens (30d)</th><th>Actions</th></tr>
+                </thead>
+                <tbody id="sub-table"></tbody>
+            </table>
+        </div>
+
+        <!-- Messages tab -->
+        <div id="tab-messages" class="panel">
+            <h2>Send Message to All Subscribers</h2>
+            <div class="inline-form" style="flex-direction:column">
+                <input type="text" id="msg-title" placeholder="Title">
+                <textarea id="msg-body" placeholder="Message body"></textarea>
+                <div>
+                    <select id="msg-priority"><option value="normal">Normal</option><option value="urgent">Urgent</option></select>
+                    <button class="btn btn-primary" onclick="sendMessage()">Send</button>
+                </div>
+            </div>
+
+            <h2>Message History</h2>
+            <div id="msg-list"></div>
+        </div>
+
+        <!-- Usage tab -->
+        <div id="tab-usage" class="panel">
+            <h2>Usage (Last 30 Days)</h2>
+            <table>
+                <thead>
+                    <tr><th>Key</th><th>Requests</th><th>Prompt Tokens</th><th>Completion Tokens</th><th>Total Tokens</th></tr>
+                </thead>
+                <tbody id="usage-table"></tbody>
+            </table>
+        </div>
+
+        <!-- Logs tab -->
+        <div id="tab-logs" class="panel">
+            <h2>Server Logs</h2>
+            <div class="log-controls">
+                <select id="log-lines" onchange="loadLogs()">
+                    <option value="100">Last 100 lines</option>
+                    <option value="200" selected>Last 200 lines</option>
+                    <option value="500">Last 500 lines</option>
+                    <option value="1000">Last 1000 lines</option>
+                </select>
+                <input type="text" id="log-filter" placeholder="Filter..." oninput="filterLogs()" style="width:200px">
+                <button class="btn btn-primary" onclick="loadLogs()">Refresh</button>
+                <label style="color:var(--muted);font-size:0.85rem"><input type="checkbox" id="log-auto" onchange="toggleAutoRefresh()"> Auto-refresh (10s)</label>
+            </div>
+            <div class="log-viewer" id="log-content">Loading...</div>
+        </div>
+    </div>
+
+    <script>
+        let adminKey = '';
+
+        function api(path, opts = {}) {
+            return fetch(path, {
+                ...opts,
+                headers: { 'Content-Type': 'application/json', 'X-Admin-Key': adminKey, ...(opts.headers || {}) },
+            });
+        }
+
+        function login() {
+            adminKey = document.getElementById('admin-key').value;
+            api('/admin/api/subscribers').then(r => {
+                if (r.ok) {
+                    document.getElementById('login-panel').style.display = 'none';
+                    document.getElementById('dashboard').classList.add('active');
+                    loadAll();
+                } else {
+                    alert('Invalid password');
+                }
+            });
+        }
+
+        function showTab(name) {
+            document.querySelectorAll('.tabs .tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('#dashboard > .panel').forEach(p => p.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById('tab-' + name).classList.add('active');
+        }
+
+        async function loadAll() {
+            await Promise.all([loadSubscribers(), loadMessages(), loadUsage()]);
+        }
+
+        async function loadSubscribers() {
+            const resp = await api('/admin/api/subscribers');
+            const subs = await resp.json();
+
+            const active = subs.filter(s => s.status === 'active').length;
+            const total = subs.length;
+            const totalReqs = subs.reduce((a, s) => a + (s.requests_30d || 0), 0);
+            const winuiSeen = subs.filter(s => (s.frontends_30d || '').includes('winui')).length;
+            const pysideSeen = subs.filter(s => (s.frontends_30d || '').includes('pyside')).length;
+
+            document.getElementById('stats').innerHTML = `
+                <div class="stat"><div class="number">${active}</div><div class="label">Active</div></div>
+                <div class="stat"><div class="number">${total}</div><div class="label">Total</div></div>
+                <div class="stat"><div class="number">${totalReqs.toLocaleString()}</div><div class="label">Requests (30d)</div></div>
+                <div class="stat"><div class="number">${winuiSeen}</div><div class="label">WinUI Seen (30d)</div></div>
+                <div class="stat"><div class="number">${pysideSeen}</div><div class="label">PySide Seen (30d)</div></div>
+            `;
+
+            const tbody = document.getElementById('sub-table');
+            tbody.innerHTML = subs.map(s => `
+                <tr>
+                    <td class="key-cell" onclick="navigator.clipboard.writeText('${s.license_key}')" title="Click to copy">${s.license_key.substring(0, 20)}...</td>
+                    <td>${s.email || '-'}</td>
+                    <td>${s.name || '-'}</td>
+                    <td><span class="badge ${s.status}">${s.status}</span></td>
+                    <td>${s.latest_frontend || '-'}</td>
+                    <td>${s.latest_version || '-'}</td>
+                    <td title="${s.frontends_30d || ''}">${s.installs_30d || 0}</td>
+                    <td>${formatTimestamp(s.last_seen_at)}</td>
+                    <td>${(s.requests_30d || 0).toLocaleString()}</td>
+                    <td>${(s.tokens_30d || 0).toLocaleString()}</td>
+                    <td>
+                        ${s.status === 'active' ? `<button class="btn btn-sm btn-warning" onclick="subAction('${s.license_key}','revoke')">Revoke</button>` : `<button class="btn btn-sm btn-success" onclick="subAction('${s.license_key}','activate')">Activate</button>`}
+                        <button class="btn btn-sm btn-primary" onclick="subAction('${s.license_key}','extend')">+30d</button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteSub('${s.license_key}')">Delete</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function formatTimestamp(value) {
+            if (!value) return '-';
+            const millis = Number(value) * 1000;
+            if (!Number.isFinite(millis) || millis <= 0) return '-';
+            return new Date(millis).toLocaleString();
+        }
+
+        async function createSubscriber() {
+            const email = document.getElementById('new-email').value;
+            const name = document.getElementById('new-name').value;
+            const days = parseInt(document.getElementById('new-days').value) || 30;
+            const resp = await api('/admin/api/subscribers', {
+                method: 'POST', body: JSON.stringify({email, name, days}),
+            });
+            const data = await resp.json();
+            alert('Created! Key: ' + data.license_key);
+            document.getElementById('new-email').value = '';
+            document.getElementById('new-name').value = '';
+            loadSubscribers();
+        }
+
+        async function subAction(key, action) {
+            await api('/admin/api/subscribers/' + encodeURIComponent(key), {
+                method: 'PUT', body: JSON.stringify({action, days: 30}),
+            });
+            loadSubscribers();
+        }
+
+        async function deleteSub(key) {
+            if (!confirm('Delete this subscriber?')) return;
+            await api('/admin/api/subscribers/' + encodeURIComponent(key), {method: 'DELETE'});
+            loadSubscribers();
+        }
+
+        async function loadMessages() {
+            const resp = await api('/admin/api/messages');
+            const msgs = await resp.json();
+            document.getElementById('msg-list').innerHTML = msgs.map(m => `
+                <div class="msg-card">
+                    <h4>${m.title}</h4>
+                    <p>${m.body}</p>
+                    <div class="meta">
+                        ${new Date(m.created_at * 1000).toLocaleString()} &middot; ${m.priority}
+                        <button class="btn btn-sm btn-danger" onclick="deleteMsg(${m.id})" style="float:right">Delete</button>
+                    </div>
+                </div>
+            `).join('') || '<p style="color:var(--muted)">No messages yet.</p>';
+        }
+
+        async function sendMessage() {
+            const title = document.getElementById('msg-title').value;
+            const body = document.getElementById('msg-body').value;
+            const priority = document.getElementById('msg-priority').value;
+            if (!title || !body) { alert('Title and body required'); return; }
+            await api('/admin/api/messages', {
+                method: 'POST', body: JSON.stringify({title, body, priority}),
+            });
+            document.getElementById('msg-title').value = '';
+            document.getElementById('msg-body').value = '';
+            loadMessages();
+        }
+
+        async function deleteMsg(id) {
+            await api('/admin/api/messages/' + id, {method: 'DELETE'});
+            loadMessages();
+        }
+
+        let allLogLines = [];
+        let logAutoInterval = null;
+
+        async function loadLogs() {
+            const lines = document.getElementById('log-lines').value;
+            const resp = await api('/admin/api/logs?lines=' + lines);
+            const data = await resp.json();
+            allLogLines = data.lines || [];
+            filterLogs();
+            // Auto-scroll to bottom
+            const viewer = document.getElementById('log-content');
+            viewer.scrollTop = viewer.scrollHeight;
+        }
+
+        function filterLogs() {
+            const filter = (document.getElementById('log-filter').value || '').toLowerCase();
+            const viewer = document.getElementById('log-content');
+            const filtered = filter ? allLogLines.filter(l => l.toLowerCase().includes(filter)) : allLogLines;
+            viewer.textContent = filtered.join('\n') || 'No log entries.';
+            viewer.scrollTop = viewer.scrollHeight;
+        }
+
+        function toggleAutoRefresh() {
+            if (document.getElementById('log-auto').checked) {
+                loadLogs();
+                logAutoInterval = setInterval(loadLogs, 10000);
+            } else {
+                if (logAutoInterval) clearInterval(logAutoInterval);
+                logAutoInterval = null;
+            }
+        }
+
+        async function loadUsage() {
+            const resp = await api('/admin/api/usage');
+            const usage = await resp.json();
+            document.getElementById('usage-table').innerHTML = usage.map(u => `
+                <tr>
+                    <td class="key-cell">${u.license_key.substring(0, 20)}...</td>
+                    <td>${u.requests.toLocaleString()}</td>
+                    <td>${u.total_prompt.toLocaleString()}</td>
+                    <td>${u.total_completion.toLocaleString()}</td>
+                    <td>${(u.total_prompt + u.total_completion).toLocaleString()}</td>
+                </tr>
+            `).join('') || '<tr><td colspan="5" style="color:var(--muted)">No usage data yet.</td></tr>';
+        }
+    </script>
+</body>
+</html>

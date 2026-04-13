@@ -53,6 +53,7 @@ public sealed class CoachProcess : IDisposable
         };
         psi.Environment["PYTHONPATH"] = srcDir;
         psi.Environment["MTGACOACH_RUNTIME_ROOT"] = runtimeRoot;
+        psi.Environment["MTGACOACH_FRONTEND"] = "winui";
         psi.Environment["PYTHONUNBUFFERED"] = "1";
         psi.Environment["PYTHONIOENCODING"] = "utf-8";
 
