@@ -26,18 +26,23 @@ _COMMON_MTGA_PATHS = [
     Path(r"C:\Program Files\Epic Games\MagicTheGathering"),
 ]
 _RELEASES_URL = "https://github.com/josharmour/mtgacoach/releases"
+_PYTHON_DOWNLOADS_URL = "https://www.python.org/downloads/windows/"
 
 
 @dataclass(slots=True)
 class RuntimeState:
     repo_dir: str
+    repo_checkout: bool
     runtime_root: str
     runtime_venv_dir: str
     runtime_venv_exists: bool
     python_exe: Optional[str]
     python_source: str
+    python_ready: bool
+    python_ready_detail: str
     mtga_dir: Optional[str]
     mtga_dir_source: str
+    mtga_exe_path: Optional[str]
     mtga_running: bool
     player_log: str
     bepinex_log: Optional[str]
@@ -48,20 +53,36 @@ class RuntimeState:
     plugin_build_path: Optional[str]
     plugin_built: bool
     bepinex_bundle: Optional[str]
+    restart_mtga_required: bool
     issues: list[str] = field(default_factory=list)
 
     @property
-    def is_launchable(self) -> bool:
+    def has_ready_python_runtime(self) -> bool:
         return (
             self.python_exe is not None
-            and self.mtga_dir is not None
+            and self.python_ready
+            and (
+                self.runtime_venv_exists
+                or self.python_source == "app_runtime"
+                or (self.repo_checkout and self.python_source in {"current", "app_venv"})
+            )
+        )
+
+    @property
+    def bridge_ready(self) -> bool:
+        return (
+            self.mtga_dir is not None
             and self.bepinex_installed
             and self.plugin_installed
         )
 
     @property
+    def is_launchable(self) -> bool:
+        return self.has_ready_python_runtime
+
+    @property
     def is_fully_provisioned(self) -> bool:
-        return self.is_launchable and self.runtime_venv_exists
+        return self.has_ready_python_runtime and self.bridge_ready
 
 
 def _is_app_root(path: Path) -> bool:
@@ -136,8 +157,24 @@ def _normalize_current_python(path: Path) -> Optional[Path]:
     return path
 
 
-def _find_python_on_path() -> Optional[str]:
+def _find_python_on_path() -> tuple[Optional[str], str]:
     if sys.platform == "win32":
+        try:
+            result = subprocess.run(
+                ["py", "-3", "-c", "import sys; print(sys.executable)"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    candidate = line.strip()
+                    if candidate and Path(candidate).exists():
+                        return (candidate, "py_launcher")
+        except Exception:
+            pass
+
         try:
             result = subprocess.run(
                 ["where", "python"],
@@ -150,12 +187,36 @@ def _find_python_on_path() -> Optional[str]:
                 for line in result.stdout.splitlines():
                     candidate = line.strip()
                     if candidate and Path(candidate).exists():
-                        return candidate
+                        return (candidate, "PATH")
         except Exception:
             pass
 
     found = shutil.which("python")
-    return found
+    if found:
+        return (found, "PATH")
+    return (None, "not_found")
+
+
+def _check_python_runtime(python_exe: Optional[str]) -> tuple[bool, str]:
+    if not python_exe:
+        return (False, "Python executable not found")
+
+    try:
+        result = subprocess.run(
+            [python_exe, "-c", "import PySide6"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except Exception as exc:
+        return (False, str(exc))
+
+    if result.returncode == 0:
+        return (True, "PySide6 import ok")
+
+    detail = (result.stderr or result.stdout).strip() or f"exit code {result.returncode}"
+    return (False, detail)
 
 
 def find_python_executable() -> tuple[Optional[str], str]:
@@ -178,9 +239,9 @@ def find_python_executable() -> tuple[Optional[str], str]:
         if candidate.exists():
             return (str(candidate), source)
 
-    from_path = _find_python_on_path()
+    from_path, path_source = _find_python_on_path()
     if from_path:
-        return (from_path, "PATH")
+        return (from_path, path_source)
 
     return (None, "not_found")
 
@@ -284,18 +345,51 @@ def is_mtga_running() -> bool:
         return False
 
 
+def _safe_mtime(path: Optional[Path]) -> float:
+    if path is None or not path.exists():
+        return 0.0
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _restart_mtga_required(
+    *,
+    player_log: Path,
+    bepinex_dir: Optional[Path],
+    plugin_install_path: Optional[Path],
+) -> bool:
+    if bepinex_dir is None and plugin_install_path is None:
+        return False
+
+    player_log_mtime = _safe_mtime(player_log)
+    if player_log_mtime <= 0:
+        return False
+
+    install_times = [
+        _safe_mtime(plugin_install_path),
+        _safe_mtime(bepinex_dir / "core" / "BepInEx.dll" if bepinex_dir else None),
+        _safe_mtime(bepinex_dir / "plugins" / "MtgaCoachBridge.dll" if bepinex_dir else None),
+    ]
+    return max(install_times, default=0.0) > player_log_mtime
+
+
 def detect_runtime_state() -> RuntimeState:
     app_root = Path(get_app_root())
+    repo_checkout = (app_root / ".git").exists()
     runtime_root = Path(get_runtime_root())
     app_runtime_dir = app_root / "runtime"
     runtime_venv_dir = runtime_root / "venv"
     runtime_dir = app_runtime_dir if (app_runtime_dir / "Scripts" / "python.exe").exists() else runtime_venv_dir
     runtime_venv_exists = (runtime_dir / "Scripts" / "python.exe").exists()
     python_exe, python_source = find_python_executable()
+    python_ready, python_ready_detail = _check_python_runtime(python_exe)
     mtga_dir, mtga_dir_source = find_mtga_install_dir()
+    mtga_exe_path = None
     mtga_running = is_mtga_running()
 
-    player_log = str(
+    player_log_path = (
         Path.home()
         / "AppData"
         / "LocalLow"
@@ -303,6 +397,7 @@ def detect_runtime_state() -> RuntimeState:
         / "MTGA"
         / "Player.log"
     )
+    player_log = str(player_log_path)
 
     bepinex_dir: Optional[str] = None
     bepinex_installed = False
@@ -311,6 +406,9 @@ def detect_runtime_state() -> RuntimeState:
     plugin_installed = False
 
     if mtga_dir:
+        mtga_exe = Path(mtga_dir) / "MTGA.exe"
+        if mtga_exe.exists():
+            mtga_exe_path = str(mtga_exe)
         b_dir = Path(mtga_dir) / "BepInEx"
         core_dll = b_dir / "core" / "BepInEx.dll"
         if b_dir.is_dir() and core_dll.exists():
@@ -345,25 +443,39 @@ def detect_runtime_state() -> RuntimeState:
             bepinex_bundle = str(bundle_zip)
             break
 
+    restart_mtga_required = _restart_mtga_required(
+        player_log=player_log_path,
+        bepinex_dir=Path(bepinex_dir) if bepinex_dir else None,
+        plugin_install_path=Path(plugin_install_path) if plugin_install_path else None,
+    )
+
     issues: list[str] = []
     if python_exe is None:
         issues.append("Python 3.10+ not found")
+    elif not python_ready:
+        issues.append("Setup environment has not completed")
     if mtga_dir is None:
         issues.append("MTGA install not detected")
     if mtga_dir is not None and not bepinex_installed:
         issues.append("BepInEx not installed in MTGA")
     if mtga_dir is not None and bepinex_installed and not plugin_installed:
         issues.append("MtgaCoachBridge.dll not deployed to BepInEx/plugins")
+    if restart_mtga_required:
+        issues.append("Restart MTGA to load the updated bridge")
 
     return RuntimeState(
         repo_dir=str(app_root),
+        repo_checkout=repo_checkout,
         runtime_root=str(runtime_root),
         runtime_venv_dir=str(runtime_dir),
         runtime_venv_exists=runtime_venv_exists,
         python_exe=python_exe,
         python_source=python_source,
+        python_ready=python_ready,
+        python_ready_detail=python_ready_detail,
         mtga_dir=mtga_dir,
         mtga_dir_source=mtga_dir_source,
+        mtga_exe_path=mtga_exe_path,
         mtga_running=mtga_running,
         player_log=player_log,
         bepinex_log=bepinex_log,
@@ -374,6 +486,7 @@ def detect_runtime_state() -> RuntimeState:
         plugin_build_path=str(plugin_build) if plugin_built else None,
         plugin_built=plugin_built,
         bepinex_bundle=bepinex_bundle,
+        restart_mtga_required=restart_mtga_required,
         issues=issues,
     )
 
@@ -419,7 +532,7 @@ def _subprocess_creationflags() -> int:
     return getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 
 
-def run_setup_wizard(mode: str | None = None) -> subprocess.Popen[str]:
+def get_setup_wizard_command(mode: str | None = None) -> tuple[str, list[str], dict[str, str]]:
     app_root = Path(get_app_root())
     runtime_root = get_runtime_root()
     python_exe, _ = find_python_executable()
@@ -428,13 +541,21 @@ def run_setup_wizard(mode: str | None = None) -> subprocess.Popen[str]:
 
     env = os.environ.copy()
     env["MTGACOACH_RUNTIME_ROOT"] = runtime_root
-    args = [python_exe, "setup_wizard.py"]
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    args = [str(app_root / "setup_wizard.py")]
     if mode == "create_venv":
         args.append("--create-venv")
     elif mode == "setup_environment":
         args.append("--setup-environment")
+    return (python_exe, args, env)
+
+
+def run_setup_wizard(mode: str | None = None) -> subprocess.Popen[str]:
+    app_root = Path(get_app_root())
+    python_exe, args, env = get_setup_wizard_command(mode)
     return subprocess.Popen(
-        args,
+        [python_exe] + args,
         cwd=app_root,
         env=env,
         creationflags=_subprocess_creationflags(),
@@ -508,6 +629,42 @@ def repair_bridge_stack(mtga_dir: str) -> list[str]:
         changed.append(install_plugin(mtga_dir))
 
     return changed
+
+
+def close_mtga() -> bool:
+    if sys.platform != "win32":
+        raise RuntimeError("Closing MTGA is only supported on Windows")
+    if not is_mtga_running():
+        return False
+
+    result = subprocess.run(
+        ["taskkill", "/IM", "MTGA.exe", "/T", "/F"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "taskkill failed"
+        raise RuntimeError(detail)
+    return True
+
+
+def launch_mtga(mtga_dir: str) -> str:
+    executable = Path(mtga_dir) / "MTGA.exe"
+    if not executable.exists():
+        raise FileNotFoundError(f"MTGA.exe not found at {executable}")
+
+    if sys.platform == "win32":
+        os.startfile(str(executable))  # type: ignore[attr-defined]
+    else:
+        subprocess.Popen([str(executable)])
+    return str(executable)
+
+
+def restart_mtga(mtga_dir: str) -> str:
+    close_mtga()
+    return launch_mtga(mtga_dir)
 
 
 def open_path(path: str) -> None:

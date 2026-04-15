@@ -11,7 +11,7 @@ from arenamcp.settings import get_settings
 from .coach_process import CoachProcess
 from .coach_tab import CoachTab
 from .repair_tab import RepairTab
-from .runtime import detect_runtime_state, read_version
+from .runtime import RuntimeState, open_url, read_version
 from .theme import THEME_LABELS, apply_theme, available_themes, load_saved_theme, save_theme
 
 
@@ -21,6 +21,7 @@ class MainWindow(QMainWindow):
         self._closing = False
         self._launch_flags = (False, False, False)
         self._process: Optional[CoachProcess] = None
+        self._startup_prompt_shown = False
         self._settings = get_settings()
         self._theme_actions: dict[str, QAction] = {}
         self._debug_logging_action: Optional[QAction] = None
@@ -33,6 +34,8 @@ class MainWindow(QMainWindow):
         self.coach_tab = CoachTab()
         self.repair_tab = RepairTab()
         self.repair_tab.restart_requested.connect(self.restart_coach)
+        self.repair_tab.provisioning_changed.connect(self._handle_provisioning_changed)
+        self.repair_tab.guided_setup_finished.connect(self._handle_guided_setup_finished)
         tabs.addTab(self.coach_tab, "Coach")
         tabs.addTab(self.repair_tab, "Repair")
         self.tabs = tabs
@@ -51,8 +54,8 @@ class MainWindow(QMainWindow):
         self.refresh_state()
         self._auto_start()
 
-    def refresh_state(self) -> None:
-        self.repair_tab.refresh_state()
+    def refresh_state(self) -> RuntimeState:
+        return self.repair_tab.refresh_state()
 
     def restart_coach(self, autopilot: bool, dry_run: bool, afk: bool) -> None:
         self._launch_flags = (autopilot, dry_run, afk)
@@ -79,14 +82,24 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _auto_start(self) -> None:
-        state = detect_runtime_state()
-        if state.python_exe is None:
-            self._status_bar.showMessage("Python not found. Go to Repair to set up.")
+        state = self.refresh_state()
+        if not state.is_fully_provisioned:
+            if state.python_exe is None:
+                self._status_bar.showMessage("Python 3.10+ is required. Open Repair to finish setup.")
+            else:
+                self._status_bar.showMessage("Setup is incomplete. Open Repair to finish setup.")
             self.tabs.setCurrentIndex(1)
+            self._show_startup_prompt(state)
             return
         self._start_coach(False, False, False)
 
     def _start_coach(self, autopilot: bool, dry_run: bool, afk: bool) -> None:
+        state = self.refresh_state()
+        if not state.is_fully_provisioned:
+            self._status_bar.showMessage("Setup is incomplete. Finish Repair before starting the coach.")
+            self.tabs.setCurrentIndex(1)
+            return
+
         process = CoachProcess(self)
         process.exited.connect(self._on_process_exited)
         self._process = process
@@ -175,3 +188,56 @@ class MainWindow(QMainWindow):
                 "muted": bool(self._settings.get("muted", False)),
             }
         )
+
+    def _handle_provisioning_changed(self, ready: bool) -> None:
+        self.tabs.setTabEnabled(0, ready)
+        if not ready and self.tabs.currentIndex() == 0:
+            self.tabs.setCurrentIndex(1)
+
+    def _handle_guided_setup_finished(self, success: bool, message: str) -> None:
+        self._status_bar.showMessage(message, 8000)
+        if not success:
+            QMessageBox.warning(self, "Setup Incomplete", message)
+            self.tabs.setCurrentIndex(1)
+            return
+
+        state = self.refresh_state()
+        if state.is_fully_provisioned and self._process is None:
+            self._start_coach(*self._launch_flags)
+
+    def _show_startup_prompt(self, state: RuntimeState) -> None:
+        if self._startup_prompt_shown:
+            return
+        self._startup_prompt_shown = True
+
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Information)
+        dialog.setWindowTitle("Finish mtgacoach Setup")
+
+        if state.python_exe is None:
+            dialog.setText("Python 3.10+ is required before mtgacoach can finish setup.")
+            dialog.setInformativeText(
+                "Install Python, then return here and retry detection."
+            )
+            open_python = dialog.addButton("Open Python Downloads", QMessageBox.AcceptRole)
+            retry = dialog.addButton("Retry Detection", QMessageBox.ActionRole)
+            dialog.addButton("Later", QMessageBox.RejectRole)
+            dialog.exec()
+            clicked = dialog.clickedButton()
+            if clicked == open_python:
+                open_url("https://www.python.org/downloads/windows/")
+            elif clicked == retry:
+                self._startup_prompt_shown = False
+                self._auto_start()
+            return
+
+        dialog.setText("mtgacoach still needs first-run setup.")
+        dialog.setInformativeText(
+            "Run guided setup now. It usually takes 3-5 minutes and streams progress in the Repair tab."
+        )
+        run_setup = dialog.addButton("Set Everything Up", QMessageBox.AcceptRole)
+        dialog.addButton("Later", QMessageBox.RejectRole)
+        dialog.exec()
+        if dialog.clickedButton() == run_setup:
+            self.tabs.setCurrentIndex(1)
+            self.repair_tab.start_guided_setup()
