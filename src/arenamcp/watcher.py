@@ -6,8 +6,8 @@ delivering new content via callback as it's written.
 
 import os
 import logging
-import re
 import glob
+import re
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -17,12 +17,127 @@ from watchdog.events import FileSystemEventHandler, FileModifiedEvent, FileCreat
 
 logger = logging.getLogger(__name__)
 
-# Pattern to identify match start in logs
-MATCH_START_PATTERN = re.compile(
-    r'\[UnityCrossThreadLogger\].*(?:MatchGameRoomStateChanged|MatchCreated|Event_Join)'
+MATCH_START_TOKENS = (
+    "MatchCreated",
+    "MatchGameRoomStateChangedEvent",
+    "Event_Join",
 )
+MATCH_END_TOKENS = (
+    "GREMessageType_IntermissionReq",
+    "MatchState_MatchComplete",
+    "MatchState_GameComplete",
+    "MatchGameRoomStateType_MatchCompleted",
+    '"resultList"',
+)
+DRAFT_ACTIVITY_TOKENS = (
+    "CardsInPack",
+    "PackCards",
+    "DraftPack",
+    "DraftStatus",
+    "SelfPack",
+    "SelfPick",
+)
+ACTIVE_GAMEPLAY_TOKENS = (
+    "GREMessageType_GameStateMessage",
+    "GREMessageType_QueuedGameStateMessage",
+    "GREMessageType_MulliganReq",
+    "GREMessageType_PromptReq",
+    "GREMessageType_SubmitDeckReq",
+)
+INACTIVE_GAMEPLAY_TOKENS = (
+    "MatchState_MatchComplete",
+    "MatchState_GameComplete",
+    "GameStage_GameOver",
+)
+RESUME_OVERRIDE_SLACK_BYTES = 4096
 
 _WINDOWS_ABS_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _contains_any(text: str, tokens: tuple[str, ...]) -> bool:
+    return any(token in text for token in tokens)
+
+
+def _is_active_gameplay_line(line: str) -> bool:
+    return _contains_any(line, ACTIVE_GAMEPLAY_TOKENS) and not _contains_any(
+        line,
+        INACTIVE_GAMEPLAY_TOKENS,
+    )
+
+
+def _startup_anchor_from_tail(
+    content_bytes: bytes,
+    *,
+    start_offset: int,
+    file_size: int,
+) -> tuple[int, str]:
+    """Choose a relevant startup position from a tail chunk of Player.log.
+
+    The goal is to reconstruct the current live session without replaying old
+    draft or match history on startup.
+    """
+    if not content_bytes:
+        return file_size, "empty_log"
+
+    content = content_bytes.decode("utf-8", errors="replace")
+    if not content:
+        return file_size, "empty_log"
+
+    events: list[tuple[str, int]] = []
+    byte_pos = 0
+
+    for raw_line in content.splitlines(keepends=True):
+        line = raw_line.strip()
+        absolute_pos = start_offset + byte_pos
+
+        if line:
+            if _contains_any(line, MATCH_START_TOKENS):
+                events.append(("match_start", absolute_pos))
+            if _contains_any(line, MATCH_END_TOKENS):
+                events.append(("match_end", absolute_pos))
+            if _contains_any(line, DRAFT_ACTIVITY_TOKENS):
+                events.append(("draft_activity", absolute_pos))
+            if _is_active_gameplay_line(line):
+                events.append(("active_gameplay", absolute_pos))
+
+        byte_pos += len(raw_line.encode("utf-8"))
+
+    if not events:
+        return file_size, "no_relevant_events"
+
+    last_active_index = next(
+        (idx for idx in range(len(events) - 1, -1, -1) if events[idx][0] == "active_gameplay"),
+        None,
+    )
+    if last_active_index is not None:
+        if last_active_index < len(events) - 1:
+            trailing_kind, trailing_pos = events[-1]
+            if trailing_kind == "draft_activity":
+                return trailing_pos, "draft_waiting"
+            if trailing_kind in {"match_start", "match_end"}:
+                return file_size, "idle_or_completed"
+
+        active_anchor = events[last_active_index][1]
+        for kind, pos in reversed(events[:last_active_index]):
+            if kind == "active_gameplay":
+                active_anchor = pos
+                continue
+            if kind == "match_start":
+                return pos, "active_match"
+            if kind == "draft_activity":
+                return pos, "active_draft"
+            if kind == "match_end":
+                return active_anchor, "mid_session_after_match_end"
+        return active_anchor, "mid_session_active"
+
+    last_kind, last_pos = events[-1]
+    if last_kind == "draft_activity":
+        return last_pos, "draft_waiting"
+
+    if last_kind in {"match_start", "match_end"}:
+        return file_size, "idle_or_completed"
+
+    return file_size, "no_active_session"
 
 
 def _is_wsl() -> bool:
@@ -243,63 +358,48 @@ class MTGALogWatcher:
 
         logger.info(f"MTGALogWatcher initialized for: {self.log_path}")
 
-    def find_last_match_start(self) -> int:
-        """Find the byte position of the last match start in the log file.
+    def find_relevant_start(self) -> tuple[int, str]:
+        """Find the most relevant startup position for the current session.
 
-        Scans the LAST 5MB of the log file to find the most recent MatchCreated 
-        indicator. This prevents reading entire 1GB+ log files into memory which
-        causes massive stuttering.
-
-        Returns:
-            Byte position to start reading from.
-            If no match found in last 5MB, returns current file size (start from end/live).
+        Scans only the tail of the log and classifies whether the latest
+        relevant activity looks like an active match, active draft, or an
+        already completed session.
         """
         if not self.log_path.exists():
-            return 0
+            return 0, "missing_log"
 
         try:
             file_size = self.log_path.stat().st_size
 
-            # Scan last 15MB for match start — long games can generate 8-10MB of log data
+            # Scan last 15MB. This is enough to cover long matches without
+            # replaying the whole file on startup.
             MAX_SCAN_BYTES = 15 * 1024 * 1024
             read_size = min(file_size, MAX_SCAN_BYTES)
             start_offset = max(0, file_size - read_size)
 
             if read_size == 0:
-                return 0
+                return 0, "empty_log"
 
-            # Read tail of file as bytes
             with open(self.log_path, 'rb') as f:
                 f.seek(start_offset)
                 content_bytes = f.read(read_size)
 
-            # Decode for regex matching, tracking byte positions
-            content = content_bytes.decode('utf-8', errors='replace')
-
-            # Find all match start positions (character positions)
-            last_char_pos = -1
-            for match in MATCH_START_PATTERN.finditer(content):
-                # Find the start of this line (search backward for newline)
-                line_start = content.rfind('\n', 0, match.start())
-                last_char_pos = line_start + 1 if line_start != -1 else 0
-
-            if last_char_pos >= 0:
-                # Convert character position back to byte position relative to read chunk
-                relevant_substring = content[:last_char_pos]
-                relative_byte_pos = len(relevant_substring.encode('utf-8'))
-
-                final_pos = start_offset + relative_byte_pos
-                logger.info(f"Found last match start at byte position {final_pos} (scanned last {read_size/1024/1024:.1f}MB)")
-                return final_pos
-            else:
-                # No match found — start from end (live mode). Parsing the entire
-                # log file (can be 40MB+) causes massive startup delay for no benefit.
-                logger.info(f"No match start found in last {read_size/1024/1024:.1f}MB — starting from end (live mode)")
-                return file_size
+            start_pos, mode = _startup_anchor_from_tail(
+                content_bytes,
+                start_offset=start_offset,
+                file_size=file_size,
+            )
+            logger.info(
+                "Startup anchor: mode=%s offset=%s (scanned last %.1fMB)",
+                mode,
+                start_pos,
+                read_size / 1024 / 1024,
+            )
+            return start_pos, mode
 
         except OSError as e:
-            logger.warning(f"Error scanning log for match start: {e}")
-            return 0
+            logger.warning(f"Error scanning log for startup anchor: {e}")
+            return 0, "scan_error"
 
     def _is_fresh_log(self) -> bool:
         """Detect if the log file is freshly created (MTGA just launched).
@@ -334,9 +434,10 @@ class MTGALogWatcher:
         existing log content from the last match start.
 
         Startup modes:
-        - resume_same_session: read from saved offset (fastest)
-        - fresh_log: skip backfill, start from beginning (fast)
-        - backfill: scan for last match start (slower but recovers state)
+        - resumed_session: read from saved offset when still relevant
+        - readahead_override: tail scan detected a newer active/completed session
+        - fresh_launch: skip scan and read from start of a new log
+        - readahead: choose a relevant anchor from the recent tail
         """
         if self._observer is not None:
             logger.warning("Watcher already started")
@@ -349,30 +450,39 @@ class MTGALogWatcher:
             # Still set up the watcher - it will detect when directory is created
 
         self._handler = MTGALogHandler(str(self.log_path), self.callback)
+        relevant_start, relevant_mode = (
+            self.find_relevant_start() if self.log_path.exists() else (0, "missing_log")
+        )
 
-        # Use resume_offset if provided (match state recovery)
         if self._resume_offset is not None and self.log_path.exists():
             file_size = self.log_path.stat().st_size
             if self._resume_offset <= file_size:
-                logger.info(f"Startup mode: resumed_session (offset {self._resume_offset})")
-                self._handler.read_from_position(self._resume_offset)
+                if relevant_start > self._resume_offset + RESUME_OVERRIDE_SLACK_BYTES:
+                    logger.info(
+                        "Startup mode: readahead_override (%s at %s supersedes saved offset %s)",
+                        relevant_mode,
+                        relevant_start,
+                        self._resume_offset,
+                    )
+                    self._handler.read_from_position(relevant_start)
+                else:
+                    logger.info(f"Startup mode: resumed_session (offset {self._resume_offset})")
+                    self._handler.read_from_position(self._resume_offset)
             else:
                 logger.warning(
                     f"Resume offset {self._resume_offset} > file size {file_size}, "
                     "falling back to backfill"
                 )
                 if self._backfill_enabled:
-                    start_pos = self.find_last_match_start()
+                    start_pos = relevant_start
                     self._handler.read_from_position(start_pos)
         elif self._backfill_enabled and self.log_path.exists():
-            # Fast path: skip expensive backfill scan for freshly created logs
             if self._is_fresh_log():
                 logger.info("Startup mode: fresh_launch (reading from start)")
                 self._handler.read_from_position(0)
             else:
-                logger.info("Startup mode: backfill (scanning for last match)")
-                start_pos = self.find_last_match_start()
-                self._handler.read_from_position(start_pos)
+                logger.info("Startup mode: readahead (%s)", relevant_mode)
+                self._handler.read_from_position(relevant_start)
 
         self._observer = Observer()
 

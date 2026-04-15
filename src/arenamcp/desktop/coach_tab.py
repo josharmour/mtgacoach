@@ -14,11 +14,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSplitter,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from arenamcp.rules_engine import RulesEngine
 from arenamcp.settings import get_settings
 from arenamcp.tts import VoiceOutput
 
@@ -119,7 +121,14 @@ class CoachTab(QWidget):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
 
+        top_panel = QWidget()
+        top_layout = QVBoxLayout(top_panel)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(10)
+
         status_box = QGroupBox("Status")
+        status_box.setCheckable(True)
+        status_box.setChecked(False)
         status_layout = QVBoxLayout(status_box)
         status_layout.setContentsMargins(8, 8, 8, 8)
         status_layout.setSpacing(6)
@@ -140,20 +149,12 @@ class CoachTab(QWidget):
             block_layout.addWidget(value)
             summary_row.addWidget(block, stretch=1)
             self._status_labels[key] = value
-        status_layout.addLayout(summary_row)
-
-        analysis_row = QHBoxLayout()
-        analysis_row.setSpacing(8)
-        analysis_title = QLabel("Analysis")
-        analysis_title.setStyleSheet("font-weight: 600; color: #8a8a8a;")
-        analysis_value = QLabel("-")
-        analysis_value.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        analysis_value.setWordWrap(True)
-        analysis_row.addWidget(analysis_title)
-        analysis_row.addWidget(analysis_value, stretch=1)
-        self._status_labels["analysis"] = analysis_value
-        status_layout.addLayout(analysis_row)
-        root.addWidget(status_box)
+        self._status_content = QWidget()
+        self._status_content.setLayout(summary_row)
+        status_layout.addWidget(self._status_content)
+        self._status_content.setVisible(False)
+        status_box.toggled.connect(self._status_content.setVisible)
+        top_layout.addWidget(status_box)
 
         button_row = QHBoxLayout()
         commands = [
@@ -179,7 +180,7 @@ class CoachTab(QWidget):
         debug_button = QPushButton("Debug Report")
         debug_button.clicked.connect(self._submit_debug_report)
         button_row.addWidget(debug_button)
-        root.addLayout(button_row)
+        top_layout.addLayout(button_row)
 
         game_box = QGroupBox("Game State")
         game_layout = QVBoxLayout(game_box)
@@ -188,14 +189,29 @@ class CoachTab(QWidget):
         self.game_state_view.setAcceptRichText(True)
         self.game_state_view.setHtml(self._build_waiting_game_state_html())
         game_layout.addWidget(self.game_state_view)
-        root.addWidget(game_box, stretch=2)
 
         log_box = QGroupBox("Coach Log")
         log_layout = QVBoxLayout(log_box)
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         log_layout.addWidget(self.log_view)
-        root.addWidget(log_box, stretch=3)
+
+        content_splitter = QSplitter(Qt.Horizontal)
+        content_splitter.setChildrenCollapsible(True)
+        content_splitter.addWidget(game_box)
+        content_splitter.addWidget(log_box)
+        content_splitter.setStretchFactor(0, 3)
+        content_splitter.setStretchFactor(1, 2)
+        content_splitter.setSizes([900, 700])
+
+        main_splitter = QSplitter(Qt.Vertical)
+        main_splitter.setChildrenCollapsible(True)
+        main_splitter.addWidget(top_panel)
+        main_splitter.addWidget(content_splitter)
+        main_splitter.setStretchFactor(0, 0)
+        main_splitter.setStretchFactor(1, 1)
+        main_splitter.setSizes([140, 860])
+        root.addWidget(main_splitter, stretch=1)
 
         chat_row = QHBoxLayout()
         self.chat_input = QLineEdit()
@@ -309,8 +325,6 @@ class CoachTab(QWidget):
             self._set_button_text("cycle_model", "Model", self._compact_model_label(value))
         elif normalized in {"BRIDGE", "GRE"}:
             self._set_status_label("bridge", text)
-        elif normalized == "ANALYSIS":
-            self._set_status_label("analysis", text)
         elif normalized == "STYLE":
             self._set_button_text("toggle_style", "Style", self._compact_style_label(value))
         elif normalized in {"VOICE", "VOICE_ID"}:
@@ -531,6 +545,12 @@ class CoachTab(QWidget):
                 "other": "#374151",
                 "warning_bg": "#fff7ed",
                 "warning_fg": "#9a3412",
+                "castable_bg": "#dcfce7",
+                "castable_fg": "#166534",
+                "uncastable_bg": "#ffedd5",
+                "uncastable_fg": "#9a3412",
+                "hand_neutral_bg": "#eef3f8",
+                "hand_neutral_fg": "#1f2937",
             }
         if theme_name == THEME_HIGH_CONTRAST:
             return {
@@ -554,6 +574,12 @@ class CoachTab(QWidget):
                 "other": "#ffffff",
                 "warning_bg": "#111111",
                 "warning_fg": "#ffff00",
+                "castable_bg": "#003300",
+                "castable_fg": "#00ff66",
+                "uncastable_bg": "#331100",
+                "uncastable_fg": "#ffff00",
+                "hand_neutral_bg": "#0f0f0f",
+                "hand_neutral_fg": "#ffffff",
             }
         return {
             "bg": "#0f1317",
@@ -576,6 +602,12 @@ class CoachTab(QWidget):
             "other": "#cbd5e1",
             "warning_bg": "#3a1f15",
             "warning_fg": "#fdba74",
+            "castable_bg": "#163524",
+            "castable_fg": "#86efac",
+            "uncastable_bg": "#4a2a18",
+            "uncastable_fg": "#fdba74",
+            "hand_neutral_bg": "#1f2630",
+            "hand_neutral_fg": "#e6edf3",
         }
 
     def _build_waiting_game_state_html(self) -> str:
@@ -629,6 +661,7 @@ class CoachTab(QWidget):
         top_resources = self._render_resource_row(
             "Opponent",
             opponent_player,
+            data,
             zones,
             opponent_seat,
             tokens,
@@ -637,6 +670,7 @@ class CoachTab(QWidget):
         bottom_resources = self._render_resource_row(
             "You",
             local_player,
+            data,
             zones,
             local_seat,
             tokens,
@@ -759,6 +793,7 @@ class CoachTab(QWidget):
         self,
         seat_label: str,
         player: Optional[dict[str, Any]],
+        game_state: dict[str, Any],
         zones: dict[str, Any],
         seat_id: int,
         tokens: dict[str, str],
@@ -773,6 +808,7 @@ class CoachTab(QWidget):
             self._resource_chip("Graveyard", self._zone_summary(self._cards_for_zone_and_seat(zones.get("graveyard"), seat_id), 5), tokens["other"], tokens),
             self._resource_chip("Exile", self._zone_summary(self._cards_for_zone_and_seat(zones.get("exile"), seat_id), 5), tokens["other"], tokens),
         ]
+        hand_html = ""
 
         if include_hand_count:
             hand_count = _int_value(zones.get("opponent_hand_count"))
@@ -780,22 +816,47 @@ class CoachTab(QWidget):
 
         if include_hand_cards:
             hand_cards = self._cards_for_zone_and_seat(zones.get("my_hand") or zones.get("hand"), seat_id, allow_unknown_owner=True)
-            items.append(self._resource_chip("Hand", self._hand_summary(hand_cards), tokens["spell"], tokens))
+            hand_html = self._resource_chip(
+                "Hand",
+                self._render_hand_summary(hand_cards, game_state, tokens),
+                tokens["spell"],
+                tokens,
+                allow_html=True,
+                wide=True,
+            )
+
+        cells = "".join(
+            f"<td valign='top' style='padding:0 8px 6px 0;'>{item}</td>"
+            for item in items
+        )
 
         return (
             f"<div style='margin-bottom:8px;'>"
             f"<div style='font-size:12px; color:{accent}; font-weight:700; margin-bottom:4px;'>{html.escape(seat_label)}</div>"
-            f"{''.join(items)}</div>"
+            f"<table cellspacing='0' cellpadding='0' style='border-collapse:collapse; margin:0 0 6px 0;'><tr>{cells}</tr></table>"
+            f"{hand_html}</div>"
         )
 
-    def _resource_chip(self, label: str, value: str, accent: str, tokens: dict[str, str]) -> str:
+    def _resource_chip(
+        self,
+        label: str,
+        value: str,
+        accent: str,
+        tokens: dict[str, str],
+        *,
+        allow_html: bool = False,
+        wide: bool = False,
+    ) -> str:
+        rendered_value = value or "-"
+        if not allow_html:
+            rendered_value = html.escape(rendered_value)
+        min_width = "132px" if not wide else "420px"
         return (
-            f"<span style='display:inline-block; vertical-align:top; margin:0 8px 6px 0; padding:6px 8px;"
-            f"border:1px solid {tokens['border']}; border-left:4px solid {accent}; border-radius:7px;"
-            f"background:{tokens['panel']}; min-width:132px; line-height:1.35;'>"
-            f"<span style='display:block; color:{tokens['muted']}; font-size:11px; text-transform:uppercase; letter-spacing:0.04em;'>{html.escape(label)}</span>"
-            f"<span style='display:block; color:{tokens['text']}; margin-top:2px;'>{html.escape(value or '-')}</span>"
-            f"</span>"
+            f"<div style='padding:6px 8px; border:1px solid {tokens['border']}; border-left:4px solid {accent}; "
+            f"border-radius:7px; background:{tokens['panel']}; min-width:{min_width}; line-height:1.35;'>"
+            f"<div style='color:{tokens['muted']}; font-size:11px; text-transform:uppercase; letter-spacing:0.04em;'>{html.escape(label)}</div>"
+            f"<div style='color:{tokens['text']}; margin-top:2px;'>{rendered_value}</div>"
+            f"</div>"
         )
 
     def _render_battlefield_section(
@@ -831,15 +892,19 @@ class CoachTab(QWidget):
     def _render_card_lane(self, label: str, cards: list[dict[str, Any]], type_key: str, tokens: dict[str, str]) -> str:
         if not cards:
             return ""
-        badges = "".join(self._render_card_badge(card, type_key, tokens) for card in cards)
+        accent = tokens.get(type_key, tokens["other"])
+        summaries = " • ".join(
+            html.escape(self._compact_card_summary(card))
+            for card in cards
+        )
         return (
             f"<div style='margin-bottom:7px;'>"
-            f"<div style='color:{tokens['muted']}; font-size:11px; text-transform:uppercase; margin-bottom:4px; letter-spacing:0.04em;'>{html.escape(label)}:</div>"
-            f"{badges}</div>"
+            f"<div style='color:{tokens['muted']}; font-size:11px; text-transform:uppercase; margin-bottom:2px; letter-spacing:0.04em;'>{html.escape(label)}:</div>"
+            f"<div style='color:{accent}; line-height:1.4; word-wrap:break-word;'>{summaries}</div>"
+            f"</div>"
         )
 
-    def _render_card_badge(self, card: dict[str, Any], type_key: str, tokens: dict[str, str]) -> str:
-        accent = tokens.get(type_key, tokens["other"])
+    def _compact_card_summary(self, card: dict[str, Any]) -> str:
         name = _str_value(card.get("name"), "?")
         detail_parts: list[str] = []
         mana_cost = _str_value(card.get("mana_cost"))
@@ -865,21 +930,10 @@ class CoachTab(QWidget):
         if counters:
             detail_parts.append(counters)
 
-        detail_text = " | ".join(part for part in detail_parts if part)
-        detail_html = ""
+        detail_text = ", ".join(part for part in detail_parts if part)
         if detail_text:
-            detail_html = (
-                f"<span style='display:block; color:{tokens['muted']}; font-size:11px; margin-top:2px;'>"
-                f"{html.escape(detail_text)}</span>"
-            )
-        return (
-            f"<span style='display:inline-block; vertical-align:top; margin:0 6px 6px 0; padding:6px 8px;"
-            f"max-width:300px; border:1px solid {tokens['border']}; border-left:4px solid {accent};"
-            f"border-radius:7px; background:{tokens['panel2']}; line-height:1.35;'>"
-            f"<span style='display:block; color:{tokens['header']}; font-weight:700;'>{html.escape(name)}</span>"
-            f"{detail_html}"
-            f"</span>"
-        )
+            return f"{name} ({detail_text})"
+        return name
 
     def _render_stack_section(self, stack_zone: Any, tokens: dict[str, str]) -> str:
         if not isinstance(stack_zone, list) or not stack_zone:
@@ -958,7 +1012,7 @@ class CoachTab(QWidget):
     def _render_legal_actions(self, actions_zone: Any, tokens: dict[str, str]) -> str:
         if not isinstance(actions_zone, list):
             return ""
-        actions = []
+        actions: list[str] = []
         for action in actions_zone:
             action_text = _str_value(action).strip()
             if (
@@ -970,11 +1024,28 @@ class CoachTab(QWidget):
                 actions.append(action_text)
         if not actions:
             return ""
-        rendered = "".join(
-            f"<span style='display:inline-block; margin:0 6px 6px 0; padding:5px 7px; border:1px solid {tokens['border']};"
-            f"border-radius:6px; background:{tokens['panel']}; color:{tokens['spell']};'>{html.escape(action)}</span>"
-            for action in actions[:12]
-        )
+        rendered_parts: list[str] = []
+        for action in actions[:12]:
+            lower = action.lower()
+            border = tokens["spell"]
+            fg = tokens["spell"]
+            bg = tokens["panel"]
+            label = action
+            if lower.startswith("cast "):
+                if "[ok]" in lower:
+                    border = tokens["castable_fg"]
+                    fg = tokens["castable_fg"]
+                    bg = tokens["castable_bg"]
+                else:
+                    border = tokens["uncastable_fg"]
+                    fg = tokens["uncastable_fg"]
+                    bg = tokens["uncastable_bg"]
+                    label = f"{action} [MANUAL PAY / NOT CONFIRMED]"
+            rendered_parts.append(
+                f"<div style='margin:0 0 6px 0; padding:5px 7px; border:1px solid {border};"
+                f"border-left:4px solid {border}; border-radius:6px; background:{bg}; color:{fg};'>{html.escape(label)}</div>"
+            )
+        rendered = "".join(rendered_parts)
         return (
             f"<div style='margin-top:6px;'>"
             f"<div style='font-size:12px; color:{tokens['muted']}; text-transform:uppercase; margin-bottom:4px;'>Legal actions</div>"
@@ -1047,6 +1118,132 @@ class CoachTab(QWidget):
             names.append(f"{name} {mana}".strip())
         extra = f" +{len(cards) - 8}" if len(cards) > 8 else ""
         return f"{len(cards)} ({', '.join(names)}{extra})"
+
+    def _render_hand_summary(
+        self,
+        cards: list[dict[str, Any]],
+        game_state: dict[str, Any],
+        tokens: dict[str, str],
+    ) -> str:
+        if not cards:
+            return "0"
+
+        castable_names = self._castable_hand_names(game_state)
+        rows = "".join(
+            self._render_hand_badge(card, castable_names, game_state, tokens)
+            for card in cards
+            if isinstance(card, dict)
+        )
+        return (
+            f"<div style='color:{tokens['muted']}; font-size:11px; margin-bottom:4px;'>{len(cards)} card(s)</div>"
+            f"<table cellspacing='0' cellpadding='0' style='border-collapse:separate; border-spacing:0 4px; width:100%;'>{rows}</table>"
+        )
+
+    def _castable_hand_names(self, game_state: dict[str, Any]) -> set[str]:
+        names: set[str] = set()
+        legal_actions = game_state.get("legal_actions")
+        if not isinstance(legal_actions, list):
+            return names
+        for action in legal_actions:
+            text = _str_value(action).strip()
+            if not text.lower().startswith("cast "):
+                continue
+            if "[ok]" not in text.lower():
+                continue
+            card_name = text[5:].split("[", 1)[0].strip().lower()
+            if card_name:
+                names.add(card_name)
+        return names
+
+    def _render_hand_badge(
+        self,
+        card: dict[str, Any],
+        castable_names: set[str],
+        game_state: dict[str, Any],
+        tokens: dict[str, str],
+    ) -> str:
+        name = _str_value(card.get("name"), "?")
+        mana_cost = _str_value(card.get("mana_cost"))
+        type_line = _str_value(card.get("type_line")).lower()
+        status = self._hand_card_status(card, castable_names, game_state)
+
+        if status == "castable":
+            background = tokens["castable_bg"]
+            foreground = tokens["castable_fg"]
+            border = tokens["castable_fg"]
+        elif status == "uncastable":
+            background = tokens["uncastable_bg"]
+            foreground = tokens["uncastable_fg"]
+            border = tokens["uncastable_fg"]
+        elif "land" in type_line:
+            background = tokens["panel2"]
+            foreground = tokens["land"]
+            border = tokens["land"]
+        else:
+            background = tokens["hand_neutral_bg"]
+            foreground = tokens["hand_neutral_fg"]
+            border = tokens["border"]
+
+        detail = html.escape(mana_cost) if mana_cost else ""
+        type_label = "LAND" if status == "land" else "CAST" if status == "castable" else "NO MANA" if status == "uncastable" else ""
+        detail_cell = (
+            f"<td style='padding:4px 8px; color:{foreground}; opacity:0.9; white-space:nowrap;'>{detail}</td>"
+            if detail
+            else "<td></td>"
+        )
+        type_cell = (
+            f"<td style='padding:4px 8px; color:{foreground}; opacity:0.9; white-space:nowrap; text-align:right;'>{html.escape(type_label)}</td>"
+            if type_label
+            else "<td></td>"
+        )
+        return (
+            f"<tr>"
+            f"<td colspan='3' style='padding:0;'>"
+            f"<table cellspacing='0' cellpadding='0' style='border-collapse:collapse; width:100%; "
+            f"border:1px solid {border}; border-left:4px solid {border}; border-radius:7px; background:{background};'>"
+            f"<tr>"
+            f"<td style='padding:4px 8px; color:{foreground}; font-weight:700;'>{html.escape(name)}</td>"
+            f"{detail_cell}"
+            f"{type_cell}"
+            f"</tr>"
+            f"</table>"
+            f"</td>"
+            f"</tr>"
+        )
+
+    def _hand_card_status(
+        self,
+        card: dict[str, Any],
+        castable_names: set[str],
+        game_state: dict[str, Any],
+    ) -> str:
+        name = _str_value(card.get("name")).strip().lower()
+        mana_cost = _str_value(card.get("mana_cost"))
+        type_line = _str_value(card.get("type_line")).lower()
+
+        if "land" in type_line:
+            return "land"
+        if name and name in castable_names:
+            return "castable"
+        if not mana_cost:
+            return "neutral"
+
+        local_seat = next(
+            (
+                _int_value(player.get("seat_id"))
+                for player in game_state.get("players", [])
+                if isinstance(player, dict) and _bool_value(player.get("is_local"))
+            ),
+            0,
+        )
+        if not local_seat:
+            return "neutral"
+
+        try:
+            mana_pool = RulesEngine._get_mana_pool(game_state, local_seat)
+        except Exception:
+            return "neutral"
+        return "castable" if RulesEngine._can_afford(mana_cost, mana_pool) else "uncastable"
 
     def _library_value(self, zones: dict[str, Any], opponent: bool) -> str:
         if opponent:

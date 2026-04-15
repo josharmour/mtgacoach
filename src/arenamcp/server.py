@@ -81,6 +81,58 @@ _draft_helper_last_pack: int = 0
 _draft_helper_last_pick: int = 0
 
 
+def _deactivate_draft_state(reason: str) -> None:
+    """Clear active-pack draft state without discarding the drafted pool."""
+    global _draft_helper_last_pack, _draft_helper_last_pick
+
+    if not draft_state.is_active and not draft_state.cards_in_pack:
+        return
+
+    logger.info(
+        "Deactivating draft pack state: %s (event=%s pack=%s pick=%s cards=%s)",
+        reason,
+        draft_state.event_name or "?",
+        draft_state.pack_number,
+        draft_state.pick_number,
+        len(draft_state.cards_in_pack),
+    )
+    draft_state.is_active = False
+    draft_state.cards_in_pack = []
+    draft_state.pack_number = 0
+    draft_state.pick_number = 0
+    draft_state.is_sealed = False
+    draft_state.sealed_pool = []
+    draft_state.sealed_analyzed = False
+    draft_state.picks_per_pack = 1
+    _draft_helper_last_pack = 0
+    _draft_helper_last_pick = 0
+
+
+def _has_live_match_state() -> bool:
+    """Return True when the published snapshot already looks like real gameplay."""
+    snap = game_state.get_published_snapshot(deep_copy=False)
+    if not snap.get("match_id"):
+        return False
+
+    turn_info = snap.get("turn_info", {}) or {}
+    if int(turn_info.get("turn_number", 0) or 0) > 0:
+        return True
+
+    if snap.get("pending_decision") or snap.get("legal_actions"):
+        return True
+
+    if snap.get("players"):
+        return True
+
+    zones = snap.get("zones", {}) or {}
+    for zone_name in ("battlefield", "my_hand", "stack", "graveyard", "exile", "command"):
+        if zones.get(zone_name):
+            return True
+
+    library_count = zones.get("library_count")
+    return library_count not in (None, "", "?")
+
+
 def _get_card_db() -> FallbackCardDatabase:
     """Get the unified card database (lazy loading, thread-safe)."""
     return get_card_database()
@@ -543,6 +595,7 @@ def _handle_match_created(payload: dict) -> None:
             else:
                 logger.info(f"New match detected (ID: {match_id}). Resetting game state.")
                 game_state.reset()
+                _deactivate_draft_state(f"new live match {match_id}")
             game_state.match_id = match_id
 
             # Since we reset state, notify draft helper effectively if needed
@@ -1558,6 +1611,9 @@ def get_draft_pack() -> dict[str, Any]:
     if watcher is None:
         start_watching()
 
+    if _has_live_match_state():
+        _deactivate_draft_state("live match state present")
+
     if not draft_state.is_active or not draft_state.cards_in_pack:
         return {
             "is_active": False,
@@ -1620,6 +1676,9 @@ def evaluate_draft_pack_for_standalone() -> dict[str, Any]:
         Dict with pack_number, pick_number, spoken_advice, and evaluations list,
         or {"is_active": False} if no draft in progress.
     """
+    if _has_live_match_state():
+        _deactivate_draft_state("live match state present")
+
     if not draft_state.is_active or draft_state.is_sealed:
         return {"is_active": False}
 

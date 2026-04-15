@@ -1102,6 +1102,9 @@ def enrich_snapshot_from_pending_response(
         snapshot["pending_decision"] = label
 
     decision_type = _get_bridge_decision_type(request_type, request_class)
+    plugin_provided_type = bool(
+        bridge_decision_context and bridge_decision_context.get("type")
+    )
     existing_ctx = snapshot.get("decision_context") or {}
     if bridge_decision_context:
         snapshot["decision_context"] = {
@@ -1124,7 +1127,19 @@ def enrich_snapshot_from_pending_response(
 
     if decision_type:
         existing_type = existing_ctx.get("type")
-        if not existing_type or existing_type in {"unknown_req", UNMAPPED_INTERACTION_TYPE}:
+        # Stale snapshots can carry a previous window's type (e.g. "actions_available")
+        # after the bridge has moved on to a Search/SelectTargets/PayCosts request.
+        # If the plugin did not stamp a type this poll, trust the bridge-mapped one.
+        stale_disagrees = bool(
+            existing_type
+            and existing_type != decision_type
+            and not plugin_provided_type
+        )
+        if (
+            not existing_type
+            or existing_type in {"unknown_req", UNMAPPED_INTERACTION_TYPE}
+            or stale_disagrees
+        ):
             existing_ctx = {
                 **existing_ctx,
                 "type": decision_type,

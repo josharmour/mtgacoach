@@ -2467,8 +2467,26 @@ class CoachEngine:
         # abilities), but if our mana analysis says NEED, filter them out to
         # avoid the LLM suggesting unaffordable spells.
         cards_to_filter = no_target_card_names | uncastable_card_names
-        if cards_to_filter and valid_moves:
-            filtered_moves = [m for m in valid_moves if not any(f"Cast {nt}" in m for nt in cards_to_filter)]
+        non_ok_cast_names = {
+            m[5:].split("[", 1)[0].strip()
+            for m in valid_moves
+            if isinstance(m, str)
+            and m.lower().startswith("cast ")
+            and "[ok]" not in m.lower()
+        }
+        cards_to_filter |= non_ok_cast_names
+        if valid_moves:
+            filtered_moves = [
+                m for m in valid_moves
+                if not (
+                    isinstance(m, str)
+                    and m.lower().startswith("cast ")
+                    and (
+                        "[ok]" not in m.lower()
+                        or any(f"Cast {nt}" in m for nt in cards_to_filter)
+                    )
+                )
+            ]
             if filtered_moves != valid_moves:
                 if not filtered_moves:
                     new_legal = 'NONE \u2014 say "pass priority"'
@@ -2479,25 +2497,29 @@ class CoachEngine:
                 lines[1] = f"Legal: {new_legal}"
 
                 # Also filter LegalGRE raw actions so the LLM can't see
-                # no-target spells as castable in the raw GRE data
-                if raw_legal_actions and no_target_card_names:
-                    # Map card names to grp_ids for filtering
-                    no_target_grp_ids = set()
-                    for card in game_state.get("hand", []):
-                        if card.get("name") in no_target_card_names:
-                            gid = card.get("grp_id")
-                            if gid:
-                                no_target_grp_ids.add(gid)
-                    if no_target_grp_ids:
-                        filtered_raw = [
-                            a for a in raw_legal_actions
-                            if a.get("grpId") not in no_target_grp_ids
-                            or a.get("actionType") != "ActionType_Cast"
-                        ]
-                        for i, line in enumerate(lines):
-                            if isinstance(line, str) and line.startswith("LegalGRE:"):
-                                lines[i] = "LegalGRE: " + _format_legal_actions_raw_for_prompt(filtered_raw)
-                                break
+                # no-target or non-autotap spells as castable in raw GRE data.
+                if raw_legal_actions:
+                    filter_grp_ids = set()
+                    for zone_name in ("hand", "command"):
+                        for card in game_state.get(zone_name, []):
+                            if card.get("name") in cards_to_filter:
+                                gid = card.get("grp_id")
+                                if gid:
+                                    filter_grp_ids.add(gid)
+                    filtered_raw = [
+                        a for a in raw_legal_actions
+                        if not (
+                            a.get("actionType") == "ActionType_Cast"
+                            and (
+                                a.get("grpId") in filter_grp_ids
+                                or not a.get("autoTapSolution")
+                            )
+                        )
+                    ]
+                    for i, line in enumerate(lines):
+                        if isinstance(line, str) and line.startswith("LegalGRE:"):
+                            lines[i] = "LegalGRE: " + _format_legal_actions_raw_for_prompt(filtered_raw)
+                            break
 
         return "\n".join(lines)
 

@@ -189,11 +189,15 @@ class ActionPlanner:
             ActionPlan with structured actions to execute.
         """
         start = time.perf_counter()
+        effective_legal_actions = self._filter_legal_actions_for_planning(
+            game_state, legal_actions or []
+        )
         diag: dict[str, Any] = {
             "timestamp": time.time(),
             "trigger": trigger,
             "turn": game_state.get("turn", {}).get("turn_number", 0),
             "legal_actions": legal_actions,
+            "effective_legal_actions": effective_legal_actions,
             "decision_context_type": (decision_context or {}).get("type"),
             "bridge_request": game_state.get("_bridge_request_type"),
         }
@@ -201,7 +205,7 @@ class ActionPlanner:
         # Build the prompt
         system_prompt = AUTOPILOT_SYSTEM_PROMPT
         user_message = self._build_action_prompt(
-            game_state, trigger, legal_actions, decision_context
+            game_state, trigger, effective_legal_actions, decision_context
         )
         diag["prompt_len"] = len(user_message)
 
@@ -231,16 +235,16 @@ class ActionPlanner:
         diag["response_preview"] = (response or "")[:300]
 
         # Parse response
-        plan = self._parse_response(response, legal_actions or [])
+        plan = self._parse_response(response, effective_legal_actions)
         plan.trigger = trigger
         plan.turn_number = game_state.get("turn", {}).get("turn_number", 0)
 
         if not plan.actions:
             logger.warning(
                 f"Planner JSON parse returned 0 actions for trigger={trigger}, "
-                f"legal_actions={legal_actions}, response={response[:200] if response else 'None'!r}"
+                f"legal_actions={effective_legal_actions}, response={response[:200] if response else 'None'!r}"
             )
-            fallback = self._fallback_plan(response, legal_actions or [])
+            fallback = self._fallback_plan(response, effective_legal_actions)
             fallback.trigger = trigger
             fallback.turn_number = plan.turn_number
             if fallback.actions:
@@ -250,7 +254,7 @@ class ActionPlanner:
                 diag["failure"] = "empty_plan"
                 logger.warning(
                     f"Planner fallback also failed: trigger={trigger}, "
-                    f"{len(legal_actions or [])} legal actions"
+                    f"{len(effective_legal_actions)} legal actions"
                 )
 
         # Attach GRE action refs if raw actions are available. If the bridge says
@@ -330,6 +334,68 @@ class ActionPlanner:
             else:
                 logger.debug(f"No GRE ref found for {action.action_type.value} ({action.card_name})")
 
+    @staticmethod
+    def _normalize_action_text(text: str) -> str:
+        return re.sub(r"\s*\[[^\]]+\]\s*$", "", (text or "").strip())
+
+    def _filter_legal_actions_for_planning(
+        self,
+        game_state: dict[str, Any],
+        legal_actions: list[str],
+    ) -> list[str]:
+        """Remove actions the planner must not choose."""
+        if not legal_actions:
+            return []
+
+        filtered: list[str] = []
+        mana_pool = None
+        rules_engine_cls = None
+
+        for legal_action in legal_actions:
+            lower = legal_action.lower()
+            if lower.startswith("cast "):
+                if "[ok]" not in lower:
+                    continue
+
+                if mana_pool is None:
+                    try:
+                        from arenamcp.rules_engine import RulesEngine
+
+                        rules_engine_cls = RulesEngine
+                        local_seat = next(
+                            (
+                                p.get("seat_id")
+                                for p in game_state.get("players", [])
+                                if p.get("is_local")
+                            ),
+                            None,
+                        )
+                        if local_seat is not None:
+                            mana_pool = RulesEngine._get_mana_pool(game_state, local_seat)
+                        else:
+                            mana_pool = {}
+                    except Exception:
+                        mana_pool = {}
+
+                if mana_pool and rules_engine_cls is not None:
+                    card_name = self._normalize_action_text(legal_action).replace("Cast ", "").strip()
+                    card_cost = ""
+                    for card in game_state.get("hand", []):
+                        if card.get("name", "").lower() == card_name.lower():
+                            card_cost = card.get("mana_cost", "")
+                            break
+                    if card_cost and not rules_engine_cls._can_afford(card_cost, mana_pool):
+                        logger.info(
+                            "Filtering unaffordable spell: %s (cost=%s)",
+                            card_name,
+                            card_cost,
+                        )
+                        continue
+
+            filtered.append(legal_action)
+
+        return filtered or legal_actions
+
     def _build_action_prompt(
         self,
         game_state: dict[str, Any],
@@ -390,45 +456,7 @@ class ActionPlanner:
         ]
 
         if legal_actions:
-            # Filter out spells that can't be cast.
-            # Primary: [OK] marker (MTGA's autoTapSolution).
-            # Secondary: rules_engine mana check (catches cases where
-            # autoTapSolution is present but mana is actually insufficient).
-            filtered = []
-            mana_pool = None  # lazy-init
-            for a in legal_actions:
-                lower = a.lower()
-                if lower.startswith("cast "):
-                    if "[ok]" not in lower:
-                        continue  # No autoTap solution — skip
-                    # Secondary check: verify mana pool can actually pay
-                    if mana_pool is None:
-                        try:
-                            from arenamcp.rules_engine import RulesEngine
-                            local_seat = next(
-                                (p.get("seat_id") for p in game_state.get("players", [])
-                                 if p.get("is_local")), None
-                            )
-                            if local_seat is not None:
-                                mana_pool = RulesEngine._get_mana_pool(game_state, local_seat)
-                            else:
-                                mana_pool = {}  # Can't check — allow through
-                        except Exception:
-                            mana_pool = {}  # Can't check — allow through
-                    if mana_pool:
-                        # Extract card name, find its cost in hand
-                        card_name = a.split("[")[0].replace("Cast ", "").strip()
-                        hand = game_state.get("hand", [])
-                        card_cost = ""
-                        for c in hand:
-                            if c.get("name", "").lower() == card_name.lower():
-                                card_cost = c.get("mana_cost", "")
-                                break
-                        if card_cost and not RulesEngine._can_afford(card_cost, mana_pool):
-                            logger.info(f"Filtering unaffordable spell: {card_name} (cost={card_cost})")
-                            continue
-                filtered.append(a)
-            parts.append(f"\nLegal: {', '.join(filtered or legal_actions)}")
+            parts.append(f"\nLegal: {', '.join(legal_actions)}")
 
         if decision_context:
             parts.append(f"\nDecision: {json.dumps(decision_context, indent=2)}")
@@ -559,8 +587,15 @@ class ActionPlanner:
         # Parse actions
         for action_data in data.get("actions", []):
             action = self._parse_action(action_data)
-            if action:
+            if action and self._is_action_legal(action, legal_actions):
                 plan.actions.append(action)
+            elif action:
+                logger.warning(
+                    "Dropping illegal planner action: %s (%s) not in %s",
+                    action.action_type.value,
+                    action.card_name,
+                    legal_actions,
+                )
 
         return plan
 
@@ -642,7 +677,7 @@ class ActionPlanner:
 
     def _legal_action_to_action(self, legal_action: str) -> Optional[GameAction]:
         """Convert a rules-engine legal action string into a GameAction."""
-        act = (legal_action or "").strip()
+        act = self._normalize_action_text(legal_action)
         lower = act.lower()
 
         if lower.startswith("play land:"):
@@ -679,6 +714,49 @@ class ActionPlanner:
             return GameAction(action_type=ActionType.PASS_PRIORITY)
 
         return None
+
+    def _is_action_legal(self, action: GameAction, legal_actions: list[str]) -> bool:
+        """Require planner output to map to a current legal action."""
+        if not legal_actions:
+            return True
+
+        normalized_card_name = self._normalize_action_text(action.card_name).lower()
+
+        for legal_action in legal_actions:
+            legal = self._legal_action_to_action(legal_action)
+            if not legal or legal.action_type != action.action_type:
+                continue
+
+            if action.action_type in (
+                ActionType.CAST_SPELL,
+                ActionType.PLAY_LAND,
+                ActionType.ACTIVATE_ABILITY,
+            ):
+                if legal.card_name.strip().lower() == normalized_card_name:
+                    return True
+                continue
+
+            if action.action_type == ActionType.SELECT_TARGET:
+                if legal.target_names and action.target_names:
+                    if legal.target_names[0].strip().lower() == action.target_names[0].strip().lower():
+                        return True
+                continue
+
+            if action.action_type == ActionType.DECLARE_ATTACKERS:
+                if {n.strip().lower() for n in legal.attacker_names} == {
+                    n.strip().lower() for n in action.attacker_names
+                }:
+                    return True
+                continue
+
+            if action.action_type == ActionType.CHOOSE_STARTING_PLAYER:
+                if (legal.play_or_draw or "").lower() == (action.play_or_draw or "").lower():
+                    return True
+                continue
+
+            return True
+
+        return False
 
     def _parse_action(self, data: dict[str, Any]) -> Optional[GameAction]:
         """Parse a single action dict into a GameAction."""

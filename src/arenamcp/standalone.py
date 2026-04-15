@@ -736,8 +736,56 @@ class StandaloneCoach:
             return True
 
         legal_actions = game_state.get("legal_actions", []) or []
-        meaningful_prefixes = ("Cast ", "Play ", "Activate Ability", "Action: Activate", "Action: Attack", "Action: Block")
-        return any(action.startswith(meaningful_prefixes) for action in legal_actions)
+        return any(cls._is_meaningful_legal_action(action) for action in legal_actions)
+
+    @staticmethod
+    def _is_meaningful_legal_action(action: str) -> bool:
+        meaningful_prefixes = (
+            "Cast ",
+            "Play ",
+            "Activate Ability",
+            "Action: Activate",
+            "Action: Attack",
+            "Action: Block",
+        )
+        return str(action or "").startswith(meaningful_prefixes)
+
+    @classmethod
+    def _has_actionable_priority_window(cls, game_state: dict[str, Any]) -> bool:
+        """Return True when priority is on the local player and something actionable remains."""
+        turn = game_state.get("turn", {})
+        local_seat = cls._get_local_seat_from_state(game_state)
+        if local_seat is None or turn.get("priority_player") != local_seat:
+            return False
+
+        if game_state.get("pending_decision"):
+            return True
+
+        legal_actions = game_state.get("legal_actions", []) or []
+        return any(cls._is_meaningful_legal_action(action) for action in legal_actions)
+
+    @classmethod
+    def _summarize_actionable_window(cls, game_state: dict[str, Any], max_items: int = 2) -> str:
+        """Build a short debug summary for a stuck/actionable priority window."""
+        pending_decision = str(game_state.get("pending_decision") or "").strip()
+        legal_actions = [str(action or "").strip() for action in (game_state.get("legal_actions", []) or [])]
+
+        if pending_decision:
+            actions = legal_actions[:max_items]
+        else:
+            actions = [action for action in legal_actions if cls._is_meaningful_legal_action(action)][:max_items]
+
+        normalized: list[str] = []
+        for action in actions:
+            compact = " ".join(action.split())
+            if len(compact) > 72:
+                compact = compact[:69].rstrip() + "..."
+            normalized.append(compact)
+
+        summary = "; ".join(normalized) if normalized else f"legal={len(legal_actions)}"
+        if pending_decision:
+            return f"decision={pending_decision} | {summary}"
+        return summary
 
     @staticmethod
     def _is_garbled(text: str, threshold: float = 0.4) -> bool:
@@ -1495,6 +1543,13 @@ class StandaloneCoach:
 
         prev_state: dict[str, Any] = {}
         seat_announced = False
+        last_priority_log_signature = None
+        last_priority_state_line = ""
+        last_priority_progress_note = "startup"
+        last_actionable_window_signature = None
+        last_actionable_window_started_at = 0.0
+        last_actionable_window_log_at = 0.0
+        actionable_window_stall_seconds = 4.0
 
         last_advice_turn = 0
         last_advice_phase = ""
@@ -1661,6 +1716,63 @@ class StandaloneCoach:
                 turn_num = turn.get("turn_number", 0)
                 phase = turn.get("phase", "")
                 curr_match_id = curr_state.get("match_id")
+                step = turn.get("step", "")
+                active_player = turn.get("active_player", 0)
+                priority_player = turn.get("priority_player", 0)
+                local_seat = self._get_local_seat_from_state(curr_state)
+                pending_decision = str(curr_state.get("pending_decision") or "").strip()
+                legal_actions = curr_state.get("legal_actions", []) or []
+                priority_owner = "YOU" if local_seat and priority_player == local_seat else "OPP"
+                active_owner = "YOU" if local_seat and active_player == local_seat else "OPP"
+                priority_signature = (
+                    curr_match_id,
+                    turn_num,
+                    phase,
+                    step,
+                    active_player,
+                    priority_player,
+                    local_seat,
+                    pending_decision,
+                    len(legal_actions),
+                )
+                pending_suffix = f" | decision={pending_decision}" if pending_decision else ""
+                state_line = (
+                    f"T{turn_num} {phase}/{step or '-'} | active={active_owner}({active_player}) "
+                    f"| priority={priority_owner}({priority_player}) | legal={len(legal_actions)}"
+                    f"{pending_suffix}"
+                )
+                if turn_num > 0 and priority_signature != last_priority_log_signature:
+                    self.ui.log(f"[STATE] {state_line}")
+                    last_priority_log_signature = priority_signature
+                    last_priority_state_line = state_line
+
+                if turn_num > 0 and self._has_actionable_priority_window(curr_state):
+                    actionable_window_signature = (
+                        priority_signature,
+                        tuple(str(action or "") for action in legal_actions[:8]),
+                    )
+                    now = time.time()
+                    if actionable_window_signature != last_actionable_window_signature:
+                        last_actionable_window_signature = actionable_window_signature
+                        last_actionable_window_started_at = now
+                        last_actionable_window_log_at = 0.0
+                    else:
+                        elapsed = now - last_actionable_window_started_at
+                        if (
+                            elapsed >= actionable_window_stall_seconds
+                            and now - last_actionable_window_log_at >= actionable_window_stall_seconds
+                        ):
+                            window_summary = self._summarize_actionable_window(curr_state)
+                            self.ui.log(
+                                "[STUCK?] "
+                                f"priority still YOU for {elapsed:.1f}s | {last_priority_state_line or state_line} "
+                                f"| window={window_summary} | last={last_priority_progress_note}"
+                            )
+                            last_actionable_window_log_at = now
+                else:
+                    last_actionable_window_signature = None
+                    last_actionable_window_started_at = 0.0
+                    last_actionable_window_log_at = 0.0
 
                 # Resolve unknown cards via VLM (only when using a local VLM backend)
                 # Skip entirely for cloud backends like Azure — the card DB
@@ -2029,6 +2141,7 @@ class StandaloneCoach:
                     # Debug: Log trigger results
                     if triggers:
                         logger.info(f"Triggers detected: {triggers}")
+                        last_priority_progress_note = f"triggers={','.join(triggers[:2])}"
 
                     # Feed the GRE log ring buffer for watchdog context
                     _turn = curr_state.get("turn", {})
@@ -2381,15 +2494,21 @@ class StandaloneCoach:
                                     curr_state, trigger
                                 )
                                 if handled:
+                                    last_priority_progress_note = f"autopilot handled {trigger}"
+                                    last_actionable_window_signature = None
+                                    last_actionable_window_started_at = time.time()
+                                    last_actionable_window_log_at = 0.0
                                     last_advice_turn = turn_num
                                     last_advice_phase = phase
                                     continue  # Autopilot handled it
                                 else:
+                                    last_priority_progress_note = f"autopilot fell through {trigger}"
                                     logger.info(
                                         f"Autopilot failed for trigger '{trigger}' — "
                                         "falling through to coaching"
                                     )
                             except Exception as e:
+                                last_priority_progress_note = f"autopilot error {trigger}"
                                 logger.error(f"Autopilot error: {e}", exc_info=True)
                             # Fall through to coaching below
 
@@ -2541,6 +2660,10 @@ class StandaloneCoach:
                             else:
                                 # Advice was successfully generated — NOW update dedup state
                                 # so only real, delivered advice suppresses future triggers.
+                                last_priority_progress_note = f"coached {trigger}"
+                                last_actionable_window_signature = None
+                                last_actionable_window_started_at = time.time()
+                                last_actionable_window_log_at = 0.0
                                 last_advice_turn = turn_num
                                 last_advice_phase = phase
                                 self._last_advised_decision_sig = pending_decision_sig
