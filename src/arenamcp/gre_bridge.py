@@ -1129,11 +1129,13 @@ _ACTIONS_AVAILABLE_BRIDGE_REQUESTS = {
     "ActionsAvailableRequest",
 }
 
-_NON_ACTIONABLE_BRIDGE_REQUESTS = {
+_INTERMISSION_BRIDGE_REQUESTS = {
     "Intermission",
     "IntermissionReq",
     "IntermissionRequest",
 }
+
+_NON_ACTIONABLE_BRIDGE_REQUESTS = _INTERMISSION_BRIDGE_REQUESTS
 
 
 def _get_bridge_decision_type(
@@ -1186,6 +1188,10 @@ def enrich_snapshot_from_pending_response(
     request_payload = poll.get("request_payload")
     bridge_decision_context = poll.get("decision_context") or {}
 
+    is_intermission = (
+        (request_type or "") in _INTERMISSION_BRIDGE_REQUESTS
+        or (request_class or "") in _INTERMISSION_BRIDGE_REQUESTS
+    )
     if has_pending and _is_non_actionable_bridge_request(request_type, request_class):
         has_pending = False
         request_type = None
@@ -1193,6 +1199,12 @@ def enrich_snapshot_from_pending_response(
         actions = []
         request_payload = None
         bridge_decision_context = {}
+
+    # Surface intermission as a durable signal so the coach loop can
+    # detect end-of-match even after the request fields are zeroed out.
+    snapshot["_bridge_in_intermission"] = is_intermission
+    if is_intermission:
+        snapshot["match_ended"] = True
 
     snapshot["_bridge_request_type"] = request_type if has_pending else None
     snapshot["_bridge_request_class"] = request_class if has_pending else None

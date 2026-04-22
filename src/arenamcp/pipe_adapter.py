@@ -666,6 +666,11 @@ class PipeAdapter:
             from arenamcp.coach import get_models_for_mode
 
             mode = coach.backend_name
+            # Online is proxied — the server controls the active model so
+            # users can't cycle between them. Keeps upstream model swaps
+            # invisible.
+            if mode == "online":
+                return
             if mode not in ("online", "local"):
                 mode = "local"
 

@@ -3060,6 +3060,12 @@ def _handle_select_n_req(game_state: GameState, msg: dict) -> bool:
         "min": min_select, "max": max_select,
         "context_raw": context_data, "prior_prompt": prior_prompt or None,
         "option_cards": option_cards or None,
+        # Preserve raw option IDs and the request's IdType so the
+        # autopilot's GRE bridge path knows whether to submit instance
+        # IDs (e.g. milled-card pick from a library reveal) or grp IDs
+        # (e.g. printing-based choice).
+        "option_ids": option_ids,
+        "id_type": req.get("idType") or "",
     }
     return False
 

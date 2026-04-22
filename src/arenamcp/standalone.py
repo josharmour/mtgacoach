@@ -2205,6 +2205,28 @@ class StandaloneCoach:
                             else:
                                 self.ui.status("BRIDGE", "Disconnected")
 
+                        # BRIDGE-DRIVEN MATCH END:
+                        # The bridge sees IntermissionRequest as soon as MTGA
+                        # transitions to the post-match screen. The log-side
+                        # GREMessageType_IntermissionReq path (which calls
+                        # prepare_for_game_end + reset) can lag behind by minutes
+                        # if Player.log hasn't flushed. Drive the same pipeline
+                        # directly when the bridge sees intermission so the coach
+                        # stops running on stale mid-match state.
+                        if curr_state.get("_bridge_in_intermission") and not self._game_end_handled:
+                            try:
+                                from arenamcp.server import game_state as gs
+                                if gs.match_id and not gs.game_ended_event.is_set():
+                                    logger.info(
+                                        "Bridge Intermission detected (match=%s) — "
+                                        "triggering match-end pipeline",
+                                        gs.match_id,
+                                    )
+                                    gs.prepare_for_game_end()
+                                    gs.reset()
+                            except Exception as e:
+                                logger.debug(f"Bridge-driven match end failed: {e}")
+
                     triggers = self._trigger.check_triggers(prev_state, curr_state)
 
                     # Bridge-detected decision takes priority over log-based detection
@@ -2521,18 +2543,27 @@ class StandaloneCoach:
                         if not should_advise:
                             continue
 
-                        if (
+                        suppress_coach_advice = (
                             has_pending_decision
                             and pending_decision != "Action Required"
                             and pending_decision_sig
                             and pending_decision_sig == self._last_advised_decision_sig
+                        )
+                        if suppress_coach_advice and not (
+                            self._autopilot_enabled and self._autopilot
                         ):
+                            # Advice-only mode: coach already spoke this
+                            # decision; nothing else to do.
                             logger.info(
                                 "Suppressing duplicate unresolved decision advice: %s via %s",
                                 pending_decision,
                                 trigger,
                             )
                             continue
+                        # When autopilot is on, fall through so autopilot can
+                        # retry the action even if the coach has already
+                        # advised. Coach re-entry is blocked below using the
+                        # same flag so we don't pay for another LLM call.
 
                         logger.info(f"TRIGGER: {trigger}")
 
@@ -2644,6 +2675,19 @@ class StandaloneCoach:
                                 logger.error(f"Autopilot error: {e}", exc_info=True)
                             # Fall through to coaching below
 
+                        # When autopilot retried a decision the coach has
+                        # already advised on, skip re-running the LLM. The
+                        # user already heard the advice; just wait for the
+                        # autopilot to succeed (engine_busy window expiring,
+                        # bridge reconnecting, etc.).
+                        if suppress_coach_advice:
+                            logger.debug(
+                                "Autopilot retry without re-advising: %s via %s",
+                                pending_decision,
+                                trigger,
+                            )
+                            continue
+
                         if self._coach:
                             # Snapshot turn state BEFORE the (slow) LLM call
                             pre_advice_turn = turn_num
@@ -2673,10 +2717,21 @@ class StandaloneCoach:
 
                                 # Emit structured actions for the match overlay
                                 # to highlight directly on MTGA cards.
+                                # Skip when autopilot is enabled — it will
+                                # execute the action itself, and leaving a
+                                # stale highlighted ring on the board after
+                                # the action fires is distracting.
                                 try:
-                                    emit = getattr(self.ui, "emit_suggested_actions", None)
-                                    if callable(emit):
-                                        emit(self._actions_to_event_payload(plan, curr_state))
+                                    if not self._autopilot_enabled:
+                                        emit = getattr(self.ui, "emit_suggested_actions", None)
+                                        if callable(emit):
+                                            emit(self._actions_to_event_payload(plan, curr_state))
+                                    else:
+                                        # Clear any residual highlights from
+                                        # an earlier advice-mode run.
+                                        clear = getattr(self.ui, "emit_suggested_actions", None)
+                                        if callable(clear):
+                                            clear([])
                                 except Exception as exc:
                                     logger.debug(f"emit_suggested_actions failed: {exc}")
                             else:

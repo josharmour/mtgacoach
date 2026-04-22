@@ -2082,6 +2082,19 @@ class AutopilotEngine:
             ActionType.SEARCH_LIBRARY,
             ActionType.SELECT_COUNTERS,
         ):
+            # Scry / surveil / similar library-top ordering is a GroupRequest,
+            # not a SelectN. Route it through submit_group so the client sends
+            # the proper GroupResp with top/bottom zones populated.
+            bridge_req_type = (
+                game_state.get("_bridge_request_type")
+                or game_state.get("_bridge_request_class")
+                or ""
+            )
+            if "Group" in str(bridge_req_type):
+                result = self._try_gre_bridge_scry(action, game_state)
+                if result is not None:
+                    return result
+
             result = self._try_gre_bridge_select_n(action, game_state)
             if result is not None:
                 return result
@@ -2529,57 +2542,128 @@ class AutopilotEngine:
         if not desired_names and action.card_name:
             desired_names = [action.card_name.lower().strip()]
 
-        # Collect candidate cards from every visible zone
-        matched_grp_ids: list[int] = []
+        # Decide whether the request takes instance IDs or grp IDs. For
+        # most library-reveal style selections (Lluwen, Scry, Surveil,
+        # mill-then-pick) the IdType is InstanceId — two copies of the
+        # same card have different instance IDs. Submitting grp_ids in
+        # that case silently no-ops and the game keeps asking.
+        decision_context = game_state.get("decision_context") or {}
+        id_type = str(decision_context.get("id_type") or "").strip()
+        option_ids = decision_context.get("option_ids") or []
+        try:
+            option_ids = [int(x) for x in option_ids]
+        except (TypeError, ValueError):
+            option_ids = []
+        wants_instance_ids = (
+            "InstanceId" in id_type
+            or "instance" in id_type.lower()
+            # Heuristic fallback: if the request advertises a short list
+            # of specific IDs AND those IDs resolve to battlefield/library
+            # game objects, they're instance IDs.
+            or (
+                len(option_ids) > 0
+                and len(option_ids) <= 20
+                and all(
+                    any(
+                        int(c.get("instance_id") or 0) == oid
+                        for c in (
+                            game_state.get("battlefield", [])
+                            + game_state.get("library_top_revealed", [])
+                            + game_state.get("hand", [])
+                            + game_state.get("graveyard", [])
+                            + game_state.get("stack", [])
+                            + game_state.get("exile", [])
+                        )
+                        if isinstance(c, dict)
+                    )
+                    for oid in option_ids[:5]
+                )
+            )
+        )
+
+        matched_ids: list[int] = []
         zone_keys = (
             "library", "library_top_revealed", "hand", "battlefield",
             "battlefield_player", "battlefield_opponent",
             "graveyard", "graveyard_player", "graveyard_opponent",
             "exile", "stack",
         )
-        for zone_key in zone_keys:
-            zone = game_state.get(zone_key)
-            if not isinstance(zone, list):
-                continue
-            for card in zone:
-                if not isinstance(card, dict):
-                    continue
-                name = str(card.get("name") or "").lower().strip()
-                grp = card.get("grp_id") or 0
-                if not (name and grp):
-                    continue
-                for want in desired_names:
-                    if want and (want == name or want in name or name in want):
-                        if int(grp) not in matched_grp_ids:
-                            matched_grp_ids.append(int(grp))
-                        break
 
-        # Fallback: some SelectN targets are library-top reveals (Lluwen ETB,
-        # Cultivate, etc.) that don't appear in hand/battlefield/graveyard.
-        # Resolve by card name lookup against the card DB so we can still
-        # submit the right grp_id.
-        if not matched_grp_ids and desired_names:
-            try:
-                from arenamcp.card_db import get_card_database
-                card_db = get_card_database()
-                for want in desired_names:
-                    card = card_db.get_card_by_name(want)
-                    if card and getattr(card, "arena_id", 0):
-                        grp = int(card.arena_id)
-                        if grp not in matched_grp_ids:
-                            matched_grp_ids.append(grp)
-                if matched_grp_ids:
-                    logger.info(
-                        f"select_n: resolved {desired_names} via card DB -> {matched_grp_ids}"
-                    )
-            except Exception as e:
-                logger.debug(f"select_n card DB lookup failed: {e}")
+        if wants_instance_ids:
+            # Resolve desired_names against visible cards and submit their
+            # instance_ids — restricted to option_ids when available.
+            option_id_set = set(option_ids)
+            for zone_key in zone_keys:
+                zone = game_state.get(zone_key)
+                if not isinstance(zone, list):
+                    continue
+                for card in zone:
+                    if not isinstance(card, dict):
+                        continue
+                    name = str(card.get("name") or "").lower().strip()
+                    iid = int(card.get("instance_id") or 0)
+                    if not (name and iid):
+                        continue
+                    if option_id_set and iid not in option_id_set:
+                        continue
+                    for want in desired_names:
+                        if want and (want == name or want in name or name in want):
+                            if iid not in matched_ids:
+                                matched_ids.append(iid)
+                            break
+                    if len(matched_ids) >= max(1, int(decision_context.get("count") or 1)):
+                        break
+                if len(matched_ids) >= max(1, int(decision_context.get("count") or 1)):
+                    break
+
+        if not matched_ids:
+            # Collect candidate cards by grp_id from every visible zone
+            # (falls back to this path when IdType is grp-based or we
+            # couldn't resolve by instance).
+            for zone_key in zone_keys:
+                zone = game_state.get(zone_key)
+                if not isinstance(zone, list):
+                    continue
+                for card in zone:
+                    if not isinstance(card, dict):
+                        continue
+                    name = str(card.get("name") or "").lower().strip()
+                    grp = card.get("grp_id") or 0
+                    if not (name and grp):
+                        continue
+                    for want in desired_names:
+                        if want and (want == name or want in name or name in want):
+                            if int(grp) not in matched_ids:
+                                matched_ids.append(int(grp))
+                            break
+
+            # Fallback: some SelectN targets are library-top reveals (Lluwen ETB,
+            # Cultivate, etc.) that don't appear in hand/battlefield/graveyard.
+            # Resolve by card name lookup against the card DB so we can still
+            # submit the right grp_id.
+            if not matched_ids and desired_names:
+                try:
+                    from arenamcp.card_db import get_card_database
+                    card_db = get_card_database()
+                    for want in desired_names:
+                        card = card_db.get_card_by_name(want)
+                        if card and getattr(card, "arena_id", 0):
+                            grp = int(card.arena_id)
+                            if grp not in matched_ids:
+                                matched_ids.append(grp)
+                    if matched_ids:
+                        logger.info(
+                            f"select_n: resolved {desired_names} via card DB -> {matched_ids}"
+                        )
+                except Exception as e:
+                    logger.debug(f"select_n card DB lookup failed: {e}")
 
         # Submit — empty list → SubmitArbitrary (safe fallback when we can't
         # resolve a specific option)
-        success = self._gre_bridge.submit_selection(matched_grp_ids)
+        success = self._gre_bridge.submit_selection(matched_ids)
         if success:
-            method = f"{len(matched_grp_ids)} grp_ids" if matched_grp_ids else "arbitrary"
+            id_kind = "instance_ids" if wants_instance_ids else "grp_ids"
+            method = f"{len(matched_ids)} {id_kind}" if matched_ids else "arbitrary"
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE,
                 f"select_n: {method} (req={req_class or req_type}) via GRE bridge"
@@ -2588,6 +2672,99 @@ class AutopilotEngine:
 
         logger.info("GRE bridge select_n failed, falling back to clicks")
         self._gre_bridge_failed_methods.add("select_n")
+        return None
+
+    def _try_gre_bridge_scry(
+        self, action: GameAction, game_state: dict[str, Any]
+    ) -> Optional[ClickResult]:
+        """Submit a scry / surveil-style GroupRequest via the bridge.
+
+        The client represents scry as a `GroupRequest` over the cards being
+        scryed, expecting two Groups in the response (top and bottom of the
+        library). The LLM gives us:
+          - `select_card_names`: the card(s) to keep on top
+          - `scry_position`: "top" or "bottom" — applied to all revealed
+             cards when no specific names are given
+
+        Cards not named in `select_card_names` go to the other group.
+        """
+        pending = self._gre_bridge.get_pending_actions()
+        if not pending or not pending.get("has_pending"):
+            return None
+
+        req_class = str(pending.get("request_class") or "")
+        if "GroupRequest" not in req_class and "Group" not in str(pending.get("request_type") or ""):
+            return None
+
+        # Extract the revealed instance IDs the request is asking us to order.
+        request_payload = pending.get("request_payload") or {}
+        instance_ids_raw = (
+            request_payload.get("instanceIds")
+            or (pending.get("decision_context") or {}).get("instanceIds")
+            or []
+        )
+        instance_ids: list[int] = []
+        for v in instance_ids_raw:
+            try:
+                instance_ids.append(int(v))
+            except (TypeError, ValueError):
+                continue
+        if not instance_ids:
+            logger.info("scry: GroupRequest has no instanceIds; cannot split top/bottom")
+            return None
+
+        # Map the LLM's chosen names to instance IDs via the stack / library
+        # peek in game state.
+        desired_names = [
+            (n or "").lower().strip()
+            for n in (action.select_card_names or [])
+            if n and (n or "").strip()
+        ]
+        name_to_iid: dict[str, list[int]] = {}
+        for zone_key in ("library_top_revealed", "stack", "scry_cards", "revealed"):
+            zone = game_state.get(zone_key)
+            if not isinstance(zone, list):
+                continue
+            for card in zone:
+                if not isinstance(card, dict):
+                    continue
+                name = str(card.get("name") or "").lower().strip()
+                iid = card.get("instance_id") or card.get("instanceId") or 0
+                if name and iid:
+                    name_to_iid.setdefault(name, []).append(int(iid))
+
+        top_ids: list[int] = []
+        if desired_names:
+            for want in desired_names:
+                for name, iids in name_to_iid.items():
+                    if want and (want == name or want in name or name in want):
+                        for iid in iids:
+                            if iid in instance_ids and iid not in top_ids:
+                                top_ids.append(iid)
+
+        # If no specific names resolved, fall back to scry_position intent.
+        pos = (action.scry_position or "").lower()
+        if not top_ids and not desired_names:
+            if pos == "top":
+                top_ids = list(instance_ids)
+            # pos == "bottom" or empty: leave top empty (all go bottom)
+
+        bottom_ids = [iid for iid in instance_ids if iid not in top_ids]
+
+        groups = [
+            {"ids": top_ids, "zone": "Library", "sub_zone": "Top"},
+            {"ids": bottom_ids, "zone": "Library", "sub_zone": "Bottom"},
+        ]
+        success = self._gre_bridge.submit_group(groups)
+        if success:
+            self._log_execution_path(
+                ExecutionPath.GRE_AWARE,
+                f"scry: top={len(top_ids)} bottom={len(bottom_ids)} via GRE bridge"
+            )
+            return ClickResult(True, 0, 0, "scry", "GRE bridge")
+
+        logger.info("GRE bridge scry failed, falling back to clicks")
+        self._gre_bridge_failed_methods.add("scry")
         return None
 
     def _execute_action(

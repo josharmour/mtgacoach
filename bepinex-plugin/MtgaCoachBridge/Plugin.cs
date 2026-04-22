@@ -830,7 +830,13 @@ namespace MtgaCoachBridge
 
                     if (selectedBlockers.Count > 0)
                     {
+                        // Two-step protocol: UpdateBlockers sends the pairing
+                        // (DeclareBlockersResp), then SubmitBlockers sends the
+                        // "confirm" (SubmitBlockersReq). Without the second
+                        // call MTGA leaves the "N Blockers" confirm button on
+                        // screen waiting for the user to click it.
                         blockersReq.UpdateBlockers(selectedBlockers.ToArray());
+                        blockersReq.SubmitBlockers();
                     }
                     else
                     {
@@ -1027,6 +1033,31 @@ namespace MtgaCoachBridge
                         var idsArr = g["ids"] as JArray;
                         if (idsArr != null)
                             foreach (var id in idsArr) group.Ids.Add((uint)id.Value<int>());
+
+                        // Optional zone/sub_zone fields so the caller can
+                        // express scry/surveil-style top/bottom ordering.
+                        // Accept either the short enum name ("Library",
+                        // "Top") or the protobuf OriginalName form
+                        // ("ZoneType_Library", "SubZoneType_Top").
+                        var zoneTok = g["zone"];
+                        if (zoneTok != null && zoneTok.Type != JTokenType.Null)
+                        {
+                            var raw = zoneTok.Value<string>() ?? string.Empty;
+                            var stripped = raw.StartsWith("ZoneType_") ? raw.Substring("ZoneType_".Length) : raw;
+                            ZoneType zt;
+                            if (Enum.TryParse<ZoneType>(stripped, true, out zt))
+                                group.ZoneType = zt;
+                        }
+                        var subZoneTok = g["sub_zone"];
+                        if (subZoneTok != null && subZoneTok.Type != JTokenType.Null)
+                        {
+                            var raw = subZoneTok.Value<string>() ?? string.Empty;
+                            var stripped = raw.StartsWith("SubZoneType_") ? raw.Substring("SubZoneType_".Length) : raw;
+                            SubZoneType szt;
+                            if (Enum.TryParse<SubZoneType>(stripped, true, out szt))
+                                group.SubZoneType = szt;
+                        }
+
                         groups.Add(group);
                     }
                 }
@@ -1082,6 +1113,14 @@ namespace MtgaCoachBridge
             if (request is SelectTargetsRequest targetsReq)
             {
                 var targetInstanceId = (uint)cmd.Json.Value<int>("target_instance_id");
+                // Default to finalizing (UpdateTarget + SubmitTargets) so the
+                // "Take Action" / confirm button is pressed automatically.
+                // Callers that need to pair multiple targets before committing
+                // can pass "finalize": false on intermediate calls.
+                bool finalize = true;
+                var finalizeTok = cmd.Json["finalize"];
+                if (finalizeTok != null && finalizeTok.Type != JTokenType.Null)
+                    finalize = finalizeTok.Value<bool>();
 
                 // Find the target in the request's own TargetSelections
                 // Each TargetSelection has a TargetIdx and a list of legal Targets
@@ -1092,7 +1131,7 @@ namespace MtgaCoachBridge
                     {
                         if (t.TargetInstanceId == targetInstanceId)
                         {
-                            _log.LogInfo($"UpdateTarget: instanceId={targetInstanceId}, targetIdx={ts.TargetIdx}");
+                            _log.LogInfo($"UpdateTarget: instanceId={targetInstanceId}, targetIdx={ts.TargetIdx}, finalize={finalize}");
                             targetsReq.UpdateTarget(t, ts.TargetIdx);
                             found = true;
                             break;
@@ -1113,8 +1152,14 @@ namespace MtgaCoachBridge
                     return;
                 }
 
+                if (finalize)
+                {
+                    _log.LogInfo("SubmitTargets: finalizing");
+                    targetsReq.SubmitTargets();
+                }
+
                 lock (_interactionLock) { _lastKnownRequest = null; }
-                cmd.SetResponse(new JObject { ["ok"] = true, ["submitted_type"] = "SelectTargets", ["target_instance_id"] = (int)targetInstanceId });
+                cmd.SetResponse(new JObject { ["ok"] = true, ["submitted_type"] = "SelectTargets", ["target_instance_id"] = (int)targetInstanceId, ["finalized"] = finalize });
             }
             else
             {

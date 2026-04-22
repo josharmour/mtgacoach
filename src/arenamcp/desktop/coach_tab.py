@@ -673,9 +673,15 @@ class CoachTab(QWidget):
             mode_button = self._buttons.get("cycle_mode")
             if mode_button is not None:
                 mode_button.setText(f"Mode: {self._compact_backend_label(value)}")
+            # Hide the Model cycling button in online mode — the proxy
+            # controls which model runs, so exposing its identity (or
+            # letting the user cycle) would lock us into a specific
+            # model name in the UI.
+            self._apply_model_button_visibility()
         elif normalized == "MODEL":
             self._refresh_coach_summary()
-            self._set_button_text("cycle_model", "Model", self._compact_model_label(value))
+            if not self._is_online_backend():
+                self._set_button_text("cycle_model", "Model", self._compact_model_label(value))
         elif normalized in {"BRIDGE", "GRE"}:
             self._set_status_label("bridge", text)
         elif normalized == "STYLE":
@@ -864,14 +870,36 @@ class CoachTab(QWidget):
     def _refresh_coach_summary(self) -> None:
         backend = self._status_values.get("BACKEND") or self._status_values.get("PROVIDER") or "-"
         model = self._status_values.get("MODEL", "").strip()
-        model_compact = self._compact_model_label(model) if model else ""
-
         backend_compact = self._compact_backend_label(backend)
+
+        # In online mode the proxy decides which model runs. Don't expose
+        # that to users — otherwise swapping a model upstream becomes a
+        # visible user-facing change.
+        if self._is_online_backend():
+            self._set_status_label("coach", backend_compact)
+            return
+
+        model_compact = self._compact_model_label(model) if model else ""
         if model_compact and model_compact.lower() not in {"default", backend_compact.lower()}:
             coach_text = f"{backend_compact} / {model_compact}"
         else:
             coach_text = backend_compact
         self._set_status_label("coach", coach_text)
+
+    def _is_online_backend(self) -> bool:
+        backend = (self._status_values.get("BACKEND") or self._status_values.get("PROVIDER") or "").lower().strip()
+        # Exact match on "online" or "online (...)". Anything containing
+        # "local" (including fallback strings like "local (temp) — online
+        # failed") is considered local.
+        if "local" in backend:
+            return False
+        return backend == "online" or backend.startswith("online ") or backend.startswith("online(") or "online" == self._compact_backend_label(backend).lower()
+
+    def _apply_model_button_visibility(self) -> None:
+        button = self._buttons.get("cycle_model")
+        if button is None:
+            return
+        button.setVisible(not self._is_online_backend())
 
     def refresh_game_state_view(self) -> None:
         if self._last_game_state_payload:

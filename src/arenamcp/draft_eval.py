@@ -311,6 +311,9 @@ def check_synergy(
         "flashback", "warp", "harmonize", "earthbend", "eerie",
         "room", "threshold", "delirium", "constellation",
         "+1/+1 counter", "flying", "defender",
+        # Secrets of Strixhaven (SOS)
+        "prepare", "increment", "paradigm",
+        "infusion", "opus", "repartee", "converge",
     ]
     for mech in mechanics:
         if mech in card_oracle or mech in card_types:

@@ -585,8 +585,67 @@ class RulesEngine:
             )
             actions = []
             if legal:
-                for name in RulesEngine._disambiguate_names(legal):
-                    actions.append(f"Attack with: {name}")
+                # Pair each legal attacker name with the P/T of a matching
+                # creature on the battlefield. When two creatures share a
+                # name, the #1/#2 disambiguation is assigned in the same
+                # order we iterate — callers see e.g.
+                # "Attack with: Filcher #1 (1/3)" vs "Attack with: Filcher #2 (0/2)"
+                # so the planner can distinguish a useful attacker from a
+                # dead-weight one. 0-power creatures are flagged explicitly.
+                local_seat = None
+                for p in game_state.get("players", []):
+                    if p.get("is_local"):
+                        local_seat = p.get("seat_id")
+                        break
+                turn_num = game_state.get("turn", {}).get("turn_number", 0)
+                candidates_by_name: Dict[str, List[Dict[str, Any]]] = {}
+                for card in game_state.get("battlefield", []):
+                    controller = card.get("controller_seat_id")
+                    owner = card.get("owner_seat_id")
+                    if controller not in (None, local_seat) and owner != local_seat:
+                        continue
+                    type_line = (card.get("type_line") or "").lower()
+                    if "creature" not in type_line:
+                        continue
+                    if card.get("is_tapped"):
+                        continue
+                    if (
+                        card.get("turn_entered_battlefield", -1) == turn_num
+                        and "haste" not in (card.get("oracle_text") or "").lower()
+                    ):
+                        continue
+                    name = card.get("name")
+                    if name:
+                        candidates_by_name.setdefault(name, []).append(card)
+
+                disambiguated = RulesEngine._disambiguate_names(legal)
+                consumed: Dict[str, int] = {}
+                for display_name, bare_name in zip(disambiguated, legal):
+                    queue = candidates_by_name.get(bare_name, [])
+                    idx = consumed.get(bare_name, 0)
+                    suffix = ""
+                    if idx < len(queue):
+                        card = queue[idx]
+                        consumed[bare_name] = idx + 1
+                        power = card.get("power")
+                        toughness = card.get("toughness")
+                        if power not in (None, "") and toughness not in (None, ""):
+                            try:
+                                power_val = int(power)
+                            except (TypeError, ValueError):
+                                power_val = None
+                            suffix = f" ({power}/{toughness})"
+                            if power_val == 0:
+                                oracle = (card.get("oracle_text") or "").lower()
+                                # Attack-triggered abilities can still make
+                                # a 0-power attacker worthwhile (raid, exert,
+                                # "whenever ~ attacks" clauses).
+                                attack_trigger = (
+                                    "whenever" in oracle and "attack" in oracle
+                                ) or "exert" in oracle
+                                if not attack_trigger:
+                                    suffix += " [0 POWER — attacking deals 0 damage]"
+                    actions.append(f"Attack with: {display_name}{suffix}")
             actions.append("Done (confirm attackers)")
             return actions
 

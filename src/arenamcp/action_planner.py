@@ -896,8 +896,8 @@ class ActionPlanner:
         "Mulligan":                {ActionType.MULLIGAN_KEEP, ActionType.MULLIGAN_MULL},
         "CastingTimeOption":       {ActionType.CASTING_OPTIONS, ActionType.MODAL_CHOICE, ActionType.NUMERIC_INPUT},
         "CastingTimeOptions":      {ActionType.CASTING_OPTIONS, ActionType.MODAL_CHOICE},
-        "Group":                   {ActionType.ORDER_TRIGGERS, ActionType.ORDER_BLOCKERS},
-        "GroupReq":                {ActionType.ORDER_TRIGGERS, ActionType.ORDER_BLOCKERS},
+        "Group":                   {ActionType.ORDER_TRIGGERS, ActionType.ORDER_BLOCKERS, ActionType.SELECT_N, ActionType.SELECT_TARGET},
+        "GroupReq":                {ActionType.ORDER_TRIGGERS, ActionType.ORDER_BLOCKERS, ActionType.SELECT_N, ActionType.SELECT_TARGET},
         "DeclareAttackers":        {ActionType.DECLARE_ATTACKERS},
         "DeclareBlockers":         {ActionType.DECLARE_BLOCKERS},
     }
@@ -952,6 +952,16 @@ class ActionPlanner:
             has_individual_attack_lines = any(
                 la.lower().strip().startswith("attack with:") for la in legal_actions
             )
+            def _strip_attacker_annotations(tail: str) -> str:
+                # Legal lines may carry a "(P/T)" suffix plus warning tags
+                # like "[0 POWER ...]"; drop anything after the name+#N.
+                cleaned = tail
+                for marker in (" (", " ["):
+                    cut = cleaned.find(marker)
+                    if cut >= 0:
+                        cleaned = cleaned[:cut]
+                return cleaned
+
             for legal_action in legal_actions:
                 low = legal_action.lower().strip()
                 if action.action_type == ActionType.DECLARE_ATTACKERS:
@@ -959,6 +969,7 @@ class ActionPlanner:
                         # Exactly one creature per line; keep the full tail
                         # (including any commas in the name).
                         tail = legal_action.split(":", 1)[1]
+                        tail = _strip_attacker_annotations(tail)
                         clean = self._normalize_action_text(tail).strip().lower()
                         if clean:
                             legal_names.add(clean)
@@ -969,6 +980,7 @@ class ActionPlanner:
                             # Fallback comma-split only if no per-creature lines
                             tail = legal_action.split(":", 1)[1]
                             for name in tail.split(","):
+                                name = _strip_attacker_annotations(name)
                                 clean = self._normalize_action_text(name).strip().lower()
                                 if clean:
                                     legal_names.add(clean)
@@ -977,6 +989,7 @@ class ActionPlanner:
                 else:
                     if low.startswith("block with:"):
                         tail = legal_action.split(":", 1)[1]
+                        tail = _strip_attacker_annotations(tail)
                         clean = self._normalize_action_text(tail).strip().lower()
                         if clean:
                             legal_names.add(clean)

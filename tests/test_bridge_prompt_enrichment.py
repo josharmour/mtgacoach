@@ -153,6 +153,58 @@ def test_enrich_snapshot_from_pending_response_clears_stale_state_when_bridge_id
     assert snapshot["legal_actions_raw"] == []
 
 
+def test_bridge_intermission_surfaces_durable_match_end_flags():
+    """Regression for issue #115 / #98: when the bridge sees an
+    IntermissionRequest, it zeros out _bridge_request_type so the existing
+    ``startswith("Intermission")`` guard in coach.py:check_triggers cannot
+    detect post-match state. The enrichment must instead set durable
+    ``_bridge_in_intermission`` and ``match_ended`` flags so the coach can
+    suppress losing_badly (and any other mid-match-only triggers) once the
+    match has actually ended.
+    """
+    snapshot: dict[str, object] = {
+        "pending_decision": "Action Required",
+        "decision_context": {"type": "actions_available"},
+        "legal_actions": ["Pass"],
+        "legal_actions_raw": [{"actionType": "ActionType_Pass"}],
+    }
+
+    enrich_snapshot_from_pending_response(
+        snapshot,
+        {
+            "has_pending": True,
+            "request_type": "Intermission",
+            "request_class": "IntermissionRequest",
+            "actions": [],
+        },
+        bridge_connected=True,
+    )
+
+    assert snapshot["_bridge_in_intermission"] is True
+    assert snapshot["match_ended"] is True
+    # Existing zeroing behavior must remain intact.
+    assert snapshot["_bridge_request_type"] is None
+    assert snapshot["_bridge_request_class"] is None
+    assert snapshot["pending_decision"] is None
+
+
+def test_bridge_non_intermission_does_not_set_match_end_flags():
+    snapshot: dict[str, object] = {}
+    enrich_snapshot_from_pending_response(
+        snapshot,
+        {
+            "has_pending": True,
+            "request_type": "Search",
+            "request_class": "SearchRequest",
+            "actions": [],
+        },
+        bridge_connected=True,
+    )
+
+    assert snapshot["_bridge_in_intermission"] is False
+    assert "match_ended" not in snapshot
+
+
 def test_bridge_enrich_snapshot_infers_scry_from_generic_selection_payload():
     poller = BridgeDecisionPoller(_DummyBridge())
     poller._last_poll_result = {

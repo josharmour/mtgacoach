@@ -502,7 +502,20 @@ CRITICAL STRATEGY RULES:
 - BLOCKING MATH: The "Best blocks → X dmg" line shows MINIMUM damage after optimal blocking. Trust this number, not the raw attacker power.
   Use the "Best blocks" life total for survival math, not the "No blocks" total.
   Do NOT re-derive blocking math yourself — the computed numbers already account for flying, trample, and blocker assignment.
+- DOUBLE-BLOCK RULE: Assigning two blockers to one attacker wastes a creature UNLESS (a) the attacker has trample, (b) killing this specific attacker is critical and a single blocker can't do it, or (c) there is only one attacker and you'd rather trade 2-for-1 than take the damage. Without trample, the attacker only deals its power in damage regardless of how many blockers it faces — a chump block with one creature achieves the same damage prevention as a double-block, while keeping your second creature alive. Default to spreading blockers across multiple attackers or chump-blocking, not stacking them on one.
+- COMBAT SOLVER: When you see a "Computed optimal blocks: ..." or "Computed optimal attack: ..." line in the game state, that is a deterministic enumeration of every legal block/attack assignment scored by life preserved + material traded. Follow it unless you have a specific reason the solver couldn't see (e.g. a combat trick in hand that swings the math, a removal spell on the stack about to kill the attacker, or a synergy that makes one creature more valuable than its P+T). Do NOT pick a different assignment without naming the specific reason.
 - IMPENDING: Cards flagged [IMPENDING] are enchantments with time counters — they are NOT creatures yet and cannot attack, block, or be counted as combat threats. Ignore them in damage/lethal math until the counters are gone.
+
+SECRETS OF STRIXHAVEN (SOS) MECHANICS — the five colleges each have their own theme; instants/sorceries are the mechanical backbone of the set:
+- PREPARE (keyword on creatures): The creature enters with an exiled copy of its "prepare spell." While the creature is on the battlefield AND prepared, you may cast that copy by paying its mana cost — doing so unprepares the creature. Think "Adventure that lives on the battlefield." The spell copy is only castable when the creature is prepared.
+- INCREMENT (keyword, Quandrix U/G): Whenever you cast a spell, if the mana spent to cast it is greater than this creature's power OR its toughness, put a +1/+1 counter on it. Rewards curving into progressively bigger spells; a 1/1 with increment can snowball fast.
+- PARADIGM (keyword on instants/sorceries): After the spell resolves, exile it. At the beginning of each of your first main phases for the REST OF THE GAME, you may cast a free copy from exile. These are the highest-impact cards in the set — resolving one usually wins the game if it's not answered immediately.
+- INFUSION (Witherbloom B/G ability word): The ability triggers or gains an enhanced mode if you GAINED ANY LIFE this turn. Amount doesn't matter — 1 life is enough. Pair with any lifegain trigger.
+- OPUS (Prismari U/R ability word): Triggers whenever you cast an instant or sorcery; the effect is BIGGER if you spent 5+ mana casting that spell. Reward for going tall on spells.
+- REPARTEE (Silverquill W/B ability word): Triggers whenever you cast an instant or sorcery that TARGETS A CREATURE (including your own creatures). Auras, pump spells, targeted removal, and targeted buffs all count.
+- FLASHBACK (returning, Lorehold R/W): Cast an instant/sorcery from your graveyard for its flashback cost, then exile it. Treats graveyard instants/sorceries as a second cast.
+- CONVERGE (returning): The effect scales with the number of DIFFERENT colors of mana spent to cast the spell (max 5). Paying {1}{W}{U}{B}{R}{G} on a converge spell gives the full effect.
+
 - Bounce/removal spells can target OPPONENT creatures too. Bouncing a blocker for lethal > saving your creature.
 - When opponent has a removal spell on the stack, weigh "save my creature" vs "ignore it and go for the kill."
 - Creatures have power/toughness (e.g. 5/5). Don't call creatures "planeswalkers."
@@ -541,7 +554,10 @@ STRATEGY:
 - ATTACK DEFAULT: Attack with ALL eligible creatures (listed after "can attack:" in the Atk: line) unless the trade is BAD or you need to hold back a blocker to survive crackback. Never say a creature is your "only" attacker without checking the full list.
 - CRACKBACK CHECK: Before attacking, count opponent's total power vs YOUR life. If they can kill you next turn and you need blockers to survive, do NOT attack with those creatures. The "Crackback:" line already accounts for your blockers — trust its damage-through number.
 - BLOCKING MATH: The "Best blocks → X dmg" line shows MINIMUM damage after optimal blocking. Use this number for survival math, not the "No blocks" total. Do NOT re-derive blocking math yourself.
+- DOUBLE-BLOCK RULE: A non-trample attacker deals its power in damage regardless of how many blockers face it. Double-blocking only makes sense when (a) attacker has trample, (b) you MUST kill this specific attacker and a single blocker can't, or (c) a 2-for-1 trade is explicitly worth it. Otherwise chump-block with ONE creature and save the other — the damage prevented is the same.
+- COMBAT SOLVER: "Computed optimal blocks:" / "Computed optimal attack:" lines are deterministic enumerations of every legal assignment scored by life + material. Follow them unless you have a specific reason they miss (combat trick in hand, removal on the stack, synergy that makes one creature worth more than P+T).
 - IMPENDING: Cards flagged [IMPENDING] are NOT creatures yet — ignore them in combat/lethal math.
+- SOS MECHANICS: PREPARE = creature has an exile-copy spell castable only while prepared; casting the copy unprepares it. INCREMENT = +1/+1 counter whenever you cast a spell costlier than this creature's power or toughness. PARADIGM = after resolving, free copy at every one of your main phases FOREVER — top-priority threats. INFUSION = triggers if you gained any life this turn. OPUS = instant/sorcery trigger, bigger at 5+ mana spent. REPARTEE = instant/sorcery targeting a creature. FLASHBACK = cast from graveyard, then exile. CONVERGE = scales with distinct colors paid.
 - Bounce/removal spells can target OPPONENT creatures too. Bouncing a blocker for lethal > saving your creature.
 - When opponent has a removal spell on the stack, weigh "save my creature" vs "ignore it and go for the kill."
 - ORACLE TEXT: Only reference abilities explicitly shown. Do NOT guess card text from memory.
@@ -1943,6 +1959,30 @@ class CoachEngine:
                 lines.append(f"Crackback: {opp_attack_power}pwr vs your {your_life} life \u2014 DANGER (only {life_margin} margin!)")
             else:
                 lines.append(f"Crackback: {opp_attack_power}pwr vs your {your_life} life \u2014 safe")
+
+        # Deterministic attack solver — picks the attacker subset that
+        # maximizes expected damage through while surviving worst-case
+        # crackback. Surface its pick so the LLM can follow it.
+        try:
+            from arenamcp.combat_solver import optimal_attacks
+            opp_next_turn_attackers = [c for c in opp_creatures]
+            your_remaining_blockers = [
+                c for c in your_creatures
+                if c not in valid_attackers and not c.get("is_tapped")
+            ]
+            solver_plan = optimal_attacks(
+                valid_attackers,
+                opp_blockers,
+                opp_life,
+                your_life,
+                opp_next_turn_attackers,
+                your_remaining_blockers,
+            )
+            if solver_plan is not None:
+                lines.append(f"Computed optimal attack: {solver_plan.explanation}")
+        except Exception as e:
+            logger.debug(f"combat solver (attack) failed: {e}")
+
         return lines
 
     def _format_block_combat(self, your_cards: list[dict], opp_cards: list[dict],
@@ -2018,6 +2058,20 @@ class CoachEngine:
         if opp_next_turn_power > 0 and life_after_blocks > 0:
             if opp_next_turn_power >= life_after_blocks:
                 lines.append(f"\u26a0\ufe0f Next turn: opp can attack for up to {opp_next_turn_power}pwr \u2014 LETHAL if you're at {life_after_blocks} life after this combat! Preserve blockers!")
+
+        # Deterministic block solver — grounds the LLM in the actual
+        # material/life outcome of every legal block assignment rather
+        # than letting it guess. The LLM should follow this unless it
+        # has a specific reason (e.g. a combat trick in hand).
+        try:
+            from arenamcp.combat_solver import optimal_blocks
+            usable_blockers = [c for c in your_creatures if not c.get("is_tapped")]
+            solver_plan = optimal_blocks(attacking, usable_blockers, your_life)
+            if solver_plan is not None:
+                lines.append(f"Computed optimal blocks: {solver_plan.explanation}")
+        except Exception as e:
+            logger.debug(f"combat solver (blocks) failed: {e}")
+
         return lines
 
     def _check_castability(self, type_line: str, cost: str, cmc: int,
@@ -4265,8 +4319,25 @@ class GameStateTrigger:
         # LOSING BADLY detection — proactive concede suggestion
         # Fires once per game when multiple signals indicate a hopeless position.
         # Only check on new turns to avoid spamming during combat math.
+        # Skip entirely if the match has ended or the bridge reports an
+        # intermission state — otherwise a resumed coach process will
+        # re-trigger losing_badly against post-match state and fire the
+        # win-probability LLM call well after the user lost.
+        pending_decision = str(curr_state.get("pending_decision") or "")
+        bridge_req_type = str(curr_state.get("_bridge_request_type") or "")
+        # _bridge_in_intermission is the durable signal — the bridge
+        # zeroes _bridge_request_type when it sees an Intermission request,
+        # so checking startswith("Intermission") on its own is dead code.
+        match_in_intermission = (
+            pending_decision.lower() == "intermission"
+            or bridge_req_type.startswith("Intermission")
+            or bool(curr_state.get("_bridge_in_intermission"))
+            or bool(curr_state.get("match_ended"))
+        )
+
         if (
             not self._losing_badly_fired
+            and not match_in_intermission
             and curr_local and curr_opp
             and curr_turn_num >= 4  # too early to judge before turn 4
             and "new_turn" in triggers
