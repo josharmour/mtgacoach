@@ -1323,6 +1323,11 @@ class AutopilotEngine:
                 if not click_result.success:
                     logger.warning(f"Action failed: {click_result}")
                     self._notify("AUTOPILOT", f"FAILED: {click_result.error}")
+                    # Block this action from being retried in the same priority
+                    # window. Without this, an action the bridge can't handle
+                    # (e.g. an auto-pick fallback whose name doesn't resolve)
+                    # gets re-planned on every backstop tick → infinite loop.
+                    self._mark_action_blocked(action, game_state, f"execute failed: {click_result.error}")
                     continue
 
                 self._actions_executed += 1

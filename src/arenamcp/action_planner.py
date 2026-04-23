@@ -803,6 +803,26 @@ class ActionPlanner:
 
         return max(legal_actions, key=score)
 
+    @staticmethod
+    def _strip_decoration(name: str) -> str:
+        """Strip P/T suffix and trailing tags from a card name.
+
+        The rules engine annotates legal actions with display-only suffixes
+        like "Veteran Survivor (4/3)" or "Foo [NO TARGETS]". The bridge
+        submitter looks up cards by their plain battlefield name, so the
+        decoration must come off before we hand the action to the bridge.
+        """
+        if not name:
+            return ""
+        # Remove a trailing "(P/T)" — power/toughness can be digits or '*'.
+        name = re.sub(r"\s*\([\dxX*+-]+/[\dxX*+-]+\)\s*$", "", name).strip()
+        # Remove any number of trailing "[...]" tags ([OK], [NO TARGETS], etc.).
+        prev = None
+        while prev != name:
+            prev = name
+            name = re.sub(r"\s*\[[^\]]*\]\s*$", "", name).strip()
+        return name
+
     def _legal_action_to_action(self, legal_action: str) -> Optional[GameAction]:
         """Convert a rules-engine legal action string into a GameAction."""
         act = self._normalize_action_text(legal_action)
@@ -811,20 +831,22 @@ class ActionPlanner:
         if lower.startswith("play land:"):
             return GameAction(
                 action_type=ActionType.PLAY_LAND,
-                card_name=act.split(":", 1)[1].strip(),
+                card_name=self._strip_decoration(act.split(":", 1)[1]),
             )
         if lower.startswith("cast "):
-            return GameAction(action_type=ActionType.CAST_SPELL, card_name=act[5:].strip())
+            return GameAction(action_type=ActionType.CAST_SPELL, card_name=self._strip_decoration(act[5:]))
         if lower.startswith("activate "):
-            return GameAction(action_type=ActionType.ACTIVATE_ABILITY, card_name=act[9:].strip())
+            return GameAction(action_type=ActionType.ACTIVATE_ABILITY, card_name=self._strip_decoration(act[9:]))
         if lower.startswith("declare attackers:"):
-            names = [n.strip() for n in act.split(":", 1)[1].split(",") if n.strip()]
+            names = [self._strip_decoration(n) for n in act.split(":", 1)[1].split(",")]
+            names = [n for n in names if n]
             return GameAction(action_type=ActionType.DECLARE_ATTACKERS, attacker_names=names)
         if lower.startswith("attack with:"):
-            names = [n.strip() for n in act.split(":", 1)[1].split(",") if n.strip()]
+            names = [self._strip_decoration(n) for n in act.split(":", 1)[1].split(",")]
+            names = [n for n in names if n]
             return GameAction(action_type=ActionType.DECLARE_ATTACKERS, attacker_names=names)
         if lower.startswith("block with:"):
-            name = act.split(":", 1)[1].strip()
+            name = self._strip_decoration(act.split(":", 1)[1])
             return GameAction(
                 action_type=ActionType.DECLARE_BLOCKERS,
                 blocker_assignments={name: ""} if name else {},
@@ -832,7 +854,7 @@ class ActionPlanner:
         if lower.startswith("select target:"):
             return GameAction(
                 action_type=ActionType.SELECT_TARGET,
-                target_names=[act.split(":", 1)[1].strip()],
+                target_names=[self._strip_decoration(act.split(":", 1)[1])],
             )
         if lower.startswith("pay costs for") or "auto-pay" in lower:
             return GameAction(action_type=ActionType.PAY_COSTS)

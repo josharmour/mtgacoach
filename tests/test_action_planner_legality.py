@@ -128,3 +128,64 @@ def test_optional_action_rules_engine_emits_accept_decline():
     assert any("accept" in a.lower() for a in actions)
     assert any("decline" in a.lower() for a in actions)
     assert not any("wait" in a.lower() for a in actions)
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for issue #117 / #118: the v2.1.4 rules-engine change
+# started annotating legal "Attack with: ..." lines with a "(P/T)" suffix.
+# When the LLM call fails (proxy 402, parse error, transient API blip) the
+# planner falls back to parsing the legal-action string back into a
+# GameAction. Without stripping the decoration, the bridge submitter sees
+# attacker_names=["Veteran Survivor (4/3)"] which doesn't match anything on
+# the battlefield, the action fails, and the autopilot loops forever.
+# ---------------------------------------------------------------------------
+
+
+def test_legal_action_to_action_strips_pt_suffix_from_attackers():
+    action = _planner()._legal_action_to_action("Attack with: Veteran Survivor (4/3)")
+    assert action is not None
+    assert action.action_type == ActionType.DECLARE_ATTACKERS
+    assert action.attacker_names == ["Veteran Survivor"]
+
+
+def test_legal_action_to_action_strips_zero_power_warning_tag():
+    action = _planner()._legal_action_to_action(
+        "Attack with: Tin Rebel (0/2) [0 POWER — attacking deals 0 damage]"
+    )
+    assert action is not None
+    assert action.attacker_names == ["Tin Rebel"]
+
+
+def test_legal_action_to_action_strips_pt_from_multiple_attackers():
+    action = _planner()._legal_action_to_action(
+        "Attack with: Veteran Survivor (4/3), Page, Loose Leaf (2/1)"
+    )
+    assert action is not None
+    # Comma split happens before strip. "Page, Loose Leaf" trips the naive
+    # split (the card name itself contains a comma) — but at minimum we must
+    # NOT preserve the "(P/T)" decoration on whatever we DID extract.
+    for name in action.attacker_names:
+        assert "(" not in name, f"P/T decoration leaked into {name!r}"
+
+
+def test_legal_action_to_action_strips_decoration_from_select_target():
+    action = _planner()._legal_action_to_action("Select target: Escape Tunnel [OK]")
+    assert action is not None
+    assert action.action_type == ActionType.SELECT_TARGET
+    assert action.target_names == ["Escape Tunnel"]
+
+
+def test_legal_action_to_action_strips_decoration_from_block_with():
+    action = _planner()._legal_action_to_action("Block with: Ooze #1 (2/2)")
+    assert action is not None
+    assert action.action_type == ActionType.DECLARE_BLOCKERS
+    # Disambiguation suffix "#1" must be preserved (it identifies which copy
+    # of the card to block with), but the (P/T) must be stripped.
+    assert action.blocker_assignments == {"Ooze #1": ""}
+
+
+def test_legal_action_to_action_leaves_undecorated_names_alone():
+    action = _planner()._legal_action_to_action("Cast Veteran Survivor")
+    assert action is not None
+    assert action.action_type == ActionType.CAST_SPELL
+    assert action.card_name == "Veteran Survivor"
