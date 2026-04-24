@@ -207,6 +207,74 @@ def _build_bridge_context_lines(
     return lines
 
 
+_NON_PASSABLE_REQUEST_CLASSES = {
+    "SelectTargetsRequest",
+    "SelectNRequest",
+    "SearchRequest",
+    "GroupRequest",
+    "DistributionRequest",
+    "CastingTimeOptionRequest",
+    "CastingTimeOption_ModalRequest",
+    "CastingTimeOption_ChooseOrCostRequest",
+    "CastingTimeOption_NumericInputRequest",
+    "CastingTimeOption_Replicate",
+    "CastingTimeOption_SelectNRequest",
+    "CastingTimeOption_SpecializeRequest",
+    "CastingTimeOption_KickerRequest",
+    "CastingTimeOption_AdditionalCostRequest",
+    "CastingTimeOption_CostKeywordRequest",
+    "PayCostsRequest",
+    "MulliganRequest",
+}
+
+_NON_PASSABLE_REQUEST_TYPES = {
+    "SelectTargets",
+    "SelectN",
+    "Search",
+    "Group",
+    "Distribution",
+    "PayCosts",
+    "Mulligan",
+}
+
+
+def _fallback_non_action_advice(game_state: dict[str, Any]) -> str:
+    """Pick a sensible fallback advice when legal_actions is empty.
+
+    `pass priority` is the right answer for an idle Action request, but
+    non-passable requests (target/mode/search/cast-time) need manual
+    intervention instead. Surface that clearly rather than issuing a
+    literal "pass priority" the user can't actually submit.
+    """
+    req_type = str(game_state.get("_bridge_request_type") or "")
+    req_class = str(game_state.get("_bridge_request_class") or "")
+    in_intermission = bool(game_state.get("_bridge_in_intermission"))
+    can_pass = game_state.get("_bridge_can_pass")
+
+    if in_intermission:
+        return "Match ending — no action needed."
+
+    non_passable = (
+        req_class in _NON_PASSABLE_REQUEST_CLASSES
+        or req_type in _NON_PASSABLE_REQUEST_TYPES
+        or (can_pass is False and req_class)
+    )
+    if non_passable:
+        if "Target" in req_class or req_type == "SelectTargets":
+            return "Pick a target manually."
+        if "Search" in req_class:
+            return "Pick a card manually."
+        if req_class.startswith("CastingTimeOption") or "Modal" in req_class:
+            return "Choose a mode manually."
+        if "PayCosts" in req_class or req_type == "PayCosts":
+            return "Confirm the mana payment."
+        if "Mulligan" in req_class:
+            return "Make the mulligan call."
+        return "Make this decision manually."
+
+    return "pass priority"
+
+
 # LLM Backend Protocol and Implementations
 from arenamcp.backends import (  # noqa: E402
     LLMBackend,
@@ -3853,8 +3921,31 @@ class CoachEngine:
                 logger.info(f"Replaced illegal advice with legal action: {best} (original: {advice[:80]})")
                 advice = best
         else:
-            # If no legal actions, instruct pass priority explicitly
-            advice = "pass priority"
+            # No legal_actions reported. For passable idle windows this
+            # means "pass priority" — but for SelectTargets/Search/Modal/
+            # PayCosts the LLM's targeted answer is the best signal we
+            # have (RulesEngine can't enumerate candidates for these).
+            # Keep the model's advice unless it's clearly useless; only
+            # then fall back to the context-appropriate manual prompt.
+            req_class = str(game_state.get("_bridge_request_class") or "")
+            req_type = str(game_state.get("_bridge_request_type") or "")
+            non_passable = (
+                req_class in _NON_PASSABLE_REQUEST_CLASSES
+                or req_type in _NON_PASSABLE_REQUEST_TYPES
+                or game_state.get("_bridge_can_pass") is False
+            )
+            stripped = (advice or "").strip()
+            looks_useful = (
+                bool(stripped)
+                and len(stripped) >= 3
+                and "pass priority" not in stripped.lower()
+                and "pass" not in stripped.lower().split()[:1]
+            )
+            if non_passable and looks_useful:
+                # Trust the LLM's targeted advice on non-passable requests.
+                pass
+            else:
+                advice = _fallback_non_action_advice(game_state)
 
         # Clean up internal action format for spoken output:
         # "Play Land: Plains" → "Play Plains"

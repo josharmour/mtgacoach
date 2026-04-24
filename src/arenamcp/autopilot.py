@@ -232,20 +232,29 @@ class AutopilotEngine:
         return self._config.land_drop_mode
 
     def _capture_screenshot(self) -> Optional[bytes]:
-        """Capture MTGA window as PNG bytes for VLM analysis."""
+        """Capture MTGA window as PNG bytes for VLM analysis.
+
+        Uses PrintWindow for DirectX/Unity windows; ImageGrab (GDI BitBlt)
+        returns black frames on many systems for MTGA.
+        """
         try:
+            from arenamcp.screen_capture import capture_mtga_png
+            from arenamcp.input_controller import find_mtga_hwnd
+
             window_rect = self._mapper.window_rect
             if not window_rect:
                 window_rect = self._mapper.refresh_window()
-            if not window_rect:
-                return None
+            bbox = None
+            if window_rect:
+                left, top, width, height = window_rect
+                bbox = (left, top, left + width, top + height)
 
-            left, top, width, height = window_rect
-            screenshot = ImageGrab.grab(bbox=(left, top, left + width, top + height))
+            try:
+                hwnd = find_mtga_hwnd()
+            except Exception:
+                hwnd = None
 
-            buf = io.BytesIO()
-            screenshot.save(buf, format='PNG')
-            return buf.getvalue()
+            return capture_mtga_png(hwnd=hwnd, bbox=bbox)
         except Exception as e:
             logger.error(f"Screenshot capture failed: {e}")
             return None
@@ -778,7 +787,17 @@ class AutopilotEngine:
                     local_seat = p.get("seat_id")
             is_my_turn = turn.get("active_player") == local_seat if local_seat else False
 
-            if pending == "Intermission" or bridge_request_type.startswith("Intermission") or bridge_request_class.startswith("Intermission"):
+            # Bridge zeroes out request_type/class during Intermission (see
+            # gre_bridge._process_bridge_overlay), so the string-prefix check
+            # alone misses the common end-of-match case. Use the durable
+            # _bridge_in_intermission signal as the primary guard.
+            if (
+                game_state.get("_bridge_in_intermission")
+                or game_state.get("match_ended")
+                or pending == "Intermission"
+                or bridge_request_type.startswith("Intermission")
+                or bridge_request_class.startswith("Intermission")
+            ):
                 logger.info("Autopilot: ignoring non-actionable intermission request")
                 self._state = AutopilotState.IDLE
                 return True
@@ -1796,6 +1815,19 @@ class AutopilotEngine:
         if self._bug_report_fn is None:
             return
 
+        # Intermission is non-actionable by design. Suppress fallback
+        # reports so queued end-of-turn passes don't flood GitHub with
+        # duplicates when a match ends (see issues #124-127).
+        req_type = (game_state.get("_bridge_request_type") or "")
+        req_class = (game_state.get("_bridge_request_class") or "")
+        if (
+            game_state.get("_bridge_in_intermission")
+            or game_state.get("match_ended")
+            or req_type.startswith("Intermission")
+            or req_class.startswith("Intermission")
+        ):
+            return
+
         gre_ref = getattr(action, "gre_action_ref", None)
         ref_info = None
         if gre_ref is not None:
@@ -2788,6 +2820,21 @@ class AutopilotEngine:
         Returns:
             ClickResult from the execution.
         """
+        # Match just ended — the bridge is in Intermission and no action
+        # (including pass_priority) is legal. Queued actions from the last
+        # priority window would otherwise fail against IntermissionRequest
+        # and produce duplicate `bridge_only_suppressed` fallback bug
+        # reports (see issues #124-127). Treat it as a silent no-op.
+        if (
+            game_state.get("_bridge_in_intermission")
+            or game_state.get("match_ended")
+        ):
+            logger.info(
+                f"Autopilot: skipping {action.action_type.value} — "
+                "bridge in intermission"
+            )
+            return ClickResult(True, 0, 0, action.action_type.value, "intermission_noop")
+
         # Try GRE bridge first (direct action submission, no mouse needed)
         if not self._config.dry_run:
             gre_result = self._try_gre_bridge(action, game_state)

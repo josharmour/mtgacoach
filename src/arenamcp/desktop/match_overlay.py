@@ -12,10 +12,12 @@ clears after N seconds or when a new event arrives.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer
@@ -33,6 +35,12 @@ try:
     import pygetwindow as gw
 except ImportError:
     gw = None
+
+try:
+    from arenamcp.input_controller import find_mtga_hwnd, get_client_rect
+except Exception:
+    find_mtga_hwnd = None  # type: ignore[assignment]
+    get_client_rect = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +98,20 @@ class MatchOverlayWindow(QWidget):
         self._user_enabled = True
         self._match_active = False
         self._calibration_mode = False
+        # Affine post-transform applied on top of the auto-derived window
+        # rect. Lets the user manually nudge/scale the card overlay when
+        # MTGA's render area doesn't perfectly match GetClientRect (e.g.
+        # letterbox scaling at non-16:9 windows). Identity by default.
+        self._calib_offset_x: float = 0.0
+        self._calib_offset_y: float = 0.0
+        self._calib_scale_x: float = 1.0
+        self._calib_scale_y: float = 1.0
+        # Active drag state for pan gesture
+        self._calib_drag_origin: Optional[QPoint] = None
+        self._calib_drag_ox0: float = 0.0
+        self._calib_drag_oy0: float = 0.0
+        self._calib_saved_at: float = 0.0
+        self._load_calibration()
         # Latest coach advice (plain text). Displayed on the overlay so the
         # user can keep eyes on MTGA instead of switching windows.
         self._advice_text: str = ""
@@ -198,9 +220,15 @@ class MatchOverlayWindow(QWidget):
                     )
                 except Exception:
                     pass
+            # Take keyboard focus so arrow keys / Ctrl+S work in calibration mode
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            self.activateWindow()
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
             # Immediate poll so we don't have to wait up to 300ms
             self._refresh_card_positions()
         else:
+            self._calib_drag_origin = None
+            self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self._apply_click_through()
         self.update()
 
@@ -248,6 +276,70 @@ class MatchOverlayWindow(QWidget):
             self._advice_expire_at = time.time() + self.ADVICE_TTL_SEC
         self.update()
 
+    # -- Calibration persistence --------------------------------------------
+
+    def _calibration_path(self) -> Path:
+        """Resolve where overlay_calibration.json lives.
+
+        Prefers %LOCALAPPDATA%/mtgacoach (matches the rest of the app's
+        runtime state). Falls back to ~/.mtgacoach for non-Windows dev.
+        """
+        try:
+            from arenamcp.desktop.runtime import get_runtime_root
+            root = Path(get_runtime_root())
+        except Exception:
+            root = Path.home() / ".mtgacoach"
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return root / "overlay_calibration.json"
+
+    def _load_calibration(self) -> None:
+        try:
+            p = self._calibration_path()
+            if not p.exists():
+                return
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+            self._calib_offset_x = float(data.get("offset_x", 0.0) or 0.0)
+            self._calib_offset_y = float(data.get("offset_y", 0.0) or 0.0)
+            self._calib_scale_x = float(data.get("scale_x", 1.0) or 1.0)
+            self._calib_scale_y = float(data.get("scale_y", 1.0) or 1.0)
+            if self._calib_scale_x <= 0:
+                self._calib_scale_x = 1.0
+            if self._calib_scale_y <= 0:
+                self._calib_scale_y = 1.0
+        except Exception as e:
+            logger.debug(f"load overlay_calibration failed: {e}")
+
+    def _save_calibration(self) -> None:
+        try:
+            p = self._calibration_path()
+            data = {
+                "offset_x": round(self._calib_offset_x, 3),
+                "offset_y": round(self._calib_offset_y, 3),
+                "scale_x": round(self._calib_scale_x, 5),
+                "scale_y": round(self._calib_scale_y, 5),
+            }
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            self._calib_saved_at = time.time()
+            logger.info(f"overlay calibration saved: {data}")
+        except Exception as e:
+            logger.error(f"save overlay_calibration failed: {e}")
+        self.update()
+
+    def _reset_calibration(self) -> None:
+        """Revert in-memory calibration to identity. Does not delete the
+        saved file — user must Ctrl+S to persist the reset.
+        """
+        self._calib_offset_x = 0.0
+        self._calib_offset_y = 0.0
+        self._calib_scale_x = 1.0
+        self._calib_scale_y = 1.0
+        self.update()
+
     # -- Click-through -------------------------------------------------------
 
     def _apply_click_through(self) -> None:
@@ -269,57 +361,202 @@ class MatchOverlayWindow(QWidget):
         super().showEvent(event)
         self._apply_click_through()
 
+    # -- Interactive calibration input --------------------------------------
+
+    _CALIB_SCALE_MIN = 0.2
+    _CALIB_SCALE_MAX = 5.0
+    _CALIB_WHEEL_FACTOR = 1.05  # 5% per notch
+
+    def _clamp_scale(self, value: float) -> float:
+        return max(self._CALIB_SCALE_MIN, min(self._CALIB_SCALE_MAX, value))
+
+    def _zoom_axis_about(
+        self,
+        factor: float,
+        anchor: float,
+        offset_attr: str,
+        scale_attr: str,
+    ) -> None:
+        """Scale one axis while keeping the given anchor point stationary."""
+        old_scale = getattr(self, scale_attr)
+        new_scale = self._clamp_scale(old_scale * factor)
+        if old_scale <= 0 or new_scale == old_scale:
+            return
+        old_offset = getattr(self, offset_attr)
+        new_offset = anchor - (anchor - old_offset) * (new_scale / old_scale)
+        setattr(self, scale_attr, new_scale)
+        setattr(self, offset_attr, new_offset)
+
+    def wheelEvent(self, event) -> None:
+        if not self._calibration_mode:
+            super().wheelEvent(event)
+            return
+        try:
+            pos = event.position()
+            cursor_x = float(pos.x())
+            cursor_y = float(pos.y())
+        except Exception:
+            cursor_x = self.width() / 2.0
+            cursor_y = self.height() / 2.0
+        steps = event.angleDelta().y() / 120.0
+        if steps == 0:
+            event.accept()
+            return
+        factor = self._CALIB_WHEEL_FACTOR ** steps
+        mods = event.modifiers()
+        shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        if shift and not ctrl:
+            self._zoom_axis_about(factor, cursor_x, "_calib_offset_x", "_calib_scale_x")
+        elif ctrl and not shift:
+            self._zoom_axis_about(factor, cursor_y, "_calib_offset_y", "_calib_scale_y")
+        else:
+            self._zoom_axis_about(factor, cursor_x, "_calib_offset_x", "_calib_scale_x")
+            self._zoom_axis_about(factor, cursor_y, "_calib_offset_y", "_calib_scale_y")
+        self.update()
+        event.accept()
+
+    def mousePressEvent(self, event) -> None:
+        if not self._calibration_mode:
+            super().mousePressEvent(event)
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._calib_drag_origin = event.position().toPoint()
+            self._calib_drag_ox0 = self._calib_offset_x
+            self._calib_drag_oy0 = self._calib_offset_y
+            event.accept()
+        elif event.button() == Qt.MouseButton.RightButton:
+            self._reset_calibration()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if not self._calibration_mode or self._calib_drag_origin is None:
+            super().mouseMoveEvent(event)
+            return
+        delta = event.position().toPoint() - self._calib_drag_origin
+        self._calib_offset_x = self._calib_drag_ox0 + delta.x()
+        self._calib_offset_y = self._calib_drag_oy0 + delta.y()
+        self.update()
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        if not self._calibration_mode:
+            super().mouseReleaseEvent(event)
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._calib_drag_origin = None
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if not self._calibration_mode:
+            super().keyPressEvent(event)
+            return
+        key = event.key()
+        mods = event.modifiers()
+        step = 10 if (mods & Qt.KeyboardModifier.ShiftModifier) else 1
+        if key == Qt.Key.Key_S and (mods & Qt.KeyboardModifier.ControlModifier):
+            self._save_calibration()
+            event.accept()
+        elif key == Qt.Key.Key_R:
+            self._reset_calibration()
+            event.accept()
+        elif key == Qt.Key.Key_Left:
+            self._calib_offset_x -= step
+            self.update()
+            event.accept()
+        elif key == Qt.Key.Key_Right:
+            self._calib_offset_x += step
+            self.update()
+            event.accept()
+        elif key == Qt.Key.Key_Up:
+            self._calib_offset_y -= step
+            self.update()
+            event.accept()
+        elif key == Qt.Key.Key_Down:
+            self._calib_offset_y += step
+            self.update()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
     # -- MTGA bounds tracking ------------------------------------------------
 
     def _get_mtga_rect(self) -> Optional[QRect]:
-        """Return MTGA's window rect in Qt logical (device-independent) pixels.
+        """Return MTGA's **client-area** rect in Qt logical pixels.
 
-        `pygetwindow` reports physical pixels. Qt's `setGeometry` on a
-        high-DPI display expects logical pixels. Dividing by the screen's
-        device-pixel-ratio converts physical → logical so the overlay is
-        sized to exactly match MTGA's visible area (and doesn't extend
-        past the right/bottom when scaling > 100%).
+        The plugin reports normalized card coords against Unity's
+        `Screen.width/height`, which is the render client area — not the
+        full OS window. Using `pygetwindow`'s full window bounds (title
+        bar, borders, DWM invisible frames) made the overlay larger than
+        the game surface and shifted all highlights. Prefer
+        `GetClientRect + ClientToScreen`.
         """
-        if os.name != "nt" or gw is None:
+        if os.name != "nt":
             return None
-        try:
-            wins = [w for w in gw.getWindowsWithTitle("MTGA") if w.title == "MTGA"]
-            if not wins:
-                return None
-            m = wins[0]
-            if m.isMinimized:
-                return None
 
-            # Find the screen MTGA is on (for per-monitor DPI) and its ratio
-            ratio = 1.0
+        # Preferred: GetClientRect + ClientToScreen. Returns the render
+        # client area in physical screen pixels, matching Unity.Screen.
+        client_rect = None
+        if find_mtga_hwnd is not None and get_client_rect is not None:
             try:
-                from PySide6.QtGui import QGuiApplication
-                center_px = (m.left + m.width // 2, m.top + m.height // 2)
-                screen = QGuiApplication.screenAt(
-                    self.mapToGlobal(self.rect().topLeft())
-                ) or QGuiApplication.primaryScreen()
-                # Use the screen containing MTGA's center if we can find it
-                for s in QGuiApplication.screens():
-                    geo = s.geometry()  # logical pixels, but origin is physical 0
-                    # We check against logical geometry since that's what Qt knows
-                    if geo.contains(center_px[0], center_px[1]):
-                        screen = s
-                        break
-                if screen:
-                    ratio = float(screen.devicePixelRatio() or 1.0)
+                hwnd = find_mtga_hwnd()
+                if hwnd:
+                    client_rect = get_client_rect(hwnd)
             except Exception:
-                ratio = 1.0
+                client_rect = None
 
-            if ratio <= 0:
-                ratio = 1.0
-            return QRect(
-                int(m.left / ratio),
-                int(m.top / ratio),
-                int(m.width / ratio),
-                int(m.height / ratio),
-            )
+        left_px = top_px = width_px = height_px = None
+        if client_rect is not None:
+            left_px, top_px, width_px, height_px = client_rect
+            if width_px <= 0 or height_px <= 0:
+                client_rect = None
+
+        # Fallback: pygetwindow full-window rect (keeps us working on
+        # environments without ctypes user32 for whatever reason).
+        if client_rect is None:
+            if gw is None:
+                return None
+            try:
+                wins = [w for w in gw.getWindowsWithTitle("MTGA") if w.title == "MTGA"]
+                if not wins:
+                    return None
+                m = wins[0]
+                if m.isMinimized:
+                    return None
+                left_px, top_px, width_px, height_px = m.left, m.top, m.width, m.height
+            except Exception:
+                return None
+
+        # Per-monitor DPI ratio so the overlay sits correctly on high-DPI displays.
+        ratio = 1.0
+        try:
+            from PySide6.QtGui import QGuiApplication
+            center_px = (left_px + width_px // 2, top_px + height_px // 2)
+            screen = QGuiApplication.screenAt(
+                self.mapToGlobal(self.rect().topLeft())
+            ) or QGuiApplication.primaryScreen()
+            for s in QGuiApplication.screens():
+                geo = s.geometry()
+                if geo.contains(center_px[0], center_px[1]):
+                    screen = s
+                    break
+            if screen:
+                ratio = float(screen.devicePixelRatio() or 1.0)
         except Exception:
-            return None
+            ratio = 1.0
+        if ratio <= 0:
+            ratio = 1.0
+
+        return QRect(
+            int(left_px / ratio),
+            int(top_px / ratio),
+            int(width_px / ratio),
+            int(height_px / ratio),
+        )
 
     def _tick(self) -> None:
         rect = self._get_mtga_rect()
@@ -492,10 +729,12 @@ class MatchOverlayWindow(QWidget):
         ):
             return None
 
-        x = int(fnx * win_w)
-        y = int(fny * win_h)
-        w = int(fnw * win_w)
-        h = int(fnh * win_h)
+        eff_w = win_w * self._calib_scale_x
+        eff_h = win_h * self._calib_scale_y
+        x = int(fnx * eff_w + self._calib_offset_x)
+        y = int(fny * eff_h + self._calib_offset_y)
+        w = int(fnw * eff_w)
+        h = int(fnh * eff_h)
         return QRect(x, y, max(1, w), max(1, h))
 
     # -- Painting -----------------------------------------------------------
@@ -519,15 +758,32 @@ class MatchOverlayWindow(QWidget):
             painter.setPen(QPen(QColor("cyan"), 2))
             painter.drawRect(self.rect().adjusted(1, 1, -1, -1))
 
-            header = (
-                f"MATCH CALIBRATION — window {self.width()}x{self.height()}  "
-                f"unity {self._screen_w}x{self._screen_h}  "
-                f"detected {len(self._card_positions)} cards"
-            )
+            saved_hint = ""
+            if self._calib_saved_at and time.time() - self._calib_saved_at < 2.5:
+                saved_hint = "  ✓ SAVED"
+            header_lines = [
+                (
+                    f"MATCH CALIBRATION — window {self.width()}x{self.height()}  "
+                    f"unity {self._screen_w}x{self._screen_h}  "
+                    f"cards {len(self._card_positions)}{saved_hint}"
+                ),
+                (
+                    f"offset ({self._calib_offset_x:+.0f}, {self._calib_offset_y:+.0f})  "
+                    f"scale ({self._calib_scale_x:.3f}, {self._calib_scale_y:.3f})"
+                ),
+                "drag = pan   wheel = scale (shift=X only, ctrl=Y only)   arrows = nudge (shift=×10)",
+                "Ctrl+S = save   R = reset   right-click = reset",
+            ]
+            painter.setPen(QColor(20, 20, 25, 200))
+            painter.setBrush(QColor(20, 20, 25, 200))
+            block_h = 20 * len(header_lines) + 10
+            painter.drawRoundedRect(6, 6, min(self.width() - 12, 720), block_h, 6, 6)
+            painter.setBrush(Qt.NoBrush)
             painter.setPen(QColor("white"))
-            font = QFont(); font.setBold(True); font.setPixelSize(14)
+            font = QFont(); font.setBold(True); font.setPixelSize(13)
             painter.setFont(font)
-            painter.drawText(10, 22, header)
+            for i, line in enumerate(header_lines):
+                painter.drawText(14, 24 + i * 18, line)
 
             # Zone colors for quick visual grouping
             zone_colors = {

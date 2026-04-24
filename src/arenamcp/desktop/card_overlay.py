@@ -27,6 +27,12 @@ try:
 except ImportError:
     gw = None
 
+try:
+    from arenamcp.input_controller import find_mtga_hwnd, get_client_rect
+except Exception:
+    find_mtga_hwnd = None  # type: ignore[assignment]
+    get_client_rect = None  # type: ignore[assignment]
+
 
 # -- Card grid layout constants (in fractions of MTGA render height/width) ----
 # These are calibrated to match MTGA's draft UI. MTGA renders internally at
@@ -296,35 +302,63 @@ class CardOverlayWindow(QWidget):
     # -- Geometry / MTGA tracking -----------------------------------------
 
     def _get_mtga_rect(self) -> Optional[QRect]:
-        """Return MTGA's window rect in Qt logical pixels (DPI-corrected)."""
-        if os.name != "nt" or gw is None:
+        """Return MTGA's **client-area** rect in Qt logical pixels.
+
+        Prefers `GetClientRect + ClientToScreen` so grid fractions (derived
+        from MTGA's render area) aren't shifted by title bar / border /
+        DWM-frame padding that `pygetwindow` includes.
+        """
+        if os.name != "nt":
             return None
-        try:
-            windows = [w for w in gw.getWindowsWithTitle("MTGA") if w.title == "MTGA"]
-            if not windows:
+
+        left_px = top_px = width_px = height_px = None
+        if find_mtga_hwnd is not None and get_client_rect is not None:
+            try:
+                hwnd = find_mtga_hwnd()
+                if hwnd:
+                    cr = get_client_rect(hwnd)
+                    if cr is not None and cr[2] > 0 and cr[3] > 0:
+                        left_px, top_px, width_px, height_px = cr
+            except Exception:
+                left_px = None
+
+        if left_px is None:
+            if gw is None:
                 return None
-            m = windows[0]
-            if m.isMinimized:
+            try:
+                windows = [w for w in gw.getWindowsWithTitle("MTGA") if w.title == "MTGA"]
+                if not windows:
+                    return None
+                m = windows[0]
+                if m.isMinimized:
+                    return None
+                left_px, top_px, width_px, height_px = m.left, m.top, m.width, m.height
+            except Exception:
                 return None
 
-            ratio = 1.0
-            try:
-                from PySide6.QtGui import QGuiApplication
-                screen = QGuiApplication.primaryScreen()
-                if screen:
-                    ratio = float(screen.devicePixelRatio() or 1.0)
-            except Exception:
-                ratio = 1.0
-            if ratio <= 0:
-                ratio = 1.0
-            return QRect(
-                int(m.left / ratio),
-                int(m.top / ratio),
-                int(m.width / ratio),
-                int(m.height / ratio),
-            )
+        ratio = 1.0
+        try:
+            from PySide6.QtGui import QGuiApplication
+            center_px = (left_px + width_px // 2, top_px + height_px // 2)
+            screen = QGuiApplication.primaryScreen()
+            for s in QGuiApplication.screens():
+                geo = s.geometry()
+                if geo.contains(center_px[0], center_px[1]):
+                    screen = s
+                    break
+            if screen:
+                ratio = float(screen.devicePixelRatio() or 1.0)
         except Exception:
-            return None
+            ratio = 1.0
+        if ratio <= 0:
+            ratio = 1.0
+
+        return QRect(
+            int(left_px / ratio),
+            int(top_px / ratio),
+            int(width_px / ratio),
+            int(height_px / ratio),
+        )
 
     def _tick(self) -> None:
         """Periodic: match MTGA bounds and redraw if visible."""

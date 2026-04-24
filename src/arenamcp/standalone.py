@@ -3204,26 +3204,44 @@ class StandaloneCoach:
             return
 
         try:
-            from PIL import ImageGrab
+            from PIL import Image
             import io
+            from arenamcp.screen_capture import capture_mtga_png, is_mostly_black
+            from arenamcp.input_controller import find_mtga_hwnd
 
-            # Capture MTGA window if possible, otherwise full screen
-            img = None
+            window_rect = None
             if self._vision_mapper:
-                window_rect = self._vision_mapper.window_rect
-                if not window_rect:
-                    window_rect = self._vision_mapper.refresh_window()
-                if window_rect:
-                    left, top, width, height = window_rect
-                    img = ImageGrab.grab(bbox=(left, top, left + width, top + height))
+                window_rect = self._vision_mapper.window_rect or self._vision_mapper.refresh_window()
 
-            if img is None:
-                img = ImageGrab.grab()
+            bbox = None
+            if window_rect:
+                left, top, width, height = window_rect
+                bbox = (left, top, left + width, top + height)
+
+            try:
+                hwnd = find_mtga_hwnd()
+            except Exception:
+                hwnd = None
+
+            png_bytes = capture_mtga_png(hwnd=hwnd, bbox=bbox)
+            if not png_bytes:
+                self.ui.log("[red]Screenshot capture returned no data.[/]")
+                return
+
+            # Detect a black capture and bail with a clear message instead of
+            # sending the VLM a blank frame (it will then hallucinate advice
+            # like "re-upload a clear image" which is unhelpful mid-match).
+            img = Image.open(io.BytesIO(png_bytes))
+            if is_mostly_black(img):
+                self.ui.log(
+                    "[red]Screenshot came back black — MTGA's DirectX frame "
+                    "wasn't captured. Try windowed mode or update Windows.[/]"
+                )
+                return
 
             img.thumbnail((1920, 1080))
-
             buf = io.BytesIO()
-            img.save(buf, format='PNG')
+            img.save(buf, format="PNG")
             png_bytes = buf.getvalue()
 
             self.ui.log("[yellow]Analyzing screenshot...[/]")
