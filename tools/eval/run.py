@@ -160,23 +160,24 @@ def run(
         f"already-recorded={len(done)}"
     )
 
-    backend_clients = {b.label: b.build() for b in backends}
+    # Iterate backend-then-prompt (not prompt-then-backend) so each local
+    # model loads into VRAM once and processes every prompt while hot. With
+    # a single GPU, the alternative ping-pongs between models and pays the
+    # load cost per prompt, which dominates wall time.
+    for be in backends:
+        client = be.build()
+        for idx, prompt in enumerate(prompts):
+            pid = _stable_prompt_id(prompt, idx)
+            system = prompt.get("system") or ""
+            user = prompt.get("user") or ""
+            if not user:
+                logger.warning(f"prompt {pid} has empty user message — skipping")
+                continue
 
-    for idx, prompt in enumerate(prompts):
-        pid = _stable_prompt_id(prompt, idx)
-        system = prompt.get("system") or ""
-        user = prompt.get("user") or ""
-        if not user:
-            logger.warning(f"prompt {pid} has empty user message — skipping")
-            continue
-
-        for be in backends:
             key = (pid, be.label)
             if key in done:
                 logger.info(f"skip {pid} {be.label} (already recorded)")
                 continue
-
-            client = backend_clients[be.label]
             t0 = time.perf_counter()
             try:
                 content = client.complete(

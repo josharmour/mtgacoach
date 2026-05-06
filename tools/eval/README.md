@@ -17,6 +17,25 @@ WSL the default `localhost:11434` won't reach Ollama; use
 `--backend openai-compatible|http://<windows-host-ip>:11434/v1|<model>`
 or set `OLLAMA_HOST=0.0.0.0:11434` in Ollama's config and use the host IP.
 
+## Known issues with the seed corpus
+
+`data/seed_prompts.jsonl` is **synthetic and not rules-verified**. It exists
+to validate the pipeline end-to-end before you have real captures, not to
+produce trustworthy quality numbers. Confirmed issues from a live run on
+2026-05-06:
+
+- `seed-002-removal` lists `Cast Cut Down (target Sheoldred)` as a legal
+  action, but Cut Down only hits creatures with mana value ≤2 or
+  toughness ≤2; Sheoldred is mv-4 toughness-5. The legal_actions field
+  is wrong, so models that "follow" the prompt's lie get penalized.
+- The judge model (GPT-5.4) also occasionally gets card text wrong on
+  edge cases (e.g. Glistening Deluge's color clause), so seed-corpus
+  judge scores have noise from both the prompt AND the judge.
+
+**Use seed_prompts.jsonl only for plumbing checks.** For real signal,
+capture from live play (next section) — those prompts come from the real
+rules engine and don't have these bugs.
+
 ## Quick start (no capture, just seed corpus)
 
 Suggested first run with what's installed: pick one ~8B, one ~14B, and the
