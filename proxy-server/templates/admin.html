@@ -88,6 +88,7 @@
     <nav>
         <div class="container">
             <a href="/" class="logo">mtgacoach admin</a>
+            <button id="logout-btn" class="btn btn-sm" style="background:var(--surface);color:var(--text);border:1px solid var(--border);display:none" onclick="logout()">Logout</button>
         </div>
     </nav>
 
@@ -95,7 +96,11 @@
     <div id="login-panel">
         <h2>Admin Login</h2>
         <input type="password" id="admin-key" placeholder="Admin password" onkeypress="if(event.key==='Enter')login()">
+        <label style="display:flex;align-items:center;gap:8px;justify-content:center;color:var(--muted);font-size:0.9rem;margin-bottom:12px;cursor:pointer">
+            <input type="checkbox" id="admin-remember" checked> Remember me on this browser
+        </label>
         <button class="btn btn-primary" onclick="login()">Login</button>
+        <p style="color:var(--muted);font-size:0.75rem;margin-top:16px">Stored in localStorage on this browser only. Use Logout to clear.</p>
     </div>
 
     <!-- Dashboard -->
@@ -312,6 +317,10 @@
     </div>
 
     <script>
+        // Admin key. Hydrated from localStorage if "Remember me" was checked
+        // on a prior login. Stored in localStorage only — the user controls
+        // it from this browser via Logout.
+        const ADMIN_KEY_STORAGE = 'mtgacoach_admin_key';
         let adminKey = '';
 
         function api(path, opts = {}) {
@@ -321,18 +330,59 @@
             });
         }
 
+        function _enterDashboard() {
+            document.getElementById('login-panel').style.display = 'none';
+            document.getElementById('dashboard').classList.add('active');
+            const lb = document.getElementById('logout-btn');
+            if (lb) lb.style.display = '';
+            loadAll();
+        }
+
         function login() {
             adminKey = document.getElementById('admin-key').value;
+            const remember = document.getElementById('admin-remember').checked;
             api('/admin/api/subscribers').then(r => {
                 if (r.ok) {
-                    document.getElementById('login-panel').style.display = 'none';
-                    document.getElementById('dashboard').classList.add('active');
-                    loadAll();
+                    if (remember) {
+                        try { localStorage.setItem(ADMIN_KEY_STORAGE, adminKey); } catch (_) {}
+                    } else {
+                        try { localStorage.removeItem(ADMIN_KEY_STORAGE); } catch (_) {}
+                    }
+                    _enterDashboard();
                 } else {
                     alert('Invalid password');
                 }
             });
         }
+
+        function logout() {
+            try { localStorage.removeItem(ADMIN_KEY_STORAGE); } catch (_) {}
+            adminKey = '';
+            // Reload so the dashboard's lazy state resets cleanly.
+            window.location.reload();
+        }
+
+        // Auto-login on page load if a remembered key exists. We validate it
+        // against the same /admin/api/subscribers endpoint; on 401 we wipe
+        // it (rotated password) and fall through to the manual login form.
+        async function _tryAutoLogin() {
+            let saved = '';
+            try { saved = localStorage.getItem(ADMIN_KEY_STORAGE) || ''; } catch (_) {}
+            if (!saved) return false;
+            adminKey = saved;
+            try {
+                const r = await api('/admin/api/subscribers');
+                if (r.ok) {
+                    _enterDashboard();
+                    return true;
+                }
+            } catch (_) { /* fall through */ }
+            try { localStorage.removeItem(ADMIN_KEY_STORAGE); } catch (_) {}
+            adminKey = '';
+            return false;
+        }
+        // Fire after the DOM script block has loaded the rest of the JS.
+        window.addEventListener('DOMContentLoaded', () => { _tryAutoLogin(); });
 
         function showTab(name) {
             document.querySelectorAll('.tabs .tab').forEach(t => t.classList.remove('active'));
