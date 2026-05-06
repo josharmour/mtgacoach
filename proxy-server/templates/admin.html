@@ -75,7 +75,14 @@
         .log-controls { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
         .log-controls select, .log-controls input { padding: 6px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.85rem; }
         .msg-card .meta { font-size: 0.8rem; color: var(--muted); margin-top: 8px; }
+
+        /* Activity chart */
+        .activity-controls { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+        .activity-controls select { padding: 6px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.9rem; }
+        .activity-chart-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; min-height: 320px; position: relative; }
+        .activity-empty { text-align: center; padding: 80px 0; color: var(--muted); font-size: 0.9rem; }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
     <nav>
@@ -94,15 +101,35 @@
     <!-- Dashboard -->
     <div id="dashboard" class="panel container">
         <div class="tabs">
-            <div class="tab active" onclick="showTab('subscribers')">Subscribers</div>
+            <div class="tab active" onclick="showTab('activity')">Activity</div>
+            <div class="tab" onclick="showTab('subscribers')">Subscribers</div>
             <div class="tab" onclick="showTab('messages')">Messages</div>
             <div class="tab" onclick="showTab('usage')">Usage</div>
             <div class="tab" onclick="showTab('providers')">Providers</div>
             <div class="tab" onclick="showTab('logs')">Logs</div>
         </div>
 
+        <!-- Activity tab -->
+        <div id="tab-activity" class="panel active">
+            <div class="activity-controls">
+                <label style="color:var(--muted);font-size:0.9rem">Range:</label>
+                <select id="activity-range" onchange="loadActivity()">
+                    <option value="1">Last 24 hours</option>
+                    <option value="7" selected>Last 7 days</option>
+                    <option value="30">Last 30 days</option>
+                    <option value="90">Last 90 days</option>
+                </select>
+                <button class="btn btn-sm" style="background:var(--surface);color:var(--text);border:1px solid var(--border)" onclick="loadActivity()">Refresh</button>
+            </div>
+            <div class="stats" id="activity-stats"></div>
+            <div class="activity-chart-wrap">
+                <canvas id="activity-chart" style="display:none"></canvas>
+                <div id="activity-empty" class="activity-empty">Loading…</div>
+            </div>
+        </div>
+
         <!-- Subscribers tab -->
-        <div id="tab-subscribers" class="panel active">
+        <div id="tab-subscribers" class="panel">
             <div class="stats" id="stats"></div>
 
             <h2>Create Subscriber</h2>
@@ -220,10 +247,148 @@
             document.getElementById('tab-' + name).classList.add('active');
             if (name === 'logs' && typeof loadLogs === 'function') loadLogs();
             if (name === 'providers') loadProviders();
+            if (name === 'activity') loadActivity();
         }
 
         async function loadAll() {
-            await Promise.all([loadSubscribers(), loadMessages(), loadUsage()]);
+            await Promise.all([loadSubscribers(), loadMessages(), loadUsage(), loadActivity()]);
+        }
+
+        // -- Activity chart ----------------------------------------------------
+        let activityChart = null;
+
+        function _formatBucketLabel(tsSeconds, bucketSeconds) {
+            const d = new Date(tsSeconds * 1000);
+            // Sub-day buckets: show date + hour in local time. Daily+: just the date.
+            if (bucketSeconds < 86400) {
+                return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric' });
+            }
+            return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+        }
+
+        async function loadActivity() {
+            const days = parseInt(document.getElementById('activity-range').value, 10) || 7;
+            const empty = document.getElementById('activity-empty');
+            const canvas = document.getElementById('activity-chart');
+            empty.textContent = 'Loading…';
+            empty.style.display = '';
+            canvas.style.display = 'none';
+
+            let data;
+            try {
+                const resp = await api(`/admin/api/activity?days=${days}`);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                data = await resp.json();
+            } catch (e) {
+                empty.textContent = `Failed to load activity: ${e.message || e}`;
+                return;
+            }
+
+            const buckets = data.buckets || [];
+            const bucketSeconds = data.bucket_seconds || 3600;
+
+            // Range totals for the stat cards.
+            const totalReqs = buckets.reduce((a, b) => a + (b.requests || 0), 0);
+            const totalPrompt = buckets.reduce((a, b) => a + (b.prompt_tokens || 0), 0);
+            const totalCompletion = buckets.reduce((a, b) => a + (b.completion_tokens || 0), 0);
+            const peak = buckets.reduce((m, b) => Math.max(m, b.requests || 0), 0);
+            const bucketLabel = bucketSeconds === 3600
+                ? 'hour'
+                : bucketSeconds < 86400
+                    ? `${bucketSeconds / 3600}h bucket`
+                    : bucketSeconds === 86400
+                        ? 'day'
+                        : `${bucketSeconds / 86400}d bucket`;
+
+            document.getElementById('activity-stats').innerHTML = `
+                <div class="stat"><div class="number">${totalReqs.toLocaleString()}</div><div class="label">Requests</div></div>
+                <div class="stat"><div class="number">${(totalPrompt + totalCompletion).toLocaleString()}</div><div class="label">Total Tokens</div></div>
+                <div class="stat"><div class="number">${peak.toLocaleString()}</div><div class="label">Peak / ${bucketLabel}</div></div>
+                <div class="stat"><div class="number">${buckets.length}</div><div class="label">Buckets</div></div>
+            `;
+
+            if (totalReqs === 0) {
+                empty.textContent = 'No activity in this range.';
+                return;
+            }
+
+            const labels = buckets.map(b => _formatBucketLabel(b.ts, bucketSeconds));
+            const reqSeries = buckets.map(b => b.requests || 0);
+            const tokenSeries = buckets.map(b => (b.prompt_tokens || 0) + (b.completion_tokens || 0));
+
+            empty.style.display = 'none';
+            canvas.style.display = '';
+            const ctx = canvas.getContext('2d');
+            if (activityChart) {
+                activityChart.destroy();
+                activityChart = null;
+            }
+            activityChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'Requests',
+                            data: reqSeries,
+                            borderColor: '#6366f1',
+                            backgroundColor: 'rgba(99, 102, 241, 0.15)',
+                            fill: true,
+                            tension: 0.25,
+                            pointRadius: buckets.length > 60 ? 0 : 2,
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: 'Tokens',
+                            data: tokenSeries,
+                            borderColor: '#22c55e',
+                            backgroundColor: 'transparent',
+                            borderDash: [4, 4],
+                            tension: 0.25,
+                            pointRadius: 0,
+                            yAxisID: 'y1',
+                        },
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { labels: { color: '#e0e0e8' } },
+                        tooltip: {
+                            backgroundColor: '#12121a',
+                            borderColor: '#2a2a3a',
+                            borderWidth: 1,
+                        },
+                    },
+                    scales: {
+                        x: {
+                            ticks: {
+                                color: '#888',
+                                maxRotation: 0,
+                                autoSkip: true,
+                                maxTicksLimit: 12,
+                            },
+                            grid: { color: 'rgba(42, 42, 58, 0.4)' },
+                        },
+                        y: {
+                            position: 'left',
+                            beginAtZero: true,
+                            ticks: { color: '#6366f1', precision: 0 },
+                            grid: { color: 'rgba(42, 42, 58, 0.4)' },
+                            title: { display: true, text: 'Requests', color: '#6366f1' },
+                        },
+                        y1: {
+                            position: 'right',
+                            beginAtZero: true,
+                            ticks: { color: '#22c55e' },
+                            grid: { drawOnChartArea: false },
+                            title: { display: true, text: 'Tokens', color: '#22c55e' },
+                        },
+                    },
+                },
+            });
         }
 
         async function loadSubscribers() {

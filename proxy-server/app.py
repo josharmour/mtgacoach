@@ -1560,6 +1560,44 @@ async def admin_usage(request: Request, _=Depends(_require_admin)):
     return db.get_all_usage_summary(30)
 
 
+@app.get("/admin/api/activity")
+async def admin_activity(request: Request, _=Depends(_require_admin)):
+    """Time-bucketed activity series for the dashboard chart.
+
+    Query params:
+      - days: how far back to look (default 7, max 365)
+      - bucket: bucket size in seconds (default auto from days)
+    """
+    try:
+        days = max(1, min(365, int(request.query_params.get("days", "7"))))
+    except ValueError:
+        days = 7
+
+    bucket_param = request.query_params.get("bucket")
+    if bucket_param:
+        try:
+            bucket_seconds = max(60, int(bucket_param))
+        except ValueError:
+            bucket_seconds = _auto_bucket_seconds(days)
+    else:
+        bucket_seconds = _auto_bucket_seconds(days)
+
+    return db.get_activity_series(days=days, bucket_seconds=bucket_seconds)
+
+
+def _auto_bucket_seconds(days: int) -> int:
+    """Choose a bucket size that keeps the chart at ~24-100 points."""
+    if days <= 1:
+        return 3600           # hourly      -> 24 points
+    if days <= 3:
+        return 3 * 3600       # 3-hourly    -> 24 points
+    if days <= 14:
+        return 6 * 3600       # 6-hourly    -> ~28-56 points
+    if days <= 90:
+        return 86400          # daily       -> up to 90 points
+    return 7 * 86400          # weekly      -> up to ~52 points
+
+
 @app.get("/admin/api/logs")
 async def admin_logs(request: Request, _=Depends(_require_admin)):
     """Return the last N lines of the proxy log."""

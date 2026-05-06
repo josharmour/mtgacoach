@@ -378,3 +378,91 @@ def get_all_usage_summary(days: int = 30) -> list[dict]:
             (since,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_activity_series(days: int = 7, bucket_seconds: int = 3600) -> dict:
+    """Return time-bucketed activity for the admin dashboard.
+
+    Buckets are aligned to ``bucket_seconds`` boundaries (Unix epoch %
+    bucket_seconds == 0). Empty buckets in the range are returned as zeros so
+    the chart shows continuous time, not just buckets that had traffic.
+
+    Returns:
+        {
+            "bucket_seconds": int,
+            "buckets": [
+                {
+                    "ts": float,            # bucket start (epoch seconds)
+                    "requests": int,
+                    "prompt_tokens": int,
+                    "completion_tokens": int,
+                    "by_provider": {provider: requests, ...},
+                },
+                ...
+            ],
+        }
+    """
+    if bucket_seconds <= 0:
+        bucket_seconds = 3600
+    now = time.time()
+    since = now - (days * 86400)
+    # Snap "since" down to bucket boundary so the leftmost bucket aligns.
+    start = int(since // bucket_seconds) * bucket_seconds
+    end = int(now // bucket_seconds) * bucket_seconds + bucket_seconds
+
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT "
+            "  CAST(timestamp / ? AS INTEGER) * ? AS bucket, "
+            "  provider, "
+            "  COUNT(*) AS requests, "
+            "  COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens, "
+            "  COALESCE(SUM(completion_tokens), 0) AS completion_tokens "
+            "FROM usage_log "
+            "WHERE timestamp >= ? AND timestamp < ? "
+            "GROUP BY bucket, provider "
+            "ORDER BY bucket ASC",
+            (bucket_seconds, bucket_seconds, start, end),
+        ).fetchall()
+
+    # Aggregate (bucket, provider) -> bucket-level dict.
+    bucket_map: dict[int, dict] = {}
+    for r in rows:
+        bts = int(r["bucket"])
+        slot = bucket_map.setdefault(
+            bts,
+            {
+                "ts": float(bts),
+                "requests": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "by_provider": {},
+            },
+        )
+        slot["requests"] += int(r["requests"])
+        slot["prompt_tokens"] += int(r["prompt_tokens"])
+        slot["completion_tokens"] += int(r["completion_tokens"])
+        provider = r["provider"] or "unknown"
+        slot["by_provider"][provider] = (
+            slot["by_provider"].get(provider, 0) + int(r["requests"])
+        )
+
+    # Fill empty buckets with zeros across [start, end).
+    buckets: list[dict] = []
+    bts = start
+    while bts < end:
+        if bts in bucket_map:
+            buckets.append(bucket_map[bts])
+        else:
+            buckets.append(
+                {
+                    "ts": float(bts),
+                    "requests": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "by_provider": {},
+                }
+            )
+        bts += bucket_seconds
+
+    return {"bucket_seconds": bucket_seconds, "buckets": buckets}
