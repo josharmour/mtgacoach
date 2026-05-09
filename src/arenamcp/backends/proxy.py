@@ -41,6 +41,10 @@ def _maybe_capture_prompt(
             "user": user_message,
             "max_tokens": max_tokens,
             "temperature": temperature,
+            # Record which prompt variant produced this capture so the
+            # eval-side ablation can split captures by variant later.
+            # See coach.py: _build_context.
+            "prompt_variant": os.environ.get("MTGACOACH_PROMPT_VARIANT", "default").lower(),
         }
         line = json.dumps(record, ensure_ascii=False)
         with _CAPTURE_LOCK:

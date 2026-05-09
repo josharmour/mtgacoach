@@ -2791,6 +2791,63 @@ class CoachEngine:
 
         return card_words
 
+    # Fields trimmed from raw_json output: large, noisy, or internal. Includes
+    # raw_gre_events (megabytes per turn), legal_actions_raw (the bridge action
+    # list which is already surfaced via decision_context), and underscore-
+    # prefixed fields used for internal bookkeeping. See _format_game_context_raw_json.
+    _RAW_JSON_TRIM_FIELDS = frozenset({
+        "raw_gre_events",
+        "legal_actions_raw",
+        "_match_number",
+        "_pending_request_raw",
+        "annotations",
+    })
+
+    def _build_context(
+        self, game_state: dict[str, Any], question: str = "",
+        *, for_planner: bool = False,
+    ) -> str:
+        """Pick the active prompt variant for the user-message context.
+
+        Reads MTGACOACH_PROMPT_VARIANT once per call. Honors:
+          - 'raw_json' -> _format_game_context_raw_json
+          - anything else (or unset) -> _format_game_context (compressed)
+
+        Forwards optional kwargs only when they're non-default to preserve
+        the calling convention of legacy callers and tests that patch
+        _format_game_context with a simple lambda(state).
+        """
+        kwargs: dict[str, Any] = {}
+        if question:
+            kwargs["question"] = question
+        if for_planner:
+            kwargs["for_planner"] = for_planner
+        if os.environ.get("MTGACOACH_PROMPT_VARIANT", "default").lower() == "raw_json":
+            return self._format_game_context_raw_json(game_state, **kwargs)
+        return self._format_game_context(game_state, **kwargs)
+
+    def _format_game_context_raw_json(
+        self, game_state: dict[str, Any], question: str = "",
+        *, for_planner: bool = False,
+    ) -> str:
+        """Ablation variant: emit the game_state dict as JSON, no compression.
+
+        Tests Gemini's claim that the structured-English formatting in
+        _format_game_context is obsolete for small models like gemma4:e2b.
+        Strips obviously-noisy fields (raw_gre_events, internal markers)
+        but does NO derivation — the model gets the same dict the rest of
+        the coach pipeline sees. Round-trippable, content-faithful, and
+        directly comparable to the compressed builder when both are run
+        on the same game_state.
+
+        for_planner is accepted for API parity with the compressed builder
+        but currently has no effect here.
+        """
+        cleaned = {k: v for k, v in game_state.items() if k not in self._RAW_JSON_TRIM_FIELDS}
+        body = json.dumps(cleaned, ensure_ascii=False, separators=(",", ":"), default=str)
+        suffix = f"\n\nThe player asks: {question}" if question else ""
+        return f"Game state (JSON):\n{body}{suffix}"
+
     def get_advice(
         self,
         game_state: dict[str, Any],
@@ -2814,9 +2871,11 @@ class CoachEngine:
 
         total_start = time.perf_counter()
 
-        # Build context
+        # Build context. _build_context honors MTGACOACH_PROMPT_VARIANT
+        # (default | raw_json) — see _format_game_context_raw_json for the
+        # compression-ablation rationale.
         context_start = time.perf_counter()
-        context = self._format_game_context(game_state)
+        context = self._build_context(game_state)
         context_time = (time.perf_counter() - context_start) * 1000
 
         # Get card name words to exclude from overuse tracking
@@ -3142,8 +3201,8 @@ class CoachEngine:
         total_start = time.perf_counter()
         be = backend or self._backend
 
-        # Build context (reuse existing formatter)
-        context = self._format_game_context(game_state)
+        # Build context (honors MTGACOACH_PROMPT_VARIANT)
+        context = self._build_context(game_state)
 
         # Build system prompt with turn count injected
         system_prompt = WIN_PLAN_PROMPT.format(n=turns)
@@ -3384,7 +3443,7 @@ class CoachEngine:
         if be is None:
             return ""
 
-        context = self._format_game_context(game_state)
+        context = self._build_context(game_state)
 
         system_prompt = (
             "You are an expert MTG analyst. Evaluate the current game state and estimate "
