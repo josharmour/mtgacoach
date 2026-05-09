@@ -53,6 +53,7 @@ from .prompts import (  # noqa: E402
     CreatureChoice,
     enumerate_actions,
     build_actions_available_prompt,
+    build_actions_available_prompt_raw_json,
     build_declare_attackers_prompt,
     build_declare_blockers_prompt,
     build_mulligan_prompt,
@@ -135,17 +136,22 @@ def _make_base_record(replay_path: Path, meta, d: Decision, snap: GameStateSnaps
 def _handle_actions_available(
     snap: GameStateSnapshot, d: Decision, replay_path, meta, messages,
     backends, backend_specs: list[str], seen: set, high_signal_only: bool,
-    out_f, log_prefix: str,
+    out_f, log_prefix: str, prompt_variant: str = "default",
 ) -> int:
     actions = enumerate_actions(d.request)
     if len(actions) <= 1:
         return 0
     if high_signal_only and not is_high_signal_actions_available(snap, d.request, actions):
         return 0
-    user_text = build_actions_available_prompt(snap, d.request, actions)
+    if prompt_variant == "raw_json":
+        user_text = build_actions_available_prompt_raw_json(snap, d.request, actions)
+        label_suffix = "#raw_json"
+    else:
+        user_text = build_actions_available_prompt(snap, d.request, actions)
+        label_suffix = ""
     written = 0
     for spec, backend in zip(backend_specs, backends):
-        label = backend.label
+        label = backend.label + label_suffix
         key = (replay_path.name, int(d.request.msg_id), label)
         if key in seen:
             continue
@@ -159,6 +165,7 @@ def _handle_actions_available(
                          "label": a.label} for a in actions],
             "backend": label, "spec": spec,
             "model": getattr(backend, "model", spec),
+            "prompt_variant": prompt_variant,
             "response": response, "error": error,
             "choice_number": choice.number if choice else None,
             "choice_action_type": choice.action_type if choice else None,
@@ -170,7 +177,7 @@ def _handle_actions_available(
         out_f.flush()
         seen.add(key)
         flag = "OK" if matched else ("ERR" if error else "MISS")
-        print(f"  {log_prefix} {label[:25]:25}  AA  chose#{choice.number if choice else '?':>3}  "
+        print(f"  {log_prefix} {label[:30]:30}  AA  chose#{choice.number if choice else '?':>3}  "
               f"truth={d.ground_truth.summary[:35]:35} {flag} {lat:.0f}ms")
         written += 1
     return written
@@ -361,6 +368,7 @@ def run(
     seat: int = 2,
     kinds: set[str] | None = None,
     high_signal_only: bool = False,
+    prompt_variant: str = "default",
 ) -> None:
     backends = [BackendSpec.parse(s, license_key=license_key) for s in backend_specs]
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -391,7 +399,8 @@ def run(
                 log_prefix = f"d{d.index:3d} T{snap.turn_number}"
                 if d.ground_truth.kind == "ActionsAvailable":
                     handler(snap, d, replay_path, meta, messages, backends, backend_specs,
-                            seen, high_signal_only, out_f, log_prefix)
+                            seen, high_signal_only, out_f, log_prefix,
+                            prompt_variant=prompt_variant)
                 else:
                     handler(snap, d, replay_path, meta, messages, backends, backend_specs,
                             seen, out_f, log_prefix)
@@ -412,6 +421,8 @@ def main():
                    help="Comma-separated decision kinds to score")
     p.add_argument("--high-signal-only", action="store_true",
                    help="For ActionsAvailable, only score decisions on your Main Phase with priority and a card-action available")
+    p.add_argument("--prompt-variant", choices=["default", "raw_json"], default="default",
+                   help="ActionsAvailable prompt format: structured English (default) or raw JSON state. Backend label is suffixed with '#raw_json' so variants don't collide in the responses file.")
     args = p.parse_args()
 
     files = _list_replays(args.replays_dir, args.max_replays)
@@ -420,7 +431,8 @@ def main():
     run(replay_paths=files, out_path=args.out, backend_specs=args.backend,
         license_key=args.license_key,
         max_decisions_per_replay=args.max_decisions_per_replay, seat=args.seat,
-        kinds=kinds, high_signal_only=args.high_signal_only)
+        kinds=kinds, high_signal_only=args.high_signal_only,
+        prompt_variant=args.prompt_variant)
 
 
 if __name__ == "__main__":

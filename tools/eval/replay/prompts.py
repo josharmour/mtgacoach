@@ -219,6 +219,56 @@ def build_actions_available_prompt(
     return "\n".join(lines)
 
 
+def _card_to_json_dict(c: dict) -> dict:
+    """Render a battlefield/hand card as a small dict with resolved name."""
+    out: dict = {"grpId": c.get("grpId"), "name": _name_for_grpid(c.get("grpId"))}
+    p = _pt_value(c.get("power"))
+    t = _pt_value(c.get("toughness"))
+    if p is not None: out["power"] = p
+    if t is not None: out["toughness"] = t
+    return out
+
+
+def build_actions_available_prompt_raw_json(
+    snap: GameStateSnapshot,
+    request: ReplayMessage,
+    actions: list[ActionChoice],
+) -> str:
+    """Same fields as build_actions_available_prompt, rendered as JSON.
+
+    Ablation control: tests whether the structured-English scaffolding
+    is load-bearing for small models or if they parse raw JSON state
+    directly. Card names are still resolved (free given the card_db
+    cache); no GRE-internal fields are added — this is pure formatting.
+    """
+    import json as _json
+    seat = snap.local_seat_id
+    opp_seat = 1 if seat == 2 else 2
+
+    state = {
+        "turn": snap.turn_number,
+        "phase": snap.phase.replace("Phase_", ""),
+        "active_player": "you" if snap.active_player == seat else "opp",
+        "priority": "you" if snap.priority_player == seat else "opp",
+        "life": {"you": snap.life(seat), "opp": snap.life(opp_seat)},
+        "your_hand": [_card_to_json_dict(c) for c in snap.hand(seat)],
+        "your_battlefield": [_card_to_json_dict(c) for c in snap.battlefield(seat)],
+        "opp_battlefield": [_card_to_json_dict(c) for c in snap.battlefield(opp_seat)],
+        "legal_actions": [
+            {"number": a.number, "label": a.label,
+             "action_type": a.action_type, "grp_id": a.grp_id}
+            for a in actions
+        ],
+    }
+    body = _json.dumps(state, separators=(",", ":"))
+    return (
+        "Game state (JSON):\n"
+        f"{body}\n\n"
+        "Pick ONE legal_action by number. Reply with `ACTION: <N>` on the "
+        "first line, then a brief reason."
+    )
+
+
 # ---------------------------------------------------------------------------
 # DeclareAttackers prompt
 # ---------------------------------------------------------------------------
