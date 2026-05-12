@@ -346,6 +346,15 @@ class AutopilotEngine:
         # Bug-report dedup for repeated failures in the same priority window.
         self._reported_bridge_bug_keys: set[tuple[Any, ...]] = set()
         self._reported_bridge_bug_window_sig: Optional[tuple[Any, ...]] = None
+        # Persistent failure counter (#231): _blocked_action_keys gets cleared
+        # whenever _bridge_game_state_id ticks, which lets a perpetually failing
+        # action (e.g. SelectTargets from Optimistic Scavenger that the bridge
+        # has no handler for) retry forever as long as MTGA re-issues the same
+        # logical decision with a new gameStateId. Track consecutive failures
+        # by action key here so we can escalate to a "hard block" that survives
+        # priority-window resets.
+        self._persistent_failure_counts: dict[tuple[Any, ...], int] = {}
+        self._HARD_BLOCK_FAILURE_THRESHOLD = 5
 
     @property
     def afk_mode(self) -> bool:
@@ -573,11 +582,24 @@ class AutopilotEngine:
         )
 
     def _refresh_blocked_action_window(self, game_state: dict[str, Any]) -> None:
-        """Reset blocked-action suppression when the priority window changes."""
+        """Reset blocked-action suppression when the priority window changes.
+
+        Actions that have hit the persistent-failure threshold survive the
+        reset — see #231. Without this, an action that the bridge can't
+        handle (e.g. a SelectTargets sub-type with no bridge serializer)
+        keeps getting retried every time MTGA re-issues the same logical
+        decision with a new gameStateId, locking up gameplay.
+        """
         sig = self._priority_window_signature(game_state)
         if sig != self._blocked_action_window_sig:
             self._blocked_action_window_sig = sig
-            self._blocked_action_keys.clear()
+            # Preserve hard-blocked actions across the window boundary.
+            hard_blocked = {
+                key for key in self._blocked_action_keys
+                if self._persistent_failure_counts.get(key, 0)
+                >= self._HARD_BLOCK_FAILURE_THRESHOLD
+            }
+            self._blocked_action_keys = hard_blocked
         if sig != self._reported_bridge_bug_window_sig:
             self._reported_bridge_bug_window_sig = sig
             self._reported_bridge_bug_keys.clear()
@@ -621,10 +643,36 @@ class AutopilotEngine:
         )
 
     def _mark_action_blocked(self, action: GameAction, game_state: dict[str, Any], reason: str) -> None:
-        """Block an action from being retried in the current priority window."""
+        """Block an action from being retried in the current priority window.
+
+        Also bumps a persistent failure counter (#231). When the counter
+        reaches _HARD_BLOCK_FAILURE_THRESHOLD, the block survives priority
+        window changes — pause for manual instead of looping forever.
+        """
         key = self._action_block_key(action, game_state)
         self._blocked_action_keys.add(key)
-        logger.warning("Blocking action for current window: %s (%s)", action, reason)
+        count = self._persistent_failure_counts.get(key, 0) + 1
+        self._persistent_failure_counts[key] = count
+        if count >= self._HARD_BLOCK_FAILURE_THRESHOLD:
+            logger.error(
+                "Hard-blocking action after %d consecutive failures: %s (%s)",
+                count, action, reason,
+            )
+            self._pause_for_manual(
+                f"Action repeatedly failed ({count}x): {action.action_type.value}"
+                f" {action.card_name or ''}".strip(),
+                game_state,
+            )
+        else:
+            logger.warning(
+                "Blocking action for current window (failure %d/%d): %s (%s)",
+                count, self._HARD_BLOCK_FAILURE_THRESHOLD, action, reason,
+            )
+
+    def _reset_persistent_failure(self, action: GameAction, game_state: dict[str, Any]) -> None:
+        """Clear the persistent-failure counter for an action that just succeeded."""
+        key = self._action_block_key(action, game_state)
+        self._persistent_failure_counts.pop(key, None)
 
     def _is_action_blocked(self, action: GameAction, game_state: dict[str, Any]) -> bool:
         """Whether this action already failed to advance the current window."""
@@ -2022,6 +2070,9 @@ class AutopilotEngine:
                     return True
 
                 self._actions_executed += 1
+                # Clear the persistent-failure counter for this action key
+                # so a future failure starts counting from 0 (#231).
+                self._reset_persistent_failure(action, game_state)
 
                 # --- 4. VERIFYING ---
                 action_verified = True
@@ -2064,7 +2115,12 @@ class AutopilotEngine:
                 if i < len(plan.actions) - 1:
                     self._controller.wait(self._config.action_delay, "between actions")
 
-            self._state = AutopilotState.IDLE
+            # Preserve PAUSED state if _pause_for_manual fired mid-plan
+            # (e.g. bridge-mismatch on one action). Overwriting PAUSED with
+            # IDLE here is what stranded users with a stale current_plan in
+            # the UI while the engine reported idle — see #230.
+            if self._state != AutopilotState.PAUSED:
+                self._state = AutopilotState.IDLE
             self._plans_completed += 1
             plan_had_failures = self._consecutive_failed_verifications > 0
             self._notify("AUTOPILOT", f"Plan complete ({len(plan.actions)} actions)")
@@ -2162,6 +2218,14 @@ class AutopilotEngine:
 
             return True
         finally:
+            # Invariant: state == IDLE implies no in-flight plan. Multiple
+            # IDLE transitions throughout process_trigger don't clear the
+            # plan reference individually; enforcing the invariant here
+            # keeps get_debug_info() honest and prevents the "stale plan
+            # visible while engine reports idle" symptom from #230.
+            if self._state == AutopilotState.IDLE:
+                self._current_plan = None
+                self._current_action_idx = 0
             self._release_lock()
 
     def _deterministic_fallback(
