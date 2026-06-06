@@ -16,9 +16,11 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 # Prevent UnicodeEncodeError on Windows consoles using cp1252/cp437/etc.
@@ -36,7 +38,14 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 
 # -- Constants ----------------------------------------------------------------
 
-GITHUB_REPO = "https://github.com/josharmour/mtgacoach.git"
+# Source is fetched over HTTPS (GitHub API + release/branch ZIP archives)
+# rather than via git, so a git install is not required for setup or updates.
+GITHUB_OWNER_REPO = "josharmour/mtgacoach"
+GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_OWNER_REPO}/releases/latest"
+GITHUB_API_TAGS = f"https://api.github.com/repos/{GITHUB_OWNER_REPO}/tags"
+GITHUB_ARCHIVE = f"https://github.com/{GITHUB_OWNER_REPO}/archive"
+SOURCE_ZIP_URL = f"{GITHUB_ARCHIVE}/refs/heads/master.zip"
+USER_AGENT = "mtgacoach-setup"
 IS_WIN = sys.platform == "win32"
 SETTINGS_DIR = Path.home() / ".arenamcp"
 SETTINGS_FILE = SETTINGS_DIR / "settings.json"
@@ -141,14 +150,112 @@ def _create_windows_shortcut(
     )
 
 
+def _http_get_json(url: str, timeout: int = 10) -> object:
+    """GET *url* and decode the JSON body (GitHub API)."""
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _fetch_latest_remote_version() -> str:
+    """Return the latest release/tag version (no leading ``v``), or ``""``."""
+    # Prefer the published "latest release".
+    try:
+        data = _http_get_json(GITHUB_API_LATEST)
+        if isinstance(data, dict):
+            tag = str(data.get("tag_name", "")).strip()
+            if tag:
+                return tag.lstrip("v")
+    except Exception:
+        pass
+    # Fall back to the tags list (repos that tag without formal releases).
+    try:
+        tags = _http_get_json(GITHUB_API_TAGS)
+        best: tuple[int, ...] = (0,)
+        best_str = ""
+        for entry in tags if isinstance(tags, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name", "")).strip()
+            if not name:
+                continue
+            try:
+                version_tuple = tuple(int(x) for x in name.lstrip("v").split("."))
+            except (ValueError, TypeError):
+                continue
+            if version_tuple > best:
+                best = version_tuple
+                best_str = name.lstrip("v")
+        return best_str
+    except Exception:
+        return ""
+
+
+def _merge_tree(source: Path, dest: Path) -> None:
+    """Copy *source* into *dest*, overwriting files but never touching ``.git``."""
+    for child in source.iterdir():
+        if child.name == ".git":
+            continue
+        target = dest / child.name
+        if child.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            _merge_tree(child, target)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(child, target)
+
+
+def _download_zip_into(urls: list[str], dest_root: Path, timeout: int = 120) -> bool:
+    """Download the first reachable ZIP and merge it into *dest_root*."""
+    data = None
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read()
+            break
+        except Exception:
+            continue
+    if data is None:
+        return False
+    tmp_dir = Path(tempfile.mkdtemp(prefix="mtgacoach-dl-"))
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            archive.extractall(tmp_dir)
+        # GitHub archives extract to a single ``<repo>-<ref>/`` directory.
+        roots = [p for p in tmp_dir.iterdir() if p.is_dir()]
+        if len(roots) != 1:
+            return False
+        _merge_tree(roots[0], dest_root)
+        return True
+    except Exception:
+        return False
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _download_release_zip(version: str, dest_root: Path) -> bool:
+    """Download the release tag ZIP for *version* and merge into *dest_root*."""
+    return _download_zip_into(
+        [
+            f"{GITHUB_ARCHIVE}/refs/tags/v{version}.zip",
+            f"{GITHUB_ARCHIVE}/refs/tags/{version}.zip",
+        ],
+        dest_root,
+    )
+
+
 def _resolve_root() -> Path:
     """Figure out where the mtgacoach repo lives.
 
     Priority:
     1. If the script/exe sits inside the repo, use that.
-    2. If an existing clone is recorded in settings, reuse it.
-    3. Ask the user to point at an existing clone or pick a directory
-       for a fresh ``git clone``.
+    2. If an existing install is recorded in settings, reuse it.
+    3. Ask the user to point at an existing copy, or download the source
+       ZIP over HTTPS (no git required).
     """
     # When running as PyInstaller exe, __file__ is inside a temp dir.
     # Use the directory containing the exe instead.
@@ -171,12 +278,16 @@ def _resolve_root() -> Path:
 
     # 3. Interactive -- ask the user
     print()
-    print("    The setup wizard needs to know where mtgacoach is (or should be).")
+    print("    The setup wizard could not find the mtgacoach files.")
     print()
-    print("    [1] I already have a git clone -- let me type the path")
-    print("    [2] Clone fresh into a folder I choose")
+    print("    mtgacoach is normally installed via the Windows installer,")
+    print("    which unpacks all of the files for you. If you already have a")
+    print("    copy, point me at it; otherwise I can download the source.")
     print()
-    choice = prompt_choice(["Existing clone", "Clone fresh"])
+    print("    [1] I already have a copy -- let me type the path")
+    print("    [2] Download the source into a folder I choose")
+    print()
+    choice = prompt_choice(["Existing copy", "Download source"])
 
     if choice == 1:
         while True:
@@ -189,34 +300,29 @@ def _resolve_root() -> Path:
                 sys.exit(1)
     else:
         default_parent = Path.home()
-        parent = Path(prompt_input("Parent folder for clone", str(default_parent))).expanduser().resolve()
+        parent = Path(prompt_input("Parent folder for download", str(default_parent))).expanduser().resolve()
         parent.mkdir(parents=True, exist_ok=True)
         dest = parent / "mtgacoach"
         if dest.exists() and _is_repo_dir(dest):
-            print(f"    Found existing clone at {dest}")
+            print(f"    Found existing copy at {dest}")
             return dest
-        if not shutil.which("git"):
+        dest.mkdir(parents=True, exist_ok=True)
+        print(f"    Downloading the latest source into {dest} ...")
+        downloaded = False
+        version = _fetch_latest_remote_version()
+        if version:
+            downloaded = _download_release_zip(version, dest)
+        if not downloaded:
+            # Fall back to the default branch archive.
+            downloaded = _download_zip_into([SOURCE_ZIP_URL], dest)
+        if not downloaded or not _is_repo_dir(dest):
             print()
-            print("    ERROR: git is not installed (or not on your PATH).")
-            print()
-            if IS_WIN:
-                print("    Install it from https://git-scm.com/download/win")
-                print("    or run:  winget install Git.Git")
-            else:
-                print("    Install it with your package manager, e.g.:")
-                print("      sudo apt install git   # Debian/Ubuntu")
-                print("      brew install git        # macOS")
-            print()
-            print("    After installing, restart this wizard.")
+            print("    ERROR: could not download the source automatically.")
+            print("    Download it manually from:")
+            print(f"      {SOURCE_ZIP_URL}")
+            print("    extract it, then re-run this wizard from that folder.")
             sys.exit(1)
-        print(f"    Cloning {GITHUB_REPO} into {dest} ...")
-        result = subprocess.run(
-            ["git", "clone", GITHUB_REPO, str(dest)],
-            timeout=120,
-        )
-        if result.returncode != 0:
-            print("    ERROR: git clone failed.")
-            sys.exit(1)
+        print(f"    Source ready at {dest}")
         return dest
 
 
@@ -568,94 +674,52 @@ def step_virtual_environment() -> bool:
 
 
 def step_update_code() -> bool:
-    """Step 3: Pull latest code from git before installing dependencies."""
+    """Step 3: Download the latest release before installing dependencies.
+
+    Uses the GitHub releases API + release ZIP archive over HTTPS, so no git
+    install is required. Any local ``.git`` directory is preserved.
+    """
     print_header(3, "Update Code")
 
-    git_bin = shutil.which("git")
-    if not git_bin:
-        info("git not found on PATH -- skipping auto-update.")
-        return True
-
-    # Check if we're inside a git repo
-    check = subprocess.run(
-        ["git", "rev-parse", "--is-inside-work-tree"],
-        capture_output=True, text=True, cwd=str(ROOT),
-    )
-    if check.returncode != 0:
-        info("Not a git repository -- skipping auto-update.")
-        return True
-
-    # Show current version
-    info("Checking for updates...")
-    result = subprocess.run(
-        ["git", "ls-remote", "--tags", "origin"],
-        capture_output=True, text=True, timeout=10, cwd=str(ROOT),
-    )
-    if result.returncode != 0:
-        info("Could not reach remote -- skipping update (will install from local code).")
-        return True
-
-    # Parse remote tags to find latest version
-    best = (0, 0, 0)
-    best_str = ""
-    for line in result.stdout.splitlines():
-        parts = line.split("refs/tags/")
-        if len(parts) != 2:
-            continue
-        tag = parts[1].strip()
-        if tag.endswith("^{}"):
-            continue
-        ver_str = tag.lstrip("v")
-        try:
-            ver_tuple = tuple(int(x) for x in ver_str.split("."))
-            if ver_tuple > best:
-                best = ver_tuple
-                best_str = ver_str
-        except (ValueError, TypeError):
-            continue
-
     # Read local version from pyproject.toml (no package import needed)
-    local_ver = "0.0.0"
     pyproject = ROOT / "pyproject.toml"
-    if pyproject.exists():
-        for line in pyproject.read_text().splitlines():
-            line = line.strip()
-            if line.startswith("version"):
-                # version = "x.y.z"
-                local_ver = line.split("=", 1)[1].strip().strip('"').strip("'")
-                break
+    if not pyproject.exists():
+        info("No pyproject.toml found -- skipping auto-update.")
+        return True
 
-    local_tuple = tuple(int(x) for x in local_ver.split("."))
+    local_ver = "0.0.0"
+    for line in pyproject.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("version"):
+            # version = "x.y.z"
+            local_ver = line.split("=", 1)[1].strip().strip('"').strip("'")
+            break
 
-    if best > local_tuple and best_str:
-        info(f"Update available: v{local_ver} -> v{best_str}")
-        if prompt_yn("Pull latest code before installing?", default=True):
-            info("Running git pull --ff-only ...")
-            pull = subprocess.run(
-                ["git", "pull", "--ff-only", "origin", "master"],
-                capture_output=True, text=True, timeout=60, cwd=str(ROOT),
-            )
-            if pull.returncode == 0:
-                ok(f"Updated to latest code")
-                # Show summary line
-                summary = pull.stdout.strip().splitlines()[-1] if pull.stdout.strip() else ""
-                if summary:
-                    info(summary)
+    info("Checking for updates...")
+    remote_ver = _fetch_latest_remote_version()
+    if not remote_ver:
+        info("Could not reach GitHub -- skipping update (will install from local code).")
+        return True
+
+    try:
+        local_tuple = tuple(int(x) for x in local_ver.split("."))
+        remote_tuple = tuple(int(x) for x in remote_ver.split("."))
+    except (ValueError, TypeError):
+        info("Could not compare versions -- skipping update.")
+        return True
+
+    if remote_tuple > local_tuple:
+        info(f"Update available: v{local_ver} -> v{remote_ver}")
+        if prompt_yn("Download latest code before installing?", default=True):
+            info("Downloading release archive from GitHub...")
+            if _download_release_zip(remote_ver, ROOT):
+                ok(f"Updated to v{remote_ver}")
             else:
-                stderr = pull.stderr.strip()
-                fail("git pull failed -- installing from current code")
-                if "not possible to fast-forward" in stderr or "divergent" in stderr:
-                    info("Local branch has diverged. Run 'git pull' manually to resolve.")
-                elif "uncommitted changes" in stderr or "dirty" in stderr:
-                    info("You have uncommitted local changes. Commit or stash them first.")
-                else:
-                    info(stderr[:200] if stderr else "Unknown error")
+                fail("Download failed -- installing from current code")
         else:
             info("Skipping update.")
-    elif best_str:
-        ok(f"Already up to date (v{local_ver})")
     else:
-        info("No remote tags found -- skipping version check.")
+        ok(f"Already up to date (v{local_ver})")
 
     return True
 
@@ -665,7 +729,9 @@ def step_install_dependencies() -> bool:
     print_header(4, "Install Dependencies")
 
     info("Installing core + voice + LLM packages...")
-    editable = (ROOT / ".git").exists()
+    # Editable install when we have project source at ROOT (git clone *or*
+    # installer-unpacked source); no .git directory required.
+    editable = (ROOT / "pyproject.toml").exists()
     full_install = ["install", "-e", ".[full]"] if editable else ["install", ".[full]"]
     base_install = ["install", "-e", "."] if editable else ["install", "."]
 
@@ -1106,7 +1172,7 @@ def main() -> int:
     if not step_virtual_environment():
         return 1
 
-    # Step 3: Update code from git (before installing deps)
+    # Step 3: Update code from GitHub (before installing deps)
     if not step_update_code():
         return 1
 

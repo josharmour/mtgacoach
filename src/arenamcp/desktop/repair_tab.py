@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -42,6 +43,7 @@ class RepairTab(QWidget):
     restart_requested = Signal(bool, bool, bool)
     provisioning_changed = Signal(bool)
     guided_setup_finished = Signal(bool, str)
+    _diagnostics_done = Signal(bool, str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -57,7 +59,10 @@ class RepairTab(QWidget):
         self._guided_setup_active = False
         self._operation_in_progress = False
         self._busy_buttons: list[QPushButton] = []
+        self._diagnostics_worker: Optional[threading.Thread] = None
+        self._diagnostics_output = ""
         self._build_ui()
+        self._diagnostics_done.connect(self._on_diagnostics_complete)
         self.refresh_state()
 
     def _build_ui(self) -> None:
@@ -159,6 +164,9 @@ class RepairTab(QWidget):
         self.install_plugin_button = QPushButton("Install Plugin")
         self.install_plugin_button.clicked.connect(self._install_plugin)
         action_row.addWidget(self.install_plugin_button)
+        self.run_diagnostics_button = QPushButton("Run Full Diagnostics")
+        self.run_diagnostics_button.clicked.connect(self._run_full_diagnostics)
+        action_row.addWidget(self.run_diagnostics_button)
         action_row.addStretch(1)
         fix_layout.addLayout(action_row)
 
@@ -188,6 +196,14 @@ class RepairTab(QWidget):
         self.fix_log.setMaximumBlockCount(500)
         self.fix_log.setMinimumHeight(120)
         fix_layout.addWidget(self.fix_log)
+
+        copy_row = QHBoxLayout()
+        copy_row.addStretch(1)
+        self.copy_diagnostics_button = QPushButton("Copy for Support")
+        self.copy_diagnostics_button.setEnabled(False)
+        self.copy_diagnostics_button.clicked.connect(self._copy_diagnostics_to_clipboard)
+        copy_row.addWidget(self.copy_diagnostics_button)
+        fix_layout.addLayout(copy_row)
         layout.addWidget(fix_box)
 
         log_box = QGroupBox("Log Tails")
@@ -207,6 +223,7 @@ class RepairTab(QWidget):
             self.repair_button,
             self.install_bepinex_button,
             self.install_plugin_button,
+            self.run_diagnostics_button,
         ]
 
     def refresh_state(self) -> RuntimeState:
@@ -297,6 +314,69 @@ class RepairTab(QWidget):
         self._set_busy(True)
         self._guided_setup_active = self._guided_setup_active or False
         self._run_fix_sequence()
+
+    def _run_full_diagnostics(self) -> None:
+        if self._is_busy():
+            self._show_busy_message()
+            return
+
+        self.fix_log.clear()
+        self._diagnostics_output = ""
+        self.copy_diagnostics_button.setEnabled(False)
+        self._append_fix_log("[..] Running full diagnostics (this can take a few seconds)...")
+        self._set_fix_step("Running diagnostics...")
+        self._operation_in_progress = True
+        self._set_busy(True)
+        self._run_diagnostics_in_thread()
+
+    def _run_diagnostics_in_thread(self) -> None:
+        def worker() -> None:
+            try:
+                from arenamcp.diagnose import collect_diagnostics
+                report = collect_diagnostics()
+                self._diagnostics_done.emit(True, report)
+            except Exception as exc:  # pragma: no cover - defensive
+                self._diagnostics_done.emit(False, f"Diagnostics failed: {exc}")
+
+        thread = threading.Thread(target=worker, name="mtgacoach-diagnostics", daemon=True)
+        self._diagnostics_worker = thread
+        thread.start()
+
+    def _on_diagnostics_complete(self, success: bool, output: str) -> None:
+        self._diagnostics_worker = None
+        self._diagnostics_output = output
+
+        for line in output.splitlines():
+            self.fix_log.appendPlainText(line)
+
+        if success:
+            # Count only marker check-lines, not the RESULT footer (which can
+            # embed a literal "[FAIL]"), to avoid an off-by-one summary.
+            fails = sum(1 for ln in output.splitlines() if ln.lstrip().startswith("[FAIL]"))
+            warns = sum(1 for ln in output.splitlines() if ln.lstrip().startswith("[WARN]"))
+            self._append_fix_log(f"[Summary] {fails} critical issue(s), {warns} warning(s)")
+            self._set_fix_step("Diagnostics complete")
+        else:
+            self._set_fix_step("Diagnostics error")
+
+        self.copy_diagnostics_button.setEnabled(bool(self._diagnostics_output.strip()))
+        self._operation_in_progress = False
+        self._set_busy(False)
+        # Common failures (e.g. permission issues) may now be visible — refresh
+        # the status panel so it reflects whatever the checks just discovered.
+        self.refresh_state()
+
+    def _copy_diagnostics_to_clipboard(self) -> None:
+        text = self.fix_log.toPlainText()
+        if not text.strip():
+            QMessageBox.information(self, "mtgacoach", "Run diagnostics first.")
+            return
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text)
+            self._set_fix_step("Copied diagnostics to clipboard")
+        else:  # pragma: no cover - clipboard unavailable
+            QMessageBox.warning(self, "mtgacoach", "Clipboard is not available.")
 
     def start_guided_setup(self) -> None:
         if self._is_busy():

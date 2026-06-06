@@ -8,7 +8,9 @@ Usage:
     python -m arenamcp.standalone --diagnose
 """
 
+import contextlib
 import importlib
+import io
 import json
 import os
 import platform
@@ -498,6 +500,24 @@ def run_diagnostics() -> int:
     print()
 
     return 0 if issues == 0 else 1
+
+
+def collect_diagnostics() -> str:
+    """Run all diagnostic checks and return the formatted report as a string.
+
+    This is the GUI-friendly counterpart to :func:`run_diagnostics`. It runs
+    the exact same check sequence but captures everything that would normally
+    be printed to stdout into a string, restoring stdout even if a check
+    raises. Use this from the desktop app / Repair tab; use
+    :func:`run_diagnostics` for the CLI (it still returns an exit code).
+    """
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        try:
+            run_diagnostics()
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"\n{FAIL} Diagnostics crashed: {exc}")
+    return buffer.getvalue()
 
 
 if __name__ == "__main__":

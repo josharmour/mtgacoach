@@ -135,6 +135,71 @@ def main() -> int:
         app.setWindowIcon(QIcon(str(icon_path)))
 
     apply_theme(app, load_saved_theme())
+
+    if not _run_first_run_setup(app):
+        return 1
+
     window = MainWindow()
     window.show()
     return app.exec()
+
+
+def _run_first_run_setup(app) -> bool:
+    """Show the setup splash when the runtime environment is not provisioned.
+
+    Returns ``True`` if the app should continue to the main window, ``False`` if
+    setup was needed but failed/cancelled (caller should exit). When no setup is
+    needed this returns ``True`` immediately and shows nothing.
+    """
+    try:
+        from .runtime import detect_runtime_state
+    except Exception as exc:  # pragma: no cover - defensive
+        _write_log(f"runtime detection unavailable, skipping first-run setup: {exc}")
+        return True
+
+    try:
+        state = detect_runtime_state()
+    except Exception as exc:  # pragma: no cover - defensive
+        _write_log(f"detect_runtime_state failed, skipping first-run setup: {exc}")
+        return True
+
+    # Only provision when we have a Python but it is not yet usable for the app.
+    needs_setup = state.python_exe is not None and not state.has_ready_python_runtime
+    if not needs_setup:
+        return True
+
+    _write_log(
+        "first-run setup needed"
+        f" python_source={state.python_source}"
+        f" python_ready={state.python_ready}"
+        f" runtime_venv_exists={state.runtime_venv_exists}"
+    )
+
+    try:
+        from .setup_splash import SetupSplashWindow
+    except Exception as exc:  # pragma: no cover - defensive
+        _write_log(f"setup splash unavailable, continuing without it: {exc}")
+        return True
+
+    splash = SetupSplashWindow()
+    splash.show()
+    splash.start_setup()
+
+    # Drive a local event loop until the splash window is dismissed. The splash
+    # closes itself on success (via the connected slot) and stays open with a
+    # Retry/Close affordance on failure.
+    splash.setup_completed.connect(
+        lambda success, _message: splash.close() if success else None
+    )
+    # Block on the OS event wait between events instead of spin-looping, which
+    # would otherwise peg a CPU core for the whole setup. The timeout keeps
+    # isVisible() re-checked promptly (incl. the failure/Retry-Close path).
+    from PySide6.QtCore import QEventLoop
+
+    while splash.isVisible():
+        app.processEvents(QEventLoop.WaitForMoreEvents, 100)
+
+    if not splash.setup_success:
+        _write_log("first-run setup cancelled or failed; exiting")
+        return False
+    return True

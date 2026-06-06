@@ -406,11 +406,87 @@ def _safe_mtime(path: Optional[Path]) -> float:
         return 0.0
 
 
+# Config files that require an MTGA restart to take effect, relative to the
+# MTGA install dir. Tracked alongside the BepInEx/plugin binaries so that
+# editing a config (not just swapping a DLL) is detected.
+_RESTART_CONFIG_FILES = {
+    "doorstop_config.ini": ("doorstop_config.ini",),
+    "BepInEx.cfg": ("BepInEx", "config", "BepInEx.cfg"),
+}
+
+
+def _config_paths_for(mtga_dir: str) -> dict[str, Path]:
+    base = Path(mtga_dir)
+    return {name: base.joinpath(*parts) for name, parts in _RESTART_CONFIG_FILES.items()}
+
+
+def get_saved_config_mtimes(mtga_dir: str) -> dict[str, float]:
+    """Return the recorded baseline config mtimes for *mtga_dir*.
+
+    The baseline is stored per MTGA directory under ``config_mtimes`` in
+    settings.json. Missing/old settings files degrade gracefully to ``{}``.
+    """
+    try:
+        if not _SETTINGS_FILE.exists():
+            return {}
+        with _SETTINGS_FILE.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        all_mtimes = data.get("config_mtimes")
+        if isinstance(all_mtimes, dict):
+            entry = all_mtimes.get(mtga_dir)
+            if isinstance(entry, dict):
+                return {
+                    str(k): float(v)
+                    for k, v in entry.items()
+                    if isinstance(v, (int, float))
+                }
+    except Exception:
+        pass
+    return {}
+
+
+def set_saved_config_mtimes(mtga_dir: str, mtimes: dict[str, float]) -> None:
+    """Persist the baseline config mtimes for *mtga_dir* into settings.json."""
+    _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+    data: dict[str, object] = {}
+    if _SETTINGS_FILE.exists():
+        try:
+            with _SETTINGS_FILE.open("r", encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            if isinstance(loaded, dict):
+                data.update(loaded)
+        except Exception:
+            pass
+    all_mtimes = data.get("config_mtimes")
+    if not isinstance(all_mtimes, dict):
+        all_mtimes = {}
+    all_mtimes[mtga_dir] = {str(k): float(v) for k, v in mtimes.items()}
+    data["config_mtimes"] = all_mtimes
+    with _SETTINGS_FILE.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2)
+
+
+def _record_config_mtimes(mtga_dir: str) -> None:
+    """Snapshot the current config mtimes as the baseline for *mtga_dir*.
+
+    Called right after an install/repair so that freshly-written configs do
+    not produce a spurious "restart required" signal.
+    """
+    mtimes: dict[str, float] = {}
+    for name, path in _config_paths_for(mtga_dir).items():
+        current = _safe_mtime(path)
+        if current > 0:
+            mtimes[name] = current
+    if mtimes:
+        set_saved_config_mtimes(mtga_dir, mtimes)
+
+
 def _restart_mtga_required(
     *,
     player_log: Path,
     bepinex_dir: Optional[Path],
     plugin_install_path: Optional[Path],
+    mtga_dir: Optional[str] = None,
 ) -> bool:
     if bepinex_dir is None and plugin_install_path is None:
         return False
@@ -424,12 +500,35 @@ def _restart_mtga_required(
         _safe_mtime(bepinex_dir / "core" / "BepInEx.dll" if bepinex_dir else None),
         _safe_mtime(bepinex_dir / "plugins" / "MtgaCoachBridge.dll" if bepinex_dir else None),
     ]
+
+    # Config changes (BepInEx.cfg, doorstop_config.ini) also require a restart
+    # to take effect, but only the binaries were tracked before. Fold the
+    # configs into the same Player.log comparison: a config newer than the
+    # latest Player.log write means MTGA is running with a stale config. This
+    # is self-clearing (Player.log becomes newest again after the restart).
+    #
+    # The recorded baseline (from a prior install/repair) is used to suppress
+    # configs that still match what we installed, which avoids a false signal
+    # right after install when Player.log can be older than the fresh configs.
+    if mtga_dir:
+        saved = get_saved_config_mtimes(mtga_dir)
+        for name, path in _config_paths_for(mtga_dir).items():
+            current = _safe_mtime(path)
+            if current <= 0:
+                continue  # config not written yet (created on first MTGA run)
+            baseline = saved.get(name)
+            if baseline is not None and current <= baseline:
+                continue  # unchanged since we recorded the baseline
+            install_times.append(current)
+
     return max(install_times, default=0.0) > player_log_mtime
 
 
 def detect_runtime_state() -> RuntimeState:
     app_root = Path(get_app_root())
-    repo_checkout = (app_root / ".git").exists()
+    # A valid checkout is anything that ships pyproject.toml (git clone *or*
+    # installer-unpacked source); we no longer require a .git directory.
+    repo_checkout = (app_root / "pyproject.toml").exists()
     runtime_root = Path(get_runtime_root())
     app_runtime_dir = app_root / "runtime"
     runtime_venv_dir = runtime_root / "venv"
@@ -547,6 +646,7 @@ def detect_runtime_state() -> RuntimeState:
         player_log=player_log_path,
         bepinex_dir=Path(bepinex_dir) if bepinex_dir else None,
         plugin_install_path=Path(plugin_install_path) if plugin_install_path else None,
+        mtga_dir=mtga_dir,
     )
 
     issues: list[str] = []
@@ -690,6 +790,10 @@ def install_bepinex(mtga_dir: str) -> str:
         if source.exists():
             shutil.copy2(source, Path(mtga_dir) / filename)
 
+    # Baseline the freshly-written configs so detect_runtime_state() doesn't
+    # report a spurious "restart required" immediately after install.
+    _record_config_mtimes(mtga_dir)
+
     return str(target_dir)
 
 
@@ -714,6 +818,11 @@ def install_plugin(mtga_dir: str) -> str:
     plugins_dir.mkdir(parents=True, exist_ok=True)
     dest_dll = plugins_dir / "MtgaCoachBridge.dll"
     shutil.copy2(source_dll, dest_dll)
+
+    # Refresh the config baseline so the install doesn't trip the restart
+    # detector before MTGA has been launched against the new plugin.
+    _record_config_mtimes(mtga_dir)
+
     return str(dest_dll)
 
 
