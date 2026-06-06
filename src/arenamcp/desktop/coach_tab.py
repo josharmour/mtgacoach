@@ -4,7 +4,7 @@ import html
 import sys
 from typing import Any, Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSplitter,
     QTextEdit,
@@ -49,6 +50,12 @@ class CoachTab(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._process: Optional[CoachProcess] = None
+        # Headless self-play (bot-vs-bot) subprocess. Lives only while a
+        # self-play session is running; it needs the bridge on port 44222,
+        # so the live coach must be stopped first.
+        self._selfplay_process: Optional[QProcess] = None
+        self._selfplay_out_buf = ""
+        self._selfplay_err_buf = ""
         self._tts = TtsManager(self)
         self._all_log_lines: list[tuple[str, str]] = []  # (role, text)
         self._last_game_state = "Turn 0 waiting for MTGA..."
@@ -119,6 +126,23 @@ class CoachTab(QWidget):
         self._process = None
 
     def shutdown(self) -> None:
+        # Tear down any running self-play subprocess so it doesn't outlive
+        # the app and keep holding the bridge port.
+        process = self._selfplay_process
+        if process is not None:
+            self._selfplay_process = None
+            try:
+                process.finished.disconnect(self._on_self_play_finished)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                if process.state() != QProcess.NotRunning:
+                    process.terminate()
+                    if not process.waitForFinished(2000):
+                        process.kill()
+                        process.waitForFinished(1000)
+            except Exception:
+                pass
         self._tts.shutdown()
         self._draft_hud.close()
         self._card_overlay.close()
@@ -343,6 +367,18 @@ class CoachTab(QWidget):
         debug_button = QPushButton("Debug Report")
         debug_button.clicked.connect(self._submit_debug_report)
         button_row.addWidget(debug_button)
+
+        # Self-play (bots): stops the live coach to free the bridge port
+        # (44222), then runs a headless bot-vs-bot session whose output
+        # streams into the Coach Log. Toggles to a Stop control while running.
+        self._self_play_btn = QPushButton("Self-Play")
+        self._self_play_btn.setToolTip(
+            "Stop live coaching and run a headless bot-vs-bot self-play session.\n"
+            "This frees the GRE bridge (port 44222) for the self-play process.\n"
+            "Output streams into the Coach Log."
+        )
+        self._self_play_btn.clicked.connect(lambda _checked=False: self._toggle_self_play())
+        button_row.addWidget(self._self_play_btn)
 
         import sys
         # Match-overlay calibration: draws a thin outline around every card
@@ -778,6 +814,214 @@ class CoachTab(QWidget):
 
     def _handle_process_exit(self, exit_code: int) -> None:
         self.append_log(f"Coach process exited ({exit_code}).", role="error")
+
+    # -- Self-play (bot-vs-bot) --------------------------------------------
+    def _toggle_self_play(self) -> None:
+        if self._selfplay_process is not None and self._selfplay_process.state() != QProcess.NotRunning:
+            self._stop_self_play()
+        else:
+            self._start_self_play()
+
+    def _start_self_play(self) -> None:
+        if self._selfplay_process is not None and self._selfplay_process.state() != QProcess.NotRunning:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Start Self-Play (bots)",
+            "This will STOP the live coach (freeing the GRE bridge on port "
+            "44222) and launch a headless bot-vs-bot self-play session.\n\n"
+            "Make sure MTGA is running and idle at the main menu. Decisions "
+            "will stream into the Coach Log.\n\nStart self-play now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # Free the bridge port by stopping the live coach first. If that
+        # fails, tell the user to stop coaching manually rather than crash.
+        if not self._stop_coach_for_self_play():
+            QMessageBox.warning(
+                self,
+                "Stop Coaching First",
+                "Could not stop the running coach automatically. Please stop "
+                "coaching before starting self-play, then try again.",
+            )
+            return
+
+        self.append_log(
+            "Stopping coach to free bridge port 44222 for self-play...",
+            role="header",
+        )
+        self._self_play_btn.setEnabled(False)
+        self._self_play_btn.setText("Starting...")
+        # Give the coach subprocess a moment to release the TCP listen socket
+        # before the self-play process tries to bind it. Non-blocking.
+        QTimer.singleShot(2000, self._launch_self_play_process)
+
+    def _stop_coach_for_self_play(self) -> bool:
+        """Stop the desktop coach so its bridge releases TCP port 44222.
+
+        Returns True if the coach was stopped (or was not running). The
+        coach's ``exited`` signal is disconnected first so the main window
+        does not auto-restart it and re-bind the port underneath self-play.
+        """
+        process = self._process
+        if process is None or not getattr(process, "is_running", False):
+            return True
+        try:
+            # Drop our own handlers, then drop the main window's auto-restart
+            # hook so stopping the coach doesn't immediately relaunch it.
+            self.detach_process()
+            try:
+                process.exited.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            process.stop_async()
+        except Exception as exc:
+            self.append_log(f"Could not stop coach for self-play: {exc}", role="error")
+            return False
+        return True
+
+    def _resolve_self_play_python(self) -> str:
+        try:
+            from .runtime import find_python_executable
+
+            python_exe, _source = find_python_executable()
+            if python_exe:
+                return python_exe
+        except Exception:
+            pass
+        return sys.executable
+
+    def _launch_self_play_process(self) -> None:
+        from pathlib import Path
+
+        from .runtime import get_app_root
+
+        python_exe = self._resolve_self_play_python()
+        app_root = get_app_root()
+        src_dir = str(Path(app_root) / "src")
+
+        process = QProcess(self)
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONPATH", src_dir)
+        env.insert("PYTHONUNBUFFERED", "1")
+        env.insert("PYTHONIOENCODING", "utf-8")
+        process.setProcessEnvironment(env)
+        process.setWorkingDirectory(str(app_root))
+        process.setProgram(python_exe)
+        process.setArguments(["-u", "-m", "arenamcp.self_play", "--auto"])
+        process.setProcessChannelMode(QProcess.SeparateChannels)
+        process.readyReadStandardOutput.connect(self._on_self_play_stdout)
+        process.readyReadStandardError.connect(self._on_self_play_stderr)
+        process.finished.connect(self._on_self_play_finished)
+        process.errorOccurred.connect(self._on_self_play_error)
+
+        self._selfplay_process = process
+        self._selfplay_out_buf = ""
+        self._selfplay_err_buf = ""
+        process.start()
+
+        if not process.waitForStarted(5000):
+            message = process.errorString() or "failed to start"
+            self.append_log(f"Self-play failed to start: {message}", role="error")
+            try:
+                process.deleteLater()
+            except Exception:
+                pass
+            self._selfplay_process = None
+            self._reset_self_play_button()
+            return
+
+        self.append_log(
+            f"Self-play started: {python_exe} -m arenamcp.self_play --auto",
+            role="header",
+        )
+        self._self_play_btn.setEnabled(True)
+        self._self_play_btn.setText("Stop Self-Play")
+
+    def _stop_self_play(self) -> None:
+        process = self._selfplay_process
+        if process is None:
+            return
+        self.append_log("Stopping self-play...", role="header")
+        self._self_play_btn.setEnabled(False)
+        try:
+            if process.state() != QProcess.NotRunning:
+                process.terminate()
+                if not process.waitForFinished(3000):
+                    process.kill()
+                    process.waitForFinished(2000)
+        except Exception as exc:
+            self.append_log(f"Error stopping self-play: {exc}", role="error")
+        # _on_self_play_finished performs cleanup, button reset, and the
+        # coach restart. If the process was already gone, finalize here.
+        if self._selfplay_process is None:
+            self._reset_self_play_button()
+
+    def _on_self_play_stdout(self) -> None:
+        process = self._selfplay_process
+        if process is None:
+            return
+        chunk = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        self._selfplay_out_buf += chunk
+        while "\n" in self._selfplay_out_buf:
+            line, self._selfplay_out_buf = self._selfplay_out_buf.split("\n", 1)
+            line = line.rstrip("\r")
+            if line:
+                self.append_log(f"[self-play] {line}", role="advice")
+
+    def _on_self_play_stderr(self) -> None:
+        process = self._selfplay_process
+        if process is None:
+            return
+        chunk = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
+        self._selfplay_err_buf += chunk
+        while "\n" in self._selfplay_err_buf:
+            line, self._selfplay_err_buf = self._selfplay_err_buf.split("\n", 1)
+            line = line.rstrip("\r")
+            if line:
+                # self_play logs to stderr at INFO; surface it as visible log
+                # output rather than alarming red error styling.
+                self.append_log(f"[self-play] {line}", role="advice")
+
+    def _on_self_play_error(self, _error: QProcess.ProcessError) -> None:
+        process = self._selfplay_process
+        if process is not None:
+            self.append_log(f"Self-play process error: {process.errorString()}", role="error")
+
+    def _on_self_play_finished(self, exit_code: int, _status: QProcess.ExitStatus) -> None:
+        if self._selfplay_out_buf.strip():
+            self.append_log(f"[self-play] {self._selfplay_out_buf.strip()}", role="advice")
+        if self._selfplay_err_buf.strip():
+            self.append_log(f"[self-play] {self._selfplay_err_buf.strip()}", role="advice")
+        self._selfplay_out_buf = ""
+        self._selfplay_err_buf = ""
+
+        process = self._selfplay_process
+        self._selfplay_process = None
+        if process is not None:
+            try:
+                process.deleteLater()
+            except Exception:
+                pass
+
+        self.append_log(f"Self-play exited ({exit_code}).", role="header")
+        self._reset_self_play_button()
+
+        # Re-enable live coaching now that the bridge port is free again. The
+        # main window owns process lifecycle, so route through its restart.
+        self.append_log("Restarting coach...", role="status")
+        self.restart_requested.emit()
+
+    def _reset_self_play_button(self) -> None:
+        try:
+            self._self_play_btn.setEnabled(True)
+            self._self_play_btn.setText("Self-Play")
+        except RuntimeError:
+            pass
 
     def _update_status(self, key: str, value: str) -> None:
         normalized = key.upper()

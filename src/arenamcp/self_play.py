@@ -19,9 +19,12 @@ import argparse
 import json
 import logging
 import os
+import socket
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -48,6 +51,218 @@ from arenamcp.gre_action_matcher import match_action_to_gre
 from tools.eval.run import BackendSpec
 
 logger = logging.getLogger("arenamcp.self_play")
+
+# Default backend for autonomous self-play (local vLLM, OpenAI-compatible).
+# Used for BOTH seats when --local-backend/--opponent-backend are omitted.
+DEFAULT_BACKEND = "openai-compatible|http://localhost:8003/v1|gemma-4-12b-it"
+
+# Port the GRE bridge server binds for the BepInEx plugin to connect to.
+GRE_BRIDGE_PORT = 44222
+
+
+def _backend_base_url(spec: str) -> Optional[str]:
+    """Extract the OpenAI-compatible base_url from a backend spec, if any.
+
+    Only ``openai-compatible|<base_url>|<model>`` specs expose a base URL we can
+    health-check. Other forms (``ollama:``, ``online:``) return None.
+    """
+    if spec and spec.startswith("openai-compatible|"):
+        parts = spec.split("|")
+        if len(parts) >= 3 and parts[1].strip():
+            return parts[1].strip().rstrip("/")
+    return None
+
+
+def vllm_preflight(base_urls: list[str], timeout: float = 3.0) -> Dict[str, tuple[bool, Any]]:
+    """GET ``<base_url>/models`` for each distinct base URL.
+
+    Returns a mapping ``{base_url: (ok, detail)}`` where ``detail`` is the list
+    of available model ids on success or an error string on failure.
+    """
+    results: Dict[str, tuple[bool, Any]] = {}
+    for url in base_urls:
+        models_url = url.rstrip("/") + "/models"
+        try:
+            req = urllib.request.Request(models_url, method="GET")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read().decode("utf-8", "replace")
+            try:
+                data = json.loads(body)
+                ids = [
+                    m.get("id")
+                    for m in data.get("data", [])
+                    if isinstance(m, dict)
+                ]
+            except Exception:
+                ids = []
+            results[url] = (True, ids)
+            logger.info(f"vLLM preflight OK: {models_url} -> models={ids}")
+        except Exception as e:  # urllib.error.URLError, socket.timeout, etc.
+            results[url] = (False, str(e))
+            logger.warning(f"vLLM preflight FAILED: {models_url} -> {e}")
+    return results
+
+
+def _import_proton_launch():
+    """Best-effort import of the Proton launcher module.
+
+    Returns the module or None if it is not available in this build.
+    """
+    try:
+        from arenamcp import proton_launch  # type: ignore
+        return proton_launch
+    except Exception as e:  # pragma: no cover - depends on platform build
+        logger.debug(f"arenamcp.proton_launch unavailable: {e}")
+        return None
+
+
+def mtga_is_running() -> bool:
+    """True if an MTGA process is currently running (Proton or native)."""
+    pl = _import_proton_launch()
+    if pl is not None and hasattr(pl, "is_mtga_running"):
+        try:
+            return bool(pl.is_mtga_running())
+        except Exception:
+            pass
+    try:
+        from arenamcp.desktop.runtime import is_mtga_running
+        return bool(is_mtga_running())
+    except Exception:
+        return False
+
+
+def find_mtga_install() -> tuple[Optional[str], str]:
+    """Locate the MTGA install directory. Returns ``(path_or_None, source)``."""
+    pl = _import_proton_launch()
+    if pl is not None and hasattr(pl, "find_mtga_install"):
+        try:
+            res = pl.find_mtga_install()
+            if isinstance(res, tuple):
+                return res
+            if res:
+                return (str(res), "proton_launch")
+        except Exception:
+            pass
+    try:
+        from arenamcp.desktop.runtime import find_mtga_install_dir
+        return find_mtga_install_dir()
+    except Exception:
+        return (None, "not_found")
+
+
+def _port_bindable(port: int = GRE_BRIDGE_PORT) -> bool:
+    """True if 127.0.0.1:port can be bound right now (i.e. it is free)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def ensure_mtga_running() -> None:
+    """Launch MTGA via the Proton launcher if it is not already running.
+
+    Prefers ``arenamcp.proton_launch`` (per product design); falls back to the
+    desktop runtime launcher if that module is unavailable.
+    """
+    if mtga_is_running():
+        logger.info("MTGA already running; skipping launch.")
+        return
+
+    logger.info("MTGA not running; launching...")
+    pl = _import_proton_launch()
+    if pl is not None and hasattr(pl, "launch_mtga"):
+        pl.launch_mtga()
+        if hasattr(pl, "wait_for_mtga_process"):
+            pl.wait_for_mtga_process()
+        else:
+            for _ in range(120):
+                if mtga_is_running():
+                    break
+                time.sleep(1.0)
+        logger.info("MTGA launch initiated via proton_launch.")
+        return
+
+    # Fallback: desktop runtime launcher.
+    logger.warning(
+        "arenamcp.proton_launch unavailable; using desktop.runtime launcher fallback."
+    )
+    try:
+        from arenamcp.desktop.runtime import find_mtga_install_dir
+        from arenamcp.desktop.runtime import launch_mtga as rt_launch
+    except Exception as e:
+        logger.error(f"No MTGA launcher available: {e}")
+        sys.exit(5)
+    install_dir, _ = find_mtga_install_dir()
+    if not install_dir:
+        logger.error("Cannot launch MTGA: install directory not found.")
+        sys.exit(5)
+    rt_launch(install_dir)
+    for _ in range(120):
+        if mtga_is_running():
+            break
+        time.sleep(1.0)
+    logger.info("MTGA launch initiated via desktop.runtime fallback.")
+
+
+def run_dry_run(local_spec: str, opp_spec: str) -> int:
+    """Check self-play readiness and report. Returns process exit code.
+
+    Does NOT launch MTGA or start any match.
+    """
+    logger.info("=== self-play readiness check (--dry-run) ===")
+    ok = True
+
+    # 1. MTGA install location
+    install_dir, source = find_mtga_install()
+    if install_dir:
+        logger.info(f"MTGA install: FOUND ({source}) -> {install_dir}")
+    else:
+        logger.error("MTGA install: NOT FOUND")
+        ok = False
+
+    # 2. MTGA process state (informational)
+    running = mtga_is_running()
+    logger.info(f"MTGA process running: {running}")
+
+    # 3. GRE bridge port availability
+    bindable = _port_bindable(GRE_BRIDGE_PORT)
+    if bindable:
+        logger.info(f"GRE bridge port {GRE_BRIDGE_PORT}: bindable (free)")
+    else:
+        logger.error(
+            f"GRE bridge port {GRE_BRIDGE_PORT}: NOT bindable (in use). "
+            "Stop the desktop coach/bridge before running self-play."
+        )
+        ok = False
+
+    # 4. vLLM reachability for each distinct openai-compatible base_url
+    base_urls: list[str] = []
+    for spec in (local_spec, opp_spec):
+        b = _backend_base_url(spec)
+        if b and b not in base_urls:
+            base_urls.append(b)
+    if base_urls:
+        results = vllm_preflight(base_urls)
+        for url, (good, _detail) in results.items():
+            if not good:
+                logger.error(f"vLLM unreachable: {url}")
+                ok = False
+    else:
+        logger.info("No openai-compatible backends to preflight.")
+
+    if ok:
+        logger.info("=== readiness: OK ===")
+        return 0
+    logger.error("=== readiness: NOT READY ===")
+    return 1
 
 
 def find_instance_id_by_name(name: str, battlefield: list[dict]) -> Optional[int]:
@@ -358,12 +573,35 @@ class SelfPlayOrchestrator:
 
 def main():
     p = argparse.ArgumentParser(description="Self-play orchestrator for model tuning.")
-    p.add_argument("--local-backend", required=True, help="Spec for Player 1 (local)")
-    p.add_argument("--opponent-backend", required=True, help="Spec for Player 2 (opponent)")
+    p.add_argument(
+        "--local-backend",
+        default=None,
+        help=f"Spec for Player 1 (local). Defaults to {DEFAULT_BACKEND} when omitted.",
+    )
+    p.add_argument(
+        "--opponent-backend",
+        default=None,
+        help=f"Spec for Player 2 (opponent). Defaults to {DEFAULT_BACKEND} when omitted.",
+    )
     p.add_argument("--matches", type=int, default=1, help="Number of matches to play")
     p.add_argument("--sets", default="EOE", help="Sets to generate random decks from")
     p.add_argument("--out-trajectories", type=Path, default=REPO / "tools/eval/data/self_play_trajectories.jsonl")
     p.add_argument("--license-key", default=os.environ.get("MTGACOACH_LICENSE_KEY", ""))
+    p.add_argument(
+        "--auto",
+        action="store_true",
+        help="Autonomous flow: launch MTGA if needed, wait for the bridge, and run.",
+    )
+    p.add_argument(
+        "--launch-mtga",
+        action="store_true",
+        help="Launch MTGA via arenamcp.proton_launch if not already running (implied by --auto).",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Check readiness and exit WITHOUT launching MTGA or starting any match.",
+    )
     args = p.parse_args()
 
     logging.basicConfig(
@@ -371,9 +609,33 @@ def main():
         format="%(asctime)s %(levelname)s %(name)s | %(message)s",
     )
 
+    # Resolve backend specs. Both default to the local vLLM backend when omitted
+    # (and in --auto mode). Explicit specs are always respected for back-compat.
+    local_spec = args.local_backend or DEFAULT_BACKEND
+    opp_spec = args.opponent_backend or DEFAULT_BACKEND
+
+    # --dry-run: readiness check only. Never launches MTGA or starts a match.
+    if args.dry_run:
+        sys.exit(run_dry_run(local_spec, opp_spec))
+
+    autonomous = args.auto or args.launch_mtga
+
+    # vLLM reachability preflight (informational for normal runs).
+    base_urls: list[str] = []
+    for spec in (local_spec, opp_spec):
+        b = _backend_base_url(spec)
+        if b and b not in base_urls:
+            base_urls.append(b)
+    if base_urls:
+        vllm_preflight(base_urls)
+
+    # --auto / --launch-mtga: ensure MTGA is up before binding the bridge.
+    if autonomous:
+        ensure_mtga_running()
+
     orchestrator = SelfPlayOrchestrator(
-        local_backend_spec=args.local_backend,
-        opp_backend_spec=args.opponent_backend,
+        local_backend_spec=local_spec,
+        opp_backend_spec=opp_spec,
         trajectories_path=args.out_trajectories,
         license_key=args.license_key,
     )
@@ -392,10 +654,15 @@ def main():
     bridge._reconnect_cooldown = 0.5
     logger.info("Connecting to MTGA BepInEx plugin...")
     connected = False
-    for _ in range(30):
+    # In autonomous mode MTGA may still be booting, so wait much longer for the
+    # bridge plugin to connect (~180s) and log friendly progress.
+    max_wait = 180 if autonomous else 30
+    for i in range(max_wait):
         if bridge.connect():
             connected = True
             break
+        if i % 10 == 0:
+            logger.info(f"waiting for MTGA + bridge plugin... ({i}/{max_wait}s)")
         time.sleep(1.0)
 
     if not connected:
