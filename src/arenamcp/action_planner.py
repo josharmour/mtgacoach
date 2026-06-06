@@ -410,14 +410,14 @@ class ActionPlanner:
                 return self._backend.complete(
                     system_prompt,
                     user_message,
-                    400,
+                    4096,
                     temperature=0.0,
                     request_timeout_s=self._timeout,
                 )
             except TypeError:
                 try:
                     return self._backend.complete(
-                        system_prompt, user_message, 400, temperature=0.0
+                        system_prompt, user_message, 4096, temperature=0.0
                     )
                 except TypeError:
                     return self._backend.complete(system_prompt, user_message)
@@ -636,14 +636,14 @@ class ActionPlanner:
                 return self._backend.complete(
                     AUTOPILOT_SYSTEM_PROMPT,
                     user_message,
-                    600,
+                    4096,
                     temperature=0.0,
                     request_timeout_s=self._timeout,
                 )
             except TypeError:
                 try:
                     return self._backend.complete(
-                        AUTOPILOT_SYSTEM_PROMPT, user_message, 600, temperature=0.0
+                        AUTOPILOT_SYSTEM_PROMPT, user_message, 4096, temperature=0.0
                     )
                 except TypeError:
                     return self._backend.complete(AUTOPILOT_SYSTEM_PROMPT, user_message)

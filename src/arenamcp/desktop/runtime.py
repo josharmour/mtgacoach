@@ -5,6 +5,8 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import webbrowser
 import zipfile
 from dataclasses import dataclass, field
@@ -231,18 +233,21 @@ def _check_python_runtime(python_exe: Optional[str]) -> tuple[bool, str]:
 def find_python_executable() -> tuple[Optional[str], str]:
     runtime_root = Path(get_runtime_root())
     app_root = Path(get_app_root())
-    app_runtime = app_root / "runtime" / "Scripts" / "python.exe"
+    scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
+    py_exe = "python.exe" if sys.platform == "win32" else "python"
+    
+    app_runtime = app_root / "runtime" / scripts_dir / py_exe
 
     candidates: list[tuple[Path, str]] = [
         (app_runtime, "app_runtime"),
-        (runtime_root / "venv" / "Scripts" / "python.exe", "runtime_venv"),
+        (runtime_root / "venv" / scripts_dir / py_exe, "runtime_venv"),
     ]
 
     current = _normalize_current_python(Path(sys.executable))
     if current is not None:
         candidates.append((current, "current"))
 
-    candidates.append((app_root / ".venv" / "Scripts" / "python.exe", "app_venv"))
+    candidates.append((app_root / ".venv" / scripts_dir / py_exe, "app_venv"))
 
     for candidate, source in candidates:
         if candidate.exists():
@@ -330,6 +335,16 @@ def find_mtga_install_dir() -> tuple[Optional[str], str]:
     if from_registry:
         return (from_registry, "registry")
 
+    if sys.platform != "win32":
+        linux_paths = [
+            Path.home() / ".steam/steam/steamapps/compatdata/2141910/pfx/drive_c/Program Files/Wizards of the Coast/MTGA",
+            Path.home() / ".local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/Program Files/Wizards of the Coast/MTGA",
+            Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/Program Files/Wizards of the Coast/MTGA",
+        ]
+        for candidate in linux_paths:
+            if candidate.is_dir():
+                return (str(candidate), "proton_path")
+
     for candidate in _COMMON_MTGA_PATHS:
         if candidate.is_dir():
             return (str(candidate), "common_path")
@@ -337,22 +352,49 @@ def find_mtga_install_dir() -> tuple[Optional[str], str]:
     return (None, "not_found")
 
 
-def is_mtga_running() -> bool:
-    if sys.platform != "win32":
-        return False
+_running_cache_value: Optional[bool] = None
+_running_cache_time: float = 0.0
+_running_cache_lock = threading.Lock()
 
-    try:
-        result = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq MTGA.exe", "/NH"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-            check=False,
-            creationflags=_NO_WINDOW_FLAGS,
-        )
-        return "MTGA.exe" in result.stdout
-    except Exception:
-        return False
+
+def is_mtga_running() -> bool:
+    global _running_cache_value, _running_cache_time
+    now = time.monotonic()
+    if now - _running_cache_time < 1.0:
+        return _running_cache_value if _running_cache_value is not None else False
+
+    with _running_cache_lock:
+        # Re-check inside lock
+        if now - _running_cache_time < 1.0:
+            return _running_cache_value if _running_cache_value is not None else False
+        _running_cache_time = now
+
+        if sys.platform != "win32":
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-f", "MTGA.exe"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    check=False,
+                )
+                _running_cache_value = bool(result.stdout.strip())
+            except Exception:
+                _running_cache_value = False
+        else:
+            try:
+                result = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq MTGA.exe", "/NH"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    check=False,
+                    creationflags=_NO_WINDOW_FLAGS,
+                )
+                _running_cache_value = "MTGA.exe" in result.stdout
+            except Exception:
+                _running_cache_value = False
+        return _running_cache_value
 
 
 def _safe_mtime(path: Optional[Path]) -> float:
@@ -391,22 +433,70 @@ def detect_runtime_state() -> RuntimeState:
     runtime_root = Path(get_runtime_root())
     app_runtime_dir = app_root / "runtime"
     runtime_venv_dir = runtime_root / "venv"
-    runtime_dir = app_runtime_dir if (app_runtime_dir / "Scripts" / "python.exe").exists() else runtime_venv_dir
-    runtime_venv_exists = (runtime_dir / "Scripts" / "python.exe").exists()
+    
+    scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
+    py_exe = "python.exe" if sys.platform == "win32" else "python"
+    
+    runtime_dir = app_runtime_dir if (app_runtime_dir / scripts_dir / py_exe).exists() else runtime_venv_dir
+    runtime_venv_exists = (runtime_dir / scripts_dir / py_exe).exists()
     python_exe, python_source = find_python_executable()
     python_ready, python_ready_detail = _check_python_runtime(python_exe)
     mtga_dir, mtga_dir_source = find_mtga_install_dir()
     mtga_exe_path = None
     mtga_running = is_mtga_running()
 
-    player_log_path = (
-        Path.home()
-        / "AppData"
-        / "LocalLow"
-        / "Wizards Of The Coast"
-        / "MTGA"
-        / "Player.log"
-    )
+    env_log_path = os.environ.get("MTGA_LOG_PATH")
+    if env_log_path:
+        player_log_path = Path(env_log_path)
+    else:
+        if sys.platform != "win32":
+            if mtga_dir:
+                prefix_dir = None
+                curr = Path(mtga_dir)
+                for _ in range(5):
+                    if curr.name.lower() == "steamapps":
+                        prefix_dir = curr / "compatdata" / "2141910" / "pfx"
+                        break
+                    if curr.parent == curr:
+                        break
+                    curr = curr.parent
+                
+                if not prefix_dir:
+                    prefix_dir = Path(mtga_dir).parent.parent.parent.parent
+
+                player_log_path = prefix_dir / "drive_c" / "users" / "steamuser" / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+                if not player_log_path.exists():
+                    drive_c = prefix_dir / "drive_c"
+                    if drive_c.exists():
+                        users_dir = drive_c / "users"
+                        if users_dir.exists():
+                            for user_folder in users_dir.iterdir():
+                                candidate = user_folder / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+                                if candidate.exists():
+                                    player_log_path = candidate
+                                    break
+            else:
+                common_prefixes = [
+                    Path.home() / ".steam/steam/steamapps/compatdata/2141910/pfx",
+                    Path.home() / ".local/share/Steam/steamapps/compatdata/2141910/pfx",
+                    Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/2141910/pfx",
+                ]
+                for pfx in common_prefixes:
+                    candidate = pfx / "drive_c" / "users" / "steamuser" / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+                    if candidate.exists():
+                        player_log_path = candidate
+                        break
+                else:
+                    player_log_path = Path.home() / ".steam/steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast" / "MTGA" / "Player.log"
+        else:
+            player_log_path = (
+                Path.home()
+                / "AppData"
+                / "LocalLow"
+                / "Wizards Of The Coast"
+                / "MTGA"
+                / "Player.log"
+            )
     player_log = str(player_log_path)
 
     bepinex_dir: Optional[str] = None
@@ -641,11 +731,26 @@ def repair_bridge_stack(mtga_dir: str) -> list[str]:
     return changed
 
 
+
+
+
+
 def close_mtga() -> bool:
-    if sys.platform != "win32":
-        raise RuntimeError("Closing MTGA is only supported on Windows")
     if not is_mtga_running():
         return False
+
+    if sys.platform != "win32":
+        result = subprocess.run(
+            ["pkill", "-f", "MTGA.exe"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0 and result.returncode != 1:
+            detail = (result.stderr or result.stdout).strip() or "pkill failed"
+            raise RuntimeError(detail)
+        return True
 
     result = subprocess.run(
         ["taskkill", "/IM", "MTGA.exe", "/T", "/F"],
@@ -669,7 +774,14 @@ def launch_mtga(mtga_dir: str) -> str:
     if sys.platform == "win32":
         os.startfile(str(executable))  # type: ignore[attr-defined]
     else:
-        subprocess.Popen([str(executable)])
+        steam_bin = shutil.which("steam")
+        flatpak_bin = shutil.which("flatpak")
+        if steam_bin:
+            subprocess.Popen([steam_bin, "steam://rungameid/2141910"])
+        elif flatpak_bin:
+            subprocess.Popen([flatpak_bin, "run", "com.valvesoftware.Steam", "steam://rungameid/2141910"])
+        else:
+            subprocess.Popen([str(executable)])
     return str(executable)
 
 
@@ -687,7 +799,11 @@ def open_path(path: str) -> None:
     if sys.platform == "win32":
         os.startfile(str(target))  # type: ignore[attr-defined]
         return
-    webbrowser.open(target.as_uri())
+    xdg_open = shutil.which("xdg-open")
+    if xdg_open:
+        subprocess.Popen([xdg_open, str(target)])
+    else:
+        webbrowser.open(target.as_uri())
 
 
 def open_url(url: str = _RELEASES_URL) -> None:
@@ -702,3 +818,60 @@ def _copy_directory(source: Path, dest: Path) -> None:
             _copy_directory(child, target)
         else:
             shutil.copy2(child, target)
+
+
+_geometry_cache_value: Optional[dict[str, int]] = None
+_geometry_cache_time: float = 0.0
+_geometry_cache_lock = threading.Lock()
+
+
+def get_linux_window_geometry(title: str = "MTGA") -> Optional[dict[str, int]]:
+    global _geometry_cache_value, _geometry_cache_time
+    now = time.monotonic()
+    if now - _geometry_cache_time < 0.3:
+        return _geometry_cache_value
+
+    with _geometry_cache_lock:
+        # Re-check inside lock
+        if now - _geometry_cache_time < 0.3:
+            return _geometry_cache_value
+        _geometry_cache_time = now
+
+        xwininfo = shutil.which("xwininfo")
+        if not xwininfo:
+            _geometry_cache_value = None
+            return None
+        try:
+            result = subprocess.run(
+                [xwininfo, "-name", title],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False
+            )
+            if result.returncode != 0:
+                _geometry_cache_value = None
+                return None
+
+            geometry = {}
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line.startswith("Absolute upper-left X:"):
+                    geometry["left"] = int(line.split(":")[-1].strip())
+                elif line.startswith("Absolute upper-left Y:"):
+                    geometry["top"] = int(line.split(":")[-1].strip())
+                elif line.startswith("Width:"):
+                    geometry["width"] = int(line.split(":")[-1].strip())
+                elif line.startswith("Height:"):
+                    geometry["height"] = int(line.split(":")[-1].strip())
+                elif line.startswith("Map State:"):
+                    geometry["is_visible"] = "IsViewable" in line
+
+            if "left" in geometry and "top" in geometry and "width" in geometry and "height" in geometry:
+                geometry["is_minimized"] = not geometry.get("is_visible", True)
+                _geometry_cache_value = geometry
+                return geometry
+        except Exception:
+            pass
+        _geometry_cache_value = None
+        return None

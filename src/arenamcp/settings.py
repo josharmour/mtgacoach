@@ -79,7 +79,7 @@ def _migrate_settings(data: dict) -> bool:
     # Migrate old backend to mode
     old_backend = data.get("backend")
     if old_backend is not None:
-        if old_backend in ("ollama", "lmstudio", "lm-studio", "lm_studio"):
+        if old_backend in ("ollama", "lmstudio", "lm-studio", "lm_studio", "local"):
             data["mode"] = "local"
             # Preserve the URL they were using
             if old_backend == "ollama" and data.get("ollama_url"):
@@ -88,6 +88,8 @@ def _migrate_settings(data: dict) -> bool:
             elif old_backend in ("lmstudio", "lm-studio", "lm_studio") and data.get("lmstudio_url"):
                 data["local_url"] = data["lmstudio_url"]
                 data["local_api_key"] = "lm-studio"
+        elif old_backend == "auto":
+            data["mode"] = "auto"
         else:
             data["mode"] = "online"
         changed = True
@@ -168,7 +170,10 @@ class Settings:
         Returns:
             Setting value or default
         """
-        return self._data.get(key, default if default is not None else DEFAULTS.get(key))
+        val = self._data.get(key, default if default is not None else DEFAULTS.get(key))
+        if key == "mode" and val != "online":
+            return "online"
+        return val
 
     def set(self, key: str, value: Any, save: bool = True) -> None:
         """Set a setting value.
@@ -178,6 +183,8 @@ class Settings:
             value: Value to set
             save: If True (default), immediately save to disk
         """
+        if key == "mode" and value != "online":
+            value = "online"
         self._data[key] = value
         if save:
             self.save()

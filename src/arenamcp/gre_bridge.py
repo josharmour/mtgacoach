@@ -17,6 +17,8 @@ import hashlib
 import json
 import logging
 import re
+import select
+import socket
 import struct
 import threading
 import time
@@ -120,41 +122,33 @@ def _label_for_decision_type(decision_type: str, count: Any = None) -> Optional[
 class GREBridge:
     """Client for the MtgaCoachBridge BepInEx plugin.
 
-    Communicates via Windows named pipe using newline-delimited JSON.
+    Communicates via TCP loopback socket using newline-delimited JSON.
     Thread-safe for single-command-at-a-time use.
     """
 
     def __init__(self):
-        self._pipe = None
         self._connected = False
         # Keepalive thread — proactively reconnects after disconnect and
-        # pings periodically so we detect silently-broken pipes quickly.
+        # pings periodically so we detect silently-broken sockets quickly.
         self._keepalive_thread: Optional[threading.Thread] = None
         self._keepalive_stop = threading.Event()
         self._last_connect_attempt = 0.0
         self._reconnect_cooldown = 0.5  # seconds between reconnect attempts
         # Last successful ping; if it's been longer than `_ping_max_age`,
-        # the keepalive will issue a ping to confirm the pipe is still alive.
+        # the keepalive will issue a ping to confirm the socket is still alive.
         self._last_ping_at = 0.0
         self._ping_max_age = 5.0
-        self._server_pipe_handle = None  # Raw HANDLE for the server pipe (created once)
-        self._pipe_created = False  # Whether the server pipe exists
-        self._pipe_lock = threading.Lock()  # Serialize pipe I/O across threads
+        self._server_socket = None  # The listening TCP socket
+        self._client_socket = None  # The accepted client TCP socket
+        self._pipe_file = None      # Wrapped file object for writing/reading
+        self._pipe_lock = threading.Lock()  # Serialize socket I/O across threads
 
     @property
     def connected(self) -> bool:
         return self._connected
 
     def connect(self) -> bool:
-        """Create a named pipe SERVER and wait for the BepInEx plugin to connect.
-
-        Python owns the pipe (server). The BepInEx plugin connects as client.
-        This avoids MTGA-internal issues (mystery clients, scene transitions,
-        MonoBehaviour lifecycle) since the pipe lives in the Python process.
-
-        Two-phase: first call creates the pipe, subsequent calls check if a
-        client connected. Non-blocking — safe to call from the polling loop.
-        """
+        """Create a TCP server socket and wait for the BepInEx plugin to connect."""
         if self._connected:
             return True
 
@@ -165,85 +159,30 @@ class GREBridge:
         self._last_connect_attempt = now
 
         try:
-            import ctypes
-            import ctypes.wintypes
+            # Phase 1: Create and bind the server socket if not exists
+            if self._server_socket is None:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(("127.0.0.1", 44222))
+                s.listen(1)
+                s.setblocking(False)
+                self._server_socket = s
+                logger.info("GRE bridge TCP server listening on 127.0.0.1:44222")
 
-            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-            kernel32.CreateNamedPipeW.restype = ctypes.wintypes.HANDLE
-            kernel32.ConnectNamedPipe.restype = ctypes.wintypes.BOOL
-            kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+            # Phase 2: Check for incoming client connection (non-blocking)
+            r, _, _ = select.select([self._server_socket], [], [], 0.0)
+            if not r:
+                return False
 
-            PIPE_ACCESS_DUPLEX = 0x00000003
-            FILE_FLAG_OVERLAPPED = 0x40000000
-            PIPE_TYPE_BYTE = 0x00000000
-            PIPE_READMODE_BYTE = 0x00000000
-            PIPE_NOWAIT = 0x00000001
-            INVALID_HANDLE_VALUE = ctypes.wintypes.HANDLE(-1).value
-            BUFFER_SIZE = 4096
-            ERROR_PIPE_CONNECTED = 535
-            ERROR_PIPE_LISTENING = 536
-            ERROR_NO_DATA = 232
+            client_sock, addr = self._server_socket.accept()
+            client_sock.setblocking(True)
+            client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
-            # Phase 1: Create the pipe if it doesn't exist yet
-            if not self._pipe_created:
-                handle = kernel32.CreateNamedPipeW(
-                    PIPE_NAME,
-                    PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
-                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT,
-                    1,           # max instances
-                    BUFFER_SIZE,
-                    BUFFER_SIZE,
-                    0,           # default timeout
-                    None,        # default security
-                )
-
-                if handle == INVALID_HANDLE_VALUE:
-                    err = ctypes.get_last_error()
-                    logger.debug(f"GRE bridge CreateNamedPipe failed (error {err})")
-                    return False
-
-                self._server_pipe_handle = handle
-                self._pipe_created = True
-                logger.info(f"GRE bridge pipe server created: {PIPE_NAME}")
-
-                # Initiate non-blocking ConnectNamedPipe
-                kernel32.ConnectNamedPipe(handle, None)
-                # With PIPE_NOWAIT, this returns immediately.
-                # Check error: LISTENING means waiting, CONNECTED means ready.
-
-            # Phase 2: Check if a client connected
-            handle = self._server_pipe_handle
-            result = kernel32.ConnectNamedPipe(handle, None)
-            err = ctypes.get_last_error()
-
-            if not result:
-                if err == ERROR_PIPE_CONNECTED:
-                    pass  # Client already connected — success!
-                elif err == ERROR_NO_DATA:
-                    pass  # Client connected (NOWAIT mode)
-                elif err == ERROR_PIPE_LISTENING:
-                    # Still waiting for client — not connected yet
-                    return False
-                else:
-                    logger.debug(f"GRE bridge ConnectNamedPipe check: error {err}")
-                    return False
-
-            # Client connected! Wrap handle in a file object.
-            # Switch pipe back to blocking mode for normal I/O
-            PIPE_WAIT = 0x00000000
-            mode = ctypes.wintypes.DWORD(PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT)
-            kernel32.SetNamedPipeHandleState(handle, ctypes.byref(mode), None, None)
-
-            import msvcrt
-            import os
-            fd = msvcrt.open_osfhandle(handle, 0)
-            self._pipe_handle = handle
-            self._pipe_fd = fd
-            self._pipe_file = os.fdopen(fd, "r+b", buffering=0)
+            self._client_socket = client_sock
+            self._pipe_file = client_sock.makefile("rwb", buffering=0)
             self._connected = True
-            self._pipe_created = False  # Reset so next disconnect creates fresh
 
-            logger.info("GRE bridge: plugin connected to our pipe server")
+            logger.info(f"GRE bridge: plugin connected from {addr}")
 
             # Verify with ping
             try:
@@ -260,34 +199,25 @@ class GREBridge:
                 self.disconnect()
                 return False
 
-        except ImportError:
-            logger.debug("GRE bridge requires Windows (named pipes)")
-            self._reconnect_cooldown = 60.0
-            return False
         except Exception as e:
             logger.info(f"GRE bridge connect error: {e}")
             return False
 
     def disconnect(self):
-        """Close the pipe connection and server handle."""
+        """Close the socket connection and client socket."""
         self._connected = False
-        self._pipe_created = False
         try:
             if self._pipe_file:
                 self._pipe_file.close()
         except Exception:
             pass
-        # If server pipe was created but no file wrapper, close raw handle
-        if self._server_pipe_handle and not self._pipe_file:
-            try:
-                import ctypes
-                ctypes.WinDLL('kernel32').CloseHandle(self._server_pipe_handle)
-            except Exception:
-                pass
+        try:
+            if self._client_socket:
+                self._client_socket.close()
+        except Exception:
+            pass
         self._pipe_file = None
-        self._pipe_fd = None
-        self._pipe_handle = None
-        self._server_pipe_handle = None
+        self._client_socket = None
 
     # -------------------------------------------------------------------
     # Keepalive: background thread that holds the pipe open and quickly
@@ -1998,3 +1928,83 @@ def get_poller() -> BridgeDecisionPoller:
     if _poller is None:
         _poller = BridgeDecisionPoller(get_bridge())
     return _poller
+
+
+class BotBattlePipeServer:
+    """A synchronous TCP server for bot battles.
+
+    Accepts connections from the BepInEx client (BridgeStrategy) on
+    127.0.0.1:44223, reads a decision request JSON line,
+    passes it to a decision handler callback, and writes the response JSON line.
+    """
+
+    def __init__(self, port: int = 44223):
+        self.port = port
+        self.running = False
+        self._server_socket = None
+
+    def start(self, handler_callback):
+        """Starts the server loop, blocking until stop() is called or connection fails.
+
+        handler_callback is a function: callback(request_dict) -> response_dict
+        """
+        self.running = True
+        logger.info(f"Starting BotBattle TCP Server on 127.0.0.1:{self.port}")
+
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", self.port))
+            s.listen(5)
+            self._server_socket = s
+        except Exception as e:
+            logger.error(f"Failed to start BotBattle TCP server on port {self.port}: {e}")
+            self.running = False
+            return
+
+        while self.running:
+            try:
+                # Use select with 1s timeout to check self.running regularly
+                r, _, _ = select.select([self._server_socket], [], [], 1.0)
+                if not r:
+                    continue
+                client_sock, addr = self._server_socket.accept()
+            except Exception as e:
+                if self.running:
+                    logger.error(f"BotBattle server accept failed: {e}")
+                time.sleep(1.0)
+                continue
+
+            client_sock.setblocking(True)
+            pipe_file = client_sock.makefile("rwb", buffering=0)
+
+            try:
+                line = pipe_file.readline()
+                if line:
+                    req_json = json.loads(line.decode("utf-8").strip())
+                    resp_dict = handler_callback(req_json)
+                    resp_line = json.dumps(resp_dict) + "\n"
+                    pipe_file.write(resp_line.encode("utf-8"))
+                    pipe_file.flush()
+            except Exception as e:
+                logger.warning(f"Error handling bot battle request: {e}")
+            finally:
+                try:
+                    pipe_file.close()
+                except Exception:
+                    pass
+                try:
+                    client_sock.close()
+                except Exception:
+                    pass
+
+        self._server_socket = None
+
+    def stop(self):
+        self.running = False
+        if self._server_socket:
+            try:
+                self._server_socket.close()
+            except Exception:
+                pass
+

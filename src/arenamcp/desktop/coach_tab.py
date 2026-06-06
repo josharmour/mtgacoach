@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import sys
 from typing import Any, Optional
 
 from PySide6.QtCore import Qt, Signal
@@ -80,6 +81,12 @@ class CoachTab(QWidget):
             self._tts.start()
         except Exception as exc:
             self.append_log(f"TTS worker failed to start: {exc}", role="error")
+
+        if sys.platform != "win32":
+            self.append_log(
+                "In-game overlays (HUD and card badges) are disabled on Linux/Wayland due to system compatibility constraints. Advice is available here in the Coach log and via TTS voice output.",
+                role="header"
+            )
 
     def attach_process(self, process: CoachProcess) -> None:
         if self._process is process:
@@ -318,8 +325,6 @@ class CoachTab(QWidget):
 
         button_row = QHBoxLayout()
         commands = [
-            ("Mode", "cycle_mode"),
-            ("Model", "cycle_model"),
             ("Quick", "toggle_style"),
             ("Voice", "cycle_voice"),
             ("Speed", "cycle_speed"),
@@ -339,11 +344,18 @@ class CoachTab(QWidget):
         debug_button.clicked.connect(self._submit_debug_report)
         button_row.addWidget(debug_button)
 
+        import sys
         # Match-overlay calibration: draws a thin outline around every card
         # the plugin detects, so we can verify ground-truth positions align.
-        match_calib_button = QPushButton("Match Calib")
+        match_calib_button = QPushButton("Calibrate Cards")
         match_calib_button.setCheckable(True)
-        match_calib_button.setToolTip("Show outline around every card the BepInEx plugin reports")
+        if sys.platform != "win32":
+            match_calib_button.setEnabled(False)
+            match_calib_button.setToolTip("Calibration is not supported on Linux/Wayland")
+        else:
+            match_calib_button.setToolTip(
+                "Draw border around MTGA cards reported by bridge plugin to verify alignment"
+            )
         match_calib_button.clicked.connect(
             lambda checked: self._match_overlay.set_calibration(checked)
         )
@@ -353,8 +365,13 @@ class CoachTab(QWidget):
         # it's covering MTGA content.
         self._overlay_toggle_btn = QPushButton("Overlay")
         self._overlay_toggle_btn.setCheckable(True)
-        self._overlay_toggle_btn.setChecked(True)  # default: on
-        self._overlay_toggle_btn.setToolTip("Show/hide the in-game overlay (pill + advice panel)")
+        if sys.platform != "win32":
+            self._overlay_toggle_btn.setChecked(False)
+            self._overlay_toggle_btn.setEnabled(False)
+            self._overlay_toggle_btn.setToolTip("In-game overlays are not supported on Linux/Wayland")
+        else:
+            self._overlay_toggle_btn.setChecked(True)  # default: on
+            self._overlay_toggle_btn.setToolTip("Show/hide the in-game overlay (pill + advice panel)")
         self._overlay_toggle_btn.clicked.connect(
             lambda checked: self._match_overlay.set_enabled(checked)
         )
@@ -566,11 +583,25 @@ class CoachTab(QWidget):
             if wins:
                 w = wins[0]
                 if not w.isMinimized:
-                    bbox = (w.left, w.top, w.left + w.width, w.top + w.height)
-                    img = ImageGrab.grab(bbox=bbox, all_screens=True)
-                    mtga_path = bug_dir / f"bug_{timestamp}_mtga.png"
-                    img.save(str(mtga_path), "PNG")
-                    out["mtga"] = str(mtga_path)
+                    left = getattr(w, "left", None)
+                    top = getattr(w, "top", None)
+                    width = getattr(w, "width", None)
+                    height = getattr(w, "height", None)
+                    if (
+                        left is not None
+                        and top is not None
+                        and width is not None
+                        and height is not None
+                        and width > 0
+                        and height > 0
+                    ):
+                        bbox = (left, top, left + width, top + height)
+                        img = ImageGrab.grab(bbox=bbox, all_screens=True)
+                        mtga_path = bug_dir / f"bug_{timestamp}_mtga.png"
+                        img.save(str(mtga_path), "PNG")
+                        out["mtga"] = str(mtga_path)
+                    else:
+                        logger.warning(f"Invalid MTGA window bounds for screenshot: left={left}, top={top}, width={width}, height={height}")
         except Exception as e:
             self.append_log(f"MTGA screenshot failed: {e}", role="debug")
 

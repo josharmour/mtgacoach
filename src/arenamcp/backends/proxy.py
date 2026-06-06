@@ -170,7 +170,7 @@ class ProxyBackend:
         self,
         system_prompt: str,
         user_message: str,
-        max_tokens: int = 400,
+        max_tokens: int = 1500,
         temperature: float = 0.3,
         request_timeout_s: Optional[float] = None,
     ) -> str:
@@ -201,18 +201,26 @@ class ProxyBackend:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
-                "max_completion_tokens": max_tokens,
                 "temperature": temperature,
             }
 
             model_lower = self.model.lower()
-            extra = {}
-            is_gpt5 = "gpt-5" in model_lower or "gpt5" in model_lower
+            is_gpt5 = "gpt-5" in model_lower or "gpt5" in model_lower or "o1" in model_lower or "o3" in model_lower
             is_gemini = "gemini" in model_lower
+
+            if is_gpt5:
+                params["max_completion_tokens"] = max_tokens
+            else:
+                params["max_tokens"] = max_tokens
+
+            extra = {}
             if self.enable_thinking:
                 if "claude" in model_lower:
                     extra["thinking"] = {"type": "enabled", "budget_tokens": 8000}
-                    params["max_completion_tokens"] = max_tokens + 8000
+                    if "max_completion_tokens" in params:
+                        params["max_completion_tokens"] = max_tokens + 8000
+                    else:
+                        params["max_tokens"] = max_tokens + 8000
                 elif is_gemini:
                     # Gemini's OpenAI-compat endpoint rejects native fields
                     # like thinking_config. Use reasoning_effort instead.
@@ -241,9 +249,30 @@ class ProxyBackend:
             try:
                 stream = client.chat.completions.create(**params, stream=True)
                 chunks: list[str] = []
+                reasoning_chunks: list[str] = []
                 for chunk in stream:
-                    if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
-                        chunks.append(chunk.choices[0].delta.content)
+                    if chunk.choices and chunk.choices[0].delta:
+                        delta = chunk.choices[0].delta
+                        
+                        # Extract reasoning token if present
+                        reasoning_token = None
+                        if getattr(delta, "reasoning_content", None):
+                            reasoning_token = delta.reasoning_content
+                        elif getattr(delta, "model_extra", None) and delta.model_extra.get("reasoning"):
+                            reasoning_token = delta.model_extra.get("reasoning")
+                        elif getattr(delta, "reasoning", None):
+                            reasoning_token = delta.reasoning
+                            
+                        if reasoning_token:
+                            reasoning_chunks.append(reasoning_token)
+                        
+                        if delta.content:
+                            chunks.append(delta.content)
+                
+                if reasoning_chunks:
+                    reasoning_str = "".join(reasoning_chunks)
+                    logger.debug(f"[PROXY] Model reasoning:\n{reasoning_str}")
+                    
                 content = "".join(chunks)
                 request_time = (time.perf_counter() - request_start) * 1000
                 logger.info(
@@ -258,7 +287,19 @@ class ProxyBackend:
             response = client.chat.completions.create(**params)
             request_time = (time.perf_counter() - request_start) * 1000
 
-            content = response.choices[0].message.content
+            message = response.choices[0].message
+            content = message.content
+            
+            # Extract reasoning
+            reasoning = None
+            if getattr(message, "reasoning_content", None):
+                reasoning = message.reasoning_content
+            elif getattr(message, "model_extra", None) and message.model_extra.get("reasoning"):
+                reasoning = message.model_extra.get("reasoning")
+            elif getattr(message, "reasoning", None):
+                reasoning = message.reasoning
+            if reasoning:
+                logger.debug(f"[PROXY] Model reasoning:\n{reasoning}")
             usage = getattr(response, 'usage', None)
             tokens_info = ""
             if usage:

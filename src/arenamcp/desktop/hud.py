@@ -22,11 +22,16 @@ except ImportError:
 
 try:
     import pygetwindow as gw
-except ImportError:
+except (ImportError, NotImplementedError):
     gw = None
 
 
 class HudWindow(QWidget):
+    def setVisible(self, visible: bool) -> None:
+        if visible and os.name != "nt":
+            return
+        super().setVisible(visible)
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._is_click_through = False
@@ -121,7 +126,12 @@ class HudWindow(QWidget):
             )
 
     def _follow_mtga(self) -> None:
-        if os.name != "nt" or gw is None:
+        if os.name != "nt":
+            if self.isVisible():
+                self.hide()
+            return
+
+        if gw is None:
             return
 
         try:
@@ -327,7 +337,20 @@ class DraftHudWindow(HudWindow):
 
     def _save_user_offset(self) -> None:
         """Store the current position as an offset from MTGA window top-left."""
-        if os.name != "nt" or gw is None:
+        if os.name != "nt":
+            try:
+                from arenamcp.desktop.runtime import get_linux_window_geometry
+                geom = get_linux_window_geometry("MTGA")
+                if geom:
+                    self._user_offset = QPoint(
+                        self.x() - geom["left"],
+                        self.y() - geom["top"],
+                    )
+            except Exception:
+                pass
+            return
+
+        if gw is None:
             return
         try:
             windows = [w for w in gw.getWindowsWithTitle("MTGA") if w.title == "MTGA"]
@@ -343,7 +366,38 @@ class DraftHudWindow(HudWindow):
     # -- Override _follow_mtga to respect user drag offset ---------------
 
     def _follow_mtga(self) -> None:
-        if os.name != "nt" or gw is None:
+        if os.name != "nt":
+            try:
+                from arenamcp.desktop.runtime import get_linux_window_geometry
+                geom = get_linux_window_geometry("MTGA")
+                if not geom or not self._should_show:
+                    if self.isVisible():
+                        self.hide()
+                    return
+
+                if geom.get("is_minimized"):
+                    if self.isVisible():
+                        self.hide()
+                    return
+
+                if not self.isVisible():
+                    self.show()
+
+                if self._user_offset is not None:
+                    target_x = geom["left"] + self._user_offset.x()
+                    target_y = geom["top"] + self._user_offset.y()
+                else:
+                    margin = 10
+                    target_x = geom["left"] + margin
+                    target_y = geom["top"] + margin
+
+                if self.pos() != QPoint(target_x, target_y):
+                    self.move(target_x, target_y)
+            except Exception:
+                pass
+            return
+
+        if gw is None:
             return
 
         try:

@@ -171,7 +171,20 @@ def _windows_path_to_wsl(path: str) -> Path:
 
 
 def _default_log_path() -> str:
-    """Best-effort default MTGA Player.log path for Windows/WSL."""
+    """Best-effort default MTGA Player.log path for Windows/WSL/Linux."""
+    import sys
+    if sys.platform.startswith("linux") and not _is_wsl():
+        linux_candidates = [
+            Path.home() / ".steam/steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log",
+            Path.home() / ".local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log",
+            Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log",
+        ]
+        for candidate in linux_candidates:
+            if candidate.exists():
+                return str(candidate)
+        # fallback to the first one if none exist yet
+        return str(linux_candidates[0])
+
     local_appdata = os.environ.get("LOCALAPPDATA", "")
     if local_appdata:
         return os.path.join(

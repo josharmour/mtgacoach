@@ -210,10 +210,14 @@ def capture_mtga_png(
     if img is None and bbox is not None:
         try:
             left, top, right, bottom = bbox
-            img = ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
-        except TypeError:
-            # older PIL without all_screens kwarg
-            img = ImageGrab.grab(bbox=(bbox[0], bbox[1], bbox[2], bbox[3]))
+            if left is not None and top is not None and right is not None and bottom is not None and left < right and top < bottom:
+                try:
+                    img = ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
+                except TypeError:
+                    # older PIL without all_screens kwarg
+                    img = ImageGrab.grab(bbox=(left, top, right, bottom))
+            else:
+                logger.warning(f"Skipping ImageGrab due to invalid bbox dimensions: {bbox}")
         except Exception as e:
             logger.debug(f"ImageGrab.grab(bbox) failed: {e}")
             img = None

@@ -1,18 +1,22 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.IO.Pipes;
+using System.Net.Sockets;
 using System.Reflection;
+using System.Text;
 using BepInEx.Logging;
 using GreClient.Rules;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using Wotc.Mtga.Cards.Database;
+using HarmonyLib;
 
 namespace MtgaCoachBridge
 {
-    // Phase 1 stub: an IHeadlessClientStrategy that delegates every request
-    // to GoldfishStrategy and logs the type + outcome. Used to smoke-test
-    // that the bot-battle plumbing works end-to-end before wiring the
-    // strategy to the Python coach over a second named pipe.
+    // Custom IHeadlessClientStrategy that forwards decision requests to Python
+    // over the mtgacoach_botbattle_v2 named pipe.
     internal class BridgeStrategy : IHeadlessClientStrategy
     {
         private readonly IHeadlessClientStrategy _inner;
@@ -37,14 +41,97 @@ namespace MtgaCoachBridge
             _requestCount++;
             var t = request != null ? request.GetType().Name : "<null>";
             _log?.LogInfo($"[Bridge:{_label}] #{_requestCount} HandleRequest: {t}");
+
+            if (request == null) return;
+
             try
             {
-                _inner.HandleRequest(request);
+                // Serialize the request using the exposed static methods of Plugin
+                JObject payload = Plugin.Instance != null ? Plugin.BuildPendingRequestPayload(request) : new JObject();
+                JObject context = Plugin.Instance != null ? Plugin.BuildPendingRequestDecisionContext(request, payload) : new JObject();
+
+                // Fetch the game state JSON using the existing pipe command handler
+                JObject gameState = null;
+                if (Plugin.Instance != null)
+                {
+                    var stateCmd = new PipeCommand(new JObject { ["action"] = "get_game_state" });
+                    Plugin.Instance.ExecutePipeCommand(stateCmd);
+                    var stateResult = stateCmd.WaitForResponse(2000);
+                    if (stateResult != null && stateResult.Value<bool>("ok"))
+                    {
+                        gameState = stateResult;
+                    }
+                }
+
+                // Build decision request payload
+                JObject msg = new JObject
+                {
+                    ["seat"] = _label, // "local" or "opp"
+                    ["request_type"] = t,
+                    ["payload"] = payload,
+                    ["context"] = context,
+                    ["game_state"] = gameState
+                };
+
+                // Send to Python over the bot battle pipe
+                string responseStr = QueryPythonBotBattlePipe(msg.ToString(Formatting.None));
+
+                if (!string.IsNullOrEmpty(responseStr))
+                {
+                    JObject responseJson = JObject.Parse(responseStr);
+                    _log?.LogInfo($"[Bridge:{_label}] Python chosen action: {responseJson.ToString(Formatting.None)}");
+
+                    // Set last known request so the submit handler finds it
+                    Plugin.Instance?.SetLastKnownRequest(request);
+
+                    // Execute the chosen submit command using the existing Plugin commands
+                    var cmd = new PipeCommand(responseJson);
+                    Plugin.Instance?.ExecutePipeCommand(cmd);
+                    var result = cmd.WaitForResponse(5000);
+                    _log?.LogInfo($"[Bridge:{_label}] Submit outcome: {result.ToString(Formatting.None)}");
+                }
+                else
+                {
+                    _log?.LogWarning($"[Bridge:{_label}] Empty/null response from Python, falling back to inner strategy (Goldfish)");
+                    _inner.HandleRequest(request);
+                }
             }
             catch (Exception ex)
             {
-                _log?.LogError($"[Bridge:{_label}] inner.HandleRequest threw: {ex}");
-                throw;
+                _log?.LogError($"[Bridge:{_label}] HandleRequest failed: {ex.Message}. Falling back to inner strategy (Goldfish)");
+                _log?.LogError(ex.StackTrace);
+                _inner.HandleRequest(request);
+            }
+        }
+
+        private string QueryPythonBotBattlePipe(string requestJson)
+        {
+            using (var client = new TcpClient())
+            {
+                try
+                {
+                    var result = client.BeginConnect("127.0.0.1", 44223, null, null);
+                    bool success = result.AsyncWaitHandle.WaitOne(5000); // 5 seconds timeout
+                    if (!success)
+                    {
+                        throw new TimeoutException("BotBattle TCP connection timed out");
+                    }
+                    client.EndConnect(result);
+
+                    using (var stream = client.GetStream())
+                    using (var reader = new StreamReader(stream, Encoding.UTF8))
+                    using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+                    {
+                        writer.WriteLine(requestJson);
+                        writer.Flush();
+                        return reader.ReadLine();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log?.LogWarning($"[Bridge:{_label}] TCP connection failed: {ex.Message}");
+                    return null;
+                }
             }
         }
 
@@ -66,6 +153,30 @@ namespace MtgaCoachBridge
         private static int _matchesCompleted;
         private static BridgeStrategy _localStrategy;
         private static BridgeStrategy _opponentStrategy;
+
+        public static bool IsRunning
+        {
+            get
+            {
+                lock (_stateLock)
+                {
+                    return _running;
+                }
+            }
+        }
+
+        public static void OnMatchCompleted()
+        {
+            lock (_stateLock)
+            {
+                _matchesCompleted++;
+                Plugin._log?.LogInfo($"[BotBattleBridge] Match completed! Count: {_matchesCompleted}/{_matchesRequested}");
+                if (_matchesCompleted >= _matchesRequested)
+                {
+                    _running = false;
+                }
+            }
+        }
 
         public static JObject GetStatus()
         {
@@ -117,6 +228,22 @@ namespace MtgaCoachBridge
                     return Fail(log, "PAPA.CardDatabase is null — db not loaded yet?");
                 }
 
+                // Ensure we are fully loaded past the startup sequence to prevent it from aborting our scene load
+                bool isHomeLoaded = false;
+                for (int i = 0; i < UnityEngine.SceneManagement.SceneManager.sceneCount; i++)
+                {
+                    string sname = UnityEngine.SceneManagement.SceneManager.GetSceneAt(i).name;
+                    if (sname == "HomePage" || sname == "MainNavigation")
+                    {
+                        isHomeLoaded = true;
+                        break;
+                    }
+                }
+                if (!isHomeLoaded)
+                {
+                    return Fail(log, "MTGA is still in the startup/login sequence — wait until you see the Home screen!");
+                }
+
                 List<uint> localDeck;
                 List<uint> opponentDeck;
                 try
@@ -139,17 +266,37 @@ namespace MtgaCoachBridge
                     MatchesToPlay = matches,
                     LocalPlayerStrategy = BotBattleStrategyType.Goldfish,
                     OpponentStrategy = BotBattleStrategyType.Goldfish,
-                    LocalPlayerCardsToTest = new List<List<uint>> { localDeck },
+                    LocalPlayerCardsToTest = new List<List<uint>> { localDeck, opponentDeck },
                     OpponentCardsToTest = new List<List<uint>> { opponentDeck },
                 };
 
                 log?.LogInfo($"[BotBattleBridge] dispatching BotBattleScene.Load: matches={matches} sets='{sets}' localDeck={localDeck.Count} oppDeck={opponentDeck.Count}");
 
-                // Hand off to BotBattleScene's static loader. After it
-                // enqueues the test, we hot-swap the strategy via reflection
-                // (next match cycle) so the bridge gets the requests instead
-                // of GoldfishStrategy.
-                BotBattleScene.Load(dsConfig);
+                // Create a persistent coordinator GameObject to bypass the missing BotBattleScene asset
+                var go = new GameObject("BotBattleBridgeCoordinator");
+                UnityEngine.Object.DontDestroyOnLoad(go);
+                var comp = go.AddComponent<BotBattleScene>();
+                
+                var papaField = typeof(BotBattleScene).GetField("_papa", BindingFlags.NonPublic | BindingFlags.Instance);
+                if (papaField != null)
+                {
+                    papaField.SetValue(comp, papa);
+                }
+                var cardDbField = typeof(BotBattleScene).GetField("_cardDatabase", BindingFlags.NonPublic | BindingFlags.Instance);
+                if (cardDbField != null)
+                {
+                    cardDbField.SetValue(comp, cardDb);
+                }
+
+                var enqueueMethod = typeof(BotBattleScene).GetMethod("EnqueueTests", BindingFlags.NonPublic | BindingFlags.Instance);
+                if (enqueueMethod != null)
+                {
+                    enqueueMethod.Invoke(comp, new object[] { new BotBattleDSConfig[] { dsConfig } });
+                }
+                else
+                {
+                    log?.LogError("[BotBattleBridge] EnqueueTests method not found via reflection!");
+                }
 
                 // Defer the strategy hot-swap one frame: BotBattleScene needs
                 // its scene to load + EnqueueTests to run before _testQueue
@@ -167,7 +314,8 @@ namespace MtgaCoachBridge
             }
             catch (Exception ex)
             {
-                return Fail(log, $"unhandled: {ex.Message}");
+                log?.LogError($"[BotBattleBridge] Start failed: {ex}");
+                return Fail(log, $"unhandled: {ex.InnerException?.Message ?? ex.Message}");
             }
         }
 
@@ -237,6 +385,94 @@ namespace MtgaCoachBridge
                 _opponentStrategy = opp;
             }
             log?.LogInfo("[BotBattleBridge] strategies swapped on _currentTest");
+        }
+    }
+
+    [HarmonyPatch(typeof(BotBattleScene), "Awake")]
+    internal static class BotBattleScene_Awake_Patch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(BotBattleScene __instance)
+        {
+            Plugin._log?.LogInfo("[HarmonyPatch] BotBattleScene.Awake prefix called! Skipping original Awake to prevent scene load.");
+            
+            // Initialize lists and queues
+            var exceptionsField = typeof(BotBattleScene).GetField("_exceptions", BindingFlags.NonPublic | BindingFlags.Instance);
+            if (exceptionsField != null && exceptionsField.GetValue(__instance) == null)
+            {
+                exceptionsField.SetValue(__instance, new List<Exception>());
+            }
+            var errorsField = typeof(BotBattleScene).GetField("_errors", BindingFlags.NonPublic | BindingFlags.Instance);
+            if (errorsField != null && errorsField.GetValue(__instance) == null)
+            {
+                errorsField.SetValue(__instance, new List<string>());
+            }
+            var assertsField = typeof(BotBattleScene).GetField("_asserts", BindingFlags.NonPublic | BindingFlags.Instance);
+            if (assertsField != null && assertsField.GetValue(__instance) == null)
+            {
+                assertsField.SetValue(__instance, new List<string>());
+            }
+            var queueField = typeof(BotBattleScene).GetField("_testQueue", BindingFlags.NonPublic | BindingFlags.Instance);
+            if (queueField != null && queueField.GetValue(__instance) == null)
+            {
+                queueField.SetValue(__instance, new Queue<BotBattleTest>());
+            }
+            var loadingField = typeof(BotBattleScene).GetField("_loadingScene", BindingFlags.NonPublic | BindingFlags.Static);
+            if (loadingField != null)
+            {
+                loadingField.SetValue(null, false);
+            }
+
+            return false; // Skip original Awake
+        }
+    }
+
+    [HarmonyPatch(typeof(BotBattleScene), "OnMatchCompleted")]
+    internal static class BotBattleScene_OnMatchCompleted_Patch
+    {
+        [HarmonyPrefix]
+        private static void Prefix()
+        {
+            BotBattleBridge.OnMatchCompleted();
+        }
+    }
+
+    [HarmonyPatch(typeof(MatchSceneManager), "ExitMatchScene")]
+    internal static class MatchSceneManager_ExitMatchScene_Patch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix()
+        {
+            if (BotBattleBridge.IsRunning)
+            {
+                Plugin._log?.LogInfo("[HarmonyPatch] MatchSceneManager.ExitMatchScene prefix called! Skipping ExitMatchScene since bot battle is running.");
+                return false; // Skip original method
+            }
+            return true; // Run original method
+        }
+    }
+
+    [HarmonyPatch]
+    internal static class BotBattleScene_ConnectConfig_Patch
+    {
+        [HarmonyTargetMethod]
+        private static MethodBase TargetMethod()
+        {
+            return typeof(BotBattleScene).GetMethod("ConnectConfig", BindingFlags.NonPublic | BindingFlags.Instance);
+        }
+
+        [HarmonyPrefix]
+        private static void Prefix()
+        {
+            if (Wizards.Mtga.Pantry.CurrentEnvironment != null)
+            {
+                if (string.IsNullOrEmpty(Wizards.Mtga.Pantry.CurrentEnvironment.mdHost) || Wizards.Mtga.Pantry.CurrentEnvironment.mdPort <= 0)
+                {
+                    Plugin._log?.LogInfo($"[HarmonyPatch] BotBattleScene.ConnectConfig: mdHost is empty. Overwriting with fdHost: {Wizards.Mtga.Pantry.CurrentEnvironment.fdHost}:{Wizards.Mtga.Pantry.CurrentEnvironment.fdPort}");
+                    Wizards.Mtga.Pantry.CurrentEnvironment.mdHost = Wizards.Mtga.Pantry.CurrentEnvironment.fdHost;
+                    Wizards.Mtga.Pantry.CurrentEnvironment.mdPort = Wizards.Mtga.Pantry.CurrentEnvironment.fdPort;
+                }
+            }
         }
     }
 }

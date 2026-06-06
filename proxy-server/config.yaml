@@ -9,84 +9,42 @@ server:
 # Provider routing: requests are tried in order of priority (lowest first).
 # The proxy picks the first available provider and forwards the request.
 providers:
-  - name: local-vllm
+  - name: azure-openai
     priority: 0
+    base_url: "${AZURE_OPENAI_BASE_URL}"
+    api_key: "${AZURE_OPENAI_API_KEY}"
+    api_version: "2024-05-01-preview"
+    models:
+      - "gpt-5.4"
+    enabled: true
+
+  - name: local-vllm
+    priority: 10
     # Home-lab vLLM on RTX PRO 6000 Blackwell (96 GB). Serves the TrevorJS
     # abliterated Gemma 4 31B (bf16) with MTP speculative decoding via
     # google/gemma-4-31B-it-assistant as drafter. Both the bare name and the
     # :latest alias resolve here so clients that mix Ollama-style tags and
     # vLLM-style names route the same way.
-    base_url: "http://10.0.0.10:8000/v1"
+    base_url: "http://10.0.0.10:8001/v1"
     # vLLM accepts any non-empty bearer; literal keeps the provider always
     # "enabled" without needing an env var on the NAS.
     api_key: "vllm"
     models:
-      - "gemma4-31b-uncensored"
-      - "gemma4-31b-uncensored:latest"
+      - "nvidia/MiniMax-M2.7-NVFP4"
     enabled: true
 
-  - name: ollama-local
+  - name: local-vllm-gemma-12b
     priority: 5
-    # Failover for the abliterated 31B if vLLM is down. Same physical box,
-    # Ollama on port 11434 serves the Q4_K_M GGUF (smaller, faster cold-start,
-    # no MTP). Requires OLLAMA_HOST=0.0.0.0:11434 on the Windows host +
-    # firewall rule for inbound TCP 11434.
-    base_url: "http://10.0.0.10:11434/v1"
-    # Ollama ignores the bearer token; literal keeps the provider enabled.
-    api_key: "ollama"
+    # Home-lab vLLM serving the faster Gemma 4 12B-it on port 8002
+    base_url: "http://10.0.0.10:8002/v1"
+    api_key: "vllm"
     models:
-      - "gemma4-31b-uncensored:latest"
-    enabled: true
-
-  - name: azure
-    priority: 1
-    base_url: "https://bmfllm-resource.cognitiveservices.azure.com/openai"
-    api_key: "${AZURE_OPENAI_API_KEY}"
-    api_version: "2025-04-01-preview"
-    # Models exposed through this provider. Each name must match an Azure
-    # deployment in this resource (data plane uses deployment names, not
-    # model names). _build_url() routes per-model when a match exists, else
-    # falls back to models[0].
-    models:
-      - "gpt-5.5"
-      - "gpt-5.4"
-    enabled: true
-
-  - name: anthropic
-    priority: 2
-    base_url: "https://api.anthropic.com/v1"
-    api_key: "${ANTHROPIC_API_KEY}"
-    models:
-      - "claude-sonnet-4-5-20250929"
-      - "claude-haiku-4-5-20251001"
-    enabled: false
-
-  - name: openai
-    priority: 3
-    base_url: "https://api.openai.com/v1"
-    api_key: "${OPENAI_API_KEY}"
-    models:
-      - "gpt-4o"
-      - "gpt-4o-mini"
-    enabled: false
-
-  - name: gemini
-    priority: 4
-    # Gemini's OpenAI-compatible endpoint accepts standard chat/completions
-    # requests with Authorization: Bearer <key>. No URL-side model routing
-    # needed — model name is passed in the request body like OpenAI.
-    base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
-    api_key: "${GEMINI_API_KEY}"
-    models:
-      - "gemini-3.1-flash-lite-preview"
-      - "gemini-2.5-flash-lite"
-      - "gemini-2.5-flash"
-      - "gemini-2.5-pro"
+      - "gemma-4-12b-it"
     enabled: true
 
 # Default model when client doesn't specify (or sends model="" / "default").
 # The /v1/chat/completions handler substitutes this in when no model is given.
-default_model: "gpt-5.4"
+default_model: "gemma-4-12b-it"
 
 # Admin credentials for the management dashboard
 admin:

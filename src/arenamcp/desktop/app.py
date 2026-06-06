@@ -126,6 +126,14 @@ def main() -> int:
 
     app.setApplicationName("mtgacoach")
     app.setOrganizationName("mtgacoach")
+    app.setDesktopFileName("mtgacoach.desktop")
+
+    from PySide6.QtGui import QIcon
+    from .runtime import get_app_root
+    icon_path = Path(get_app_root()) / "assets" / "icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
     apply_theme(app, load_saved_theme())
     window = MainWindow()
     window.show()

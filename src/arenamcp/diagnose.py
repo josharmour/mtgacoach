@@ -108,27 +108,20 @@ def check_settings_json() -> bool:
 
 def check_mtga_log() -> bool:
     """Check MTGA Player.log exists and is readable."""
-    # Check env override first
     custom = os.environ.get("MTGA_LOG_PATH")
     if custom:
         log_path = Path(custom)
     else:
-        # Standard Windows path
-        local_low = os.environ.get("LOCALAPPDATA", "")
-        if local_low:
-            # LOCALAPPDATA is AppData/Local, we need AppData/LocalLow
-            log_path = Path(local_low).parent / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
-        else:
-            log_path = Path.home() / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
-
-        # WSL: also check /mnt/c/Users/<user>/AppData/LocalLow/...
-        if not log_path.exists() and platform.system() == "Linux" and Path("/mnt/c").exists():
-            import glob
-            wsl_candidates = glob.glob(
-                "/mnt/c/Users/*/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log"
-            )
-            if wsl_candidates:
-                log_path = Path(wsl_candidates[0])
+        try:
+            from arenamcp.desktop.runtime import detect_runtime_state
+            state = detect_runtime_state()
+            log_path = Path(state.player_log)
+        except Exception:
+            local_low = os.environ.get("LOCALAPPDATA", "")
+            if local_low:
+                log_path = Path(local_low).parent / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+            else:
+                log_path = Path.home() / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
 
     if log_path.exists():
         size_mb = log_path.stat().st_size / (1024 * 1024)
@@ -290,11 +283,16 @@ def check_log_health() -> bool:
     custom = os.environ.get("MTGA_LOG_PATH")
 
     # Resolve default path
-    local_low = os.environ.get("LOCALAPPDATA", "")
-    if local_low:
-        default_path = Path(local_low).parent / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
-    else:
-        default_path = Path.home() / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+    try:
+        from arenamcp.desktop.runtime import detect_runtime_state
+        state = detect_runtime_state()
+        default_path = Path(state.player_log)
+    except Exception:
+        local_low = os.environ.get("LOCALAPPDATA", "")
+        if local_low:
+            default_path = Path(local_low).parent / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+        else:
+            default_path = Path.home() / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
 
     # Warn if custom path differs from default
     if custom:

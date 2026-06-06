@@ -946,7 +946,7 @@ class StandaloneCoach:
         # We use a simple heuristic: if it contains no active verbs (Cast, Attack, Block, Play),
         # and matches a silence trigger, we skip it.
         is_passive = any(trigger in clean_text for trigger in silence_triggers)
-        has_action = any(verb in clean_text for verb in ["cast", "play", "attack", "block", "activate", "kill", "destroy"])
+        has_action = any(verb in clean_text for verb in ["cast", "play", "attack", "block", "activate", "kill", "destroy", "decline", "accept", "choose", "select", "keep", "mulligan", "bottom"])
 
         if is_passive and not has_action and len(text) < 60:
             return
@@ -975,7 +975,7 @@ class StandaloneCoach:
     @backend_name.setter
     def backend_name(self, value: str):
         self._backend_name = value
-        self.settings.set("backend", value)
+        self.settings.set("mode", value)
         
     @property
     def model_name(self) -> Optional[str]:
@@ -1320,10 +1320,14 @@ class StandaloneCoach:
             from PIL import ImageGrab
             import io as _io
             left, top, width, height = window_rect
-            screenshot = ImageGrab.grab(bbox=(left, top, left + width, top + height))
-            buf = _io.BytesIO()
-            screenshot.save(buf, format='PNG')
-            png_bytes = buf.getvalue()
+            if left is not None and top is not None and width is not None and height is not None and width > 0 and height > 0:
+                screenshot = ImageGrab.grab(bbox=(left, top, left + width, top + height))
+                buf = _io.BytesIO()
+                screenshot.save(buf, format='PNG')
+                png_bytes = buf.getvalue()
+            else:
+                logger.warning(f"Invalid window_rect for card identification: {window_rect}")
+                return
         except Exception as e:
             logger.debug(f"Screenshot for card identification failed: {e}")
             return

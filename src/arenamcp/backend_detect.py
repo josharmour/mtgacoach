@@ -26,8 +26,8 @@ def detect_backends_quick() -> dict[str, bool]:
     # Online: check if mtgacoach.com API is reachable and we have a license key
     results["online"] = _is_online_available()
 
-    # Local: check if configured local endpoint responds
-    results["local"] = _is_local_available()
+    # Local: disabled for now
+    results["local"] = False
 
     return results
 
@@ -62,20 +62,8 @@ def _is_online_available() -> bool:
 
 
 def _is_local_available() -> bool:
-    """Check if the configured local endpoint responds."""
-    try:
-        from arenamcp.settings import get_settings
-        local_url = get_settings().get("local_url") or "http://localhost:8000/v1"
-    except Exception:
-        local_url = "http://localhost:8000/v1"
-
-    try:
-        req = urllib.request.Request(f"{local_url}/models", method="GET")
-        with urllib.request.urlopen(req, timeout=2):
-            return True
-    except Exception as e:
-        logger.debug(f"Local endpoint check failed: {e}")
-        return False
+    """Check if the configured local endpoint responds (disabled)."""
+    return False
 
 
 def validate_backend(mode: str) -> tuple[bool, str]:
@@ -89,9 +77,9 @@ def validate_backend(mode: str) -> tuple[bool, str]:
     if mode == "online":
         return _validate_online()
     elif mode == "local":
-        return _validate_local()
+        return False, "Local mode is disabled."
     else:
-        return False, f"Unknown mode: {mode}. Use 'online' or 'local'."
+        return False, f"Unknown mode: {mode}. Use 'online'."
 
 
 def _validate_online() -> tuple[bool, str]:
@@ -151,20 +139,9 @@ def _validate_local() -> tuple[bool, str]:
 def auto_select_mode() -> tuple[str, Optional[str]]:
     """Auto-select the best available mode.
 
-    Prefers online if subscription is valid, falls back to local.
-
     Returns:
         (mode, model_or_none)
     """
-    detected = detect_backends_quick()
-
-    if detected.get("online"):
-        return "online", None
-
-    if detected.get("local"):
-        return "local", DEFAULT_LOCAL_MODEL
-
-    # Nothing available — default to online (will prompt for subscription)
     return "online", None
 
 

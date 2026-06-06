@@ -58,11 +58,23 @@ class ScryfallCache:
         )
 
         self._arena_index: dict[int, dict[str, Any]] = {}
+        self._bulk_data_ready = False
         self._last_api_call: float = 0.0
         self._not_found_cache: set[int] = set()  # Negative cache for 404s
         self._name_cache: dict[str, Optional[dict[str, Any]]] = {}  # Session cache for name lookups
 
-        self._load_or_download_bulk_data()
+        import threading
+        self._thread = threading.Thread(target=self._run_background_load, daemon=True)
+        self._thread.start()
+
+    def _run_background_load(self) -> None:
+        """Run bulk data load/download in a background thread."""
+        try:
+            self._load_or_download_bulk_data()
+        except Exception as e:
+            logger.error(f"Scryfall background initialization failed: {e}")
+        finally:
+            self._bulk_data_ready = True
 
     def _get_bulk_data_path(self) -> Path:
         """Get path to the bulk data JSON file."""
@@ -120,12 +132,13 @@ class ScryfallCache:
         with open(bulk_path, "r", encoding="utf-8") as f:
             cards = json.load(f)
 
-        self._arena_index.clear()
+        temp_index = {}
         for card in cards:
             arena_id = card.get("arena_id")
             if arena_id is not None:
-                self._arena_index[arena_id] = card
+                temp_index[arena_id] = card
 
+        self._arena_index = temp_index
         logger.info(f"Indexed {len(self._arena_index)} cards with arena_id")
 
     def _load_or_download_bulk_data(self) -> None:
@@ -181,10 +194,10 @@ class ScryfallCache:
         # For DFCs/transform cards, oracle_text is in card_faces, not top level
         oracle_text = card.get("oracle_text", "")
         mana_cost = card.get("mana_cost", "")
+        faces = card.get("card_faces", [])
 
-        if not oracle_text and "card_faces" in card:
+        if not oracle_text and faces:
             # Combine oracle text from all faces
-            faces = card["card_faces"]
             oracle_parts = []
             for face in faces:
                 face_text = face.get("oracle_text", "")
@@ -193,7 +206,7 @@ class ScryfallCache:
             oracle_text = "\n---\n".join(oracle_parts)
 
             # Get mana cost from front face if not at top level
-            if not mana_cost and faces:
+            if not mana_cost:
                 mana_cost = faces[0].get("mana_cost", "")
 
         return ScryfallCard(
@@ -257,6 +270,11 @@ class ScryfallCache:
         if arena_id in self._not_found_cache:
             return None
 
+        # Skip API fallback if bulk data is not loaded yet to prevent blocking startup
+        if not self._bulk_data_ready:
+            logger.debug(f"Skipping Scryfall API fallback for arena_id {arena_id} because bulk data is not ready yet")
+            return None
+
         # Fall back to API
         card_data = self._fetch_from_api(arena_id)
         if card_data:
@@ -288,6 +306,11 @@ class ScryfallCache:
             card_data = self._name_cache[name]
             if card_data:
                 return self._card_dict_to_scryfall_card(card_data)
+            return None
+
+        # Skip API lookup if bulk data is not loaded yet to prevent blocking startup
+        if not self._bulk_data_ready:
+            logger.debug(f"Skipping Scryfall API lookup for '{name}' because bulk data is not ready yet")
             return None
 
         self._rate_limit_api()

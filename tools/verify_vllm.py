@@ -36,13 +36,14 @@ def chat_round_trip(base_url: str, model: str, api_key: str = "vllm") -> None:
     print(f"\n>>> streamed chat completion (model={model})")
     start = time.perf_counter()
     chunks: list[str] = []
+    reasoning_chunks: list[str] = []
     stream = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": "You are a curt MTG coach."},
             {"role": "user", "content": "Reply with the single word: ready"},
         ],
-        max_completion_tokens=8,
+        max_completion_tokens=150,
         temperature=0.0,
         stream=True,
     )
@@ -50,11 +51,28 @@ def chat_round_trip(base_url: str, model: str, api_key: str = "vllm") -> None:
     for chunk in stream:
         if getattr(chunk, "model", None):
             last_model_seen = chunk.model
-        if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
-            chunks.append(chunk.choices[0].delta.content)
+        if chunk.choices and chunk.choices[0].delta:
+            delta = chunk.choices[0].delta
+            
+            # Extract reasoning
+            r = None
+            if getattr(delta, "reasoning_content", None):
+                r = delta.reasoning_content
+            elif getattr(delta, "model_extra", None) and delta.model_extra.get("reasoning"):
+                r = delta.model_extra.get("reasoning")
+            elif getattr(delta, "reasoning", None):
+                r = delta.reasoning
+                
+            if r:
+                reasoning_chunks.append(r)
+            if delta.content:
+                chunks.append(delta.content)
+                
     elapsed = (time.perf_counter() - start) * 1000
     print(f"    latency: {elapsed:.0f}ms")
     print(f"    server-reported model: {last_model_seen}")
+    if reasoning_chunks:
+        print(f"    thinking process: {''.join(reasoning_chunks)!r}")
     print(f"    streamed text: {''.join(chunks)!r}")
 
     print("\n>>> non-streamed chat completion")
@@ -62,13 +80,25 @@ def chat_round_trip(base_url: str, model: str, api_key: str = "vllm") -> None:
     resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": "Reply with: ok"}],
-        max_completion_tokens=4,
+        max_completion_tokens=150,
         temperature=0.0,
     )
     elapsed = (time.perf_counter() - start) * 1000
     print(f"    latency: {elapsed:.0f}ms")
     print(f"    server-reported model: {resp.model}")
-    print(f"    content: {resp.choices[0].message.content!r}")
+    
+    message = resp.choices[0].message
+    reasoning = None
+    if getattr(message, "reasoning_content", None):
+        reasoning = message.reasoning_content
+    elif getattr(message, "model_extra", None) and message.model_extra.get("reasoning"):
+        reasoning = message.model_extra.get("reasoning")
+    elif getattr(message, "reasoning", None):
+        reasoning = message.reasoning
+        
+    if reasoning:
+        print(f"    thinking process: {reasoning!r}")
+    print(f"    content: {message.content!r}")
     if resp.usage:
         print(f"    tokens: in={resp.usage.prompt_tokens} out={resp.usage.completion_tokens}")
 

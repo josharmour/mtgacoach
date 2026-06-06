@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using System.Threading;
@@ -14,14 +15,17 @@ using UnityEngine;
 using GreClient.Rules;
 using GreClient.CardData;
 using Wotc.Mtgo.Gre.External.Messaging;
+using HarmonyLib;
 
 namespace MtgaCoachBridge
 {
     [BepInPlugin(PluginInfo.GUID, PluginInfo.Name, PluginInfo.Version)]
     public class Plugin : BaseUnityPlugin
     {
+        public static Plugin Instance { get; private set; }
+
         private const int UnityCommandTimeoutMs = 15000;
-        private static ManualLogSource _log;
+        internal static ManualLogSource _log;
         private Thread _pipeThread;
         private volatile bool _running;
 
@@ -68,9 +72,21 @@ namespace MtgaCoachBridge
 
         private void Awake()
         {
+            Instance = this;
             _log = Logger;
             _log.LogInfo($"MtgaCoachBridge v{PluginInfo.Version} loaded");
             DontDestroyOnLoad(gameObject);
+
+            try
+            {
+                var harmony = new Harmony(PluginInfo.GUID);
+                harmony.PatchAll();
+                _log.LogInfo("Harmony patches applied successfully.");
+            }
+            catch (Exception ex)
+            {
+                _log.LogError($"Failed to apply Harmony patches: {ex}");
+            }
 
             // Unity-thread state (sync context, command queue, GameManager
             // cache) lives on a separate persistent host. BepInEx's manager
@@ -93,7 +109,7 @@ namespace MtgaCoachBridge
             _log?.LogInfo("Plugin OnDestroy — pipe thread + persistent host continue");
         }
 
-        private void ExecutePipeCommand(PipeCommand cmd)
+        internal void ExecutePipeCommand(PipeCommand cmd)
         {
             try
             {
@@ -107,6 +123,14 @@ namespace MtgaCoachBridge
                     ["ok"] = false,
                     ["error"] = ex.Message
                 });
+            }
+        }
+
+        internal void SetLastKnownRequest(BaseUserRequest request)
+        {
+            lock (_interactionLock)
+            {
+                _lastKnownRequest = request;
             }
         }
 
@@ -156,7 +180,7 @@ namespace MtgaCoachBridge
         {
             // Reconnect loop with adaptive backoff.
             //   - Short connect timeout (1s) so we poll frequently when the
-            //     Python pipe server is momentarily down (scene transitions,
+            //     Python server is momentarily down (scene transitions,
             //     Python process restart).
             //   - Successful connections reset the retry delay.
             //   - Failed reconnects back off from 200ms up to 2s so we don't
@@ -168,34 +192,36 @@ namespace MtgaCoachBridge
 
             while (true)
             {
-                NamedPipeClientStream pipe = null;
+                TcpClient client = null;
                 bool connectedThisIteration = false;
                 try
                 {
-                    pipe = new NamedPipeClientStream(
-                        ".",
-                        "mtgacoach_bridge_v2",
-                        PipeDirection.InOut
-                    );
+                    client = new TcpClient();
+                    var result = client.BeginConnect("127.0.0.1", 44222, null, null);
+                    bool success = result.AsyncWaitHandle.WaitOne(1000); // 1s timeout — retry if Python isn't up yet
+                    if (!success)
+                    {
+                        throw new TimeoutException("TCP connection to Python server timed out");
+                    }
+                    client.EndConnect(result);
 
-                    pipe.Connect(1000); // 1s timeout — retry if Python isn't up yet
                     connectedThisIteration = true;
                     consecutiveTimeouts = 0;
                     retryMs = minRetryMs;
-                    _log.LogInfo("Pipe client connected to Python server");
+                    _log.LogInfo("TCP client connected to Python server on port 44222");
 
-                    HandleClient(pipe);
-                    _log.LogInfo("Pipe client lost connection (HandleClient returned), reconnecting...");
+                    HandleClient(client);
+                    _log.LogInfo("TCP client lost connection (HandleClient returned), reconnecting...");
                 }
                 catch (TimeoutException)
                 {
                     // Python server not up yet — usually means the Python
-                    // process is restarting or between pipe server recreations.
+                    // process is restarting or between server recreations.
                     consecutiveTimeouts++;
                     if (consecutiveTimeouts == 1 || consecutiveTimeouts % 10 == 0)
                     {
                         _log.LogInfo(
-                            $"Pipe client: Python server not available " +
+                            $"TCP client: Python server not available " +
                             $"(timeout {consecutiveTimeouts}), retrying in {retryMs}ms"
                         );
                     }
@@ -204,14 +230,14 @@ namespace MtgaCoachBridge
                 }
                 catch (Exception ex)
                 {
-                    _log.LogWarning($"Pipe client error: {ex.GetType().Name}: {ex.Message}");
+                    _log.LogWarning($"TCP client error: {ex.GetType().Name}: {ex.Message}");
                     // Reset retry after non-timeout errors — they're usually
-                    // transient (e.g. pipe state mismatch during race).
+                    // transient.
                     retryMs = minRetryMs;
                 }
                 finally
                 {
-                    try { pipe?.Dispose(); } catch { }
+                    try { client?.Close(); } catch { }
                 }
 
                 // If we DID connect successfully and HandleClient returned,
@@ -222,15 +248,16 @@ namespace MtgaCoachBridge
             }
         }
 
-        private void HandleClient(PipeStream pipe)
+        private void HandleClient(TcpClient client)
         {
-            using var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, leaveOpen: true);
-            using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true)
+            using var stream = client.GetStream();
+            using var reader = new StreamReader(stream, Encoding.UTF8, false, 4096, leaveOpen: true);
+            using var writer = new StreamWriter(stream, new UTF8Encoding(false), 4096, leaveOpen: true)
             {
                 AutoFlush = true
             };
 
-            while (pipe.IsConnected)
+            while (client.Connected)
             {
                 string line;
                 try
@@ -254,7 +281,7 @@ namespace MtgaCoachBridge
                     var json = JObject.Parse(line);
                     string action = json.Value<string>("action") ?? "";
 
-                    // Handle ping directly on pipe thread — doesn't need Unity main thread.
+                    // Handle ping directly on TCP thread — doesn't need Unity main thread.
                     // This is critical because Update() stops after OnDestroy (scene transitions).
                     if (action == "ping")
                     {
@@ -283,7 +310,7 @@ namespace MtgaCoachBridge
                 }
             }
 
-            _log.LogInfo("Pipe client disconnected");
+            _log.LogInfo("TCP client disconnected");
             writer.Dispose();
         }
 
@@ -475,6 +502,73 @@ namespace MtgaCoachBridge
 
                 case "bot_battle_status":
                     cmd.SetResponse(BotBattleBridge.GetStatus());
+                    break;
+
+                case "list_scenes":
+                    {
+                        var sceneList = new JArray();
+                        for (int i = 0; i < UnityEngine.SceneManagement.SceneManager.sceneCountInBuildSettings; i++)
+                        {
+                            sceneList.Add(UnityEngine.SceneManagement.SceneUtility.GetScenePathByBuildIndex(i));
+                        }
+                        cmd.SetResponse(new JObject { ["ok"] = true, ["scenes"] = sceneList });
+                    }
+                    break;
+
+                case "inspect_class":
+                    {
+                        string typeName = cmd.Json.Value<string>("type") ?? "BotBattleScene";
+                        try
+                        {
+                            var type = Type.GetType(typeName);
+                            if (type == null)
+                            {
+                                // Try in the assembly of BotBattleScene
+                                type = typeof(BotBattleScene).Assembly.GetType(typeName);
+                            }
+                            if (type == null)
+                            {
+                                // Try in assembly of Plugin
+                                type = typeof(Plugin).Assembly.GetType(typeName);
+                            }
+                            if (type == null)
+                            {
+                                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = $"Type {typeName} not found" });
+                                break;
+                            }
+                            var methods = new JArray();
+                            foreach (var m in type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static))
+                            {
+                                string prefix = "";
+                                if (m.IsStatic) prefix += "static ";
+                                if (m.IsPublic) prefix += "public ";
+                                else if (m.IsPrivate) prefix += "private ";
+                                methods.Add($"{prefix}{m.ReturnType.Name} {m.Name}({string.Join(", ", Array.ConvertAll(m.GetParameters(), p => $"{p.ParameterType.Name} {p.Name}"))})");
+                            }
+                            var fields = new JArray();
+                            foreach (var f in type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static))
+                            {
+                                string prefix = "";
+                                if (f.IsStatic) prefix += "static ";
+                                if (f.IsLiteral) prefix += "const ";
+                                if (f.IsPublic) prefix += "public ";
+                                else if (f.IsPrivate) prefix += "private ";
+                                fields.Add($"{prefix}{f.FieldType.Name} {f.Name}");
+                            }
+                            cmd.SetResponse(new JObject
+                            {
+                                ["ok"] = true,
+                                ["name"] = type.FullName,
+                                ["base"] = type.BaseType?.FullName,
+                                ["methods"] = methods,
+                                ["fields"] = fields
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = ex.Message });
+                        }
+                    }
                     break;
 
                 default:
@@ -2087,7 +2181,7 @@ namespace MtgaCoachBridge
             }
         }
 
-        private static JObject BuildPendingRequestPayload(BaseUserRequest request)
+        internal static JObject BuildPendingRequestPayload(BaseUserRequest request)
         {
             var payload = new JObject();
             var requestType = request.Type.ToString();
@@ -2123,7 +2217,7 @@ namespace MtgaCoachBridge
             return payload;
         }
 
-        private static JObject BuildPendingRequestDecisionContext(BaseUserRequest request, JObject requestPayload)
+        internal static JObject BuildPendingRequestDecisionContext(BaseUserRequest request, JObject requestPayload)
         {
             var requestType = request.Type.ToString();
             var context = new JObject

@@ -191,7 +191,7 @@ class AutopilotConfig:
     # cut typical call latency to ~1-1.5s. The extra headroom absorbs Azure
     # tail spikes (we've seen 6+s outliers) without forcing the retry cascade
     # that wastes a full call's worth of latency before recovery.
-    planning_timeout: float = 12.0
+    planning_timeout: float = 30.0
     enable_vision_fallback: bool = True
     prefer_deterministic: bool = True  # When True, skip VLM for actions that have deterministic coordinates
     enable_tts_preview: bool = True
@@ -1753,11 +1753,11 @@ class AutopilotEngine:
                     f"(consecutive failures: {self._consecutive_plan_failures})"
                 )
 
-                # After 2 failures: escalate timeout (×1.5, cap 15s)
+                # After 2 failures: escalate timeout (×1.5, cap 45s)
                 if self._consecutive_plan_failures >= 2:
                     new_timeout = min(
                         self._effective_planning_timeout * 1.5,
-                        15.0,
+                        45.0,
                     )
                     if new_timeout != self._effective_planning_timeout:
                         self._effective_planning_timeout = new_timeout

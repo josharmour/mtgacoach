@@ -309,11 +309,10 @@ def get_available_modes() -> list[tuple[str, str]]:
     """Return available backend modes.
 
     Returns list of ``(display_name, mode_id)`` tuples.
-    Both modes are always listed; availability is indicated separately.
+    Only online mode is available.
     """
     return [
         ("Online", "online"),
-        ("Local", "local"),
     ]
 
 
@@ -571,6 +570,7 @@ STRATEGIC VALUE — BEFORE suggesting any spell, evaluate whether it advances yo
 - Could this card be more impactful later? Hold removal for real threats, don't waste it on marginal targets.
 - Does casting this spell advance your win condition or just react? Proactive plays that build your board or set up combos are usually better than reactive plays against non-threatening permanents.
 - If a spell has a downside (lose life, sacrifice, discard), the payoff must be worth it. "Can cast" does not mean "should cast."
+- Do NOT cast auras, buffs, or combat tricks on opponent's creatures unless it outright kills them. Buffing an opponent's creature just to trigger a "draw a card" effect is a terrible trade.
 
 CRITICAL BLOCKING RULES:
 - Creatures tagged [FLYING] can ONLY be blocked by creatures with [FLYING] or [REACH].
@@ -2362,7 +2362,7 @@ class CoachEngine:
         recent_events = game_state.get("recent_events", [])
         if recent_events:
             event_strs = []
-            for evt in recent_events[-5:]:
+            for evt in recent_events[-15:]:
                 etype = evt.get("type", "")
                 if etype == "damage_dealt": event_strs.append(f"{evt.get('source','?')} dealt {evt.get('amount',0)} to {evt.get('target','?')}")
                 elif etype == "zone_transfer": event_strs.append(f"{evt.get('card','?')} moved zones")
@@ -2801,10 +2801,50 @@ class CoachEngine:
         "annotations",
     })
 
+    def _normalize_game_state_cards(self, game_state: dict[str, Any]) -> None:
+        """In-place normalize all card dictionaries in the game state to ensure
+        they have a type_line, synthesizing one if type_line is empty but
+        card_types or subtypes are present.
+        """
+        def normalize_card(card: dict[str, Any]) -> None:
+            if not isinstance(card, dict):
+                return
+            type_line = card.get("type_line")
+            if not type_line or not str(type_line).strip():
+                card_types = card.get("card_types") or []
+                subtypes = card.get("subtypes") or []
+                if isinstance(card_types, str):
+                    card_types = [card_types]
+                if isinstance(subtypes, str):
+                    subtypes = [subtypes]
+                
+                type_parts = []
+                if card_types:
+                    type_parts.append(" ".join(card_types))
+                if subtypes:
+                    type_parts.append("—")
+                    type_parts.append(" ".join(subtypes))
+                card["type_line"] = " ".join(type_parts).strip()
+
+        # Normalize cards in list-based zones at the top level
+        for key, value in game_state.items():
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict) and "instance_id" in item:
+                        normalize_card(item)
+            elif isinstance(value, dict):
+                # Also normalize cards in nested dictionary lists (like game_state["zones"])
+                for sub_key, sub_val in value.items():
+                    if isinstance(sub_val, list):
+                        for item in sub_val:
+                            if isinstance(item, dict) and "instance_id" in item:
+                                normalize_card(item)
+
     def _build_context(
         self, game_state: dict[str, Any], question: str = "",
         *, for_planner: bool = False,
     ) -> str:
+        self._normalize_game_state_cards(game_state)
         """Pick the active prompt variant for the user-message context.
 
         Reads MTGACOACH_PROMPT_VARIANT once per call. Honors:
@@ -3135,6 +3175,7 @@ class CoachEngine:
             self._backend.complete,
             effective_system_prompt,
             user_message,
+            1000,
             **complete_kwargs,
         )
         try:
@@ -3237,7 +3278,7 @@ class CoachEngine:
                 be.complete,
                 system_prompt,
                 user_message,
-                1200,
+                2000,
                 request_timeout_s=api_timeout,
             )
         else:
@@ -3478,7 +3519,7 @@ class CoachEngine:
             else {}
         )
         future = executor.submit(
-            be.complete, system_prompt, user_message, 200, **submit_kwargs
+            be.complete, system_prompt, user_message, 1000, **submit_kwargs
         )
         try:
             response = future.result(timeout=api_timeout)
@@ -4002,32 +4043,105 @@ class CoachEngine:
             if not matches and any(p in advice_lower for p in PASSTHROUGH_PHRASES):
                 matches = True
 
-            # Special-case "Play <land>" suggestions to match "Play Land: <land>"
-            if not matches and advice_lower.startswith("play "):
-                for act in legal_actions:
-                    if act.lower().startswith("play land:"):
-                        matches = True
-                        break
-
-            # Special-case "Attack with X" to match "Declare Attackers: X, Y, ..."
-            # LLMs frequently say "attack with" instead of "declare attackers"
-            if not matches and "attack" in advice_lower:
+            # Enhanced advice matching for partial card names, generic attacks/blocks, activations
+            if not matches:
                 for act in legal_actions:
                     act_lower = act.lower()
-                    if act_lower.startswith("declare attackers:"):
-                        # Extract creature names from the legal action
-                        names = [n.strip() for n in act_lower.split(":", 1)[1].split(",")]
-                        if any(name in advice_lower for name in names):
+                    act_clean = re.sub(r'\s*\[(?:OK|NEED:\d+|NO TARGETS)\]', '', act_lower).strip()
+                    
+                    # 1. Cast actions (e.g., "cast michelangelo, weirdness to 11")
+                    if act_clean.startswith("cast "):
+                        card_name = act_clean[5:].strip()
+                        short_name = re.split(r'[,—/]', card_name)[0].strip()
+                        if short_name and short_name in advice_lower:
+                            matches = True
+                            break
+                    
+                    # 2. Play land actions (e.g., "play land: forest")
+                    elif act_clean.startswith("play land:"):
+                        card_name = act_clean[10:].strip()
+                        short_name = re.split(r'[,—/]', card_name)[0].strip()
+                        if short_name and (short_name in advice_lower or "play land" in advice_lower or "play a land" in advice_lower):
+                            matches = True
+                            break
+                    
+                    # 3. Activate actions (e.g., "activate bristly bill, spine sower")
+                    elif act_clean.startswith("activate "):
+                        card_name = act_clean[9:].strip()
+                        short_name = re.split(r'[,—/]', card_name)[0].strip()
+                        if short_name and short_name in advice_lower:
+                            matches = True
+                            break
+                    
+                    # 4. Declare attackers (e.g., "declare attackers: bristly bill, spine sower...")
+                    elif act_clean.startswith("declare attackers:"):
+                        names_str = act_clean.split(":", 1)[1]
+                        names = [n.strip() for n in re.split(r'[,#\d]', names_str) if n.strip()]
+                        name_matched = any(name in advice_lower for name in names if len(name) > 2)
+                        
+                        is_negative = any(neg in advice_lower for neg in [
+                            "don't", "dont", "do not", "no attack", "not attack", "hold back",
+                            "never attack", "avoid attacking", "decline to attack"
+                        ])
+                        generic_attack = any(phrase in advice_lower for phrase in [
+                            "attack with all", "attack with everything", "all attack",
+                            "swing with all", "swing with everything", "attack all",
+                            "swing all", "attack with everyone", "swing with everyone",
+                            "all in", "all-in", "attack with all creatures",
+                            "swing with all creatures", "all creatures attack",
+                            "attack with your creatures", "swing with your creatures",
+                            "attack with all of your", "swing with all of your",
+                            "attack with all available", "swing with all available",
+                            "attack with your team", "swing with your team",
+                            "attack with the team", "swing with the team",
+                            "attack!", "attack.", "swing!", "swing."
+                        ]) or advice_lower.strip() in ("attack", "swing")
+                        
+                        if (name_matched or generic_attack) and not is_negative:
+                            matches = True
+                            break
+                    
+                    # 5. Block actions (e.g., "block with: ...")
+                    elif act_clean.startswith("block with:"):
+                        is_negative = any(neg in advice_lower for neg in [
+                            "don't", "dont", "do not", "no block", "not block", "never block",
+                            "avoid blocking", "decline to block", "no blocks"
+                        ])
+                        generic_block = any(phrase in advice_lower for phrase in [
+                            "block with all", "block with everything", "all block",
+                            "block all", "block with everyone", "block with all creatures",
+                            "block with your creatures", "block with all available",
+                            "block with your team", "block with the team",
+                            "block!", "block."
+                        ]) or advice_lower.strip() in ("block", "blocking")
+                        
+                        if generic_block and not is_negative:
                             matches = True
                             break
 
-            # Special-case "Block X with Y" / "Block with Y" to match "Block with: X, Y, ..."
-            if not matches and "block" in advice_lower:
-                for act in legal_actions:
-                    act_lower = act.lower()
-                    if act_lower.startswith("block with:"):
-                        names = [n.strip() for n in act_lower.split(":", 1)[1].split(",")]
-                        if any(name in advice_lower for name in names):
+                    # 6. Done (confirm attackers) - matches if LLM recommends attacking
+                    elif act_clean == "done (confirm attackers)":
+                        is_negative = any(neg in advice_lower for neg in [
+                            "don't", "dont", "do not", "no attack", "not attack", "hold back",
+                            "never attack", "avoid attacking", "decline to attack"
+                        ])
+                        has_attack_intent = any(phrase in advice_lower for phrase in [
+                            "attack", "swing", "lethal", "all in", "all-in", "combat"
+                        ])
+                        if has_attack_intent and not is_negative:
+                            matches = True
+                            break
+
+                    # 7. Done (confirm blockers) - matches if LLM recommends blocking
+                    elif act_clean == "done (confirm blockers)":
+                        is_negative = any(neg in advice_lower for neg in [
+                            "don't", "dont", "do not", "no block", "not block", "never block",
+                            "avoid blocking", "decline to block", "no blocks"
+                        ])
+                        has_block_intent = any(phrase in advice_lower for phrase in [
+                            "block", "chump", "trade"
+                        ])
+                        if has_block_intent and not is_negative:
                             matches = True
                             break
 

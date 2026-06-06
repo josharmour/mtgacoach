@@ -948,12 +948,21 @@ def _serialize_game_object(obj) -> dict[str, Any]:
             if enriched["name"].startswith("Unknown"):
                 enriched["name"] = f"Ability of {source_enriched['name']}"
 
+    name = enriched.get("name") or f"Unknown ({obj.grp_id})"
+    type_line = enriched.get("type_line") or ""
+    if name.startswith("Unknown"):
+        basics = {"Forest", "Island", "Swamp", "Mountain", "Plains"}
+        matching = basics.intersection(obj.subtypes)
+        if len(matching) == 1:
+            name = list(matching)[0]
+            type_line = f"Basic Land — {name}"
+
     result = {
         "instance_id": obj.instance_id,
         "grp_id": obj.grp_id,
-        "name": enriched.get("name") or f"Unknown ({obj.grp_id})",
+        "name": name,
         "oracle_text": enriched.get("oracle_text") or "",
-        "type_line": enriched.get("type_line") or "",
+        "type_line": type_line,
         "mana_cost": enriched.get("mana_cost") or "",
         "owner_seat_id": obj.owner_seat_id,
         "controller_seat_id": obj.controller_seat_id,
@@ -999,12 +1008,22 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
     """Serialize a published-snapshot object with oracle text enrichment."""
     grp_id = int(obj.get("grp_id", 0) or 0)
     enriched = enrich_with_oracle_text(grp_id)
+    name = enriched.get("name") or f"Unknown ({grp_id})"
+    type_line = enriched.get("type_line") or ""
+    subtypes = obj.get("subtypes", [])
+    if name.startswith("Unknown"):
+        basics = {"Forest", "Island", "Swamp", "Mountain", "Plains"}
+        matching = basics.intersection(subtypes)
+        if len(matching) == 1:
+            name = list(matching)[0]
+            type_line = f"Basic Land — {name}"
+
     result = {
         "instance_id": obj.get("instance_id"),
         "grp_id": grp_id,
-        "name": enriched.get("name") or f"Unknown ({grp_id})",
+        "name": name,
         "oracle_text": enriched.get("oracle_text") or "",
-        "type_line": enriched.get("type_line") or "",
+        "type_line": type_line,
         "mana_cost": enriched.get("mana_cost") or "",
         "owner_seat_id": obj.get("owner_seat_id"),
         "controller_seat_id": obj.get("controller_seat_id"),
@@ -1015,7 +1034,7 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
         "is_attacking": obj.get("is_attacking", False),
         "is_blocking": obj.get("is_blocking", False),
         "card_types": obj.get("card_types", []),
-        "subtypes": obj.get("subtypes", []),
+        "subtypes": subtypes,
         "object_kind": obj.get("object_kind", "UNKNOWN"),
         "counters": obj.get("counters", {}),
     }
@@ -1057,12 +1076,22 @@ def _serialize_bridge_card(
     grp_id = _coerce_int(card.get("grp_id"), fallback_grp_id) or 0
     enriched = enrich_with_oracle_text(grp_id)
 
+    name = enriched.get("name") or fallback.get("name") or f"Unknown ({grp_id})"
+    type_line = enriched.get("type_line") or fallback.get("type_line") or ""
+    subtypes = _copy_list(card.get("subtypes") or fallback.get("subtypes"))
+    if name.startswith("Unknown"):
+        basics = {"Forest", "Island", "Swamp", "Mountain", "Plains"}
+        matching = basics.intersection(subtypes)
+        if len(matching) == 1:
+            name = list(matching)[0]
+            type_line = f"Basic Land — {name}"
+
     result = {
         "instance_id": instance_id,
         "grp_id": grp_id,
-        "name": enriched.get("name") or fallback.get("name") or f"Unknown ({grp_id})",
+        "name": name,
         "oracle_text": enriched.get("oracle_text") or fallback.get("oracle_text") or "",
-        "type_line": enriched.get("type_line") or fallback.get("type_line") or "",
+        "type_line": type_line,
         "mana_cost": enriched.get("mana_cost") or fallback.get("mana_cost") or "",
         "owner_seat_id": _coerce_int(card.get("owner_id"), fallback.get("owner_seat_id")),
         "controller_seat_id": _coerce_int(card.get("controller_id"), fallback.get("controller_seat_id")),
@@ -1073,7 +1102,7 @@ def _serialize_bridge_card(
         "is_attacking": bool(card.get("is_attacking", fallback.get("is_attacking", False))),
         "is_blocking": bool(card.get("is_blocking", fallback.get("is_blocking", False))),
         "card_types": _copy_list(card.get("card_types") or fallback.get("card_types")),
-        "subtypes": _copy_list(card.get("subtypes") or fallback.get("subtypes")),
+        "subtypes": subtypes,
         "object_kind": _normalize_object_kind(card.get("object_type"), fallback.get("object_kind", "UNKNOWN")),
         "counters": dict(card.get("counters") or fallback.get("counters") or {}),
     }

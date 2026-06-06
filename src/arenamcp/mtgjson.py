@@ -380,5 +380,8 @@ def get_mtgjson() -> MTGJSONDatabase:
     global _mtgjson_db
     if _mtgjson_db is None:
         _mtgjson_db = MTGJSONDatabase()
-        _mtgjson_db.load()
+        # Load asynchronously in a background thread to prevent blocking startup / UI loop.
+        import threading
+        thread = threading.Thread(target=_mtgjson_db.load, daemon=True)
+        thread.start()
     return _mtgjson_db

@@ -24,7 +24,7 @@ except ImportError:
 
 try:
     import pygetwindow as gw
-except ImportError:
+except (ImportError, NotImplementedError):
     gw = None
 
 try:
@@ -115,6 +115,11 @@ class CardOverlayWindow(QWidget):
     # Refresh interval for window-follow (ms). Shorter = smoother tracking,
     # but keep reasonable since MTGA rarely moves during a draft.
     FOLLOW_INTERVAL_MS = 500
+
+    def setVisible(self, visible: bool) -> None:
+        if visible and os.name != "nt":
+            return
+        super().setVisible(visible)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -308,33 +313,45 @@ class CardOverlayWindow(QWidget):
         from MTGA's render area) aren't shifted by title bar / border /
         DWM-frame padding that `pygetwindow` includes.
         """
-        if os.name != "nt":
-            return None
-
         left_px = top_px = width_px = height_px = None
-        if find_mtga_hwnd is not None and get_client_rect is not None:
+        if os.name != "nt":
             try:
-                hwnd = find_mtga_hwnd()
-                if hwnd:
-                    cr = get_client_rect(hwnd)
-                    if cr is not None and cr[2] > 0 and cr[3] > 0:
-                        left_px, top_px, width_px, height_px = cr
+                from arenamcp.desktop.runtime import get_linux_window_geometry
+                geom = get_linux_window_geometry("MTGA")
+                if geom and not geom.get("is_minimized"):
+                    left_px = geom["left"]
+                    top_px = geom["top"]
+                    width_px = geom["width"]
+                    height_px = geom["height"]
             except Exception:
-                left_px = None
+                pass
+        else:
+            if find_mtga_hwnd is not None and get_client_rect is not None:
+                try:
+                    hwnd = find_mtga_hwnd()
+                    if hwnd:
+                        cr = get_client_rect(hwnd)
+                        if cr is not None and cr[2] > 0 and cr[3] > 0:
+                            left_px, top_px, width_px, height_px = cr
+                except Exception:
+                    left_px = None
+
+            if left_px is None:
+                if gw is None:
+                    return None
+                try:
+                    windows = [w for w in gw.getWindowsWithTitle("MTGA") if w.title == "MTGA"]
+                    if not windows:
+                        return None
+                    m = windows[0]
+                    if m.isMinimized:
+                        return None
+                    left_px, top_px, width_px, height_px = m.left, m.top, m.width, m.height
+                except Exception:
+                    return None
 
         if left_px is None:
-            if gw is None:
-                return None
-            try:
-                windows = [w for w in gw.getWindowsWithTitle("MTGA") if w.title == "MTGA"]
-                if not windows:
-                    return None
-                m = windows[0]
-                if m.isMinimized:
-                    return None
-                left_px, top_px, width_px, height_px = m.left, m.top, m.width, m.height
-            except Exception:
-                return None
+            return None
 
         ratio = 1.0
         try:
@@ -362,6 +379,10 @@ class CardOverlayWindow(QWidget):
 
     def _tick(self) -> None:
         """Periodic: match MTGA bounds and redraw if visible."""
+        if os.name != "nt":
+            if self.isVisible():
+                self.hide()
+            return
         rect = self._get_mtga_rect()
         if rect is None or not self._should_show or not self._user_enabled:
             if self.isVisible():

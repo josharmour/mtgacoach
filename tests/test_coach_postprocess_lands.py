@@ -170,3 +170,42 @@ def test_no_typo_dict_means_typoed_card_passes_through_unchanged():
         "the hardcoded typo_fixes dict should be gone — fuzzy matching alone "
         "shouldn't invent card names that aren't present in game state"
     )
+
+
+def test_normalize_game_state_cards():
+    coach = _make_coach()
+    state = {
+        "hand": [
+            {
+                "instance_id": 1,
+                "name": "Unknown (ID: 75553)",
+                "type_line": "",
+                "card_types": ["Land"],
+                "subtypes": ["Forest"],
+            },
+            {
+                "instance_id": 2,
+                "name": "Animal Attendant",
+                "type_line": "Creature — Human Citizen",
+                "card_types": ["Creature"],
+                "subtypes": ["Human", "Citizen"],
+            }
+        ],
+        "zones": {
+            "battlefield": [
+                {
+                    "instance_id": 3,
+                    "name": "Unknown (ID: 69698)",
+                    "type_line": "",
+                    "card_types": ["Land"],
+                }
+            ]
+        }
+    }
+    
+    coach._normalize_game_state_cards(state)
+    
+    assert state["hand"][0]["type_line"] == "Land — Forest"
+    assert state["hand"][1]["type_line"] == "Creature — Human Citizen"
+    assert state["zones"]["battlefield"][0]["type_line"] == "Land"
+

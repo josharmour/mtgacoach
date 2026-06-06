@@ -50,6 +50,10 @@ MTGA_PATHS = [
     Path("/mnt/c/Program Files (x86)/Wizards of the Coast/MTGA"),
     Path("/mnt/c/Program Files (x86)/Steam/steamapps/common/MTGA"),
     Path("/mnt/c/Program Files/Epic Games/MagicTheGathering"),
+    # Linux native Steam/Flatpak paths
+    Path.home() / ".steam/steam/steamapps/common/MTGA",
+    Path.home() / ".local/share/Steam/steamapps/common/MTGA",
+    Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common/MTGA",
 ]
 
 
@@ -65,7 +69,21 @@ def find_mtga_database() -> Optional[Path]:
     """
     candidates = []
     
-    for base_path in MTGA_PATHS:
+    # 1. Start with MTGA_PATHS
+    search_paths = list(MTGA_PATHS)
+
+    # 2. Check settings for mtga_install_dir (imported locally to avoid circular dependencies)
+    try:
+        from arenamcp.settings import get_settings
+        settings_path_str = get_settings().get("mtga_install_dir")
+        if settings_path_str:
+            settings_path = Path(settings_path_str)
+            if settings_path not in search_paths:
+                search_paths.insert(0, settings_path)
+    except Exception as e:
+        logger.debug(f"Could not read mtga_install_dir from settings: {e}")
+    
+    for base_path in search_paths:
         raw_dir = base_path / "MTGA_Data" / "Downloads" / "Raw"
         if raw_dir.exists():
             # Find the CardDatabase file (name includes hash)
