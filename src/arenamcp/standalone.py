@@ -889,6 +889,109 @@ class StandaloneCoach:
         legal_actions = game_state.get("legal_actions", []) or []
         return any(cls._is_meaningful_legal_action(action) for action in legal_actions)
 
+    # Local life total at/below this is dangerous enough that *any* window
+    # deserves advice, regardless of the trigger (defensive bias-to-speak).
+    # Matches the GameStateTrigger low-life threshold (coach.py life_threshold
+    # default 5).
+    _MEANINGFUL_LOW_LIFE = 5
+
+    # Triggers gated by the meaningful-window predicate. Deliberately scoped to
+    # the noisy "filler" triggers only — pass/priority/what's-next windows that
+    # are frequently empty. Real decision points are intentionally absent:
+    # critical triggers always fire; combat_attackers/combat_blockers are genuine
+    # attack/block decisions (combat_blockers fires on the opponent's turn, where
+    # gating could wrongly silence a real block); new_turn is the per-turn plan.
+    _MEANINGFUL_GATE_TRIGGERS = frozenset(
+        {"priority_gained", "opponent_turn", "land_played", "spell_resolved"}
+    )
+
+    @classmethod
+    def _is_meaningful_advice_window(
+        cls,
+        game_state: dict[str, Any],
+        *,
+        has_castable_instants: bool = False,
+    ) -> bool:
+        """Pure predicate: does this window represent a real decision worth advice?
+
+        Used to gate NON-CRITICAL triggers in the coaching loop. Critical
+        triggers (``decision_required`` with a real pending decision,
+        ``low_life``, ``threat_detected``, ``stack_spell*``, ...) bypass this
+        entirely and always fire — they are meaningful by definition.
+
+        A window is *meaningful* (speak) when the local player actually has a
+        choice:
+          - a real, named pending decision (scry/discard/target/mulligan/modal/
+            pay_costs/declare_*) — the generic ``"Action Required"`` priority
+            placeholder is NOT a decision by itself, so it falls through to the
+            legal-action analysis, OR
+          - the local player holds priority and has a meaningful legal action
+            (cast/play/activate/attack/block), OR
+          - the local player can respond at instant speed during a window where
+            priority is not theirs (opponent's turn / opponent's spell), OR
+          - the local player's life is dangerously low.
+
+        It is *trivial* (skip) only when the window is a pure pass/wait window:
+        pass-only local priority with no castable instants, the opponent holds
+        priority and we have no instant-speed response, or empty legal moves
+        with no pending decision.
+
+        Biased toward returning True (speak) when uncertain — missing a real
+        decision is worse than an occasional redundant line. ``game_state`` is
+        read-only; ``has_castable_instants`` is supplied by the caller
+        (``GameStateTrigger._has_castable_instants``) so this stays pure and
+        unit-testable without an instance.
+        """
+        turn = game_state.get("turn", {}) or {}
+        local_seat = cls._get_local_seat_from_state(game_state)
+
+        # 1. A real, named pending decision is always meaningful. The generic
+        #    "Action Required" priority placeholder is not a decision on its own.
+        pending = str(game_state.get("pending_decision") or "").strip()
+        if pending and pending != "Action Required":
+            return True
+
+        # 2. Dangerously low local life — always worth advice (defensive bias;
+        #    the low_life critical trigger covers the common transition, this
+        #    keeps later non-critical windows talking while at risk).
+        for player in game_state.get("players", []) or []:
+            if player.get("is_local"):
+                life = player.get("life_total")
+                if isinstance(life, (int, float)) and life <= cls._MEANINGFUL_LOW_LIFE:
+                    return True
+                break
+
+        legal_actions = [
+            str(action or "").strip()
+            for action in (game_state.get("legal_actions", []) or [])
+        ]
+        is_local_priority = (
+            local_seat is not None and turn.get("priority_player") == local_seat
+        )
+
+        # 3. Local player holds priority with a real legal play.
+        if is_local_priority and any(
+            cls._is_meaningful_legal_action(action) for action in legal_actions
+        ):
+            return True
+
+        # 4. Priority is not the local player's (opponent turn / opponent spell):
+        #    meaningful only if we can respond at instant speed.
+        if not is_local_priority:
+            return bool(has_castable_instants)
+
+        # 5. Local priority but no meaningful legal play. Pure pass/wait (or
+        #    empty) is trivial unless we hold an instant-speed response. Any
+        #    unrecognized non-pass/wait legal action biases toward speaking.
+        non_pass = [
+            action
+            for action in legal_actions
+            if action.lower() not in ("", "wait", "pass", "pass priority")
+        ]
+        if non_pass:
+            return True
+        return bool(has_castable_instants)
+
     @classmethod
     def _summarize_actionable_window(cls, game_state: dict[str, Any], max_items: int = 2) -> str:
         """Build a short debug summary for a stuck/actionable priority window."""
@@ -2648,7 +2751,11 @@ class StandaloneCoach:
                         if trigger in ("land_played", "spell_resolved") and has_pending_decision:
                             logger.debug(f"Suppressing {trigger} - waiting for decision: {pending_decision}")
 
-                        # Combat and priority triggers only in "every_priority" mode
+                        # Combat and priority triggers only in "every_priority" mode.
+                        # NOTE: "every_priority" now means "every *meaningful*
+                        # priority" — the meaningful-window gate below drops
+                        # pass-only/no-instant filler, so these fire frequently
+                        # but only when the human has a real choice.
                         is_frequent = (
                             self.advice_frequency == "every_priority" and
                             trigger in ("priority_gained", "combat_attackers", "combat_blockers") and
@@ -2664,6 +2771,43 @@ class StandaloneCoach:
                         # in the same batch to ensure the decision is the primary focus.
                         if "decision_required" in triggers and trigger != "decision_required" and not is_critical:
                             continue
+
+                        # MEANINGFUL-WINDOW GATE: the coach should talk frequently
+                        # but only on windows where the human actually has a real
+                        # choice. For the noisy "filler" triggers below, skip
+                        # trivial windows entirely — pass-only priority, opponent
+                        # priority with no instant-speed response, or empty legal
+                        # moves with no pending decision. Skipping here means NO
+                        # LLM call, NO Coach-Log line, and NO TTS for filler.
+                        #
+                        # The gate is deliberately scoped to FILLER triggers only.
+                        # It must NOT touch real decision points:
+                        #   - critical triggers (decision_required/low_life/
+                        #     threat_detected/stack_spell*/...) always fire;
+                        #   - combat_attackers/combat_blockers are genuine attack/
+                        #     block decisions (and combat_blockers fires on the
+                        #     OPPONENT's turn, where priority_player can read as the
+                        #     opponent and a block is not an instant — gating it
+                        #     would wrongly silence a real block);
+                        #   - new_turn is the once-per-turn plan and stays.
+                        # The predicate itself biases toward speaking when
+                        # uncertain. This is what makes "every_priority" mean
+                        # "every *meaningful* priority" rather than literally every
+                        # pass/wait window.
+                        if not is_critical and trigger in self._MEANINGFUL_GATE_TRIGGERS:
+                            window_has_instants = self._trigger._has_castable_instants(curr_state)
+                            if not self._is_meaningful_advice_window(
+                                curr_state, has_castable_instants=window_has_instants
+                            ):
+                                logger.debug(
+                                    "Skipping trivial window (no meaningful decision): "
+                                    "trigger=%s turn=%s phase=%s pending=%s",
+                                    trigger,
+                                    turn_num,
+                                    phase,
+                                    pending_decision,
+                                )
+                                continue
 
                         should_advise = is_critical or is_new_turn or is_opponent_turn or is_step_by_step or is_frequent
 
@@ -5149,9 +5293,17 @@ class StandaloneCoach:
         self.ui.log(f"\n[STYLE] Changed to {label}\n")
 
     def _on_frequency_toggle_hotkey(self) -> None:
-        """F3 - Toggle advice frequency."""
+        """F3 - Toggle advice frequency.
+
+        Two modes:
+          - "every_priority": advice on every *meaningful* priority window
+            (frequent, but the meaningful-window gate drops pass-only/no-instant
+            filler — this is the recommended default).
+          - "start_of_turn": advice once per turn (quieter).
+        Both modes always fire critical triggers (decisions, low life, threats).
+        """
         self.advice_frequency = "every_priority" if self.advice_frequency == "start_of_turn" else "start_of_turn"
-        label = "EVERY PRIORITY" if self.advice_frequency == "every_priority" else "START OF TURN"
+        label = "EVERY DECISION" if self.advice_frequency == "every_priority" else "START OF TURN"
         self.ui.status("FREQ", label)
         self.ui.log(f"\n[FREQ] Changed to {label}\n")
 
