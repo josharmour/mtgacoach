@@ -221,3 +221,99 @@ fails, re-run it in isolation; do not let it block you. Everything else must pas
    test file. Verify (py_compile + pytest) per change.
 4. Adversarially review: does any path now silence a REAL decision? Add a test
    for it. Loop until the matrix is airtight.
+
+---
+
+## RESULT (2026-06-06, autonomous)
+
+**Status: DONE.** Implemented, tested, committed. Full suite green
+(`233 passed`), `py_compile` clean on every touched file. The only remaining
+step is yours: launch the desktop, play a Sparky match, and confirm
+frequent-but-relevant advice (live GUI verification was not attempted, per the
+brief).
+
+### What changed
+
+**`src/arenamcp/standalone.py`** (commit `dbc0867`)
+- Added `StandaloneCoach._is_meaningful_advice_window(game_state, *,
+  has_castable_instants)` — a **pure, `game_state`-only classmethod** (~line
+  905) that returns `True` (speak) / `False` (skip). Logic, in order:
+  1. A real **named pending decision** (anything except the generic
+     `"Action Required"`) → meaningful.
+  2. **Local life ≤ 5** (`_MEANINGFUL_LOW_LIFE`, matches the trigger's
+     `life_threshold`) → meaningful (defensive bias).
+  3. **Local priority + a meaningful legal action** (reuses
+     `_is_meaningful_legal_action`: `Cast/Play/Activate Ability/Action:
+     Activate/Attack/Block`) → meaningful.
+  4. **Priority not local** (opponent turn / opponent spell) → meaningful
+     **only if** `has_castable_instants`.
+  5. Local priority, no meaningful play: pure `pass`/`wait`/empty → trivial
+     (unless instants); any **unrecognized non-pass legal action biases toward
+     speaking**.
+- Added `_MEANINGFUL_GATE_TRIGGERS = frozenset({priority_gained, opponent_turn,
+  land_played, spell_resolved})`.
+- **Wired the gate into the coaching loop** (just before `should_advise`, after
+  turn-ownership filtering & the `decision_required`-in-batch suppression): for
+  a non-critical trigger **in the filler set**, compute
+  `self._trigger._has_castable_instants(curr_state)` and, if the window is not
+  meaningful, `continue` with a debug log → **no LLM call, no Coach-Log line, no
+  TTS**.
+- Updated the `is_frequent` comment and the **F3 toggle** docstring; F3 label
+  for `every_priority` now reads **"EVERY DECISION"**.
+
+**`tests/test_meaningful_advice_filter.py`** (commit `e9b07b2`, `git add -f`'d
+since `tests/` is gitignored) — 22 GUI-free tests over crafted `game_state`
+dicts covering the full matrix (your-turn casts/lands/abilities/attacks →
+SPEAK; pass-only / empty → SKIP; opponent turn with/without a castable instant →
+SKIP/SPEAK; target/scry/discard/mulligan pending → SPEAK; `"Action Required"` +
+pass-only → SKIP but + a real play → SPEAK; low/lethal life → SPEAK; the
+low-life threshold boundary; the uncertainty-bias case; gate scoping; and an
+integration check against the real `GameStateTrigger._has_castable_instants`).
+
+### New / changed `advice_frequency` semantics
+- Kept the **two existing values** (no new value, no settings migration needed —
+  your `every_priority` in `~/.arenamcp/settings.json` "just works"):
+  - **`every_priority`** now means **"advice on every *meaningful* priority
+    window"** — frequent, but the gate drops pass-only / opponent-no-instant /
+    empty filler.
+  - **`start_of_turn`** unchanged (quieter, once-per-turn).
+- Both modes still always fire **critical** triggers (real decisions, low life,
+  threats, stack spells).
+
+### Key design decision / the one real risk I closed
+The brief said "gate all non-critical triggers." A blanket gate would have been
+**unsafe for `combat_blockers`**: it fires on the **opponent's** turn (verified
+in `coach.py:check_triggers`, `DeclareBlock ... not is_your_turn`), where the
+snapshot's `priority_player` reads as the opponent and a block is not an instant
+— the predicate would have classified it as "opponent priority, no instants →
+skip" and **silenced a real block decision**. So I **scoped the gate to the
+four genuinely-noisy filler triggers only**. `combat_attackers`,
+`combat_blockers`, `new_turn`, and all critical triggers are **never gated** and
+flow to `should_advise` exactly as before. `test_gate_scoped_to_filler_triggers_only`
+locks this in. This honors the brief's hard requirement ("never silence a real
+decision; bias toward speaking when uncertain") over its literal wording.
+
+### Verification
+```
+.venv/bin/python -m py_compile src/arenamcp/standalone.py src/arenamcp/coach.py \
+    tests/test_meaningful_advice_filter.py        # PY_COMPILE OK
+.venv/bin/python -m pytest tests -q               # 233 passed
+```
+`tests/test_standalone_speak_advice.py` still passes (TTS heuristic untouched —
+kept as belt-and-suspenders behind the primary generation-time gate). The
+known-flaky `test_gre_bridge_read_timeout.py` passed in the full run.
+
+### Notes / uncertainties for you
+- I did **not** touch the LiteLLM gateway, ProxyBackend/online path, autopilot
+  execution, or the GamePlan layer.
+- The 9 existing suppression points and the stale/empty-advice checks are
+  unchanged; the gate sits ahead of them and only `continue`s on filler windows
+  the downstream QUIET/stack blocks would also have suppressed.
+- If in play you find `every_priority` still slightly too chatty on your own
+  main phase, the cheapest follow-up is to also gate `new_turn` — but I left it
+  ungated on purpose because you said `start_of_turn` (the turn-plan line) was
+  *too sparse*, so silencing turn-plan windows seemed against intent.
+- If instead you find it too quiet on opponent turns, check
+  `_has_castable_instants` (coach.py:4405) — its CMC math is approximate and may
+  undercount castable instants on nonstandard mana, which would make the gate
+  skip a window where you actually could respond.
