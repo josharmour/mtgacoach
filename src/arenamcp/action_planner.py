@@ -186,6 +186,7 @@ RULES:
 - EXCEPTION: declare_attackers/declare_blockers carry the full set in one action — do NOT add a "done" click.
 - [SS] = summoning sick (can't attack). * prefix = token. [3P1P] = 3 +1/+1 counters.
 - If a TURN PLAN is shown, follow it. Stay committed to the locked turn plan unless a material change (opponent response, lethal threat, unexpected trigger) makes it obsolete.
+- VOICE CLARITY: voice_advice must state ONE concrete action in plain spoken language and name the specific creatures involved. For blocks: either name the block ("Block their <attacker> with your <blocker>") or, if not blocking, say "Don't block — take <N> from <attacker>". For attacks, name who swings. Never give self-contradictory advice (e.g. saying both "let it trade" and "take the hit"), and never reference a creature that is not on the board. When a "Computed optimal blocks:" line is present, your voice_advice must match it.
 - Output ONLY JSON matching the schema. No prose, no markdown, no commentary.
 
 ACTION_TYPE MAPPING (match Legal text → action_type):
@@ -1514,13 +1515,13 @@ class ActionPlanner:
             name = s[5:].strip()
             name = re.sub(r"\s*\[[^\]]*\]\s*$", "", name)
             return f"Cast {name}."
-        if low.startswith("attack with:"):
-            name = s.split(":", 1)[1].strip()
-            return f"Attack with {name}."
-        if low.startswith("declare attackers:"):
-            return f"Attack with {s.split(':', 1)[1].strip()}."
+        if "no block" in low or "no attack" in low or low in ("done", "decline"):
+            # "Done (no blocks)" / "Declare no blockers" etc.
+            return "Don't block." if "block" in low else "Pass."
+        if low.startswith("attack with:") or low.startswith("declare attackers:"):
+            return f"Attack with {_strip_attacker_annotations(s.split(':', 1)[1]).strip()}."
         if low.startswith("block with:"):
-            return f"Block with {s.split(':', 1)[1].strip()}."
+            return f"Block with {_strip_attacker_annotations(s.split(':', 1)[1]).strip()}."
         if low.startswith("activate "):
             return f"Activate {s[9:].strip()}."
         if "done" in low and "confirm" in low:
