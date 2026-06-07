@@ -1028,30 +1028,45 @@ class StandaloneCoach:
         ratio = alnum_space / len(text)
         return ratio < threshold
 
+    # Phrases that mark a "do nothing" line, and the action verbs that
+    # override them (a line with a real verb is never treated as passive,
+    # e.g. "Decline the optional action and pass priority").
+    _PASSIVE_PHRASES = (
+        "wait",
+        "pass",
+        "pass priority",
+        "no actions",
+        "wait for opponent",
+        "opponent has priority",
+    )
+    _ACTION_VERBS = (
+        "cast", "play", "attack", "block", "activate", "kill", "destroy",
+        "decline", "accept", "choose", "select", "keep", "mulligan", "bottom",
+    )
+
+    @classmethod
+    def _is_passive_advice(cls, text: str) -> bool:
+        """True for short "do nothing" advice (Wait / Pass) with no real action.
+
+        A line is passive only if it matches a silence phrase, contains no
+        action verb, and is short — so "Decline the optional action and pass
+        priority" (has "decline") is NOT passive. Shared by speak_advice (TTS
+        mute) and the coaching loop (skip filler advice the model passed on).
+        """
+        if not text:
+            return False
+        clean = text.lower().strip(" .!")
+        is_passive = any(p in clean for p in cls._PASSIVE_PHRASES)
+        has_action = any(v in clean for v in cls._ACTION_VERBS)
+        return is_passive and not has_action and len(text) < 60
+
     def speak_advice(self, text: str, blocking: bool = True) -> None:
         """Speak advice using local Kokoro TTS."""
         if not text:
             return
 
-        # Filter out passive calls from TTS (User Request)
-        # We silence: Wait, Pass, No actions
-        clean_text = text.lower().strip(" .!")
-        silence_triggers = [
-            "wait",
-            "pass",
-            "pass priority",
-            "no actions",
-            "wait for opponent",
-            "opponent has priority"
-        ]
-
-        # Check if text starts with or is substantially just these phrases
-        # We use a simple heuristic: if it contains no active verbs (Cast, Attack, Block, Play),
-        # and matches a silence trigger, we skip it.
-        is_passive = any(trigger in clean_text for trigger in silence_triggers)
-        has_action = any(verb in clean_text for verb in ["cast", "play", "attack", "block", "activate", "kill", "destroy", "decline", "accept", "choose", "select", "keep", "mulligan", "bottom"])
-
-        if is_passive and not has_action and len(text) < 60:
+        # Filter out passive calls from TTS (User Request): Wait, Pass, etc.
+        if self._is_passive_advice(text):
             return
 
         # Use local Kokoro TTS
@@ -3131,6 +3146,25 @@ class StandaloneCoach:
                                 logger.warning(f"Suppressing error advice from TTS: {advice[:80]}")
                                 self._report_backend_failure(advice)
                                 self.ui.error(advice)
+                            elif (
+                                not is_critical
+                                and trigger in self._MEANINGFUL_GATE_TRIGGERS
+                                and not has_pending_decision
+                                and self._is_passive_advice(advice)
+                            ):
+                                # The meaningful-window gate let this filler
+                                # window through (e.g. an instant was technically
+                                # castable), but the model decided to pass/wait.
+                                # That's low-value: skip it entirely like a
+                                # trivial window — no Coach-Log line, no TTS, and
+                                # don't update dedup state (so a later real play
+                                # this turn/phase still fires).
+                                logger.info(
+                                    "Quiet: %s (model advised pass/wait: %r)",
+                                    trigger,
+                                    advice[:60],
+                                )
+                                continue
                             else:
                                 # Advice was successfully generated — NOW update dedup state
                                 # so only real, delivered advice suppresses future triggers.
