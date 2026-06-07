@@ -385,6 +385,17 @@ def run_matches(
                 "Match %d complete: result=%s winner=%s decisions=%d",
                 m, result, winner, n,
             )
+
+            # Auto-continue: leave the post-match result screen back to Home so
+            # the next start_practice_match can fire with no clicks. Retry a few
+            # times since the result screen can take a moment to appear.
+            if m < matches:
+                logger.info("Returning to Home for the next match...")
+                for _ in range(20):
+                    if bridge.return_to_home():
+                        break
+                    time.sleep(1.0)
+                time.sleep(4.0)  # let the Home scene load before start_practice_match
     except KeyboardInterrupt:
         logger.warning("Interrupted; flushing current match buffer.")
         recorder.flush_match(None)

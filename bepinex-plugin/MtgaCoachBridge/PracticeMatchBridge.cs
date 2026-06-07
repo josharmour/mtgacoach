@@ -123,6 +123,29 @@ namespace MtgaCoachBridge
             }
         }
 
+        // Returns to the Home screen from the post-match result screen by
+        // invoking the same call the "Leave Match" button fires
+        // (MatchEndScene.LeaveMatch -> ExitMatchCompleted). Lets the harness
+        // loop matches with no clicks.
+        public static JObject ReturnToHome(ManualLogSource log)
+        {
+            try
+            {
+                var endScene = UnityEngine.Object.FindObjectOfType<MatchEndScene>();
+                if (endScene == null)
+                {
+                    return Fail(log, "no MatchEndScene active — not on the match-result screen");
+                }
+                endScene.LeaveMatch();
+                log?.LogInfo("[PracticeMatchBridge] ReturnToHome: LeaveMatch() invoked");
+                return new JObject { ["ok"] = true };
+            }
+            catch (Exception ex)
+            {
+                return Fail(log, $"ReturnToHome failed: {ex.InnerException?.Message ?? ex.Message}");
+            }
+        }
+
         // Default: prefer a complete constructed deck (>= 60 main cards), most
         // recently played first. If contents aren't loaded for any cached deck
         // (main count unknown / 0), fall back to the most recently played deck.

@@ -538,6 +538,24 @@ class GREBridge:
             logger.warning(f"GRE bridge pass error: {e}")
             return False
 
+    def return_to_home(self) -> bool:
+        """Leave the post-match result screen and return to the Home screen.
+
+        Invokes MatchEndScene.LeaveMatch() in the client (same as clicking the
+        "Leave Match" button), so the harness can loop matches without clicks.
+        Returns True if the call was accepted.
+        """
+        try:
+            resp = self._send_safe({"action": "return_to_home"}, timeout=10.0)
+            if resp.get("ok"):
+                logger.info("GRE bridge returned to Home (LeaveMatch)")
+                return True
+            logger.warning(f"GRE bridge return_to_home failed: {resp.get('error')}")
+            return False
+        except GREBridgeError as e:
+            logger.warning(f"GRE bridge return_to_home error: {e}")
+            return False
+
     def submit_blockers(
         self,
         assignments: list[dict[str, Any]],
