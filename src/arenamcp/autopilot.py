@@ -4194,6 +4194,17 @@ class AutopilotEngine:
                 except Exception as e:
                     logger.debug(f"select_n card DB lookup failed: {e}")
 
+        # Mandatory-selection fallback: if we couldn't resolve specific cards
+        # but the request REQUIRES at least select_min picks (e.g. end-of-turn
+        # discard down to 7), an empty/arbitrary submit is rejected and loops
+        # forever. Pick select_min candidate ids so the decision completes.
+        if not matched_ids and select_min > 0 and option_ids:
+            matched_ids = [int(x) for x in list(option_ids)[:select_min]]
+            logger.info(
+                f"select_n: mandatory min={select_min}, no pick resolved — "
+                f"defaulting to first {len(matched_ids)} candidate(s) {matched_ids}"
+            )
+
         # Submit — empty list → SubmitArbitrary (safe fallback when we can't
         # resolve a specific option)
         success = self._gre_bridge.submit_selection(matched_ids)
