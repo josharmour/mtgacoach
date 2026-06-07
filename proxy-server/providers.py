@@ -98,11 +98,27 @@ class Provider:
                 body["model"] = self.models[0]
             return body
         if not self.is_azure:
-            # OpenAI / Anthropic: also remap unknown model → first configured.
+            # OpenAI / Anthropic / local vLLM: remap unknown model → first configured.
             body = dict(body)
             req_model = body.get("model", "")
-            if req_model and self.models and req_model not in self.models:
+            remapped = bool(req_model and self.models and req_model not in self.models)
+            if remapped:
                 body["model"] = self.models[0]
+                # The client thought it was talking to a GPT-5-class reasoning
+                # model (e.g. "gpt-5.4") and may have sent reasoning_effort /
+                # verbosity. A local model like Gemma 4 *honors* reasoning_effort
+                # by emitting everything into the reasoning channel and leaving
+                # `content` empty — which surfaces to the user as "empty advice".
+                # Since we've remapped to a different model, strip those
+                # GPT-5-specific controls so the model returns normal content.
+                for k in (
+                    "reasoning_effort",
+                    "reasoning",
+                    "thinking_config",
+                    "thinking",
+                    "verbosity",
+                ):
+                    body.pop(k, None)
             return body
         body = dict(body)
         # Azure uses the deployment name in the URL, not the model field —

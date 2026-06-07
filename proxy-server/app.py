@@ -258,10 +258,18 @@ async def chat_completions(request: Request, sub: dict = Depends(_require_licens
         body["model"] = model
     if requested and requested != model:
         logger.info(
-            f"Subscriber {sub['license_key'][:12]}… routed to {model!r} "
+            f"Subscriber {sub['license_key'][:12]}... routed to {model!r} "
             f"(client asked for {requested!r}; "
             f"{'admin pin' if assigned else 'cluster default'})"
         )
+        # The client thought it was talking to a GPT-5-class reasoning model
+        # (e.g. "gpt-5.4") and may have sent reasoning_effort / verbosity. A
+        # local model like Gemma 4 *honors* reasoning_effort by emitting tokens
+        # into the reasoning channel and leaving `content` empty — which surfaces
+        # to the user as "empty advice". Since we've routed to a different model,
+        # drop those GPT-5-specific controls so the served model returns content.
+        for _k in ("reasoning_effort", "reasoning", "thinking_config", "thinking", "verbosity"):
+            body.pop(_k, None)
 
     provider = router.select_provider(model)
     if not provider:
