@@ -2908,6 +2908,34 @@ class CoachEngine:
         suffix = f"\n\nThe player asks: {question}" if question else ""
         return f"Game state (JSON):\n{body}{suffix}"
 
+    @staticmethod
+    def _plan_framing_instruction(
+        plan_block: str, *, our_turn: bool, plan_changed: bool
+    ) -> str:
+        """Return the GAME PLAN prompt suffix, gated by when to recite it aloud.
+
+        The plan stays in the prompt as context either way (so advice is
+        plan-aware), but it's only *spoken* on the opponent's turn or when the
+        win strategy just changed. On our own turn with an unchanged plan it's
+        silent background and the model gives just the concrete play. Returns ""
+        when there is no plan yet.
+        """
+        if not plan_block:
+            return ""
+        recite = (not our_turn) or plan_changed
+        if recite:
+            return (
+                "\n\n" + plan_block
+                + "\n\nLead with the concrete recommended move FIRST, then briefly "
+                "name the plan and how this move advances it."
+            )
+        return (
+            "\n\n" + plan_block
+            + "\n\nUse this game plan as SILENT background only. Do NOT name, recite, "
+            "or summarize the plan or win condition in your answer. Give ONLY the "
+            "concrete next play and its immediate tactical reason."
+        )
+
     def get_advice(
         self,
         game_state: dict[str, Any],
@@ -3145,7 +3173,13 @@ class CoachEngine:
         # Persistent GAME PLAN: refresh on our own active turn, then frame the
         # advice as the next STEP in that plan. Fully guarded — a plan failure
         # must never break advice generation.
-        plan_block = ""
+        #
+        # Reciting the hierarchical plan/win aloud on EVERY turn is repetitive.
+        # Speak it only on the opponent's turn (less to do — strategy recap is
+        # useful) or when the win strategy just changed; on our own turn with an
+        # unchanged plan, keep it as silent background and just give the play.
+        # (When autopilot drives, advice goes through the planner, which narrates
+        # the plan there.)
         try:
             mgr = self._ensure_game_plan_mgr()
             if mgr is not None:
@@ -3158,16 +3192,14 @@ class CoachEngine:
                         break
                 active_player = (game_state.get("turn", {}) or {}).get("active_player")
                 our_turn = local_seat is None or active_player == local_seat
+                intro_before = mgr.coach_intro()
                 if our_turn:
                     mgr.maybe_reform(game_state)
-                plan_block = mgr.plan_text() or ""
-                if plan_block:
-                    effective_system_prompt += (
-                        "\n\n" + plan_block
-                        + "\n\nFrame your advice as the next STEP in this game plan: "
-                        "name the plan briefly, recommend the move, and say how it "
-                        "advances the plan."
-                    )
+                intro_after = mgr.coach_intro()
+                plan_changed = bool(intro_after) and intro_after != intro_before
+                effective_system_prompt += self._plan_framing_instruction(
+                    mgr.plan_text() or "", our_turn=our_turn, plan_changed=plan_changed
+                )
         except Exception as e:
             logger.debug(f"Game-plan injection failed (non-fatal): {e}")
 
