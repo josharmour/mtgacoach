@@ -1534,9 +1534,26 @@ def _apply_bridge_blockers(
             except (TypeError, ValueError):
                 continue
 
+    # Resolve blocker names paired 1:1 with legal_blocker_ids, so this matches
+    # the log-path decision_context shape (gamestate.py) and the name->id map
+    # autopilot builds (_build_blocker_id_map requires len(names) == len(ids)).
+    # Falls back to a stable per-id label when a name isn't on the battlefield
+    # yet, so lengths always match and resolved names still map correctly.
+    name_by_id: dict[int, str] = {}
+    for card in snapshot.get("battlefield", []) or []:
+        try:
+            inst = int(card.get("instance_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        name = card.get("name") or card.get("modified_name") or ""
+        if inst:
+            name_by_id[inst] = name
+    legal_blockers = [name_by_id.get(bid) or f"Creature {bid}" for bid in blocker_ids]
+
     ctx = dict(snapshot.get("decision_context") or {})
     ctx["raw_blockers"] = raw_blockers
     ctx["legal_blocker_ids"] = blocker_ids
+    ctx["legal_blockers"] = legal_blockers
     if attacker_ids:
         ctx["attacker_ids"] = sorted(attacker_ids)
     snapshot["decision_context"] = ctx
