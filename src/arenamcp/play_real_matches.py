@@ -216,6 +216,14 @@ def _wait_for_match_active(server_mod, poller, timeout: float = 90.0) -> bool:
             return True
         try:
             state = server_mod.get_game_state()
+            poller.enrich_snapshot(state)
+            # A decision can already be pending (e.g. the mulligan) before this
+            # wait started polling — the change-based poll() then reports nothing.
+            # Treat any live bridge request (not intermission/match-end) as
+            # active so we don't block the full timeout during the mulligan.
+            breq = state.get("_bridge_request_type") or state.get("_bridge_request_class") or ""
+            if breq and not state.get("_bridge_in_intermission") and not state.get("match_ended"):
+                return True
             if (state.get("turn", {}) or {}).get("turn_number", 0) > 0:
                 return True
         except Exception:
