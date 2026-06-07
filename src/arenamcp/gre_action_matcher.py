@@ -54,6 +54,40 @@ ACTION_TYPE_MAP: dict[ActionType, str] = {
 
 
 # ---------------------------------------------------------------------------
+# actionType normalization
+#
+# The raw GRE actionType string reaches us from two different producers that
+# spell the same enum value differently:
+#   * gre_serializer.py (Player.log fallback path) emits the protobuf wire
+#     names, e.g. "ActionType_Play", "ActionType_Cast".
+#   * The BepInEx bridge (Plugin.cs SerializeAction) emits
+#     ``action.ActionType.ToString()`` which is the *C# enum member name* —
+#     "Play", "Cast", "Pass", "Activate" (no "ActionType_" prefix). The
+#     protobuf [OriginalName] attribute is NOT what ToString() returns.
+# CLAUDE.md makes the bridge authoritative, so the matcher MUST accept the
+# short bridge form. Comparing on the prefix-stripped, lowercased name covers
+# both producers (and the PlayMDFC/CastMdfc case-mismatch between them).
+# ---------------------------------------------------------------------------
+
+def _norm_atype(atype: str) -> str:
+    """Strip the ``ActionType_`` prefix and lowercase for robust comparison."""
+    if not atype:
+        return ""
+    s = atype[len("ActionType_"):] if atype.startswith("ActionType_") else atype
+    return s.lower()
+
+
+# Families of actionType short-names (lowercased) that the matcher treats as a
+# land play / spell cast respectively. Covers MDFC/Adventure/Room/Omen and the
+# split left/right variants emitted by either producer.
+_PLAY_ATYPES: frozenset[str] = frozenset({"play", "playmdfc"})
+_CAST_ATYPES: frozenset[str] = frozenset({
+    "cast", "castleft", "castright", "castadventure", "castmdfc",
+    "castprototype", "castleftroom", "castrightroom", "castomen",
+})
+
+
+# ---------------------------------------------------------------------------
 # GREActionRef dataclass
 # ---------------------------------------------------------------------------
 
@@ -220,7 +254,7 @@ def match_action_to_gre(
     # --- PASS / RESOLVE ------------------------------------------------
     if atype in (ActionType.PASS_PRIORITY, ActionType.RESOLVE, ActionType.CLICK_BUTTON):
         for raw in raw_actions:
-            if raw.get("actionType") == "ActionType_Pass":
+            if _norm_atype(raw.get("actionType", "")) == "pass":
                 ref = GREActionRef.from_raw(raw)
                 logger.debug(f"Matched {atype.value} -> ActionType_Pass")
                 return ref
@@ -230,7 +264,7 @@ def match_action_to_gre(
     # --- PLAY LAND -----------------------------------------------------
     if atype == ActionType.PLAY_LAND:
         for raw in raw_actions:
-            if raw.get("actionType") != "ActionType_Play":
+            if _norm_atype(raw.get("actionType", "")) not in _PLAY_ATYPES:
                 continue
             grp_id = raw.get("grpId", 0)
             card_name = _resolve_card_name(grp_id, game_objects, scryfall_lookup)
@@ -239,7 +273,7 @@ def match_action_to_gre(
                 logger.info(f"Matched PLAY_LAND '{action.card_name}' -> grpId={grp_id} '{card_name}'")
                 return ref
         # Fallback: if only one Play action, use it
-        plays = [r for r in raw_actions if r.get("actionType") == "ActionType_Play"]
+        plays = [r for r in raw_actions if _norm_atype(r.get("actionType", "")) in _PLAY_ATYPES]
         if len(plays) == 1:
             ref = GREActionRef.from_raw(plays[0])
             logger.info(f"Matched PLAY_LAND '{action.card_name}' -> sole ActionType_Play (grpId={plays[0].get('grpId', 0)})")
@@ -250,7 +284,7 @@ def match_action_to_gre(
     # --- CAST SPELL ----------------------------------------------------
     if atype == ActionType.CAST_SPELL:
         for raw in raw_actions:
-            if raw.get("actionType") != "ActionType_Cast":
+            if _norm_atype(raw.get("actionType", "")) not in _CAST_ATYPES:
                 continue
             grp_id = raw.get("grpId", 0)
             card_name = _resolve_card_name(grp_id, game_objects, scryfall_lookup)
@@ -259,7 +293,7 @@ def match_action_to_gre(
                 logger.info(f"Matched CAST_SPELL '{action.card_name}' -> grpId={grp_id} '{card_name}'")
                 return ref
         # Fallback: if only one Cast action, use it
-        casts = [r for r in raw_actions if r.get("actionType") == "ActionType_Cast"]
+        casts = [r for r in raw_actions if _norm_atype(r.get("actionType", "")) in _CAST_ATYPES]
         if len(casts) == 1:
             ref = GREActionRef.from_raw(casts[0])
             logger.info(f"Matched CAST_SPELL '{action.card_name}' -> sole ActionType_Cast (grpId={casts[0].get('grpId', 0)})")
@@ -270,7 +304,7 @@ def match_action_to_gre(
     # --- ACTIVATE ABILITY ----------------------------------------------
     if atype == ActionType.ACTIVATE_ABILITY:
         for raw in raw_actions:
-            if raw.get("actionType") != "ActionType_Activate":
+            if _norm_atype(raw.get("actionType", "")) != "activate":
                 continue
             # Try to match by source card name
             source_id = raw.get("sourceId", 0) or raw.get("instanceId", 0)
@@ -280,7 +314,7 @@ def match_action_to_gre(
                 logger.info(f"Matched ACTIVATE_ABILITY '{action.card_name}' -> sourceId={source_id} '{source_name}'")
                 return ref
         # Fallback: sole activate
-        activates = [r for r in raw_actions if r.get("actionType") == "ActionType_Activate"]
+        activates = [r for r in raw_actions if _norm_atype(r.get("actionType", "")) == "activate"]
         if len(activates) == 1:
             ref = GREActionRef.from_raw(activates[0])
             logger.info(f"Matched ACTIVATE_ABILITY '{action.card_name}' -> sole ActionType_Activate")

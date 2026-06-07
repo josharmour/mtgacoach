@@ -1536,10 +1536,27 @@ class AutopilotEngine:
                     summary=f"auto-confirmed '{done_action}'",
                 )
                 if "attacker" in done_action.lower():
+                    # Do NOT silently confirm an empty attack when this turn's
+                    # plan intended to swing. If an attack was planned and the
+                    # bridge is presenting legal attackers, declare them instead
+                    # of submitting DeclareAttackersSubmit with nobody attacking.
+                    intended_attackers: list[str] = []
+                    if self._planner.has_pending_attack_intent():
+                        ctx = game_state.get("decision_context") or {}
+                        intended_attackers = [
+                            str(name)
+                            for name in (ctx.get("legal_attackers") or [])
+                            if name
+                        ]
+                        if intended_attackers:
+                            logger.info(
+                                "Autopilot: attack intended this turn — declaring "
+                                f"{intended_attackers} instead of confirming empty"
+                            )
                     return self._run_bridge_action(
                         GameAction(
                             action_type=ActionType.DECLARE_ATTACKERS,
-                            attacker_names=[],
+                            attacker_names=intended_attackers,
                             reasoning=f"auto-confirmed '{done_action}'",
                         ),
                         game_state,

@@ -774,6 +774,23 @@ class ActionPlanner:
         plan.mark_current_done()
         return True
 
+    def has_pending_attack_intent(self) -> bool:
+        """True if the active turn plan still has an un-executed attack step.
+
+        Used by the autopilot to avoid auto-confirming an *empty* attacker
+        declaration (``Done (confirm attackers)`` with nobody attacking) when
+        the locked turn plan for this turn intended to swing. Without this
+        guard the bridge submits ``DeclareAttackersSubmit`` with no attackers
+        and the planned attack silently evaporates.
+        """
+        plan = self._active_turn_plan
+        if plan is None:
+            return False
+        return any(
+            step.action_type == "declare_attackers" and step.status != "done"
+            for step in plan.steps
+        )
+
     def invalidate_turn_plan(self, reason: str = "") -> None:
         """Drop the active turn plan and stash the reason for the UI to show."""
         plan = self._active_turn_plan
