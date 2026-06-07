@@ -2799,13 +2799,20 @@ class StandaloneCoach:
                             if not self._is_meaningful_advice_window(
                                 curr_state, has_castable_instants=window_has_instants
                             ):
-                                logger.debug(
-                                    "Skipping trivial window (no meaningful decision): "
-                                    "trigger=%s turn=%s phase=%s pending=%s",
+                                # INFO (not debug) so the quiet decision is
+                                # visible in the normal Coach-Log: a silent
+                                # window should be distinguishable from a hung
+                                # coach. Mirrors the existing "Quiet:" lines.
+                                logger.info(
+                                    "Quiet: %s (no meaningful play) "
+                                    "[turn=%s phase=%s prio=%s pending=%s instants=%s legal=%s]",
                                     trigger,
                                     turn_num,
                                     phase,
+                                    curr_state.get("turn", {}).get("priority_player"),
                                     pending_decision,
+                                    window_has_instants,
+                                    len(curr_state.get("legal_actions", []) or []),
                                 )
                                 continue
 
