@@ -108,6 +108,18 @@ class TrajectoryRecorder:
         with self._lock:
             return len(self._buffer)
 
+    def current_match_records(self) -> List[Dict[str, Any]]:
+        """Return a shallow copy of the current (unflushed) match's decisions.
+
+        Used by the post-match evaluator to review the game BEFORE
+        :meth:`flush_match` clears the buffer. Never raises.
+        """
+        try:
+            with self._lock:
+                return list(self._buffer)
+        except Exception:  # pragma: no cover - defensive
+            return []
+
     def record_decision(
         self,
         *,

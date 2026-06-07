@@ -303,12 +303,18 @@ def run_matches(
     license_key: str,
     launch: bool,
     attach: bool = False,
+    eval_matches: bool = True,
 ) -> int:
     """Full autonomous run: preflight, bridge, N matches, clean shutdown.
 
     When ``attach`` is True, do not launch MTGA or start a new match — just
     connect to the bridge and play/record the match that is already in progress
     (a single match).
+
+    When ``eval_matches`` is True (default), after each game the playing model
+    reviews its own decisions and writes a structured critique via
+    :class:`arenamcp.match_evaluator.MatchEvaluator`. Those critiques plus the
+    recorded trajectories feed ``tools/training/build_dataset.py``.
     """
     # 1. vLLM preflight (informational; we still try even if it warns).
     base = _backend_base_url(backend_spec)
@@ -358,6 +364,22 @@ def run_matches(
 
     poller = BridgeDecisionPoller(bridge)
 
+    # 4b. Build the post-match self-evaluator, REUSING the same LLM client the
+    # autopilot planner already constructed (no new backend connection).
+    evaluator = None
+    if eval_matches:
+        try:
+            from arenamcp.match_evaluator import MatchEvaluator
+
+            eval_client = engine._planner._backend
+            evaluator = MatchEvaluator(
+                eval_client, model_label=getattr(recorder, "backend_label", "")
+            )
+            logger.info("Post-match self-evaluation ON -> %s", evaluator.out_path)
+        except Exception as e:
+            logger.warning("Could not init MatchEvaluator (continuing without): %s", e)
+            evaluator = None
+
     # 5. Play N matches.
     completed = 0
     try:
@@ -384,12 +406,34 @@ def run_matches(
 
             result = _drive_match(engine, server_mod, poller)
             winner = normalize_winner(result, seat="local")
+            # Snapshot this match's decisions BEFORE flush_match clears the
+            # buffer — the evaluator needs them to review the game.
+            match_decisions = recorder.current_match_records()
+            match_id = (match_decisions[0].get("match_id") if match_decisions else None)
             n = recorder.flush_match(winner)
             completed += 1
             logger.info(
                 "Match %d complete: result=%s winner=%s decisions=%d",
                 m, result, winner, n,
             )
+
+            # Post-match self-evaluation: the playing model critiques its own
+            # game. Exception-safe — never blocks the next match.
+            if evaluator is not None and match_decisions:
+                rec = evaluator.evaluate(
+                    match_id=match_id or f"match_{m}",
+                    decisions=match_decisions,
+                    result=result,
+                    winner=winner,
+                    deck_name=deck_name,
+                )
+                if rec is not None:
+                    logger.info(
+                        "Match eval: self_score=%s/5; %d mistakes; -> %s",
+                        rec.get("self_score"),
+                        len(rec.get("key_mistakes") or []),
+                        evaluator.out_path,
+                    )
 
             # Auto-continue: leave the post-match result screen back to Home so
             # the next start_practice_match can fire with no clicks. Retry a few
@@ -456,6 +500,11 @@ def main() -> None:
         help="Play/record the match already in progress instead of starting "
              "one (implies --no-launch, single match).",
     )
+    p.add_argument(
+        "--no-eval", dest="eval_matches", action="store_false", default=True,
+        help="Disable per-match self-evaluation (the playing model critiquing "
+             "its own game after each match).",
+    )
     args = p.parse_args()
 
     logging.basicConfig(
@@ -475,6 +524,7 @@ def main() -> None:
             license_key=args.license_key,
             launch=args.launch,
             attach=args.attach,
+            eval_matches=args.eval_matches,
         )
     )
 
