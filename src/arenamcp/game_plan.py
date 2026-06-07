@@ -115,6 +115,12 @@ class GamePlanManager:
     # long grind doesn't run forever on a turn-2 plan.
     _STALE_TURNS = 4
 
+    # After this many consecutive stalls on plan-advancing plays, force a
+    # reform and tell the model its current line is unexecutable so it picks a
+    # different one (fixes the write-only plan that re-emitted "Cast Rush of
+    # Dread" for five turns while the executor never landed it).
+    _STALL_REFORM_THRESHOLD = 3
+
     def __init__(self, backend: Any, timeout: float = 10.0):
         self._backend = backend
         self._timeout = timeout
@@ -122,6 +128,10 @@ class GamePlanManager:
         self._seed: Optional[str] = None  # deck archetype summary, if available
         self._last_sig: Optional[tuple] = None
         self._last_reform_turn: int = -1
+        # Execution-feedback: stalls since the last reform + the last thing that
+        # couldn't be executed, so the next reform avoids the stuck line.
+        self._stall_count: int = 0
+        self._stall_hint: str = ""
 
     # ----- lifecycle -------------------------------------------------------
     def reset(self) -> None:
@@ -129,6 +139,19 @@ class GamePlanManager:
         self._plan = None
         self._last_sig = None
         self._last_reform_turn = -1
+        self._stall_count = 0
+        self._stall_hint = ""
+
+    def note_stall(self, what: str) -> None:
+        """Record that a plan-advancing play could not be executed.
+
+        Called by the autopilot when it has to auto_respond/escape/pause on a
+        decision the plan wanted. Enough of these forces the next reform to pick
+        a different, executable line rather than re-emitting the stuck plan.
+        """
+        self._stall_count += 1
+        if what:
+            self._stall_hint = what.strip()
 
     def seed(self, deck_strategy: Optional[str]) -> None:
         """Store the static deck archetype summary used to seed the first plan."""
@@ -166,7 +189,11 @@ class GamePlanManager:
         if self._last_reform_turn >= 0 and turn_num < self._last_reform_turn:
             self.reset()
 
-        if not (force or self._should_reform(sig)):
+        # Execution feedback: a plan that repeatedly can't be enacted must be
+        # reconsidered even if the board looks materially unchanged.
+        stalled = self._stall_count >= self._STALL_REFORM_THRESHOLD
+
+        if not (force or stalled or self._should_reform(sig)):
             return self._plan
 
         plan = self._reform(game_state, turn_num)
@@ -174,6 +201,10 @@ class GamePlanManager:
             self._plan = plan
             self._last_sig = sig
             self._last_reform_turn = turn_num
+        # Clear stall feedback after a reform attempt regardless of outcome, so
+        # we don't immediately reform again next window.
+        self._stall_count = 0
+        self._stall_hint = ""
         return self._plan
 
     def _should_reform(self, sig: tuple) -> bool:
@@ -283,6 +314,13 @@ class GamePlanManager:
         user_parts = [context]
         if self._seed:
             user_parts.append(f"\nDECK ARCHETYPE:\n{self._seed}")
+        if self._stall_count >= self._STALL_REFORM_THRESHOLD and self._stall_hint:
+            user_parts.append(
+                f"\nPRIOR PLAN STALLED: the previous plan-advancing play "
+                f"\"{self._stall_hint}\" could NOT be executed across several "
+                f"attempts. Do not rely on that line again — choose a DIFFERENT, "
+                f"executable win condition / next play this time."
+            )
         user_parts.append("\nForm the GAME PLAN as JSON now.")
         user_message = "\n".join(user_parts)
 

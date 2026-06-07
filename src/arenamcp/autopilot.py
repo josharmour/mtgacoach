@@ -385,6 +385,8 @@ class AutopilotEngine:
         self._window_repeat_count: int = 0
         self._auto_respond_escaped_sig: Optional[tuple[Any, ...]] = None
         self._AUTO_RESPOND_LOOP_THRESHOLD = 3
+        # Spoken game-plan announcement dedup (speak each new plan once).
+        self._last_announced_plan: str = ""
 
     @property
     def afk_mode(self) -> bool:
@@ -585,6 +587,34 @@ class AutopilotEngine:
             info["planner_diagnostics"] = []
 
         return info
+
+    def _announce_game_plan(self) -> None:
+        """Speak the current game plan aloud when it changes (TTS).
+
+        Lets the operator hear what the autopilot is thinking strategically.
+        Fires only when a speak function is wired (the desktop coach and the
+        opt-in harness path) and only once per distinct plan. Always
+        non-blocking and best-effort — never affects play.
+        """
+        if self._speak_fn is None or self._game_plan_mgr is None:
+            return
+        try:
+            intro = self._game_plan_mgr.coach_intro()
+        except Exception:
+            return
+        if not intro or intro == self._last_announced_plan:
+            return
+        self._last_announced_plan = intro
+        try:
+            # speak_fn signature is (text, blocking); announce in the background.
+            self._speak_fn(intro, False)
+        except TypeError:
+            try:
+                self._speak_fn(intro)
+            except Exception as e:
+                logger.debug("game-plan TTS announce failed: %s", e)
+        except Exception as e:
+            logger.debug("game-plan TTS announce failed: %s", e)
 
     @staticmethod
     def _is_local_active_turn(game_state: dict[str, Any]) -> bool:
@@ -1005,6 +1035,12 @@ class AutopilotEngine:
                     ExecutionPath.GRE_AWARE,
                     f"auto_respond escape on stuck {breq or bcls} ({reason})",
                 )
+                # Feed the strategic layer: a plan step we couldn't enact.
+                if self._game_plan_mgr is not None:
+                    try:
+                        self._game_plan_mgr.note_stall(f"{breq or bcls} ({reason})")
+                    except Exception:
+                        pass
                 self._state = AutopilotState.IDLE
                 return True
         except Exception as e:
@@ -1184,6 +1220,14 @@ class AutopilotEngine:
             game_state, f"manual-required fallback: {reason}"
         ):
             return
+
+        # The plan could not be enacted here — tell the strategic layer so a
+        # repeatedly-unexecutable plan gets reformed into a different line.
+        if self._game_plan_mgr is not None:
+            try:
+                self._game_plan_mgr.note_stall(reason)
+            except Exception:
+                pass
 
         self._state = AutopilotState.PAUSED
         hint = self._format_bridge_gap_hint(game_state)
@@ -2067,6 +2111,7 @@ class AutopilotEngine:
                     if self._is_local_active_turn(game_state):
                         self._game_plan_mgr.maybe_reform(game_state)
                     self._planner.set_game_plan(self._game_plan_mgr.plan_text())
+                    self._announce_game_plan()
                 except Exception as e:
                     logger.debug("game-plan refresh skipped: %s", e)
 

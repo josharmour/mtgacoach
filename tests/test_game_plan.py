@@ -134,6 +134,36 @@ def test_new_game_resets_plan():
     assert mgr.current.path == "game 2 plan"
 
 
+def test_repeated_stalls_force_reform_with_hint():
+    be = FakeBackend([_plan_json("Cast Rush of Dread"), _plan_json("go wide with tokens")])
+    mgr = GamePlanManager(be)
+    mgr.maybe_reform(_state(turn=3))
+    assert be.calls == 1
+    # Same turn, static board => normally no reform...
+    mgr.maybe_reform(_state(turn=3))
+    assert be.calls == 1
+    # ...but three stalls on the plan-advancing play force a reform even though
+    # nothing material changed, and tell the model the line was unexecutable.
+    for _ in range(3):
+        mgr.note_stall("SelectTargets (Rush of Dread)")
+    mgr.maybe_reform(_state(turn=3))
+    assert be.calls == 2
+    assert mgr.current.path == "go wide with tokens"
+    # Stall feedback is cleared after the reform.
+    assert mgr._stall_count == 0
+
+
+def test_note_stall_below_threshold_does_not_reform():
+    be = FakeBackend([_plan_json(), _plan_json("plan B")])
+    mgr = GamePlanManager(be)
+    mgr.maybe_reform(_state(turn=2))
+    assert be.calls == 1
+    mgr.note_stall("x")
+    mgr.note_stall("x")  # only 2 < threshold(3)
+    mgr.maybe_reform(_state(turn=2))
+    assert be.calls == 1
+
+
 def test_llm_failure_keeps_prior_plan():
     class BoomBackend:
         calls = 0

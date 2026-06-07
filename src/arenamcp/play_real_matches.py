@@ -146,7 +146,10 @@ def _build_autopilot(backend_spec: str, recorder: TrajectoryRecorder, license_ke
     config = AutopilotConfig(
         dry_run=False,
         afk_mode=False,
-        enable_tts_preview=False,  # headless data collection: no voice
+        # Per-action voice preview stays off (headless data collection), but we
+        # still wire a speak_fn below so the autopilot can announce its strategic
+        # GAME PLAN aloud — that's plan-level narration, not per-click chatter.
+        enable_tts_preview=False,
     )
     planner = ActionPlanner(
         backend,
@@ -156,12 +159,32 @@ def _build_autopilot(backend_spec: str, recorder: TrajectoryRecorder, license_ke
     mapper = ScreenMapper()
     controller = InputController(dry_run=False)
 
+    # Best-effort TTS for spoken game-plan announcements. If audio/TTS isn't
+    # available, fall back to silent operation (never block data collection).
+    speak_fn = None
+    try:
+        from arenamcp.tts import VoiceOutput
+
+        _voice = VoiceOutput()
+
+        def speak_fn(text: str, blocking: bool = False) -> None:  # noqa: ANN001
+            try:
+                _voice.speak(text, blocking=blocking)
+            except Exception as e:
+                logger.debug("TTS speak failed: %s", e)
+
+        logger.info("Game-plan TTS announcements ON")
+    except Exception as e:
+        logger.info("TTS unavailable, plan announcements off: %s", e)
+        speak_fn = None
+
     engine = AutopilotEngine(
         planner=planner,
         mapper=mapper,
         controller=controller,
         get_game_state=server.get_game_state,
         config=config,
+        speak_fn=speak_fn,
     )
     # Attach the recorder — this is the single integration point that turns on
     # trajectory capture in the autopilot's planning path.
