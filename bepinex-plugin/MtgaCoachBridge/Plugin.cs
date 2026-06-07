@@ -500,6 +500,10 @@ namespace MtgaCoachBridge
                     cmd.SetResponse(BotBattleBridge.Start(cmd.Json, _log));
                     break;
 
+                case "start_practice_match":
+                    cmd.SetResponse(PracticeMatchBridge.Start(cmd.Json, _log));
+                    break;
+
                 case "bot_battle_status":
                     cmd.SetResponse(BotBattleBridge.GetStatus());
                     break;

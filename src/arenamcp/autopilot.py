@@ -285,6 +285,10 @@ class AutopilotEngine:
         # Optional callback to record autopilot-driven decisions into the
         # app's advice_history. Set by standalone after construction.
         self._advice_recorder: Optional[Any] = None
+        # Optional TrajectoryRecorder for real-match data collection. When set
+        # (by play_real_matches), each planning decision is logged in the
+        # self-play JSONL format. None by default => zero overhead.
+        self._trajectory_recorder: Optional[Any] = None
         # Buffer of fallback bug events collected during the current match.
         # On match end, we sample up to `_max_fallback_bugs_per_match` at
         # random and dispatch those. Rest are discarded — goal is
@@ -880,6 +884,45 @@ class AutopilotEngine:
             )
         except Exception as e:
             logger.debug(f"_record_autopilot_decision failed: {e}")
+
+    def _maybe_record_trajectory(
+        self,
+        game_state: dict[str, Any],
+        trigger: str,
+        legal_actions: Optional[list[str]],
+        decision_context: Optional[dict[str, Any]],
+        plan: Optional[ActionPlan],
+        latency_ms: float,
+    ) -> None:
+        """Record this planning decision to an attached TrajectoryRecorder.
+
+        No-op (and near-zero cost) unless ``self._trajectory_recorder`` is set.
+        Fully guarded — never raises into the planning/execution path.
+        """
+        recorder = getattr(self, "_trajectory_recorder", None)
+        if recorder is None:
+            return
+        try:
+            from arenamcp.action_planner import AUTOPILOT_SYSTEM_PROMPT
+            prompt_user = self._planner._build_action_prompt(
+                game_state, trigger, legal_actions, decision_context
+            )
+            planned = plan.actions[0] if (plan and plan.actions) else None
+            request_type = (
+                game_state.get("_bridge_request_type")
+                or game_state.get("_bridge_request_class")
+                or trigger
+            )
+            recorder.record_decision(
+                game_state=game_state,
+                prompt_system=AUTOPILOT_SYSTEM_PROMPT,
+                prompt_user=prompt_user,
+                planned_action=planned,
+                request_type=request_type,
+                latency_ms=latency_ms,
+            )
+        except Exception as e:
+            logger.debug(f"_maybe_record_trajectory failed (ignored): {e}")
 
     def _pause_for_manual(self, reason: str, game_state: Optional[dict[str, Any]] = None) -> None:
         """Pause the autopilot and surface that manual input is required.
@@ -1737,8 +1780,15 @@ class AutopilotEngine:
                 f"bridge={game_state.get('_bridge_request_type')}"
             )
 
+            _plan_started_at = time.perf_counter()
             plan = self._planner.plan_actions(
                 game_state, trigger, legal_actions, decision_context
+            )
+            # Opt-in trajectory capture for real-match data collection. No-op
+            # unless a recorder was attached (engine._trajectory_recorder).
+            self._maybe_record_trajectory(
+                game_state, trigger, legal_actions, decision_context, plan,
+                (time.perf_counter() - _plan_started_at) * 1000.0,
             )
 
             # Surface any newly-built turn plan to the UI immediately so the
