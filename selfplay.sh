@@ -27,4 +27,5 @@ echo " python: ${VENV_PY}"
 echo "=============================================="
 
 cd "${REPO_DIR}"
-exec "${VENV_PY}" -m arenamcp.self_play --auto "$@"
+# -u: unbuffered, so decision logs stream live even when redirected to a file.
+exec "${VENV_PY}" -u -m arenamcp.self_play --auto "$@"
