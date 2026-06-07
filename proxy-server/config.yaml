@@ -9,14 +9,20 @@ server:
 # Provider routing: requests are tried in order of priority (lowest first).
 # The proxy picks the first available provider and forwards the request.
 providers:
+  # Azure gpt-5.4 is disabled so that "online" routes to the home-lab gemma
+  # below (online == local for this deployment). With azure off, a client
+  # request for "gpt-5.4" matches no provider's model list and falls back to
+  # the highest-priority available provider (gemma-12b), whose forward path
+  # rewrites the model name to "gemma-4-12b-it". Re-enable azure (and demote
+  # gemma) to restore the cloud model as primary.
   - name: azure-openai
-    priority: 0
+    priority: 100
     base_url: "${AZURE_OPENAI_BASE_URL}"
     api_key: "${AZURE_OPENAI_API_KEY}"
     api_version: "2024-05-01-preview"
     models:
       - "gpt-5.4"
-    enabled: true
+    enabled: false
 
   - name: local-vllm
     priority: 10
@@ -34,9 +40,10 @@ providers:
     enabled: true
 
   - name: local-vllm-gemma-12b
-    priority: 5
-    # Home-lab vLLM serving the faster Gemma 4 12B-it on port 8002
-    base_url: "http://10.0.0.10:8002/v1"
+    priority: 0
+    # Home-lab vLLM serving the faster Gemma 4 12B-it on port 8003 (the fast
+    # one; 8002 serves the 31B). Primary provider for online mode.
+    base_url: "http://10.0.0.10:8003/v1"
     api_key: "vllm"
     models:
       - "gemma-4-12b-it"
