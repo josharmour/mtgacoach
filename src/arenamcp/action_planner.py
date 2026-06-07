@@ -968,10 +968,22 @@ class ActionPlanner:
         mana_pool = None
         rules_engine_cls = None
 
+        # When the GRE bridge is authoritative (an ActionsAvailable window),
+        # MTGA only ever offers a Cast action you can actually pay for — the
+        # bridge has already done castability filtering. In that case we must
+        # NOT drop a "Cast X" just because our log-derived [OK] tag is missing:
+        # doing so deletes castable creatures from the planner's options, which
+        # is exactly how the autopilot ends up playing only a land (or nothing)
+        # and discarding a full hand. Trust the bridge.
+        bridge_authoritative = bool(
+            (game_state.get("_bridge_request_type") or "").strip()
+            or (game_state.get("_bridge_request_class") or "").strip()
+        )
+
         for legal_action in legal_actions:
             lower = legal_action.lower()
             if lower.startswith("cast "):
-                if "[ok]" not in lower:
+                if "[ok]" not in lower and not bridge_authoritative:
                     continue
 
                 if mana_pool is None:

@@ -372,6 +372,19 @@ class AutopilotEngine:
         # priority-window resets.
         self._persistent_failure_counts: dict[tuple[Any, ...], int] = {}
         self._HARD_BLOCK_FAILURE_THRESHOLD = 5
+        # Universal loop-breaker: count how many times we've processed the SAME
+        # interactive window without it clearing. Some interactive submits
+        # ("Choose a color" SelectN, X-value, target picks) report success to
+        # the bridge but the GRE silently rejects them and re-presents the same
+        # window, so the failure counter above never trips and the harness
+        # re-fires forever. After _AUTO_RESPOND_LOOP_THRESHOLD no-progress
+        # repeats we escalate to the GRE's own auto_respond() — it always picks
+        # a legal default, so the game advances unattended even on a request
+        # type we don't have an explicit handler for.
+        self._window_repeat_sig: Optional[tuple[Any, ...]] = None
+        self._window_repeat_count: int = 0
+        self._auto_respond_escaped_sig: Optional[tuple[Any, ...]] = None
+        self._AUTO_RESPOND_LOOP_THRESHOLD = 3
 
     @property
     def afk_mode(self) -> bool:
@@ -628,6 +641,16 @@ class AutopilotEngine:
                 >= self._HARD_BLOCK_FAILURE_THRESHOLD
             }
             self._blocked_action_keys = hard_blocked
+
+        # Universal loop-breaker bookkeeping: track consecutive repeats of the
+        # exact same window so a non-clearing interactive request can be
+        # escaped via auto_respond() (see _maybe_escape_stuck_window).
+        if sig == self._window_repeat_sig:
+            self._window_repeat_count += 1
+        else:
+            self._window_repeat_sig = sig
+            self._window_repeat_count = 0
+            self._auto_respond_escaped_sig = None
         if sig != self._reported_bridge_bug_window_sig:
             self._reported_bridge_bug_window_sig = sig
             self._reported_bridge_bug_keys.clear()
@@ -948,6 +971,69 @@ class AutopilotEngine:
         except Exception as e:
             logger.debug(f"_maybe_record_trajectory failed (ignored): {e}")
 
+    def _try_auto_respond_escape(
+        self, game_state: Optional[dict[str, Any]], reason: str
+    ) -> bool:
+        """Escape a stuck interactive request via the GRE's own auto_respond().
+
+        Last-resort, universal unblocker. ``auto_respond()`` invokes the pending
+        request's ``AutoRespond()`` on the MTGA side, which picks a legal default
+        for ANY request type (color choice, X value, target, modal, ...). It is
+        not always the optimal choice, but it always advances the game — which is
+        what lets the autopilot finish a match unattended on a request type we
+        don't have an explicit handler for. Restricted to interactive
+        (non-ActionsAvailable) requests; ActionsAvailable windows pass/play
+        through their own paths.
+        """
+        if self._config.dry_run or self._gre_bridge is None:
+            return False
+        if not getattr(self._gre_bridge, "connected", False):
+            return False
+        breq = str((game_state or {}).get("_bridge_request_type") or "")
+        bcls = str((game_state or {}).get("_bridge_request_class") or "")
+        if not (breq or bcls):
+            return False
+        # Don't auto_respond an ordinary priority window — those pass/play.
+        if (
+            breq in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+            or bcls in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+        ):
+            return False
+        try:
+            if self._gre_bridge.auto_respond():
+                self._log_execution_path(
+                    ExecutionPath.GRE_AWARE,
+                    f"auto_respond escape on stuck {breq or bcls} ({reason})",
+                )
+                self._state = AutopilotState.IDLE
+                return True
+        except Exception as e:
+            logger.debug(f"auto_respond escape failed: {e}")
+        return False
+
+    def _maybe_escape_stuck_window(self, game_state: dict[str, Any]) -> bool:
+        """If the same interactive window has repeated too many times, escape it.
+
+        Handles the case where an interactive submit reports success to the
+        bridge but the GRE silently rejects it (wrong id/type) and re-presents
+        the same window — the per-action failure counter never trips because
+        nothing "failed", so without this the harness re-fires forever (observed
+        live as the 'Choose a color' SelectN loop submitting 19 times).
+        """
+        sig = self._window_repeat_sig
+        if (
+            self._window_repeat_count >= self._AUTO_RESPOND_LOOP_THRESHOLD
+            and sig is not None
+            and sig != self._auto_respond_escaped_sig
+        ):
+            if self._try_auto_respond_escape(
+                game_state, f"window repeated {self._window_repeat_count}x"
+            ):
+                self._auto_respond_escaped_sig = sig
+                self._window_repeat_count = 0
+                return True
+        return False
+
     def _try_submit_plan_advancing_play(
         self, game_state: Optional[dict[str, Any]]
     ) -> bool:
@@ -1089,6 +1175,15 @@ class AutopilotEngine:
                         return
                 except Exception as e:
                     logger.debug(f"auto-pass fallback failed: {e}")
+
+        # Final universal escape before surfacing manual-required: if there's a
+        # pending interactive (non-ActionsAvailable) request we couldn't handle,
+        # let the GRE auto-respond with a legal default so the match keeps
+        # going. Optimality is secondary to staying hands-free.
+        if not self._config.dry_run and self._try_auto_respond_escape(
+            game_state, f"manual-required fallback: {reason}"
+        ):
+            return
 
         self._state = AutopilotState.PAUSED
         hint = self._format_bridge_gap_hint(game_state)
@@ -1480,6 +1575,12 @@ class AutopilotEngine:
                 bridge_trigger.get("actions") if bridge_trigger else None
             )
             self._refresh_blocked_action_window(game_state)
+
+            # Universal loop-breaker: if the same interactive window keeps
+            # re-presenting despite our submits, escape via auto_respond() so the
+            # game advances unattended instead of looping forever.
+            if self._maybe_escape_stuck_window(game_state):
+                return True
 
             if game_state.get("game_engine_busy"):
                 logger.info("Autopilot: engine busy resolving internal loop/synthetic event")
