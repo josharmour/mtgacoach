@@ -267,16 +267,13 @@ def _drive_match(engine, server_mod, poller, poll_interval: float = 0.4) -> Opti
         # bridge decision is still pending and we haven't fired recently — on
         # the player's own turn the state is stable, so the re-plan executes.
         # process_trigger is synchronous, so this never overlaps a running plan.
-        if not fire:
+        if not fire and (time.monotonic() - last_fire) > 2.0:
             try:
-                snap = server_mod.get_game_state()
-                breq = snap.get("_bridge_request_type") or snap.get("_bridge_request_class") or ""
-                pending = (
-                    bool(breq)
-                    and not snap.get("_bridge_in_intermission")
-                    and not snap.get("match_ended")
-                )
-                if pending and (time.monotonic() - last_fire) > 2.0:
+                # Authoritative pending check straight from the bridge — the
+                # game-state snapshot doesn't reliably carry the request type
+                # during turn transitions, so ask the plugin directly.
+                pa = poller._bridge.get_pending_actions() or {}
+                if pa.get("has_pending") and not pa.get("_bridge_in_intermission"):
                     fire = True
             except Exception:
                 pass
