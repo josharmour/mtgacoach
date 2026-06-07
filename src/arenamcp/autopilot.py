@@ -1965,9 +1965,16 @@ class AutopilotEngine:
                         stale = True
                     elif fresh_turn.get("phase", "") != pre_phase:
                         is_sorcery_play = any(a.action_type in (ActionType.PLAY_LAND, ActionType.CAST_SPELL) for a in plan.actions)
+                        has_combat_action = any(a.action_type in (ActionType.DECLARE_ATTACKERS, ActionType.DECLARE_BLOCKERS) for a in plan.actions)
                         now_combat = "Combat" in fresh_turn.get("phase", "")
 
-                        if is_sorcery_play and now_combat:
+                        # Only discard a sorcery-speed plan that got overtaken by
+                        # combat. If the plan ALSO includes a combat action
+                        # (declare attackers/blockers), moving into combat is
+                        # exactly where we want to be — keep the plan; the
+                        # executor stale-skips the now-illegal sorcery steps and
+                        # submits the combat action.
+                        if is_sorcery_play and now_combat and not has_combat_action:
                             logger.warning(f"STALE: phase changed {pre_phase} → {fresh_turn.get('phase')} (sorcery plan in combat)")
                             stale = True
                         else:
