@@ -205,6 +205,21 @@ namespace MtgaCoachBridge
                     }
                     client.EndConnect(result);
 
+                    // Guard against TCP self-connect: on loopback, if the OS
+                    // hands our client socket source port 44222 (same as the
+                    // dest), a TCP simultaneous-open connects us to ourselves.
+                    // The socket reports ESTABLISHED but there is no Python
+                    // server on the other end, so we'd hang forever. Detect it
+                    // (local port == remote port) and retry with a fresh socket.
+                    var localEp = client.Client.LocalEndPoint as System.Net.IPEndPoint;
+                    if (localEp != null && localEp.Port == 44222)
+                    {
+                        _log.LogWarning("TCP self-connect detected (local port == 44222); retrying");
+                        try { client.Close(); } catch { }
+                        System.Threading.Thread.Sleep(50);
+                        continue;
+                    }
+
                     connectedThisIteration = true;
                     consecutiveTimeouts = 0;
                     retryMs = minRetryMs;

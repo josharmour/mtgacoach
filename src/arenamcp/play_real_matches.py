@@ -271,15 +271,26 @@ def run_matches(
     out_path: Path,
     license_key: str,
     launch: bool,
+    attach: bool = False,
 ) -> int:
-    """Full autonomous run: preflight, bridge, N matches, clean shutdown."""
+    """Full autonomous run: preflight, bridge, N matches, clean shutdown.
+
+    When ``attach`` is True, do not launch MTGA or start a new match — just
+    connect to the bridge and play/record the match that is already in progress
+    (a single match).
+    """
     # 1. vLLM preflight (informational; we still try even if it warns).
     base = _backend_base_url(backend_spec)
     if base:
         vllm_preflight([base])
 
     # 2. Ensure MTGA is running.
-    if launch:
+    if attach:
+        if not mtga_is_running():
+            logger.error("--attach given but MTGA is not running. Aborting.")
+            return 5
+        matches = 1  # attach plays only the current in-progress match
+    elif launch:
         ensure_mtga_running()
     elif not mtga_is_running():
         logger.error("MTGA is not running and --no-launch was given. Aborting.")
@@ -323,7 +334,12 @@ def run_matches(
             logger.info("=== Starting match %d of %d ===", m, matches)
             poller.reset()
 
-            if not _start_practice_match(bridge, deck_name):
+            if attach:
+                logger.info(
+                    "--attach: playing the match already in progress "
+                    "(not starting a new one)."
+                )
+            elif not _start_practice_match(bridge, deck_name):
                 logger.error("Could not start match %d; stopping run.", m)
                 break
 
@@ -393,6 +409,11 @@ def main() -> None:
         help="Preflight only: vLLM reachable + MTGA found + port check. "
              "Never launches MTGA or starts a match.",
     )
+    p.add_argument(
+        "--attach", action="store_true",
+        help="Play/record the match already in progress instead of starting "
+             "one (implies --no-launch, single match).",
+    )
     args = p.parse_args()
 
     logging.basicConfig(
@@ -411,6 +432,7 @@ def main() -> None:
             out_path=args.out,
             license_key=args.license_key,
             launch=args.launch,
+            attach=args.attach,
         )
     )
 

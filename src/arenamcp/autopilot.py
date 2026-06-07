@@ -4297,6 +4297,34 @@ class AutopilotEngine:
                         )
                     )
 
+                    # Combat livelock fix: when we want to declare attackers/
+                    # blockers but the bridge is still at a precombat
+                    # ActionsAvailableRequest, a no-op skip livelocks — the next
+                    # plan re-issues the same combat action and we never advance.
+                    # Pass priority to move the game into the combat step, where
+                    # the bridge presents the DeclareAttacker/Blocker request and
+                    # we can actually attack/block.
+                    if (
+                        is_combat_stale
+                        and bridge_is_actions_available
+                        and bool(game_state.get("_bridge_can_pass"))
+                        and self._gre_bridge is not None
+                    ):
+                        try:
+                            if self._gre_bridge.submit_pass():
+                                self._log_execution_path(
+                                    ExecutionPath.GRE_AWARE,
+                                    f"{action.action_type.value}: not in combat "
+                                    "step — passing priority to advance toward "
+                                    "combat",
+                                )
+                                return ClickResult(
+                                    True, 0, 0, "pass_priority",
+                                    "GRE bridge (advance-to-combat)",
+                                )
+                        except Exception as e:
+                            logger.debug(f"advance-to-combat pass failed: {e}")
+
                     if is_combat_stale or is_displaced_main_action or is_displaced_select:
                         if is_combat_stale:
                             reason = "bridge not in combat step yet"
