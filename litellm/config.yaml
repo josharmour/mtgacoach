@@ -1,18 +1,22 @@
 # LiteLLM gateway for api.mtgacoach.com
 # =====================================
-# One OpenAI-compatible endpoint in front of the home-lab models. Friends/family
-# get a virtual key (minted at /admin) scoped to the models they're allowed to
-# use; mtgacoach itself is just another key + model. Replaces the hand-rolled
-# proxy (providers.py/app.py) — LiteLLM handles routing, key auth, budgets,
-# usage, fallbacks, and param compatibility.
+# One OpenAI-compatible endpoint in front of the two baremetal vLLM models.
+# Friends/family get a virtual key (minted at /ui) scoped to the models they're
+# allowed to use; mtgacoach itself is just another key + model. Replaces the
+# hand-rolled proxy — LiteLLM handles routing, key auth, budgets, usage.
 
 model_list:
-  # --- mtgacoach coaching model (fast) ---
+  # --- fast coaching model (mtgacoach) ---
   - model_name: gemma-4-12b-it
     litellm_params:
       model: openai/gemma-4-12b-it
       api_base: http://10.0.0.10:8003/v1
       api_key: vllm
+      # Gemma 4 is a thinking model; without this it emits reasoning tokens and
+      # leaves `content` empty (the "empty advice" / empty coding-response bug).
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
 
   # --- bigger dense model for agentic / coding (nephew + friends) ---
   - model_name: gemma-4-31b-it
@@ -20,35 +24,15 @@ model_list:
       model: openai/gemma-4-31b-it
       api_base: http://10.0.0.10:8002/v1
       api_key: vllm
-
-  # --- legacy alias: the existing desktop client still asks for "gpt-5.4" ---
-  - model_name: gpt-5.4
-    litellm_params:
-      model: openai/gemma-4-12b-it
-      api_base: http://10.0.0.10:8003/v1
-      api_key: vllm
-
-  # --- Azure cloud model: premium / fallback (kept disabled-by-default via no key) ---
-  - model_name: gpt-5.4-azure
-    litellm_params:
-      model: azure/gpt-5.4
-      api_base: os.environ/AZURE_OPENAI_BASE_URL
-      api_key: os.environ/AZURE_OPENAI_API_KEY
-      api_version: "2024-05-01-preview"
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
 
 litellm_settings:
   # Silently drop params a given model doesn't support instead of erroring.
   drop_params: true
 
-router_settings:
-  # If a local model is down, fall back to the Azure cloud model.
-  fallbacks:
-    - gemma-4-12b-it: ["gpt-5.4-azure"]
-    - gpt-5.4: ["gpt-5.4-azure"]
-    - gemma-4-31b-it: ["gpt-5.4-azure"]
-
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   database_url: os.environ/DATABASE_URL
-  # Let the UI/admin manage keys (and optionally models) at runtime.
   store_model_in_db: true
