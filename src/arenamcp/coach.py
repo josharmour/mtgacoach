@@ -942,6 +942,21 @@ class CoachEngine:
         self._deck_strategy: Optional[str] = None
         self._deck_strategy_pending = False
         self._rules_db: Optional["RulesDB"] = None
+        # Persistent, adaptive strategic plan. Lazily constructed (game_plan.py
+        # imports CoachEngine, so a module-level import here would cycle).
+        self._game_plan_mgr = None
+
+    def _ensure_game_plan_mgr(self):
+        """Lazily construct and return the GamePlanManager (or None on failure)."""
+        if self._game_plan_mgr is None:
+            try:
+                from arenamcp.game_plan import GamePlanManager
+
+                self._game_plan_mgr = GamePlanManager(self._backend)
+            except Exception as e:
+                logger.debug(f"GamePlanManager unavailable: {e}")
+                return None
+        return self._game_plan_mgr
 
     def get_backend_info(self) -> dict[str, Any]:
         """Return diagnostic info about the current LLM backend.
@@ -1263,6 +1278,13 @@ class CoachEngine:
                 return None
 
             self._deck_strategy = strategy
+            # Seed the persistent game plan from the deck archetype.
+            try:
+                mgr = self._ensure_game_plan_mgr()
+                if mgr is not None:
+                    mgr.seed(self._deck_strategy)
+            except Exception as e:
+                logger.debug(f"Game-plan seed failed (non-fatal): {e}")
             elapsed = (time.perf_counter() - start) * 1000
             logger.info(
                 f"Deck analysis complete: {elapsed:.0f}ms, {len(strategy)} chars"
@@ -3120,6 +3142,35 @@ class CoachEngine:
                 "(e.g. 'Cast X — triggers Kodama for a free land, setting up combo next turn')."
             )
 
+        # Persistent GAME PLAN: refresh on our own active turn, then frame the
+        # advice as the next STEP in that plan. Fully guarded — a plan failure
+        # must never break advice generation.
+        plan_block = ""
+        try:
+            mgr = self._ensure_game_plan_mgr()
+            if mgr is not None:
+                # Only reform on our own active turn. If the local seat is
+                # unknown, treat the turn as ours (conservative — still refreshes).
+                local_seat = None
+                for p in game_state.get("players", []) or []:
+                    if p.get("is_local"):
+                        local_seat = p.get("seat_id")
+                        break
+                active_player = (game_state.get("turn", {}) or {}).get("active_player")
+                our_turn = local_seat is None or active_player == local_seat
+                if our_turn:
+                    mgr.maybe_reform(game_state)
+                plan_block = mgr.plan_text() or ""
+                if plan_block:
+                    effective_system_prompt += (
+                        "\n\n" + plan_block
+                        + "\n\nFrame your advice as the next STEP in this game plan: "
+                        "name the plan briefly, recommend the move, and say how it "
+                        "advances the plan."
+                    )
+        except Exception as e:
+            logger.debug(f"Game-plan injection failed (non-fatal): {e}")
+
         # Re-inject blacklisted words and decision guidance into effective prompt
         if blacklisted:
             avoid_list = ", ".join(blacklisted)
@@ -3197,6 +3248,22 @@ class CoachEngine:
 
         if trigger == "threat_detected" and threat and (not response or response.startswith("Error")):
             response = self._build_threat_fallback(game_state, threat)
+
+        # Prepend a short plan framing for longer styles only (the "quick" style
+        # has a very tight word cap — prepending would blow it). Fully guarded.
+        try:
+            if (
+                style_key in ("normal", "chatty", "explain")
+                and response
+                and not response.startswith("Error")
+                and not response.lstrip().lower().startswith("plan")
+            ):
+                mgr = self._game_plan_mgr
+                intro = mgr.coach_intro() if mgr is not None else ""
+                if intro:
+                    response = f"{intro}. {response}"
+        except Exception as e:
+            logger.debug(f"Game-plan intro prepend failed (non-fatal): {e}")
 
         # POST-PROCESSING: Validate and fix common LLM issues (especially for smaller models)
         response = self._postprocess_advice(response, game_state, style=style_key)

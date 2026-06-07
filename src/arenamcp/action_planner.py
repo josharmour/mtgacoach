@@ -271,6 +271,23 @@ class ActionPlanner:
         # — without this, every priority window in a turn where plan_turn
         # fails would burn an extra LLM call.
         self._turn_plan_attempted_for_turn: int = -1
+        # Persistent GAME PLAN block (strategic spine) injected into every
+        # per-decision prompt. Owned externally by a GamePlanManager and set via
+        # set_game_plan(); unlike _turn_intent it survives turn changes. "" when
+        # no plan has been formed yet.
+        self._game_plan: str = ""
+
+    def set_game_plan(self, plan_text: Optional[str]) -> None:
+        """Set the persistent strategic GAME PLAN block injected into prompts.
+
+        Owned by a :class:`arenamcp.game_plan.GamePlanManager`; the autopilot
+        refreshes it before planning. Persists across turns (it is NOT cleared on
+        turn change, unlike the per-turn intent/memo).
+        """
+        self._game_plan = (plan_text or "").strip()
+
+    def clear_game_plan(self) -> None:
+        self._game_plan = ""
 
     def plan_actions(
         self,
@@ -623,10 +640,13 @@ class ActionPlanner:
             '"target_names": [], "rationale": "early pressure"}'
             ']}}'
         )
+        game_plan_block = f"{self._game_plan}\n\n" if self._game_plan else ""
         user_message = (
             f"TRIGGER: turn_plan (turn {current_turn})\n\n"
             f"{context}\n\n"
+            f"{game_plan_block}"
             f"INSTRUCTIONS: {instructions}\n"
+            f"Order the plays so they ADVANCE the game plan above.\n"
             f"Output ONLY a JSON object matching this shape (no prose, no markdown):\n"
             f"{schema_example}"
         )
@@ -1236,6 +1256,13 @@ class ActionPlanner:
             "",
             context,
         ]
+
+        # Persistent GAME PLAN (strategic spine): the top-level frame every
+        # tactical decision serves. Placed before the per-turn intent so the
+        # model reads "here is how we win this game" first, then "here is the
+        # plan for this turn", then the immediate decision.
+        if self._game_plan:
+            parts.append(self._game_plan)
 
         # Locked turn intent: a single high-level plan for the whole turn,
         # captured on the first non-trivial LLM call of the turn. Subsequent

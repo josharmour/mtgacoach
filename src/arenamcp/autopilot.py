@@ -329,6 +329,19 @@ class AutopilotEngine:
         self._gre_bridge_failed_methods: set[str] = set()
         self._bridge_preloaded_actions: Optional[list[dict[str, Any]]] = None
 
+        # Persistent strategic GAME PLAN layer (win conditions + path), reformed
+        # only on material board changes and threaded into the planner's prompt
+        # so the autopilot develops toward a win instead of reacting per-window.
+        try:
+            from arenamcp.game_plan import GamePlanManager
+
+            self._game_plan_mgr: Optional[Any] = GamePlanManager(
+                self._planner._backend
+            )
+        except Exception as e:  # never block construction on the strategic layer
+            logger.debug("GamePlanManager unavailable: %s", e)
+            self._game_plan_mgr = None
+
         # Execution path tracking
         self._path_stats: dict[str, int] = {}
 
@@ -559,6 +572,17 @@ class AutopilotEngine:
             info["planner_diagnostics"] = []
 
         return info
+
+    @staticmethod
+    def _is_local_active_turn(game_state: dict[str, Any]) -> bool:
+        """True when it's our turn (or seat is unknown — treat as ours)."""
+        local_seat = next(
+            (p.get("seat_id") for p in game_state.get("players", []) if p.get("is_local")),
+            None,
+        )
+        if local_seat is None:
+            return True
+        return (game_state.get("turn", {}) or {}).get("active_player") == local_seat
 
     @staticmethod
     def _decision_type(game_state: dict[str, Any]) -> str:
@@ -924,6 +948,95 @@ class AutopilotEngine:
         except Exception as e:
             logger.debug(f"_maybe_record_trajectory failed (ignored): {e}")
 
+    def _try_submit_plan_advancing_play(
+        self, game_state: Optional[dict[str, Any]]
+    ) -> bool:
+        """Submit a legal plan-advancing play instead of passing it away.
+
+        Last-ditch guard used before the auto-pass fallback: on our own
+        ActionsAvailable window, if the bridge offers a land drop or a castable
+        spell that the plan wants, submit it by index rather than passing
+        priority. This is what stops the autopilot from silently skipping a
+        castable creature (e.g. Spellbook Vendor / Veteran Survivor) when the
+        planner's chosen action failed to match and we'd otherwise auto-pass.
+
+        Deliberately conservative: only fires for an unambiguous choice — the
+        plan's wanted card, the sole legal land drop, or the sole legal cast.
+        When several casts are legal and none matches the plan, it declines
+        (returns False) and lets the caller pass, since blindly casting a random
+        spell is worse than passing.
+        """
+        if self._config.dry_run or self._gre_bridge is None:
+            return False
+        if not getattr(self._gre_bridge, "connected", False):
+            return False
+        if game_state is None or not self._is_local_active_turn(game_state):
+            return False
+        breq = str(game_state.get("_bridge_request_type") or "")
+        bcls = str(game_state.get("_bridge_request_class") or "")
+        if not (
+            breq in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+            or bcls in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+        ):
+            return False
+        try:
+            pending = self._gre_bridge.get_pending_actions()
+        except Exception:
+            return False
+        if not pending or not pending.get("has_pending"):
+            return False
+        actions = pending.get("actions") or []
+
+        def _norm(a: dict) -> str:
+            return str(a.get("actionType", "")).replace("ActionType_", "").lower()
+
+        candidates = [(i, a) for i, a in enumerate(actions) if _norm(a) in ("play", "cast")]
+        if not candidates:
+            return False
+
+        chosen_idx: Optional[int] = None
+        # 1. Prefer the card the plan actually wanted.
+        wanted = ""
+        if self._current_plan and getattr(self._current_plan, "actions", None):
+            first = self._current_plan.actions[0]
+            if first.action_type in (ActionType.PLAY_LAND, ActionType.CAST_SPELL):
+                wanted = _normalize_planner_card_name(first.card_name or "").lower()
+        if wanted:
+            for i, a in candidates:
+                grp = a.get("grpId", 0)
+                name = ""
+                if grp:
+                    try:
+                        from arenamcp import server
+                        name = (server.get_card_info(grp).get("name", "") or "").lower()
+                    except Exception:
+                        name = ""
+                if name and (wanted == name or wanted in name or name in wanted):
+                    chosen_idx = i
+                    break
+        # 2. Else an unambiguous sole land drop, then a sole cast.
+        if chosen_idx is None:
+            plays = [i for i, a in candidates if _norm(a) == "play"]
+            casts = [i for i, a in candidates if _norm(a) == "cast"]
+            if len(plays) == 1:
+                chosen_idx = plays[0]
+            elif len(casts) == 1:
+                chosen_idx = casts[0]
+        if chosen_idx is None:
+            return False
+        try:
+            if self._gre_bridge.submit_action_by_index(
+                chosen_idx, auto_pass=self._config.auto_pass_priority
+            ):
+                self._log_execution_path(
+                    ExecutionPath.GRE_AWARE,
+                    f"plan-advancing play submitted instead of auto-pass (idx={chosen_idx})",
+                )
+                return True
+        except Exception as e:
+            logger.debug(f"plan-advancing submit failed: {e}")
+        return False
+
     def _pause_for_manual(self, reason: str, game_state: Optional[dict[str, Any]] = None) -> None:
         """Pause the autopilot and surface that manual input is required.
 
@@ -934,6 +1047,16 @@ class AutopilotEngine:
         the user just sees "MANUAL REQUIRED: Bridge couldn't handle X" and
         has no signal whether to file a bug, reconnect, or just wait.
         """
+        # Never pass away a legal, plan-advancing play. Before the graceful
+        # auto-pass below, if this is our own ActionsAvailable window and the
+        # bridge offers an unambiguous land drop or castable spell the plan
+        # wants, submit it instead of passing. This is what fixes the autopilot
+        # silently skipping a castable creature when the planner's action failed
+        # to match the bridge.
+        if not self._config.dry_run and self._try_submit_plan_advancing_play(game_state):
+            self._state = AutopilotState.IDLE
+            return
+
         # Graceful auto-pass: if we're stuck on a normal ActionsAvailable
         # priority window where passing is legal, advance the game by passing
         # instead of halting for manual input. This keeps a match moving when
@@ -1829,6 +1952,22 @@ class AutopilotEngine:
                 f"decision={decision_context.get('type') if decision_context else None}, "
                 f"bridge={game_state.get('_bridge_request_type')}"
             )
+
+            # --- STRATEGIC GAME PLAN: (re)form on material change, then inject ---
+            # Refresh the persistent game plan before tactical planning so the
+            # per-decision prompt is framed by "how we win this game". The
+            # manager only calls the LLM on material board changes (and at most
+            # once per turn), so this is cheap on most windows. Gate the
+            # (potentially blocking) reform to our own turn — we don't want to
+            # burn think-time reforming during the opponent's turn — but always
+            # inject whatever plan we have.
+            if self._game_plan_mgr is not None:
+                try:
+                    if self._is_local_active_turn(game_state):
+                        self._game_plan_mgr.maybe_reform(game_state)
+                    self._planner.set_game_plan(self._game_plan_mgr.plan_text())
+                except Exception as e:
+                    logger.debug("game-plan refresh skipped: %s", e)
 
             _plan_started_at = time.perf_counter()
             plan = self._planner.plan_actions(
@@ -3266,6 +3405,36 @@ class AutopilotEngine:
                                     continue  # Wrong card — skip
                     best_idx = idx
                     break
+
+                # Sole-candidate fallback: the planner's card_name didn't
+                # exact-match any bridge action (truncation, split-card face,
+                # grpId→name lookup miss), but if exactly ONE bridge action has
+                # the wanted GRE type it is unambiguous — submit it rather than
+                # dropping the play, which would let _pause_for_manual auto-pass
+                # away a castable creature/land (the Spellbook Vendor /
+                # Veteran Survivor skip bug). Mirrors the PLAY/CAST sole-candidate
+                # branches in gre_action_matcher.match_action_to_gre.
+                if best_idx is None:
+
+                    def _type_eq(t: str) -> bool:
+                        return (
+                            t == gre_type
+                            or f"ActionType_{t}" == gre_type
+                            or t == gre_type.replace("ActionType_", "")
+                        )
+
+                    type_matches = [
+                        idx
+                        for idx, ba in enumerate(bridge_actions)
+                        if _type_eq(ba.get("actionType", ""))
+                    ]
+                    if len(type_matches) == 1:
+                        best_idx = type_matches[0]
+                        logger.info(
+                            f"GRE bridge sole-candidate: '{action.card_name}' "
+                            f"didn't name-match, submitting the only {gre_type} "
+                            f"action (idx={best_idx})"
+                        )
 
                 if best_idx is not None:
                     if self._gre_bridge.submit_action_by_index(
