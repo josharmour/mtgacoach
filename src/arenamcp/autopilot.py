@@ -1813,6 +1813,32 @@ class AutopilotEngine:
             # call when there's no active plan — the helper short-circuits.
             self._emit_turn_plan_payload()
 
+            # --- SAFE-DEFAULT NET for non-passable interactive requests ---
+            # The planner/fallback can only ever emit pass/resolve for many
+            # interactive GRE requests (Group bottoming, SelectN, Search,
+            # NumericInput, SelectTargets, ...). Those requests do NOT accept a
+            # pass, so submitting one livelocks the GRE and the "blocked action
+            # repeated" guard then halts the turn forever (observed live with
+            # the London-mulligan bottoming GroupRequest). When the plan can't
+            # produce a real submission for such a request, submit a typed safe
+            # default via the bridge instead so the game always advances. This
+            # never touches the ActionsAvailable priority path.
+            if (
+                self._is_non_passable_interactive(game_state)
+                and self._plan_cannot_legally_submit(plan)
+            ):
+                net = self._try_interactive_safe_default(game_state, trigger)
+                if net is not None:
+                    self._consecutive_plan_failures = 0
+                    self._state = AutopilotState.IDLE
+                    if net:
+                        return True
+                    self._pause_for_manual(
+                        "Safe-default submission failed for non-passable request",
+                        game_state,
+                    )
+                    return False
+
             if not plan.actions:
                 self._consecutive_plan_failures += 1
                 logger.warning(
@@ -2070,6 +2096,18 @@ class AutopilotEngine:
                 self._notify("AUTOPILOT", action_text)
 
                 if self._is_action_blocked(action, game_state):
+                    # Backstop: never dead-loop on a non-passable interactive
+                    # request. If the blocked action is a pass/resolve the GRE
+                    # won't accept here, submit a typed safe default instead of
+                    # halting the turn forever.
+                    if (
+                        action.action_type in (ActionType.PASS_PRIORITY, ActionType.RESOLVE)
+                        and self._is_non_passable_interactive(game_state)
+                    ):
+                        net = self._try_interactive_safe_default(game_state, trigger)
+                        if net:
+                            self._state = AutopilotState.IDLE
+                            return True
                     self._pause_for_manual("Blocked action repeated in the same priority window", game_state)
                     return False
 
@@ -4224,6 +4262,346 @@ class AutopilotEngine:
         logger.info("GRE bridge scry failed, surfacing manual-required to caller")
         self._gre_bridge_failed_methods.add("scry")
         return None
+
+    # ------------------------------------------------------------------
+    # Safe-default net for non-passable interactive GRE requests
+    # ------------------------------------------------------------------
+    #
+    # Many interactive requests (Group bottoming, SelectN, Search,
+    # NumericInput, SelectTargets, ...) do NOT accept a pass. When the
+    # planner/fallback can only produce pass/resolve for one of these, the
+    # plugin rejects the pass, the "blocked action repeated" guard fires, and
+    # the autopilot dead-loops on the opening interaction (observed live with
+    # the London-mulligan bottoming GroupRequest). These helpers submit a
+    # *legal* typed default via the bridge so the GRE always advances.
+
+    @staticmethod
+    def _plan_cannot_legally_submit(plan: Optional[ActionPlan]) -> bool:
+        """True when the plan can't produce a real (non-pass) submission."""
+        if not plan or not plan.actions:
+            return True
+        passive = {ActionType.PASS_PRIORITY, ActionType.RESOLVE}
+        return all(a.action_type in passive for a in plan.actions)
+
+    def _is_non_passable_interactive(self, game_state: dict[str, Any]) -> bool:
+        """True when the pending bridge request is interactive and rejects pass.
+
+        Excludes the ActionsAvailable priority window (the normal
+        play-land/cast/attack/pass path) and the dedicated Mulligan keep/mull
+        request, both of which have their own correct handling.
+        """
+        btype = str(game_state.get("_bridge_request_type") or "")
+        bclass = str(game_state.get("_bridge_request_class") or "")
+        if not btype and not bclass:
+            return False
+        if "ActionsAvailable" in btype or "ActionsAvailable" in bclass:
+            return False
+        # The Mulligan keep/mull decision (request type "Mulligan") is its own
+        # critical path. Note the post-keep London bottoming step is a separate
+        # GroupRequest (type "Group", context "LondonMulligan"), which IS
+        # handled by the net below.
+        if btype in ("Mulligan", "MulliganReq", "MulliganRequest") or bclass == "MulliganRequest":
+            return False
+        if game_state.get("_bridge_can_pass"):
+            return False
+        return True
+
+    def _try_interactive_safe_default(
+        self, game_state: dict[str, Any], trigger: str
+    ) -> Optional[bool]:
+        """Submit a typed safe default for a non-passable interactive request.
+
+        Returns True if a legal default was submitted, False if every attempt
+        (including MTGA's own AutoRespond) failed, or None if the request
+        isn't actionable here (dry-run, bridge offline, or nothing pending).
+        """
+        if self._config.dry_run:
+            return None
+        if not (self._gre_bridge.connected or self._gre_bridge.connect()):
+            return None
+        pending = self._gre_bridge.get_pending_actions()
+        if not pending or not pending.get("has_pending"):
+            return None
+
+        dec_type = self._decision_type(game_state)
+        btype = str(game_state.get("_bridge_request_type") or pending.get("request_type") or "")
+        bclass = str(game_state.get("_bridge_request_class") or pending.get("request_class") or "")
+        label = btype or bclass or dec_type or "interactive"
+
+        def _ok(detail: str) -> bool:
+            self._log_execution_path(
+                ExecutionPath.GRE_AWARE, f"{label}: safe-default submission ({detail})"
+            )
+            self._record_autopilot_decision(
+                game_state, trigger,
+                action_type="safe_default",
+                summary=f"{label}: {detail}",
+            )
+            return True
+
+        # Group: London-mulligan bottoming / scry-surveil / ordering default.
+        if "Group" in btype or "Group" in bclass or dec_type == "group_selection":
+            res = self._try_gre_bridge_group_default(game_state, pending)
+            if res is not None and res.success:
+                return _ok("group default")
+
+        # SelectN / Search: submit the resolvable selection, else SubmitArbitrary.
+        if (
+            dec_type in ("select_n", "selection_generic", "search")
+            or "SelectN" in btype or "SelectN" in bclass
+            or "Search" in btype or "Search" in bclass
+        ):
+            res = self._try_gre_bridge_select_n(
+                GameAction(action_type=ActionType.SELECT_N), game_state
+            )
+            if res is not None and res.success:
+                return _ok("select_n/search min-or-arbitrary")
+            if self._gre_bridge.submit_selection([]):
+                return _ok("empty selection (SubmitArbitrary)")
+
+        # NumericInput: min (or first suggested) legal value.
+        if dec_type == "numeric_input" or "Numeric" in btype or "Numeric" in bclass:
+            value = self._safe_default_numeric(pending)
+            if self._gre_bridge.submit_numeric(value):
+                return _ok(f"numeric={value}")
+
+        # SelectTargets: first legal candidate.
+        if dec_type == "target_selection" or "SelectTargets" in btype or "SelectTargets" in bclass:
+            tid = self._first_target_candidate(pending)
+            if tid is not None and self._gre_bridge.submit_targets(tid):
+                return _ok(f"first target {tid}")
+
+        # SelectReplacement: first replacement.
+        if dec_type == "select_replacement" or "SelectReplacement" in btype or "SelectReplacement" in bclass:
+            if self._gre_bridge.submit_select_replacement(index=0):
+                return _ok("replacement index 0")
+
+        # Ordering / SelectFromGroups: accept the given default order.
+        if dec_type in ("order_triggers", "order_combat_damage", "select_from_groups"):
+            if self._gre_bridge.submit_order():
+                return _ok("default order")
+            if self._gre_bridge.submit_select_from_groups([]):
+                return _ok("select_from_groups default")
+
+        # Universal fallback: MTGA's own "do the default" for this request.
+        if self._gre_bridge.auto_respond():
+            return _ok("auto_respond")
+        return False
+
+    @staticmethod
+    def _safe_default_numeric(pending: dict[str, Any]) -> int:
+        """Pick a safe legal value for a NumericInputRequest (suggested|min)."""
+        disallowed = set()
+        for v in (pending.get("numeric_disallowed") or []):
+            try:
+                disallowed.add(int(v))
+            except (TypeError, ValueError):
+                continue
+        for v in (pending.get("numeric_suggested") or []):
+            try:
+                iv = int(v)
+            except (TypeError, ValueError):
+                continue
+            if iv not in disallowed:
+                return iv
+        try:
+            lo = int(pending.get("numeric_min") or 0)
+        except (TypeError, ValueError):
+            lo = 0
+        try:
+            hi = int(pending.get("numeric_max") or lo)
+        except (TypeError, ValueError):
+            hi = lo
+        v = lo
+        while v in disallowed and v < hi:
+            v += 1
+        return v
+
+    @staticmethod
+    def _first_target_candidate(pending: dict[str, Any]) -> Optional[int]:
+        """Return the first legal target instance_id, if any."""
+        for c in (pending.get("target_candidates") or []):
+            if not isinstance(c, dict):
+                continue
+            try:
+                iid = int(c.get("targetInstanceId") or c.get("instance_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if iid:
+                return iid
+        return None
+
+    def _try_gre_bridge_group_default(
+        self,
+        game_state: dict[str, Any],
+        pending: Optional[dict[str, Any]] = None,
+    ) -> Optional[ClickResult]:
+        """Submit a safe-default GroupRequest response via the bridge.
+
+        Two cases, matching MTGA's own LondonWorkflow / ScryWorkflow shapes:
+          - London mulligan bottoming: put the worst N cards on the bottom of
+            the library, keep the rest in hand. N = GroupSpecs[bottom].LowerBound
+            (the slot the client requires us to fill).
+          - Any other ordering Group (scry / surveil / trigger ordering): accept
+            the cards in the order/zones already presented (nothing to bottom).
+
+        Returns a ClickResult (success flag set), or None if not a GroupRequest.
+        """
+        pending = pending or self._gre_bridge.get_pending_actions()
+        if not pending or not pending.get("has_pending"):
+            return None
+        btype = str(pending.get("request_type") or "")
+        bclass = str(pending.get("request_class") or "")
+        if "Group" not in btype and "Group" not in bclass:
+            return None
+
+        payload = pending.get("request_payload") or {}
+        raw_ids = (
+            pending.get("group_instance_ids")
+            or payload.get("instanceIds")
+            or (game_state.get("decision_context") or {}).get("instanceIds")
+            or []
+        )
+        instance_ids: list[int] = []
+        for v in raw_ids:
+            try:
+                instance_ids.append(int(v))
+            except (TypeError, ValueError):
+                continue
+
+        specs = pending.get("group_specs") or payload.get("groupSpecs") or []
+        context = str(pending.get("group_context") or payload.get("context") or "")
+
+        def _spec_bound(spec: dict[str, Any]) -> int:
+            for key in ("lowerBound", "upperBound", "lower_bound", "upper_bound"):
+                try:
+                    b = int(spec.get(key) or 0)
+                except (TypeError, ValueError):
+                    b = 0
+                if b > 0:
+                    return b
+            return 0
+
+        def _is_bottom_spec(spec: dict[str, Any]) -> bool:
+            zone = str(spec.get("zoneType") or spec.get("zone") or "")
+            sub = str(spec.get("subZoneType") or spec.get("subZone") or "")
+            return "Bottom" in sub or "Library" in zone
+
+        # Determine how many cards must go to the bottom. Prefer the bottom
+        # spec's bound (LondonWorkflow reads GroupSpecs[1].LowerBound); fall
+        # back to hand_size - 7 for a London mulligan when specs are opaque.
+        bottom_count = 0
+        for spec in specs:
+            if isinstance(spec, dict) and _is_bottom_spec(spec):
+                bottom_count += _spec_bound(spec)
+        if bottom_count <= 0 and "LondonMulligan" in context:
+            bottom_count = max(0, len(instance_ids) - 7)
+        bottom_count = max(0, min(bottom_count, len(instance_ids)))
+
+        if not instance_ids or bottom_count <= 0:
+            # Nothing to bottom: accept the default order. Put every card in the
+            # first (top/keep) group, mirroring the request's first spec zone.
+            top_zone, top_sub = "Hand", "Top"
+            if specs and isinstance(specs[0], dict):
+                top_zone = str(specs[0].get("zoneType") or specs[0].get("zone") or top_zone)
+                top_sub = str(specs[0].get("subZoneType") or specs[0].get("subZone") or top_sub)
+            groups = [{"ids": list(instance_ids), "zone": top_zone, "sub_zone": top_sub}]
+            for spec in specs[1:]:
+                z = str(spec.get("zoneType") or spec.get("zone") or "") if isinstance(spec, dict) else ""
+                s = str(spec.get("subZoneType") or spec.get("subZone") or "") if isinstance(spec, dict) else ""
+                groups.append({"ids": [], "zone": z or None, "sub_zone": s or None})
+            ok = self._gre_bridge.submit_group(groups)
+            if ok:
+                self._log_execution_path(
+                    ExecutionPath.GRE_AWARE,
+                    f"group: default order ({len(instance_ids)} cards, ctx={context or '?'}) via GRE bridge",
+                )
+                return ClickResult(True, 0, 0, "group", "GRE bridge")
+            self._gre_bridge_failed_methods.add("group")
+            return ClickResult(False, 0, 0, "group", "GRE bridge")
+
+        # Bottom the worst N cards; keep the rest in hand. Response shape mirrors
+        # MTGA's LondonWorkflow: [Hand/Top keep group, Library/Bottom group].
+        worst_first = self._rank_cards_for_bottoming(instance_ids, game_state)
+        bottom_ids = worst_first[:bottom_count]
+        keep_ids = [iid for iid in instance_ids if iid not in bottom_ids]
+        groups = [
+            {"ids": keep_ids, "zone": "Hand", "sub_zone": "Top"},
+            {"ids": bottom_ids, "zone": "Library", "sub_zone": "Bottom"},
+        ]
+        ok = self._gre_bridge.submit_group(groups)
+        if ok:
+            self._log_execution_path(
+                ExecutionPath.GRE_AWARE,
+                f"group: bottom {len(bottom_ids)} keep {len(keep_ids)} "
+                f"(ctx={context or '?'}) via GRE bridge",
+            )
+            return ClickResult(True, 0, 0, "group", "GRE bridge")
+        self._gre_bridge_failed_methods.add("group")
+        return ClickResult(False, 0, 0, "group", "GRE bridge")
+
+    def _rank_cards_for_bottoming(
+        self, instance_ids: list[int], game_state: dict[str, Any]
+    ) -> list[int]:
+        """Order instance_ids worst-keep first (best candidates to bottom).
+
+        Heuristic: bottom excess lands first (keep ~4), then highest-cmc
+        spells, keeping a low land+cheap-spell base. Cards with no resolvable
+        info fall to the end of their bucket — at minimum we still return a
+        valid permutation so a default selection is always available.
+        """
+        info = {iid: self._lookup_card_for_bottoming(iid, game_state) for iid in instance_ids}
+        lands = [iid for iid in instance_ids if info[iid] and info[iid]["is_land"]]
+        nonlands = [iid for iid in instance_ids if iid not in lands]
+        keep_lands = min(len(lands), 4)
+        excess_lands = lands[keep_lands:]
+        kept_lands = lands[:keep_lands]
+        nonlands_sorted = sorted(
+            nonlands,
+            key=lambda i: -(info[i]["cmc"] if info[i] else 0),
+        )
+        # Worst first: extra lands, then most expensive spells, then the cheap
+        # spells + the lands we'd rather keep (least likely to be bottomed).
+        return excess_lands + nonlands_sorted + kept_lands
+
+    def _lookup_card_for_bottoming(
+        self, instance_id: int, game_state: dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
+        """Resolve an instance_id to {name, is_land, cmc} from visible zones."""
+        for zone_key in ("hand", "library_top_revealed", "stack"):
+            for c in (game_state.get(zone_key) or []):
+                if not isinstance(c, dict):
+                    continue
+                try:
+                    iid = int(c.get("instance_id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if iid != instance_id:
+                    continue
+                type_line = str(c.get("type_line") or "")
+                mana_cost = str(c.get("mana_cost") or "")
+                return {
+                    "name": str(c.get("name") or ""),
+                    "is_land": "land" in type_line.lower(),
+                    "cmc": self._parse_mana_value(mana_cost),
+                }
+        return None
+
+    @staticmethod
+    def _parse_mana_value(mana_cost: str) -> int:
+        """Convert a mana-cost string like '{2}{G}{G}' to a CMC integer."""
+        if not mana_cost:
+            return 0
+        total = 0
+        for sym in re.findall(r"\{([^}]+)\}", mana_cost):
+            s = sym.strip().upper()
+            if s.isdigit():
+                total += int(s)
+            elif s in ("X", "Y", "Z"):
+                total += 0
+            else:
+                total += 1
+        return total
 
     def _execute_action(
         self, action: GameAction, game_state: dict[str, Any]
