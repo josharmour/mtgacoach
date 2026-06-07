@@ -232,6 +232,7 @@ def _drive_match(engine, server_mod, poller, poll_interval: float = 0.4) -> Opti
     recorder attached in ``_build_autopilot``.
     """
     gs = getattr(server_mod, "game_state", None)
+    last_fire = 0.0  # monotonic time of the last process_trigger call
 
     while True:
         # Match-end detection: the authoritative game-end signal (same path
@@ -248,7 +249,31 @@ def _drive_match(engine, server_mod, poller, poll_interval: float = 0.4) -> Opti
             logger.debug("poller error (ignored): %s", e)
             trigger = None
 
-        if trigger and trigger.get("trigger") == "decision_required":
+        fire = bool(trigger and trigger.get("trigger") == "decision_required")
+
+        # Stale-discard / latency recovery: the poller only emits a fresh
+        # "decision_required" when the decision *changes*. If a plan went stale
+        # at a turn transition (the autopilot discarded it and went idle) the
+        # same decision is still pending but unchanged, so the poller stays
+        # quiet and the bot sits forever. Re-fire process_trigger whenever a
+        # bridge decision is still pending and we haven't fired recently — on
+        # the player's own turn the state is stable, so the re-plan executes.
+        # process_trigger is synchronous, so this never overlaps a running plan.
+        if not fire:
+            try:
+                snap = server_mod.get_game_state()
+                breq = snap.get("_bridge_request_type") or snap.get("_bridge_request_class") or ""
+                pending = (
+                    bool(breq)
+                    and not snap.get("_bridge_in_intermission")
+                    and not snap.get("match_ended")
+                )
+                if pending and (time.monotonic() - last_fire) > 2.0:
+                    fire = True
+            except Exception:
+                pass
+
+        if fire:
             try:
                 state = server_mod.get_game_state()
                 # Belt-and-suspenders: surface intermission/match-end as end.
@@ -257,6 +282,7 @@ def _drive_match(engine, server_mod, poller, poll_interval: float = 0.4) -> Opti
                         result, _snap = gs.consume_game_end()
                         return result
                 poller.enrich_snapshot(state)
+                last_fire = time.monotonic()
                 engine.process_trigger(state, "decision_required")
             except Exception as e:
                 logger.warning("process_trigger failed (continuing): %s", e)
