@@ -1492,6 +1492,67 @@ def enrich_snapshot_from_pending_response(
     if existing_ctx:
         snapshot["decision_context"] = existing_ctx
 
+    # Surface DeclareBlockers candidate data so the combat solver and the
+    # advice prompt light up. The plugin sends an authoritative `blockers`
+    # array (blockerInstanceId + the attackerInstanceIds each may block);
+    # without this merge the bridge path leaves the snapshot with no attacker
+    # flags and no legal_blocker_ids, so _format_block_combat / optimal_blocks
+    # produce nothing and the coach can only give vague prose.
+    _apply_bridge_blockers(snapshot, poll)
+
+
+def _apply_bridge_blockers(
+    snapshot: dict[str, Any], poll: dict[str, Any]
+) -> None:
+    """Merge the plugin's DeclareBlockers `blockers` payload into the snapshot.
+
+    Writes `raw_blockers` + `legal_blocker_ids` onto decision_context (the
+    shape combat_solver.collect_blockers_from_decision / the autopilot block
+    submitter already expect) and flags the GRE-authoritative attackers with
+    `is_attacking=True` on the battlefield so _format_block_combat and
+    optimal_blocks can enumerate the actual combat. Idempotent and defensive:
+    a missing/empty `blockers` list is a no-op.
+    """
+    raw_blockers = poll.get("blockers")
+    if not isinstance(raw_blockers, list) or not raw_blockers:
+        return
+
+    blocker_ids: list[int] = []
+    attacker_ids: set[int] = set()
+    for blk in raw_blockers:
+        if not isinstance(blk, dict):
+            continue
+        bid = blk.get("blockerInstanceId", blk.get("instanceId"))
+        try:
+            if bid is not None:
+                blocker_ids.append(int(bid))
+        except (TypeError, ValueError):
+            pass
+        for aid in blk.get("attackerInstanceIds") or []:
+            try:
+                attacker_ids.add(int(aid))
+            except (TypeError, ValueError):
+                continue
+
+    ctx = dict(snapshot.get("decision_context") or {})
+    ctx["raw_blockers"] = raw_blockers
+    ctx["legal_blocker_ids"] = blocker_ids
+    if attacker_ids:
+        ctx["attacker_ids"] = sorted(attacker_ids)
+    snapshot["decision_context"] = ctx
+
+    # Flag the attacking creatures so the existing combat machinery (which
+    # keys off is_attacking) enumerates this combat instead of falling back to
+    # the tapped-creature heuristic.
+    if attacker_ids:
+        for card in snapshot.get("battlefield", []) or []:
+            try:
+                inst = int(card.get("instance_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if inst in attacker_ids:
+                card["is_attacking"] = True
+
 
 def _normalize_poll(poll: dict[str, Any]) -> dict[str, Any]:
     """Pull the request fields out of a poll, blanking out non-actionable ones.
