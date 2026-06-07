@@ -934,6 +934,39 @@ class AutopilotEngine:
         the user just sees "MANUAL REQUIRED: Bridge couldn't handle X" and
         has no signal whether to file a bug, reconnect, or just wait.
         """
+        # Graceful auto-pass: if we're stuck on a normal ActionsAvailable
+        # priority window where passing is legal, advance the game by passing
+        # instead of halting for manual input. This keeps a match moving when
+        # the planner's chosen action can't be submitted (e.g. it wanted a
+        # second land it doesn't have, or an aura with no legal target) —
+        # passing priority is the correct fallback and prevents a dead-loop.
+        # Non-ActionsAvailable interactive requests (Group/SelectN/Search/...)
+        # are handled earlier by the safe-default net (passing them is illegal),
+        # so we only auto-pass here when the bridge explicitly allows a pass.
+        if (
+            not self._config.dry_run
+            and game_state is not None
+            and self._gre_bridge is not None
+            and getattr(self._gre_bridge, "connected", False)
+            and bool(game_state.get("_bridge_can_pass"))
+        ):
+            breq = str(game_state.get("_bridge_request_type") or "")
+            bcls = str(game_state.get("_bridge_request_class") or "")
+            if (
+                breq in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+                or bcls in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+            ):
+                try:
+                    if self._gre_bridge.submit_pass():
+                        self._log_execution_path(
+                            ExecutionPath.GRE_AWARE,
+                            f"auto-pass to advance (could not act: {reason})",
+                        )
+                        self._state = AutopilotState.IDLE
+                        return
+                except Exception as e:
+                    logger.debug(f"auto-pass fallback failed: {e}")
+
         self._state = AutopilotState.PAUSED
         hint = self._format_bridge_gap_hint(game_state)
         details = ""
