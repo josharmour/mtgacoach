@@ -605,6 +605,14 @@ class AutopilotEngine:
         if not intro or intro == self._last_announced_plan:
             return
         self._last_announced_plan = intro
+        # Show the plan in the Coach Log + match overlay too (not just speak it).
+        # The "PLAN:" prefix marks it strategic so the desktop renders it as
+        # visible advice rather than demoting it.
+        if self._ui_advice_fn is not None:
+            try:
+                self._ui_advice_fn(intro, "AUTOPILOT")
+            except Exception as e:
+                logger.debug("game-plan UI advice failed: %s", e)
         try:
             # speak_fn signature is (text, blocking); announce in the background.
             self._speak_fn(intro, False)

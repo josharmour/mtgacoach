@@ -158,7 +158,7 @@ class CoachTab(QWidget):
     # are the pertinent ones: coaching advice, coach headers, and errors.
     # All other roles (status/dim/debug/default) are hidden unless the
     # View → Show Debug Logging toggle is on.
-    _PERTINENT_LOG_ROLES = frozenset({"advice", "header", "error"})
+    _PERTINENT_LOG_ROLES = frozenset({"advice", "header", "error", "autopilot"})
 
     _LOG_COLORS = {
         "advice": "#69d46c",
@@ -167,6 +167,7 @@ class CoachTab(QWidget):
         "status": "#64c8dc",
         "dim": "#8a8a8a",
         "debug": "#6b7280",
+        "autopilot": "#7fb7e8",
         "default": "#d7d7d7",
     }
 
@@ -687,14 +688,20 @@ class CoachTab(QWidget):
             text = str(payload.get("text", ""))
             is_autopilot = seat_info.strip().upper() == "AUTOPILOT"
             t = text.strip()
+            t_upper = t.upper()
             is_strategic = (
-                t.startswith("PLAN:")
-                or t.startswith("MANUAL REQUIRED")
-                or "MANUAL REQUIRED" in t[:80]
+                t_upper.startswith("PLAN:")
+                or "MANUAL REQUIRED" in t_upper[:80]
             )
             if is_autopilot and not is_strategic:
-                role_header = "debug"
-                role_body = "debug"
+                # Autopilot's per-decision reasoning. Keep it visible (the user
+                # wants to see what the bot is thinking) but on a distinct,
+                # calmer role so it reads differently from coach advice and
+                # strategic PLAN lines. Previously this was demoted to "debug",
+                # which hid it entirely whenever Show Debug Logging was off —
+                # so the bot spoke advice but the Coach Log stayed empty.
+                role_header = "autopilot"
+                role_body = "autopilot"
             else:
                 role_header = "header"
                 role_body = "advice"
