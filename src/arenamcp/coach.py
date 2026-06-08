@@ -2355,6 +2355,36 @@ class CoachEngine:
                     removal_info += " [NO TARGETS]"
                     no_target_card_names.add(name)
 
+            # Auras must enchant a creature. A buff/protective Aura is only
+            # worth casting on a creature YOU control; if you control none, the
+            # only legal target is an opponent's creature and casting it just
+            # hands the enemy a free buff. A debuff/removal Aura (Pacifism-style)
+            # is the opposite — it needs an OPPONENT creature. Detect both so we
+            # don't recommend an Aura that can only hit the wrong side.
+            is_aura = "aura" in type_line and "enchantment" in type_line
+            if is_aura and "enchant creature" in oracle_lower and "[NO TARGETS]" not in removal_info:
+                def _is_creature(c: dict) -> bool:
+                    tl = c.get("type_line", "").lower()
+                    return (("creature" in tl or "CardType_Creature" in c.get("card_types", []))
+                            and "land" not in tl)
+                my_creatures = [c for c in battlefield
+                                if c.get("controller_seat_id") == local_seat and _is_creature(c)]
+                enemy_creatures = [c for c in battlefield
+                                   if c.get("controller_seat_id") not in (None, local_seat) and _is_creature(c)]
+                debuff_markers = (
+                    "loses all abilities", "can't attack", "can't block",
+                    "doesn't untap", "base power and toughness", "is a coward",
+                    "can't be blocked by", "as long as enchanted",
+                )
+                is_debuff_aura = (
+                    bool(re.search(r"gets? -\d+/-?\d+", oracle_lower))
+                    or any(m in oracle_lower for m in debuff_markers)
+                )
+                relevant = enemy_creatures if is_debuff_aura else my_creatures
+                if not relevant:
+                    removal_info += " [NO TARGETS]"
+                    no_target_card_names.add(name)
+
             is_basic_land = "land" in type_line and ("basic" in type_line or name in ["Plains", "Island", "Swamp", "Mountain", "Forest"])
             oracle_stripped = self._remove_reminder_text(oracle_text) if oracle_text else ""
             show_oracle = bool(oracle_text) and not is_basic_land
