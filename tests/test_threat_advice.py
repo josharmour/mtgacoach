@@ -239,3 +239,18 @@ def test_debuff_aura_with_enemy_creature_is_castable():
 
     assert "[NO TARGETS]" not in context
     assert "Cast Reprobation" in context.split("Legal:", 1)[1].split("\n", 1)[0]
+
+
+def test_system_prompts_warn_against_pointless_protective_abilities():
+    """Regression for the Adanto Vanguard report: the coach told the user to
+    activate a 'Pay 4 life: indestructible' ability with no blockers and no
+    removal on the stack — pure life loss. Both system prompts must carry an
+    explicit rule against paying life for protection without a concrete threat."""
+    from arenamcp.coach import DEFAULT_SYSTEM_PROMPT, CONCISE_SYSTEM_PROMPT
+
+    for prompt in (DEFAULT_SYSTEM_PROMPT, CONCISE_SYSTEM_PROMPT):
+        low = prompt.lower()
+        assert "indestructible" in low
+        assert "protection" in low or "hexproof" in low
+        # The rule must tie protection to an actual threat, not blanket activation.
+        assert "threat" in low

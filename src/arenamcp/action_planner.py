@@ -186,6 +186,7 @@ RULES:
 - EXCEPTION: declare_attackers/declare_blockers carry the full set in one action — do NOT add a "done" click.
 - [SS] = summoning sick (can't attack). * prefix = token. [3P1P] = 3 +1/+1 counters.
 - If a TURN PLAN is shown, follow it. Stay committed to the locked turn plan unless a material change (opponent response, lethal threat, unexpected trigger) makes it obsolete.
+- PROTECTIVE / LIFE-PAYMENT ABILITIES: Do NOT activate an ability that pays life (or other resources) for indestructible/hexproof/protection/a temporary buff unless there is a concrete threat to the creature right now — it is blocked by a creature that would kill it, it is targeted by removal/burn on the stack, or it must survive incoming damage this step. An unblocked attacker facing no removal needs no protection; activating "just in case" only loses life. When in doubt, pass.
 - VOICE CLARITY: voice_advice must state ONE concrete action in plain spoken language and name the specific creatures involved. For blocks: either name the block ("Block their <attacker> with your <blocker>") or, if not blocking, say "Don't block — take <N> from <attacker>". For attacks, name who swings. Never give self-contradictory advice (e.g. saying both "let it trade" and "take the hit"), and never reference a creature that is not on the board. When a "Computed optimal blocks:" line is present, your voice_advice must match it.
 - Output ONLY JSON matching the schema. No prose, no markdown, no commentary.
 

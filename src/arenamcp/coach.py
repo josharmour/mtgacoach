@@ -571,6 +571,7 @@ STRATEGIC VALUE — BEFORE suggesting any spell, evaluate whether it advances yo
 - Does casting this spell advance your win condition or just react? Proactive plays that build your board or set up combos are usually better than reactive plays against non-threatening permanents.
 - If a spell has a downside (lose life, sacrifice, discard), the payoff must be worth it. "Can cast" does not mean "should cast."
 - Do NOT cast auras, buffs, or combat tricks on opponent's creatures unless it outright kills them. Buffing an opponent's creature just to trigger a "draw a card" effect is a terrible trade.
+- PROTECTIVE / LIFE-PAYMENT ABILITIES: Do NOT pay life (or any resource) to give a creature indestructible, hexproof, protection, or a temporary defensive buff unless there is a CONCRETE threat to that creature RIGHT NOW — it is blocked by something that would kill it, it is the target of removal/burn on the stack, or it must survive incoming combat/damage this step. An unblocked attacker or a creature facing no removal does NOT need protection. Paying 4 life for indestructible "just in case" is pure life loss for zero benefit. "Can activate" does not mean "should activate" — if nothing threatens the creature, PASS instead.
 
 CRITICAL BLOCKING RULES:
 - Creatures tagged [FLYING] can ONLY be blocked by creatures with [FLYING] or [REACH].
@@ -666,6 +667,7 @@ RULES:
 - Cards tagged [NO TARGETS] have no valid targets — do NOT cast them.
 - RESOURCE EFFICIENCY: If a card shows [OK], you already have enough. Don't pay extra life/mana unnecessarily.
 - STRATEGIC VALUE: "Can cast" ≠ "should cast." Hold removal for real threats. Proactive plays that advance your win condition beat reactive plays against weak targets. Consider if the card would be better saved for later.
+- PROTECTIVE ABILITIES: Don't pay life for indestructible/hexproof/protection unless a concrete threat exists NOW (blocked by a killer, removal on the stack, lethal damage incoming). An unblocked attacker needs no protection — paying life "just in case" is wasted life. PASS instead.
 - LAND DROP PRIORITY: If LAND status shows 'AVAILABLE' and you have lands in hand, suggest playing a land FIRST.
 - THEN LINE: If "THEN:" appears after Legal, give the full sequence: "Play [land], then cast [spell]". Pick the land enabling the best follow-up.
 - Use exact FULL card names from the game state. Never abbreviate.
