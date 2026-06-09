@@ -1,3 +1,35 @@
+# ⚠️ CORRECTION (2026-06-09)
+
+Findings #1, #2, and #3 below were **misdiagnosed**. They are not live
+failures — they are **pytest fixtures leaking into the shared log**. Every
+pytest run appended test logging to `~/.arenamcp/standalone.log` (because
+`arenamcp.standalone` calls `configure_logging()` at import time), and the
+overnight test runs wrote the exact strings analyzed below:
+
+- `verification timed out after 0.01s` → `tests/test_autopilot_bridge_lock.py`
+  sets `verification_timeout=0.01`.
+- `MysteryReq` → a fixture request type in the same test file.
+- The `cast_spell (Shock)` / `game_state_id stayed at 123` cascade → scripted
+  planner fixtures (`response='completely invalid'`, `'Forest broken bowl'`).
+
+Fixed by `tests/conftest.py` + an `ARENAMCP_LOG_FILE` override in
+`logging_config.py` — pytest now logs to a temp file.
+
+**The real live failure** (session 2026-06-07 21:46, Linux/Proton): BepInEx
+was never injected into MTGA, so the bridge plugin never connected, and with
+no OS-input backend on Linux every autopilot action died "Bridge offline."
+Root cause: the Steam launch options for MTGA (app 2141910) no longer contain
+`WINEDLLOVERRIDES="winhttp=n,b"` — they were replaced by the Untapped
+companion options. BepInEx's `winhttp.dll` doorstop silently doesn't load
+without that override. Fixes shipped: autopilot now waits briefly for the
+plugin to reconnect before declaring MANUAL REQUIRED, and the bridge warns
+once (with the launch-options hint) when no plugin ever connects.
+
+#4 (no-attackers auto-confirm) and #5 (Escape Tunnel name lookup) remain
+plausible live issues — unverified either way.
+
+---
+
 # Overnight autopilot findings (2026-06-07, while you slept)
 
 You asked me to fix autopilot autonomously overnight. Here's the honest scope I

@@ -243,6 +243,24 @@ namespace MtgaCoachBridge
                     // Back off on repeated timeouts so we don't spin.
                     retryMs = System.Math.Min(maxRetryMs, retryMs * 2);
                 }
+                catch (System.Net.Sockets.SocketException sex)
+                {
+                    // Connection refused = Python server not running. Same
+                    // situation as a connect timeout, so same treatment:
+                    // back off and log every 10th attempt. (Previously this
+                    // reset the retry to 200ms and logged EVERY attempt —
+                    // ~5 log lines/sec for as long as Python was down.)
+                    consecutiveTimeouts++;
+                    if (consecutiveTimeouts == 1 || consecutiveTimeouts % 10 == 0)
+                    {
+                        _log.LogInfo(
+                            $"TCP client: Python server not available " +
+                            $"({sex.SocketErrorCode}, attempt {consecutiveTimeouts}), " +
+                            $"retrying in {retryMs}ms"
+                        );
+                    }
+                    retryMs = System.Math.Min(maxRetryMs, retryMs * 2);
+                }
                 catch (Exception ex)
                 {
                     _log.LogWarning($"TCP client error: {ex.GetType().Name}: {ex.Message}");

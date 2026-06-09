@@ -208,6 +208,15 @@ class AutopilotConfig:
     # to simulate actions with mouse clicks. Actions the bridge cannot
     # submit are surfaced as MANUAL REQUIRED and auto-filed as bridge bugs.
     bridge_only_when_connected: bool = True
+    # When the bridge is the only execution path and it's disconnected,
+    # wait up to this long for the plugin to reconnect before declaring
+    # MANUAL REQUIRED. The plugin's reconnect loop retries every 0.2-2s,
+    # so a transient drop (scene transition, Python restart) recovers well
+    # inside this window. 0 disables the wait.
+    bridge_reconnect_wait: float = 4.0
+    # After a wait expires without a connection, skip further waits for
+    # this long so a dead plugin doesn't add seconds to every action.
+    bridge_reconnect_wait_cooldown: float = 20.0
 
 
 class AutopilotEngine:
@@ -327,6 +336,10 @@ class AutopilotEngine:
         # GRE bridge for direct action submission (bypasses mouse clicks)
         self._gre_bridge: GREBridge = get_bridge()
         self._gre_bridge_failed_methods: set[str] = set()
+        # Last time a bridge-reconnect wait expired without the plugin
+        # showing up — used to avoid stacking multi-second waits on every
+        # action of every plan while the plugin is genuinely gone.
+        self._last_bridge_wait_failed_at: float = 0.0
         self._bridge_preloaded_actions: Optional[list[dict[str, Any]]] = None
 
         # Persistent strategic GAME PLAN layer (win conditions + path), reformed
@@ -3282,6 +3295,57 @@ class AutopilotEngine:
 
     # --- Action Execution Handlers ---
 
+    def _wait_for_bridge_reconnect(self) -> bool:
+        """Briefly wait for the GRE bridge plugin to reconnect.
+
+        In bridge-only mode the bridge is the sole execution path; when it
+        drops (MTGA scene transition, Python server restart) the plugin's
+        reconnect loop comes back within ~0.2-2s. Waiting here converts a
+        transient drop into a successful submit instead of a per-action
+        MANUAL REQUIRED cascade.
+
+        Returns True only if the bridge is connected on exit. After an
+        unsuccessful wait, further waits are skipped for
+        ``bridge_reconnect_wait_cooldown`` seconds so a genuinely dead
+        plugin (e.g. BepInEx not injected) doesn't slow every action.
+        """
+        if self._config.dry_run or not self._config.bridge_only_when_connected:
+            return False
+        wait_budget = self._config.bridge_reconnect_wait
+        if wait_budget <= 0:
+            return False
+        if getattr(self._gre_bridge, "connected", False):
+            return True
+        now = time.monotonic()
+        if (
+            now - self._last_bridge_wait_failed_at
+            < self._config.bridge_reconnect_wait_cooldown
+        ):
+            return False
+        self._notify(
+            "AUTOPILOT",
+            f"Bridge offline — waiting up to {wait_budget:.0f}s for the "
+            "plugin to reconnect...",
+        )
+        deadline = now + wait_budget
+        while time.monotonic() < deadline and not self._abort_event.is_set():
+            try:
+                if self._gre_bridge.connected or self._gre_bridge.connect():
+                    logger.info("Bridge reconnected during wait; retrying via bridge")
+                    return True
+            except Exception as e:
+                logger.debug(f"Bridge reconnect attempt failed: {e}")
+            time.sleep(0.25)
+        self._last_bridge_wait_failed_at = time.monotonic()
+        logger.warning(
+            "Bridge still offline after %.1fs wait — the MtgaCoachBridge "
+            "plugin isn't connecting. If MTGA is running, BepInEx is likely "
+            "not injected. On Linux/Proton, Steam launch options must "
+            'include: WINEDLLOVERRIDES="winhttp=n,b" %%command%%',
+            wait_budget,
+        )
+        return False
+
     def _try_gre_bridge(
         self,
         action: GameAction,
@@ -5011,6 +5075,16 @@ class AutopilotEngine:
         # Try GRE bridge first (direct action submission, no mouse needed)
         if not self._config.dry_run:
             gre_result = self._try_gre_bridge(action, game_state)
+            if (
+                gre_result is None
+                and not getattr(self._gre_bridge, "connected", False)
+                and self._wait_for_bridge_reconnect()
+            ):
+                # Bridge came back mid-window — retry the submission instead
+                # of cascading into MANUAL REQUIRED (live failure 2026-06-07:
+                # every action in a match died "Bridge offline" because the
+                # executor never gave the plugin's reconnect loop a chance).
+                gre_result = self._try_gre_bridge(action, game_state)
             if gre_result is not None:
                 return gre_result
 

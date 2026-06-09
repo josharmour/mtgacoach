@@ -20,6 +20,7 @@ import re
 import select
 import socket
 import struct
+import sys
 import threading
 import time
 from typing import Any, Optional
@@ -142,6 +143,13 @@ class GREBridge:
         self._client_socket = None  # The accepted client TCP socket
         self._pipe_file = None      # Wrapped file object for writing/reading
         self._pipe_lock = threading.Lock()  # Serialize socket I/O across threads
+        # No-plugin diagnostics: when the server listens but nothing ever
+        # connects, the plugin isn't running (most often BepInEx isn't
+        # injected). Warn once with an actionable hint instead of staying
+        # silently "offline" all match (live failure 2026-06-07).
+        self._server_started_at: Optional[float] = None
+        self._ever_connected = False
+        self._no_plugin_warned = False
 
     @property
     def connected(self) -> bool:
@@ -167,6 +175,7 @@ class GREBridge:
                 s.listen(1)
                 s.setblocking(False)
                 self._server_socket = s
+                self._server_started_at = time.monotonic()
                 logger.info("GRE bridge TCP server listening on 127.0.0.1:44222")
 
             # Phase 2: Check for incoming client connection (non-blocking)
@@ -181,6 +190,7 @@ class GREBridge:
             self._client_socket = client_sock
             self._pipe_file = client_sock.makefile("rwb", buffering=0)
             self._connected = True
+            self._ever_connected = True
 
             logger.info(f"GRE bridge: plugin connected from {addr}")
 
@@ -253,12 +263,50 @@ class GREBridge:
     def stop_keepalive(self) -> None:
         self._keepalive_stop.set()
 
+    # How long the server may listen with zero plugin connections before
+    # we conclude the plugin isn't running and warn the user.
+    _NO_PLUGIN_HINT_AFTER_S = 30.0
+
+    def _maybe_warn_no_plugin(self) -> None:
+        """One-time actionable warning when no plugin has ever connected.
+
+        A listening server with zero connections for 30s+ means the
+        MtgaCoachBridge plugin isn't running — its reconnect loop retries
+        every 0.2-2s whenever it's alive. The usual cause is BepInEx not
+        being injected (on Linux/Proton: missing WINEDLLOVERRIDES in the
+        Steam launch options; on Windows: missing winhttp.dll/plugin).
+        """
+        if self._ever_connected or self._no_plugin_warned:
+            return
+        if self._server_socket is None or self._server_started_at is None:
+            return
+        if time.monotonic() - self._server_started_at < self._NO_PLUGIN_HINT_AFTER_S:
+            return
+        self._no_plugin_warned = True
+        if sys.platform.startswith("linux"):
+            hint = (
+                "On Linux/Proton, BepInEx only injects when the Steam launch "
+                "options for MTGA include: WINEDLLOVERRIDES=\"winhttp=n,b\" "
+                "%command% — check they weren't overwritten."
+            )
+        else:
+            hint = (
+                "Check that BepInEx and MtgaCoachBridge.dll are installed in "
+                "the MTGA folder (desktop app → Repair tab can reinstall them)."
+            )
+        logger.warning(
+            "GRE bridge: server listening but no plugin connection after "
+            f"{self._NO_PLUGIN_HINT_AFTER_S:.0f}s. If MTGA is running, the "
+            f"MtgaCoachBridge plugin is not loading. {hint}"
+        )
+
     def _keepalive_loop(self, interval: float) -> None:
         while not self._keepalive_stop.is_set():
             try:
                 if not self._connected:
                     # Cheap reconnect attempt (respects _reconnect_cooldown)
                     self.connect()
+                    self._maybe_warn_no_plugin()
                 else:
                     age = time.monotonic() - self._last_ping_at
                     if age >= self._ping_max_age:

@@ -18,7 +18,11 @@ from pathlib import Path
 
 # Shared constants
 LOG_DIR = Path.home() / ".arenamcp"
-LOG_FILE = LOG_DIR / "standalone.log"
+# ARENAMCP_LOG_FILE redirects file logging away from the live log; pytest
+# sets it (tests/conftest.py) so test-fixture noise never lands in
+# ~/.arenamcp/standalone.log and gets mistaken for live failures.
+_env_log_file = os.getenv("ARENAMCP_LOG_FILE")
+LOG_FILE = Path(_env_log_file) if _env_log_file else LOG_DIR / "standalone.log"
 
 # Shared format used by every handler
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
@@ -44,7 +48,7 @@ def configure_logging(*, console: bool = False) -> None:
         return
     _configured = True
 
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     level_name = os.getenv("ARENAMCP_LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
