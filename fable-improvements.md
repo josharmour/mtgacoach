@@ -18,9 +18,20 @@
   the same set), autopilot `_try_typed_decision_path` runs before legacy
   planning. **ActionsAvailable intentionally stays on the legacy strategic
   path** (turn plans, combat solver, land-drop-first are richer) — it migrates
-  in Phase C. Tests: `test_decisions.py`, `test_typed_decision_path.py`.
-- [ ] **Phase C** — items 2 + 3 (request-identity tracking + submission FSM)
+  in Phase E (below). Tests: `test_decisions.py`, `test_typed_decision_path.py`.
+- [x] **Phase C** — items 2 + 3 (request-identity tracking + submission FSM) — done 2026-06-09
+  `request_tracker.py`: content-addressed request identity (request type +
+  option set — survives the GRE's msgId/gameStateId churn), one in-flight
+  submission per request, observation-driven settlement (different decision
+  → ADVANCED; same fingerprint after a 2s grace → REJECTED), hard cap of 3
+  submissions per request (then one MANUAL REQUIRED + stand-down), escapes
+  only after ≥2 real rejections. Wired into the typed-decision path; resets
+  on new match. Tests: `test_request_tracker.py`.
 - [ ] **Phase D** — item 5 (stall corpus → CI harness)
+- [ ] **Phase E** (added) — migrate ActionsAvailable onto the typed pipeline
+  (turn plans / combat solver / land-drop-first re-expressed over
+  `DecisionOption`s) and retire the legacy string planning path entirely —
+  the acceptance-criteria grep proof lands here.
 **Origin:** First live bridge sessions on Linux/Proton (2026-06-09). Two bot
 matches and one ranked Brawl match surfaced a *class* of autopilot failures
 that per-bug patches cannot close out. This doc is the durable plan for the

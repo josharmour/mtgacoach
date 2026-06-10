@@ -159,6 +159,35 @@ def test_typed_path_handles_mulligan(monkeypatch):
     assert bridge.submitted == [("mulligan", True)]
 
 
+def test_typed_path_fsm_blocks_double_submit_and_exhausts(monkeypatch):
+    """One in-flight submission per request; after the cap the path
+    declares MANUAL REQUIRED once and owns the trigger (no legacy replan,
+    no coaching fall-through)."""
+    bridge = _TypedBridge(_TARGET_POLL)
+    planner = _planner_with('{"option_ids": ["tgt:2"], "reasoning": "x"}')
+    eng = _engine(monkeypatch, bridge, planner)
+    monkeypatch.setattr(eng._request_tracker, "REJECT_GRACE_S", 0.0)
+
+    # 1st call: submits.
+    assert eng._try_typed_decision_path(_state(), "decision_required") is True
+    assert bridge.submitted == [("targets", 2)]
+
+    # 2nd/3rd calls: window re-presented (same poll) → rejection counted,
+    # resubmit allowed up to the cap.
+    assert eng._try_typed_decision_path(_state(), "decision_required") is True
+    assert eng._try_typed_decision_path(_state(), "decision_required") is True
+    assert len(bridge.submitted) == 3
+
+    # 4th call: cap reached → owns the trigger, no 4th submission.
+    pauses = []
+    monkeypatch.setattr(
+        eng, "_pause_for_manual", lambda reason, gs=None: pauses.append(reason)
+    )
+    assert eng._try_typed_decision_path(_state(), "decision_required") is True
+    assert len(bridge.submitted) == 3
+    assert pauses and "not accepted after" in pauses[0]
+
+
 def test_planner_respects_max_select():
     planner = _planner_with(
         '{"option_ids": ["sel:10", "sel:11", "sel:12"], "reasoning": "all"}'

@@ -353,6 +353,10 @@ class AutopilotEngine:
         self._window_first_seen_at: float = 0.0
         self._given_up_window_sig: Optional[tuple[Any, ...]] = None
         self._recent_submission_times: deque = deque(maxlen=32)
+        # Per-request submission FSM (fable Phase C) — content-addressed
+        # request identity, one in-flight submission per request.
+        from arenamcp.request_tracker import RequestTracker
+        self._request_tracker = RequestTracker()
         self._runaway_tripped_turn: Optional[int] = None
         self._escape_budget_turn: int = -1
         self._escape_count_this_turn: int = 0
@@ -1774,6 +1778,7 @@ class AutopilotEngine:
                 self._cast_rollback_counts.clear()
                 self._last_cast_submitted = None
                 self._runaway_tripped_turn = None
+                self._request_tracker.reset()
             self._max_seen_turn = max(self._max_seen_turn, turn_num)
 
             # Runaway protection: once tripped, stand down for the rest of
@@ -3538,10 +3543,36 @@ class AutopilotEngine:
             return None
 
         from arenamcp.decisions import build_pending_decision, submit_option
+        from arenamcp.request_tracker import decision_fingerprint
 
         decision = build_pending_decision(poll)
+        # Feed the tracker the current decision (or None) so any in-flight
+        # submission settles as ADVANCED/REJECTED before we act.
+        fp = decision_fingerprint(decision) if decision else None
+        self._request_tracker.observe(fp)
         if decision is None or decision.request_type not in self._TYPED_DECISION_FAMILIES:
             return None
+        assert fp is not None
+
+        if not self._request_tracker.may_submit(fp):
+            if self._request_tracker.exhausted(fp):
+                # Answered MAX times without the game advancing — a human
+                # is needed. Declare once (sets the given-up window) and
+                # own the trigger so coaching doesn't replan it either.
+                self._pause_for_manual(
+                    f"{decision.request_type} not accepted after "
+                    f"{self._request_tracker.MAX_SUBMISSIONS_PER_REQUEST} "
+                    "submissions",
+                    game_state,
+                )
+                return True
+            # A submission is in flight — give it time to settle.
+            logger.debug(
+                "typed-decision: submission in flight for %s; waiting",
+                decision.request_type,
+            )
+            self._state = AutopilotState.IDLE
+            return True
 
         option_ids = self._planner.plan_decision_options(decision, game_state)
         if not option_ids:
@@ -3552,6 +3583,7 @@ class AutopilotEngine:
             for oid in option_ids
         ]
         if submit_option(self._gre_bridge, decision, option_ids):
+            self._request_tracker.note_submitted(fp)
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE,
                 f"typed-decision {decision.request_type}: {', '.join(labels)}",
