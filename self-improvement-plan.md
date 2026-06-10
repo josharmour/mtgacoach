@@ -77,13 +77,18 @@ The volume sources that DO work, today:
 | **Autopilot vs real humans (ranked)** | works, used live | strategy under real opposition | high (use judiciously) |
 
 The missing piece for unattended Sparky grinding is **requeueing between
-matches** — menu navigation. XTest input is dead on Wayland, but the
-plugin can do it the same way BotBattleBridge drives scenes: decompiled
-`HomePageContentController.SetupBotMatch(selectedEvent, ...)` is the
-client's own bot-match entry point. A `queue_bot_match` bridge command
-invoking it is a far smaller lift than the BotBattleScene handshake and
-turns autopilot into an unattended data grinder:
-`queue_bot_match → autopilot plays → packet recorded → repeat`.
+matches**. Decompile findings (2026-06-09 night) — the client's join flow
+in `HomePageContentController.Coroutine_JoinBotMatch` is:
+
+1. `EAiBotMatchTypeUtil.GetBotMatchType(eventContext.PlayerEvent.EventInfo.EventId)`
+2. `botMatchServiceWrapper.AIBotMatch(DeckInfoV3.FromDeckInfo(...deck...),
+   botTool.DeckHeuristic.GUID, botMatchType)` — async Promise (server call)
+3. on success: `matchmaking.SetupBotMatch(eventContext, LoadSceneMode.Additive)`
+
+So `queue_bot_match` must reflect: the bot-match EventContext, the
+selected deck (DecksManager), the bot heuristic GUID, and await the
+promise before SetupBotMatch — doable, but needs live MTGA iteration
+(deploy → restart → probe). Planned for a daytime session, NOT blind.
 
 Champion/challenger gating (`run_pipeline.py`) already prevents a bad
 checkpoint from being promoted: hard legality/reasoning floors, win-rate
