@@ -1256,7 +1256,7 @@ class CoachEngine:
                 strategy = be.complete(
                     DECK_ANALYSIS_PROMPT,
                     user_message,
-                    max_tokens=2048,
+                    max_tokens=4096,
                     use_thinking=True,
                 )
             except TypeError:
@@ -3409,7 +3409,7 @@ class CoachEngine:
                 be.complete,
                 system_prompt,
                 user_message,
-                2000,
+                4096,
                 request_timeout_s=api_timeout,
             )
         else:
@@ -3580,7 +3580,7 @@ class CoachEngine:
                 be.complete,
                 POST_MATCH_ANALYSIS_PROMPT,
                 user_message,
-                2048,
+                4096,
                 **submit_kwargs,
             )
         else:

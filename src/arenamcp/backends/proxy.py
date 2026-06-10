@@ -170,7 +170,12 @@ class ProxyBackend:
         self,
         system_prompt: str,
         user_message: str,
-        max_tokens: int = 1500,
+        # 4096 (was 1500): thinking-variant local models (gemma-4-31b-it)
+        # burn hidden reasoning tokens inside this cap before any visible
+        # output — 1500 returned EMPTY advice on large game-state prompts
+        # (same failure as the eval harness hit 2026-06-09). A cap, not a
+        # target: online models are unaffected.
+        max_tokens: int = 4096,
         temperature: float = 0.3,
         request_timeout_s: Optional[float] = None,
     ) -> str:
