@@ -477,8 +477,13 @@ def optimal_attacks(
             blk_killed_mat = 0
         else:
             damage_through = opp_block.damage_through
-            atk_lost_mat = opp_block.blockers_lost_material  # from opp POV, "blockers" = our attackers
-            blk_killed_mat = opp_block.attackers_killed_material  # their creatures we kill
+            # optimal_blocks was called with OUR creatures as `attackers`
+            # and THEIRS as `blockers`, so the roles carry over directly:
+            # attackers killed = our attackers lost; blockers lost = their
+            # creatures we killed. (These were swapped before 2026-06-09,
+            # which made suicidal attacks score as profitable trades.)
+            atk_lost_mat = opp_block.attackers_killed_material
+            blk_killed_mat = opp_block.blockers_lost_material
 
         # Crackback — the creatures we didn't attack with, plus whatever
         # opponent will attack with next turn (we take this list in

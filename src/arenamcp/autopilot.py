@@ -1875,6 +1875,19 @@ class AutopilotEngine:
                                 "Autopilot: attack intended this turn — declaring "
                                 f"{intended_attackers} instead of confirming empty"
                             )
+                    if not intended_attackers:
+                        # No planner intent — ask the combat solver before
+                        # submitting an empty attack. Live finding 2026-06-06:
+                        # autopilot confirmed "no attackers" every combat even
+                        # with safe profitable attacks on board, because the
+                        # only attack source was turn-plan intent.
+                        solver_names = self._solver_attack_names(game_state)
+                        if solver_names:
+                            intended_attackers = solver_names
+                            logger.info(
+                                "Autopilot: combat solver picked attackers "
+                                f"{solver_names}; declaring instead of empty confirm"
+                            )
                     return self._run_bridge_action(
                         GameAction(
                             action_type=ActionType.DECLARE_ATTACKERS,
@@ -3748,6 +3761,90 @@ class AutopilotEngine:
             f"among {len(casting_entries)} entries: {available}"
         )
         return None
+
+    def _solver_attack_names(self, game_state: dict[str, Any]) -> list[str]:
+        """Deterministic attack pick for auto-confirmed DeclareAttackers.
+
+        Used when a DeclareAttackers window is about to be auto-confirmed
+        with no planner attack intent. Returns attacker names only when the
+        combat solver's best plan is strictly better than not attacking
+        (the solver scores the empty plan too); otherwise [] keeps the
+        empty-confirm behavior.
+        """
+        try:
+            from arenamcp.combat_solver import optimal_attacks
+        except Exception:
+            return []
+
+        ctx = game_state.get("decision_context") or {}
+        legal_names = {str(n) for n in (ctx.get("legal_attackers") or []) if n}
+        if not legal_names:
+            return []
+
+        local_seat = next(
+            (p.get("seat_id") for p in game_state.get("players", []) if p.get("is_local")),
+            None,
+        )
+        if local_seat is None:
+            return []
+
+        def _is_creature(c: dict) -> bool:
+            tl = (c.get("type_line") or "").lower()
+            return "creature" in tl or "CardType_Creature" in (c.get("card_types") or [])
+
+        yours: list[dict] = []
+        theirs: list[dict] = []
+        for c in game_state.get("battlefield", []) or []:
+            if not _is_creature(c):
+                continue
+            if c.get("controller_seat_id") == local_seat:
+                yours.append(c)
+            elif c.get("controller_seat_id") is not None:
+                theirs.append(c)
+
+        candidates = [c for c in yours if (c.get("name") or "") in legal_names]
+        if not candidates:
+            return []
+
+        your_life, opp_life = 20, 20
+        for p in game_state.get("players", []) or []:
+            if p.get("is_local"):
+                your_life = p.get("life_total", 20)
+            else:
+                opp_life = p.get("life_total", 20)
+
+        opp_blockers = [c for c in theirs if not c.get("is_tapped")]
+        remaining_blockers = [
+            c for c in yours if c not in candidates and not c.get("is_tapped")
+        ]
+        try:
+            plan = optimal_attacks(
+                candidates,
+                opp_blockers,
+                opp_life,
+                your_life,
+                theirs,
+                remaining_blockers,
+            )
+        except Exception as e:
+            logger.debug(f"combat solver attack fallback failed: {e}")
+            return []
+        if plan is None or not plan.attacker_names:
+            return []
+        # Conservative gate: only override the empty confirm when the swing
+        # actually accomplishes something (damage through or a favorable
+        # material trade). A zero-value attack isn't worth the crackback
+        # risk the solver might have underestimated.
+        if (
+            plan.damage_through <= 0
+            and plan.blockers_killed_material <= plan.attackers_lost_material
+        ):
+            return []
+        logger.info(
+            f"Combat solver attack fallback: {plan.explanation} "
+            f"(score={plan.score:.1f})"
+        )
+        return [n for n in plan.attacker_names if n in legal_names]
 
     def _try_bridge_declare_attackers(self, action: GameAction) -> Optional[ClickResult]:
         """Submit attacker declarations via GRE bridge (two-step NPE handler pattern).
