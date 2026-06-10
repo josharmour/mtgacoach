@@ -497,6 +497,10 @@ namespace MtgaCoachBridge
                     HandleGetGameState(cmd);
                     break;
 
+                case "resolve_grp_ids":
+                    HandleResolveGrpIds(cmd);
+                    break;
+
                 case "get_draft_state":
                     HandleGetDraftState(cmd);
                     break;
@@ -2866,6 +2870,93 @@ namespace MtgaCoachBridge
         }
 
         // -------------------------------------------------------------------
+        // resolve_grp_ids — name resolution through the client itself.
+        // Dynamically-created objects (copies, modified cards) carry runtime
+        // grpIds far above the catalog range; no static database can name
+        // them. The client can: the card-title provider first, then live
+        // game-state instances (instance TitleId -> GreLocProvider).
+        // -------------------------------------------------------------------
+
+        private void HandleResolveGrpIds(PipeCommand cmd)
+        {
+            var gm = GetGameManager();
+            var cardDb = gm != null ? gm.CardDatabase : null;
+            if (cardDb == null)
+            {
+                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "CardDatabase not available" });
+                return;
+            }
+
+            var idsTok = cmd.Json["ids"] as JArray;
+            if (idsTok == null || idsTok.Count == 0)
+            {
+                cmd.SetResponse(new JObject { ["ok"] = true, ["names"] = new JObject() });
+                return;
+            }
+
+            MtgGameState gs = null;
+            try { gs = gm.CurrentGameState; } catch { }
+
+            var names = new JObject();
+            foreach (var tok in idsTok)
+            {
+                uint gid;
+                try { gid = tok.Value<uint>(); } catch { continue; }
+                if (gid == 0) continue;
+
+                string title = null;
+                try
+                {
+                    title = cardDb.CardTitleProvider.GetCardTitle(gid, false);
+                }
+                catch { }
+
+                if (string.IsNullOrEmpty(title) && gs != null)
+                {
+                    try
+                    {
+                        var inst = FindInstanceByGrpId(gs, gid);
+                        if (inst != null && inst.TitleId != 0)
+                            title = cardDb.GreLocProvider.GetLocalizedText(inst.TitleId, null, false);
+                    }
+                    catch { }
+                }
+
+                if (!string.IsNullOrEmpty(title))
+                    names[gid.ToString()] = title;
+            }
+
+            _log.LogInfo($"resolve_grp_ids: {idsTok.Count} requested, {names.Count} resolved");
+            cmd.SetResponse(new JObject { ["ok"] = true, ["names"] = names });
+        }
+
+        private static MtgCardInstance FindInstanceByGrpId(MtgGameState gs, uint grpId)
+        {
+            var zones = new MtgZone[]
+            {
+                SafeZone(() => gs.Battlefield), SafeZone(() => gs.Stack),
+                SafeZone(() => gs.LocalHand), SafeZone(() => gs.OpponentHand),
+                SafeZone(() => gs.LocalGraveyard), SafeZone(() => gs.OpponentGraveyard),
+                SafeZone(() => gs.Exile), SafeZone(() => gs.Command),
+                SafeZone(() => gs.LocalLibrary), SafeZone(() => gs.OpponentLibrary),
+            };
+            foreach (var zone in zones)
+            {
+                if (zone?.VisibleCards == null) continue;
+                foreach (var card in zone.VisibleCards)
+                {
+                    if (card != null && card.GrpId == grpId)
+                        return card;
+                }
+            }
+            return null;
+        }
+
+        private static MtgZone SafeZone(Func<MtgZone> getter)
+        {
+            try { return getter(); } catch { return null; }
+        }
+
         // Phase 2: get_game_state — full game state from MtgGameState
         // -------------------------------------------------------------------
 

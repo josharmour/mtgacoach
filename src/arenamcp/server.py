@@ -1611,6 +1611,25 @@ def get_card_info(arena_id: int) -> dict[str, Any]:
     card = card_db.get_card_by_arena_id(arena_id)
 
     if card is None:
+        # Dynamic in-game objects (copies, modified cards, conjured cards)
+        # get runtime grpIds above the catalog range that no static DB can
+        # name — only the running client can, via resolve_grp_ids on the
+        # bridge. The overlay is filled asynchronously by the poll loop.
+        from arenamcp import dynamic_cards
+        name = dynamic_cards.get_name(arena_id)
+        if name:
+            return {
+                "name": name,
+                "oracle_text": "",
+                "type_line": "",
+                "mana_cost": "",
+                "cmc": 0,
+                "colors": [],
+                "scryfall_uri": None,
+                "dynamic": True,
+            }
+        if arena_id >= dynamic_cards.DYNAMIC_ID_FLOOR:
+            dynamic_cards.note_unresolved(arena_id)
         return {"error": f"Card not found for arena_id {arena_id}"}
 
     return {

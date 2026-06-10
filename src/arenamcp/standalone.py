@@ -2265,6 +2265,14 @@ class StandaloneCoach:
                     self._match_number += 1
                     logger.info(f"Match boundary detected ({last_match_id} -> {curr_match_id}), match #{self._match_number}, resetting coaching state")
 
+                    # New game state can name dynamic grpIds the previous
+                    # one couldn't — allow the bridge to re-ask.
+                    try:
+                        from arenamcp import dynamic_cards
+                        dynamic_cards.reset_asked()
+                    except Exception:
+                        pass
+
                     # Trigger analysis if game_end detection above missed it
                     if self._advice_history and not self._game_end_handled:
                         self._game_end_handled = True

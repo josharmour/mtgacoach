@@ -489,6 +489,46 @@ class GREBridge:
             logger.debug(f"get_pending_actions failed: {e}")
         return None
 
+    def resolve_grp_ids(self, grp_ids: list[int]) -> dict[int, str]:
+        """Resolve card names for grpIds via the running client.
+
+        The only authority for dynamically-created grpIds (copies,
+        modified cards -- ids above the catalog range) is the game client
+        itself: the plugin asks the card-title provider, falling back to
+        live game-state instance TitleIds.
+        """
+        if not grp_ids:
+            return {}
+        try:
+            resp = self._send_safe({
+                "action": "resolve_grp_ids",
+                "ids": [int(g) for g in grp_ids],
+            })
+            if resp.get("ok"):
+                names = resp.get("names") or {}
+                return {int(k): str(v) for k, v in names.items() if v}
+        except (GREBridgeError, ValueError, TypeError) as e:
+            logger.debug(f"resolve_grp_ids failed: {e}")
+        return {}
+
+    def resolve_pending_dynamic_cards(self) -> int:
+        """Drain the dynamic-card overlay's unresolved queue through the
+        client. Called opportunistically from the poll loop; cheap no-op
+        when nothing is pending. Returns names newly resolved."""
+        from arenamcp import dynamic_cards
+
+        ids = dynamic_cards.take_pending()
+        if not ids:
+            return 0
+        names = self.resolve_grp_ids(ids)
+        added = dynamic_cards.put_names(names)
+        if added:
+            logger.info(
+                f"Resolved {added} dynamic card name(s) via client: "
+                + ", ".join(f"{g}={names[g]!r}" for g in list(names)[:5])
+            )
+        return added
+
     def submit_action_by_index(
         self,
         action_index: int,
@@ -1916,6 +1956,14 @@ class BridgeDecisionPoller:
         if not self._was_connected:
             self._was_connected = True
             logger.info("Bridge decision detection active")
+
+        # Opportunistic: resolve any dynamic grpIds the card lookups
+        # couldn't name (runtime copies/modified cards). No-op when the
+        # unresolved queue is empty.
+        try:
+            self._bridge.resolve_pending_dynamic_cards()
+        except Exception as e:
+            logger.debug(f"dynamic card resolve failed: {e}")
 
         # Poll
         resp = self._bridge.get_pending_actions()
