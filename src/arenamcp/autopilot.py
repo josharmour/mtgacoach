@@ -351,6 +351,7 @@ class AutopilotEngine:
         self._last_cast_submitted: Optional[tuple[int, str]] = None
         self._max_seen_turn: int = 0
         self._window_first_seen_at: float = 0.0
+        self._given_up_window_sig: Optional[tuple[Any, ...]] = None
         self._recent_submission_times: deque = deque(maxlen=32)
         self._runaway_tripped_turn: Optional[int] = None
         self._escape_budget_turn: int = -1
@@ -1362,6 +1363,16 @@ class AutopilotEngine:
                 pass
 
         self._state = AutopilotState.PAUSED
+        # Stand down for THIS window: the user has been told to act. Without
+        # this, the coaching loop's backstop re-forces decision_required
+        # every ~2s, each cycle replanning (LLM call) and re-speaking the
+        # same advice against a window only the user can resolve (live
+        # 2026-06-09: dead SelectTargets window → TTS loop).
+        if game_state is not None:
+            try:
+                self._given_up_window_sig = self._priority_window_signature(game_state)
+            except Exception:
+                self._given_up_window_sig = None
         hint = self._format_bridge_gap_hint(game_state)
         details = ""
         if game_state:
@@ -1372,6 +1383,21 @@ class AutopilotEngine:
         logger.warning("Autopilot manual required: %s%s", reason, details)
         suffix = f" [{hint}]" if hint else ""
         self._notify("AUTOPILOT", f"MANUAL REQUIRED: {reason}{suffix}")
+
+    def is_window_given_up(self, game_state: dict[str, Any]) -> bool:
+        """True if MANUAL REQUIRED was already declared for the current window.
+
+        The coaching loop uses this to stop re-forcing decision_required
+        for a window the autopilot has handed to the user. Self-clears as
+        soon as the window signature changes (user acted / game advanced).
+        """
+        sig = getattr(self, "_given_up_window_sig", None)
+        if sig is None:
+            return False
+        try:
+            return self._priority_window_signature(game_state) == sig
+        except Exception:
+            return False
 
     def _format_bridge_gap_hint(
         self, game_state: Optional[dict[str, Any]]
@@ -1762,6 +1788,17 @@ class AutopilotEngine:
                     self._state = AutopilotState.IDLE
                     return False
                 self._runaway_tripped_turn = None
+
+            # Given-up window: MANUAL REQUIRED was already declared for this
+            # exact window — replanning it would only repeat the same LLM
+            # call and TTS line. Stay silent until the window changes.
+            if self.is_window_given_up(game_state):
+                logger.debug(
+                    "Autopilot: window already declared manual-required; "
+                    "standing by for the user"
+                )
+                self._state = AutopilotState.IDLE
+                return False
 
             self._clear_events()
 

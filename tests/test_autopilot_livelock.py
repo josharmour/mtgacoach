@@ -220,6 +220,26 @@ def test_runaway_protection_stands_down_for_turn(monkeypatch):
     assert eng._runaway_tripped_turn is None
 
 
+def test_given_up_window_silences_autopilot(monkeypatch):
+    """After MANUAL REQUIRED, the same window must not be replanned —
+    the backstop re-forcing decision_required every 2s replayed the same
+    LLM call + TTS line forever (live 2026-06-09)."""
+    eng = _engine(monkeypatch)
+    gs = _state(5, pending_decision="Select Targets")
+    gs["_bridge_game_state_id"] = 123
+
+    assert eng.is_window_given_up(gs) is False
+    eng._given_up_window_sig = eng._priority_window_signature(gs)
+    assert eng.is_window_given_up(gs) is True
+    # process_trigger goes silent for this window.
+    assert eng.process_trigger(gs, "decision_required") is False
+
+    # Any window change (user clicked / game advanced) re-arms autopilot.
+    gs2 = dict(gs)
+    gs2["_bridge_game_state_id"] = 124
+    assert eng.is_window_given_up(gs2) is False
+
+
 def test_new_match_clears_rollback_memory(monkeypatch):
     eng = _engine(monkeypatch)
     eng._max_seen_turn = 9

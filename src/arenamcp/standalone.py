@@ -2517,12 +2517,21 @@ class StandaloneCoach:
                     # pending decision that hasn't been handled yet.
                     if self._autopilot_enabled and self._autopilot and pending_now:
                         if "decision_required" not in triggers:
+                            # Don't re-force a window the autopilot has already
+                            # handed to the user (MANUAL REQUIRED). Re-forcing
+                            # replans + re-speaks the same advice every ~2s
+                            # against a window only the user can resolve.
+                            _given_up = False
+                            try:
+                                _given_up = self._autopilot.is_window_given_up(curr_state)
+                            except Exception:
+                                pass
                             dec_ctx = curr_state.get("decision_context") or {}
                             dec_type = dec_ctx.get("type", "")
                             legal = curr_state.get("legal_actions", []) or []
                             sig = f"{pending_now}|{dec_type}|{len(legal)}"
                             now = time.time()
-                            if (
+                            if not _given_up and (
                                 sig != self._last_forced_decision_sig
                                 or (now - self._last_forced_decision_ts) > 2.0
                             ):
