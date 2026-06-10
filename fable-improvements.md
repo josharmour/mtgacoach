@@ -38,7 +38,15 @@
 - [ ] **Phase E** (added) — migrate ActionsAvailable onto the typed pipeline
   (turn plans / combat solver / land-drop-first re-expressed over
   `DecisionOption`s) and retire the legacy string planning path entirely —
-  the acceptance-criteria grep proof lands here.
+  the acceptance-criteria grep proof lands here. Also in scope:
+  - **GroupRequest (London bottoming / ordering) as a typed family** — first
+    live run (2026-06-09 19:01) showed the legacy planner answering
+    `mulligan_keep` against a Group window before the group handler ran.
+  - **Mulligan fingerprint collision**: keep/mull option sets are identical
+    across mulligan rounds, so round 2 looks like a re-present of round 1
+    (false REJECTED; cap could exhaust on a triple mulligan). Real fix:
+    plugin surfaces gameStateId/msgId in get_pending_actions and the
+    fingerprint incorporates them for static-option families.
 **Origin:** First live bridge sessions on Linux/Proton (2026-06-09). Two bot
 matches and one ranked Brawl match surfaced a *class* of autopilot failures
 that per-bug patches cannot close out. This doc is the durable plan for the

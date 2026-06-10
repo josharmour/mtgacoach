@@ -1353,8 +1353,18 @@ class AutopilotEngine:
         # pending interactive (non-ActionsAvailable) request we couldn't handle,
         # let the GRE auto-respond with a legal default so the match keeps
         # going. Optimality is secondary to staying hands-free.
-        if not self._config.dry_run and self._try_auto_respond_escape(
-            game_state, f"manual-required fallback: {reason}"
+        # Age-gated like _maybe_escape_stuck_window: this path fired ~5s into
+        # a London-bottoming GroupRequest (live 2026-06-09 19:01) and
+        # auto-responded the user's mulligan bottoming before the proper
+        # group handler ran. A young window is not stuck — let the normal
+        # handlers have it first.
+        window_age = time.monotonic() - getattr(self, "_window_first_seen_at", 0.0)
+        if (
+            not self._config.dry_run
+            and window_age >= self._ESCAPE_MIN_WINDOW_AGE_S
+            and self._try_auto_respond_escape(
+                game_state, f"manual-required fallback: {reason}"
+            )
         ):
             return
 

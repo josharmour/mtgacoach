@@ -18,6 +18,16 @@ logger = logging.getLogger(__name__)
 # Cache configuration
 CACHE_DIR = Path.home() / ".arenamcp" / "cache" / "scryfall"
 BULK_DATA_URL = "https://api.scryfall.com/bulk-data"
+
+# Scryfall rejects requests without a descriptive User-Agent + Accept
+# header (HTTP 400) — observed live 2026-06-09 when EVERY endpoint
+# (bulk-data, /cards/arena, /cards/named) started returning 400 and the
+# missing negative-cache on that path produced a 25-lookup/second hammer
+# loop. See https://scryfall.com/docs/api (Required Headers).
+_SCRYFALL_HEADERS = {
+    "User-Agent": "mtgacoach/2.3 (+https://github.com/josharmour/mtgacoach)",
+    "Accept": "application/json",
+}
 CACHE_MAX_AGE_HOURS = 24
 API_RATE_LIMIT_MS = 100
 
@@ -90,7 +100,7 @@ class ScryfallCache:
         logger.info("Fetching bulk data manifest from Scryfall...")
 
         # Get bulk data manifest
-        response = requests.get(BULK_DATA_URL, timeout=30)
+        response = requests.get(BULK_DATA_URL, timeout=30, headers=_SCRYFALL_HEADERS)
         response.raise_for_status()
         manifest = response.json()
 
@@ -108,7 +118,7 @@ class ScryfallCache:
         logger.info(f"Downloading bulk data from {download_uri}...")
 
         # Download the bulk data file
-        response = requests.get(download_uri, timeout=300, stream=True)
+        response = requests.get(download_uri, timeout=300, stream=True, headers=_SCRYFALL_HEADERS)
         response.raise_for_status()
 
         bulk_path = self._get_bulk_data_path()
@@ -240,7 +250,7 @@ class ScryfallCache:
         logger.debug(f"Fetching card from API: {url}")
 
         try:
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=10, headers=_SCRYFALL_HEADERS)
             if response.status_code == 404:
                 logger.debug(f"Card not found for arena_id {arena_id}")
                 return None
@@ -321,7 +331,7 @@ class ScryfallCache:
         logger.debug(f"Fetching card by name from API: {name}")
 
         try:
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(url, params=params, timeout=10, headers=_SCRYFALL_HEADERS)
             if response.status_code == 404:
                 logger.debug(f"Card not found by name: {name}")
                 self._name_cache[name] = None  # Cache negative result
@@ -334,4 +344,8 @@ class ScryfallCache:
             return self._card_dict_to_scryfall_card(card_data)
         except requests.RequestException as e:
             logger.warning(f"API request failed for name '{name}': {e}")
+            # Negative-cache failures too: only 404s were cached before, so
+            # a 400/timeout re-fired on EVERY lookup — live 2026-06-09 this
+            # produced 1,700+ requests for one card name in ~70 seconds.
+            self._name_cache[name] = None
             return None
