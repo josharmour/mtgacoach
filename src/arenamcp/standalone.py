@@ -44,7 +44,7 @@ import threading
 import time
 import traceback
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -4476,6 +4476,15 @@ class StandaloneCoach:
             )
             self.ui.status("ANALYSIS", "Generating post-match analysis...")
 
+            # Structured review runs FIRST and independently of the LLM —
+            # deterministic detectors over the match's own artifacts, so the
+            # analyze button always yields verifiable, actionable findings
+            # even if the prose analysis times out or hallucinates.
+            try:
+                self._run_match_review(match_id, match_result, advice_history)
+            except Exception as e:
+                logger.warning(f"match-review failed: {e}")
+
             # Parse replay file for decision-point context
             replay_context = self._extract_replay_context(replay_path)
 
@@ -4584,6 +4593,108 @@ class StandaloneCoach:
             self.ui.status("ANALYSIS", "")
         finally:
             self._post_match_analysis_running = False
+
+    def _run_match_review(
+        self,
+        match_id: str,
+        match_result: str,
+        advice_history: list[dict],
+    ) -> None:
+        """Deterministic post-match review: detect real, evidenced problems
+        and file ONE consolidated GitHub issue when warranted.
+
+        This is what makes the analyze button improve the coach: unlike the
+        prose analysis (which has invented events), every finding here is
+        mechanically derived from the log slice, advice history, and match
+        packet, and carries its evidence lines.
+        """
+        from arenamcp import __version__
+        from arenamcp.match_review import (
+            build_issue, read_log_slice, run_match_review, save_review,
+            should_file_issue,
+        )
+
+        # Log slice from just before the first advice entry.
+        since = None
+        for e in advice_history or []:
+            try:
+                since = datetime.fromisoformat(e["timestamp"])
+                break
+            except (KeyError, ValueError, TypeError):
+                continue
+        log_slice = ""
+        if since is not None:
+            log_slice = read_log_slice(LOG_FILE, since - timedelta(seconds=90))
+
+        # Match packet (decisions + FSM outcomes), if one was recorded.
+        packet = None
+        try:
+            packets_dir = Path.home() / ".arenamcp" / "match_packets"
+            candidates = sorted(
+                packets_dir.glob(f"*{match_id}*.json"),
+                key=lambda p: p.stat().st_mtime,
+            )
+            if candidates:
+                with open(candidates[-1], encoding="utf-8") as f:
+                    packet = json.load(f)
+        except Exception as e:
+            logger.debug(f"match-review packet load failed: {e}")
+
+        findings = run_match_review(
+            advice_history=advice_history,
+            match_result=match_result,
+            log_slice=log_slice,
+            packet=packet,
+        )
+        review_path = save_review(match_id, match_result, findings)
+        if not findings:
+            logger.info("match-review: no findings")
+            return
+
+        sev = {"high": 0, "medium": 0, "low": 0}
+        for f in findings:
+            sev[f.severity] = sev.get(f.severity, 0) + 1
+        logger.info(
+            f"match-review: {len(findings)} findings "
+            f"(high={sev['high']} med={sev['medium']} low={sev['low']}) "
+            f"saved={review_path}"
+        )
+        self.ui.log(
+            f"[bold yellow]Match review: {len(findings)} verified finding(s) "
+            f"({sev['high']} high, {sev['medium']} medium, {sev['low']} low)[/]"
+        )
+        for f in findings:
+            self.ui.log(f"  [{f.severity}] {f.category}: {f.title}")
+
+        if not should_file_issue(findings):
+            self.ui.log("[yellow]Low-severity only — saved locally, no issue filed.[/]")
+            return
+
+        title, body = build_issue(match_id, match_result, findings, version=__version__)
+        token = self._get_github_token_for_auto_bug()
+        if not token:
+            self.ui.log("[yellow]No GitHub token — review saved locally only.[/]")
+            return
+        try:
+            import requests
+            from arenamcp.bugreport import GITHUB_REPO
+            resp = requests.post(
+                f"https://api.github.com/repos/{GITHUB_REPO}/issues",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {token}",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                json={"title": title, "body": body, "labels": ["match-review"]},
+                timeout=12,
+            )
+            if resp.ok:
+                url = str(resp.json().get("html_url", ""))
+                self.ui.log(f"[match-review] Filed: {url}")
+            else:
+                logger.debug(f"match-review GitHub API failed: {resp.status_code}")
+        except Exception as e:
+            logger.debug(f"match-review issue filing failed: {e}")
 
     def _offer_missed_decision_issue(self, missed_decisions: Optional[list[dict]] = None) -> None:
         """Offer to file a GH issue if vision detected missed decisions this match.
