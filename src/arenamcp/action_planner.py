@@ -1790,6 +1790,15 @@ class ActionPlanner:
         action_hint = action.action_type.value.lower()
         if action_hint in ctx_type or ctx_type in action_hint:
             return True
+        # "target_selection" vs "select_target": neither string contains the
+        # other, so the substring check above misses the single most common
+        # decision pairing — the planner's valid target pick got dropped as
+        # illegal and the targeting window stalled (live 2026-06-09,
+        # Nurturing Presence).
+        if ctx_type == "target_selection" and action.action_type in (
+            ActionType.SELECT_TARGET, ActionType.SELECT_N,
+        ):
+            return True
         if ctx_type == "selection_generic" and action.action_type in (
             ActionType.SELECT_N, ActionType.SELECT_TARGET,
             ActionType.SELECT_REPLACEMENT, ActionType.SEARCH_LIBRARY,

@@ -70,6 +70,26 @@ def test_fallback_unchanged_without_ok_tagging():
     assert ActionPlanner._pick_preferred_legal_action(legal) == "Cast Shock"
 
 
+def test_select_target_legal_under_target_selection_context():
+    """'target_selection' decision context must accept select_target plans —
+    the substring heuristic missed this pairing and dropped valid target
+    picks (live 2026-06-09: Nurturing Presence stall)."""
+    p = _planner()
+    from arenamcp.action_planner import GameAction
+
+    action = GameAction(
+        action_type=ActionType.SELECT_TARGET,
+        card_name="Nurturing Presence",
+        target_names=["Light-Paws, Emperor's Voice"],
+    )
+    assert p._is_action_legal(
+        action,
+        ["Select target for Nurturing Presence"],
+        decision_context={"type": "target_selection"},
+        bridge_request=None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Autopilot-side loop breakers
 # ---------------------------------------------------------------------------
