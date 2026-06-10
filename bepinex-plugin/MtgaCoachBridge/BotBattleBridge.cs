@@ -228,20 +228,41 @@ namespace MtgaCoachBridge
                     return Fail(log, "PAPA.CardDatabase is null — db not loaded yet?");
                 }
 
-                // Ensure we are fully loaded past the startup sequence to prevent it from aborting our scene load
+                // Ensure we are fully loaded past the startup sequence to prevent it from aborting our scene load.
+                // The old exact-name allowlist ("HomePage"/"MainNavigation") went stale
+                // with a client update and rejected start_bot_battle forever while MTGA
+                // sat at the Home screen (live 2026-06-09 - 60/60 attempts failed).
+                // Robust version: substring match on home/nav scenes, explicit rejection
+                // only for known startup scenes, and the loaded scene list is included
+                // in the error so a future rename diagnoses itself.
                 bool isHomeLoaded = false;
+                bool isStartupScene = false;
+                var loadedScenes = new List<string>();
                 for (int i = 0; i < UnityEngine.SceneManagement.SceneManager.sceneCount; i++)
                 {
-                    string sname = UnityEngine.SceneManagement.SceneManager.GetSceneAt(i).name;
-                    if (sname == "HomePage" || sname == "MainNavigation")
+                    string sname = UnityEngine.SceneManagement.SceneManager.GetSceneAt(i).name ?? "";
+                    loadedScenes.Add(sname);
+                    string lower = sname.ToLowerInvariant();
+                    if (lower.Contains("home") || lower.Contains("mainnavigation") || lower.Contains("navbar"))
                     {
                         isHomeLoaded = true;
-                        break;
                     }
+                    if (lower.Contains("startup") || lower.Contains("assetprep") || lower.Contains("login") || lower.Contains("bootstrap") || lower.Contains("title"))
+                    {
+                        isStartupScene = true;
+                    }
+                }
+                if (!isHomeLoaded && isStartupScene)
+                {
+                    return Fail(log, "MTGA is still in the startup/login sequence - wait until you see the Home screen! (loaded scenes: " + string.Join(", ", loadedScenes) + ")");
                 }
                 if (!isHomeLoaded)
                 {
-                    return Fail(log, "MTGA is still in the startup/login sequence — wait until you see the Home screen!");
+                    // No recognizable home scene but no startup scene either -
+                    // scene names likely changed again. Log loudly and proceed:
+                    // PAPA + CardDatabase being available is the functional
+                    // prerequisite, and the scene list is in the log for triage.
+                    log.LogWarning("BotBattle: no recognizable home scene (loaded: " + string.Join(", ", loadedScenes) + ") - proceeding because PAPA/CardDatabase are ready");
                 }
 
                 List<uint> localDeck;
