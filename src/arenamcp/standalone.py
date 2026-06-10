@@ -2228,6 +2228,28 @@ class StandaloneCoach:
                                 replay_path=self._get_latest_replay_path(),
                                 reason="event-signal",
                             )
+                            try:
+                                from arenamcp.match_packets import stop_match_packet
+                                packet = stop_match_packet()
+                                if packet:
+                                    packet.result = game_result
+                                    packet.replay_path = self._get_latest_replay_path()
+                                    if self._coach:
+                                        packet.deck_strategy = self._coach._deck_strategy
+                                    if packet.replay_path:
+                                        try:
+                                            from arenamcp.match_history import parse_replay_cosmetics
+                                            cosmetics = parse_replay_cosmetics(packet.replay_path)
+                                            if cosmetics:
+                                                # Header shape: {Local, Opponent:{ScreenName,...}, BattlefieldId}
+                                                packet.opponent_name = (
+                                                    cosmetics.get("Opponent") or {}
+                                                ).get("ScreenName")
+                                        except Exception:
+                                            pass
+                                    packet.save()
+                            except Exception as e:
+                                logger.warning(f"Failed to save match packet on event-signal: {e}")
                 except Exception as e:
                     msg = str(e)
                     if msg != self._last_game_end_check_error:
@@ -2252,6 +2274,28 @@ class StandaloneCoach:
                             replay_path=self._get_latest_replay_path(),
                             reason="match-boundary",
                         )
+                    try:
+                        from arenamcp.match_packets import stop_match_packet
+                        packet = stop_match_packet()
+                        if packet:
+                            packet.result = self._detect_match_result() or "unknown"
+                            packet.replay_path = self._get_latest_replay_path()
+                            if self._coach:
+                                packet.deck_strategy = self._coach._deck_strategy
+                            if packet.replay_path:
+                                try:
+                                    from arenamcp.match_history import parse_replay_cosmetics
+                                    cosmetics = parse_replay_cosmetics(packet.replay_path)
+                                    if cosmetics:
+                                        # Header shape: {Local, Opponent:{ScreenName,...}, BattlefieldId}
+                                        packet.opponent_name = (
+                                            cosmetics.get("Opponent") or {}
+                                        ).get("ScreenName")
+                                except Exception:
+                                    pass
+                            packet.save()
+                    except Exception as e:
+                        logger.warning(f"Failed to save match packet on match-boundary: {e}")
 
                     prev_state = {}
                     last_advice_turn = 0
@@ -2277,6 +2321,14 @@ class StandaloneCoach:
                     self._match_boundary_ts = time.time()
                 if match_id_changed:
                     last_match_id = curr_match_id
+                    if curr_match_id is not None:
+                        try:
+                            from arenamcp.match_packets import start_match_packet
+                            packet = start_match_packet(curr_match_id)
+                            if self._coach:
+                                packet.deck_strategy = self._coach._deck_strategy
+                        except Exception as e:
+                            logger.warning(f"Failed to start match packet: {e}")
 
                 # Debug: Log if turn_num is 0 (every 30 seconds)
                 if turn_num == 0:

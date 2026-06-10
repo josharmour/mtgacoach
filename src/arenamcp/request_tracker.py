@@ -95,6 +95,13 @@ class RequestTracker:
             rec.in_flight = False
             self._in_flight = None
             logger.debug(f"request {flight[0]}: ADVANCED after submit")
+            try:
+                from arenamcp.match_packets import get_current_packet
+                packet = get_current_packet()
+                if packet:
+                    packet.update_outcome(flight, "ADVANCED")
+            except Exception as e:
+                logger.warning(f"MatchPacket: failed to update ADVANCED outcome: {e}")
             return
         age = time.monotonic() - rec.submitted_at
         if age >= self.REJECT_GRACE_S:
@@ -105,6 +112,13 @@ class RequestTracker:
                 f"request {flight[0]}: REJECTED (re-presented {age:.1f}s "
                 f"after submit; rejection #{rec.rejected})"
             )
+            try:
+                from arenamcp.match_packets import get_current_packet
+                packet = get_current_packet()
+                if packet:
+                    packet.update_outcome(flight, "REJECTED")
+            except Exception as e:
+                logger.warning(f"MatchPacket: failed to update REJECTED outcome: {e}")
 
     def may_submit(self, fp: Fingerprint) -> bool:
         rec = self._record(fp)
@@ -125,6 +139,13 @@ class RequestTracker:
         if self._in_flight == fp:
             rec.in_flight = False
             self._in_flight = None
+            try:
+                from arenamcp.match_packets import get_current_packet
+                packet = get_current_packet()
+                if packet:
+                    packet.update_outcome(fp, "ROLLED_BACK")
+            except Exception as e:
+                logger.warning(f"MatchPacket: failed to update ROLLED_BACK outcome: {e}")
 
     # -- queries --------------------------------------------------------
 

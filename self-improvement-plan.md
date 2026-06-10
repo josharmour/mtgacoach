@@ -1,7 +1,7 @@
 # Self-Improvement Plan
 
 **Date:** 2026-06-09
-**Status:** Proposed — packet recorder not yet started
+**Status:** In Progress — packet recorder completed 2026-06-09
 **Companion doc:** [fable-improvements.md](fable-improvements.md) (the typed
 decision pipeline this plan trains against)
 
@@ -147,9 +147,7 @@ CUDA_VISIBLE_DEVICES=1 python -m tools.training.train \
 
 ## Build order (updated 2026-06-09)
 
-1. **Match-packet recorder** (~half day): extend `stall_corpus.py` →
-   `match_packets.py`; hook the match-end path; include replay reference.
-   Data flows from day one of normal play.
+1. [x] **Match-packet recorder** — done 2026-06-09: created `match_packets.py`, hooked decision choice in `autopilot.py` and outcomes in `request_tracker.py`, wired start/stop/save in `standalone.py`. Tests: `test_match_packets.py`.
 2. **`queue_bot_match` plugin command**: unattended Sparky grinding via
    `HomePageContentController.SetupBotMatch` (replaces BotBattleScene).
 3. **Judge + dataset dry run**: `build_dataset.py --judge-backend

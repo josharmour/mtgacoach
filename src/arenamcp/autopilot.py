@@ -3608,6 +3608,13 @@ class AutopilotEngine:
         ]
         if submit_option(self._gre_bridge, decision, option_ids):
             self._request_tracker.note_submitted(fp)
+            try:
+                from arenamcp.match_packets import get_current_packet
+                packet = get_current_packet()
+                if packet:
+                    packet.add_decision(decision, option_ids)
+            except Exception as e:
+                logger.warning(f"MatchPacket: failed to record decision: {e}")
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE,
                 f"typed-decision {decision.request_type}: {', '.join(labels)}",
