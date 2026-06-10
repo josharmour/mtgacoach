@@ -35,7 +35,12 @@
   failures live in `tests/fixtures/stalls/` and run in pytest
   (`test_stall_corpus.py`) — including the assertion that the deterministic
   pick never chooses an unpayable cast.
-- [ ] **Phase E** (added) — migrate ActionsAvailable onto the typed pipeline
+- [~] **Phase E** (in progress) — GroupRequest (London bottoming) joined the
+  typed pipeline 2026-06-09 late: options = cards to bottom, LLM picks by id,
+  legacy worst-card ranking stays as the fallback when the LLM gives no valid
+  pick. Remaining: ActionsAvailable migration + mulligan fingerprint
+  collision (below).
+- [ ] **Phase E remainder** — migrate ActionsAvailable onto the typed pipeline
   (turn plans / combat solver / land-drop-first re-expressed over
   `DecisionOption`s) and retire the legacy string planning path entirely —
   the acceptance-criteria grep proof lands here. Also in scope:

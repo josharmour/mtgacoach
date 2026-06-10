@@ -3531,7 +3531,7 @@ class AutopilotEngine:
     # Interactive families served by the typed-decision path. Mulligan is
     # included; ActionsAvailable intentionally is NOT (legacy strategic
     # planning is still richer there — Phase C migrates it).
-    _TYPED_DECISION_FAMILIES = frozenset({"SelectTargets", "SelectN", "Search", "Mulligan"})
+    _TYPED_DECISION_FAMILIES = frozenset({"SelectTargets", "SelectN", "Search", "Mulligan", "Group"})
 
     def _try_typed_decision_path(
         self, game_state: dict[str, Any], trigger: str
@@ -3555,7 +3555,14 @@ class AutopilotEngine:
         from arenamcp.decisions import build_pending_decision, submit_option
         from arenamcp.request_tracker import decision_fingerprint
 
-        decision = build_pending_decision(poll)
+        def _resolve_instance(iid: int) -> str:
+            for zone in ("hand", "battlefield"):
+                for c in game_state.get(zone) or []:
+                    if isinstance(c, dict) and int(c.get("instance_id") or 0) == iid:
+                        return str(c.get("name") or "")
+            return ""
+
+        decision = build_pending_decision(poll, resolve_instance=_resolve_instance)
         # Feed the tracker the current decision (or None) so any in-flight
         # submission settles as ADVANCED/REJECTED before we act.
         fp = decision_fingerprint(decision) if decision else None
@@ -3598,7 +3605,20 @@ class AutopilotEngine:
             self._state = AutopilotState.IDLE
             return True
 
-        option_ids = self._planner.plan_decision_options(decision, game_state)
+        if decision.request_type == "Group":
+            # Only take Group windows when the LLM gives a valid pick — the
+            # legacy safe-default has a smarter worst-card bottoming ranking
+            # than a blind deterministic fallback, so it keeps that job.
+            try:
+                llm_ids = self._planner._llm_decision_options(decision, game_state)
+            except Exception:
+                llm_ids = []
+            valid = decision.option_ids()
+            option_ids = [o for o in llm_ids if o in valid][: decision.max_select]
+            if len(option_ids) != decision.min_select:
+                return None  # legacy group-default path handles it
+        else:
+            option_ids = self._planner.plan_decision_options(decision, game_state)
         if not option_ids:
             return None
 

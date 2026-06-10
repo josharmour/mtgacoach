@@ -70,12 +70,14 @@ _ACTIONS_AVAILABLE_TYPES = {
 _SELECT_TARGETS_TYPES = {"SelectTargets", "SelectTargetsRequest"}
 _SELECT_N_TYPES = {"SelectN", "SelectNRequest", "Search", "SearchRequest"}
 _MULLIGAN_TYPES = {"Mulligan", "MulliganReq", "MulliganRequest"}
+_GROUP_TYPES = {"Group", "GroupReq", "GroupRequest"}
 
 
 def build_pending_decision(
     poll: Optional[dict[str, Any]],
     *,
     resolve_name: Callable[[int], str] = _default_name_resolver,
+    resolve_instance: Optional[Callable[[int], str]] = None,
 ) -> Optional[PendingDecision]:
     """Build a PendingDecision from a raw get_pending_actions() response.
 
@@ -111,6 +113,8 @@ def build_pending_decision(
         return _build_select_n(
             poll, request_id, rtype, can_cancel, source_label, resolve_name
         )
+    if rtype in _GROUP_TYPES or request_class in _GROUP_TYPES:
+        return _build_group(poll, request_id, can_cancel, source_label, resolve_instance)
     if rtype in _MULLIGAN_TYPES or request_class in _MULLIGAN_TYPES:
         return PendingDecision(
             request_id=request_id,
@@ -266,6 +270,82 @@ def _build_select_n(
     )
 
 
+def _build_group(
+    poll: dict[str, Any],
+    request_id: tuple[int, int],
+    can_cancel: bool,
+    source_label: str,
+    resolve_instance: Optional[Callable[[int], str]],
+) -> Optional[PendingDecision]:
+    """GroupRequest — London mulligan bottoming and ordering windows.
+
+    Option semantics: each option is a card; CHOSEN options go to the
+    bottom group (Library/Bottom), the rest keep (Hand/Top) — mirroring
+    MTGA's LondonWorkflow response shape. Only bottoming-shaped requests
+    (a bottom spec with a positive bound) are mapped; pure ordering
+    windows fall back to the legacy safe-default handler.
+    """
+    payload = poll.get("request_payload") or {}
+    raw_ids = poll.get("group_instance_ids") or payload.get("instanceIds") or []
+    instance_ids: list[int] = []
+    for v in raw_ids:
+        try:
+            iid = int(v)
+        except (TypeError, ValueError):
+            continue
+        if iid:
+            instance_ids.append(iid)
+    if not instance_ids:
+        return None
+
+    specs = poll.get("group_specs") or payload.get("groupSpecs") or []
+    context = str(poll.get("group_context") or payload.get("context") or "")
+
+    bottom_count = 0
+    for spec in specs:
+        if not isinstance(spec, dict):
+            continue
+        zone = str(spec.get("zoneType") or spec.get("zone") or "")
+        sub = str(spec.get("subZoneType") or spec.get("subZone") or "")
+        if "Bottom" in sub or "Library" in zone:
+            for key in ("lowerBound", "upperBound", "lower_bound", "upper_bound"):
+                try:
+                    b = int(spec.get(key) or 0)
+                except (TypeError, ValueError):
+                    b = 0
+                if b > 0:
+                    bottom_count = max(bottom_count, b)
+    if bottom_count <= 0 and "LondonMulligan" in context:
+        bottom_count = max(0, len(instance_ids) - 7)
+    if bottom_count <= 0 or bottom_count > len(instance_ids):
+        return None  # ordering/unknown shape → legacy safe-default path
+
+    options = []
+    for iid in instance_ids:
+        name = ""
+        if resolve_instance is not None:
+            try:
+                name = resolve_instance(iid) or ""
+            except Exception:
+                name = ""
+        options.append(
+            DecisionOption(
+                option_id=f"grp:{iid}",
+                label=(f"Bottom {name}" if name else f"Bottom card #{iid}"),
+                meta={"instance_id": iid},
+            )
+        )
+    return PendingDecision(
+        request_id=request_id,
+        request_type="Group",
+        options=tuple(options),
+        min_select=bottom_count,
+        max_select=bottom_count,
+        can_cancel=can_cancel,
+        source_label=source_label or context,
+    )
+
+
 # ---------------------------------------------------------------------------
 # (De)serialization — used by the stall corpus (fable item 5)
 # ---------------------------------------------------------------------------
@@ -356,5 +436,20 @@ def submit_option(
     if first.startswith("sel:"):
         ids = [int(o.split(":", 1)[1]) for o in chosen if o.startswith("sel:")]
         return bool(bridge.submit_selection(ids))
+    if first.startswith("grp:"):
+        # Chosen = bottom; the rest of the option set keeps (LondonWorkflow
+        # response shape: [Hand/Top keep group, Library/Bottom group]).
+        bottom = [int(o.split(":", 1)[1]) for o in chosen if o.startswith("grp:")]
+        all_ids = [
+            int(o.option_id.split(":", 1)[1])
+            for o in decision.options
+            if o.option_id.startswith("grp:")
+        ]
+        keep = [i for i in all_ids if i not in bottom]
+        groups = [
+            {"ids": keep, "zone": "Hand", "sub_zone": "Top"},
+            {"ids": bottom, "zone": "Library", "sub_zone": "Bottom"},
+        ]
+        return bool(bridge.submit_group(groups))
     logger.warning("submit_option: unknown option id scheme %r", first)
     return False

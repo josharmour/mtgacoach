@@ -203,3 +203,69 @@ def test_planner_respects_max_select():
     )
     chosen = planner.plan_decision_options(d, {"turn": {}})
     assert chosen == ["sel:10", "sel:11"]
+
+
+_GROUP_POLL = {
+    "has_pending": True,
+    "request_type": "Group",
+    "group_instance_ids": [101, 102, 103, 104, 105, 106, 107, 108],
+    "group_specs": [
+        {"zoneType": "Hand", "subZoneType": "Top"},
+        {"zoneType": "Library", "subZoneType": "Bottom", "lowerBound": 1},
+    ],
+    "group_context": "LondonMulligan",
+}
+
+
+def test_group_family_builds_bottoming_decision():
+    d = build_pending_decision(
+        _GROUP_POLL, resolve_instance=lambda iid: f"Card{iid}"
+    )
+    assert d is not None and d.request_type == "Group"
+    assert d.min_select == 1 and d.max_select == 1
+    assert d.find("grp:101").label == "Bottom Card101"
+    assert len(d.options) == 8
+
+
+def test_group_ordering_window_returns_none_for_legacy():
+    poll = dict(_GROUP_POLL)
+    poll["group_specs"] = [{"zoneType": "Hand", "subZoneType": "Top"}]
+    poll["group_context"] = "OrderTriggers"
+    assert build_pending_decision(poll) is None
+
+
+def test_group_submit_builds_keep_and_bottom_groups():
+    from arenamcp.decisions import submit_option
+
+    class _GroupBridge:
+        def __init__(self):
+            self.groups = None
+
+        def submit_group(self, groups):
+            self.groups = groups
+            return True
+
+    d = build_pending_decision(_GROUP_POLL)
+    bridge = _GroupBridge()
+    assert submit_option(bridge, d, ["grp:103"]) is True
+    keep, bottom = bridge.groups
+    assert bottom == {"ids": [103], "zone": "Library", "sub_zone": "Bottom"}
+    assert 103 not in keep["ids"] and len(keep["ids"]) == 7
+
+
+def test_typed_path_group_uses_llm_or_defers_to_legacy(monkeypatch):
+    bridge = _TypedBridge(_GROUP_POLL)
+    bridge.groups = None
+    bridge.submit_group = lambda groups: (setattr(bridge, "groups", groups), True)[1]
+
+    # Valid LLM pick → typed path owns it.
+    planner = _planner_with('{"option_ids": ["grp:105"], "reasoning": "worst card"}')
+    eng = _engine(monkeypatch, bridge, planner)
+    assert eng._try_typed_decision_path(_state(), "decision_required") is True
+    assert bridge.groups[1]["ids"] == [105]
+
+    # Garbage LLM → defer to legacy smart default (None, no submission).
+    bridge2 = _TypedBridge(_GROUP_POLL)
+    planner2 = _planner_with("nonsense")
+    eng2 = _engine(monkeypatch, bridge2, planner2)
+    assert eng2._try_typed_decision_path(_state(), "decision_required") is None
