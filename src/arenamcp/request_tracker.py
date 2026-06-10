@@ -36,13 +36,24 @@ Fingerprint = tuple
 
 
 def decision_fingerprint(decision: Any) -> Fingerprint:
-    """Content-addressed identity for a PendingDecision."""
-    return (
+    """Content-addressed identity for a PendingDecision.
+
+    Static-option families (Mulligan: always keep/mull) are content-
+    identical across rounds, so for them the GRE request identity is
+    folded in when the plugin provides it (zeros otherwise — older
+    plugin builds — preserving the previous behavior).
+    """
+    base = (
         decision.request_type,
         tuple(sorted(o.option_id for o in decision.options)),
         int(decision.min_select or 0),
         int(decision.max_select or 0),
     )
+    if decision.request_type == "Mulligan":
+        rid = tuple(getattr(decision, "request_id", (0, 0)) or (0, 0))
+        if any(rid):
+            return base + (rid,)
+    return base
 
 
 @dataclass

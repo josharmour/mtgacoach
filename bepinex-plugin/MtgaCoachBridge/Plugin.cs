@@ -741,6 +741,16 @@ namespace MtgaCoachBridge
                 ["can_cancel"] = request.CanCancel,
                 ["allow_undo"] = request.AllowUndo
             };
+            // Request identity for the Python-side FSM: static-option
+            // windows (Mulligan keep/mull) are content-identical across
+            // rounds, so without these ids round 2 looks like a re-present
+            // of round 1 (false REJECTED; see fable-improvements Phase E).
+            try
+            {
+                resp["game_state_id"] = (long)request.OriginalMessage.GameStateId;
+                resp["msg_id"] = (long)request.OriginalMessage.MsgId;
+            }
+            catch { }
 
             if (request is ActionsAvailableRequest actionsReq)
             {

@@ -103,3 +103,23 @@ def test_reset_clears_history():
     assert not t.may_submit(fp)
     t.reset()
     assert t.may_submit(fp)
+
+
+def test_mulligan_fingerprint_distinguishes_rounds_when_ids_available():
+    """Mulligan option sets are identical across rounds; with the plugin
+    surfacing request identity, round 2 must NOT inherit round 1's
+    rejection/submission history (fable Phase E)."""
+    round1 = build_pending_decision(
+        {"has_pending": True, "request_type": "Mulligan",
+         "game_state_id": 10, "msg_id": 5}
+    )
+    round2 = build_pending_decision(
+        {"has_pending": True, "request_type": "Mulligan",
+         "game_state_id": 22, "msg_id": 9}
+    )
+    assert decision_fingerprint(round1) != decision_fingerprint(round2)
+
+    # Old plugin (no ids) keeps the legacy collision behavior — harmless.
+    legacy = build_pending_decision({"has_pending": True, "request_type": "Mulligan"})
+    legacy2 = build_pending_decision({"has_pending": True, "request_type": "Mulligan"})
+    assert decision_fingerprint(legacy) == decision_fingerprint(legacy2)
