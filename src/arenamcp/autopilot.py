@@ -323,6 +323,10 @@ class AutopilotEngine:
 
         # Statistics
         self._actions_executed = 0
+        # Wall-clock of the last successful execution; used to tell "user
+        # took over" apart from "our own previous plan already advanced the
+        # state" when a redundant overlapping plan comes back stale.
+        self._last_exec_success_ts: float = 0.0
         self._actions_skipped = 0
         self._plans_completed = 0
         self._consecutive_failed_verifications = 0
@@ -2742,6 +2746,7 @@ class AutopilotEngine:
                     return True
 
                 self._actions_executed += 1
+                self._last_exec_success_ts = time.time()
                 # Clear the persistent-failure counter for this action key
                 # so a future failure starts counting from 0 (#231).
                 self._reset_persistent_failure(action, game_state)
@@ -3164,6 +3169,7 @@ class AutopilotEngine:
                     game_state,
                 ):
                     self._actions_executed += 1
+                    self._last_exec_success_ts = time.time()
                     self._land_drop_last_turn = turn_number
                     logger.info(f"LAND DROP: {land_name} played successfully")
                     return True
@@ -3444,6 +3450,21 @@ class AutopilotEngine:
             )
             return
 
+        # If WE just executed something successfully, the state didn't
+        # advance because the user stepped in — it advanced because our own
+        # previous plan landed and an overlapping/redundant planning pass
+        # came back stale against the already-resolved window. Live example
+        # (bug_20260610_122802): attack submitted+finalized at 12:23:41, a
+        # stack_spell_yours trigger replanned the same attack at :42, the
+        # duplicate was discarded at :45 and misfiled as a user takeover.
+        if time.time() - self._last_exec_success_ts < 10.0:
+            logger.debug(
+                f"plan stale ({reason}) but autopilot executed "
+                f"{time.time() - self._last_exec_success_ts:.1f}s ago — own "
+                "action advanced the state, not a user takeover"
+            )
+            return
+
         extra = {
             "auto_user_takeover": {
                 "reason_tag": reason,
@@ -3673,6 +3694,7 @@ class AutopilotEngine:
                 f"{decision.request_type}: {', '.join(labels)}",
             )
             self._actions_executed += 1
+            self._last_exec_success_ts = time.time()
             self._state = AutopilotState.IDLE
             return True
         try:
