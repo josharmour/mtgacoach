@@ -4,7 +4,8 @@ import html
 import sys
 from typing import Any, Optional
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QProcess, QProcessEnvironment, Qt, QTimer, Signal
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -160,7 +161,11 @@ class CoachTab(QWidget):
     # View → Show Debug Logging toggle is on.
     _PERTINENT_LOG_ROLES = frozenset({"advice", "header", "error", "autopilot"})
 
-    _LOG_COLORS = {
+    # Two palettes: the pastels are tuned for dark backgrounds and were
+    # near-invisible on the light theme (live 2026-06-09 screenshot —
+    # light green / lavender on white). The active set follows the
+    # widget's actual palette, re-applied on theme change.
+    _LOG_COLORS_DARK = {
         "advice": "#69d46c",
         "header": "#b48cff",
         "error": "#ff6666",
@@ -170,6 +175,41 @@ class CoachTab(QWidget):
         "autopilot": "#7fb7e8",
         "default": "#d7d7d7",
     }
+    _LOG_COLORS_LIGHT = {
+        "advice": "#1b7e2c",
+        "header": "#6636c7",
+        "error": "#c62828",
+        "status": "#0b7285",
+        "dim": "#707070",
+        "debug": "#5f6672",
+        "autopilot": "#1255b0",
+        "default": "#202020",
+    }
+
+    def _is_dark_theme(self) -> bool:
+        try:
+            view = getattr(self, "log_view", None)
+            pal = view.palette() if view is not None else self.palette()
+            return pal.color(QPalette.Base).lightness() < 128
+        except Exception:
+            return True
+
+    @property
+    def _LOG_COLORS(self) -> dict[str, str]:
+        return self._LOG_COLORS_DARK if self._is_dark_theme() else self._LOG_COLORS_LIGHT
+
+    def changeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange):
+            # Theme switched: baked-in HTML colors must be re-rendered and
+            # the turn-plan panel restyled for the new background.
+            try:
+                self._rerender_log()
+                self._apply_turn_plan_style()
+                if self._last_game_state_payload:
+                    self.refresh_game_state_view()
+            except Exception:
+                pass
 
     def append_log(self, text: str, role: str = "default") -> None:
         # Keep the full history (role + text) so we can re-render when the
@@ -206,6 +246,24 @@ class CoachTab(QWidget):
             if not self._is_role_visible(role):
                 continue
             self._render_log_line(role, text)
+
+    def _apply_turn_plan_style(self) -> None:
+        """(Re)apply the turn-plan panel style for the current theme.
+
+        The text color was hardcoded #e6e6e6, which vanished on the light
+        theme's pale-blue panel background.
+        """
+        fg = "#e6e6e6" if self._is_dark_theme() else "#1c2c44"
+        self.turn_plan_label.setStyleSheet(
+            "QLabel#turnPlanPanel {"
+            "  background: rgba(60, 110, 180, 0.18);"
+            "  border: 1px solid rgba(120, 170, 230, 0.55);"
+            "  border-radius: 6px;"
+            "  padding: 8px 10px;"
+            f"  color: {fg};"
+            "  font-family: Consolas, 'Courier New', monospace;"
+            "}"
+        )
 
     def _update_turn_plan_panel(self, data: dict[str, Any]) -> None:
         """Wholesale-replace the sticky turn-plan panel.
@@ -348,79 +406,117 @@ class CoachTab(QWidget):
         status_outer.addWidget(self._status_content)
         top_layout.addWidget(status_container)
 
+        # Toolbar: buttons clustered by function so the row reads as
+        # Coaching | Voice | Autopilot | System (+ Display on Windows).
+        # Windows-only overlay tools (Screen, Calibrate Cards, Overlay,
+        # Reset Advice Panel) are simply not created on other platforms —
+        # a row of permanently-disabled buttons is noise, not UI.
+        def _btn(label, tooltip, *, command=None, on_click=None):
+            b = QPushButton(label)
+            b.setToolTip(tooltip)
+            if command is not None:
+                b.clicked.connect(
+                    lambda _checked=False, cmd=command: self._send_command(cmd)
+                )
+                self._buttons[command] = b
+            elif on_click is not None:
+                b.clicked.connect(on_click)
+            return b
+
+        def _group(title, buttons):
+            box = QGroupBox(title)
+            lay = QHBoxLayout(box)
+            lay.setContentsMargins(8, 2, 8, 6)
+            lay.setSpacing(6)
+            for b in buttons:
+                lay.addWidget(b)
+            return box
+
         button_row = QHBoxLayout()
-        commands = [
-            ("Quick", "toggle_style"),
-            ("Voice", "cycle_voice"),
-            ("Speed", "cycle_speed"),
-            ("Mute", "toggle_mute"),
-            ("AP", "toggle_autopilot"),
-            ("Analyze Match", "analyze_match"),
-            ("Screen", "analyze_screen"),
-            ("Win Plan", "read_win_plan"),
-            ("Restart", "restart"),
-        ]
-        for label, command in commands:
-            button = QPushButton(label)
-            button.clicked.connect(lambda _checked=False, cmd=command: self._send_command(cmd))
-            button_row.addWidget(button)
-            self._buttons[command] = button
-        debug_button = QPushButton("Debug Report")
-        debug_button.clicked.connect(self._submit_debug_report)
-        button_row.addWidget(debug_button)
+        button_row.setSpacing(10)
+
+        # NOTE: "Win Plan" (read_win_plan) was removed from the toolbar —
+        # the win-plan worker needs a thinking-capable model and is
+        # disabled on the default online backend, so the button did
+        # nothing for most users. Re-add when the worker supports the
+        # online path.
+        button_row.addWidget(_group("Coaching", [
+            _btn("Quick", "Cycle the advice style (quick / concise / verbose ...)",
+                 command="toggle_style"),
+            _btn("Analyze Match", "Full post-match analysis of the last game",
+                 command="analyze_match"),
+        ]))
+
+        button_row.addWidget(_group("Voice", [
+            _btn("Voice", "Cycle the TTS voice", command="cycle_voice"),
+            _btn("Speed", "Cycle the speaking speed", command="cycle_speed"),
+            _btn("Mute", "Mute / unmute spoken advice", command="toggle_mute"),
+        ]))
+
+        button_row.addWidget(_group("Autopilot", [
+            _btn("AP", "Toggle autopilot — plays the game for you via the "
+                 "GRE bridge", command="toggle_autopilot"),
+        ]))
 
         # Self-play (bots): stops the live coach to free the bridge port
         # (44222), then runs a headless bot-vs-bot session whose output
         # streams into the Coach Log. Toggles to a Stop control while running.
-        self._self_play_btn = QPushButton("Self-Play")
-        self._self_play_btn.setToolTip(
+        self._self_play_btn = _btn(
+            "Self-Play",
             "Stop live coaching and run a headless bot-vs-bot self-play session.\n"
             "This frees the GRE bridge (port 44222) for the self-play process.\n"
-            "Output streams into the Coach Log."
+            "Output streams into the Coach Log.",
+            on_click=lambda _checked=False: self._toggle_self_play(),
         )
-        self._self_play_btn.clicked.connect(lambda _checked=False: self._toggle_self_play())
-        button_row.addWidget(self._self_play_btn)
+        button_row.addWidget(_group("System", [
+            _btn("Restart", "Restart the coaching engine", command="restart"),
+            _btn("Debug Report", "Capture logs + game state and file a bug report",
+                 on_click=self._submit_debug_report),
+            self._self_play_btn,
+        ]))
 
         import sys
-        # Match-overlay calibration: draws a thin outline around every card
-        # the plugin detects, so we can verify ground-truth positions align.
-        match_calib_button = QPushButton("Calibrate Cards")
-        match_calib_button.setCheckable(True)
-        if sys.platform != "win32":
-            match_calib_button.setEnabled(False)
-            match_calib_button.setToolTip("Calibration is not supported on Linux/Wayland")
-        else:
+        if sys.platform == "win32":
+            # Match-overlay calibration: draws a thin outline around every
+            # card the plugin detects, to verify ground-truth alignment.
+            match_calib_button = QPushButton("Calibrate Cards")
+            match_calib_button.setCheckable(True)
             match_calib_button.setToolTip(
-                "Draw border around MTGA cards reported by bridge plugin to verify alignment"
+                "Draw border around MTGA cards reported by bridge plugin "
+                "to verify alignment"
             )
-        match_calib_button.clicked.connect(
-            lambda checked: self._match_overlay.set_calibration(checked)
-        )
-        button_row.addWidget(match_calib_button)
+            match_calib_button.clicked.connect(
+                lambda checked: self._match_overlay.set_calibration(checked)
+            )
 
-        # Overlay visibility toggle — hide the whole in-game overlay when
-        # it's covering MTGA content.
-        self._overlay_toggle_btn = QPushButton("Overlay")
-        self._overlay_toggle_btn.setCheckable(True)
-        if sys.platform != "win32":
-            self._overlay_toggle_btn.setChecked(False)
-            self._overlay_toggle_btn.setEnabled(False)
-            self._overlay_toggle_btn.setToolTip("In-game overlays are not supported on Linux/Wayland")
-        else:
+            # Overlay visibility toggle — hide the whole in-game overlay
+            # when it's covering MTGA content.
+            self._overlay_toggle_btn = QPushButton("Overlay")
+            self._overlay_toggle_btn.setCheckable(True)
             self._overlay_toggle_btn.setChecked(True)  # default: on
-            self._overlay_toggle_btn.setToolTip("Show/hide the in-game overlay (pill + advice panel)")
-        self._overlay_toggle_btn.clicked.connect(
-            lambda checked: self._match_overlay.set_enabled(checked)
-        )
-        button_row.addWidget(self._overlay_toggle_btn)
+            self._overlay_toggle_btn.setToolTip(
+                "Show/hide the in-game overlay (pill + advice panel)"
+            )
+            self._overlay_toggle_btn.clicked.connect(
+                lambda checked: self._match_overlay.set_enabled(checked)
+            )
 
-        # Reset advice panel — drag the panel anywhere over MTGA to move it,
-        # use the corner grip to resize. Click this button to put it back.
-        self._advice_anchor_btn = QPushButton("Reset Advice Panel")
-        self._advice_anchor_btn.setToolTip("Snap the advice panel back to its default position and size")
-        self._advice_anchor_btn.clicked.connect(self._reset_advice_panel)
-        button_row.addWidget(self._advice_anchor_btn)
+            # Reset advice panel — drag the panel anywhere over MTGA to
+            # move it; click this to put it back.
+            self._advice_anchor_btn = _btn(
+                "Reset Advice Panel",
+                "Snap the advice panel back to its default position and size",
+                on_click=self._reset_advice_panel,
+            )
+            button_row.addWidget(_group("Display", [
+                _btn("Screen", "Analyze a screenshot of the game with the "
+                     "vision model", command="analyze_screen"),
+                match_calib_button,
+                self._overlay_toggle_btn,
+                self._advice_anchor_btn,
+            ]))
 
+        button_row.addStretch()
         top_layout.addLayout(button_row)
 
         game_box = QGroupBox("Game State")
@@ -442,16 +538,7 @@ class CoachTab(QWidget):
         self.turn_plan_label.setWordWrap(True)
         self.turn_plan_label.setTextFormat(Qt.PlainText)
         self.turn_plan_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.turn_plan_label.setStyleSheet(
-            "QLabel#turnPlanPanel {"
-            "  background: rgba(60, 110, 180, 0.18);"
-            "  border: 1px solid rgba(120, 170, 230, 0.55);"
-            "  border-radius: 6px;"
-            "  padding: 8px 10px;"
-            "  color: #e6e6e6;"
-            "  font-family: Consolas, 'Courier New', monospace;"
-            "}"
-        )
+        self._apply_turn_plan_style()
         self.turn_plan_label.setVisible(False)
         log_layout.addWidget(self.turn_plan_label)
 
@@ -1495,6 +1582,8 @@ class CoachTab(QWidget):
         # Strip noisy "Phase_" prefix
         phase_display = phase.replace("Phase_", "")
         step = _str_value(turn.get("step")).replace("Step_", "")
+        if step in ("None", "-", "?"):
+            step = ""  # a literal "None" step rendered as 'T4 · Main1 · None'
         active_player = _int_value(turn.get("active_player"))
         active_label = ""
         if active_player and local_seat:
@@ -1581,16 +1670,18 @@ class CoachTab(QWidget):
         if not deduped:
             return ""
 
-        chips = "".join(
-            f"<span style='display:inline-block; margin:6px 6px 0 0; padding:4px 7px; border:1px solid {tokens['border']};"
-            f"border-radius:999px; background:{tokens['panel']}; color:{tokens['warning_fg']}; font-size:11px;'>"
-            f"{html.escape(option)}</span>"
+        # Block divs, one option per line — QTextEdit ignores inline-block
+        # chip styling and would concatenate the options into one run.
+        rows = "".join(
+            f"<div style='color:{tokens['warning_fg']}; font-size:11px;"
+            f" margin:1px 0 1px 8px;'>&bull; {html.escape(option)}</div>"
             for option in deduped[:6]
         )
         return (
             f"<div style='margin-top:4px;'>"
-            f"<div style='color:{tokens['muted']}; font-size:11px; text-transform:uppercase; letter-spacing:0.04em;'>Current options</div>"
-            f"{chips}</div>"
+            f"<div style='color:{tokens['muted']}; font-size:11px;"
+            f" font-weight:700;'>CHOOSE ONE</div>"
+            f"{rows}</div>"
         )
 
     def _render_resource_row(
@@ -1898,39 +1989,39 @@ class CoachTab(QWidget):
                 actions.append(action_text)
         if not actions:
             return ""
-        rendered_parts: list[str] = []
+        # One action per line. QTextEdit's rich-text engine does NOT support
+        # display:inline-block or <details>, so the old "chips in a
+        # collapsible" rendered as one unbroken run of concatenated text
+        # ("...[OK]Cast XPlay Land: Plains...") — unreadable (live
+        # 2026-06-09 screenshot). Block-level divs are the supported way to
+        # get one-per-line.
+        rendered_rows: list[str] = []
         for action in actions[:12]:
             lower = action.lower()
-            border = tokens["spell"]
             fg = tokens["spell"]
-            bg = tokens["panel"]
             label = action
             if lower.startswith("cast "):
                 if "[ok]" in lower:
-                    border = tokens["castable_fg"]
                     fg = tokens["castable_fg"]
-                    bg = tokens["castable_bg"]
                 else:
-                    border = tokens["uncastable_fg"]
                     fg = tokens["uncastable_fg"]
-                    bg = tokens["uncastable_bg"]
-                    label = f"{action} [MANUAL PAY / NOT CONFIRMED]"
-            # Compact inline chip instead of full-width padded row
-            rendered_parts.append(
-                f"<span style='display:inline-block; margin:0 4px 3px 0; padding:2px 6px;"
-                f" border:1px solid {border}; border-left:3px solid {border}; border-radius:4px;"
-                f" background:{bg}; color:{fg}; font-size:10px;'>{html.escape(label)}</span>"
+                    label = f"{action} — needs manual mana payment"
+            rendered_rows.append(
+                f"<div style='color:{fg}; font-size:11px; margin:1px 0 1px 8px;'>"
+                f"&bull; {html.escape(label)}</div>"
             )
-        rendered = "".join(rendered_parts)
-        # Collapsible — hidden by default since this is usually the biggest
-        # chunk of the game state view and MTGA already shows these on screen.
+        extra = ""
+        if len(actions) > 12:
+            extra = (
+                f"<div style='color:{tokens['muted']}; font-size:10px;"
+                f" margin-left:8px;'>+{len(actions) - 12} more</div>"
+            )
         return (
-            f"<details style='margin-top:4px; font-size:11px;'>"
-            f"<summary style='cursor:pointer; color:{tokens['muted']};"
-            f" text-transform:uppercase; letter-spacing:0.04em;'>"
-            f"Legal actions ({len(actions)})</summary>"
-            f"<div style='margin-top:4px;'>{rendered}</div>"
-            f"</details>"
+            f"<div style='margin-top:6px;'>"
+            f"<div style='color:{tokens['muted']}; font-size:11px;"
+            f" font-weight:700;'>LEGAL ACTIONS ({len(actions)})</div>"
+            f"{''.join(rendered_rows)}{extra}"
+            f"</div>"
         )
 
     def _group_battlefield(self, cards: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -2016,7 +2107,8 @@ class CoachTab(QWidget):
             if isinstance(card, dict)
         )
         return (
-            f"<div style='color:{tokens['muted']}; font-size:11px; margin-bottom:4px;'>{len(cards)} card(s)</div>"
+            f"<div style='color:{tokens['muted']}; font-size:11px;"
+            f" font-weight:700; margin-bottom:4px;'>YOUR HAND ({len(cards)})</div>"
             f"<table cellspacing='0' cellpadding='0' style='border-collapse:separate; border-spacing:0 4px; width:100%;'>{rows}</table>"
         )
 
