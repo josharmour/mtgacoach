@@ -24,7 +24,7 @@ from arenamcp.match_packets import (
 )
 from arenamcp.request_tracker import RequestTracker, decision_fingerprint
 
-from tests.test_typed_decision_path import _TypedBridge, _planner_with, _engine, _state, _TARGET_POLL
+from test_typed_decision_path import _TypedBridge, _planner_with, _engine, _state, _TARGET_POLL
 
 
 @pytest.fixture

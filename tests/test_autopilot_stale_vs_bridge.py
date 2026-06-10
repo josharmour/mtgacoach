@@ -268,3 +268,38 @@ def test_select_n_against_actions_available_is_stale():
         "_bridge_request_class": "ActionsAvailableRequest",
     }
     assert engine._is_planner_action_stale_vs_bridge(action, state) is True
+
+
+def test_pass_priority_against_pay_costs_is_stale():
+    """Shape 5 (bug_20260610_121152): planned pass landed on a PayCostsReq
+    opened mid-plan (user manually cast Sapling Nursery). Pass only exists
+    on ActionsAvailableRequest — classify stale, never MANUAL REQUIRED."""
+    engine, ap = _engine_with_method()
+    action = ap.GameAction(action_type=ap.ActionType.PASS_PRIORITY)
+    state = {
+        "_bridge_request_type": "PayCosts",
+        "_bridge_request_class": "PayCostsReq",
+    }
+    assert engine._is_planner_action_stale_vs_bridge(action, state) is True
+
+
+def test_resolve_against_casting_time_option_is_stale():
+    engine, ap = _engine_with_method()
+    action = ap.GameAction(action_type=ap.ActionType.RESOLVE)
+    state = {
+        "_bridge_request_type": "CastingTimeOptions",
+        "_bridge_request_class": "CastingTimeOptionRequest",
+    }
+    assert engine._is_planner_action_stale_vs_bridge(action, state) is True
+
+
+def test_pass_priority_against_actions_available_is_not_stale():
+    """A pass that fails against a live ActionsAvailable window is a real
+    bridge problem — must still surface manual-required."""
+    engine, ap = _engine_with_method()
+    action = ap.GameAction(action_type=ap.ActionType.PASS_PRIORITY)
+    state = {
+        "_bridge_request_type": "ActionsAvailable",
+        "_bridge_request_class": "ActionsAvailableRequest",
+    }
+    assert engine._is_planner_action_stale_vs_bridge(action, state) is False

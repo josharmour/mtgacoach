@@ -1573,6 +1573,22 @@ class AutopilotEngine:
             # No matching bridge request — race or already-resolved.
             return True
 
+        # Shape 5: pass/resolve against a non-passable window. SubmitPass
+        # only exists on ActionsAvailableRequest — if the window changed to
+        # PayCosts / CastingTimeOption / a selection request between plan
+        # and submit (a cast started resolving, or the user acted manually),
+        # "Cannot pass on current interaction" is guaranteed. Stale: the
+        # next plan cycle sees the new window. Cluster: bug_20260610_121152
+        # (planned pass landed on PayCostsReq while the user manually cast
+        # Sapling Nursery).
+        if action.action_type in (ActionType.PASS_PRIORITY, ActionType.RESOLVE):
+            is_actions_available = (
+                bridge_type in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+                or bridge_class in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+            )
+            if not is_actions_available:
+                return True
+
         return False
 
     def _is_critical_decision_state(
@@ -5591,6 +5607,11 @@ class AutopilotEngine:
                             ActionType.SELECT_COUNTERS,
                         )
                     )
+                    is_displaced_pass = (
+                        action.action_type
+                        in (ActionType.PASS_PRIORITY, ActionType.RESOLVE)
+                        and bridge_has_other_request
+                    )
 
                     # Combat livelock fix: when we want to declare attackers/
                     # blockers but the bridge is still at a precombat
@@ -5620,11 +5641,21 @@ class AutopilotEngine:
                         except Exception as e:
                             logger.debug(f"advance-to-combat pass failed: {e}")
 
-                    if is_combat_stale or is_displaced_main_action or is_displaced_select:
+                    if (
+                        is_combat_stale
+                        or is_displaced_main_action
+                        or is_displaced_select
+                        or is_displaced_pass
+                    ):
                         if is_combat_stale:
                             reason = "bridge not in combat step yet"
                         elif is_displaced_main_action:
                             reason = f"bridge moved to {bridge_type or bridge_class}"
+                        elif is_displaced_pass:
+                            reason = (
+                                f"window is now {bridge_type or bridge_class} — "
+                                "pass not applicable"
+                            )
                         else:
                             reason = (
                                 f"bridge has no SelectN/Search pending "
@@ -5653,6 +5684,46 @@ class AutopilotEngine:
                         "planner_action_stale",
                         msg,
                     )
+
+                # Pass/resolve failures are overwhelmingly races: the window
+                # we planned against closed or was replaced while the LLM was
+                # thinking. Classify against a LIVE poll, not the planning
+                # snapshot — the snapshot routinely still says
+                # ActionsAvailable when the bridge has already moved on
+                # (observed live 2026-06-10: repeated "failure N/5:
+                # pass_priority" during opponent-turn window churn).
+                if action.action_type in (ActionType.PASS_PRIORITY, ActionType.RESOLVE):
+                    try:
+                        live = self._gre_bridge.get_pending_actions() or {}
+                    except Exception:
+                        live = {}
+                    live_type = str(live.get("request_type") or "")
+                    live_class = str(live.get("request_class") or "")
+                    if not live.get("has_pending"):
+                        self._log_execution_path(
+                            ExecutionPath.GRE_AWARE,
+                            f"{action.action_type.value}: window already closed "
+                            "(live poll) — no-op",
+                        )
+                        return ClickResult(
+                            True, 0, 0, action.action_type.value,
+                            "GRE bridge (no-op, window closed)",
+                        )
+                    if not (
+                        live_type in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+                        or live_class in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+                    ):
+                        self._log_execution_path(
+                            ExecutionPath.GRE_AWARE,
+                            f"{action.action_type.value}: window is now "
+                            f"{live_class or live_type} — skipping (will re-plan)",
+                        )
+                        return ClickResult(
+                            True, 0, 0, action.action_type.value,
+                            "GRE bridge (stale-skip)",
+                        )
+                    # Live window IS ActionsAvailable and pass still failed —
+                    # fall through to the genuine manual-required path.
 
                 # Pattern A: pass_priority + nothing pending = no-op success.
                 # MTGA already cleared the priority window we wanted to pass on

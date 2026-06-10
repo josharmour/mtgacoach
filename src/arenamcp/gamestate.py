@@ -3534,10 +3534,17 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
                     info = server.get_card_info(action["grpId"])
                     name = info.get("name", "")
                 except Exception: pass
+            # Same payability signal casts get: an autoTapSolution means
+            # MTGA's mana solver verified the activation cost is payable
+            # right now. Without this tag the LLM recomputes the cost from
+            # the (often zero) floating-mana summary and wrongly passes
+            # (bug_20260610_121152: "cannot activate Sapling Nursery").
+            payable = action.get("autoTapSolution") is not None
+            suffix = " [OK]" if payable else ""
             if name:
-                legal_list.append(f"Activate Ability: {name}")
+                legal_list.append(f"Activate Ability: {name}{suffix}")
             else:
-                legal_list.append("Activate Ability")
+                legal_list.append(f"Activate Ability{suffix}")
         else:
             legal_list.append(f"Action: {atype.replace('ActionType_', '')}")
 
