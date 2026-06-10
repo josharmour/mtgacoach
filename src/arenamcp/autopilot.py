@@ -350,6 +350,7 @@ class AutopilotEngine:
         self._cast_rollback_counts: dict[tuple[int, str], int] = {}
         self._last_cast_submitted: Optional[tuple[int, str]] = None
         self._max_seen_turn: int = 0
+        self._window_first_seen_at: float = 0.0
         self._recent_submission_times: deque = deque(maxlen=32)
         self._runaway_tripped_turn: Optional[int] = None
         self._escape_budget_turn: int = -1
@@ -715,6 +716,7 @@ class AutopilotEngine:
         else:
             self._window_repeat_sig = sig
             self._window_repeat_count = 0
+            self._window_first_seen_at = time.monotonic()
             self._auto_respond_escaped_sig = None
         if sig != self._reported_bridge_bug_window_sig:
             self._reported_bridge_bug_window_sig = sig
@@ -1044,6 +1046,9 @@ class AutopilotEngine:
     # new window signature, so the old once-per-window guard allowed an
     # escape every cycle of a cross-window loop — i.e. forever.
     _MAX_ESCAPES_PER_TURN = 2
+    # A window must be stuck this long (wall clock) before auto_respond may
+    # escape it — the repeat counter alone trips in <1s of trigger spam.
+    _ESCAPE_MIN_WINDOW_AGE_S = 12.0
 
     def _note_cast_rollback(self, why: str) -> None:
         """Record that the most recently submitted cast was rolled back."""
@@ -1174,8 +1179,18 @@ class AutopilotEngine:
         live as the 'Choose a color' SelectN loop submitting 19 times).
         """
         sig = self._window_repeat_sig
+        # Age gate: the repeat counter increments on every trigger ping and
+        # several pings land per second for one window, so the count alone
+        # said "stuck" within ~0.5s of a cast — the escape then fired BEFORE
+        # the real handler got one attempt, and its AutoRespond consumed
+        # MTGA's client-side request object while the GRE kept waiting. The
+        # game froze on the targeting arrow until a human clicked (live
+        # 2026-06-09: Ruthless Negotiation, Withering Torment). Only escape
+        # windows that have been stuck for real wall-clock time.
+        window_age = time.monotonic() - getattr(self, "_window_first_seen_at", 0.0)
         if (
             self._window_repeat_count >= self._AUTO_RESPOND_LOOP_THRESHOLD
+            and window_age >= self._ESCAPE_MIN_WINDOW_AGE_S
             and sig is not None
             and sig != self._auto_respond_escaped_sig
         ):

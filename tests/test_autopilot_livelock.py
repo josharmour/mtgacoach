@@ -190,6 +190,26 @@ def test_escape_on_casting_window_counts_as_cast_rollback(monkeypatch):
     assert eng._cast_rollback_counts.get((5, "ruthless negotiation")) == 1
 
 
+def test_escape_blocked_on_young_window(monkeypatch):
+    """The escape must NOT fire just because triggers ping fast — a window
+    that appeared <12s ago is not 'stuck', it just hasn't been handled yet.
+    Live 2026-06-09: the escape fired 0.5s after a cast and consumed the
+    SelectTargetsRequest, freezing the game on the targeting arrow."""
+    bridge = _DummyBridge()
+    eng = _engine(monkeypatch, bridge)
+    eng._window_repeat_sig = ("sig",)
+    eng._window_repeat_count = 50          # trigger spam
+    eng._window_first_seen_at = time.monotonic()  # window just appeared
+    gs = _state(5, _bridge_request_type="SelectTargets")
+    assert eng._maybe_escape_stuck_window(gs) is False
+    assert bridge.auto_respond_calls == 0
+
+    # Same window, genuinely old → escape allowed.
+    eng._window_first_seen_at = time.monotonic() - 60.0
+    assert eng._maybe_escape_stuck_window(gs) is True
+    assert bridge.auto_respond_calls == 1
+
+
 def test_runaway_protection_stands_down_for_turn(monkeypatch):
     eng = _engine(monkeypatch)
     eng._runaway_tripped_turn = 7
