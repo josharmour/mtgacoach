@@ -1875,6 +1875,15 @@ class AutopilotEngine:
             if self._should_prefetch_vision(game_state, trigger):
                 self._scan_layout_if_needed(game_state)
 
+            # --- TYPED-DECISION PATH (fable Phase B) ---
+            # Interactive request families flow as structured options:
+            # the planner picks option ids, submission is by id, and no
+            # display string is parsed. ActionsAvailable stays on the
+            # legacy strategic path until Phase C migrates it.
+            typed_handled = self._try_typed_decision_path(game_state, trigger)
+            if typed_handled is not None:
+                return typed_handled
+
             # --- AFK MODE: auto-pass everything without LLM ---
             if self._config.afk_mode:
                 return self._handle_afk(game_state, trigger)
@@ -3503,6 +3512,63 @@ class AutopilotEngine:
         self._consecutive_failed_verifications = 0
 
     # --- Action Execution Handlers ---
+
+    # Interactive families served by the typed-decision path. Mulligan is
+    # included; ActionsAvailable intentionally is NOT (legacy strategic
+    # planning is still richer there — Phase C migrates it).
+    _TYPED_DECISION_FAMILIES = frozenset({"SelectTargets", "SelectN", "Search", "Mulligan"})
+
+    def _try_typed_decision_path(
+        self, game_state: dict[str, Any], trigger: str
+    ) -> Optional[bool]:
+        """Handle interactive requests via the typed PendingDecision pipeline.
+
+        Returns True/False when the path owned the decision (submitted /
+        definitively failed), or None to fall through to the legacy path
+        (no bridge, unmapped family, no options).
+        """
+        if self._config.dry_run:
+            return None
+        if not (self._gre_bridge.connected or self._gre_bridge.connect()):
+            return None
+        try:
+            poll = self._gre_bridge.get_pending_actions() or {}
+        except Exception as e:
+            logger.debug(f"typed-decision poll failed: {e}")
+            return None
+
+        from arenamcp.decisions import build_pending_decision, submit_option
+
+        decision = build_pending_decision(poll)
+        if decision is None or decision.request_type not in self._TYPED_DECISION_FAMILIES:
+            return None
+
+        option_ids = self._planner.plan_decision_options(decision, game_state)
+        if not option_ids:
+            return None
+
+        labels = [
+            (decision.find(oid).label if decision.find(oid) else oid)
+            for oid in option_ids
+        ]
+        if submit_option(self._gre_bridge, decision, option_ids):
+            self._log_execution_path(
+                ExecutionPath.GRE_AWARE,
+                f"typed-decision {decision.request_type}: {', '.join(labels)}",
+            )
+            self._notify(
+                "AUTOPILOT",
+                f"{decision.request_type}: {', '.join(labels)}",
+            )
+            self._actions_executed += 1
+            self._state = AutopilotState.IDLE
+            return True
+        logger.info(
+            "typed-decision submit failed for %s (%s); falling back to legacy path",
+            decision.request_type,
+            option_ids,
+        )
+        return None
 
     def _wait_for_bridge_reconnect(self) -> bool:
         """Briefly wait for the GRE bridge plugin to reconnect.

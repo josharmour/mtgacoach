@@ -10,7 +10,15 @@
     ghost decisions; standalone drops `decision_required` + backstop force when the
     arbiter returns None; `set_autopilot`/`get_status` pipe commands added
     (`toggle_autopilot` kept as deprecated alias). Tests: `test_decision_arbiter.py`.
-- [ ] **Phase B** — item 1 (typed `PendingDecision` pipeline)
+- [x] **Phase B** — item 1 (typed `PendingDecision` pipeline) — done 2026-06-09
+  for the interactive families that caused the live stalls (SelectTargets,
+  SelectN, Search, Mulligan): `decisions.py` (`PendingDecision`/`DecisionOption`,
+  `build_pending_decision`, `submit_option`), planner `plan_decision_options`
+  (LLM answers option ids, mechanical validation, deterministic fallback from
+  the same set), autopilot `_try_typed_decision_path` runs before legacy
+  planning. **ActionsAvailable intentionally stays on the legacy strategic
+  path** (turn plans, combat solver, land-drop-first are richer) — it migrates
+  in Phase C. Tests: `test_decisions.py`, `test_typed_decision_path.py`.
 - [ ] **Phase C** — items 2 + 3 (request-identity tracking + submission FSM)
 - [ ] **Phase D** — item 5 (stall corpus → CI harness)
 **Origin:** First live bridge sessions on Linux/Proton (2026-06-09). Two bot

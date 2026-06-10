@@ -1501,6 +1501,106 @@ class ActionPlanner:
         plan.voice_advice = self._humanize_legal_action(selected)
         return plan
 
+    # ------------------------------------------------------------------
+    # Typed-decision planning (fable-improvements.md item 1, Phase B)
+    # ------------------------------------------------------------------
+
+    _DECISION_SYSTEM_PROMPT = (
+        "You decide one pending choice in a Magic: The Gathering Arena game. "
+        "You get the game state and a list of legal options, each with an "
+        "option_id. Reply ONLY with JSON: "
+        '{"option_ids": ["<id>", ...], "reasoning": "<one short sentence>"}. '
+        "Pick between min_select and max_select options FROM THE LIST — any "
+        "other id is invalid. Prefer plays that advance your board and "
+        "remove the biggest threat; never pick options marked 'cannot "
+        "auto-pay'."
+    )
+
+    def plan_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
+        """Choose option ids for a typed PendingDecision.
+
+        LLM-first with mechanical validation against the option set, then
+        a deterministic pick from the same set. Never raises; returns []
+        only when the decision has no options at all.
+        """
+        try:
+            chosen = self._llm_decision_options(decision, game_state)
+            valid = decision.option_ids()
+            chosen = [c for c in chosen if c in valid]
+            if chosen:
+                limit = max(decision.min_select or 1, 1)
+                limit = max(limit, min(len(chosen), decision.max_select or 1))
+                return chosen[:limit]
+            logger.info(
+                "plan_decision_options: LLM answer had no valid ids for %s",
+                decision.request_type,
+            )
+        except Exception as e:
+            logger.info(f"plan_decision_options LLM path failed: {e}")
+        return self.deterministic_option_pick(decision)
+
+    def _llm_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
+        lines = [
+            f"PENDING DECISION: {decision.request_type}"
+            + (f" (source: {decision.source_label})" if decision.source_label else ""),
+            f"Choose at least {decision.min_select} and at most "
+            f"{decision.max_select} option(s).",
+            "OPTIONS:",
+        ]
+        for o in decision.options:
+            note = ""
+            if o.payable is False:
+                note = "  [cannot auto-pay — do not pick]"
+            lines.append(f"- {o.option_id}: {o.label}{note}")
+        lines.append("")
+        lines.append("GAME STATE:")
+        lines.append(self._fallback_format(game_state))
+        user_message = "\n".join(lines)
+
+        try:
+            response = self._backend.complete(
+                self._DECISION_SYSTEM_PROMPT,
+                user_message,
+                512,
+                temperature=0.0,
+                request_timeout_s=self._timeout,
+            )
+        except TypeError:
+            response = self._backend.complete(
+                self._DECISION_SYSTEM_PROMPT, user_message
+            )
+
+        json_str = (response or "").strip()
+        fence = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", json_str, re.DOTALL)
+        if fence:
+            json_str = fence.group(1).strip()
+        json_str = re.sub(r",\s*([\]}])", r"\1", json_str)
+        data = json.loads(json_str)
+        ids = data.get("option_ids") or []
+        return [str(i) for i in ids if isinstance(i, (str, int))]
+
+    @staticmethod
+    def deterministic_option_pick(decision: Any) -> list[str]:
+        """Mechanical fallback: pick from the option set, never outside it."""
+        opts = list(decision.options)
+        if not opts:
+            return []
+        if decision.request_type == "ActionsAvailable":
+            for o in opts:
+                if o.option_id.startswith("idx:") and o.payable:
+                    return [o.option_id]
+            for o in opts:
+                if (o.meta or {}).get("actionType") == "ActionType_Play":
+                    return [o.option_id]
+            for o in opts:
+                if o.option_id == "pass":
+                    return [o.option_id]
+            return [opts[0].option_id]
+        if decision.request_type == "Mulligan":
+            return ["mull:keep"]
+        n = max(1, int(decision.min_select or 1))
+        return [o.option_id for o in opts[:n]]
+
     @staticmethod
     def _humanize_legal_action(legal: str) -> str:
         """Turn a legal-action string into a short speakable sentence."""
