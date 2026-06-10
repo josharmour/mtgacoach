@@ -146,6 +146,7 @@ def run(
     backends: list[BackendSpec],
     limit: Optional[int] = None,
     timeout_s: float = 60.0,
+    max_tokens: Optional[int] = None,
 ) -> None:
     prompts = list(_read_jsonl(prompts_path))
     if limit:
@@ -183,7 +184,7 @@ def run(
                 content = client.complete(
                     system,
                     user,
-                    max_tokens=int(prompt.get("max_tokens") or 400),
+                    max_tokens=int(max_tokens or prompt.get("max_tokens") or 400),
                     temperature=float(prompt.get("temperature") or 0.3),
                     request_timeout_s=timeout_s,
                 )
@@ -222,6 +223,13 @@ def main():
     parser.add_argument("--license-key", default=os.environ.get("MTGACOACH_LICENSE_KEY", ""))
     parser.add_argument("--limit", type=int, help="Only run the first N prompts")
     parser.add_argument("--timeout-s", type=float, default=60.0)
+    parser.add_argument(
+        "--max-tokens", type=int, default=None,
+        help="Override per-prompt max_tokens. Needed for thinking-variant "
+             "models (e.g. gemma-4-31b-it) whose hidden reasoning consumes "
+             "the default 400-token budget and returns EMPTY content "
+             "(observed 2026-06-09: 199/200 empty responses).",
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
@@ -231,7 +239,7 @@ def main():
     )
 
     backends = [BackendSpec.parse(b, license_key=args.license_key) for b in args.backend]
-    run(args.prompts, args.responses, backends, limit=args.limit, timeout_s=args.timeout_s)
+    run(args.prompts, args.responses, backends, limit=args.limit, timeout_s=args.timeout_s, max_tokens=args.max_tokens)
 
 
 if __name__ == "__main__":
