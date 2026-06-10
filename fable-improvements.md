@@ -1,7 +1,18 @@
 # Autopilot Framework Improvements ("Fable plan")
 
 **Date:** 2026-06-09
-**Status:** Planned — not started
+**Status:** In progress
+
+## Progress
+
+- [x] **Phase A** — item 4 (state arbiter) + item 6 (control plane) — done 2026-06-09
+  - `decision_arbiter.py` (`arbitrate()`); autopilot connected-idle branch now refuses
+    ghost decisions; standalone drops `decision_required` + backstop force when the
+    arbiter returns None; `set_autopilot`/`get_status` pipe commands added
+    (`toggle_autopilot` kept as deprecated alias). Tests: `test_decision_arbiter.py`.
+- [ ] **Phase B** — item 1 (typed `PendingDecision` pipeline)
+- [ ] **Phase C** — items 2 + 3 (request-identity tracking + submission FSM)
+- [ ] **Phase D** — item 5 (stall corpus → CI harness)
 **Origin:** First live bridge sessions on Linux/Proton (2026-06-09). Two bot
 matches and one ranked Brawl match surfaced a *class* of autopilot failures
 that per-bug patches cannot close out. This doc is the durable plan for the

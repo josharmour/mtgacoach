@@ -375,8 +375,33 @@ class PipeAdapter:
         action = cmd.get("cmd", "")
         try:
             if action == "toggle_autopilot":
+                # Deprecated alias — prefer set_autopilot (idempotent).
                 enabled = coach.toggle_autopilot()
                 self.status("AUTOPILOT", "AP:ON" if enabled else "AP:OFF")
+            elif action == "set_autopilot":
+                # Idempotent control plane (fable-improvements.md item 6):
+                # raced/repeated calls converge on the requested state.
+                target = bool(cmd.get("enabled"))
+                if hasattr(coach, "set_autopilot"):
+                    enabled = coach.set_autopilot(target)
+                else:
+                    enabled = coach.toggle_autopilot()
+                self.status("AUTOPILOT", "AP:ON" if enabled else "AP:OFF")
+            elif action == "get_status":
+                ap = getattr(coach, "_autopilot", None)
+                bridge_connected = False
+                try:
+                    from arenamcp.gre_bridge import get_bridge
+                    bridge_connected = bool(getattr(get_bridge(), "connected", False))
+                except Exception:
+                    pass
+                self._emit({
+                    "type": "status_report",
+                    "autopilot_enabled": bool(getattr(coach, "_autopilot_enabled", False)),
+                    "autopilot_initialized": ap is not None,
+                    "autopilot_state": str(getattr(ap, "_state", "") or ""),
+                    "bridge_connected": bridge_connected,
+                })
             elif action == "toggle_mute":
                 if coach._voice_output:
                     muted = coach._voice_output.toggle_mute()

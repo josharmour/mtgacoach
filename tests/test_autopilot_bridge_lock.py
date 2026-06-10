@@ -155,8 +155,11 @@ def test_process_trigger_refuses_when_bridge_idle_and_no_log_data(monkeypatch):
     assert engine.state == AutopilotState.IDLE
 
 
-def test_process_trigger_proceeds_when_bridge_idle_but_log_has_data(monkeypatch):
-    """When bridge says idle but the log already captured real data, proceed."""
+def test_process_trigger_refuses_when_bridge_idle_despite_log_data(monkeypatch):
+    """Arbiter doctrine (fable-improvements.md item 4): a connected, idle
+    bridge is authoritative; log-derived decisions are stale. The old
+    behavior (proceed on log data) planned and spoke against ghost
+    decisions the client had already consumed (live 2026-06-09)."""
     bridge = _DummyBridge({"ok": True, "has_pending": False})
     # Use dry_run so execution doesn't need real screen coordinates
     engine, planner = _make_engine(monkeypatch, lambda: {}, bridge)
@@ -167,7 +170,7 @@ def test_process_trigger_proceeds_when_bridge_idle_but_log_has_data(monkeypatch)
         post_action_delay=0.0,
     )
 
-    engine.process_trigger(
+    handled = engine.process_trigger(
         {
             "turn": {"turn_number": 4, "active_player": 1, "priority_player": 1, "phase": "Phase_Main1", "step": "Step_PreCombatMain"},
             "players": [{"seat_id": 1, "is_local": True}],
@@ -178,8 +181,9 @@ def test_process_trigger_proceeds_when_bridge_idle_but_log_has_data(monkeypatch)
         "priority_gained",
     )
 
-    # Should have reached the planner instead of being refused
-    assert planner.plan_calls >= 1
+    assert handled is False
+    assert planner.plan_calls == 0
+    assert engine.state == AutopilotState.IDLE
 
 
 def test_process_trigger_pauses_for_unmapped_bridge_interaction(monkeypatch):

@@ -1853,25 +1853,19 @@ class AutopilotEngine:
                         trigger,
                     )
                 else:
-                    # Bridge still idle.  If the log already captured real
-                    # game data (legal actions, a pending decision) trust it
-                    # rather than silently dropping the trigger.
-                    log_has_data = bool(
-                        game_state.get("pending_decision")
-                        or game_state.get("legal_actions")
+                    # Arbiter doctrine (fable-improvements.md item 4): a
+                    # connected, idle bridge is authoritative — log-derived
+                    # decisions are stale by definition. The old "log has
+                    # data; proceeding" branch here planned (and spoke)
+                    # against ghost decisions the client had already
+                    # consumed (live 2026-06-09 TTS/replan spiral).
+                    logger.info(
+                        "Autopilot: bridge connected but idle — no decision "
+                        "exists (arbiter); dropping trigger '%s'",
+                        trigger,
                     )
-                    if log_has_data:
-                        logger.info(
-                            "Autopilot: bridge idle but log has data; proceeding with trigger '%s'",
-                            trigger,
-                        )
-                    else:
-                        logger.info(
-                            "Autopilot: bridge connected but idle; refusing non-authoritative trigger '%s'",
-                            trigger,
-                        )
-                        self._state = AutopilotState.IDLE
-                        return False
+                    self._state = AutopilotState.IDLE
+                    return False
 
             if self._decision_type(game_state) == UNMAPPED_INTERACTION_TYPE:
                 self._pause_for_manual("Unmapped GRE interaction", game_state)

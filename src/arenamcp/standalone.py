@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from arenamcp.settings import get_settings
+from arenamcp.decision_arbiter import arbitrate
 from arenamcp.logging_config import configure_logging, LOG_DIR, LOG_FILE
 
 # Configure logging (shared with server.py via logging_config)
@@ -1587,6 +1588,19 @@ class StandaloneCoach:
             logger.error(f"Autopilot init failed: {e}", exc_info=True)
             self._autopilot_enabled = False
 
+    def set_autopilot(self, enabled: bool) -> bool:
+        """Idempotently set the autopilot state. Returns the resulting state.
+
+        Unlike toggle_autopilot, repeated or raced calls converge on the
+        requested state instead of flip-flopping (fable-improvements.md
+        item 6 — live 2026-06-09: a state probe and a UI click
+        double-toggled autopilot off mid-match).
+        """
+        currently_on = bool(self._autopilot_enabled and self._autopilot)
+        if currently_on == bool(enabled):
+            return currently_on
+        return self.toggle_autopilot()
+
     def toggle_autopilot(self) -> bool:
         """Toggle autopilot on/off at runtime. Returns new enabled state."""
         if self._autopilot_enabled and self._autopilot:
@@ -2526,12 +2540,18 @@ class StandaloneCoach:
                                 _given_up = self._autopilot.is_window_given_up(curr_state)
                             except Exception:
                                 pass
+                            # Arbiter: never force a decision the bridge says
+                            # doesn't exist (connected + idle ⇒ pending_now is
+                            # stale log state).
+                            _arb = arbitrate(
+                                curr_state, bridge_connected=bool(bridge_active)
+                            )
                             dec_ctx = curr_state.get("decision_context") or {}
                             dec_type = dec_ctx.get("type", "")
                             legal = curr_state.get("legal_actions", []) or []
                             sig = f"{pending_now}|{dec_type}|{len(legal)}"
                             now = time.time()
-                            if not _given_up and (
+                            if not _given_up and _arb is not None and (
                                 sig != self._last_forced_decision_sig
                                 or (now - self._last_forced_decision_ts) > 2.0
                             ):
@@ -2623,6 +2643,19 @@ class StandaloneCoach:
                         # it if we already advised this turn+phase to avoid duplicates.
                         is_critical = trigger in CRITICAL_PRIORITY
                         if trigger == "decision_required":
+                            # Arbiter (fable-improvements.md item 4): when the
+                            # bridge is connected and idle, a log-derived
+                            # pending decision is stale — drop the trigger
+                            # before it reaches autopilot OR coaching/TTS.
+                            _bridge_up = bool(
+                                self._bridge_poller and self._bridge_poller.connected
+                            )
+                            if arbitrate(curr_state, bridge_connected=_bridge_up) is None:
+                                logger.info(
+                                    "Arbiter: no real decision (bridge connected "
+                                    "and idle) — dropping decision_required"
+                                )
+                                continue
                             pending = curr_state.get("pending_decision")
                             if (
                                 pending == "Action Required"
