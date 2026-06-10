@@ -14,6 +14,7 @@ import re
 import threading
 import time
 import io
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Optional
@@ -340,6 +341,19 @@ class AutopilotEngine:
         # showing up — used to avoid stacking multi-second waits on every
         # action of every plan while the plugin is genuinely gone.
         self._last_bridge_wait_failed_at: float = 0.0
+
+        # Cross-window livelock protection (live 2026-06-09: a cast that
+        # can't complete — unpayable cost, rejected targeting — gets rolled
+        # back, re-planned, and re-cast across NEW windows, so per-window
+        # guards never trip; the cycle ran at machine speed and locked the
+        # user out of the UI).
+        self._cast_rollback_counts: dict[tuple[int, str], int] = {}
+        self._last_cast_submitted: Optional[tuple[int, str]] = None
+        self._max_seen_turn: int = 0
+        self._recent_submission_times: deque = deque(maxlen=32)
+        self._runaway_tripped_turn: Optional[int] = None
+        self._escape_budget_turn: int = -1
+        self._escape_count_this_turn: int = 0
         self._bridge_preloaded_actions: Optional[list[dict[str, Any]]] = None
 
         # Persistent strategic GAME PLAN layer (win conditions + path), reformed
@@ -1022,6 +1036,64 @@ class AutopilotEngine:
         except Exception as e:
             logger.debug(f"_maybe_record_trajectory failed (ignored): {e}")
 
+    # A cast rolled back this many times in one turn is hidden from the
+    # planner for the rest of the turn — it cannot complete and re-trying
+    # is the engine of the cast→cancel→re-cast livelock.
+    _CAST_ROLLBACK_LIMIT = 2
+    # auto_respond escapes allowed per turn. Each new gameStateId makes a
+    # new window signature, so the old once-per-window guard allowed an
+    # escape every cycle of a cross-window loop — i.e. forever.
+    _MAX_ESCAPES_PER_TURN = 2
+
+    def _note_cast_rollback(self, why: str) -> None:
+        """Record that the most recently submitted cast was rolled back."""
+        last = self._last_cast_submitted
+        if not last:
+            return
+        self._cast_rollback_counts[last] = self._cast_rollback_counts.get(last, 0) + 1
+        n = self._cast_rollback_counts[last]
+        logger.warning(
+            f"Cast rollback #{n} for {last[1]!r} (turn {last[0]}): {why}"
+        )
+
+    @staticmethod
+    def _plain_card_name(text: str) -> str:
+        """Strip (P/T) and trailing [TAG]s from a legal-action card name."""
+        text = re.sub(r"\s*\([\dxX*+-]+/[\dxX*+-]+\)\s*$", "", text or "").strip()
+        prev = None
+        while prev != text:
+            prev = text
+            text = re.sub(r"\s*\[[^\]]*\]\s*$", "", text).strip()
+        return text
+
+    def _filter_rolled_back_casts(
+        self, legal_actions: list[str], game_state: dict[str, Any]
+    ) -> list[str]:
+        """Hide 'Cast X' from the planner once X was rolled back twice this turn.
+
+        A cast that reached PayCosts/targeting and got cancelled cannot
+        complete with the current resources; offering it to the planner
+        again just re-arms the livelock (live 2026-06-09).
+        """
+        if not legal_actions or not self._cast_rollback_counts:
+            return legal_actions
+        turn = int((game_state.get("turn") or {}).get("turn_number", 0) or 0)
+        out: list[str] = []
+        for la in legal_actions:
+            if la.lower().strip().startswith("cast "):
+                name = self._plain_card_name(la.strip()[5:]).lower()
+                if (
+                    self._cast_rollback_counts.get((turn, name), 0)
+                    >= self._CAST_ROLLBACK_LIMIT
+                ):
+                    logger.info(
+                        f"Suppressing legal action {la!r} — cast rolled back "
+                        f"{self._CAST_ROLLBACK_LIMIT}+ times this turn"
+                    )
+                    continue
+            out.append(la)
+        return out
+
     def _try_auto_respond_escape(
         self, game_state: Optional[dict[str, Any]], reason: str
     ) -> bool:
@@ -1050,8 +1122,32 @@ class AutopilotEngine:
             or bcls in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
         ):
             return False
+        # Per-turn escape budget. Window signatures change every
+        # gameStateId, so a cross-window loop presents a "new" window each
+        # cycle and the once-per-window guard never limits anything —
+        # observed live 2026-06-09 as an escape every ~3s, each one
+        # cancelling the user's own cast.
+        turn = int(((game_state or {}).get("turn") or {}).get("turn_number", 0) or 0)
+        if turn != self._escape_budget_turn:
+            self._escape_budget_turn = turn
+            self._escape_count_this_turn = 0
+        if self._escape_count_this_turn >= self._MAX_ESCAPES_PER_TURN:
+            logger.warning(
+                "auto_respond escape budget exhausted for turn %s — leaving "
+                "%s for the user", turn, breq or bcls,
+            )
+            return False
         try:
             if self._gre_bridge.auto_respond():
+                self._escape_count_this_turn += 1
+                if any(
+                    k in (breq + bcls)
+                    for k in ("SelectTargets", "PayCosts", "CastingTimeOption")
+                ):
+                    # Escaping a casting-flow window rolls back the cast.
+                    self._note_cast_rollback(
+                        f"auto_respond escape on {breq or bcls}"
+                    )
                 self._log_execution_path(
                     ExecutionPath.GRE_AWARE,
                     f"auto_respond escape on stuck {breq or bcls} ({reason})",
@@ -1630,6 +1726,28 @@ class AutopilotEngine:
                 self._state = AutopilotState.IDLE
                 return False
 
+            turn_num = int((game_state.get("turn") or {}).get("turn_number", 0) or 0)
+            if turn_num and turn_num < self._max_seen_turn:
+                # Turn counter went backwards → new match. Drop per-match
+                # livelock memories.
+                self._cast_rollback_counts.clear()
+                self._last_cast_submitted = None
+                self._runaway_tripped_turn = None
+            self._max_seen_turn = max(self._max_seen_turn, turn_num)
+
+            # Runaway protection: once tripped, stand down for the rest of
+            # the turn no matter how many triggers fire. Self-clears on the
+            # next turn.
+            if self._runaway_tripped_turn is not None:
+                if turn_num == self._runaway_tripped_turn:
+                    logger.info(
+                        "Autopilot: runaway protection active (turn %s) — standing down",
+                        turn_num,
+                    )
+                    self._state = AutopilotState.IDLE
+                    return False
+                self._runaway_tripped_turn = None
+
             self._clear_events()
 
             # --- BRIDGE PRELOAD: stash bridge actions for execution phase ---
@@ -1821,6 +1939,9 @@ class AutopilotEngine:
                     logger.info("Autopilot: no AutoTap solution; cancelling PayCostsRequest")
                     if self._gre_bridge.cancel_action():
                         self._log_execution_path(ExecutionPath.GRE_AWARE, "cancel PayCosts")
+                        # The cast that opened this PayCosts can't be paid —
+                        # remember it so the planner stops re-picking it.
+                        self._note_cast_rollback("PayCosts cancelled (no autotap)")
                         return True
                 self._record_autopilot_decision(
                     game_state, trigger,
@@ -2122,6 +2243,7 @@ class AutopilotEngine:
             pre_bridge_state_id = int(game_state.get("_bridge_game_state_id", 0) or 0)
 
             legal_actions = self._get_legal_actions(game_state)
+            legal_actions = self._filter_rolled_back_casts(legal_actions, game_state)
             decision_context = game_state.get("decision_context")
 
             logger.info(
@@ -2537,6 +2659,34 @@ class AutopilotEngine:
                 # Clear the persistent-failure counter for this action key
                 # so a future failure starts counting from 0 (#231).
                 self._reset_persistent_failure(action, game_state)
+
+                # Livelock bookkeeping: count real submissions (not no-ops)
+                # toward runaway protection, and remember the last cast so a
+                # later rollback (PayCosts cancel / targeting escape) can be
+                # attributed to it.
+                result_src = click_result.error or ""
+                is_real_submission = not any(
+                    k in result_src for k in ("stale-skip", "no-op", "intermission")
+                )
+                if is_real_submission:
+                    now_ts = time.monotonic()
+                    self._recent_submission_times.append(now_ts)
+                    if (
+                        len(self._recent_submission_times) >= 15
+                        and now_ts - self._recent_submission_times[-15] <= 10.0
+                    ):
+                        self._runaway_tripped_turn = pre_turn_num
+                        self._pause_for_manual(
+                            "Runaway protection: 15+ submissions in 10s — "
+                            "autopilot standing down until next turn",
+                            game_state,
+                        )
+                        return False
+                    if action.action_type == ActionType.CAST_SPELL and action.card_name:
+                        self._last_cast_submitted = (
+                            pre_turn_num,
+                            action.card_name.strip().lower(),
+                        )
 
                 # --- 4. VERIFYING ---
                 action_verified = True

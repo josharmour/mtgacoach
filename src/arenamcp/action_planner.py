@@ -1548,11 +1548,21 @@ class ActionPlanner:
         if not legal_actions:
             return None
 
+        # When [OK] tagging is active (bridge confirmed autotap solutions),
+        # a Cast line WITHOUT the tag means MTGA lists the action but cannot
+        # auto-pay it — submitting it starts a cast workflow that dies at
+        # payment, gets cancelled, and re-planned forever (live livelock
+        # 2026-06-09: Momentum Breaker / Ruthless Negotiation cast-cancel
+        # loop locked the user out of the UI). Prefer passing over that.
+        ok_tagging_active = any("[OK]" in a for a in legal_actions)
+
         def score(action: str) -> int:
             a = action.lower().strip()
             if a.startswith("play land:"):
                 return 100
             if a.startswith("cast "):
+                if ok_tagging_active and "[ok]" not in a:
+                    return 15  # below Pass: unpayable cast is a livelock trap
                 return 90
             if a.startswith("declare attackers:") or a.startswith("attack with:"):
                 return 80
@@ -1602,6 +1612,15 @@ class ActionPlanner:
             )
         if lower.startswith("cast "):
             return GameAction(action_type=ActionType.CAST_SPELL, card_name=self._strip_decoration(act[5:]))
+        if lower.startswith("activate ability:"):
+            # gamestate emits "Activate Ability: <card>" — without this branch
+            # the generic "activate " prefix below yields card_name
+            # "Ability: <card>", which never matches the planner's card name
+            # and got legal activations dropped as illegal (live 2026-06-09).
+            return GameAction(
+                action_type=ActionType.ACTIVATE_ABILITY,
+                card_name=self._strip_decoration(act.split(":", 1)[1]),
+            )
         if lower.startswith("activate "):
             return GameAction(action_type=ActionType.ACTIVATE_ABILITY, card_name=self._strip_decoration(act[9:]))
         if lower.startswith("declare attackers:"):

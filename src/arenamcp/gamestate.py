@@ -3155,7 +3155,15 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
         source_card = source_ctx.get("source_card") or (
             f"Ability #{source_id}" if source_id else "spell"
         )
-        logger.info(f"Captured Decision: Select Targets (source: {source_card})")
+        # The GRE re-sends SelectTargetsReq on every re-present (a rejected
+        # submit loop produced 850+ identical messages/min live 2026-06-09).
+        # Log repeats at DEBUG so a runaway elsewhere can't flood the log.
+        _st_sig = ("SelectTargets", source_id)
+        if getattr(game_state, "_last_select_targets_log_sig", None) == _st_sig:
+            logger.debug(f"Captured Decision: Select Targets (source: {source_card}) [repeat]")
+        else:
+            game_state._last_select_targets_log_sig = _st_sig
+            logger.info(f"Captured Decision: Select Targets (source: {source_card})")
         game_state.pending_decision = "Select Targets"
         game_state.decision_timestamp = _time.time()
         game_state.decision_context = {
