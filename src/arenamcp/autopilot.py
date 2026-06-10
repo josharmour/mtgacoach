@@ -3431,6 +3431,19 @@ class AutopilotEngine:
         action_type_str = action_type.value if action_type else "?"
         card_name = getattr(first, "card_name", "") or ""
 
+        # A stale pass/resolve plan carries no improvement signal — the plan
+        # was to do nothing and the game (or the user) simply moved faster
+        # than the countdown. Filing these produced a 15-issue noise cluster
+        # (#238 #245 #246 #254-#261 #269-#273). Substantive planned actions
+        # (cast/attack/select) still file: those takeovers show what the
+        # autopilot got wrong. Match packets record every decision anyway.
+        if action_type in (ActionType.PASS_PRIORITY, ActionType.RESOLVE, None):
+            logger.debug(
+                f"user takeover ({reason}) on planned {action_type_str} — "
+                "benign, not buffering a bug report"
+            )
+            return
+
         extra = {
             "auto_user_takeover": {
                 "reason_tag": reason,
@@ -3790,7 +3803,11 @@ class AutopilotEngine:
         # ("Cannot pass on current interaction"). Issue #161 was filed because
         # this branch lumped CLICK_BUTTON with pass/resolve and surfaced
         # bridge_submit_failed when the LLM tried to accept an ETB trigger.
-        if action.action_type == ActionType.CLICK_BUTTON:
+        if action.action_type in (
+            ActionType.CLICK_BUTTON,
+            ActionType.ACTIVATE_ABILITY,
+            ActionType.CAST_SPELL,
+        ):
             bridge_request_class = (
                 game_state.get("_bridge_request_class")
                 or game_state.get("_bridge_request_type")
@@ -3799,7 +3816,37 @@ class AutopilotEngine:
             decision_type = (
                 (game_state.get("decision_context") or {}).get("type") or ""
             )
-            if "Optional" in str(bridge_request_class) or decision_type == "optional_action":
+            is_optional_window = (
+                "Optional" in str(bridge_request_class)
+                or decision_type == "optional_action"
+            )
+            # activate_ability / cast_spell against an OptionalActionMessage
+            # window ("Use Alseid's ability?") is the planner answering that
+            # exact yes/no — accept it. Without this mapping the action falls
+            # through to the action matcher, which finds no Cast/Activate
+            # entries on an Optional request and pauses as bridge_submit_failed
+            # (#252). Only CLICK_BUTTON may decline; wanting to activate/cast
+            # IS the accept.
+            if is_optional_window and action.action_type in (
+                ActionType.ACTIVATE_ABILITY,
+                ActionType.CAST_SPELL,
+            ):
+                if self._gre_bridge.submit_optional(True):
+                    self._log_execution_path(
+                        ExecutionPath.GRE_AWARE,
+                        f"{action.action_type.value} ({action.card_name or '?'}): "
+                        "optional window — submit_optional(accept=True)",
+                    )
+                    return ClickResult(
+                        True, 0, 0, action.card_name or "accept", "GRE bridge"
+                    )
+                logger.info(
+                    "GRE bridge submit_optional failed for "
+                    f"{action.action_type.value}; surfacing manual-required to caller"
+                )
+                self._gre_bridge_failed_methods.add(method)
+                return None
+            if action.action_type == ActionType.CLICK_BUTTON and is_optional_window:
                 button_name = (action.card_name or "").lower().strip()
                 # The LLM occasionally leaves card_name empty when the prompt
                 # is a yes/no benefit (e.g. "Search your library?"). Default
@@ -5574,15 +5621,53 @@ class AutopilotEngine:
                 # (see issues #136 #137 #139 #140 — the cluster of
                 # `bridge_submit_failed` for play_land where the bridge
                 # simply has no Play action because lands_played != 0).
-                if self._is_planner_action_stale_vs_bridge(action, game_state):
+                # Classify against the LIVE window, not the planning
+                # snapshot. During window churn the snapshot routinely
+                # lags the bridge by one request — declare_attackers vs a
+                # SelectTargets that just opened (#243), click_button vs a
+                # Search that became OptionalAction (#242 #235 #232),
+                # select_n vs SelectTargets (#266 #234). Snapshot-based
+                # classification calls those "real failures" and pauses.
+                gs_for_classify = game_state
+                try:
+                    live = self._gre_bridge.get_pending_actions() or {}
+                except Exception:
+                    live = {}
+                if live:
+                    gs_for_classify = dict(game_state)
+                    if live.get("has_pending"):
+                        gs_for_classify["_bridge_request_type"] = (
+                            live.get("request_type") or ""
+                        )
+                        gs_for_classify["_bridge_request_class"] = (
+                            live.get("request_class") or ""
+                        )
+                        if "actions" in live:
+                            gs_for_classify["_bridge_actions"] = live.get("actions") or []
+                        if "can_pass" in live:
+                            gs_for_classify["_bridge_can_pass"] = live.get("can_pass")
+                    else:
+                        # Window closed entirely: nothing for anyone to act
+                        # on. Silent no-op — the next window replans.
+                        self._log_execution_path(
+                            ExecutionPath.GRE_AWARE,
+                            f"{action.action_type.value}: window closed before "
+                            "submission (live poll) — no-op",
+                        )
+                        return ClickResult(
+                            True, 0, 0, action.action_type.value,
+                            "GRE bridge (no-op, window closed)",
+                        )
+
+                if self._is_planner_action_stale_vs_bridge(action, gs_for_classify):
                     # Silent-skip cases — the bridge will surface the right
                     # request shortly and the next plan cycle will pick
                     # correctly. Pausing for manual input here is wrong:
                     # the user can't act on a step that hasn't started yet
                     # (combat) or one that's been displaced by an
                     # in-resolution decision window (SelectN/Search/etc).
-                    bridge_type = str(game_state.get("_bridge_request_type") or "")
-                    bridge_class = str(game_state.get("_bridge_request_class") or "")
+                    bridge_type = str(gs_for_classify.get("_bridge_request_type") or "")
+                    bridge_class = str(gs_for_classify.get("_bridge_request_class") or "")
                     bridge_is_actions_available = (
                         bridge_type in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
                         or bridge_class in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
@@ -5623,7 +5708,7 @@ class AutopilotEngine:
                     if (
                         is_combat_stale
                         and bridge_is_actions_available
-                        and bool(game_state.get("_bridge_can_pass"))
+                        and bool(gs_for_classify.get("_bridge_can_pass"))
                         and self._gre_bridge is not None
                     ):
                         try:

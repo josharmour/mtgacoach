@@ -6,20 +6,30 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Default MTGA log path on Windows
-# Use LOCALAPPDATA approach which is more reliable than APPDATA/../LocalLow
-_local_appdata = os.environ.get("LOCALAPPDATA", "")
-if _local_appdata:
-    # LOCALAPPDATA is C:\Users\<user>\AppData\Local, we need LocalLow sibling
-    PLAYER_LOG_PATH = os.path.join(
-        os.path.dirname(_local_appdata),
-        "LocalLow",
-        "Wizards Of The Coast",
-        "MTGA",
-        "Player.log"
-    )
-else:
-    PLAYER_LOG_PATH = os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\Wizards Of The Coast\MTGA\Player.log")
+def _resolve_player_log_path() -> str:
+    """MTGA_LOG_PATH env override first, then the watcher's cross-platform
+    default (Windows LOCALAPPDATA, WSL /mnt/c, Linux Steam/Proton incl.
+    Flatpak). The old Windows-only fallback here logged literal
+    '%USERPROFILE%\\...' errors on every Linux session (#237)."""
+    env_path = os.environ.get("MTGA_LOG_PATH", "").strip()
+    if env_path:
+        return env_path
+    try:
+        from arenamcp.watcher import DEFAULT_LOG_PATH
+        return DEFAULT_LOG_PATH
+    except Exception:
+        local_appdata = os.environ.get("LOCALAPPDATA", "")
+        if local_appdata:
+            return os.path.join(
+                os.path.dirname(local_appdata),
+                "LocalLow", "Wizards Of The Coast", "MTGA", "Player.log",
+            )
+        return os.path.expandvars(
+            r"%USERPROFILE%\AppData\LocalLow\Wizards Of The Coast\MTGA\Player.log"
+        )
+
+
+PLAYER_LOG_PATH = _resolve_player_log_path()
 
 def get_local_player_id():
     """Scans Player.log for the AuthenticateResponse to find the local user ID.
