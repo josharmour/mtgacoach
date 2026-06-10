@@ -276,6 +276,10 @@ class SetupSplashWindow(QMainWindow):
         self._start_time = time.monotonic()
         self._append_details(f"[..] Running: {program} {' '.join(args)}")
         process.start()
+        # Close the child's stdin: the wizard must see EOF (not an open,
+        # silent pipe) so any input()/pause path exits instead of blocking
+        # until the splash's 5-minute timeout declares a false failure.
+        process.closeWriteChannel()
         self._tick_timer.start()
 
     def _on_tick(self) -> None:

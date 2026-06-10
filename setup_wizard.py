@@ -1205,18 +1205,28 @@ def _pause() -> None:
         pass
 
 
+# Modes invoked by automation (launch.bat, the desktop setup splash, the
+# Repair tab) — these must never block on "Press Enter to exit", or the
+# parent waits forever (hidden-console deadlock via launch.vbs; QProcess
+# timeout in the setup splash).
+_AUTOMATION_FLAGS = {"--setup-environment", "--create-venv"}
+
 if __name__ == "__main__":
+    _interactive = not (_AUTOMATION_FLAGS & set(sys.argv[1:]))
     try:
         code = main()
-        _pause()
+        if _interactive:
+            _pause()
         sys.exit(code)
     except KeyboardInterrupt:
         print("\n\n    Setup cancelled.")
-        _pause()
+        if _interactive:
+            _pause()
         sys.exit(1)
     except Exception as exc:
         print(f"\n    FATAL ERROR: {exc}")
         import traceback
         traceback.print_exc()
-        _pause()
+        if _interactive:
+            _pause()
         sys.exit(1)
