@@ -3559,6 +3559,20 @@ class AutopilotEngine:
                 # Answered MAX times without the game advancing — a human
                 # is needed. Declare once (sets the given-up window) and
                 # own the trigger so coaching doesn't replan it either.
+                try:
+                    from arenamcp.stall_corpus import record_stall
+                    record_stall(
+                        decision,
+                        None,
+                        "exhausted",
+                        {
+                            "turn": (game_state.get("turn") or {}).get("turn_number"),
+                            "phase": (game_state.get("turn") or {}).get("phase"),
+                            "rejections": self._request_tracker.rejections(fp),
+                        },
+                    )
+                except Exception:
+                    pass
                 self._pause_for_manual(
                     f"{decision.request_type} not accepted after "
                     f"{self._request_tracker.MAX_SUBMISSIONS_PER_REQUEST} "
@@ -3595,6 +3609,16 @@ class AutopilotEngine:
             self._actions_executed += 1
             self._state = AutopilotState.IDLE
             return True
+        try:
+            from arenamcp.stall_corpus import record_stall
+            record_stall(
+                decision,
+                option_ids,
+                "submit_failed",
+                {"turn": (game_state.get("turn") or {}).get("turn_number")},
+            )
+        except Exception:
+            pass
         logger.info(
             "typed-decision submit failed for %s (%s); falling back to legacy path",
             decision.request_type,

@@ -27,7 +27,14 @@
   submissions per request (then one MANUAL REQUIRED + stand-down), escapes
   only after ≥2 real rejections. Wired into the typed-decision path; resets
   on new match. Tests: `test_request_tracker.py`.
-- [ ] **Phase D** — item 5 (stall corpus → CI harness)
+- [x] **Phase D** — item 5 (stall corpus → CI harness) — done 2026-06-09
+  `stall_corpus.py` records a full fixture (PendingDecision + planner answer +
+  outcome) on every typed-path dead end (exhausted / submit_failed) into
+  `~/.arenamcp/stall_corpus/` (bounded, 200). `tools/eval/replay_stalls.py`
+  replays a corpus offline; curated fixtures for the three 2026-06-09 live
+  failures live in `tests/fixtures/stalls/` and run in pytest
+  (`test_stall_corpus.py`) — including the assertion that the deterministic
+  pick never chooses an unpayable cast.
 - [ ] **Phase E** (added) — migrate ActionsAvailable onto the typed pipeline
   (turn plans / combat solver / land-drop-first re-expressed over
   `DecisionOption`s) and retire the legacy string planning path entirely —

@@ -1,0 +1,17 @@
+{
+  "pending_decision": {
+    "request_id": [123, 45],
+    "request_type": "SelectTargets",
+    "options": [
+      {"option_id": "tgt:2", "label": "Target #2", "payable": null, "meta": {"grpId": 0}}
+    ],
+    "min_select": 1,
+    "max_select": 1,
+    "can_pass": false,
+    "can_cancel": true,
+    "source_label": "Ruthless Negotiation"
+  },
+  "planner_answer": {"option_ids": ["Opponent"]},
+  "outcome": "exhausted",
+  "context": {"note": "live 2026-06-09 17:40 bot match: planner answered a NAME ('Opponent') the executor could not resolve; sole player target id 2"}
+}

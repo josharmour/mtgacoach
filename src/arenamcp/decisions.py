@@ -267,6 +267,53 @@ def _build_select_n(
 
 
 # ---------------------------------------------------------------------------
+# (De)serialization — used by the stall corpus (fable item 5)
+# ---------------------------------------------------------------------------
+
+
+def decision_to_dict(decision: PendingDecision) -> dict[str, Any]:
+    return {
+        "request_id": list(decision.request_id),
+        "request_type": decision.request_type,
+        "options": [
+            {
+                "option_id": o.option_id,
+                "label": o.label,
+                "payable": o.payable,
+                "meta": o.meta,
+            }
+            for o in decision.options
+        ],
+        "min_select": decision.min_select,
+        "max_select": decision.max_select,
+        "can_pass": decision.can_pass,
+        "can_cancel": decision.can_cancel,
+        "source_label": decision.source_label,
+    }
+
+
+def decision_from_dict(data: dict[str, Any]) -> PendingDecision:
+    return PendingDecision(
+        request_id=tuple(data.get("request_id") or (0, 0)),  # type: ignore[arg-type]
+        request_type=str(data.get("request_type") or ""),
+        options=tuple(
+            DecisionOption(
+                option_id=str(o.get("option_id") or ""),
+                label=str(o.get("label") or ""),
+                payable=o.get("payable"),
+                meta=o.get("meta") or {},
+            )
+            for o in (data.get("options") or [])
+        ),
+        min_select=int(data.get("min_select") or 1),
+        max_select=int(data.get("max_select") or 1),
+        can_pass=bool(data.get("can_pass")),
+        can_cancel=bool(data.get("can_cancel")),
+        source_label=str(data.get("source_label") or ""),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Submission by option id
 # ---------------------------------------------------------------------------
 

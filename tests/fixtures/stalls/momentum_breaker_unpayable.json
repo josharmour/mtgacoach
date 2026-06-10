@@ -1,0 +1,19 @@
+{
+  "pending_decision": {
+    "request_id": [123, 46],
+    "request_type": "ActionsAvailable",
+    "options": [
+      {"option_id": "idx:0", "label": "Cast Momentum Breaker (cannot auto-pay)", "payable": false, "meta": {"actionType": "ActionType_Cast", "grpId": 94899}},
+      {"option_id": "idx:1", "label": "Cast Ruthless Negotiation", "payable": true, "meta": {"actionType": "ActionType_Cast", "grpId": 91644}},
+      {"option_id": "pass", "label": "Pass", "payable": null, "meta": {}}
+    ],
+    "min_select": 1,
+    "max_select": 1,
+    "can_pass": true,
+    "can_cancel": false,
+    "source_label": ""
+  },
+  "planner_answer": {"option_ids": []},
+  "outcome": "submit_failed",
+  "context": {"note": "live 2026-06-09 17:41 bot match: fallback auto-picked the unpayable cast 30+ times (cast/cancel livelock)"}
+}

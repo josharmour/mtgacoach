@@ -1,0 +1,17 @@
+{
+  "pending_decision": {
+    "request_id": [402, 77],
+    "request_type": "SelectTargets",
+    "options": [
+      {"option_id": "tgt:233", "label": "Light-Paws, Emperor's Voice", "payable": null, "meta": {"grpId": 79321}}
+    ],
+    "min_select": 1,
+    "max_select": 1,
+    "can_pass": false,
+    "can_cancel": true,
+    "source_label": "Nurturing Presence"
+  },
+  "planner_answer": {"option_ids": ["tgt:233"]},
+  "outcome": "exhausted",
+  "context": {"note": "live 2026-06-09 18:20 ranked Brawl: valid target pick was dropped by string legality before reaching the bridge"}
+}
