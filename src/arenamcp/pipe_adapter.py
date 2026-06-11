@@ -98,6 +98,15 @@ class PipeAdapter:
         """
         self._emit({"type": "turn_plan", "data": payload or {}})
 
+    def game_plan(self, payload: Optional[dict[str, Any]] = None) -> None:
+        """Forward the structured strategic game plan to the GUI.
+
+        Wholesale-replace event like ``turn_plan``: the UI swaps its strategy
+        card contents on each emission; empty/None reverts the card to plain
+        advice.
+        """
+        self._emit({"type": "game_plan", "data": payload or {}})
+
     def status(self, key: str, value: str) -> None:
         self._emit({"type": "status", "key": key, "value": strip_markup(value)})
 
@@ -410,7 +419,8 @@ class PipeAdapter:
             elif action == "sync_voice_preferences":
                 self._handle_sync_voice_preferences(cmd)
             elif action == "cycle_mode":
-                self._cycle_mode()
+                # Legacy frontends only — local mode was removed (online-only).
+                self.log("Local mode was removed — the app is online-only.")
             elif action == "cycle_model":
                 self._cycle_model()
             elif action == "cycle_voice":
@@ -627,60 +637,26 @@ class PipeAdapter:
         except Exception:
             pass
 
-    def _cycle_mode(self) -> None:
-        """Cycle between online and local backends."""
-        coach = self._coach
-        if coach is None:
-            return
-        current = coach._backend_name
-        new_mode = "local" if current in ("online", "proxy", "auto") else "online"
-
-        def _do_switch():
-            try:
-                from arenamcp.backend_detect import validate_backend
-                mode_label = "Online" if new_mode == "online" else "Local"
-                self.log(f"Connecting to {mode_label}...")
-
-                if new_mode == "online":
-                    from arenamcp.settings import get_settings
-                    key = get_settings().get("license_key", "")
-                    if not key:
-                        self.error("No license key configured.")
-                        return
-
-                ok, err = validate_backend(new_mode)
-                if not ok:
-                    self.error(f"{mode_label} unavailable: {err}")
-                    return
-
-                coach.set_backend(new_mode, None)
-                actual = coach.backend_name
-                model = coach.model_name
-                self.status("BACKEND", f"{actual} ({model or 'default'})")
-                self.status("MODEL", model or "default")
-                self.log(f"Switched to {actual}/{model or 'default'}")
-            except Exception as e:
-                self.error(f"Mode switch failed: {e}")
-
-        threading.Thread(target=_do_switch, daemon=True).start()
-
     def _cycle_model(self) -> None:
-        """Cycle through available models for the current backend."""
+        """Cycle through the models the online gateway serves.
+
+        The server controls the active model for customers, so this is a
+        no-op for them — upstream model swaps stay invisible. Developer
+        machines (MTGACOACH_DEV / settings developer_mode, never shipped)
+        cycle through whatever api.mtgacoach.com's /v1/models lists, for
+        live model comparison.
+        """
         coach = self._coach
         if coach is None:
             return
 
         try:
             from arenamcp.coach import get_models_for_mode
+            from arenamcp.settings import is_developer_mode
 
-            mode = coach.backend_name
-            # Online is proxied — the server controls the active model so
-            # users can't cycle between them. Keeps upstream model swaps
-            # invisible.
-            if mode == "online":
+            if not is_developer_mode():
                 return
-            if mode not in ("online", "local"):
-                mode = "local"
+            mode = "online"
 
             models = get_models_for_mode(mode)
             if len(models) <= 1:
@@ -925,53 +901,11 @@ class PipeAdapter:
             self.error(f"Subscription check failed: {e}")
 
     def _handle_local_config(self, text: str) -> None:
-        """Configure local model endpoint."""
-        from arenamcp.settings import get_settings
-        settings = get_settings()
-
-        parts = text.split(maxsplit=1)
-        arg = parts[1].strip() if len(parts) > 1 else ""
-
-        if not arg:
-            url = settings.get("local_url", "http://localhost:8000/v1")
-            model = settings.get("local_model", "auto-detect")
-            api_key = settings.get("local_api_key", "vllm")
-            self.log(f"Local config: URL={url}, Model={model or 'auto-detect'}, Key={api_key}")
-            return
-
-        arg_parts = arg.split(maxsplit=1)
-        provider = arg_parts[0].lower()
-
-        if provider == "vllm":
-            settings.set("local_url", "http://localhost:8000/v1", save=False)
-            settings.set("local_api_key", "vllm", save=False)
-            settings.set("local_model", None, save=True)
-            self.log("Local config set to vLLM (localhost:8000)")
-        elif provider == "ollama":
-            settings.set("local_url", "http://localhost:11434/v1", save=False)
-            settings.set("local_api_key", "ollama", save=False)
-            settings.set("local_model", None, save=True)
-            self.log("Local config set to Ollama (localhost:11434)")
-        elif provider in ("lmstudio", "lm-studio", "lm_studio"):
-            settings.set("local_url", "http://localhost:1234/v1", save=False)
-            settings.set("local_api_key", "lm-studio", save=False)
-            settings.set("local_model", None, save=True)
-            self.log("Local config set to LM Studio (localhost:1234)")
-        elif provider.startswith("http"):
-            url = provider
-            api_key = arg_parts[1].strip() if len(arg_parts) > 1 else "no-key"
-            settings.set("local_url", url, save=False)
-            settings.set("local_api_key", api_key, save=False)
-            settings.set("local_model", None, save=True)
-            self.log(f"Local config set to {url}")
-        else:
-            self.error(f"Unknown provider: {provider}. Use vllm, ollama, lmstudio, or a URL.")
-            return
-
-        # Switch to local mode
-        coach = self._coach
-        if coach:
-            threading.Thread(target=self._handle_switch_local, daemon=True).start()
+        """Legacy /local command — local mode was removed (online-only)."""
+        self.log(
+            "Local mode was removed — the app is online-only via "
+            "api.mtgacoach.com. Use /online to reconnect after an outage."
+        )
 
     def _handle_switch_online(self) -> None:
         """Switch to online mode with validation."""
@@ -999,27 +933,6 @@ class PipeAdapter:
             self.log(f"Switched to {coach.backend_name}/{coach.model_name or 'default'}")
         except Exception as e:
             self.error(f"Online switch failed: {e}")
-
-    def _handle_switch_local(self) -> None:
-        """Switch to local mode with validation."""
-        coach = self._coach
-        if not coach:
-            return
-        try:
-            from arenamcp.backend_detect import validate_backend
-
-            self.log("Connecting to Local...")
-            ok, err = validate_backend("local")
-            if not ok:
-                self.error(f"Local unavailable: {err}")
-                return
-
-            coach.set_backend("local", None)
-            self.status("BACKEND", f"{coach.backend_name} ({coach.model_name or 'default'})")
-            self.status("MODEL", coach.model_name or "default")
-            self.log(f"Switched to {coach.backend_name}/{coach.model_name or 'default'}")
-        except Exception as e:
-            self.error(f"Local switch failed: {e}")
 
     def _handle_set_key(self, text: str) -> None:
         """Set license key."""

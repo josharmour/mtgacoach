@@ -44,12 +44,14 @@ DEFAULTS = {
     "desktop_debug_logging": False,
     # Language for TTS and STT (e.g., "en", "nl", "es", "fr", "de", "ja")
     "language": "en",
-    # Two-mode backend: "online" or "local"
+    # The app is online-only (local mode removed 2026-06-11); "mode" is kept
+    # for settings-file compatibility but the app always runs online.
     "mode": "online",
     "model": None,  # None = use backend default
     # Subscription license key for online mode
     "license_key": "",
-    # Local model endpoint config
+    # Local endpoint config — used only by dev tooling (eval harness,
+    # self-play), not by the app.
     "local_url": "http://localhost:8000/v1",  # Default: vLLM (Ollama is at :11434)
     "local_model": None,  # None = auto-detect first available
     "local_api_key": "vllm",  # vLLM/Ollama ignore this; LM Studio needs "lm-studio"
@@ -205,3 +207,19 @@ def get_settings() -> Settings:
     if _settings is None:
         _settings = Settings()
     return _settings
+
+
+def is_developer_mode() -> bool:
+    """True on developer machines only — unlocks dev-only UI (model cycling).
+
+    Primary switch is the MTGACOACH_DEV env var (exported in the dev
+    launch script, never shipped): the settings-file flag alone is
+    unreliable because every running process holds its own in-memory
+    Settings dict and a save() from any of them rewrites the whole file,
+    silently dropping keys added externally while the app runs.
+    """
+    import os
+
+    if os.environ.get("MTGACOACH_DEV", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    return bool(get_settings().get("developer_mode", False))

@@ -3,16 +3,34 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QAction, QActionGroup
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStatusBar, QTabWidget
+from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QStackedWidget,
+    QStatusBar,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from arenamcp.settings import get_settings
 
 from .coach_process import CoachProcess
 from .coach_tab import CoachTab
+from .compact_coach import CompactCoachPanel
 from .repair_tab import RepairTab
 from .runtime import RuntimeState, open_url, read_version
 from .theme import THEME_LABELS, apply_theme, available_themes, load_saved_theme, save_theme
+
+UI_MODE_CLASSIC = "classic"
+UI_MODE_COMPACT = "compact"
+_UI_MODE_KEY = "desktop_ui_mode"
 
 
 class MainWindow(QMainWindow):
@@ -25,24 +43,25 @@ class MainWindow(QMainWindow):
         self._settings = get_settings()
         self._theme_actions: dict[str, QAction] = {}
         self._debug_logging_action: Optional[QAction] = None
+        self._compact_action: Optional[QAction] = None
         self._current_theme = load_saved_theme()
 
-        self.setWindowTitle(f"mtgacoach v{read_version()}")
-        self.resize(1400, 980)
+        mode = str(self._settings.get(_UI_MODE_KEY, UI_MODE_CLASSIC) or "").strip().lower()
+        self._ui_mode = mode if mode in (UI_MODE_CLASSIC, UI_MODE_COMPACT) else UI_MODE_CLASSIC
 
-        tabs = QTabWidget()
-        self.coach_tab = CoachTab()
+        self.setWindowTitle(f"mtgacoach v{read_version()}")
+
         self.repair_tab = RepairTab()
         self.repair_tab.restart_requested.connect(self.restart_coach)
         self.repair_tab.provisioning_changed.connect(self._handle_provisioning_changed)
         self.repair_tab.guided_setup_finished.connect(self._handle_guided_setup_finished)
-        # Restart button on the coach tab — reuses the repair tab's restart
-        # logic so state like autopilot/dry-run flags is preserved.
-        self.coach_tab.restart_requested.connect(self._restart_coach_keep_flags)
-        tabs.addTab(self.coach_tab, "Coach")
-        tabs.addTab(self.repair_tab, "Repair")
-        self.tabs = tabs
-        self.setCentralWidget(tabs)
+
+        self.coach_tab: CoachTab | None = None
+        self.tabs: Optional[QTabWidget] = None
+        self._stack: Optional[QStackedWidget] = None
+        self._repair_scroll: Optional[QScrollArea] = None
+        self._repair_back_btn: Optional[QPushButton] = None
+        self._build_central_widget()
 
         status_bar = QStatusBar()
         self.setStatusBar(status_bar)
@@ -54,8 +73,152 @@ class MainWindow(QMainWindow):
         self._build_theme_menu()
         self._build_view_menu()
 
+        self._apply_window_geometry()
         self.refresh_state()
         self._auto_start()
+
+    def _build_central_widget(self) -> None:
+        """Build the central widget for the current UI mode.
+
+        Classic: the original Coach/Repair tab pair.
+        Compact: a narrow sidebar panel with Repair on a slide-over page so
+        the window can sit beside the MTGA window.
+        """
+        if self._ui_mode == UI_MODE_COMPACT:
+            panel = CompactCoachPanel()
+            panel.repair_requested.connect(self._show_repair_view)
+            panel.classic_requested.connect(lambda: self._set_ui_mode(UI_MODE_CLASSIC))
+            self.coach_tab = panel
+
+            repair_page = QWidget()
+            page_layout = QVBoxLayout(repair_page)
+            page_layout.setContentsMargins(8, 8, 8, 8)
+            page_layout.setSpacing(6)
+            header = QHBoxLayout()
+            back_btn = QPushButton("← Back to Coach")
+            back_btn.clicked.connect(self._show_coach_view)
+            header.addWidget(back_btn)
+            header.addStretch()
+            page_layout.addLayout(header)
+            # The repair tab is laid out for a wide window; scroll it rather
+            # than letting its minimum size force the sidebar wide open.
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setWidget(self.repair_tab)
+            page_layout.addWidget(scroll)
+            self._repair_scroll = scroll
+            self._repair_back_btn = back_btn
+
+            stack = QStackedWidget()
+            stack.addWidget(panel)
+            stack.addWidget(repair_page)
+            self._stack = stack
+            self.tabs = None
+            self.setCentralWidget(stack)
+        else:
+            tabs = QTabWidget()
+            self.coach_tab = CoachTab()
+            tabs.addTab(self.coach_tab, "Coach")
+            tabs.addTab(self.repair_tab, "Repair")
+            self.tabs = tabs
+            self._stack = None
+            self._repair_scroll = None
+            self._repair_back_btn = None
+            self.setCentralWidget(tabs)
+
+        # Restart button on the coach panel — reuses the repair tab's restart
+        # logic so state like autopilot/dry-run flags is preserved.
+        self.coach_tab.restart_requested.connect(self._restart_coach_keep_flags)
+
+    def _apply_window_geometry(self) -> None:
+        if self._ui_mode == UI_MODE_COMPACT:
+            self.setMinimumWidth(380)
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            if screen is not None:
+                avail = screen.availableGeometry()
+                width = 440
+                height = max(700, avail.height() - 60)
+                self.resize(width, height)
+                self.move(avail.right() - width - 16, avail.top() + 24)
+            else:
+                self.resize(440, 1000)
+        else:
+            self.setMinimumWidth(0)
+            self.resize(1400, 980)
+
+    # -- view routing (works for both classic tabs and the compact stack) ----
+
+    def _show_coach_view(self) -> None:
+        if self.tabs is not None:
+            self.tabs.setCurrentIndex(0)
+        elif self._stack is not None:
+            self._stack.setCurrentIndex(0)
+
+    def _show_repair_view(self) -> None:
+        if self.tabs is not None:
+            self.tabs.setCurrentIndex(1)
+        elif self._stack is not None:
+            self._stack.setCurrentIndex(1)
+
+    def _set_coach_view_enabled(self, ready: bool) -> None:
+        if self.tabs is not None:
+            self.tabs.setTabEnabled(0, ready)
+            if not ready and self.tabs.currentIndex() == 0:
+                self.tabs.setCurrentIndex(1)
+        elif self._stack is not None:
+            if self._repair_back_btn is not None:
+                self._repair_back_btn.setEnabled(ready)
+            if not ready:
+                self._stack.setCurrentIndex(1)
+
+    def _set_ui_mode(self, mode: str) -> None:
+        if mode not in (UI_MODE_CLASSIC, UI_MODE_COMPACT) or mode == self._ui_mode:
+            return
+
+        process = self._process
+        old_coach = self.coach_tab
+        if old_coach is not None:
+            if process is not None:
+                old_coach.detach_process()
+            try:
+                old_coach.restart_requested.disconnect(self._restart_coach_keep_flags)
+            except (RuntimeError, TypeError):
+                pass
+            old_coach.shutdown()
+
+        # Keep the repair tab alive across layouts — it owns provisioning
+        # state and its signals were connected once in __init__.
+        if self._repair_scroll is not None:
+            self._repair_scroll.takeWidget()
+        self.repair_tab.setParent(None)
+
+        old_central = self.takeCentralWidget()
+        if old_central is not None:
+            old_central.deleteLater()
+
+        self._ui_mode = mode
+        self._settings.set(_UI_MODE_KEY, mode)
+        self._build_central_widget()
+
+        if self._compact_action is not None:
+            self._compact_action.blockSignals(True)
+            self._compact_action.setChecked(mode == UI_MODE_COMPACT)
+            self._compact_action.blockSignals(False)
+
+        if self._debug_logging_action is not None:
+            self.coach_tab.set_debug_logging(self._debug_logging_action.isChecked())
+
+        if process is not None:
+            self.coach_tab.attach_process(process)
+            # Re-emits voice/speed/mute status so the fresh panel's button
+            # labels reflect current state instead of defaults.
+            self._sync_runtime_preferences(process)
+
+        self._apply_window_geometry()
+        self._status_bar.showMessage(
+            "Compact sidebar layout" if mode == UI_MODE_COMPACT else "Classic layout", 4000
+        )
 
     def refresh_state(self) -> RuntimeState:
         return self.repair_tab.refresh_state()
@@ -109,7 +272,7 @@ class MainWindow(QMainWindow):
                 self._status_bar.showMessage("Python 3.10+ is required. Open Repair to finish setup.")
             else:
                 self._status_bar.showMessage("Setup is incomplete. Open Repair to finish setup.")
-            self.tabs.setCurrentIndex(1)
+            self._show_repair_view()
             self._show_startup_prompt(state)
             return
         self._start_coach(False, False, False)
@@ -117,13 +280,13 @@ class MainWindow(QMainWindow):
     def _start_coach(self, autopilot: bool, dry_run: bool, afk: bool) -> None:
         if self._process is not None and self._process.is_running:
             self._status_bar.showMessage("Coach is already running.")
-            self.tabs.setCurrentIndex(0)
+            self._show_coach_view()
             return
 
         state = self.refresh_state()
         if not state.is_fully_provisioned:
             self._status_bar.showMessage("Setup is incomplete. Finish Repair before starting the coach.")
-            self.tabs.setCurrentIndex(1)
+            self._show_repair_view()
             return
 
         process = CoachProcess(self)
@@ -135,12 +298,12 @@ class MainWindow(QMainWindow):
             process.start(autopilot=autopilot, dry_run=dry_run, afk=afk)
             self._sync_runtime_preferences(process)
             self._status_bar.showMessage("Coach is running.")
-            self.tabs.setCurrentIndex(0)
+            self._show_coach_view()
         except Exception as exc:
             self.coach_tab.detach_process()
             self._process = None
             self._status_bar.showMessage(f"Coach failed to start: {exc}")
-            self.tabs.setCurrentIndex(1)
+            self._show_repair_view()
             QMessageBox.critical(
                 self,
                 "Coach Launch Failed",
@@ -184,6 +347,18 @@ class MainWindow(QMainWindow):
 
     def _build_view_menu(self) -> None:
         view_menu = self.menuBar().addMenu("View")
+        compact_action = QAction("Compact Sidebar Layout", self)
+        compact_action.setCheckable(True)
+        compact_action.setChecked(self._ui_mode == UI_MODE_COMPACT)
+        compact_action.setToolTip(
+            "Narrow single-column layout sized to sit beside the MTGA window"
+        )
+        compact_action.toggled.connect(
+            lambda checked: self._set_ui_mode(UI_MODE_COMPACT if checked else UI_MODE_CLASSIC)
+        )
+        view_menu.addAction(compact_action)
+        self._compact_action = compact_action
+
         debug_action = QAction("Show Debug Logging", self)
         debug_action.setCheckable(True)
         debug_action.setChecked(bool(self._settings.get("desktop_debug_logging", False)))
@@ -219,15 +394,13 @@ class MainWindow(QMainWindow):
         )
 
     def _handle_provisioning_changed(self, ready: bool) -> None:
-        self.tabs.setTabEnabled(0, ready)
-        if not ready and self.tabs.currentIndex() == 0:
-            self.tabs.setCurrentIndex(1)
+        self._set_coach_view_enabled(ready)
 
     def _handle_guided_setup_finished(self, success: bool, message: str) -> None:
         self._status_bar.showMessage(message, 8000)
         if not success:
             QMessageBox.warning(self, "Setup Incomplete", message)
-            self.tabs.setCurrentIndex(1)
+            self._show_repair_view()
             return
 
         state = self.refresh_state()
@@ -268,5 +441,5 @@ class MainWindow(QMainWindow):
         dialog.addButton("Later", QMessageBox.RejectRole)
         dialog.exec()
         if dialog.clickedButton() == run_setup:
-            self.tabs.setCurrentIndex(1)
+            self._show_repair_view()
             self.repair_tab.start_guided_setup()

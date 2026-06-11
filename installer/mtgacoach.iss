@@ -3,7 +3,7 @@
 #define MyAppURL "https://github.com/josharmour/mtgacoach"
 
 #ifndef AppVersion
-  #define AppVersion "2.4.0"
+  #define AppVersion "2.5.0"
 #endif
 
 [Setup]

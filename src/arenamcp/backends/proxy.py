@@ -90,7 +90,11 @@ class ProxyBackend:
     def create_online(cls, model: Optional[str] = None, license_key: str = "") -> "ProxyBackend":
         """Create a backend configured for online mode (mtgacoach.com)."""
         return cls(
-            model=model or "gemma-4-12b-it",
+            # The api.mtgacoach.com gateway (LiteLLM on the NAS) owns model
+            # routing; gemma-4-31b-it is the eval-validated coach model
+            # there. The gateway also aliases legacy gemma-4-12b-it requests
+            # from older clients onto the 31B.
+            model=model or "gemma-4-31b-it",
             base_url=ONLINE_BASE_URL,
             api_key=license_key,
         )

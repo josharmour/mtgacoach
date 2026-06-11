@@ -263,6 +263,7 @@ class AutopilotEngine:
         ui_advice_fn: Optional[Callable[[str, str], None]] = None,
         bug_report_fn: Optional[Callable[[str, dict], None]] = None,
         ui_turn_plan_fn: Optional[Callable[[Optional[dict[str, Any]]], None]] = None,
+        ui_game_plan_fn: Optional[Callable[[Optional[dict[str, Any]]], None]] = None,
     ):
         """Initialize the autopilot engine.
 
@@ -282,6 +283,9 @@ class AutopilotEngine:
                 static turn-plan panel. Receives the serialized turn plan
                 whenever progress advances or the plan is invalidated; None
                 payload means "hide the panel". Wholesale-replace; no append.
+            ui_game_plan_fn: Optional UI callback (payload-or-None) for the
+                strategic game-plan card. Receives GamePlan.as_payload()
+                whenever the persistent plan changes. Wholesale-replace.
         """
         self._planner = planner
         self._mapper = mapper
@@ -292,6 +296,8 @@ class AutopilotEngine:
         self._ui_advice_fn = ui_advice_fn
         self._bug_report_fn = bug_report_fn
         self._ui_turn_plan_fn = ui_turn_plan_fn
+        self._ui_game_plan_fn = ui_game_plan_fn
+        self._last_emitted_game_plan: Optional[dict[str, Any]] = None
         # Optional callback to record autopilot-driven decisions into the
         # app's advice_history. Set by standalone after construction.
         self._advice_recorder: Optional[Any] = None
@@ -633,7 +639,20 @@ class AutopilotEngine:
         opt-in harness path) and only once per distinct plan. Always
         non-blocking and best-effort — never affects play.
         """
-        if self._speak_fn is None or self._game_plan_mgr is None:
+        if self._game_plan_mgr is None:
+            return
+        # Structured plan → UI strategy card. Independent of TTS wiring and
+        # deduped on payload so the card only repaints when the plan changes.
+        if self._ui_game_plan_fn is not None:
+            try:
+                plan = self._game_plan_mgr.current
+                payload = dict(plan.as_payload(), source="autopilot") if plan else {}
+                if payload != self._last_emitted_game_plan:
+                    self._last_emitted_game_plan = payload
+                    self._ui_game_plan_fn(payload)
+            except Exception as e:
+                logger.debug("game-plan UI payload failed: %s", e)
+        if self._speak_fn is None:
             return
         try:
             intro = self._game_plan_mgr.coach_intro()
@@ -2534,7 +2553,16 @@ class AutopilotEngine:
             plan_text = self._format_plan_preview(plan)
 
             self._notify("AUTOPILOT", plan_text)
-            if self._config.enable_tts_preview and self._speak_fn:
+            # Pass-only plans get at most one spoken explanation per turn —
+            # and none when the pass was forced (no real alternatives), since
+            # there is no decision to explain. The reasoning always reaches
+            # the UI via the _notify above.
+            pass_only = bool(plan.actions) and all(
+                getattr(action, "action_type", None) == ActionType.PASS_PRIORITY
+                for action in plan.actions
+            )
+            speak_plan = not pass_only or self._should_speak_pass_plan(game_state)
+            if self._config.enable_tts_preview and self._speak_fn and speak_plan:
                 # Run TTS in a background thread so synthesis/model-load
                 # never blocks the execution countdown.
                 threading.Thread(
@@ -3281,6 +3309,29 @@ class AutopilotEngine:
         except Exception as e:
             logger.error(f"Failed to get legal actions: {e}")
             return []
+
+    def _should_speak_pass_plan(self, game_state: dict[str, Any]) -> bool:
+        """Decide whether this pass-only plan deserves a spoken explanation.
+
+        - Forced pass (nothing legal beyond pass/mana abilities): never —
+          there was no decision, so narrating it is pure noise.
+        - Chosen pass: once per turn. The first "no useful responses,
+          passing" of a turn is informative; the re-phrasings at every later
+          priority window of the same turn are not.
+        """
+        legal = game_state.get("legal_actions") or []
+        meaningful = [
+            action for action in legal
+            if str(action) != "Pass"
+            and not str(action).startswith(("Action: Activate_Mana", "Action: FloatMana", "Wait"))
+        ]
+        if not meaningful:
+            return False
+        turn = (game_state.get("turn") or {}).get("turn_number") or 0
+        if turn and turn == getattr(self, "_last_pass_speech_turn", -1):
+            return False
+        self._last_pass_speech_turn = turn
+        return True
 
     def _format_plan_preview(self, plan: ActionPlan) -> str:
         """Format a plan for human-readable preview.
@@ -4488,6 +4539,30 @@ class AutopilotEngine:
             })
 
         if self._gre_bridge.submit_blockers(assignments):
+            # Blockers are a two-step server round-trip, like attackers: the
+            # DeclareBlockersResp update makes the GRE re-issue a fresh
+            # DeclareBlockersRequest carrying the selection, and the
+            # SubmitBlockersReq confirm must go against THAT request. The
+            # plugin fires its confirm immediately against the stale request,
+            # which the GRE ignores (live 2026-06-11: blocker shown selected
+            # in-game, "1 Blocker" confirm never fired, autopilot escaped to
+            # manual-required). Finalize here against the refreshed request —
+            # empty assignments make the plugin call SubmitBlockers() on it,
+            # confirming the pending selection.
+            time.sleep(0.8)
+            try:
+                still = self._gre_bridge.get_pending_actions()
+                if (
+                    still
+                    and still.get("has_pending")
+                    and "DeclareBlockers" in str(still.get("request_class", ""))
+                ):
+                    if self._gre_bridge.submit_blockers([]):
+                        logger.info("Bridge declare_blockers: finalized on refreshed request")
+                    else:
+                        logger.warning("Bridge declare_blockers: finalize step failed")
+            except Exception as e:
+                logger.debug(f"Bridge declare_blockers finalize check failed: {e}")
             desc = ", ".join(f"{b}->{a}" for b, a in action.blocker_assignments.items())
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE,

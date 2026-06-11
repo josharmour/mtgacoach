@@ -65,6 +65,10 @@ class CoachTab(QWidget):
         self._status_values: dict[str, str] = {}
         self._buttons: dict[str, QPushButton] = {}
         self._show_debug_logging = bool(get_settings().get("desktop_debug_logging", False))
+        # Developer machines only (MTGACOACH_DEV env / local settings flag,
+        # never shipped): unlocks model cycling in online mode.
+        from arenamcp.settings import is_developer_mode
+        self._developer_mode = is_developer_mode()
         self._build_ui()
         self._draft_hud = DraftHudWindow()
         self._draft_hud.command_requested.connect(self._handle_hud_command)
@@ -1136,7 +1140,7 @@ class CoachTab(QWidget):
             self._apply_model_button_visibility()
         elif normalized == "MODEL":
             self._refresh_coach_summary()
-            if not self._is_online_backend():
+            if self._developer_mode or not self._is_online_backend():
                 self._set_button_text("cycle_model", "Model", self._compact_model_label(value))
         elif normalized in {"BRIDGE", "GRE"}:
             self._set_status_label("bridge", text)
@@ -1350,7 +1354,7 @@ class CoachTab(QWidget):
         button = self._buttons.get("cycle_model")
         if button is None:
             return
-        button.setVisible(not self._is_online_backend())
+        button.setVisible(self._developer_mode or not self._is_online_backend())
 
     def refresh_game_state_view(self) -> None:
         if self._last_game_state_payload:

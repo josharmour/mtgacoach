@@ -37,6 +37,7 @@ import importlib
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -470,16 +471,24 @@ class StandaloneCoach:
         # Load settings
         self.settings = get_settings()
 
-        # Resolve configuration (Args > Settings > Defaults)
-        self._backend_name = backend or self.settings.get("mode", "auto")
+        # Online-only: local mode was removed from the product (2026-06-11).
+        # api.mtgacoach.com owns model routing; developer machines cycle
+        # through its served models instead of pointing at local servers.
+        requested_backend = backend or self.settings.get("mode", "online")
+        if requested_backend not in (None, "online"):
+            logger.info(
+                f"Ignoring requested backend {requested_backend!r}: app is online-only"
+            )
+        self._backend_name = "online"
         self._voice_mode = voice_mode or self.settings.get("voice_mode", "ptt")
 
-        # Model resolution: only carry over saved model if the mode matches.
+        # Model resolution: only carry over saved model if it was saved for
+        # online mode.
         if model:
             self._model_name = model
         else:
             saved_model = self.settings.get("model")
-            saved_mode = self.settings.get("mode", "auto")
+            saved_mode = self.settings.get("mode", "online")
             if saved_model and saved_mode == self._backend_name:
                 self._model_name = saved_model
             else:
@@ -1057,9 +1066,30 @@ class StandaloneCoach:
         if not text:
             return False
         clean = text.lower().strip(" .!")
-        is_passive = any(p in clean for p in cls._PASSIVE_PHRASES)
-        has_action = any(v in clean for v in cls._ACTION_VERBS)
+        # Word-boundary match: a bare substring check muted any short advice
+        # mentioning "Fabled Passage" because it contains "pass".
+        is_passive = any(
+            re.search(rf"\b{re.escape(p)}\b", clean) for p in cls._PASSIVE_PHRASES
+        )
+        has_action = any(
+            re.search(rf"\b{re.escape(v)}", clean) for v in cls._ACTION_VERBS
+        )
         return is_passive and not has_action and len(text) < 60
+
+    # A pass narration ("Passing priority to let their spell resolve...") is
+    # worth hearing once — the same explanation re-phrased at every priority
+    # window of the opponent's turn is noise. speak_advice rate-limits these.
+    _PASS_NARRATION_COOLDOWN_S = 45.0
+
+    @classmethod
+    def _is_pass_narration(cls, text: str) -> bool:
+        """True for advice whose substance is "I'm passing priority"."""
+        clean = (text or "").lower().strip(" .!")
+        if clean.startswith(("pass priority", "passing priority", "pass the priority")):
+            return True
+        return clean.endswith(
+            ("pass priority", "passing priority", "pass priority now", "passing priority now")
+        )
 
     def speak_advice(self, text: str, blocking: bool = True) -> None:
         """Speak advice using local Kokoro TTS."""
@@ -1069,6 +1099,16 @@ class StandaloneCoach:
         # Filter out passive calls from TTS (User Request): Wait, Pass, etc.
         if self._is_passive_advice(text):
             return
+
+        # Pass narrations are spoken at most once per cooldown window — one
+        # "no responses, passing" explanation is useful, five per opponent
+        # turn are not.
+        if self._is_pass_narration(text):
+            now = time.time()
+            if now - getattr(self, "_last_pass_narration_at", 0.0) < self._PASS_NARRATION_COOLDOWN_S:
+                logger.info(f"Muting repeated pass narration: {text[:60]!r}")
+                return
+            self._last_pass_narration_at = now
 
         # Use local Kokoro TTS
         if self._voice_output:
@@ -1086,6 +1126,25 @@ class StandaloneCoach:
                     logger.info("Kokoro speak retry succeeded")
                 except Exception as e2:
                     logger.error(f"Kokoro speak retry also failed: {e2}")
+
+    def _emit_coach_game_plan(self) -> None:
+        """Push the coach's structured game plan to the UI strategy card.
+
+        Advice-mode counterpart of the autopilot's ui_game_plan_fn emission:
+        deduped on payload, never raises into the coaching loop.
+        """
+        ui_fn = getattr(self.ui, "game_plan", None) if self.ui else None
+        if not callable(ui_fn) or self._coach is None:
+            return
+        try:
+            mgr = getattr(self._coach, "_game_plan_mgr", None)
+            plan = getattr(mgr, "current", None) if mgr is not None else None
+            payload = dict(plan.as_payload(), source="coach") if plan is not None else {}
+            if payload != getattr(self, "_last_coach_game_plan", None):
+                self._last_coach_game_plan = payload
+                ui_fn(payload)
+        except Exception as e:
+            logger.debug(f"coach game-plan emit failed: {e}")
 
     @property
     def backend_name(self) -> str:
@@ -1569,6 +1628,9 @@ class StandaloneCoach:
                 bug_report_fn=self._auto_bug_report_bridge_fallback,
                 ui_turn_plan_fn=(
                     self.ui.turn_plan if self.ui and hasattr(self.ui, "turn_plan") else None
+                ),
+                ui_game_plan_fn=(
+                    self.ui.game_plan if self.ui and hasattr(self.ui, "game_plan") else None
                 ),
             )
             # Give the autopilot a way to write into advice_history so
@@ -3136,6 +3198,9 @@ class StandaloneCoach:
                                     style=self.advice_style
                                 )
                             logger.info(f"ADVICE: {advice}")
+                            # Advice mode: surface the coach's (possibly just
+                            # reformed) strategic plan on the UI strategy card.
+                            self._emit_coach_game_plan()
 
                             # STALENESS CHECK: Re-poll game state after the LLM call.
                             # Only discard advice when the TURN changed (whole turn
@@ -5299,6 +5364,10 @@ class StandaloneCoach:
             self.ui.status("PROVIDER", "Not available in draft mode")
             return
 
+        if provider != "online":
+            logger.info(f"set_backend({provider!r}) coerced to 'online' — app is online-only")
+            provider = "online"
+
         try:
             from arenamcp.coach import CoachEngine, create_backend
 
@@ -5351,71 +5420,26 @@ class StandaloneCoach:
             logger.debug(traceback.format_exc())
 
     def fallback_to_local(self, reason: str = "") -> bool:
-        """Fall back to local mode when online mode fails.
+        """Report an online-backend failure. The app is online-only (local
+        mode removed 2026-06-11), so there is nothing to fall back to —
+        surface the error and stay on online. ``set_backend`` / a restart
+        clears the failed state.
 
-        Validates local endpoint before committing. Saves the original mode/model
-        so ``set_backend`` can clear the error state.
-
-        Returns True if fallback succeeded, False if no local backend available.
+        Returns False always (no fallback happened); kept under the old name
+        so the failure-detection callers don't need to change shape.
         """
         if self._backend_failed:
             return False
-
-        if self.backend_name == "local":
-            return False
-
-        old_mode = self.backend_name
-        old_model = self.model_name
+        self._backend_failed = True
         short_reason = (reason or "unknown error")[:180].replace("\n", " ")
-
-        self._original_backend = old_mode
-        self._original_model = old_model
-
-        from arenamcp.backend_detect import DEFAULT_LOCAL_MODEL, detect_backends_quick
-        detected = detect_backends_quick()
-
-        if not detected.get("local"):
-            self._backend_failed = True
-            self.ui.log(
-                f"\n[bold red]Online mode failed: {short_reason}[/]"
-            )
-            self.ui.log(
-                "[bold yellow]No local fallback available. "
-                "Configure a local model with /local, or fix online subscription.[/]\n"
-            )
-            self.ui.status("BACKEND", f"ERROR — online failed, no local fallback")
-            logger.error(f"Local fallback unavailable: {reason}")
-            return False
-
-        try:
-            from arenamcp.coach import CoachEngine, create_backend
-            progress_cb = self.ui.subtask if self.ui else None
-            llm_backend = create_backend("local", model=DEFAULT_LOCAL_MODEL, progress_callback=progress_cb)
-            actual_model = getattr(llm_backend, 'model', DEFAULT_LOCAL_MODEL) or 'default'
-
-            self._coach = CoachEngine(backend=llm_backend)
-            self._backend_name = "local"
-            self._model_name = DEFAULT_LOCAL_MODEL
-            self._backend_failed = True
-            self._consecutive_errors = 0
-
-            self.ui.log(
-                f"\n[bold red]Online mode failed: {short_reason}[/]"
-            )
-            self.ui.log(
-                f"[bold yellow]Temporarily using local ({actual_model}). "
-                f"Switch mode to retry online.[/]\n"
-            )
-            self.ui.status("BACKEND", f"LOCAL (temp) — online failed")
-            self.ui.status("MODEL", f"local/{actual_model}")
-            logger.info(f"Fallback to local from online: {reason}")
-            return True
-        except Exception as e:
-            logger.debug(f"Local fallback failed: {e}")
-            self._backend_failed = True
-            self.ui.log(f"\n[bold red]Online failed and local fallback also failed: {e}[/]")
-            self.ui.status("BACKEND", "ERROR — all backends failed")
-            return False
+        self.ui.log(f"\n[bold red]Online backend failed: {short_reason}[/]")
+        self.ui.log(
+            "[bold yellow]Check your subscription and connectivity — "
+            "advice resumes when api.mtgacoach.com responds again.[/]\n"
+        )
+        self.ui.status("BACKEND", "ERROR — online unavailable")
+        logger.error(f"Online backend failure (online-only, no fallback): {reason}")
+        return False
 
     # Backward-compatible alias
     def fallback_to_ollama(self, reason: str = "") -> bool:
@@ -5425,13 +5449,13 @@ class StandaloneCoach:
         """Check if an advice response indicates a backend auth/billing failure.
 
         Auth/billing errors (401, expired, credit) are deterministic — retrying
-        won't help.  These trigger an immediate local fallback with a persistent
-        error shown in the UI.
+        won't help. These mark the backend failed immediately with a
+        persistent error in the UI (online-only: there is no fallback).
 
         Transient errors (timeouts, rate limits) use a counter: after 3
-        consecutive failures, fall back to a local backend.
+        consecutive failures the backend is marked failed.
 
-        Returns True if a fallback was triggered.
+        Returns True if the failed state was just entered.
         """
         if not advice:
             return False
@@ -5916,7 +5940,9 @@ Examples:
 
     parser.add_argument("--backend", "-b",
                         choices=["auto", "online", "local"],
-                        default=None, help="Backend mode (default: auto-detect)")
+                        default=None,
+                        help="(legacy) Accepted for compatibility; the app is "
+                             "online-only and always uses api.mtgacoach.com")
     parser.add_argument("--model", "-m", help="Model name override")
     parser.add_argument("--provider", help="(deprecated) Alias for --model")
     parser.add_argument("--voice", "-v", choices=["ptt", "vox"], default=None,

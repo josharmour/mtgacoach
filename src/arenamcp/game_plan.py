@@ -91,6 +91,16 @@ class GamePlan:
             bits.append(f"win: {primary}")
         return "Plan: " + "; ".join(b for b in bits if b) if bits else ""
 
+    def as_payload(self) -> dict[str, Any]:
+        """JSON-safe structured form for UI emission (desktop strategy card)."""
+        return {
+            "win_conditions": [w for w in self.win_conditions if w],
+            "path": self.path,
+            "threat": self.threat,
+            "develop_next": self.develop_next,
+            "turn_formed": self.turn_formed,
+        }
+
 
 def _round(x: Any, default: int = 0) -> int:
     try:
