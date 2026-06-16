@@ -81,39 +81,42 @@ class ModelEndpointDialog(QDialog):
     # -- probe helper (runs in a background thread) ---------------------------
 
     def _probe_endpoint(self) -> list[str]:
-        """Hit ``GET {self._url_edit}/models`` and return model IDs."""
+        """Hit GET /v1/models and return model IDs."""
         raw = self._url_edit.text().strip().rstrip("/")
         if not raw:
             return []
-        # The OpenAI-compat /v1/models endpoint is well-known. If the user
-        # typed a full URL with /v1, strip it so we build the correct path;
-        # if they only have a hostname add the standard prefix.
         # Probe URL: just append /models to what the user typed.
-        # e.g. http://10.0.0.10:8002/v1 -> http://10.0.0.10:8002/v1/models
         base_url = raw.rstrip("/")
         models_url = f"{base_url}/models"
 
         key = self._key_edit.text().strip() or "vllm"
         headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
 
-        try:
+        def _do_probe(url: str) -> list[str]:
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
-            req = UrlRequest(models_url, headers=headers, method="GET")
+            req = UrlRequest(url, headers=headers, method="GET")
             with urlopen(req, timeout=10, context=ctx) as resp:
                 data = json.loads(resp.read().decode())
-            # OpenAI-compatible response: {"object":"list","data":[{"id":"...",...}]}
             models = data.get("data") or data if isinstance(data, list) else data.get("data", [])
             ids = [m["id"] for m in models if isinstance(m, dict) and m.get("id")]
-            # Ollama returns {"models": [...]}
             if not ids and "models" in data:
                 ids = [m["name"] if "name" in m else m.get("model", "")
                        for m in data["models"] if isinstance(m, dict)]
-            # vLLM also accepts /v1/models route; filter out duplicates
             return sorted(set(ids))
+
+        try:
+            return _do_probe(models_url)
         except (URLError, HTTPError, OSError, json.JSONDecodeError, ValueError) as exc:
-            logger.warning("Endpoint probe failed (%s): %s", models_url, exc, exc_info=False)
+            logger.warning("Endpoint probe failed for %s: %s", models_url, exc)
+            http_url = models_url.replace("https://", "http://")
+            if http_url != models_url:
+                logger.warning("Falling back to HTTP probe: %s", http_url)
+                try:
+                    return _do_probe(http_url)
+                except (URLError, HTTPError, OSError, json.JSONDecodeError, ValueError) as exc2:
+                    logger.warning("HTTP fallback also failed for %s: %s", http_url, exc2)
             return []
 
     # -- UI construction ------------------------------------------------------
