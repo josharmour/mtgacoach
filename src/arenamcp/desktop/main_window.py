@@ -88,16 +88,10 @@ class ModelEndpointDialog(QDialog):
         # The OpenAI-compat /v1/models endpoint is well-known. If the user
         # typed a full URL with /v1, strip it so we build the correct path;
         # if they only have a hostname add the standard prefix.
-        if raw.endswith("/v1"):
-            base = raw[:-3]
-        elif not raw.endswith("/models"):
-            base = raw
-        else:
-            base = raw.rsplit("/models", 1)[0]
-
-        if "://" not in base and "://" not in raw:
-            base = "http://" + base
-        models_url = f"{base}/models"
+        # Probe URL: just append /models to what the user typed.
+        # e.g. http://10.0.0.10:8002/v1 -> http://10.0.0.10:8002/v1/models
+        base_url = raw.rstrip("/")
+        models_url = f"{base_url}/models"
 
         key = self._key_edit.text().strip() or "vllm"
         headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
@@ -119,7 +113,7 @@ class ModelEndpointDialog(QDialog):
             # vLLM also accepts /v1/models route; filter out duplicates
             return sorted(set(ids))
         except (URLError, HTTPError, OSError, json.JSONDecodeError, ValueError) as exc:
-            logger.warning("Endpoint probe failed for %s: %s", models_url, exc)
+            logger.warning("Endpoint probe failed (%s): %s", models_url, exc, exc_info=False)
             return []
 
     # -- UI construction ------------------------------------------------------
@@ -228,7 +222,7 @@ class ModelEndpointDialog(QDialog):
         threading.Thread(target=self._probe_worker, daemon=True).start()
 
     def _probe_worker(self) -> None:
-        """Called in a background thread. Returns via postEvent."""
+        """Background thread helper. Returns results via postEvent."""
         models = self._probe_endpoint()
         QApplication.instance().postEvent(
             self, _ProbeResultEvent(models)
@@ -237,7 +231,7 @@ class ModelEndpointDialog(QDialog):
 
     def _on_probe_result(self, models: list[str]) -> None:
         if not models:
-            self._status_label.setText("No models found, or endpoint unreachable.")
+            self._status_label.setText("No models found for this endpoint.")
             self._status_label.setStyleSheet("color: #f44336;")
             return
 
