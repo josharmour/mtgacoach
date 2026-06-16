@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import json
+import logging
+import threading
 from typing import Optional
+from urllib.request import urlopen, Request as UrlRequest
+from urllib.error import URLError, HTTPError
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -33,22 +39,68 @@ from .repair_tab import RepairTab
 from .runtime import RuntimeState, open_url, read_version
 from .theme import THEME_LABELS, apply_theme, available_themes, load_saved_theme, save_theme
 
+logger = logging.getLogger(__name__)
+
 UI_MODE_CLASSIC = "classic"
 UI_MODE_COMPACT = "compact"
 _UI_MODE_KEY = "desktop_ui_mode"
 
 
 class ModelEndpointDialog(QDialog):
-    """Dialog to configure the LLM endpoint URL, API key, and model name."""
+    """Dialog to configure the LLM endpoint URL, API key, and model name.
+
+    Includes a probe button that fetches available models from the endpoint's
+    ``GET /v1/models`` route and populates a drop-down for selection.
+    """
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Model Endpoint")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(520)
         self._settings = get_settings()
         self._build_ui()
         self._populate()
-        self._model_dirty = False
+
+    # -- probe helper (runs in a background thread) ---------------------------
+
+    def _probe_endpoint(self) -> list[str]:
+        """Hit ``GET {self._url_edit}/models`` and return model IDs."""
+        raw = self._url_edit.text().strip().rstrip("/")
+        if not raw:
+            return []
+        # The OpenAI-compat /v1/models endpoint is well-known. If the user
+        # typed a full URL with /v1, strip it so we build the correct path;
+        # if they only have a hostname add the standard prefix.
+        if raw.endswith("/v1"):
+            base = raw[:-3]
+        elif not raw.endswith("/models"):
+            base = raw
+        else:
+            base = raw.rsplit("/models", 1)[0]
+
+        models_url = f"{base}/models"
+
+        key = self._key_edit.text().strip() or "vllm"
+        headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
+
+        try:
+            req = UrlRequest(models_url, headers=headers, method="GET")
+            with urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+            # OpenAI-compatible response: {"object":"list","data":[{"id":"...",...}]}
+            models = data.get("data") or data if isinstance(data, list) else data.get("data", [])
+            ids = [m["id"] for m in models if isinstance(m, dict) and m.get("id")]
+            # Ollama returns {"models": [...]}
+            if not ids and "models" in data:
+                ids = [m["name"] if "name" in m else m.get("model", "")
+                       for m in data["models"] if isinstance(m, dict)]
+            # vLLM also accepts /v1/models route; filter out duplicates
+            return sorted(set(ids))
+        except (URLError, HTTPError, OSError, json.JSONDecodeError, ValueError) as exc:
+            logger.warning("Endpoint probe failed for %s: %s", models_url, exc)
+            return []
+
+    # -- UI construction ------------------------------------------------------
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -56,13 +108,25 @@ class ModelEndpointDialog(QDialog):
         form = QFormLayout()
         form.setSpacing(8)
 
+        # API Base URL row with inline probe button
+        url_row = QHBoxLayout()
         self._url_edit = QLineEdit()
         self._url_edit.setPlaceholderText("http://localhost:8001/v1")
         self._url_edit.setToolTip(
             "OpenAI-compatible API base URL (e.g. your vLLM or Ollama server)"
         )
-        form.addRow("API Base URL:", self._url_edit)
+        url_row.addWidget(self._url_edit, stretch=1)
 
+        self._probe_btn = QPushButton("Probe")
+        self._probe_btn.setToolTip(
+            "Query the endpoint for available model IDs (GET /v1/models)"
+        )
+        self._probe_btn.clicked.connect(self._on_probe)
+        url_row.addWidget(self._probe_btn)
+
+        form.addRow("API Base URL:", url_row)
+
+        # API key
         self._key_edit = QLineEdit()
         self._key_edit.setPlaceholderText("vllm")
         self._key_edit.setToolTip(
@@ -71,13 +135,17 @@ class ModelEndpointDialog(QDialog):
         )
         form.addRow("API Key:", self._key_edit)
 
-        self._model_edit = QLineEdit()
-        self._model_edit.setPlaceholderText("gemma-4-12b-it")
-        self._model_edit.setToolTip(
+        # Model ID — editable combo so the user can probe, then select from
+        # the results, or type a model name directly.
+        self._model_combo = QComboBox()
+        self._model_combo.setEditable(True)
+        self._model_combo.setInsertPolicy(QComboBox.NoInsert)  # don't grow on every keystroke
+        self._model_combo.lineEdit().setPlaceholderText("gemma-4-12b-it")
+        self._model_combo.setToolTip(
             "Model ID to use (e.g. 'gemma-4-12b-it', 'deepseek-v4-flash', etc.)\n"
-            "Leave empty to auto-detect from the endpoint."
+            "Click Probe to auto-populate from the endpoint."
         )
-        form.addRow("Model ID:", self._model_edit)
+        form.addRow("Model ID:", self._model_combo)
 
         self._use_online = QPushButton("Reset to Online (mtgacoach.com)")
         self._use_online.setToolTip("Restore the default online endpoint")
@@ -85,11 +153,12 @@ class ModelEndpointDialog(QDialog):
 
         layout.addSpacing(8)
 
+        # Status / probe result
         status_row = QHBoxLayout()
         self._status_label = QLabel()
         self._status_label.setStyleSheet("color: #8a8a8a;")
-        status_row.addWidget(self._status_label)
-        status_row.addStretch()
+        self._status_label.setWordWrap(True)
+        status_row.addWidget(self._status_label, stretch=1)
         layout.addLayout(status_row)
 
         layout.addWidget(self._use_online)
@@ -102,41 +171,94 @@ class ModelEndpointDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-        # Re-test the endpoint when the user edits a field.
-        self._url_edit.textChanged.connect(self._mark_dirty)
-        self._key_edit.textChanged.connect(self._mark_dirty)
+        # Re-enable button when URL changes.
+        self._url_edit.textChanged.connect(self._on_url_changed)
 
     def _populate(self) -> None:
         s = self._settings
         mode = s.get("mode", "online")
+        self._model_combo.clear()
+        self._model_combo.addItem("")  # blank default
         if mode == "local":
             self._url_edit.setText(s.get("local_url", "http://localhost:8001/v1"))
             self._key_edit.setText(s.get("local_api_key", "vllm"))
-            self._model_edit.setText(s.get("local_model") or "")
+            model = s.get("local_model") or ""
+            if model:
+                self._model_combo.setCurrentText(model)
             self._status_label.setText("Local endpoint")
         else:
             self._url_edit.setText("https://api.mtgacoach.com/v1")
             self._key_edit.setText("")
-            self._model_edit.setText(s.get("model") or "")
+            model = s.get("model") or ""
+            if model:
+                self._model_combo.setCurrentText(model)
             self._status_label.setText("Online (mtgacoach.com)")
 
-    def _mark_dirty(self) -> None:
-        self._model_dirty = True
+    # -- probe logic ----------------------------------------------------------
+
+    def _on_probe(self) -> None:
+        """Fire the HTTP probe in a background thread so the UI stays live."""
+        self._probe_btn.setEnabled(False)
+        self._probe_btn.setText("Probing\u2026")
+        self._status_label.setText("Probing endpoint\u2026")
+        self._status_label.setStyleSheet("color: #f0c000;")
+
+        threading.Thread(target=self._probe_worker, daemon=True).start()
+
+    def _probe_worker(self) -> None:
+        """Called in a background thread.  Updates UI through signals."""
+        models = self._probe_endpoint()
+
+        # Use a QTimer singleShot to bounce back to the UI thread.
+        def _finish() -> None:
+            self._probe_btn.setEnabled(True)
+            self._probe_btn.setText("Probe")
+            self._on_probe_result(models)
+
+        QTimer.singleShot(0, _finish)
+
+    def _on_probe_result(self, models: list[str]) -> None:
+        if not models:
+            self._status_label.setText("No models found, or endpoint unreachable.")
+            self._status_label.setStyleSheet("color: #f44336;")
+            return
+
+        # Remember the current text so we can re-select it if still valid.
+        current = self._model_combo.currentText().strip()
+
+        self._model_combo.clear()
+        self._model_combo.addItem("")  # blank default
+        self._model_combo.addItems(models)
+
+        if current and current in models:
+            self._model_combo.setCurrentText(current)
+
+        self._status_label.setText(
+            f"Probed \u2014 {len(models)} model{'s' if len(models) != 1 else ''} found"
+        )
+        self._status_label.setStyleSheet("color: #4caf50;")
+
+    # -- helpers --------------------------------------------------------------
+
+    def _on_url_changed(self) -> None:
+        self._probe_btn.setEnabled(bool(self._url_edit.text().strip()))
+        self._status_label.setText("")
+        self._status_label.setStyleSheet("color: #8a8a8a;")
 
     def _reset_to_online(self) -> None:
         self._url_edit.setText("https://api.mtgacoach.com/v1")
         self._key_edit.setText("")
-        self._model_edit.setText("")
-        self._model_dirty = True
+        self._model_combo.clear()
+        self._model_combo.addItem("")
         self._status_label.setText("Online (mtgacoach.com)")
+        self._status_label.setStyleSheet("color: #8a8a8a;")
 
     def _on_accept(self) -> None:
         s = self._settings
         url = self._url_edit.text().strip()
         key = self._key_edit.text().strip()
-        model = self._model_edit.text().strip()
+        model = self._model_combo.currentText().strip()
 
-        # Detect if this is the mtgacoach.com online endpoint.
         is_online = "mtgacoach.com" in url or "api.mtgacoach.com" in url
         if is_online:
             s.set("mode", "online")
