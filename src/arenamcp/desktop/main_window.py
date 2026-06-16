@@ -66,26 +66,41 @@ class _ProbeResultEvent(QEvent):
 class ModelEndpointDialog(QDialog):
     """Dialog to configure the LLM endpoint URL, API key, and model name.
 
-    Includes a probe button that fetches available models from the endpoint's
-    ``GET /v1/models`` route and populates a drop-down for selection.
+    Features:
+    - URL autocomplete from known endpoints history
+    - Probe button to discover available models from the endpoint
+    - Saves/restores endpoint configs including discovered model lists
     """
+
+    _KNOWN_KEY = "known_endpoints"
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Model Endpoint")
         self.setMinimumWidth(520)
+        self._populating = True
         self._settings = get_settings()
         self._build_ui()
         self._populate()
 
-    # -- probe helper (runs in a background thread) ---------------------------
+    # -- known endpoints persistence ---------------------------------------
+
+    def _get_known(self) -> dict[str, list[str]]:
+        """Return {url: [model_id, ...]} dict from settings."""
+        data = self._settings.get(self._KNOWN_KEY, {})
+        return data if isinstance(data, dict) else {}
+
+    def _set_known(self, known: dict[str, dict[str, str | list[str]]]) -> None:
+        self._settings._data[self._KNOWN_KEY] = known
+        self._settings.save()
+
+    # -- probe helper (runs in a background thread) -------------------------
 
     def _probe_endpoint(self) -> list[str]:
         """Hit GET /v1/models and return model IDs."""
         raw = self._url_edit.text().strip().rstrip("/")
         if not raw:
             return []
-        # Probe URL: just append /models to what the user typed.
         base_url = raw.rstrip("/")
         models_url = f"{base_url}/models"
 
@@ -129,12 +144,21 @@ class ModelEndpointDialog(QDialog):
 
         # API Base URL row with inline probe button
         url_row = QHBoxLayout()
-        self._url_edit = QLineEdit()
-        self._url_edit.setPlaceholderText("http://localhost:8001/v1")
-        self._url_edit.setToolTip(
-            "OpenAI-compatible API base URL (e.g. your vLLM or Ollama server)"
+        self._url_combo = QComboBox()
+        self._url_combo.setEditable(True)
+        self._url_combo.setInsertPolicy(QComboBox.NoInsert)
+        self._url_combo.lineEdit().setPlaceholderText("http://localhost:8001/v1")
+        self._url_combo.setToolTip(
+            "OpenAI-compatible API base URL —\n"
+            "previous endpoints are auto-completed.\n"
+            "Known endpoints: " + ", ".join(
+                self._get_known().keys() or ["(none yet)"]
+            )
         )
-        url_row.addWidget(self._url_edit, stretch=1)
+        self._url_edit = self._url_combo.lineEdit()
+        self._url_edit.textChanged.connect(self._on_url_changed)
+        self._url_combo.currentIndexChanged.connect(self._on_url_selected)
+        url_row.addWidget(self._url_combo, stretch=1)
 
         self._probe_btn = QPushButton("Probe")
         self._probe_btn.setToolTip(
@@ -150,15 +174,14 @@ class ModelEndpointDialog(QDialog):
         self._key_edit.setPlaceholderText("vllm")
         self._key_edit.setToolTip(
             "API key for the endpoint (vLLM accepts any value; "
-            "Ollama expects 'ollama')"
-        )
+            "Ollama expects 'ollama'")
         form.addRow("API Key:", self._key_edit)
 
         # Model ID — editable combo so the user can probe, then select from
         # the results, or type a model name directly.
         self._model_combo = QComboBox()
         self._model_combo.setEditable(True)
-        self._model_combo.setInsertPolicy(QComboBox.NoInsert)  # don't grow on every keystroke
+        self._model_combo.setInsertPolicy(QComboBox.NoInsert)
         self._model_combo.lineEdit().setPlaceholderText("gemma-4-12b-it")
         self._model_combo.setToolTip(
             "Model ID to use (e.g. 'gemma-4-12b-it', 'deepseek-v4-flash', etc.)\n"
@@ -166,6 +189,7 @@ class ModelEndpointDialog(QDialog):
         )
         form.addRow("Model ID:", self._model_combo)
 
+        self._populating = False
         self._use_online = QPushButton("Reset to Online (mtgacoach.com)")
         self._use_online.setToolTip("Restore the default online endpoint")
         layout.addLayout(form)
@@ -183,35 +207,74 @@ class ModelEndpointDialog(QDialog):
         layout.addWidget(self._use_online)
         self._use_online.clicked.connect(self._reset_to_online)
 
+        # Forget endpoint button — small, secondary hover
+        bottom_row = QHBoxLayout()
+        self._forget_btn = QPushButton("Forget Endpoint")
+        self._forget_btn.setToolTip("Remove this endpoint from known list")
+        self._forget_btn.setStyleSheet(
+            "QPushButton { color: #888; border: none; text-decoration: underline; padding: 4px 8px; }"
+            "QPushButton:hover { color: #f44336; }"
+        )
+        self._forget_btn.clicked.connect(self._on_forget)
+        bottom_row.addWidget(self._forget_btn)
+        bottom_row.addStretch()
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
         )
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-        # Re-enable button when URL changes.
-        self._url_edit.textChanged.connect(self._on_url_changed)
+        bottom_row.addWidget(buttons)
+        layout.addLayout(bottom_row)
 
     def _populate(self) -> None:
         s = self._settings
         mode = s.get("mode", "online")
         self._model_combo.clear()
         self._model_combo.addItem("")  # blank default
+
+        # Populate URL combo from known endpoints
+        known = self._get_known()
+        self._url_combo.clear()
+        for url in known:
+            self._url_combo.addItem(url)
+
         if mode == "local":
-            self._url_edit.setText(s.get("local_url", "http://localhost:8001/v1"))
-            self._key_edit.setText(s.get("local_api_key", "vllm"))
+            url = s.get("local_url", "http://localhost:8001/v1")
+            key = s.get("local_api_key", "vllm")
             model = s.get("local_model") or ""
-            if model:
-                self._model_combo.setCurrentText(model)
-            self._status_label.setText("Local endpoint")
         else:
-            self._url_edit.setText("https://api.mtgacoach.com/v1")
-            self._key_edit.setText("")
+            url = "https://api.mtgacoach.com/v1"
+            key = ""
             model = s.get("model") or ""
-            if model:
-                self._model_combo.setCurrentText(model)
-            self._status_label.setText("Online (mtgacoach.com)")
+
+        self._url_combo.setCurrentText(url)
+        self._key_edit.setText(key)
+        if model:
+            self._model_combo.setCurrentText(model)
+
+        # If this is a known endpoint, restore models too
+        self._restore_models_for_url(url)
+        self._status_label.setText(
+            "Local endpoint" if mode == "local" else "Online (mtgacoach.com)"
+        )
+
+    def _restore_models_for_url(self, url: str) -> None:
+        """If *url* is in the known list, restore its models + separator label."""
+        known = self._get_known()
+        rec = known.get(url.rstrip("/"))
+        if not isinstance(rec, dict):
+            return
+        models = rec.get("models", [])
+        if isinstance(models, list) and models:
+            self._model_combo.clear()
+            self._model_combo.addItem("")  # blank default
+            self._model_combo.addItems(models)
+            self._model_combo.setCurrentText("")
+            self._status_label.setText(
+                f"\u2714 {len(models)} known models \u2014 probe again to refresh"
+            )
+            self._status_label.setStyleSheet("color: #888;")
 
     # -- probe logic ----------------------------------------------------------
 
@@ -231,20 +294,16 @@ class ModelEndpointDialog(QDialog):
             self, _ProbeResultEvent(models)
         )
 
-
     def _on_probe_result(self, models: list[str]) -> None:
         if not models:
             self._status_label.setText("No models found for this endpoint.")
             self._status_label.setStyleSheet("color: #f44336;")
             return
 
-        # Remember the current text so we can re-select it if still valid.
         current = self._model_combo.currentText().strip()
-
         self._model_combo.clear()
         self._model_combo.addItem("")  # blank default
         self._model_combo.addItems(models)
-
         if current and current in models:
             self._model_combo.setCurrentText(current)
 
@@ -253,20 +312,77 @@ class ModelEndpointDialog(QDialog):
         )
         self._status_label.setStyleSheet("color: #4caf50;")
 
+        # Save/update this endpoint in history
+        url = self._url_edit.text().strip().rstrip("/")
+        key = self._key_edit.text().strip()
+        known = self._get_known()
+        rec = known.get(url)
+        if not isinstance(rec, dict):
+            rec = {}
+        rec["models"] = models
+        if key:
+            rec["key"] = key
+        known[url] = rec
+        self._set_known(known)
+
+        # Ensure URL is in the combo list
+        idx = self._url_combo.findText(url)
+        if idx < 0:
+            self._url_combo.insertItem(0, url)
+
     # -- helpers --------------------------------------------------------------
 
     def _on_url_changed(self) -> None:
+        if self._populating:
+            return
         self._probe_btn.setEnabled(bool(self._url_edit.text().strip()))
         self._status_label.setText("")
         self._status_label.setStyleSheet("color: #8a8a8a;")
 
+    def _on_url_selected(self, index: int) -> None:
+        if self._populating:
+            return
+        """When the user picks a known endpoint from the dropdown, restore its details."""
+        if index < 0:
+            return
+        url = self._url_combo.itemText(index)
+        if not url:
+            return
+        known = self._get_known()
+        rec = known.get(url)
+        if not isinstance(rec, dict):
+            return
+        models = rec.get("models", [])
+        key = rec.get("key", "")
+        if key:
+            self._key_edit.setText(key)
+        self._restore_models_for_url(url)
+
     def _reset_to_online(self) -> None:
+        self._url_combo.setCurrentText("https://api.mtgacoach.com/v1")
         self._url_edit.setText("https://api.mtgacoach.com/v1")
         self._key_edit.setText("")
         self._model_combo.clear()
         self._model_combo.addItem("")
         self._status_label.setText("Online (mtgacoach.com)")
         self._status_label.setStyleSheet("color: #8a8a8a;")
+
+    def _on_forget(self) -> None:
+        """Remove the current URL from known endpoints."""
+        url = self._url_edit.text().strip().rstrip("/")
+        if not url:
+            return
+        known = self._get_known()
+        if url not in known:
+            return
+        del known[url]
+        self._set_known(known)
+        # Remove from combo
+        idx = self._url_combo.findText(url)
+        if idx >= 0:
+            self._url_combo.removeItem(idx)
+        self._status_label.setText(f"Forgot: {url}")
+        self._status_label.setStyleSheet("color: #f44336;")
 
     def _on_accept(self) -> None:
         s = self._settings
@@ -286,7 +402,6 @@ class ModelEndpointDialog(QDialog):
 
         self.accept()
 
-
     # -- event handling (for custom cross-thread events) ---------------
 
     def event(self, event: QEvent) -> bool:
@@ -298,7 +413,6 @@ class ModelEndpointDialog(QDialog):
             self._on_probe_result(pr.models)
             return True
         return super().event(event)
-
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
