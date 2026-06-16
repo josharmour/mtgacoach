@@ -8,7 +8,7 @@ from typing import Optional
 from urllib.request import urlopen, Request as UrlRequest
 from urllib.error import URLError, HTTPError
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QEvent, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
@@ -47,6 +47,22 @@ UI_MODE_COMPACT = "compact"
 _UI_MODE_KEY = "desktop_ui_mode"
 
 
+
+# -- custom event for cross-thread probe result -------------------------
+
+class _ProbeResultEvent(QEvent):
+    """Delivered from the probe worker thread to the UI thread."""
+    _EVENT_TYPE = QEvent.Type(QEvent.registerEventType())
+
+    def __init__(self, models: list[str]) -> None:
+        super().__init__(self._EVENT_TYPE)
+        self.models = models
+
+    @staticmethod
+    def is_probe_result(event: QEvent) -> bool:
+        return isinstance(event, _ProbeResultEvent)
+
+
 class ModelEndpointDialog(QDialog):
     """Dialog to configure the LLM endpoint URL, API key, and model name.
 
@@ -79,6 +95,8 @@ class ModelEndpointDialog(QDialog):
         else:
             base = raw.rsplit("/models", 1)[0]
 
+        if "://" not in base and "://" not in raw:
+            base = "http://" + base
         models_url = f"{base}/models"
 
         key = self._key_edit.text().strip() or "vllm"
@@ -210,16 +228,12 @@ class ModelEndpointDialog(QDialog):
         threading.Thread(target=self._probe_worker, daemon=True).start()
 
     def _probe_worker(self) -> None:
-        """Called in a background thread.  Updates UI through signals."""
+        """Called in a background thread. Returns via postEvent."""
         models = self._probe_endpoint()
+        QApplication.instance().postEvent(
+            self, _ProbeResultEvent(models)
+        )
 
-        # Use a QTimer singleShot to bounce back to the UI thread.
-        def _finish() -> None:
-            self._probe_btn.setEnabled(True)
-            self._probe_btn.setText("Probe")
-            self._on_probe_result(models)
-
-        QTimer.singleShot(0, _finish)
 
     def _on_probe_result(self, models: list[str]) -> None:
         if not models:
@@ -274,6 +288,19 @@ class ModelEndpointDialog(QDialog):
             s.set("local_model", model if model else None)
 
         self.accept()
+
+
+    # -- event handling (for custom cross-thread events) ---------------
+
+    def event(self, event: QEvent) -> bool:
+        """Handle custom events delivered from worker threads."""
+        if _ProbeResultEvent.is_probe_result(event):
+            pr = event  # type: ignore[assignment]
+            self._probe_btn.setEnabled(True)
+            self._probe_btn.setText("Probe")
+            self._on_probe_result(pr.models)
+            return True
+        return super().event(event)
 
 
 class MainWindow(QMainWindow):
