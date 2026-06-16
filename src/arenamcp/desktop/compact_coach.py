@@ -186,21 +186,11 @@ class CompactCoachPanel(CoachTab):
                  command="toggle_style"),
             stretch=1,
         )
-        if self._developer_mode:
-            # Dev machines get the model cycler in the prime slot; Analyze
-            # Match moves to the ⋯ menu. Customers (no model button) keep
-            # Analyze Match here.
-            row1.addWidget(
-                _btn("Model", "Cycle through models served by the backend "
-                     "(developer mode)", command="cycle_model"),
-                stretch=1,
-            )
-        else:
-            row1.addWidget(
-                _btn("Analyze Match", "Full post-match analysis of the last game",
-                     command="analyze_match"),
-                stretch=1,
-            )
+        row1.addWidget(
+            _btn("Analyze Match", "Full post-match analysis of the last game",
+                 command="analyze_match"),
+            stretch=1,
+        )
         root.addLayout(row1)
 
         row2 = QHBoxLayout()
@@ -272,15 +262,6 @@ class CompactCoachPanel(CoachTab):
         # ("Speed: 1.4x") just like a toolbar button — QAction has the same
         # setText interface.
         self._buttons["cycle_speed"] = speed_action
-
-        if self._developer_mode:
-            # The Model cycler took Analyze Match's toolbar slot on dev
-            # machines, so Analyze Match lives here instead.
-            analyze_action = menu.addAction("Analyze Match")
-            analyze_action.setToolTip("Full post-match analysis of the last game")
-            analyze_action.triggered.connect(
-                lambda _checked=False: self._send_command("analyze_match")
-            )
 
         restart_action = menu.addAction("Restart Coach")
         restart_action.setToolTip("Restart the coaching engine")

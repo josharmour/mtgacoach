@@ -6,8 +6,13 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
+    QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -31,6 +36,118 @@ from .theme import THEME_LABELS, apply_theme, available_themes, load_saved_theme
 UI_MODE_CLASSIC = "classic"
 UI_MODE_COMPACT = "compact"
 _UI_MODE_KEY = "desktop_ui_mode"
+
+
+class ModelEndpointDialog(QDialog):
+    """Dialog to configure the LLM endpoint URL, API key, and model name."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Model Endpoint")
+        self.setMinimumWidth(480)
+        self._settings = get_settings()
+        self._build_ui()
+        self._populate()
+        self._model_dirty = False
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        self._url_edit = QLineEdit()
+        self._url_edit.setPlaceholderText("http://localhost:8001/v1")
+        self._url_edit.setToolTip(
+            "OpenAI-compatible API base URL (e.g. your vLLM or Ollama server)"
+        )
+        form.addRow("API Base URL:", self._url_edit)
+
+        self._key_edit = QLineEdit()
+        self._key_edit.setPlaceholderText("vllm")
+        self._key_edit.setToolTip(
+            "API key for the endpoint (vLLM accepts any value; "
+            "Ollama expects 'ollama')"
+        )
+        form.addRow("API Key:", self._key_edit)
+
+        self._model_edit = QLineEdit()
+        self._model_edit.setPlaceholderText("gemma-4-12b-it")
+        self._model_edit.setToolTip(
+            "Model ID to use (e.g. 'gemma-4-12b-it', 'deepseek-v4-flash', etc.)\n"
+            "Leave empty to auto-detect from the endpoint."
+        )
+        form.addRow("Model ID:", self._model_edit)
+
+        self._use_online = QPushButton("Reset to Online (mtgacoach.com)")
+        self._use_online.setToolTip("Restore the default online endpoint")
+        layout.addLayout(form)
+
+        layout.addSpacing(8)
+
+        status_row = QHBoxLayout()
+        self._status_label = QLabel()
+        self._status_label.setStyleSheet("color: #8a8a8a;")
+        status_row.addWidget(self._status_label)
+        status_row.addStretch()
+        layout.addLayout(status_row)
+
+        layout.addWidget(self._use_online)
+        self._use_online.clicked.connect(self._reset_to_online)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        # Re-test the endpoint when the user edits a field.
+        self._url_edit.textChanged.connect(self._mark_dirty)
+        self._key_edit.textChanged.connect(self._mark_dirty)
+
+    def _populate(self) -> None:
+        s = self._settings
+        mode = s.get("mode", "online")
+        if mode == "local":
+            self._url_edit.setText(s.get("local_url", "http://localhost:8001/v1"))
+            self._key_edit.setText(s.get("local_api_key", "vllm"))
+            self._model_edit.setText(s.get("local_model") or "")
+            self._status_label.setText("Local endpoint")
+        else:
+            self._url_edit.setText("https://api.mtgacoach.com/v1")
+            self._key_edit.setText("")
+            self._model_edit.setText(s.get("model") or "")
+            self._status_label.setText("Online (mtgacoach.com)")
+
+    def _mark_dirty(self) -> None:
+        self._model_dirty = True
+
+    def _reset_to_online(self) -> None:
+        self._url_edit.setText("https://api.mtgacoach.com/v1")
+        self._key_edit.setText("")
+        self._model_edit.setText("")
+        self._model_dirty = True
+        self._status_label.setText("Online (mtgacoach.com)")
+
+    def _on_accept(self) -> None:
+        s = self._settings
+        url = self._url_edit.text().strip()
+        key = self._key_edit.text().strip()
+        model = self._model_edit.text().strip()
+
+        # Detect if this is the mtgacoach.com online endpoint.
+        is_online = "mtgacoach.com" in url or "api.mtgacoach.com" in url
+        if is_online:
+            s.set("mode", "online")
+            s.set("model", model if model else None)
+        else:
+            s.set("mode", "local")
+            s.set("local_url", url)
+            s.set("local_api_key", key)
+            s.set("local_model", model if model else None)
+
+        self.accept()
 
 
 class MainWindow(QMainWindow):
@@ -72,6 +189,7 @@ class MainWindow(QMainWindow):
         self.menuBar().addAction(refresh_action)
         self._build_theme_menu()
         self._build_view_menu()
+        self._build_model_menu()
 
         self._apply_window_geometry()
         self.refresh_state()
@@ -95,7 +213,7 @@ class MainWindow(QMainWindow):
             page_layout.setContentsMargins(8, 8, 8, 8)
             page_layout.setSpacing(6)
             header = QHBoxLayout()
-            back_btn = QPushButton("← Back to Coach")
+            back_btn = QPushButton("\u2190 Back to Coach")
             back_btn.clicked.connect(self._show_coach_view)
             header.addWidget(back_btn)
             header.addStretch()
@@ -131,7 +249,24 @@ class MainWindow(QMainWindow):
         # logic so state like autopilot/dry-run flags is preserved.
         self.coach_tab.restart_requested.connect(self._restart_coach_keep_flags)
 
+    _WINDOW_GEOMETRY_KEY = "desktop_window_geometry"
+
     def _apply_window_geometry(self) -> None:
+        # Try saved geometry first (captured on last closeEvent).
+        saved = self._settings.get(self._WINDOW_GEOMETRY_KEY)
+        if isinstance(saved, dict):
+            pos_x = saved.get("x")
+            pos_y = saved.get("y")
+            w = saved.get("width")
+            h = saved.get("height")
+            saved_mode = saved.get("ui_mode")
+            if saved_mode == self._ui_mode and w and h:
+                if pos_x is not None and pos_y is not None:
+                    self.setGeometry(pos_x, pos_y, w, h)
+                else:
+                    self.resize(w, h)
+                return
+
         if self._ui_mode == UI_MODE_COMPACT:
             self.setMinimumWidth(380)
             screen = self.screen() or QGuiApplication.primaryScreen()
@@ -219,6 +354,7 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage(
             "Compact sidebar layout" if mode == UI_MODE_COMPACT else "Classic layout", 4000
         )
+        self._bump_theme_status()
 
     def refresh_state(self) -> RuntimeState:
         return self.repair_tab.refresh_state()
@@ -250,9 +386,28 @@ class MainWindow(QMainWindow):
         flags = getattr(self, "_launch_flags", (False, False, False))
         self.restart_coach(*flags)
 
+    def _bump_theme_status(self) -> None:
+        """Re-emit the current theme name on the status bar."""
+        try:
+            label = THEME_LABELS.get(self._current_theme, self._current_theme)
+            self._status_bar.showMessage(f"Theme: {label}", 0)
+        except Exception:
+            pass
+
     def closeEvent(self, event) -> None:  # type: ignore[override]
         self._closing = True
         self._current_theme = save_theme(self._current_theme)
+
+        # Save window geometry so it reopens in the same spot.
+        geom = self.frameGeometry()
+        self._settings.set(self._WINDOW_GEOMETRY_KEY, {
+            "x": geom.x(),
+            "y": geom.y(),
+            "width": geom.width(),
+            "height": geom.height(),
+            "ui_mode": self._ui_mode,
+        })
+
         self._settings.set(
             "desktop_debug_logging",
             bool(self._debug_logging_action.isChecked()) if self._debug_logging_action else False,
@@ -443,3 +598,28 @@ class MainWindow(QMainWindow):
         if dialog.clickedButton() == run_setup:
             self._show_repair_view()
             self.repair_tab.start_guided_setup()
+
+    # -- Model menu (endpoint configuration) ---------------------------------
+
+    def _build_model_menu(self) -> None:
+        model_menu = self.menuBar().addMenu("Model")
+        config_action = QAction("Configure Endpoint\u2026", self)
+        config_action.setToolTip(
+            "Configure the LLM endpoint URL, API key, and model name"
+        )
+        config_action.triggered.connect(self._show_model_dialog)
+        model_menu.addAction(config_action)
+
+    def _show_model_dialog(self) -> None:
+        dialog = ModelEndpointDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        # Settings are already saved by the dialog's _on_accept.
+        # If the backend in the child coach process supports hot-swapping,
+        # notify it — but most backends just pick up the new settings on restart.
+        mode_label = "local" if self._settings.get("mode") == "local" else "online"
+        self._status_bar.showMessage(
+            f"Endpoint updated ({mode_label}). Restart the coach to apply.",
+            8000,
+        )
