@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import ssl
 from typing import Optional
 from urllib.request import urlopen, Request as UrlRequest
 from urllib.error import URLError, HTTPError
@@ -84,8 +85,11 @@ class ModelEndpointDialog(QDialog):
         headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
 
         try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
             req = UrlRequest(models_url, headers=headers, method="GET")
-            with urlopen(req, timeout=10) as resp:
+            with urlopen(req, timeout=10, context=ctx) as resp:
                 data = json.loads(resp.read().decode())
             # OpenAI-compatible response: {"object":"list","data":[{"id":"...",...}]}
             models = data.get("data") or data if isinstance(data, list) else data.get("data", [])
