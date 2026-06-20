@@ -11,27 +11,31 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Event type patterns found in MTGA logs
+# Event type patterns found in MTGA logs.
+# Each entry is (compiled_pattern, clean_event_name). The name is the value
+# used for handler dispatch — it must be the literal event type, NOT the regex
+# source, since patterns may contain metacharacters (e.g. ``Draft\.Notify``)
+# whose ``pattern.pattern`` differs from the name handlers register under.
 EVENT_PATTERNS = [
-    re.compile(r'GreToClientEvent'),
-    re.compile(r'MatchCreated'),
-    re.compile(r'MatchGameRoomStateChangedEvent'),
-    re.compile(r'ClientToMatchServiceMessage'),
-    re.compile(r'MulliganReq'),
-    re.compile(r'MulliganResp'),
-    re.compile(r'GameStateMessage'),
+    (re.compile(r'GreToClientEvent'), 'GreToClientEvent'),
+    (re.compile(r'MatchCreated'), 'MatchCreated'),
+    (re.compile(r'MatchGameRoomStateChangedEvent'), 'MatchGameRoomStateChangedEvent'),
+    (re.compile(r'ClientToMatchServiceMessage'), 'ClientToMatchServiceMessage'),
+    (re.compile(r'MulliganReq'), 'MulliganReq'),
+    (re.compile(r'MulliganResp'), 'MulliganResp'),
+    (re.compile(r'GameStateMessage'), 'GameStateMessage'),
     # Draft-related events
-    re.compile(r'Draft\.Notify'),
-    re.compile(r'Draft\.MakeHumanDraftPick'),
-    re.compile(r'Event_PlayerDraftMakePick'),
-    re.compile(r'BotDraft_DraftPick'),
-    re.compile(r'DraftPack'),
-    re.compile(r'DraftStatus'),
-    re.compile(r'CardsInPack'),
-    re.compile(r'EventName'),
+    (re.compile(r'Draft\.Notify'), 'Draft.Notify'),
+    (re.compile(r'Draft\.MakeHumanDraftPick'), 'Draft.MakeHumanDraftPick'),
+    (re.compile(r'Event_PlayerDraftMakePick'), 'Event_PlayerDraftMakePick'),
+    (re.compile(r'BotDraft_DraftPick'), 'BotDraft_DraftPick'),
+    (re.compile(r'DraftPack'), 'DraftPack'),
+    (re.compile(r'DraftStatus'), 'DraftStatus'),
+    (re.compile(r'CardsInPack'), 'CardsInPack'),
+    (re.compile(r'EventName'), 'EventName'),
     # Sealed pool events
-    re.compile(r'CardPool'),
-    re.compile(r'InternalEventName'),
+    (re.compile(r'CardPool'), 'CardPool'),
+    (re.compile(r'InternalEventName'), 'InternalEventName'),
 ]
 
 
@@ -172,9 +176,9 @@ class LogParser:
         Returns:
             Detected event type string, or 'Unknown' if not recognized.
         """
-        for pattern in EVENT_PATTERNS:
+        for pattern, name in EVENT_PATTERNS:
             if pattern.search(text):
-                return pattern.pattern
+                return name
         return "Unknown"
 
     def _start_json_block(self, json_start: str) -> None:

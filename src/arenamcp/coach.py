@@ -4552,7 +4552,8 @@ class GameStateTrigger:
         curr_turn_num = curr_turn.get("turn_number", 0)
         curr_active = curr_turn.get("active_player", 0)
 
-        if prev_turn_num == 0 and curr_turn_num > 0:
+        first_connection = prev_turn_num == 0 and curr_turn_num > 0
+        if first_connection:
             # Just connected to an active game
             is_your_turn = curr_active == local_seat
             if is_your_turn:
@@ -4566,8 +4567,11 @@ class GameStateTrigger:
                 logger.info(f"First connection with pending decision: {pending}")
                 triggers.append("decision_required")
 
-        # New turn detection
-        if curr_turn_num > prev_turn_num:
+        # New turn detection. Skip on first connection — that path above already
+        # owns the new_turn decision (gated on whether it's the local player's
+        # turn); without this guard a first-connection-on-your-turn fires
+        # new_turn twice for the same turn.
+        if curr_turn_num > prev_turn_num and not first_connection:
             triggers.append("new_turn")
 
         # Check if it's your turn or opponent's turn

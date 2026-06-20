@@ -1954,8 +1954,13 @@ class GameState:
                         break
 
                 if has_visible_card:
-                    self.local_seat_id = owner_seat_id
-                    logger.info(f"Inferred local player as seat {owner_seat_id} from hand zone with visible grp_ids")
+                    # Route through set_local_seat_id (source=1 = Inferred) rather than
+                    # a direct assignment so _seat_source stays consistent with
+                    # local_seat_id and a later System(2)/User(3) signal can still
+                    # override. The guard above already restricts this to the
+                    # seat-unset, non-user-set case, matching the sibling inference path.
+                    logger.info(f"Inferring local player as seat {owner_seat_id} from hand zone with visible grp_ids")
+                    self.set_local_seat_id(owner_seat_id, source=1)
 
     def _update_player(self, player_data: dict) -> None:
         """Update or create a player from message data.
@@ -3726,126 +3731,127 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
             game_state.update_from_message(msg_payload)
             snapshot_dirty = False
 
-        for idx, msg in enumerate(messages):
-            if not isinstance(msg, dict):
-                continue
-            msg_type = msg.get("type", "")
-            seat_hint = _coerce_optional_int(msg.get("systemSeatId"))
-            if seat_hint is None:
-                system_seat_ids = _ensure_int_list(msg.get("systemSeatIds", []))
-                if len(system_seat_ids) == 1:
-                    seat_hint = system_seat_ids[0]
-            if (
-                isinstance(seat_hint, int)
-                and (
-                    game_state.local_seat_id != seat_hint
-                    or getattr(game_state, "_seat_source", 0) < 2
+        with game_state._state_lock:
+            for idx, msg in enumerate(messages):
+                if not isinstance(msg, dict):
+                    continue
+                msg_type = msg.get("type", "")
+                seat_hint = _coerce_optional_int(msg.get("systemSeatId"))
+                if seat_hint is None:
+                    system_seat_ids = _ensure_int_list(msg.get("systemSeatIds", []))
+                    if len(system_seat_ids) == 1:
+                        seat_hint = system_seat_ids[0]
+                if (
+                    isinstance(seat_hint, int)
+                    and (
+                        game_state.local_seat_id != seat_hint
+                        or getattr(game_state, "_seat_source", 0) < 2
+                    )
+                ):
+                    game_state.set_local_seat_id(seat_hint, source=2)
+
+                game_state._record_raw_gre_message(
+                    msg,
+                    seat_hint=seat_hint,
+                    message_index=idx,
                 )
-            ):
-                game_state.set_local_seat_id(seat_hint, source=2)
+                if msg_type not in (
+                    "GREMessageType_GameStateMessage",
+                    "GREMessageType_QueuedGameStateMessage",
+                ):
+                    snapshot_dirty = True
 
-            game_state._record_raw_gre_message(
-                msg,
-                seat_hint=seat_hint,
-                message_index=idx,
-            )
-            if msg_type not in (
-                "GREMessageType_GameStateMessage",
-                "GREMessageType_QueuedGameStateMessage",
-            ):
-                snapshot_dirty = True
+                if (
+                    msg_type.endswith("Req")
+                    or msg_type in ("GREMessageType_ConnectResp", "GREMessageType_OptionalActionMessage")
+                    or ("Resp" in msg_type and game_state.pending_decision)
+                ):
+                    snapshot_dirty = True
 
-            if (
-                msg_type.endswith("Req")
-                or msg_type in ("GREMessageType_ConnectResp", "GREMessageType_OptionalActionMessage")
-                or ("Resp" in msg_type and game_state.pending_decision)
-            ):
-                snapshot_dirty = True
+                # Handle GameStateMessage
+                if msg_type == "GREMessageType_GameStateMessage":
+                    game_state_msg = msg.get("gameStateMessage")
+                    if game_state_msg:
+                        apply_game_state_update(game_state_msg)
+                        if _auto_clear_stale_decision(game_state):
+                            snapshot_dirty = True
 
-            # Handle GameStateMessage
-            if msg_type == "GREMessageType_GameStateMessage":
-                game_state_msg = msg.get("gameStateMessage")
-                if game_state_msg:
-                    apply_game_state_update(game_state_msg)
-                    if _auto_clear_stale_decision(game_state):
+                # Dispatch known decision/action message types to helpers
+                elif msg_type in _KNOWN_REQ_TYPES:
+                    if _handle_decision_message(game_state, msg_type, msg):
                         snapshot_dirty = True
-            
-            # Dispatch known decision/action message types to helpers
-            elif msg_type in _KNOWN_REQ_TYPES:
-                if _handle_decision_message(game_state, msg_type, msg):
-                    snapshot_dirty = True
 
-            elif msg_type == "GREMessageType_QueuedGameStateMessage":
-                game_state_msg = msg.get("gameStateMessage")
-                if game_state_msg:
-                    apply_game_state_update(game_state_msg)
+                elif msg_type == "GREMessageType_QueuedGameStateMessage":
+                    game_state_msg = msg.get("gameStateMessage")
+                    if game_state_msg:
+                        apply_game_state_update(game_state_msg)
 
-            elif msg_type == "GREMessageType_UIMessage":
-                if game_state._record_ui_message_event(msg):
-                    snapshot_dirty = True
+                elif msg_type == "GREMessageType_UIMessage":
+                    if game_state._record_ui_message_event(msg):
+                        snapshot_dirty = True
 
-            elif msg_type == "GREMessageType_TimerStateMessage":
-                # ── Phase 1: Parse chess clock / timer data ──
-                timer_msg = msg.get("timerStateMessage", msg.get("timerState", {}))
-                if isinstance(timer_msg, dict) and timer_msg:
-                    timers = _ensure_dict_list(timer_msg.get("timers", []))
-                    timer_data = {}
-                    for timer in timers:
-                        player_id = _coerce_int(timer.get("playerId", timer.get("seatId", 0)), 0)
-                        timer_type = timer.get("type", timer.get("timerType", ""))
-                        remaining = _coerce_int(timer.get("timeRemainingMs", timer.get("durationMs", 0)), 0)
-                        behavior = timer.get("behavior", "")
-                        if player_id:
-                            timer_data[player_id] = {
-                                "time_remaining_ms": remaining,
-                                "timer_type": timer_type,
-                                "behavior": behavior,
-                                "is_ticking": timer.get("isTicking", False),
-                            }
-                    # Also check for top-level fields
-                    if not timer_data:
-                        for key in ("player1Timer", "player2Timer"):
-                            t = timer_msg.get(key, {})
-                            if t:
-                                timer_data[key] = {
-                                    "time_remaining_ms": t.get("timeRemainingMs", 0),
-                                    "timer_type": t.get("type", ""),
+                elif msg_type == "GREMessageType_TimerStateMessage":
+                    # ── Phase 1: Parse chess clock / timer data ──
+                    timer_msg = msg.get("timerStateMessage", msg.get("timerState", {}))
+                    if isinstance(timer_msg, dict) and timer_msg:
+                        timers = _ensure_dict_list(timer_msg.get("timers", []))
+                        timer_data = {}
+                        for timer in timers:
+                            player_id = _coerce_int(timer.get("playerId", timer.get("seatId", 0)), 0)
+                            timer_type = timer.get("type", timer.get("timerType", ""))
+                            remaining = _coerce_int(timer.get("timeRemainingMs", timer.get("durationMs", 0)), 0)
+                            behavior = timer.get("behavior", "")
+                            if player_id:
+                                timer_data[player_id] = {
+                                    "time_remaining_ms": remaining,
+                                    "timer_type": timer_type,
+                                    "behavior": behavior,
+                                    "is_ticking": timer.get("isTicking", False),
                                 }
-                    if timer_data:
-                        game_state.timer_state = timer_data
+                        # Also check for top-level fields
+                        if not timer_data:
+                            for key in ("player1Timer", "player2Timer"):
+                                t = timer_msg.get(key, {})
+                                if t:
+                                    timer_data[key] = {
+                                        "time_remaining_ms": t.get("timeRemainingMs", 0),
+                                        "timer_type": t.get("type", ""),
+                                    }
+                        if timer_data:
+                            game_state.timer_state = timer_data
 
-            # Fallback for unknown Req types
-            elif msg_type.endswith("Req") and msg_type not in _KNOWN_REQ_TYPES:
-                import time as _time
-                logger.warning(f"Unknown GRE Req type: {msg_type} - treating as pending decision")
-                game_state.pending_decision = f"Unknown Decision ({msg_type})"
-                game_state.decision_timestamp = _time.time()
-                game_state.decision_context = {
-                    "type": "unknown_req",
-                    "gre_type": msg_type,
-                    "raw_message": {k: v for k, v in msg.items() if k != "type"},
-                }
+                # Fallback for unknown Req types
+                elif msg_type.endswith("Req") and msg_type not in _KNOWN_REQ_TYPES:
+                    import time as _time
+                    logger.warning(f"Unknown GRE Req type: {msg_type} - treating as pending decision")
+                    game_state.pending_decision = f"Unknown Decision ({msg_type})"
+                    game_state.decision_timestamp = _time.time()
+                    game_state.decision_context = {
+                        "type": "unknown_req",
+                        "gre_type": msg_type,
+                        "raw_message": {k: v for k, v in msg.items() if k != "type"},
+                    }
 
-            elif "Resp" in msg_type:
-                if game_state.pending_decision and msg_type in _DECISION_RESPONSE_TYPES:
-                    if game_state.pending_decision == "Mulligan" and msg_type != "GREMessageType_SubmitDeckResp":
-                        pass
-                    else:
-                        logger.debug(f"Clearing decision '{game_state.pending_decision}' due to {msg_type}")
-                        game_state.last_cleared_decision = game_state.pending_decision
-                        game_state.pending_decision = None
-                        game_state.decision_seat_id = None
-                        game_state.decision_context = None
-                        game_state.decision_timestamp = 0
+                elif "Resp" in msg_type:
+                    if game_state.pending_decision and msg_type in _DECISION_RESPONSE_TYPES:
+                        if game_state.pending_decision == "Mulligan" and msg_type != "GREMessageType_SubmitDeckResp":
+                            pass
+                        else:
+                            logger.debug(f"Clearing decision '{game_state.pending_decision}' due to {msg_type}")
+                            game_state.last_cleared_decision = game_state.pending_decision
+                            game_state.pending_decision = None
+                            game_state.decision_seat_id = None
+                            game_state.decision_context = None
+                            game_state.decision_timestamp = 0
 
-        # Also handle direct GameStateMessage events (legacy format)
-        if "gameObjects" in payload or "zones" in payload or "players" in payload:
-            apply_game_state_update(payload)
+            # Also handle direct GameStateMessage events (legacy format)
+            if "gameObjects" in payload or "zones" in payload or "players" in payload:
+                apply_game_state_update(payload)
 
-        # Publish once for decision/action-only messages that mutate state
-        # without a full/diff GameState update.
-        if snapshot_dirty:
-            game_state.publish_snapshot()
+            # Publish once for decision/action-only messages that mutate state
+            # without a full/diff GameState update.
+            if snapshot_dirty:
+                game_state.publish_snapshot()
 
         # Record frame if recording is active
         try:

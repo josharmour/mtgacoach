@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -20,82 +21,88 @@ class CoachProcess(QObject):
         self._stdout_buffer = ""
         self._stderr_buffer = ""
         self.last_error = ""
+        # Serializes start()/stop() so two concurrent start() calls can't both
+        # pass the is_running check, spawn two subprocesses, and leak the first
+        # QProcess when the second overwrites self._process.
+        self._lifecycle_lock = threading.Lock()
 
     @property
     def is_running(self) -> bool:
         return self._process is not None and self._process.state() != QProcess.NotRunning
 
     def start(self, autopilot: bool = False, dry_run: bool = False, afk: bool = False) -> None:
-        if self.is_running:
-            return
+        with self._lifecycle_lock:
+            if self.is_running:
+                return
 
-        app_root = Path(get_app_root())
-        runtime_root = get_runtime_root()
-        python_exe, python_source = find_python_executable()
-        if python_exe is None:
-            raise RuntimeError("Python executable not found")
+            app_root = Path(get_app_root())
+            runtime_root = get_runtime_root()
+            python_exe, python_source = find_python_executable()
+            if python_exe is None:
+                raise RuntimeError("Python executable not found")
 
-        args = ["-u", "-m", "arenamcp.standalone", "--pipe"]
-        if autopilot:
-            args.append("--autopilot")
-        if dry_run:
-            args.append("--dry-run")
-        if afk:
-            args.append("--afk")
+            args = ["-u", "-m", "arenamcp.standalone", "--pipe"]
+            if autopilot:
+                args.append("--autopilot")
+            if dry_run:
+                args.append("--dry-run")
+            if afk:
+                args.append("--afk")
 
-        src_dir = str(app_root / "src")
-        self.last_error = (
-            f"Launching: {python_exe} ({python_source})\n"
-            f"Args: {' '.join(args)}\n"
-            f"WorkDir: {app_root}\n"
-            f"PYTHONPATH: {src_dir}"
-        )
+            src_dir = str(app_root / "src")
+            self.last_error = (
+                f"Launching: {python_exe} ({python_source})\n"
+                f"Args: {' '.join(args)}\n"
+                f"WorkDir: {app_root}\n"
+                f"PYTHONPATH: {src_dir}"
+            )
 
-        process = QProcess(self)
-        env = QProcessEnvironment.systemEnvironment()
-        env.insert("PYTHONPATH", src_dir)
-        env.insert("MTGACOACH_RUNTIME_ROOT", runtime_root)
-        env.insert("MTGACOACH_FRONTEND", "pyside")
-        env.insert("PYTHONUNBUFFERED", "1")
-        env.insert("PYTHONIOENCODING", "utf-8")
-        process.setProcessEnvironment(env)
-        process.setWorkingDirectory(str(app_root))
-        process.setProgram(python_exe)
-        process.setArguments(args)
-        process.readyReadStandardOutput.connect(self._on_stdout_ready)
-        process.readyReadStandardError.connect(self._on_stderr_ready)
-        process.finished.connect(self._on_finished)
-        process.errorOccurred.connect(self._on_error)
-        process.start()
+            process = QProcess(self)
+            env = QProcessEnvironment.systemEnvironment()
+            env.insert("PYTHONPATH", src_dir)
+            env.insert("MTGACOACH_RUNTIME_ROOT", runtime_root)
+            env.insert("MTGACOACH_FRONTEND", "pyside")
+            env.insert("PYTHONUNBUFFERED", "1")
+            env.insert("PYTHONIOENCODING", "utf-8")
+            process.setProcessEnvironment(env)
+            process.setWorkingDirectory(str(app_root))
+            process.setProgram(python_exe)
+            process.setArguments(args)
+            process.readyReadStandardOutput.connect(self._on_stdout_ready)
+            process.readyReadStandardError.connect(self._on_stderr_ready)
+            process.finished.connect(self._on_finished)
+            process.errorOccurred.connect(self._on_error)
+            process.start()
 
-        if not process.waitForStarted(5000):
-            message = process.errorString() or "Failed to start Python coach process"
-            process.deleteLater()
-            raise RuntimeError(message)
+            if not process.waitForStarted(5000):
+                message = process.errorString() or "Failed to start Python coach process"
+                process.deleteLater()
+                raise RuntimeError(message)
 
-        self._process = process
-        self._stdout_buffer = ""
-        self._stderr_buffer = ""
+            self._process = process
+            self._stdout_buffer = ""
+            self._stderr_buffer = ""
 
     def stop(self) -> None:
-        if self._process is None:
-            return
+        with self._lifecycle_lock:
+            if self._process is None:
+                return
 
-        process = self._process
-        if process.state() == QProcess.NotRunning:
-            self._process = None
-            process.deleteLater()
-            return
+            process = self._process
+            if process.state() == QProcess.NotRunning:
+                self._process = None
+                process.deleteLater()
+                return
 
-        try:
-            process.closeWriteChannel()
-        except RuntimeError:
-            pass
+            try:
+                process.closeWriteChannel()
+            except RuntimeError:
+                pass
 
-        process.terminate()
-        if not process.waitForFinished(3000):
-            process.kill()
-            process.waitForFinished(2000)
+            process.terminate()
+            if not process.waitForFinished(3000):
+                process.kill()
+                process.waitForFinished(2000)
 
     def stop_async(self) -> None:
         """Non-blocking stop — terminates the process and schedules a

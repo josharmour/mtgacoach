@@ -142,7 +142,11 @@ class GREBridge:
         self._server_socket = None  # The listening TCP socket
         self._client_socket = None  # The accepted client TCP socket
         self._pipe_file = None      # Wrapped file object for writing/reading
+        # _send_command holds this lock and tears the connection down on its
+        # write-error/timeout paths via _disconnect_locked() (which assumes the
+        # lock is already held), so the lock stays non-reentrant.
         self._pipe_lock = threading.Lock()  # Serialize socket I/O across threads
+        self._keepalive_lock = threading.Lock()  # Guards _keepalive_thread lifecycle
         # No-plugin diagnostics: when the server listens but nothing ever
         # connects, the plugin isn't running (most often BepInEx isn't
         # injected). Warn once with an actionable hint instead of staying
@@ -187,10 +191,11 @@ class GREBridge:
             client_sock.setblocking(True)
             client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
-            self._client_socket = client_sock
-            self._pipe_file = client_sock.makefile("rwb", buffering=0)
-            self._connected = True
-            self._ever_connected = True
+            with self._pipe_lock:
+                self._client_socket = client_sock
+                self._pipe_file = client_sock.makefile("rwb", buffering=0)
+                self._connected = True
+                self._ever_connected = True
 
             logger.info(f"GRE bridge: plugin connected from {addr}")
 
@@ -214,7 +219,23 @@ class GREBridge:
             return False
 
     def disconnect(self):
-        """Close the socket connection and client socket."""
+        """Close the socket connection and client socket.
+
+        Acquires ``_pipe_lock`` so concurrent ``_send_command`` readers see a
+        consistent (_connected, _pipe_file) pair, then delegates to
+        ``_disconnect_locked()``. Callers that already hold ``_pipe_lock`` (the
+        write-error/timeout paths inside ``_send_command``) must call
+        ``_disconnect_locked()`` directly — ``_pipe_lock`` is non-reentrant.
+        """
+        with self._pipe_lock:
+            self._disconnect_locked()
+
+    def _disconnect_locked(self):
+        """Tear down the connection. Caller must already hold ``_pipe_lock``.
+
+        Closing ``_pipe_file`` is also what unblocks a pending read on the
+        daemon reader thread spawned by ``_send_command``.
+        """
         self._connected = False
         try:
             if self._pipe_file:
@@ -247,17 +268,18 @@ class GREBridge:
 
         Safe to call multiple times; starts at most one thread.
         """
-        if self._keepalive_thread is not None and self._keepalive_thread.is_alive():
-            return
-        self._keepalive_stop.clear()
-        t = threading.Thread(
-            target=self._keepalive_loop,
-            args=(interval,),
-            daemon=True,
-            name="gre-bridge-keepalive",
-        )
-        self._keepalive_thread = t
-        t.start()
+        with self._keepalive_lock:
+            if self._keepalive_thread is not None and self._keepalive_thread.is_alive():
+                return
+            self._keepalive_stop.clear()
+            t = threading.Thread(
+                target=self._keepalive_loop,
+                args=(interval,),
+                daemon=True,
+                name="gre-bridge-keepalive",
+            )
+            self._keepalive_thread = t
+            t.start()
         logger.info(f"GRE bridge keepalive started (interval={interval}s)")
 
     def stop_keepalive(self) -> None:
@@ -361,7 +383,7 @@ class GREBridge:
                 self._pipe_file.write(line.encode("utf-8"))
                 self._pipe_file.flush()
             except (BrokenPipeError, OSError, IOError) as e:
-                self.disconnect()
+                self._disconnect_locked()
                 raise GREBridgeError(f"Pipe write error: {e}")
 
             # Read on a worker thread so we can enforce a timeout.
@@ -406,7 +428,7 @@ class GREBridge:
                     timeout,
                     action_name,
                 )
-                self.disconnect()
+                self._disconnect_locked()
                 raise GREBridgeError(
                     f"Pipe read timeout ({timeout:.1f}s) for action={action_name}"
                 )
@@ -414,16 +436,16 @@ class GREBridge:
             if exc:
                 err = exc[0]
                 if isinstance(err, (BrokenPipeError, OSError, IOError)):
-                    self.disconnect()
+                    self._disconnect_locked()
                     raise GREBridgeError(f"Pipe communication error: {err}")
                 if isinstance(err, GREBridgeError):
-                    self.disconnect()
+                    self._disconnect_locked()
                     raise err
-                self.disconnect()
+                self._disconnect_locked()
                 raise GREBridgeError(f"Pipe read error: {err}")
 
             if not result:
-                self.disconnect()
+                self._disconnect_locked()
                 raise GREBridgeError("Pipe read produced no result")
 
             try:
