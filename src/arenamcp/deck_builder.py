@@ -286,6 +286,84 @@ class DeckBuilderV2:
         if total_cards == 0:
             return None
 
+        # AI Monte Carlo Auto-Optimizer (Hill Climbing Permutations)
+        import random
+        best_maindeck = maindeck.copy()
+        best_sideboard = sideboard.copy()
+        best_lands = archetype["lands"]
+
+        def eval_deck(md: dict[str, int]) -> float:
+            tc = sum(md.values())
+            if tc == 0: return -100.0
+            gihwr = sum(card_ratings[c].gih_win_rate * ct for c, ct in md.items()) / tc
+            cc = sum(ct for c, ct in md.items() if card_ratings[c].is_creature)
+            tcmc = sum(card_ratings[c].cmc * ct for c, ct in md.items())
+            acmc = tcmc / tc
+            p = 0.0
+            if cc < archetype["min_creatures"]: p += (archetype["min_creatures"] - cc) * 0.005
+            if acmc > archetype["max_avg_cmc"]: p += (acmc - archetype["max_avg_cmc"]) * 0.02
+            return gihwr - p
+
+        best_score = eval_deck(best_maindeck)
+
+        all_pool_count = sum(maindeck.values()) + sum(sideboard.values())
+        if all_pool_count >= 22:
+            for _ in range(5000):
+                test_lands = random.choice([15, 16, 17, 18])
+                target_nl = 40 - test_lands
+                if all_pool_count < target_nl:
+                    continue
+
+                md_list = []
+                for c, ct in best_maindeck.items(): md_list.extend([c] * ct)
+                sb_list = []
+                for c, ct in best_sideboard.items(): sb_list.extend([c] * ct)
+
+                # Adjust for land count changes
+                curr_nl = len(md_list)
+                while curr_nl > target_nl and md_list:
+                    c = random.choice(md_list)
+                    md_list.remove(c)
+                    sb_list.append(c)
+                    curr_nl -= 1
+                while curr_nl < target_nl and sb_list:
+                    c = random.choice(sb_list)
+                    sb_list.remove(c)
+                    md_list.append(c)
+                    curr_nl += 1
+
+                # Mutate: Swap 1 to 3 cards
+                num_swaps = random.randint(1, 3)
+                for _ in range(num_swaps):
+                    if md_list and sb_list:
+                        out_c = random.choice(md_list)
+                        in_c = random.choice(sb_list)
+                        md_list.remove(out_c)
+                        md_list.append(in_c)
+                        sb_list.remove(in_c)
+                        sb_list.append(out_c)
+
+                # Tally and Evaluate
+                from collections import Counter
+                new_md = dict(Counter(md_list))
+                new_sb = dict(Counter(sb_list))
+                score = eval_deck(new_md)
+
+                if score > best_score:
+                    best_score = score
+                    best_maindeck = new_md
+                    best_sideboard = new_sb
+                    best_lands = test_lands
+
+        maindeck = best_maindeck
+        sideboard = best_sideboard
+        archetype["lands"] = best_lands
+        total_cards = sum(maindeck.values())
+
+        # Recalculate metrics from optimized deck
+        creature_count = sum(ct for c, ct in maindeck.items() if card_ratings[c].is_creature)
+        total_cmc = sum(card_ratings[c].cmc * ct for c, ct in maindeck.items())
+
         # Calculate lands
         lands = self._suggest_lands(colors, archetype["lands"])
 

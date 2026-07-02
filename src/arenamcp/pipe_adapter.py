@@ -396,6 +396,23 @@ class PipeAdapter:
                 else:
                     enabled = coach.toggle_autopilot()
                 self.status("AUTOPILOT", "AP:ON" if enabled else "AP:OFF")
+            elif action == "force_stop":
+                # Panic button: kill the spiral, not just the switch. Turns
+                # autopilot off AND drops in-flight plan/turn-memo state so
+                # re-enabling doesn't resume the same doomed loop.
+                if hasattr(coach, "set_autopilot"):
+                    coach.set_autopilot(False)
+                else:
+                    if getattr(coach, "_autopilot_enabled", False):
+                        coach.toggle_autopilot()
+                ap = getattr(coach, "_autopilot", None)
+                if ap is not None:
+                    try:
+                        ap.force_stop()
+                    except Exception as e:
+                        self.error(f"Force stop: engine cleanup failed: {e}")
+                self.status("AUTOPILOT", "AP:OFF")
+                self.log("FORCE STOP: autopilot halted, in-flight plan cleared")
             elif action == "get_status":
                 ap = getattr(coach, "_autopilot", None)
                 bridge_connected = False

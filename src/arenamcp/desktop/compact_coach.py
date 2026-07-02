@@ -181,6 +181,17 @@ class CompactCoachPanel(CoachTab):
         )
         ap_btn.setProperty("apOn", "false")
         row1.addWidget(ap_btn, stretch=2)
+        stop_btn = _btn(
+            "STOP",
+            "Force-stop autopilot: halts it AND clears the in-flight plan/turn "
+            "intent so re-enabling doesn't resume the same loop",
+            command="force_stop",
+            object_name="forceStopButton",
+        )
+        stop_btn.setStyleSheet(
+            "QPushButton#forceStopButton { color: #ff5252; font-weight: bold; }"
+        )
+        row1.addWidget(stop_btn, stretch=1)
         row1.addWidget(
             _btn("Quick", "Cycle the advice style (quick / concise / verbose ...)",
                  command="toggle_style"),
@@ -196,6 +207,14 @@ class CompactCoachPanel(CoachTab):
         row2 = QHBoxLayout()
         row2.setSpacing(6)
         row2.addWidget(_btn("Voice", "Cycle the TTS voice", command="cycle_voice"), stretch=1)
+        if self._developer_mode:
+            # Dev machines only: cycle through the online gateway's served
+            # models (same pipe command the classic tab's Model button sends).
+            row2.addWidget(
+                _btn("Model", "Cycle through the online gateway's models",
+                     command="cycle_model"),
+                stretch=1,
+            )
         row2.addWidget(
             _btn("Debug Report", "Capture logs + game state and file a bug report",
                  on_click=self._submit_debug_report),

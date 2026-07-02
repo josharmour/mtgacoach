@@ -383,6 +383,7 @@ def get_models_for_mode(mode: str) -> list[tuple[str, Optional[str]]]:
 
 
 THINKING_MODEL_PREFERENCE = [
+    "deepseek-v4-flash",
     "claude-opus-4-6",
     "claude-sonnet-4-5-20250929",
     "gemini-2.5-pro",

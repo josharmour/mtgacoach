@@ -124,7 +124,8 @@ def test_submit_option_dispatches_by_id_scheme():
     }
     d = build_pending_decision(poll, resolve_name=_resolver)
     assert submit_option(bridge, d, ["tgt:2"]) is True
-    assert bridge.calls == [("targets", 2)]
+    # submit_targets now receives a per-slot list (one id per TargetSelection).
+    assert bridge.calls == [("targets", [2])]
 
 
 def test_submit_option_rejects_ids_outside_decision():

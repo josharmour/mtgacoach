@@ -113,7 +113,7 @@ def test_typed_path_submits_llm_choice_by_id(monkeypatch):
     eng = _engine(monkeypatch, bridge, planner)
     handled = eng._try_typed_decision_path(_state(), "decision_required")
     assert handled is True
-    assert bridge.submitted == [("targets", 2)]
+    assert bridge.submitted == [("targets", [2])]
 
 
 def test_typed_path_falls_back_deterministically_on_garbage_llm(monkeypatch):
@@ -123,7 +123,7 @@ def test_typed_path_falls_back_deterministically_on_garbage_llm(monkeypatch):
     handled = eng._try_typed_decision_path(_state(), "decision_required")
     assert handled is True
     # Deterministic pick = first option, still submitted BY ID.
-    assert bridge.submitted == [("targets", 2)]
+    assert bridge.submitted == [("targets", [2])]
 
 
 def test_typed_path_rejects_hallucinated_ids_then_falls_back(monkeypatch):
@@ -132,7 +132,7 @@ def test_typed_path_rejects_hallucinated_ids_then_falls_back(monkeypatch):
     eng = _engine(monkeypatch, bridge, planner)
     handled = eng._try_typed_decision_path(_state(), "decision_required")
     assert handled is True
-    assert bridge.submitted == [("targets", 2)]  # mechanical fallback
+    assert bridge.submitted == [("targets", [2])]  # mechanical fallback
 
 
 def test_typed_path_declines_actions_available(monkeypatch):
@@ -170,7 +170,7 @@ def test_typed_path_fsm_blocks_double_submit_and_exhausts(monkeypatch):
 
     # 1st call: submits.
     assert eng._try_typed_decision_path(_state(), "decision_required") is True
-    assert bridge.submitted == [("targets", 2)]
+    assert bridge.submitted == [("targets", [2])]
 
     # 2nd/3rd calls: window re-presented (same poll) → rejection counted,
     # resubmit allowed up to the cap.

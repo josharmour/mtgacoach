@@ -985,8 +985,7 @@ class ActionPlanner:
         for legal_action in legal_actions:
             lower = legal_action.lower()
             if lower.startswith("cast "):
-                if "[ok]" not in lower and not bridge_authoritative:
-                    continue
+                has_ok = "[ok]" in lower
 
                 if mana_pool is None:
                     try:
@@ -1008,41 +1007,64 @@ class ActionPlanner:
                     except Exception:
                         mana_pool = {}
 
-                if mana_pool and rules_engine_cls is not None:
-                    card_name = self._normalize_action_text(legal_action).replace("Cast ", "").strip()
-                    card_cost = ""
-                    card_hand_entry = None
-                    for card in game_state.get("hand", []):
-                        if card.get("name", "").lower() == card_name.lower():
-                            card_cost = card.get("mana_cost", "")
-                            card_hand_entry = card
-                            break
-                    if card_cost and not rules_engine_cls._can_afford(card_cost, mana_pool):
-                        # We log this but do NOT filter it out. 
-                        # The [OK] tag from MTGA is the source of truth.
-                        # If our local RulesEngine disagrees, the LLM will still see the [OK] 
-                        # and can make the correct decision.
-                        logger.warning(
-                            "RulesEngine mismatch: [OK] spell %s flagged as unaffordable by local check (cost=%s). Trusting MTGA.",
+                card_name = self._normalize_action_text(legal_action).replace("Cast ", "").strip()
+                card_cost = ""
+                card_hand_entry = None
+                for card in game_state.get("hand", []):
+                    if card.get("name", "").lower() == card_name.lower():
+                        card_cost = card.get("mana_cost", "")
+                        card_hand_entry = card
+                        break
+
+                # Local affordability: True/False when cost + pool are known,
+                # else None (couldn't determine).
+                local_affordable = None
+                if card_cost and mana_pool and rules_engine_cls is not None:
+                    local_affordable = rules_engine_cls._can_afford(card_cost, mana_pool)
+
+                # Payability gate (#377). "[OK]" is appended only when MTGA
+                # found an autotap solution — a real mana-payment path. WITHOUT
+                # "[OK]" the bridge has no autotap solution, so a hard cast hits
+                # PayCosts with nothing to pay and rolls back, retrying until
+                # the rollback suppressor trips ("it tried to cast X, we didn't
+                # have the mana"). Keep an un-[OK] cast only when our own mana
+                # check says we can pay it; drop it when BOTH solvers agree
+                # there's no mana path. When the cost is unknowable, fall back
+                # to the old bridge-trusting behavior so we don't regress the
+                # "autopilot plays only a land and discards its hand" bug.
+                if not has_ok:
+                    if local_affordable is False:
+                        logger.info(
+                            "Dropping unpayable cast %s (no autotap solution, "
+                            "local check unaffordable, cost=%s)",
                             card_name,
                             card_cost,
                         )
-                        # Removed 'continue' to prevent filtering out valid [OK] spells
-
-
-                    # Block removal spells that would only have friendly
-                    # targets. Casting them just forces the user to either
-                    # blow up their own permanent or cancel — neither is
-                    # worth the mana. See "Seam Rip with only my own
-                    # enchantment in play" self-destruct case.
-                    if card_hand_entry and self._removal_lacks_opponent_target(
-                        card_hand_entry, game_state
-                    ):
-                        logger.info(
-                            "Filtering self-harming removal: %s (no legal opponent target)",
-                            card_name,
-                        )
                         continue
+                    if local_affordable is None and not bridge_authoritative:
+                        continue
+                elif local_affordable is False:
+                    # "[OK]" present but the local engine disagrees — trust
+                    # MTGA's autotap solver (it handles hybrid / phyrexian /
+                    # cost reductions / affinity the local check doesn't).
+                    logger.debug(
+                        "Cast %s: [OK]/autotap present but local check "
+                        "unaffordable — trusting bridge.",
+                        card_name,
+                    )
+
+                # Block removal spells that would only have friendly targets.
+                # Casting them just forces the user to either blow up their own
+                # permanent or cancel — neither is worth the mana. See "Seam Rip
+                # with only my own enchantment in play" self-destruct case.
+                if card_hand_entry and self._removal_lacks_opponent_target(
+                    card_hand_entry, game_state
+                ):
+                    logger.info(
+                        "Filtering self-harming removal: %s (no legal opponent target)",
+                        card_name,
+                    )
+                    continue
 
             filtered.append(legal_action)
 
@@ -1537,7 +1559,116 @@ class ActionPlanner:
             )
         except Exception as e:
             logger.info(f"plan_decision_options LLM path failed: {e}")
+        if decision.request_type == "SelectTargets":
+            picked = self._targeting_fallback_pick(decision, game_state)
+            if picked:
+                logger.info(
+                    "plan_decision_options: controller-aware target fallback "
+                    f"picked {picked}"
+                )
+                return picked
         return self.deterministic_option_pick(decision)
+
+    # Mirror of autopilot._HARMFUL_SOURCE_ORACLE_PHRASES (kept local to
+    # avoid an action_planner→autopilot import cycle).
+    _HARMFUL_TARGET_ORACLE_PHRASES = (
+        "destroy target",
+        "exile target",
+        "sacrifice target",
+        "counter target",
+        "return target",
+        "opponent sacrifices target",
+        "damage to target",
+        "gets -",
+        "gets −",
+        "loses all abilities",
+        "loses flying",
+    )
+
+    def _targeting_fallback_pick(
+        self, decision: Any, game_state: dict[str, Any]
+    ) -> list[str]:
+        """Controller-aware fallback for SelectTargets when the LLM failed.
+
+        The blind ``opts[:n]`` pick targeted the user's OWN Shuri with
+        Depower (removal) live on 2026-07-01. When the source spell's
+        oracle reads as harmful, prefer the opponent's biggest threat;
+        when it reads as beneficial, prefer our own biggest creature.
+        Returns [] (defer to the blind pick) when the oracle text is
+        unknown — a wrong confident pick is worse than an arbitrary one
+        we can already see in bug reports.
+        """
+        candidates: list[int] = []
+        for o in decision.options:
+            if o.option_id.startswith("tgt:"):
+                try:
+                    candidates.append(int(o.option_id[4:]))
+                except ValueError:
+                    continue
+        if not candidates:
+            return []
+
+        local_seat = None
+        for p in game_state.get("players", []) or []:
+            if p.get("is_local"):
+                local_seat = p.get("seat_id")
+                break
+
+        battlefield: dict[int, dict[str, Any]] = {}
+        for card in game_state.get("battlefield", []) or []:
+            try:
+                iid = int(card.get("instance_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if iid:
+                battlefield[iid] = card
+
+        # Source spell oracle: match the decision's source label on the
+        # stack, else take the top of the stack (the spell awaiting targets).
+        stack = game_state.get("stack", []) or []
+        source_label = str(getattr(decision, "source_label", "") or "").strip().lower()
+        picked_entry = None
+        if source_label:
+            for entry in stack:
+                if str(entry.get("name") or "").strip().lower() == source_label:
+                    picked_entry = entry
+                    break
+        if picked_entry is None and stack:
+            picked_entry = stack[-1]
+        oracle = str((picked_entry or {}).get("oracle_text") or "").lower()
+        if not oracle:
+            return []
+        harmful = any(p in oracle for p in self._HARMFUL_TARGET_ORACLE_PHRASES)
+
+        def _power(iid: int) -> int:
+            try:
+                return int(battlefield.get(iid, {}).get("power") or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        own = [
+            iid for iid in candidates
+            if local_seat is not None
+            and (battlefield.get(iid, {}).get("controller_id")
+                 or battlefield.get(iid, {}).get("owner_seat_id")) == local_seat
+        ]
+        theirs = [
+            iid for iid in candidates
+            if iid in battlefield and iid not in own
+        ]
+
+        if harmful:
+            # Opponent's biggest threat; if the spell can only hit our own
+            # permanents (forced), throw away the least valuable one.
+            pool = sorted(theirs, key=_power, reverse=True) or sorted(own, key=_power)
+        else:
+            # Beneficial: our biggest creature; never buff the opponent's
+            # board just because it's the first candidate.
+            pool = sorted(own, key=_power, reverse=True) or sorted(theirs, key=_power)
+        if not pool:
+            return []
+        n = max(1, int(decision.min_select or 1))
+        return [f"tgt:{iid}" for iid in pool[:n]]
 
     def _llm_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         lines = [
@@ -1558,12 +1689,17 @@ class ActionPlanner:
         user_message = "\n".join(lines)
 
         try:
+            # Tighter than the general planning timeout: typed decisions
+            # (mulligan, targeting, selection) sit inside short MTGA action
+            # windows, and the deterministic fallback needs time to submit
+            # before the window closes (2026-07-01: mulligan window expired
+            # while the LLM call was still blocked).
             response = self._backend.complete(
                 self._DECISION_SYSTEM_PROMPT,
                 user_message,
                 512,
                 temperature=0.0,
-                request_timeout_s=self._timeout,
+                request_timeout_s=min(self._timeout, 12.0),
             )
         except TypeError:
             response = self._backend.complete(
@@ -1661,9 +1797,13 @@ class ActionPlanner:
             if a.startswith("play land:"):
                 return 100
             if a.startswith("cast "):
-                if ok_tagging_active and "[ok]" not in a:
-                    return 15  # below Pass: unpayable cast is a livelock trap
-                return 90
+                # Below Pass. This heuristic only runs when the planner's
+                # output was garbage — blind-casting then picks targets
+                # blindly too, and a wedged/rolled-back cast gets re-picked
+                # every priority window (Patriar's Humiliation spiral,
+                # 2026-07-01, burned the user's match timer). A missed cast
+                # costs one window; a blind cast can cost the match.
+                return 25 if (not ok_tagging_active or "[ok]" in a) else 15
             if a.startswith("declare attackers:") or a.startswith("attack with:"):
                 return 80
             if a.startswith("activate "):

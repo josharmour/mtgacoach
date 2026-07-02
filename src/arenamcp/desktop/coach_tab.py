@@ -460,6 +460,9 @@ class CoachTab(QWidget):
         button_row.addWidget(_group("Autopilot", [
             _btn("AP", "Toggle autopilot — plays the game for you via the "
                  "GRE bridge", command="toggle_autopilot"),
+            _btn("STOP", "Force-stop autopilot: halts it AND clears the "
+                 "in-flight plan/turn intent so re-enabling doesn't resume "
+                 "the same loop", command="force_stop"),
         ]))
 
         # Self-play (bots): stops the live coach to free the bridge port

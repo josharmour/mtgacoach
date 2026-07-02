@@ -32,6 +32,30 @@ class DecisionOption:
 
 
 @dataclass(frozen=True)
+class TargetSlot:
+    """One TargetSelection slot of a SelectTargetsRequest.
+
+    MTGA target requests can carry MULTIPLE slots (e.g. an Aura that
+    enchants your creature AND exiles an opponent's permanent on enter).
+    Each slot has its own legal-candidate set; a submit that fills only
+    one slot when several are required is silently rejected and the
+    request re-presents — the multi-target wedge (Sheltered by Ghosts,
+    Ethereal Armor). Submission must cover every unsatisfied slot.
+    """
+
+    target_idx: int
+    min_targets: int
+    max_targets: int
+    selected: int
+    candidate_ids: tuple[int, ...]
+
+    @property
+    def needs(self) -> int:
+        """How many more targets this slot still requires (>=0)."""
+        return max(0, self.min_targets - self.selected)
+
+
+@dataclass(frozen=True)
 class PendingDecision:
     request_id: tuple[int, int]  # (gameStateId, msgId); zeros when unknown
     request_type: str  # bridge enum/class name ("SelectTargets", ...)
@@ -41,6 +65,9 @@ class PendingDecision:
     can_pass: bool = False
     can_cancel: bool = False
     source_label: str = ""
+    # SelectTargets only: per-slot structure (empty for other families and
+    # for single-slot requests built from older plugin builds).
+    slots: tuple[TargetSlot, ...] = ()
 
     def option_ids(self) -> set[str]:
         return {o.option_id for o in self.options}
@@ -210,12 +237,37 @@ def _build_select_targets(
         )
     if not options:
         return None
-    min_sel, max_sel = 1, 1
-    selections = poll.get("target_selections") or []
-    if selections:
-        first = selections[0] or {}
-        min_sel = int(first.get("minTargets") or 1)
-        max_sel = int(first.get("maxTargets") or 1)
+
+    # Reconstruct per-slot structure so submission can cover EVERY slot a
+    # multi-target request requires (not just the first). The flat
+    # ``options`` list above stays for prompt/LLM presentation.
+    slots: list[TargetSlot] = []
+    for sel in poll.get("target_selections") or []:
+        sel = sel or {}
+        cand_ids: list[int] = []
+        cseen: set[int] = set()
+        for t in sel.get("targets") or []:
+            iid = int(t.get("targetInstanceId") or t.get("instanceId") or 0)
+            if iid and iid not in cseen:
+                cseen.add(iid)
+                cand_ids.append(iid)
+        slots.append(
+            TargetSlot(
+                target_idx=int(sel.get("targetIdx") or 0),
+                min_targets=int(sel.get("minTargets") or 1),
+                max_targets=int(sel.get("maxTargets") or 1),
+                selected=int(sel.get("selectedTargets") or 0),
+                candidate_ids=tuple(cand_ids),
+            )
+        )
+
+    if slots:
+        # Pick enough across all unsatisfied slots; single-slot stays 1/1.
+        min_sel = sum(s.needs for s in slots) or 1
+        max_sel = sum(max(0, s.max_targets - s.selected) for s in slots) or min_sel
+        max_sel = max(max_sel, min_sel)
+    else:
+        min_sel, max_sel = 1, 1
     return PendingDecision(
         request_id=request_id,
         request_type="SelectTargets",
@@ -224,6 +276,7 @@ def _build_select_targets(
         max_select=max_sel,
         can_cancel=can_cancel,
         source_label=source_label,
+        slots=tuple(slots),
     )
 
 
@@ -369,6 +422,16 @@ def decision_to_dict(decision: PendingDecision) -> dict[str, Any]:
         "can_pass": decision.can_pass,
         "can_cancel": decision.can_cancel,
         "source_label": decision.source_label,
+        "slots": [
+            {
+                "target_idx": s.target_idx,
+                "min_targets": s.min_targets,
+                "max_targets": s.max_targets,
+                "selected": s.selected,
+                "candidate_ids": list(s.candidate_ids),
+            }
+            for s in decision.slots
+        ],
     }
 
 
@@ -390,12 +453,74 @@ def decision_from_dict(data: dict[str, Any]) -> PendingDecision:
         can_pass=bool(data.get("can_pass")),
         can_cancel=bool(data.get("can_cancel")),
         source_label=str(data.get("source_label") or ""),
+        slots=tuple(
+            TargetSlot(
+                target_idx=int(s.get("target_idx") or 0),
+                min_targets=int(s.get("min_targets") or 1),
+                max_targets=int(s.get("max_targets") or 1),
+                selected=int(s.get("selected") or 0),
+                candidate_ids=tuple(int(i) for i in (s.get("candidate_ids") or [])),
+            )
+            for s in (data.get("slots") or [])
+        ),
     )
 
 
 # ---------------------------------------------------------------------------
 # Submission by option id
 # ---------------------------------------------------------------------------
+
+
+def _tgt_iid(option_id: str) -> Optional[int]:
+    if not option_id.startswith("tgt:"):
+        return None
+    try:
+        return int(option_id.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return None
+
+
+def expand_target_selection(
+    decision: PendingDecision, chosen_ids: list[str]
+) -> list[int]:
+    """Resolve a SelectTargets pick into one legal instance id per slot.
+
+    The planner chooses from the flat option list and may only name one
+    target even when the request has several slots (e.g. enchant-your-
+    creature + exile-opponent's-permanent). Submitting a single id leaves
+    the other slot empty → MTGA rejects → the request re-presents and the
+    autopilot wedges (the Sheltered by Ghosts / Ethereal Armor loop).
+
+    For every slot that still needs a target, prefer one of the planner's
+    chosen ids that is legal there; otherwise fall back to that slot's own
+    first candidate. Each id is used at most once so two slots can't
+    collapse onto the same target. Slots already satisfied are skipped.
+    """
+    preferred = [iid for iid in (_tgt_iid(o) for o in chosen_ids) if iid]
+
+    # No per-slot data (older plugin / single flat slot): preserve the
+    # historical single-target behavior.
+    if not decision.slots:
+        return preferred[:1]
+
+    used: set[int] = set()
+    out: list[int] = []
+    for slot in decision.slots:
+        if slot.needs <= 0:
+            continue
+        legal = set(slot.candidate_ids)
+        pick = next(
+            (iid for iid in preferred if iid in legal and iid not in used), None
+        )
+        if pick is None:
+            pick = next((iid for iid in slot.candidate_ids if iid not in used), None)
+        if pick is None:
+            continue  # slot has no free legal candidate; let the plugin decide
+        used.add(pick)
+        out.append(pick)
+    # If structure analysis produced nothing usable, don't silently submit
+    # empty — fall back to the planner's pick so single-target still works.
+    return out or preferred[:1]
 
 
 def submit_option(
@@ -432,7 +557,11 @@ def submit_option(
     if first.startswith("idx:"):
         return bool(bridge.submit_action_by_index(int(first.split(":", 1)[1])))
     if first.startswith("tgt:"):
-        return bool(bridge.submit_targets(int(first.split(":", 1)[1])))
+        # Cover every required slot, not just the first chosen target.
+        target_ids = expand_target_selection(decision, chosen)
+        if not target_ids:
+            return False
+        return bool(bridge.submit_targets(target_ids))
     if first.startswith("sel:"):
         ids = [int(o.split(":", 1)[1]) for o in chosen if o.startswith("sel:")]
         return bool(bridge.submit_selection(ids))

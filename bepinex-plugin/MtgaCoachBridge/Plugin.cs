@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -1590,7 +1591,32 @@ namespace MtgaCoachBridge
             var request = FindPendingInteraction();
             if (request is SelectTargetsRequest targetsReq)
             {
-                var targetInstanceId = (uint)cmd.Json.Value<int>("target_instance_id");
+                // Python may send a single id (target_instance_id, legacy) or a
+                // full per-slot list (target_instance_ids) for multi-target
+                // requests — e.g. an Aura that enchants your creature AND exiles
+                // an opponent's permanent. Each slot gets at most one of these
+                // ids; if none is legal for a slot we fall back to that slot's
+                // first legal target. Submitting one id for a 2-slot request
+                // left the other slot empty → MTGA rejected → the request
+                // re-presented and the autopilot wedged (Sheltered by Ghosts /
+                // Ethereal Armor). Cover every slot.
+                var preferredIds = new List<uint>();
+                var idsTok = cmd.Json["target_instance_ids"];
+                if (idsTok is JArray idsArr)
+                {
+                    foreach (var v in idsArr)
+                    {
+                        var pid = (uint)(int)v;
+                        if (pid != 0 && !preferredIds.Contains(pid)) preferredIds.Add(pid);
+                    }
+                }
+                var singleTok = cmd.Json["target_instance_id"];
+                if (singleTok != null && singleTok.Type != JTokenType.Null)
+                {
+                    var pid = (uint)singleTok.Value<int>();
+                    if (pid != 0 && !preferredIds.Contains(pid)) preferredIds.Add(pid);
+                }
+                uint targetInstanceId = preferredIds.Count > 0 ? preferredIds[0] : 0;
                 // Default to finalizing (UpdateTarget + SubmitTargets) so the
                 // "Take Action" / confirm button is pressed automatically.
                 // Callers that need to pair multiple targets before committing
@@ -1622,34 +1648,56 @@ namespace MtgaCoachBridge
                     foreach (var t in ts.Targets) ids.Add($"{t.TargetInstanceId}");
                     diagSlots.Add($"idx={ts.TargetIdx} min={ts.MinTargets} max={ts.MaxTargets} sel={ts.SelectedTargets} legal=[{string.Join(",", ids)}]");
                 }
-                _log.LogInfo($"SelectTargets shape (caller={targetInstanceId}): {diagSlots.Count} slot(s) | {string.Join(" | ", diagSlots)}");
+                _log.LogInfo($"SelectTargets shape (callers=[{string.Join(",", preferredIds)}]): {diagSlots.Count} slot(s) | {string.Join(" | ", diagSlots)}");
 
                 var filledSlots = new List<uint>();
+                var usedIds = new HashSet<uint>();
                 bool callerMatched = false;
+                int requiredSlots = 0;
+                int requiredFilled = 0;
                 foreach (var ts in targetsReq.TargetSelections)
                 {
+                    bool slotRequired = ts.MinTargets > 0 && ts.SelectedTargets < ts.MinTargets;
+                    if (slotRequired) requiredSlots++;
+
                     Target chosen = null;
-                    foreach (var t in ts.Targets)
+                    // Prefer one of Python's ids that is legal in THIS slot and
+                    // not already consumed by another slot.
+                    foreach (var pid in preferredIds)
                     {
-                        if (t.TargetInstanceId == targetInstanceId)
+                        if (usedIds.Contains(pid)) continue;
+                        foreach (var t in ts.Targets)
                         {
-                            chosen = t;
-                            callerMatched = true;
-                            break;
+                            if (t.TargetInstanceId == pid)
+                            {
+                                chosen = t;
+                                callerMatched = true;
+                                break;
+                            }
                         }
-                    }
-                    if (chosen == null && ts.Targets.Count > 0)
-                    {
-                        // Fall back to first legal target for this slot.
-                        chosen = ts.Targets[0];
+                        if (chosen != null) break;
                     }
                     if (chosen == null)
                     {
-                        // Slot has zero legal targets — skip; SubmitTargets will
-                        // either accept (if MinTargets=0) or reject and we'll
-                        // surface the failure as a non-OK response below.
+                        // Fall back to this slot's first legal, unused target.
+                        foreach (var t in ts.Targets)
+                        {
+                            if (!usedIds.Contains(t.TargetInstanceId))
+                            {
+                                chosen = t;
+                                break;
+                            }
+                        }
+                    }
+                    if (chosen == null)
+                    {
+                        // Slot has zero free legal targets — skip; SubmitTargets
+                        // will accept (if MinTargets=0) or reject, and we report
+                        // the partial fill honestly below.
                         continue;
                     }
+                    usedIds.Add(chosen.TargetInstanceId);
+                    if (slotRequired) requiredFilled++;
                     // Build a FRESH SelectTargetsResp message and invoke OnSubmit
                     // directly. SelectTargetsRequest.UpdateTarget mutates the
                     // request's shared _outboundMessage and calls Submit() —
@@ -1692,6 +1740,36 @@ namespace MtgaCoachBridge
                     filledSlots.Add(ts.TargetIdx);
                 }
 
+                // If all slots are already satisfied (selected >= min), skip
+                // SelectTargetsResp and just finalize. Avoids a race where
+                // the game state ID changes between the two OnSubmit calls,
+                // making SubmitTargetsReq's GameStateId stale — observed live
+                // 2026-06-18: Scales of Shale targeting loop.
+                bool allAlreadySatisfied = true;
+                foreach (var ts in targetsReq.TargetSelections)
+                {
+                    if (ts.MinTargets > 0 && ts.SelectedTargets < ts.MinTargets)
+                    {
+                        allAlreadySatisfied = false;
+                        break;
+                    }
+                }
+
+                if (allAlreadySatisfied && finalize && filledSlots.Count == 0)
+                {
+                    _log.LogInfo("All targets already selected — sending SubmitTargetsReq only");
+                    var commitMsg = new ClientToGREMessage
+                    {
+                        Type = ClientMessageType.SubmitTargetsReq,
+                        GameStateId = targetsReq.OriginalMessage.GameStateId,
+                        RespId = targetsReq.OriginalMessage.MsgId,
+                    };
+                    targetsReq.OnSubmit?.Invoke(commitMsg);
+                    lock (_interactionLock) { _lastKnownRequest = null; }
+                    cmd.SetResponse(new JObject { ["ok"] = true, ["submitted_type"] = "SelectTargets", ["target_instance_id"] = (int)targetInstanceId, ["already_selected"] = true, ["finalized"] = true });
+                    return;
+                }
+
                 if (filledSlots.Count == 0)
                 {
                     var legalIds = new List<string>();
@@ -1705,30 +1783,198 @@ namespace MtgaCoachBridge
 
                 if (!callerMatched)
                 {
-                    _log.LogWarning($"Caller's instance {targetInstanceId} did not match any slot; used per-slot defaults for {filledSlots.Count} slots");
+                    _log.LogWarning($"Caller ids [{string.Join(",", preferredIds)}] matched no slot; used per-slot defaults for {filledSlots.Count} slot(s)");
                 }
 
-                if (finalize)
+                // Honest commit: only finalize and report success when every
+                // REQUIRED slot got a target. Committing a partial selection
+                // (one slot of a two-target Aura) makes MTGA reject and
+                // re-present the request; reporting ok=true + nulling our cached
+                // request told Python it was consumed when the spell was still
+                // wedged on the stack, so the autopilot abandoned it.
+                bool allRequiredFilled = requiredFilled >= requiredSlots;
+
+                if (finalize && allRequiredFilled)
                 {
-                    // Fresh message — separate instance from the SelectTargetsResp
-                    // above so MTGA can't see a corrupted Type when serializing.
+                    // Two-phase commit. The GRE round-trips an UPDATED
+                    // SelectTargetsReq (new GameStateId + MsgId, SelectedTargets
+                    // bumped) after it processes our SelectTargetsResp; the real
+                    // client only sends SubmitTargetsReq from that updated
+                    // request (SelectTargetsWorkflow.ApplyInteractionInternal →
+                    // CanAutoSubmitTargets → SubmitTargets). Committing here
+                    // immediately with the ORIGINAL ids raced that round-trip:
+                    // the stale SubmitTargetsReq was dropped server-side, the
+                    // client workflow dismissed (has_pending went false), the
+                    // server kept waiting, and the cast rolled back on the
+                    // timer. Observed 2026-07-01 with Depower / Patriar's
+                    // Humiliation / Swords to Plowshares — always with 2+
+                    // legal candidates, because a sole candidate is
+                    // auto-targeted client-side and never reaches this path.
+                    var host = MtgaCoachHost.Instance;
+                    if (host != null)
+                    {
+                        host.StartCoroutine(DeferredSubmitTargets(
+                            cmd, targetsReq, (int)targetInstanceId,
+                            filledSlots.Count, requiredSlots, requiredFilled));
+                        return;
+                    }
+                    // No host (shouldn't happen): legacy immediate commit is
+                    // still better than dropping the interaction.
                     var commitMsg = new ClientToGREMessage
                     {
                         Type = ClientMessageType.SubmitTargetsReq,
                         GameStateId = targetsReq.OriginalMessage.GameStateId,
                         RespId = targetsReq.OriginalMessage.MsgId,
                     };
-                    _log.LogInfo($"SubmitTargets (direct): finalizing ({filledSlots.Count} slots)");
+                    _log.LogInfo($"SubmitTargets (direct): finalizing ({filledSlots.Count} slot(s)) [no-host fallback]");
                     targetsReq.OnSubmit?.Invoke(commitMsg);
                 }
+                else if (finalize)
+                {
+                    _log.LogWarning($"SubmitTargets: NOT finalizing — only {requiredFilled}/{requiredSlots} required slots filled; leaving request open for retry");
+                }
 
-                lock (_interactionLock) { _lastKnownRequest = null; }
-                cmd.SetResponse(new JObject { ["ok"] = true, ["submitted_type"] = "SelectTargets", ["target_instance_id"] = (int)targetInstanceId, ["slots_filled"] = filledSlots.Count, ["finalized"] = finalize });
+                if (allRequiredFilled)
+                {
+                    lock (_interactionLock) { _lastKnownRequest = null; }
+                }
+                cmd.SetResponse(new JObject
+                {
+                    ["ok"] = allRequiredFilled,
+                    ["submitted_type"] = "SelectTargets",
+                    ["target_instance_id"] = (int)targetInstanceId,
+                    ["slots_required"] = requiredSlots,
+                    ["slots_filled"] = filledSlots.Count,
+                    ["required_filled"] = requiredFilled,
+                    ["finalized"] = finalize && allRequiredFilled,
+                });
             }
             else
             {
                 cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = $"Pending is {request?.GetType().Name ?? "null"}, not SelectTargetsRequest" });
             }
+        }
+
+        /// <summary>
+        /// Phase 2 of target submission: wait (frame-polled, main thread) for
+        /// the GRE's updated SelectTargetsReq that acknowledges our
+        /// SelectTargetsResp, then send SubmitTargetsReq stamped with THAT
+        /// request's GameStateId/MsgId. Mirrors the real client's
+        /// click → server round-trip → auto-submit sequence.
+        /// </summary>
+        private IEnumerator DeferredSubmitTargets(
+            PipeCommand cmd,
+            SelectTargetsRequest originalReq,
+            int callerTargetId,
+            int slotsFilled,
+            int requiredSlots,
+            int requiredFilled)
+        {
+            // Budget must fit inside Python's 8s submit_targets pipe timeout.
+            const float timeoutS = 3.0f;
+            const float goneGraceS = 0.6f;
+            float start = Time.unscaledTime;
+            float goneSince = -1f;
+            uint sourceId = originalReq.SourceId;
+
+            JObject BuildResponse(bool ok, bool finalized, bool advanced)
+            {
+                return new JObject
+                {
+                    ["ok"] = ok,
+                    ["submitted_type"] = "SelectTargets",
+                    ["target_instance_id"] = callerTargetId,
+                    ["slots_required"] = requiredSlots,
+                    ["slots_filled"] = slotsFilled,
+                    ["required_filled"] = requiredFilled,
+                    ["finalized"] = finalized,
+                    ["advanced_without_commit"] = advanced,
+                };
+            }
+
+            while (Time.unscaledTime - start < timeoutS)
+            {
+                yield return null;
+
+                SelectTargetsRequest current = null;
+                try
+                {
+                    current = FindPendingInteraction() as SelectTargetsRequest;
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning($"DeferredSubmitTargets: poll failed: {ex.Message}");
+                }
+
+                if (current == null || current.SourceId != sourceId)
+                {
+                    // Request no longer presented — either the client already
+                    // auto-submitted once the selection landed, or the workflow
+                    // is mid-update. Give it a grace window before declaring
+                    // the interaction consumed.
+                    if (goneSince < 0f) goneSince = Time.unscaledTime;
+                    if (Time.unscaledTime - goneSince >= goneGraceS)
+                    {
+                        _log.LogInfo("DeferredSubmitTargets: request no longer pending — selection consumed");
+                        lock (_interactionLock) { _lastKnownRequest = null; }
+                        cmd.SetResponse(BuildResponse(ok: true, finalized: true, advanced: true));
+                        yield break;
+                    }
+                    continue;
+                }
+                goneSince = -1f;
+
+                if (ReferenceEquals(current, originalReq))
+                    continue; // GRE hasn't round-tripped the selection yet
+
+                bool satisfied = true;
+                foreach (var ts in current.TargetSelections)
+                {
+                    if (ts.MinTargets > 0 && ts.SelectedTargets < ts.MinTargets)
+                    {
+                        satisfied = false;
+                        break;
+                    }
+                }
+                if (!satisfied)
+                    continue;
+
+                var commitMsg = new ClientToGREMessage
+                {
+                    Type = ClientMessageType.SubmitTargetsReq,
+                    GameStateId = current.OriginalMessage.GameStateId,
+                    RespId = current.OriginalMessage.MsgId,
+                };
+                _log.LogInfo(
+                    "DeferredSubmitTargets: committing via updated request " +
+                    $"(gameStateId={current.OriginalMessage.GameStateId}, msgId={current.OriginalMessage.MsgId})");
+                current.OnSubmit?.Invoke(commitMsg);
+                lock (_interactionLock) { _lastKnownRequest = null; }
+                cmd.SetResponse(BuildResponse(ok: true, finalized: true, advanced: false));
+                yield break;
+            }
+
+            // Timeout: no updated request appeared. If the ORIGINAL request is
+            // still the pending one, its GameStateId is still current (the GRE
+            // never round-tripped), so the legacy immediate commit is correct
+            // here — this is the single-phase shape that historically worked.
+            SelectTargetsRequest lastSeen = null;
+            try { lastSeen = FindPendingInteraction() as SelectTargetsRequest; }
+            catch (Exception) { }
+            var commitTarget = (lastSeen != null && lastSeen.SourceId == sourceId) ? lastSeen : originalReq;
+            var lateCommit = new ClientToGREMessage
+            {
+                Type = ClientMessageType.SubmitTargetsReq,
+                GameStateId = commitTarget.OriginalMessage.GameStateId,
+                RespId = commitTarget.OriginalMessage.MsgId,
+            };
+            _log.LogWarning(
+                "DeferredSubmitTargets: no updated request within " +
+                $"{timeoutS:0.0}s — committing with last-seen ids " +
+                $"(gameStateId={commitTarget.OriginalMessage.GameStateId})");
+            commitTarget.OnSubmit?.Invoke(lateCommit);
+            lock (_interactionLock) { _lastKnownRequest = null; }
+            cmd.SetResponse(BuildResponse(ok: true, finalized: true, advanced: false));
         }
 
         // -------------------------------------------------------------------
@@ -2907,7 +3153,7 @@ namespace MtgaCoachBridge
                 string title = null;
                 try
                 {
-                    title = cardDb.CardTitleProvider.GetCardTitle(gid, false);
+                    title = cardDb.CardTitleProvider.GetCardTitle(gid, "en-US");
                 }
                 catch { }
 

@@ -1948,6 +1948,90 @@ class StandaloneCoach:
         if callable(emit_draft_state) and isinstance(draft_state, dict):
             emit_draft_state(draft_state)
 
+    def _reconcile_wedged_target(self, curr_state: dict[str, Any]) -> bool:
+        """Reconcile a bridge-idle reading against a wedged target decision.
+
+        The arbiter drops ``decision_required`` when the bridge is connected
+        and idle (the 2026-06-09 ghost-decision guard). But if the snapshot
+        shows a target/selection decision whose source spell is STILL on the
+        stack, "idle" may be a premature "cleared" from the plugin — the
+        multi-target wedge (Sheltered by Ghosts / Shardmage's Rescue), where
+        an Aura sits on the stack waiting for a target the bridge thinks it
+        already submitted.
+
+        Force ONE fresh live poll. If MTGA now reports a pending request, let
+        the trigger through (the overlay merely lagged). If the live poll is
+        also idle while the spell is still stuck, surface a manual-required
+        notice ONCE per wedged spell, then keep suppressing so we don't spam
+        autopilot/TTS.
+
+        Returns True to DROP the trigger (suppress), False to LET IT THROUGH.
+        """
+        if not hasattr(self, "_wedge_source"):
+            self._wedge_source: Optional[int] = None
+            self._wedge_since: float = 0.0
+            self._wedge_notified: bool = False
+
+        ctx = curr_state.get("decision_context") or {}
+        pending = str(curr_state.get("pending_decision") or "")
+        is_target_wait = (
+            str(ctx.get("type") or "") in ("target_selection", "select_n", "search")
+            or "Target" in pending
+            or "Select" in pending
+        )
+        if not is_target_wait:
+            return True  # nothing target-shaped to reconcile; drop as arbitered
+
+        try:
+            source_id = int(ctx.get("source_id") or 0)
+        except (TypeError, ValueError):
+            source_id = 0
+        stack_ids = {
+            int(c.get("instance_id") or 0)
+            for c in (curr_state.get("stack") or [])
+            if isinstance(c, dict)
+        }
+        if not source_id or source_id not in stack_ids:
+            # Source already resolved / left the stack → genuinely stale.
+            self._wedge_source = None
+            self._wedge_notified = False
+            return True
+
+        # Snapshot overlay may lag MTGA — force a fresh live poll.
+        bridge = getattr(self._bridge_poller, "_bridge", None)
+        if bridge is not None:
+            try:
+                live = bridge.get_pending_actions()
+            except Exception as e:
+                logger.debug(f"wedge reconcile live poll failed: {e}")
+                live = None
+            if live and live.get("has_pending"):
+                logger.info(
+                    "Arbiter reconcile: live bridge poll shows a pending request "
+                    "— letting decision_required through"
+                )
+                return False
+
+        # Genuine wedge: spell stuck on the stack, bridge can't see the request.
+        now = time.time()
+        if self._wedge_source != source_id:
+            self._wedge_source = source_id
+            self._wedge_since = now
+            self._wedge_notified = False
+        if (now - self._wedge_since) > 2.5 and not self._wedge_notified:
+            self._wedge_notified = True
+            name = str(ctx.get("source_card") or "a spell")
+            logger.warning(
+                "Autopilot wedged: %s is waiting for a target the bridge can't "
+                "submit — manual action needed",
+                name,
+            )
+            try:
+                self.ui.status("MANUAL", f"Select target for {name} in MTGA")
+            except Exception:
+                pass
+        return True
+
     def _coaching_loop(self) -> None:
         """Poll MCP for game state and provide coaching, with auto-draft detection."""
         logger.info("Coaching loop started")
@@ -2048,8 +2132,21 @@ class StandaloneCoach:
                 self._emit_pipe_snapshots(draft_state=draft_pack)
 
                 if draft_pack.get("is_active"):
-                    last_active_draft_at = time.time()
+                    pack_num = draft_pack.get("pack_number", 0)
+                    pick_num = draft_pack.get("pick_number", 0)
                     is_sealed = draft_pack.get("is_sealed", False)
+
+                    # Don't reset the active-draft timer on stale pack ghosts.
+                    # Once the draft ends, MTGA stops sending events but the old
+                    # pack data lives in is_active = True forever. Without this
+                    # guard the timer resets every loop and the draft-ended
+                    # detection at line ~2135 never fires — meaning the post-draft
+                    # pool analysis and deck suggestion are silently skipped.
+                    if not (
+                        pack_num == last_draft_pack and pick_num == last_draft_pick
+                        and in_draft_mode
+                    ):
+                        last_active_draft_at = time.time()
 
                     if is_sealed:
                         # SEALED MODE
@@ -2773,11 +2870,19 @@ class StandaloneCoach:
                                 self._bridge_poller and self._bridge_poller.connected
                             )
                             if arbitrate(curr_state, bridge_connected=_bridge_up) is None:
+                                # Bridge idle — but if a spell is wedged on the
+                                # stack waiting for a target, reconcile before
+                                # dropping (multi-target wedge recovery).
+                                if self._reconcile_wedged_target(curr_state):
+                                    logger.info(
+                                        "Arbiter: no real decision (bridge connected "
+                                        "and idle) — dropping decision_required"
+                                    )
+                                    continue
                                 logger.info(
-                                    "Arbiter: no real decision (bridge connected "
-                                    "and idle) — dropping decision_required"
+                                    "Arbiter reconcile: wedged target decision is "
+                                    "live — proceeding with decision_required"
                                 )
-                                continue
                             pending = curr_state.get("pending_decision")
                             if (
                                 pending == "Action Required"
@@ -5553,9 +5658,9 @@ class StandaloneCoach:
         next_idx = (current_idx + 1) % len(models)
         display_name, new_model = models[next_idx]
 
-        self.set_backend(provider, new_model)
+        self.set_backend(mode, new_model)
         label = display_name if display_name != "Default" else "(default)"
-        self.ui.log(f"\n[MODEL] {provider} -> {label}\n")
+        self.ui.log(f"\n[MODEL] {mode} -> {label}\n")
 
 
     def _on_style_toggle_hotkey(self) -> None:

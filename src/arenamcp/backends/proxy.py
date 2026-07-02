@@ -91,10 +91,11 @@ class ProxyBackend:
         """Create a backend configured for online mode (mtgacoach.com)."""
         return cls(
             # The api.mtgacoach.com gateway (LiteLLM on the NAS) owns model
-            # routing; gemma-4-31b-it is the eval-validated coach model
-            # there. The gateway also aliases legacy gemma-4-12b-it requests
-            # from older clients onto the 31B.
-            model=model or "gemma-4-31b-it",
+            # routing; nemotron-3-super is the model actually served on
+            # baremetal (2026-07-01). The gateway still aliases legacy
+            # gemma-4-31b-it / gemma-4-12b-it / deepseek-v4-flash requests
+            # from older clients onto it.
+            model=model or "nemotron-3-super",
             base_url=ONLINE_BASE_URL,
             api_key=license_key,
         )
@@ -130,11 +131,18 @@ class ProxyBackend:
                 key = self._api_key or "ollama"
                 client_headers = get_client_headers() if url == ONLINE_BASE_URL else None
 
+                # max_retries=0: the SDK's default (2) honors Retry-After
+                # headers between attempts, and those sleeps are NOT capped
+                # by the request timeout — a gateway 502 with Retry-After: 60
+                # wedged one decision call for 2+ minutes while the mulligan
+                # window flew by (2026-07-01). Real-time coaching would rather
+                # fail fast and let the trigger/fallback layer decide.
                 self._client = OpenAI(
                     base_url=url,
                     api_key=key,
                     default_headers=client_headers,
                     timeout=self._CLIENT_HARD_TIMEOUT_S,
+                    max_retries=0,
                 )
             except ImportError:
                 raise ImportError("openai package required: pip install openai")

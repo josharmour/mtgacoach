@@ -63,6 +63,7 @@ class CardEvaluation:
     # Keys are normalized WUBRG pair strings like "WU", "BG".
     per_pair_scores: dict[str, float] = field(default_factory=dict)
     best_pair: Optional[str] = None
+    alsa: Optional[float] = None
 
 
 def get_deck_colors(
@@ -437,6 +438,33 @@ def evaluate_pack(
     # Affinity per pair based on user commitment + format strength
     pair_affinities = _compute_pair_affinities(commitment, pair_stats)
 
+    # Color-commitment discipline (fixes #375 — "all colors suggested, never
+    # centralizes"). The commitment affinity used to be scaled by
+    # pick_depth/45 (~0.1–0.3), a whisper next to a card's raw 17lands score
+    # (~50–60), so every pick chased the strongest card and its own colors.
+    # Ramp the weight so we stay open early but commit hard by mid-pack: by
+    # pick ~6 the committed pair dominates ties, steering the pool onto two
+    # colors. A genuine bomb can still pull a pivot early or by a wide margin.
+    if pick_depth <= 2:
+        commit_weight = 0.15      # P1P1–P1P3: take the best card, stay open
+    elif pick_depth <= 5:
+        commit_weight = 0.55
+    elif pick_depth <= 9:
+        commit_weight = 1.0
+    else:
+        commit_weight = 1.5
+
+    # Leading archetype = the pair the drafter is most committed to (used to
+    # frame advice once a lean exists, so the spoken pick references one pair
+    # instead of a different one every pick).
+    anchor_pair = None
+    if pick_depth >= 3 and pair_affinities:
+        anchor_pair = max(pair_affinities, key=pair_affinities.get)
+        # Require a real lean, not noise: the top pair must beat the field avg.
+        avg_aff = sum(pair_affinities.values()) / len(pair_affinities)
+        if pair_affinities[anchor_pair] <= avg_aff + 1.0:
+            anchor_pair = None
+
     # Baseline pair WR for score_card_for_pair multiplier
     if pair_stats:
         wrs = [s.win_rate for s in pair_stats.values() if s.games >= 50]
@@ -486,12 +514,25 @@ def evaluate_pack(
 
         # 17lands GIH win rate
         gih_wr = None
+        alsa = None
         if set_code and draft_stats:
             stats = draft_stats.get_draft_rating(card_name, set_code)
             if stats and stats.gih_wr:
                 gih_wr = stats.gih_wr
+                alsa = stats.alsa
                 base_score += gih_wr * 100
                 reasons.append(f"{int(gih_wr * 100)}% WR")
+
+        # ATA / ALSA Signal Detection (Open Lane)
+        if alsa is not None and pick_depth >= 4:
+            # Approximate current pick in the pack (14 cards per pack usually)
+            pick_num = (pick_depth % 14) + 1
+            if pick_num >= 5 and alsa < (pick_num - 1.5):
+                signal_bonus = (pick_num - alsa) * 3.0
+                if gih_wr and gih_wr > 0.55:
+                    signal_bonus *= 1.5
+                base_score += signal_bonus
+                reasons.append(f"open lane signal +{signal_bonus:.0f}")
 
         # Card type value (fallback/supplement to 17lands)
         if card:
@@ -563,21 +604,27 @@ def evaluate_pack(
                 pick_depth=pick_depth,
                 pair_popularity=pair_mult,
             )
-            # Weight by user's commitment affinity to this pair
-            weighted = pair_score + pair_affinities[pair] * (pick_depth / 45.0)
+            # Weight by user's commitment affinity to this pair, ramped so it
+            # actually steers picks onto two colors by mid-pack (see #375).
+            weighted = pair_score + pair_affinities[pair] * commit_weight
             per_pair[pair] = weighted
 
         # Best pair for this card
         best_pair = max(per_pair, key=per_pair.get) if per_pair else None
         final_score = per_pair[best_pair] if best_pair else base_score
 
-        if best_pair and pick_depth >= 3:
-            # Attach color context reason based on best pair
-            if card_colors.issubset(set(best_pair)):
-                if card_colors:
-                    reasons.append(f"fits {best_pair}")
-            elif card_colors & set(best_pair):
-                reasons.append(f"splash in {best_pair}")
+        # Frame the color reason against the drafter's committed archetype
+        # (anchor_pair) when there is one, so every pick references the SAME
+        # pair instead of a different one each time (#375). Fall back to the
+        # card's own best pair before a lean is established.
+        ref_pair = anchor_pair or best_pair
+        if ref_pair and pick_depth >= 3 and card_colors:
+            if card_colors.issubset(set(ref_pair)):
+                reasons.append(f"fits {ref_pair}")
+            elif card_colors & set(ref_pair):
+                reasons.append(f"splash in {ref_pair}")
+            elif anchor_pair:
+                reasons.append(f"off-color for {ref_pair}")
 
         tier = get_tier(final_score)
         best_reason = reasons[-1] if reasons else ""
@@ -592,6 +639,7 @@ def evaluate_pack(
             tier=tier,
             per_pair_scores=per_pair,
             best_pair=best_pair,
+            alsa=alsa,
         ))
 
     evaluations.sort(key=lambda e: e.score, reverse=True)
@@ -636,5 +684,7 @@ def format_pick_recommendation(
         gap = top1.score - runner.score
         # Only mention runner-up if it's close (within 8 points)
         if gap < 8:
-            return f"{pack_pick} Take {top1.name}{r1}. Close with {runner.name}."
+            # "Next best" is clearer than the old opaque "Close with" (#374):
+            # it's the runner-up pick if the top card is gone / you disagree.
+            return f"{pack_pick} Take {top1.name}{r1}. Next best: {runner.name}."
     return f"{pack_pick} Take {top1.name}{r1}."

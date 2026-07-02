@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = sys.platform == "win32"
 
+# Session-level kill switch. On Linux/Wayland PIL's ImageGrab shells out to
+# gnome-screenshot, which cannot capture the Proton/XWayland game window —
+# every attempt spawns a subprocess that spews Gtk/GdkPixbuf CRITICALs and
+# fails (live 2026-07-01, mid-match). Capture won't start working within a
+# session, so after the first total failure we stop trying.
+_CAPTURE_DEAD: bool = False
+
 PW_RENDERFULLCONTENT = 0x00000002
 
 
@@ -194,6 +201,10 @@ def capture_mtga_png(
       3. If the result is still a mostly-black frame, log and return
          whatever we have so the caller can react.
     """
+    global _CAPTURE_DEAD
+    if _CAPTURE_DEAD:
+        return None
+
     try:
         Image, ImageGrab = _import_pil()
     except Exception as e:
@@ -226,7 +237,11 @@ def capture_mtga_png(
         try:
             img = ImageGrab.grab()
         except Exception as e:
-            logger.error(f"All screenshot methods failed: {e}")
+            _CAPTURE_DEAD = True
+            logger.error(
+                f"All screenshot methods failed: {e} — disabling screen "
+                "capture for this session (vision fallback will be skipped)"
+            )
             return None
 
     if is_mostly_black(img):

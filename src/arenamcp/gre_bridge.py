@@ -528,7 +528,16 @@ class GREBridge:
             })
             if resp.get("ok"):
                 names = resp.get("names") or {}
-                return {int(k): str(v) for k, v in names.items() if v}
+                # MTGA's title provider returns "Unknown Card Title <id>"
+                # placeholders for loc entries it doesn't have. Caching those
+                # as real names is how unresolved grpIds leaked into prompts
+                # (#335) — treat them as unresolved so the id stays pending
+                # for other resolvers.
+                return {
+                    int(k): str(v)
+                    for k, v in names.items()
+                    if v and not str(v).lower().startswith("unknown card title")
+                }
         except (GREBridgeError, ValueError, TypeError) as e:
             logger.debug(f"resolve_grp_ids failed: {e}")
         return {}
@@ -819,15 +828,33 @@ class GREBridge:
             logger.warning(f"GRE bridge submit_numeric error: {e}")
         return False
 
-    def submit_targets(self, target_instance_id: int) -> bool:
-        """Submit target selection by instance ID."""
+    def submit_targets(self, target_instance_id: "int | list[int]") -> bool:
+        """Submit target selection by instance ID(s).
+
+        Accepts a single instance id or a list — one per TargetSelection
+        slot for multi-target requests (e.g. an Aura that enchants your
+        creature and exiles an opponent's permanent). ``target_instance_id``
+        (first id) is kept for older plugin builds; ``target_instance_ids``
+        carries the full per-slot list for plugins that understand it.
+        """
+        if isinstance(target_instance_id, (list, tuple, set)):
+            ids = [int(x) for x in target_instance_id if x]
+        else:
+            ids = [int(target_instance_id)] if target_instance_id else []
+        if not ids:
+            logger.warning("GRE bridge submit_targets: no target ids given")
+            return False
         try:
+            # timeout=8: the plugin defers the SubmitTargetsReq commit until
+            # the GRE round-trips the updated request (up to ~3s), so this
+            # call legitimately outlives the default 5s pipe read timeout.
             resp = self._send_safe({
                 "action": "submit_targets",
-                "target_instance_id": target_instance_id,
-            })
+                "target_instance_id": ids[0],
+                "target_instance_ids": ids,
+            }, timeout=8.0)
             if resp.get("ok"):
-                logger.info(f"GRE bridge submitted target: instance_id={target_instance_id}")
+                logger.info(f"GRE bridge submitted target(s): instance_ids={ids}")
                 return True
             logger.warning(f"GRE bridge submit_targets failed: {resp.get('error')}")
         except GREBridgeError as e:

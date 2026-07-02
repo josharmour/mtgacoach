@@ -53,7 +53,11 @@ def test_fallback_never_picks_unpayable_cast_when_ok_tagging_active():
         "Pass",
     ]
     picked = ActionPlanner._pick_preferred_legal_action(legal)
-    assert picked == "Cast Ruthless Negotiation [OK]"
+    # 2026-07-01 policy change: the blind fallback never casts at all —
+    # a blind cast picks blind targets and re-arms wedge spirals
+    # (Patriar's Humiliation). Pass beats every cast here.
+    assert picked == "Pass"
+    assert picked != "Cast Momentum Breaker"
 
 
 def test_fallback_prefers_pass_over_unpayable_cast():
@@ -64,10 +68,18 @@ def test_fallback_prefers_pass_over_unpayable_cast():
     assert picked != "Cast Momentum Breaker"
 
 
-def test_fallback_unchanged_without_ok_tagging():
-    # Log-fallback mode has no [OK] tags at all — keep legacy behavior.
+def test_fallback_never_blind_casts_even_without_ok_tagging():
+    # 2026-07-01: blind casts are off the fallback menu in every mode —
+    # they pick blind targets and re-arm wedge spirals.
     legal = ["Cast Shock", "Pass"]
-    assert ActionPlanner._pick_preferred_legal_action(legal) == "Cast Shock"
+    assert ActionPlanner._pick_preferred_legal_action(legal) == "Pass"
+
+
+def test_fallback_casts_only_when_nothing_safer_exists():
+    # With no Pass/land available a cast is still allowed (some windows
+    # are cast-or-nothing).
+    legal = ["Cast Shock [OK]", "Cast Momentum Breaker"]
+    assert ActionPlanner._pick_preferred_legal_action(legal) == "Cast Shock [OK]"
 
 
 def test_select_target_legal_under_target_selection_context():
@@ -159,8 +171,12 @@ def _state(turn, **extra):
 
 def test_rolled_back_cast_hidden_from_planner(monkeypatch):
     eng = _engine(monkeypatch)
+    # Each rollback consumes the submission record (one submission = at
+    # most one rollback), so re-set it between notes like a real
+    # submit → rollback → resubmit → rollback cycle.
     eng._last_cast_submitted = (3, "momentum breaker")
     eng._note_cast_rollback("PayCosts cancelled (test)")
+    eng._last_cast_submitted = (3, "momentum breaker")
     eng._note_cast_rollback("PayCosts cancelled (test)")
 
     legal = [
@@ -176,6 +192,21 @@ def test_rolled_back_cast_hidden_from_planner(monkeypatch):
 
     # Next turn the suppression lifts (fresh mana, fresh chances).
     assert "Cast Momentum Breaker" in eng._filter_rolled_back_casts(legal, _state(4))
+
+
+def test_cast_rollback_game_limit_survives_turn_changes(monkeypatch):
+    # 2026-07-01: Patriar's Humiliation wedged at targeting, rolled back on
+    # the timer, and was re-picked on LATER turns — the per-turn key reset
+    # each time. After the game-wide limit, the cast stays suppressed.
+    eng = _engine(monkeypatch)
+    for turn in (3, 4, 5):
+        eng._last_cast_submitted = (turn, "patriar's humiliation")
+        eng._note_cast_rollback("timer rollback (test)")
+
+    legal = ["Cast Patriar's Humiliation [OK]", "Pass"]
+    filtered = eng._filter_rolled_back_casts(legal, _state(6))
+    assert "Cast Patriar's Humiliation [OK]" not in filtered
+    assert "Pass" in filtered
 
 
 def test_single_rollback_does_not_suppress(monkeypatch):

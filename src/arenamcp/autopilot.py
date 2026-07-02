@@ -358,7 +358,14 @@ class AutopilotEngine:
         # guards never trip; the cycle ran at machine speed and locked the
         # user out of the UI).
         self._cast_rollback_counts: dict[tuple[int, str], int] = {}
+        # Game-wide rollback totals by card name: a cast that keeps rolling
+        # back on DIFFERENT turns is the same livelock stretched out (live
+        # 2026-07-01: Patriar's Humiliation wedged at targeting, rolled back
+        # on the timer, and was re-picked the next turn — the per-turn key
+        # above reset each time).
+        self._cast_rollback_totals: dict[str, int] = {}
         self._last_cast_submitted: Optional[tuple[int, str]] = None
+        self._last_cast_submitted_ts: float = 0.0
         self._max_seen_turn: int = 0
         self._window_first_seen_at: float = 0.0
         self._given_up_window_sig: Optional[tuple[Any, ...]] = None
@@ -911,9 +918,19 @@ class AutopilotEngine:
                 controller = card.get("controller_id") or card.get("owner_seat_id")
                 break
 
-        # Opponent-controlled sole target → always safe to auto-submit.
+        # Opponent-controlled sole target: only auto-submit when
+        # the source spell is harmful to the opponent's permanent.
+        # When the opponent is casting a buff on their own thing, we
+        # should not confirm it for them.
         if local_seat is not None and controller is not None and controller != local_seat:
-            return only_id
+            if self._source_spell_is_harmful_to_target(game_state, snap_resp, live_resp):
+                return only_id
+            logger.info(
+                f"Autopilot: declining auto-submit for target {only_id} — "
+                "sole candidate is opponent-controlled but the source spell "
+                "looks beneficial to the opponent. Letting the LLM decide."
+            )
+            return None
 
         # Self-controlled (or unknown controller): only auto-submit when
         # the source spell's oracle text reads as a positive / beneficial
@@ -1070,6 +1087,10 @@ class AutopilotEngine:
     # planner for the rest of the turn — it cannot complete and re-trying
     # is the engine of the cast→cancel→re-cast livelock.
     _CAST_ROLLBACK_LIMIT = 2
+    # Across turns: the same cast wedging on different turns is the same
+    # livelock; after this many total rollbacks the cast is off the menu
+    # for the rest of the game.
+    _CAST_ROLLBACK_GAME_LIMIT = 3
     # auto_respond escapes allowed per turn. Each new gameStateId makes a
     # new window signature, so the old once-per-window guard allowed an
     # escape every cycle of a cross-window loop — i.e. forever.
@@ -1084,10 +1105,15 @@ class AutopilotEngine:
         if not last:
             return
         self._cast_rollback_counts[last] = self._cast_rollback_counts.get(last, 0) + 1
+        self._cast_rollback_totals[last[1]] = self._cast_rollback_totals.get(last[1], 0) + 1
         n = self._cast_rollback_counts[last]
         logger.warning(
-            f"Cast rollback #{n} for {last[1]!r} (turn {last[0]}): {why}"
+            f"Cast rollback #{n} for {last[1]!r} (turn {last[0]}, "
+            f"game total {self._cast_rollback_totals[last[1]]}): {why}"
         )
+        # One submission = at most one rollback; clear so a later detection
+        # pass can't double-count the same wedge.
+        self._last_cast_submitted = None
 
     @staticmethod
     def _plain_card_name(text: str) -> str:
@@ -1108,7 +1134,9 @@ class AutopilotEngine:
         complete with the current resources; offering it to the planner
         again just re-arms the livelock (live 2026-06-09).
         """
-        if not legal_actions or not self._cast_rollback_counts:
+        if not legal_actions or not (
+            self._cast_rollback_counts or self._cast_rollback_totals
+        ):
             return legal_actions
         turn = int((game_state.get("turn") or {}).get("turn_number", 0) or 0)
         out: list[str] = []
@@ -1122,6 +1150,15 @@ class AutopilotEngine:
                     logger.info(
                         f"Suppressing legal action {la!r} — cast rolled back "
                         f"{self._CAST_ROLLBACK_LIMIT}+ times this turn"
+                    )
+                    continue
+                if (
+                    self._cast_rollback_totals.get(name, 0)
+                    >= self._CAST_ROLLBACK_GAME_LIMIT
+                ):
+                    logger.info(
+                        f"Suppressing legal action {la!r} — cast rolled back "
+                        f"{self._CAST_ROLLBACK_GAME_LIMIT}+ times this game"
                     )
                     continue
             out.append(la)
@@ -1704,6 +1741,31 @@ class AutopilotEngine:
         self._confirm_event.set()  # Unblock any waiting
         self._skip_event.set()
 
+    def force_stop(self) -> None:
+        """Panic button: abort in-flight work and drop all queued intent.
+
+        Wired to the UI's Force Stop control for autopilot spirals
+        (repeated cast/target loops). The caller also disables autopilot;
+        this clears engine-side momentum — current plan, the planner's
+        locked turn memo/intent, and the per-request submission FSM — so
+        nothing resumes or re-locks the same doomed plan when autopilot
+        is re-enabled.
+        """
+        logger.warning("Autopilot FORCE STOP requested")
+        self._abort_event.set()
+        self._confirm_event.set()
+        self._skip_event.set()
+        self._current_plan = None
+        self._state = AutopilotState.IDLE
+        try:
+            self._request_tracker.reset()
+        except Exception:
+            pass
+        planner = getattr(self, "_planner", None)
+        if planner is not None:
+            planner._turn_memo = None
+            planner._turn_intent = None
+
     def _clear_events(self) -> None:
         """Clear all confirmation events."""
         self._confirm_event.clear()
@@ -1825,10 +1887,39 @@ class AutopilotEngine:
                 # Turn counter went backwards → new match. Drop per-match
                 # livelock memories.
                 self._cast_rollback_counts.clear()
+                self._cast_rollback_totals.clear()
                 self._last_cast_submitted = None
                 self._runaway_tripped_turn = None
                 self._request_tracker.reset()
             self._max_seen_turn = max(self._max_seen_turn, turn_num)
+
+            # Silent-rollback detection: we submitted a cast, and the SAME
+            # cast is being offered again in a later priority window while
+            # nothing of ours sits on the stack. The 2026-07-01 wedges rolled
+            # back on MTGA's action timer with no cancel/escape event on our
+            # side, so only this re-offer signature reveals them. The 5s
+            # floor keeps stale snapshots from the submission window itself
+            # from counting.
+            last_cast = self._last_cast_submitted
+            if (
+                last_cast is not None
+                and time.monotonic() - self._last_cast_submitted_ts > 5.0
+            ):
+                offered = {
+                    self._plain_card_name(a.strip()[5:]).lower()
+                    for a in self._get_legal_actions(game_state)
+                    if a.lower().strip().startswith("cast ")
+                }
+                if last_cast[1] in offered:
+                    stack_owned = any(
+                        isinstance(c, dict)
+                        and str(c.get("name") or "").strip().lower() == last_cast[1]
+                        for c in (game_state.get("stack") or [])
+                    )
+                    if not stack_owned:
+                        self._note_cast_rollback(
+                            "cast re-offered in a later window (timer rollback)"
+                        )
 
             # Runaway protection: once tripped, stand down for the rest of
             # the turn no matter how many triggers fire. Self-clears on the
@@ -2806,6 +2897,7 @@ class AutopilotEngine:
                             pre_turn_num,
                             action.card_name.strip().lower(),
                         )
+                        self._last_cast_submitted_ts = time.monotonic()
 
                 # --- 4. VERIFYING ---
                 action_verified = True
@@ -4763,7 +4855,27 @@ class AutopilotEngine:
         # Use the right bridge method based on request type
         success = False
         if "SelectTargets" in req_class:
-            success = self._gre_bridge.submit_targets(target_id)
+            # Multi-slot coverage: an Aura may need a second target (e.g.
+            # exile an opponent's permanent) the name lookup didn't resolve.
+            # Build the per-slot decision and cover every required slot so
+            # we don't submit one id and wedge on the unfilled slot.
+            target_ids = [target_id]
+            try:
+                from arenamcp.decisions import (
+                    build_pending_decision,
+                    expand_target_selection,
+                )
+
+                decision = build_pending_decision(pending)
+                if decision is not None and len(decision.slots) > 1:
+                    covered = expand_target_selection(
+                        decision, [f"tgt:{target_id}"]
+                    )
+                    if covered:
+                        target_ids = covered
+            except Exception as e:
+                logger.debug(f"select_target multi-slot expand failed: {e}")
+            success = self._gre_bridge.submit_targets(target_ids)
         else:
             success = self._gre_bridge.submit_selection([target_id])
 
