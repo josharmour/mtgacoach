@@ -1805,9 +1805,15 @@ class ActionPlanner:
                 # costs one window; a blind cast can cost the match.
                 return 25 if (not ok_tagging_active or "[ok]" in a) else 15
             if a.startswith("declare attackers:") or a.startswith("attack with:"):
-                return 80
+                # Below Pass for the same reason as casts: a blind attack-all
+                # when the planner failed can throw the board away.
+                return 24
             if a.startswith("activate "):
-                return 70
+                # Below Pass: a blind activation opens a targeting window that
+                # then also gets answered blindly — live 2026-07-02, the 403'd
+                # planner auto-picked "Activate Ability: Mutagen" and the
+                # blind target fallback buffed the OPPONENT's creature (#387).
+                return 23
             if a.startswith("select target:"):
                 return 60
             if "choose: play" in a or "choose: draw" in a:

@@ -82,6 +82,17 @@ def test_fallback_casts_only_when_nothing_safer_exists():
     assert ActionPlanner._pick_preferred_legal_action(legal) == "Cast Shock [OK]"
 
 
+def test_fallback_never_blind_activates_or_attacks():
+    # 2026-07-02 (#387): the 403'd planner auto-picked "Activate Ability:
+    # Mutagen", opening a targeting window that was then answered blindly
+    # (buffed the opponent's creature). Blind activations and blind
+    # attack-alls sit below Pass, same as casts.
+    legal = ["Activate Ability: Mutagen [OK]", "Pass"]
+    assert ActionPlanner._pick_preferred_legal_action(legal) == "Pass"
+    legal = ["Declare Attackers: all", "Pass"]
+    assert ActionPlanner._pick_preferred_legal_action(legal) == "Pass"
+
+
 def test_select_target_legal_under_target_selection_context():
     """'target_selection' decision context must accept select_target plans —
     the substring heuristic missed this pairing and dropped valid target
