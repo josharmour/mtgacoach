@@ -1016,6 +1016,23 @@ class ActionPlanner:
                         card_hand_entry = card
                         break
 
+                # X-cost spells are off the autopilot menu for now: the
+                # "Select a value for X" casting-time window is not
+                # discoverable through the bridge (FindPendingInteraction
+                # returns nothing), so autopilot can neither choose X nor
+                # cancel — live 2026-07-02, Silkguard resolved with X=0
+                # (wasted) and Steelbane Hydra wedged the client on the X
+                # slider until the user clicked Cancel. The coach may still
+                # ADVISE these casts; the user makes them manually.
+                if card_cost and "{X}" in card_cost.upper().replace(" ", ""):
+                    logger.info(
+                        "Dropping X-cost cast %s from autopilot (cost=%s): "
+                        "bridge cannot drive the X chooser",
+                        card_name,
+                        card_cost,
+                    )
+                    continue
+
                 # Local affordability: True/False when cost + pool are known,
                 # else None (couldn't determine).
                 local_affordable = None
