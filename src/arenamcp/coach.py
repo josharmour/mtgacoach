@@ -556,6 +556,11 @@ CRITICAL MANA RULES:
 - NEVER count lands in hand as available mana. A Plains in hand produces 0 mana until played.
 - If a card shows [OK], you already have enough mana. Don't suggest paying extra life/resources for more mana.
 - RESOURCE EFFICIENCY: Don't waste life or mana. If you can cast a spell with current mana, don't pay extra.
+- NEVER advise "developing mana toward" a spell that is already [OK] — if it's castable now, say to cast it NOW (after the free land drop if available).
+
+STRATEGIC PRIORITIES:
+- When the opponent's board is wider or grew by multiple creatures this turn, prioritize interaction (removal, profitable blocks, combat tricks) over advancing your own plan.
+- At low life (below ~15), block with large or indestructible creatures to cut incoming damage — an indestructible blocker loses nothing by blocking.
 - The "sources:" display shows what mana EACH source can produce (e.g., "{U/G}" means one source producing U OR G, not both).
 - If ALL cards show [NEED X], say "pass priority" - you cannot cast anything.
 

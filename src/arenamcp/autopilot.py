@@ -5899,6 +5899,13 @@ class AutopilotEngine:
                             ActionType.SELECT_N,
                             ActionType.SEARCH_LIBRARY,
                             ActionType.SELECT_COUNTERS,
+                            # SELECT_TARGET was missing here — a stale
+                            # select_target vs a live DeclareAttackers window
+                            # fell through to MANUAL REQUIRED and burned the
+                            # user's whole attack step (live 2026-07-02:
+                            # Nesting Grounds counter-move re-planned after it
+                            # had already resolved; no attack was declared).
+                            ActionType.SELECT_TARGET,
                         )
                     )
                     is_displaced_pass = (

@@ -126,13 +126,23 @@ def main() -> int:
 
     app.setApplicationName("mtgacoach")
     app.setOrganizationName("mtgacoach")
-    app.setDesktopFileName("mtgacoach.desktop")
+    # Base name WITHOUT the .desktop suffix (Qt convention). On Wayland this
+    # becomes the window app_id; GNOME shows a taskbar/dock icon only when a
+    # matching mtgacoach.desktop file is installed (see scripts/ install
+    # helper) — setWindowIcon alone is not enough there.
+    app.setDesktopFileName("mtgacoach")
 
     from PySide6.QtGui import QIcon
     from .runtime import get_app_root
-    icon_path = Path(get_app_root()) / "assets" / "icon.png"
-    if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
+    root = Path(get_app_root())
+    for candidate in (
+        root / "assets" / "icon.png",
+        root / "mtga_coach.ico",
+        root / "icon.ico",
+    ):
+        if candidate.exists():
+            app.setWindowIcon(QIcon(str(candidate)))
+            break
 
     apply_theme(app, load_saved_theme())
 

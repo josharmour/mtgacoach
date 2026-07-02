@@ -6125,7 +6125,22 @@ Examples:
             logger.error(f"Fatal: {e}")
             pipe.error(str(e))
             sys.exit(1)
-        return
+        # Pipe-mode restart = full process restart: the desktop frontend
+        # respawns us on exit (fresh interpreter, fresh code from disk).
+        # Plain `return` left the process half-dead when any non-daemon
+        # thread (bridge poller, TTS glue) survived run_forever — the
+        # frontend never saw an exit, so the Restart Coach button did
+        # nothing. Force the exit.
+        try:
+            coach.stop()
+        except Exception:
+            pass
+        logger.info(
+            "Pipe-mode coach exiting (restart_requested=%s)",
+            coach._restart_requested,
+        )
+        logging.shutdown()
+        os._exit(0)
 
     if args.show_log:
         print(f"Log: {LOG_FILE}")

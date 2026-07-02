@@ -1871,7 +1871,12 @@ namespace MtgaCoachBridge
             int requiredFilled)
         {
             // Budget must fit inside Python's 8s submit_targets pipe timeout.
-            const float timeoutS = 3.0f;
+            // 1.2s (was 3.0): when the GRE does round-trip an updated request
+            // it lands within a few frames; multi-slot fills we authored
+            // ourselves often get no round-trip at all and were eating the
+            // full window before the (correct) legacy commit fired — observed
+            // live 2026-07-02 as back-to-back 3s stalls on Nesting Grounds.
+            const float timeoutS = 1.2f;
             const float goneGraceS = 0.6f;
             float start = Time.unscaledTime;
             float goneSince = -1f;
