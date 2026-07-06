@@ -46,7 +46,8 @@ and macOS — one tool that manages an isolated Python environment for you.
 
 # 2. Install (or update) mtgacoach:
 uv tool install --force \
-  https://github.com/josharmour/mtgacoach/releases/latest/download/arenamcp-py3-none-any.whl
+  https://github.com/josharmour/mtgacoach/releases/download/v2.7.1/arenamcp-2.7.1-py3-none-any.whl
+# (newer versions: grab the .whl URL from the latest release page)
 
 # 3. Run:
 mtgacoach-desktop     # the app (with the Repair tab)
