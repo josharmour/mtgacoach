@@ -656,16 +656,7 @@ def detect_runtime_state() -> RuntimeState:
     plugin_build = find_plugin_dll()
     plugin_built = plugin_build is not None
 
-    bepinex_bundle: Optional[str] = None
-    for subdir in ("third_party", "assets"):
-        bundle_dir = app_root / subdir / "BepInEx"
-        if bundle_dir.is_dir():
-            bepinex_bundle = str(bundle_dir)
-            break
-        bundle_zip = app_root / subdir / "BepInEx.zip"
-        if bundle_zip.exists():
-            bepinex_bundle = str(bundle_zip)
-            break
+    bepinex_bundle = find_bepinex_bundle()
 
     restart_mtga_required = _restart_mtga_required(
         player_log=player_log_path,
@@ -821,6 +812,28 @@ def install_bepinex(mtga_dir: str) -> str:
     _record_config_mtimes(mtga_dir)
 
     return str(target_dir)
+
+
+def find_bepinex_bundle() -> Optional[str]:
+    """Locate the BepInEx bundle — packaged resource first so pip installs
+    can repair BepInEx without a repo checkout, then the dev-tree layouts."""
+    try:
+        from importlib import resources
+
+        packaged = resources.files("arenamcp.resources") / "bepinex"
+        if (packaged / "BepInEx").is_dir():
+            return str(packaged)
+    except Exception:
+        pass
+    app_root = Path(get_app_root())
+    for subdir in ("third_party", "assets"):
+        bundle_dir = app_root / subdir / "BepInEx"
+        if bundle_dir.is_dir():
+            return str(bundle_dir)
+        bundle_zip = app_root / subdir / "BepInEx.zip"
+        if bundle_zip.exists():
+            return str(bundle_zip)
+    return None
 
 
 def find_plugin_dll() -> Optional[Path]:
