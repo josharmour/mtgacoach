@@ -15,6 +15,11 @@ dependencies = [
     "sounddevice>=0.4.6",
     "numpy>=1.24.0",
     "keyboard>=0.13.5",
+    # The product IS the desktop app + online coach — these are not
+    # optional (pristine-install test 2026-07-06: a bare wheel install
+    # couldn't launch the GUI or reach the gateway).
+    "PySide6>=6.7.0",
+    "openai>=1.0.0",
 ]
 
 [project.optional-dependencies]
