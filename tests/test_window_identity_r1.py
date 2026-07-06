@@ -111,3 +111,43 @@ def test_prompt_legal_line_absent_when_no_effective_list():
     p = _planner()
     prompt = p._build_action_prompt(_tiny_state(), "decision_required", None)
     assert "EXCLUDED" not in prompt
+
+
+class _PollBridge:
+    connected = True
+
+    def __init__(self, poll):
+        self.poll = poll
+
+    def connect(self):
+        return True
+
+    def get_pending_actions(self):
+        return self.poll
+
+
+def test_live_pending_request_verification(monkeypatch):
+    # P1-5: a consumed PayCosts window must be detected before blind cancel.
+    eng = _engine(monkeypatch)
+
+    eng._gre_bridge = _PollBridge({"has_pending": False})
+    assert eng._live_pending_request_is("PayCosts") is False
+
+    eng._gre_bridge = _PollBridge(
+        {"has_pending": True, "request_class": "PayCostsRequest"}
+    )
+    assert eng._live_pending_request_is("PayCosts") is True
+
+    eng._gre_bridge = _PollBridge(
+        {"has_pending": True, "request_type": "SelectTargets"}
+    )
+    assert eng._live_pending_request_is("PayCosts") is False
+
+    class _DeadBridge:
+        connected = False
+
+        def connect(self):
+            return False
+
+    eng._gre_bridge = _DeadBridge()
+    assert eng._live_pending_request_is("PayCosts") is None

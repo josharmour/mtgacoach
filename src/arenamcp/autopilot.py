@@ -756,6 +756,28 @@ class AutopilotEngine:
         n = len(actions) if isinstance(actions, list) else -1
         return (gsid, rtype, n)
 
+    def _live_pending_request_is(self, expected_norm: str) -> Optional[bool]:
+        """Live-verify the pending bridge request family.
+
+        Returns True/False when a live poll answers, None when it cannot
+        (bridge offline / poll error) — callers keep their snapshot-based
+        behavior on None rather than guessing.
+        """
+        if not (self._gre_bridge.connected or self._gre_bridge.connect()):
+            return None
+        try:
+            live = self._gre_bridge.get_pending_actions() or {}
+        except Exception:
+            return None
+        if not live.get("has_pending"):
+            return False
+        return (
+            self._normalize_request_type(
+                live.get("request_type") or live.get("request_class")
+            )
+            == expected_norm
+        )
+
     def _live_window_identity(self) -> Optional[tuple[Any, ...]]:
         """Window identity from a live bridge poll, or None when idle/offline."""
         if not (self._gre_bridge.connected or self._gre_bridge.connect()):
@@ -2287,6 +2309,21 @@ class AutopilotEngine:
                 or bridge_request_class in ("PayCostsRequest",)
                 or (game_state.get("decision_context") or {}).get("type") == "pay_costs"
             ):
+                # P1-5: one trigger batch dispatches every trigger against
+                # the SAME snapshot. On 2026-07-05 23:01:01 the first
+                # dispatch paid the PayCosts and the second re-entered this
+                # branch on the consumed snapshot → "Pending is null" →
+                # blind cancel_action() → false MANUAL REQUIRED + a 316KB
+                # bug report. Verify the window still exists before acting.
+                if not self._config.dry_run:
+                    still_pending = self._live_pending_request_is("PayCosts")
+                    if still_pending is False:
+                        logger.info(
+                            "Autopilot: PayCosts snapshot is stale (window "
+                            "already consumed) — dropping trigger"
+                        )
+                        self._state = AutopilotState.IDLE
+                        return True
                 # Optional-cost gate (2026-07-05 Go-Shintai incident): only
                 # blind auto-pay costs of actions we initiated; out-of-band
                 # cancellable harmful triggers get a pay/decline decision.
