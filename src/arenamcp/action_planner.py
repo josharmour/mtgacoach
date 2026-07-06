@@ -231,6 +231,10 @@ PER-DECISION FIELDS:
 - distribute: distribution dict; totals must match.
 - assign_damage: order by priority (kill key targets first).
 - search_library / select_counters: use select_card_names.
+- casting_options (CastingTimeOptions window — "Cast normally" vs an
+  alternative cost / mode while a spell is being cast): answer with
+  {"pick": <menu number>} or action_type=modal_choice + modal_index.
+  This is a mode pick, NOT numeric_input and NOT a new cast.
 
 SCHEMA:
 """ + ACTION_SCHEMA
@@ -2383,6 +2387,11 @@ class ActionPlanner:
                 action_type=ActionType.SELECT_TARGET,
                 target_names=[self._strip_decoration(act.split(":", 1)[1])],
             )
+        if lower == "cast normally":
+            # CastingTimeOptions default option — a modal pick, not a cast
+            # of a card named "normally" (the fallback's pseudo-cast never
+            # matched any GRE action; P3-2, live 2026-07-05 22:53).
+            return GameAction(action_type=ActionType.MODAL_CHOICE, modal_index=0)
         if lower.startswith("action: playmdfc"):
             # MDFC land face (#39): playable land side of a modal
             # double-faced card in hand. The name isn't in the menu line;
