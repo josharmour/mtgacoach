@@ -4705,6 +4705,19 @@ class GameStateTrigger:
         # Combat phase detection - use pending steps to catch fast combat phases
         pending_steps = curr_turn.get("pending_combat_steps", [])
 
+        # P2-10: queued steps drain one poll late — once the snapshot phase
+        # has moved PAST combat (Main2/Ending) the trigger's advice is
+        # unsatisfiable before the LLM call is even made (2 guaranteed-wasted
+        # calls, 4.7s + 1.9s, on 2026-07-05).
+        if pending_steps and any(
+            marker in curr_phase for marker in ("Main2", "Second", "Ending", "End")
+        ):
+            logger.debug(
+                f"Dropping {len(pending_steps)} queued combat step(s) — "
+                f"phase already {curr_phase}"
+            )
+            pending_steps = []
+
         for step_info in pending_steps:
             step = step_info.get("step", "")
             step_active = step_info.get("active_player", 0)
