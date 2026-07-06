@@ -729,8 +729,25 @@ def tail_text(path: Optional[str], max_bytes: int = 8192) -> str:
 
 
 def read_version() -> str:
-    pyproject = Path(get_app_root()) / "pyproject.toml"
+    # The version is baked into the package (__init__ / wheel metadata);
+    # pyproject.toml is NOT shipped in a pip/uv install, so reading it made
+    # the title bar show "vunknown" on every installed copy.
     try:
+        from arenamcp import __version__
+
+        if __version__:
+            return __version__
+    except Exception:
+        pass
+    try:
+        from importlib.metadata import version
+
+        return version("arenamcp")
+    except Exception:
+        pass
+    # Dev fallback: the repo checkout has pyproject.toml.
+    try:
+        pyproject = Path(get_app_root()) / "pyproject.toml"
         for line in pyproject.read_text(encoding="utf-8").splitlines():
             trimmed = line.strip()
             if trimmed.startswith("version = "):
