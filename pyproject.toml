@@ -53,6 +53,9 @@ dev = [
     "pytest>=7.0.0",
 ]
 
+[project.scripts]
+mtgacoach-repair = "arenamcp.repair_cli:main"
+
 [project.gui-scripts]
 mtgacoach-desktop = "arenamcp.desktop.app:main"
 

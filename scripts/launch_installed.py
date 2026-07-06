@@ -58,12 +58,19 @@ def main() -> int:
         from arenamcp.desktop.app import main as desktop_main
 
         return int(desktop_main())
-    except Exception as exc:
+    except BaseException as exc:  # noqa: BLE001
+        # Audit blocker #2: a missing/broken PySide6 raises SystemExit,
+        # which escaped `except Exception` — double-clicking the app did
+        # literally nothing, forever, with no message and no log.
+        if isinstance(exc, SystemExit) and (exc.code in (0, None)):
+            return 0  # normal exit
         details = "".join(traceback.format_exception(exc)).rstrip()
         _write_log("installed launch failed\n" + details)
         _show_error(
             "mtgacoach launch failed",
-            f"{exc}\n\nSee {_log_path()} for details.",
+            f"{exc}\n\nSee {_log_path()} for details.\n\n"
+            "You can repair this install from a terminal with: "
+            "mtgacoach-repair",
         )
         return 1
 
