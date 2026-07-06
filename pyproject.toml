@@ -38,6 +38,9 @@ dependencies = [
     "kokoro-onnx",         # TTS (spoken advice)
     "soundfile>=0.12.0",   # audio I/O for TTS/STT
     "faster-whisper>=1.0.0",  # STT (push-to-talk voice input)
+    "Pillow>=10.0.0",      # autopilot vision/screenshot handling (imported
+                           # unconditionally by autopilot.py; without it the
+                           # AP toggle fails "init unsuccessful")
 ]
 
 [project.urls]
