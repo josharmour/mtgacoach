@@ -4642,6 +4642,20 @@ class AutopilotEngine:
                 self._gre_bridge_failed_methods.add(method)
                 return None
 
+        # NUMERIC_INPUT with a chosen value (X spells) — P3-1. The plugin's
+        # submit_numeric resolves the pending numeric/casting-time child and
+        # calls SubmitX(value).
+        if action.action_type == ActionType.NUMERIC_INPUT and action.numeric_value:
+            value = int(action.numeric_value)
+            if self._gre_bridge.submit_numeric(value):
+                self._log_execution_path(
+                    ExecutionPath.GRE_AWARE, f"numeric_input: X={value} via GRE bridge"
+                )
+                return ClickResult(True, 0, 0, f"X={value}", "GRE bridge")
+            logger.info("GRE bridge submit_numeric failed; surfacing manual-required")
+            self._gre_bridge_failed_methods.add(method)
+            return None
+
         # PASS / RESOLVE / generic CLICK_BUTTON — use bridge submit_pass
         if action.action_type in (ActionType.PASS_PRIORITY, ActionType.RESOLVE, ActionType.CLICK_BUTTON):
             # "Done (confirm attackers/blockers)" is not a pass — submit_pass

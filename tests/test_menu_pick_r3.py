@@ -155,3 +155,39 @@ def test_playmdfc_pick_resolves_and_matches():
     ]
     ref = match_action_to_gre(action, raw, [], None)
     assert ref is not None and ref.grp_id == 222
+
+
+def test_x_value_menu_entry_resolves_to_numeric_input():
+    # P3-1: "X = 3" casting-time entries become numeric_input actions.
+    from arenamcp.action_planner import ActionPlanner, ActionType as AT
+
+    p = ActionPlanner(_NoBackend())
+    a = p._legal_action_to_action("X = 3")
+    assert a is not None
+    assert a.action_type == AT.NUMERIC_INPUT
+    assert a.numeric_value == 3
+
+    menu = ["X = 0", "X = 1", "X = 2", "Done (confirm cast)"]
+    p._last_menu = menu
+    plan = p._parse_response('{"actions": [{"pick": 3}]}', menu)
+    assert plan.actions[0].numeric_value == 2
+
+
+def test_x_cost_cast_kept_when_bridge_connected():
+    # P3-1: the blanket X drop only applies without a bridge.
+    from arenamcp.action_planner import ActionPlanner
+
+    p = ActionPlanner(_NoBackend())
+    state = {
+        "turn": {"turn_number": 5},
+        "hand": [{"name": "Silkguard", "mana_cost": "{X}{G}"}],
+        "_bridge_connected": True,
+        "players": [],
+    }
+    legal = ["Cast Silkguard [OK]", "Pass"]
+    out = p._filter_legal_actions_for_planning(state, legal)
+    assert "Cast Silkguard [OK]" in out
+
+    state["_bridge_connected"] = False
+    out = p._filter_legal_actions_for_planning(state, legal)
+    assert "Cast Silkguard [OK]" not in out

@@ -1167,22 +1167,23 @@ class ActionPlanner:
                         card_hand_entry = card
                         break
 
-                # X-cost spells are off the autopilot menu for now: the
-                # "Select a value for X" casting-time window is not
-                # discoverable through the bridge (FindPendingInteraction
-                # returns nothing), so autopilot can neither choose X nor
-                # cancel — live 2026-07-02, Silkguard resolved with X=0
-                # (wasted) and Steelbane Hydra wedged the client on the X
-                # slider until the user clicked Cancel. The coach may still
-                # ADVISE these casts; the user makes them manually.
+                # X-cost spells (P3-1): allowed when the bridge is connected —
+                # the plugin now enumerates the X chooser as casting-time
+                # numeric entries ("X = n" → SubmitX; verified surfacing live
+                # 2026-07-06 00:53 during a manual Silkguard cast), and the
+                # per-turn rollback suppression bounds any residual wedge to
+                # two attempts. Without the bridge the mouse path still can't
+                # drive the X slider (live 2026-07-02: Silkguard resolved
+                # X=0, Steelbane Hydra wedged the client) — keep dropping.
                 if card_cost and "{X}" in card_cost.upper().replace(" ", ""):
-                    logger.info(
-                        "Dropping X-cost cast %s from autopilot (cost=%s): "
-                        "bridge cannot drive the X chooser",
-                        card_name,
-                        card_cost,
-                    )
-                    continue
+                    if not game_state.get("_bridge_connected"):
+                        logger.info(
+                            "Dropping X-cost cast %s from autopilot (cost=%s): "
+                            "no bridge to drive the X chooser",
+                            card_name,
+                            card_cost,
+                        )
+                        continue
 
                 # Local affordability: True/False when cost + pool are known,
                 # else None (couldn't determine).
@@ -2387,6 +2388,15 @@ class ActionPlanner:
                 action_type=ActionType.SELECT_TARGET,
                 target_names=[self._strip_decoration(act.split(":", 1)[1])],
             )
+        if lower.startswith("x = "):
+            # Casting-time X chooser entry ("X = 3") — P3-1.
+            try:
+                return GameAction(
+                    action_type=ActionType.NUMERIC_INPUT,
+                    numeric_value=int(lower[4:].strip()),
+                )
+            except ValueError:
+                pass
         if lower == "cast normally":
             # CastingTimeOptions default option — a modal pick, not a cast
             # of a card named "normally" (the fallback's pseudo-cast never

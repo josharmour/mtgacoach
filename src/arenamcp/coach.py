@@ -1547,6 +1547,14 @@ class CoachEngine:
                 except Exception:
                     label = f"Mode {opt_idx + 1}"
                 modal_actions.append((opt_idx, f"Mode {opt_idx}: {label}"))
+            elif kind == "numeric_input":
+                # X chooser entries (P3-1): the plugin enumerates legal X
+                # values as per-entry SubmitX actions.
+                val = ba.get("numericValue")
+                if val is not None:
+                    modal_actions.append(
+                        (500 + int(val), f"X = {val}")
+                    )
             elif kind == "done":
                 modal_actions.append((999, "Done (confirm cast)"))
 
