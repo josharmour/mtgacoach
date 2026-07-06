@@ -3363,16 +3363,20 @@ class AutopilotEngine:
                 # next own-turn LLM call will produce a fresh plan.
                 if action_verified:
                     try:
-                        advanced = self._planner.advance_turn_plan(action)
+                        outcome = self._planner.advance_turn_plan(action)
                     except Exception as e:
                         logger.debug(f"advance_turn_plan failed: {e}")
-                        advanced = False
-                    if advanced:
+                        outcome = "neutral"
+                    if outcome == "advanced":
                         self._emit_turn_plan_payload()
-                    elif self._planner.get_turn_plan_payload() is not None:
-                        # We had a plan, the executed action didn't match,
-                        # so divergence — invalidate, emit the cleared
-                        # state with the reason, then a None to hide.
+                    elif (
+                        outcome == "diverged"
+                        and self._planner.get_turn_plan_payload() is not None
+                    ):
+                        # A user-visible action matched no remaining step —
+                        # real divergence. (P2-8: "neutral" outcomes — passes,
+                        # cost payments, sub-decisions — used to land here and
+                        # killed 6/6 match-2 turn plans within seconds.)
                         self._planner.invalidate_turn_plan(
                             "executed action diverged from plan"
                         )

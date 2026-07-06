@@ -879,40 +879,56 @@ class ActionPlanner:
 
         return TurnPlan(turn_number=current_turn, steps=steps)
 
-    def advance_turn_plan(self, executed_action: GameAction) -> bool:
-        """Advance the active turn plan by one step if it matches the action.
+    def advance_turn_plan(self, executed_action: GameAction) -> str:
+        """Advance the active turn plan for an executed action.
 
-        Match is by `action_type` + case-insensitive normalized `card_name`.
-        Returns True on advance, False on mismatch (caller decides whether
-        to invalidate / replan).
+        Returns:
+            "advanced" — a plan step (the current one, or a later one via
+                look-ahead) matched and was marked done; any stepped-over
+                steps are marked "skipped".
+            "neutral"  — nothing to conclude: no active plan, or the action
+                isn't user-visible (pass / pay costs / sub-decisions). NOT
+                divergence — 3/6 match-2 plan invalidations on 2026-07-05
+                were benign passes the old boolean couldn't distinguish
+                (P2-8).
+            "diverged" — a user-visible action matching no remaining step;
+                the caller may invalidate/replan.
         """
         plan = self._active_turn_plan
         if plan is None or plan.current_idx >= len(plan.steps):
-            return False
+            return "neutral"
         if executed_action is None:
-            return False
+            return "neutral"
 
-        # Skip non-user-visible actions silently — passing priority, paying
-        # costs, or sub-decisions don't count against the plan.
         executed_type = executed_action.action_type.value
         if executed_type not in self._TURN_PLAN_USER_VISIBLE_ACTIONS:
-            return False
+            return "neutral"
 
-        current = plan.steps[plan.current_idx]
-        if current.action_type != executed_type:
-            return False
+        def _matches(step: TurnPlanStep) -> bool:
+            if step.action_type != executed_type:
+                return False
+            # For attack/block, we don't compare card names (aggregate).
+            if executed_type in ("declare_attackers", "declare_blockers"):
+                return True
+            executed_name = self._strip_decoration(
+                executed_action.card_name or ""
+            ).lower()
+            expected_name = self._strip_decoration(step.card_name or "").lower()
+            return not (
+                expected_name and executed_name and expected_name != executed_name
+            )
 
-        # For attack/block, we don't compare card names (they're aggregate).
-        if executed_type in ("declare_attackers", "declare_blockers"):
-            plan.mark_current_done()
-            return True
-
-        executed_name = self._strip_decoration(executed_action.card_name or "").lower()
-        expected_name = self._strip_decoration(current.card_name or "").lower()
-        if expected_name and executed_name and expected_name != executed_name:
-            return False
-        plan.mark_current_done()
-        return True
+        # Current step first, then look-ahead: a later step executing early
+        # (e.g. the land-drop preflight already performed step 1) marks the
+        # stepped-over ones "skipped" instead of reading as divergence.
+        for offset, step in enumerate(plan.steps[plan.current_idx:]):
+            if _matches(step):
+                for skipped in plan.steps[plan.current_idx:plan.current_idx + offset]:
+                    skipped.status = "skipped"
+                plan.current_idx += offset
+                plan.mark_current_done()
+                return "advanced"
+        return "diverged"
 
     def has_pending_attack_intent(self) -> bool:
         """True if the active turn plan still has an un-executed attack step.

@@ -192,7 +192,7 @@ def test_advance_turn_plan_matches_executed_action():
     executed = GameAction(action_type=ActionType.PLAY_LAND, card_name="Forest")
     advanced = p.advance_turn_plan(executed)
 
-    assert advanced is True
+    assert advanced == "advanced"
     assert p._active_turn_plan.current_idx == 1
     assert p._active_turn_plan.steps[0].status == "done"
     assert p._active_turn_plan.steps[1].status == "current"
@@ -203,11 +203,11 @@ def test_advance_turn_plan_returns_false_on_mismatch():
     p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
     p.plan_turn(_state(), [], None)
 
-    # Player cast something different than the next planned step (Forest land).
+    # Player cast something different than any remaining planned step.
     executed = GameAction(action_type=ActionType.CAST_SPELL, card_name="Random Bolt")
     advanced = p.advance_turn_plan(executed)
 
-    assert advanced is False
+    assert advanced == "diverged"
     # Plan unchanged on miss.
     assert p._active_turn_plan.current_idx == 0
     assert p._active_turn_plan.steps[0].status == "current"
@@ -222,14 +222,16 @@ def test_advance_turn_plan_ignores_non_user_visible_actions():
     executed = GameAction(action_type=ActionType.PAY_COSTS)
     advanced = p.advance_turn_plan(executed)
 
-    assert advanced is False
+    # P2-8: tri-state — benign non-user-visible actions are "neutral",
+    # never divergence.
+    assert advanced == "neutral"
     assert p._active_turn_plan.current_idx == 0
 
 
 def test_advance_turn_plan_with_no_active_plan_returns_false():
     p = ActionPlanner(_ScriptedBackend([]), timeout=1.0, land_drop_first=False)
     executed = GameAction(action_type=ActionType.PLAY_LAND, card_name="Forest")
-    assert p.advance_turn_plan(executed) is False
+    assert p.advance_turn_plan(executed) == "neutral"
 
 
 def test_advance_turn_plan_card_name_decoration_is_stripped():
@@ -245,7 +247,7 @@ def test_advance_turn_plan_card_name_decoration_is_stripped():
         action_type=ActionType.CAST_SPELL,
         card_name="Optimistic Scavenger [OK]",
     )
-    assert p.advance_turn_plan(executed) is True
+    assert p.advance_turn_plan(executed) == "advanced"
 
 
 # ── invalidate_turn_plan ─────────────────────────────────────────────
@@ -357,3 +359,19 @@ def test_get_turn_plan_payload_serializes_active_plan():
 def test_get_turn_plan_payload_returns_none_when_no_plan():
     p = ActionPlanner(_ScriptedBackend([]), timeout=1.0, land_drop_first=False)
     assert p.get_turn_plan_payload() is None
+
+
+def test_advance_turn_plan_lookahead_skips_stepped_over(monkeypatch):
+    # P2-8: a later step executing early (preflight already made the land
+    # drop) marks intermediate steps "skipped" instead of diverging.
+    backend = _ScriptedBackend([_turn_plan_response()])
+    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
+    p.plan_turn(_state(), [], None)
+    # Plan: [play_land Forest, cast Optimistic Scavenger, ...]. Execute the
+    # CAST first — Forest step should be skipped, not divergence.
+    outcome = p.advance_turn_plan(
+        GameAction(action_type=ActionType.CAST_SPELL, card_name="Optimistic Scavenger")
+    )
+    assert outcome == "advanced"
+    assert p._active_turn_plan.steps[0].status == "skipped"
+    assert p._active_turn_plan.steps[1].status == "done"
