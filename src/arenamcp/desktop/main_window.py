@@ -182,9 +182,9 @@ class ModelEndpointDialog(QDialog):
         self._model_combo = QComboBox()
         self._model_combo.setEditable(True)
         self._model_combo.setInsertPolicy(QComboBox.NoInsert)
-        self._model_combo.lineEdit().setPlaceholderText("nemotron-3-super")
+        self._model_combo.lineEdit().setPlaceholderText("deepseek-v4-flash")
         self._model_combo.setToolTip(
-            "Model ID to use (e.g. 'nemotron-3-super', 'gpt-5.4', etc.)\n"
+            "Model ID to use (e.g. 'deepseek-v4-flash', 'gemma-4-12b-it')\n"
             "Click Probe to auto-populate from the endpoint."
         )
         form.addRow("Model ID:", self._model_combo)

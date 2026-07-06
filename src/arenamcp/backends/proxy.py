@@ -145,11 +145,10 @@ class ProxyBackend:
         """Create a backend configured for online mode (mtgacoach.com)."""
         return cls(
             # The api.mtgacoach.com gateway (LiteLLM on the NAS) owns model
-            # routing; nemotron-3-super is the model actually served on
-            # baremetal (2026-07-01). The gateway still aliases legacy
-            # gemma-4-31b-it / gemma-4-12b-it / deepseek-v4-flash requests
-            # from older clients onto it.
-            model=model or "nemotron-3-super",
+            # routing. Default to the REAL served model name, not the legacy
+            # 'nemotron-3-super' alias (which just routes to deepseek-v4-flash
+            # and confusingly implies a Nemotron model that isn't there).
+            model=model or "deepseek-v4-flash",
             base_url=ONLINE_BASE_URL,
             api_key=license_key,
         )
