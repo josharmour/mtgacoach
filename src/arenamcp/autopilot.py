@@ -2488,6 +2488,23 @@ class AutopilotEngine:
                             summary="submitted AutoTap solution via bridge",
                         )
                         return True
+                    # Issue #414: our own just-submitted cast reaching a
+                    # PayCosts with no autotap child is a LEGAL cast that
+                    # MTGA wants paid manually (observed on every command-
+                    # zone Hei Bai cast — even [OK]-tagged ones). Cancelling
+                    # silently fizzles the spell and accrues rollback
+                    # strikes; hand it to the user instead.
+                    if self._last_cast_submitted and (
+                        time.monotonic() - self._last_cast_submitted_ts
+                        <= self._OPTIONAL_COST_OWN_ACTION_WINDOW_S
+                    ):
+                        self._pause_for_manual(
+                            f"Pay for {self._last_cast_submitted[1]} manually "
+                            "(tap lands or click Auto Pay) — the bridge found "
+                            "no auto-payment route for this cast",
+                            game_state,
+                        )
+                        return True
                     # No autotap child available — fall back to cancel.
                     logger.info("Autopilot: no AutoTap solution; cancelling PayCostsRequest")
                     if self._gre_bridge.cancel_action():

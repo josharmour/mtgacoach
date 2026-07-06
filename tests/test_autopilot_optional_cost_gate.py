@@ -118,3 +118,29 @@ def test_benign_trigger_keeps_auto_pay(monkeypatch):
     state = _go_shintai_state()
     state["stack"][0]["oracle_text"] = "you may pay {2}. if you do, draw a card."
     assert eng._should_decline_optional_cost(state) is None
+
+
+def test_command_zone_cast_requires_ok_tag():
+    # Issue #414: Hei Bai (command zone) bypassed the hand-only cost lookup
+    # and was cast without payability every turn.
+    from arenamcp.action_planner import ActionPlanner
+
+    class _NoBackend:
+        def complete(self, *a, **k):
+            raise AssertionError("no LLM in filter tests")
+
+    p = ActionPlanner(_NoBackend())
+    state = {
+        "turn": {"turn_number": 10},
+        "hand": [],
+        "command": [{"name": "Hei Bai, Forest Guardian", "mana_cost": "{3}{G}"}],
+        "players": [],
+    }
+    legal = ["Cast Hei Bai, Forest Guardian", "Pass"]
+    out = p._filter_legal_actions_for_planning(state, legal)
+    assert "Cast Hei Bai, Forest Guardian" not in out
+
+    # With MTGA's tax-aware [OK], the commander stays on the menu.
+    legal_ok = ["Cast Hei Bai, Forest Guardian [OK]", "Pass"]
+    out = p._filter_legal_actions_for_planning(state, legal_ok)
+    assert "Cast Hei Bai, Forest Guardian [OK]" in out

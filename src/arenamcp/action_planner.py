@@ -1161,11 +1161,34 @@ class ActionPlanner:
                 card_name = self._normalize_action_text(legal_action).replace("Cast ", "").strip()
                 card_cost = ""
                 card_hand_entry = None
-                for card in game_state.get("hand", []):
-                    if card.get("name", "").lower() == card_name.lower():
-                        card_cost = card.get("mana_cost", "")
-                        card_hand_entry = card
+                card_zone = ""
+                # Issue #414: commanders cast from the COMMAND zone — the
+                # hand-only lookup found no cost, so the payability gate
+                # couldn't judge them and waved unpayable Hei Bai through
+                # every single turn ("it's like it doesn't understand mana
+                # cost").
+                for zone in ("hand", "command"):
+                    for card in game_state.get(zone, []) or []:
+                        if card.get("name", "").lower() == card_name.lower():
+                            card_cost = card.get("mana_cost", "")
+                            card_hand_entry = card
+                            card_zone = zone
+                            break
+                    if card_hand_entry is not None:
                         break
+
+                # Commander tax is not in the printed cost, so even a correct
+                # local mana check lies about command-zone casts. MTGA's [OK]
+                # (autotap solution) is the only tax-aware payability signal —
+                # require it for command-zone casts.
+                if card_zone == "command" and "[OK]" not in legal_action:
+                    logger.info(
+                        "Dropping command-zone cast %s: no autotap [OK] "
+                        "(printed cost %s ignores commander tax)",
+                        card_name,
+                        card_cost or "?",
+                    )
+                    continue
 
                 # X-cost spells (P3-1): allowed when the bridge is connected —
                 # the plugin now enumerates the X chooser as casting-time

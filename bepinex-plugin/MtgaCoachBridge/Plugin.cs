@@ -2270,7 +2270,24 @@ namespace MtgaCoachBridge
             }
             if (autoTapReq == null)
             {
-                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = $"Pending is {request?.GetType().Name ?? "null"}, no AutoTapActionsRequest available" });
+                // Issue #414: command-zone casts (Hei Bai) reliably produce a
+                // PayCostsRequest with NO AutoTapActions child. Log what the
+                // request DOES contain so the manual-payment driver can be
+                // built against real shapes (PaymentActions is the suspected
+                // route — an ActionsAvailableRequest of mana activations).
+                string detail = request?.GetType().Name ?? "null";
+                if (request is PayCostsRequest pr)
+                {
+                    var kids = new List<string>();
+                    foreach (var child in pr.ChildRequests)
+                        kids.Add(child?.GetType().Name ?? "null");
+                    detail += $" children=[{string.Join(",", kids)}]"
+                        + $" paymentActions={(pr.PaymentActions != null)}"
+                        + $" paymentSelection={(pr.PaymentSelection != null)}"
+                        + $" manaReqs={(pr.ManaRequirements?.Count ?? 0)}";
+                    _log.LogInfo($"PayCosts without AutoTapActions: {detail}");
+                }
+                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = $"Pending is {detail}, no AutoTapActionsRequest available" });
                 return;
             }
             // Payload: optional {"solution_index": <int>} to pick from candidates;
