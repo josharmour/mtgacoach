@@ -458,6 +458,12 @@ class ProxyBackend:
         )
         return content
 
+    # Consecutive image-completion failures before the vision path disables
+    # itself. Live 2026-07-06: the gateway model (deepseek-v4-flash) can't
+    # serve vision and the tunnel chokes on MB image payloads — the vision
+    # watchdog burned a failing call pair every ~40s all match.
+    _VISION_DISABLE_AFTER = 3
+
     def complete_with_image(
         self,
         system_prompt: str,
@@ -468,6 +474,12 @@ class ProxyBackend:
         """Get completion with an image via the OpenAI multimodal message format."""
         import base64
         import time
+
+        if getattr(self, "_vision_dead", False):
+            return (
+                "Error getting vision analysis: vision endpoint disabled "
+                "after repeated failures"
+            )
 
         try:
             client = self._get_client()
@@ -512,9 +524,18 @@ class ProxyBackend:
 
             content = response.choices[0].message.content
             logger.info(f"[PROXY] Vision API: {request_time:.0f}ms, model: {self.model}")
+            self._vision_fail_count = 0
             return content
         except Exception as e:
             logger.error(f"Vision API error: {e}")
+            self._vision_fail_count = getattr(self, "_vision_fail_count", 0) + 1
+            if self._vision_fail_count >= self._VISION_DISABLE_AFTER:
+                self._vision_dead = True
+                logger.warning(
+                    "[PROXY] Disabling image completions after "
+                    f"{self._vision_fail_count} consecutive failures — the "
+                    "configured backend/gateway cannot serve vision requests"
+                )
             return f"Error getting vision analysis: {e}"
 
     def list_models(self) -> list[str]:

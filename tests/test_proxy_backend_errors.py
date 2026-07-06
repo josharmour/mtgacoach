@@ -108,3 +108,19 @@ def test_served_model_recorded_and_differs_from_alias():
     out = be.complete("sys", "user", 16)
     assert out == "hello"
     assert be.last_served_model == "deepseek-v4-flash"
+
+
+def test_vision_circuit_breaker_disables_after_repeated_failures():
+    # Live 2026-07-06: the vision watchdog burned a failing call pair every
+    # ~40s all match (text-only gateway model + tunnel choking on MB
+    # payloads). Three consecutive failures now open the circuit.
+    boom = _FakeAPIError("connection reset")
+    be = _backend([boom, boom, boom])
+    for _ in range(3):
+        out = be.complete_with_image("sys", "user", b"\x89PNG fake")
+        assert out.startswith("Error getting vision analysis")
+    assert be._vision_dead is True
+    # Circuit open: no further backend calls.
+    out = be.complete_with_image("sys", "user", b"\x89PNG fake")
+    assert "disabled" in out
+    assert be._client.chat.completions.calls == 3
