@@ -56,7 +56,11 @@ Source: "..\mtga_coach.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\icon.ico"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 ; Bridge plugin build output
-Source: "..\bepinex-plugin\MtgaCoachBridge\bin\Release\net472\MtgaCoachBridge.dll"; DestDir: "{app}\bepinex-plugin\MtgaCoachBridge\bin\Release\net472"; Flags: ignoreversion skipifsourcedoesntexist
+; Repair-audit blocker #1: the DLL now ships INSIDE the Python package
+; (src/arenamcp/resources/) so pip installs always have it. The installer
+; copy is a hard requirement — no skipifsourcedoesntexist: a DLL-less
+; installer build must FAIL, not silently ship a broken bridge.
+Source: "..\src\arenamcp\resources\MtgaCoachBridge.dll"; DestDir: "{app}\src\arenamcp\resources"; Flags: ignoreversion
 
 ; BepInEx bundles for repair/install
 Source: "..\assets\BepInEx\*"; DestDir: "{app}\assets\BepInEx"; Flags: ignoreversion recursesubdirs createallsubdirs

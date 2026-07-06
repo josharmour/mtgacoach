@@ -142,7 +142,18 @@ class Settings:
 
             logger.debug(f"Loaded settings from {SETTINGS_FILE}")
         except Exception as e:
-            logger.warning(f"Failed to load settings: {e}")
+            # Repair-audit blocker #6: silently replacing a corrupt file
+            # destroyed the license key with no way to re-enter it. Preserve
+            # the corrupt content for recovery and shout, don't whisper.
+            logger.error(
+                f"Settings file is corrupt ({e}) — preserving it as "
+                f"{SETTINGS_FILE.name}.bad and starting from defaults. "
+                "Your license key may need re-entering."
+            )
+            try:
+                SETTINGS_FILE.replace(SETTINGS_FILE.with_suffix(".json.bad"))
+            except OSError:
+                pass
 
     def _ensure_install_id(self) -> bool:
         """Ensure a generated install ID exists for this installation."""
@@ -153,11 +164,18 @@ class Settings:
         return True
 
     def save(self) -> None:
-        """Save settings to disk."""
+        """Save settings to disk (atomically — a crash mid-write must never
+        truncate the file that holds the license key)."""
+        import os
+
         try:
             SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
-            with open(SETTINGS_FILE, "w") as f:
+            tmp = SETTINGS_FILE.with_suffix(".json.tmp")
+            with open(tmp, "w") as f:
                 json.dump(self._data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            tmp.replace(SETTINGS_FILE)
             logger.debug(f"Saved settings to {SETTINGS_FILE}")
         except Exception as e:
             logger.warning(f"Failed to save settings: {e}")

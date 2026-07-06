@@ -620,16 +620,12 @@ def detect_runtime_state() -> RuntimeState:
             plugin_install_path = str(plugin_path)
             plugin_installed = True
 
-    plugin_build = (
-        app_root
-        / "bepinex-plugin"
-        / "MtgaCoachBridge"
-        / "bin"
-        / "Release"
-        / "net472"
-        / "MtgaCoachBridge.dll"
-    )
-    plugin_built = plugin_build.exists()
+    # A deployable DLL from ANY source (packaged resource preferred, dev
+    # build tree fallback) — on end-user installs the dev tree never
+    # exists, which made plugin_built permanently False and unreachable
+    # every update path that gated on it (repair-audit blockers #1, #7).
+    plugin_build = find_plugin_dll()
+    plugin_built = plugin_build is not None
 
     bepinex_bundle: Optional[str] = None
     for subdir in ("third_party", "assets"):
@@ -797,13 +793,24 @@ def install_bepinex(mtga_dir: str) -> str:
     return str(target_dir)
 
 
-def install_plugin(mtga_dir: str) -> str:
-    if is_mtga_running():
-        raise RuntimeError("Close MTGA before installing the plugin")
+def find_plugin_dll() -> Optional[Path]:
+    """Locate the MtgaCoachBridge.dll to deploy, wherever this app lives.
 
-    app_root = Path(get_app_root())
-    source_dll = (
-        app_root
+    Order: the DLL shipped inside the installed package (works for pip/uv
+    installs on every OS — repair-audit blocker #1: every CI installer
+    since v2.4.0 shipped WITHOUT the DLL and install_plugin dead-ended on
+    FileNotFoundError with no fallback), then the dev build tree.
+    """
+    try:
+        from importlib import resources
+
+        packaged = resources.files("arenamcp.resources") / "MtgaCoachBridge.dll"
+        if packaged.is_file():
+            return Path(str(packaged))
+    except Exception:
+        pass
+    dev_dll = (
+        Path(get_app_root())
         / "bepinex-plugin"
         / "MtgaCoachBridge"
         / "bin"
@@ -811,8 +818,21 @@ def install_plugin(mtga_dir: str) -> str:
         / "net472"
         / "MtgaCoachBridge.dll"
     )
-    if not source_dll.exists():
-        raise FileNotFoundError(f"Plugin DLL not found at {source_dll}")
+    if dev_dll.exists():
+        return dev_dll
+    return None
+
+
+def install_plugin(mtga_dir: str) -> str:
+    if is_mtga_running():
+        raise RuntimeError("Close MTGA before installing the plugin")
+
+    source_dll = find_plugin_dll()
+    if source_dll is None:
+        raise FileNotFoundError(
+            "Plugin DLL not found in the installed package or the dev build "
+            "tree — reinstall the app (pip install --force-reinstall arenamcp)"
+        )
 
     plugins_dir = Path(mtga_dir) / "BepInEx" / "plugins"
     plugins_dir.mkdir(parents=True, exist_ok=True)
