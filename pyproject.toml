@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "arenamcp"
-version = "2.7.2"
+version = "2.7.3"
 description = "AI-powered real-time coaching and autopilot for Magic: The Gathering Arena"
 requires-python = ">=3.10"
 license = "MIT"

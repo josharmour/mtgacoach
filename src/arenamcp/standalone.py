@@ -1419,6 +1419,7 @@ class StandaloneCoach:
             self.ui.log(f"[bold green]Auto-detected mode: {resolved_mode} (model: {actual_model})[/]")
 
         logger.info(f"Created {self.backend_name} backend with model: {actual_model}")
+        self._validate_model_on_launch()
         self._coach = CoachEngine(backend=llm_backend)
         # Log full backend diagnostics at startup
         backend_info = self._coach.get_backend_info()
@@ -1727,6 +1728,36 @@ class StandaloneCoach:
             else:
                 logger.warning("Autopilot toggle failed: init unsuccessful")
                 return False
+
+    def _validate_model_on_launch(self) -> None:
+        """Warn (and fall back) if the configured model isn't actually served.
+
+        The gateway can advertise stale aliases; a saved model that no longer
+        exists silently misroutes. Query the endpoint's live /v1/models and,
+        if our model isn't there, reset to the server-assigned default.
+        Best-effort: never blocks startup.
+        """
+        model = self.model_name
+        if not model:
+            return  # None == server-assigned default; always valid
+        try:
+            from arenamcp.coach import get_models_for_mode
+
+            served = {mid for _label, mid in get_models_for_mode(self.backend_name) if mid}
+            if served and model not in served:
+                self.ui.log(
+                    f"[yellow]Configured model '{model}' is not served by this "
+                    f"endpoint — using the default. Available: "
+                    f"{', '.join(sorted(served))}[/]"
+                )
+                logger.warning(
+                    "Configured model %r not in served list %s — falling back "
+                    "to default", model, sorted(served)
+                )
+                self.model_name = None
+                self.settings.set("model", None, save=True)
+        except Exception as e:
+            logger.debug("model validation skipped: %s", e)
 
     def _init_voice(self) -> None:
         """Initialize voice I/O components.
