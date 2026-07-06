@@ -8,7 +8,7 @@ from typing import Optional
 from urllib.request import urlopen, Request as UrlRequest
 from urllib.error import URLError, HTTPError
 
-from PySide6.QtCore import QEvent, QTimer
+from PySide6.QtCore import QEvent, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
@@ -415,9 +415,13 @@ class ModelEndpointDialog(QDialog):
         return super().event(event)
 
 class MainWindow(QMainWindow):
+    # (local_version, remote_version) — emitted from the update-check thread.
+    _update_ready = Signal(str, str)
+
     def __init__(self) -> None:
         super().__init__()
         self._closing = False
+        self._update_prompted = False
         self._launch_flags = (False, False, False)
         self._process: Optional[CoachProcess] = None
         self._startup_prompt_shown = False
@@ -465,6 +469,66 @@ class MainWindow(QMainWindow):
         self._apply_window_geometry()
         self.refresh_state()
         self._auto_start()
+
+        # Launch-time update check (installed copies only; editable/dev is a
+        # no-op inside updater). Delayed + threaded so it never slows startup.
+        self._update_ready.connect(self._on_update_ready)
+        QTimer.singleShot(2500, self._start_update_check)
+
+    def _start_update_check(self) -> None:
+        def _work() -> None:
+            try:
+                from arenamcp.updater import check_for_update
+
+                available, local, remote = check_for_update()
+                if available:
+                    self._update_ready.emit(local, remote)
+            except Exception as exc:  # never let the check affect the app
+                logger.debug("update check thread failed: %s", exc)
+
+        threading.Thread(target=_work, daemon=True, name="update-check").start()
+
+    def _on_update_ready(self, local: str, remote: str) -> None:
+        if self._update_prompted:
+            return
+        self._update_prompted = True
+        self._status_bar.showMessage(f"Update available: v{remote}", 0)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("Update available")
+        box.setText(f"mtgacoach v{remote} is available (you have v{local}).")
+        box.setInformativeText("Update now? The app will close so you can relaunch it.")
+        update_btn = box.addButton("Update && Restart", QMessageBox.AcceptRole)
+        box.addButton("Later", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is update_btn:
+            self._do_update()
+
+    def _do_update(self) -> None:
+        self._status_bar.showMessage("Updating…", 0)
+
+        def _work() -> None:
+            from arenamcp.updater import apply_update
+
+            ok, msg = apply_update()
+            self._update_ready.disconnect()  # avoid re-prompting
+            # Marshal the result back to the UI thread via a one-shot timer.
+            QTimer.singleShot(0, lambda: self._after_update(ok, msg))
+
+        threading.Thread(target=_work, daemon=True, name="update-apply").start()
+
+    def _after_update(self, ok: bool, msg: str) -> None:
+        if ok:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Information)
+            box.setWindowTitle("Update complete")
+            box.setText(msg)
+            box.addButton("Close mtgacoach", QMessageBox.AcceptRole)
+            box.exec()
+            self.close()
+        else:
+            self._status_bar.showMessage(msg, 10000)
+            QMessageBox.warning(self, "Update failed", msg)
 
     def _build_central_widget(self) -> None:
         """Build the central widget for the current UI mode.
