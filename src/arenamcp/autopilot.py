@@ -310,6 +310,9 @@ class AutopilotEngine:
         # random and dispatch those. Rest are discarded — goal is
         # representative telemetry without spam.
         self._pending_fallback_bugs: list[tuple[str, dict]] = []
+        # P1-8: recent takeover records (by-reference extras) awaiting
+        # possible self_recovered_replan reclassification.
+        self._recent_takeovers: list[dict[str, Any]] = []
         self._max_fallback_bugs_per_match: int = 5
 
         # State
@@ -3368,6 +3371,13 @@ class AutopilotEngine:
                         self._planner.note_executed(action)
                     except Exception as e:
                         logger.debug(f"note_executed failed: {e}")
+                    # P1-8: an execution matching a just-recorded "takeover"
+                    # proves it was turn-counter lag — relabel in place so
+                    # the match-end flush drops it.
+                    try:
+                        self._reclassify_matching_takeovers(action)
+                    except Exception as e:
+                        logger.debug(f"takeover reclassify failed: {e}")
                     try:
                         outcome = self._planner.advance_turn_plan(action)
                     except Exception as e:
@@ -4082,6 +4092,51 @@ class AutopilotEngine:
             f"planned {action_type_str} {card_name}".strip()
         )
         self._pending_fallback_bugs.append((reason_str, extra))
+        # P1-8: forward-looking reclassification handle. If autopilot itself
+        # executes a matching action shortly after, this was turn-counter lag
+        # (Arcane Signet, 22:57:00→:11 on 2026-07-05), not a takeover — the
+        # entry gets relabeled in place before the match-end flush.
+        self._recent_takeovers.append({
+            "ts": time.time(),
+            "action_type": action_type_str,
+            "card_name": card_name.strip().lower(),
+            "extra": extra,
+        })
+        del self._recent_takeovers[:-10]
+        # Real-time visibility: the record used to be telemetry-only — the
+        # user learned about the stand-down from a bug report hours later.
+        self._notify(
+            "AUTOPILOT",
+            f"Standing down — your move (it wanted: {action_type_str} "
+            f"{card_name})".strip(),
+        )
+
+    def _reclassify_matching_takeovers(self, action: "GameAction") -> None:
+        """Relabel provisional takeovers this verified execution disproves.
+
+        P1-8 (2026-07-05 22:57): a plan_went_stale takeover for Arcane
+        Signet was filed 11s before autopilot itself cast Arcane Signet on
+        the same window — pure turn-counter lag misfiled as a takeover.
+        """
+        action_type = getattr(action, "action_type", None)
+        name = (getattr(action, "card_name", "") or "").strip().lower()
+        atype_str = action_type.value if action_type else ""
+        now = time.time()
+        for rec in self._recent_takeovers:
+            if now - rec["ts"] > 30.0:
+                continue
+            if rec["action_type"] != atype_str:
+                continue
+            if rec["card_name"] and name and rec["card_name"] != name:
+                continue
+            tk = rec["extra"].get("auto_user_takeover")
+            if isinstance(tk, dict) and tk.get("reason_tag") != "self_recovered_replan":
+                tk["original_reason_tag"] = tk.get("reason_tag")
+                tk["reason_tag"] = "self_recovered_replan"
+                logger.info(
+                    f"Reclassified takeover record ({atype_str} {name!r}) — "
+                    "autopilot executed it moments later"
+                )
 
     def flush_fallback_bugs_for_match(self) -> int:
         """Dispatch up to N sampled fallback bugs from the current match.
@@ -4091,6 +4146,13 @@ class AutopilotEngine:
         """
         buf = self._pending_fallback_bugs
         self._pending_fallback_bugs = []
+        # P1-8: entries relabeled self_recovered_replan are not takeovers —
+        # autopilot executed the same action moments later.
+        buf = [
+            (reason, extra) for reason, extra in buf
+            if (extra.get("auto_user_takeover") or {}).get("reason_tag")
+            != "self_recovered_replan"
+        ]
         if not buf or self._bug_report_fn is None:
             return 0
 
