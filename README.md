@@ -34,26 +34,40 @@ Real-time AI coaching for Magic: The Gathering Arena. Watches your live games an
 - **Auto bug-report telemetry** — Up to 5 random bridge-fallback events per match
 - **Local model support** — Run with Ollama or LM Studio for free, offline play
 
-## Quick Start (Windows)
+## Install
 
-### Install
+The app installs with [**uv**](https://docs.astral.sh/uv/) on Windows, Linux,
+and macOS — one tool that manages an isolated Python environment for you.
 
-1. Install [Python 3.10+](https://python.org) (check "Add Python to PATH")
-2. Download [**mtgacoach-Setup.exe**](https://github.com/josharmour/mtgacoach/releases/latest/download/mtgacoach-Setup.exe) from the latest release
-3. Run the installer — it installs to `Program Files\mtgacoach`
-4. Launch from the desktop shortcut or Start Menu
-5. First launch: click "Provision Runtime" in the Repair tab to create the Python environment
+```bash
+# 1. Install uv (once):
+#    Linux/macOS:  curl -LsSf https://astral.sh/uv/install.sh | sh
+#    Windows:      powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-The app auto-starts the coach when launched and connects to MTGA automatically.
+# 2. Install (or update) mtgacoach:
+uv tool install --force \
+  https://github.com/josharmour/mtgacoach/releases/latest/download/arenamcp-py3-none-any.whl
 
-### BepInEx Bridge (required for the in-game overlay and autopilot)
+# 3. Run:
+mtgacoach-desktop     # the app (with the Repair tab)
+mtgacoach-repair      # the same check-and-repair checklist from a terminal
+```
 
-The GRE bridge plugin enables direct game-state access, bridge action submission, and ground-truth card positions for the overlay. The Repair tab can install it for you:
+**Windows, no terminal?** Download **mtgacoach-Setup.exe** from the
+[latest release](https://github.com/josharmour/mtgacoach/releases/latest) and run it.
 
-1. Open the **Repair** tab
-2. Click **Install BepInEx** (if not already installed)
-3. Click **Install Plugin** to deploy MtgaCoachBridge.dll
-4. Restart MTGA
+### First run
+
+Open the **Repair** tab. It checks everything automatically — Python runtime,
+license key, MTGA location, game logging, BepInEx, the bridge plugin, and
+(Linux/Proton) your Steam launch options — and fixes what it safely can. Follow
+any ⚠ rows it shows (for example, paste your license key right in the tab), then
+restart MTGA once so the plugin loads.
+
+Requires MTGA via Steam/Proton (Linux) or the official client (Windows), with
+**Detailed Logs (Plugin Support)** enabled in MTGA's options. The BepInEx bridge
+(for the overlay and autopilot) is installed and kept up to date by the Repair
+tab — no manual steps.
 
 ## AI Backend
 
