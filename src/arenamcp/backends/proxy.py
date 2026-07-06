@@ -62,6 +62,57 @@ DEFAULT_LOCAL_URL = "http://localhost:8000/v1"
 DEFAULT_LOCAL_MODEL = "gemma4:e2b"
 
 
+class BackendError(Exception):
+    """Typed API failure for consumers that must branch on error semantics.
+
+    Replaces the "Error getting advice: ..." prose sentinel for callers
+    that pass raise_on_error=True (the autopilot planner). Carries enough
+    structure that retry policy lives HERE, not in string matching.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        retry_after_s: Optional[float] = None,
+        status_code: Optional[int] = None,
+    ):
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after_s = retry_after_s
+        self.status_code = status_code
+
+
+# HTTP statuses worth one bounded retry: transient gateway/origin trouble.
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+def _classify_api_error(e: Exception) -> BackendError:
+    """Wrap an SDK/network exception in a BackendError with retry semantics."""
+    status = getattr(e, "status_code", None)
+    retry_after: Optional[float] = None
+    body = getattr(e, "body", None)
+    if isinstance(body, dict):
+        ra = body.get("retry_after")
+        try:
+            retry_after = float(ra) if ra is not None else None
+        except (TypeError, ValueError):
+            retry_after = None
+    retryable = status in _RETRYABLE_STATUS_CODES
+    if status is None:
+        # Connection-level failures (reset, refused, DNS) — the SDK raises
+        # APIConnectionError without a status. Treat as retryable.
+        retryable = type(e).__name__ in (
+            "APIConnectionError",
+            "APITimeoutError",
+            "ConnectionError",
+        )
+    return BackendError(
+        str(e), retryable=retryable, retry_after_s=retry_after, status_code=status
+    )
+
+
 class ProxyBackend:
     """LLM backend using OpenAI-compatible chat completions API.
 
@@ -82,6 +133,9 @@ class ProxyBackend:
         self._base_url = base_url
         self._api_key = api_key
         self._client = None
+        # What the server said it actually ran (R4: gateway aliases lie).
+        self.last_served_model: Optional[str] = None
+        self._served_model_warned = False
 
         # Fire-and-forget warmup for any local backend to pre-load weights/KV cache
         self._local_warmup()
@@ -190,6 +244,7 @@ class ProxyBackend:
         max_tokens: int = 4096,
         temperature: float = 0.3,
         request_timeout_s: Optional[float] = None,
+        raise_on_error: bool = False,
     ) -> str:
         """Get completion from the API endpoint.
 
@@ -202,6 +257,13 @@ class ProxyBackend:
                 which lets the calling worker thread exit cleanly. Without
                 it, hung backends silently leak threads forever (the future
                 timeout only abandons the thread, it doesn't kill it).
+            raise_on_error: Re-raise API errors instead of returning the
+                "Error getting advice: ..." sentinel string. The autopilot
+                planner sets this — during the 2026-07-05 gateway outage the
+                sentinel was fed to the JSON parser, parsed to 0 actions, and
+                the fallback then SUBMITTED real passes on windows with
+                castable spells. Sentinel-string returns are only safe for
+                consumers that display text to a human.
         """
         import time
 
@@ -260,74 +322,141 @@ class ProxyBackend:
             if extra:
                 params["extra_body"] = extra
 
-            request_start = time.perf_counter()
+            # Bounded retry: one extra attempt for transient failures
+            # (429/5xx/connection). A 60s Retry-After is useless mid-match —
+            # skip the retry entirely when the server asks for a long wait.
+            last_err: Optional[BackendError] = None
+            for attempt in (1, 2):
+                try:
+                    return self._complete_once(client, params)
+                except Exception as e:
+                    err = _classify_api_error(e)
+                    if (
+                        err.retryable
+                        and attempt == 1
+                        and (err.retry_after_s is None or err.retry_after_s <= 5.0)
+                    ):
+                        wait = min(err.retry_after_s or 0.5, 1.0)
+                        logger.warning(
+                            f"API error (retryable): {e} — one retry in {wait:.1f}s"
+                        )
+                        time.sleep(wait)
+                        continue
+                    last_err = err
+                    break
+            last_err = last_err or BackendError("unknown API failure")
+            logger.error(f"API error: {last_err}")
+            if raise_on_error:
+                raise last_err
+            return f"Error getting advice: {last_err}"
+        except BackendError:
+            raise
+        except Exception as e:
+            # Setup failures (client init, params construction).
+            logger.error(f"API error: {e}")
+            if raise_on_error:
+                raise _classify_api_error(e) from e
+            return f"Error getting advice: {e}"
 
-            # Try streaming first for lower perceived latency
-            try:
-                stream = client.chat.completions.create(**params, stream=True)
-                chunks: list[str] = []
-                reasoning_chunks: list[str] = []
-                for chunk in stream:
-                    if chunk.choices and chunk.choices[0].delta:
-                        delta = chunk.choices[0].delta
-                        
-                        # Extract reasoning token if present
-                        reasoning_token = None
-                        if getattr(delta, "reasoning_content", None):
-                            reasoning_token = delta.reasoning_content
-                        elif getattr(delta, "model_extra", None) and delta.model_extra.get("reasoning"):
-                            reasoning_token = delta.model_extra.get("reasoning")
-                        elif getattr(delta, "reasoning", None):
-                            reasoning_token = delta.reasoning
-                            
-                        if reasoning_token:
-                            reasoning_chunks.append(reasoning_token)
-                        
-                        if delta.content:
-                            chunks.append(delta.content)
-                
-                if reasoning_chunks:
-                    reasoning_str = "".join(reasoning_chunks)
-                    logger.debug(f"[PROXY] Model reasoning:\n{reasoning_str}")
-                    
-                content = "".join(chunks)
-                request_time = (time.perf_counter() - request_start) * 1000
-                logger.info(
-                    f"[PROXY] API (streamed): {request_time:.0f}ms, model: {self.model}"
-                )
-                return content
-            except Exception as stream_err:
-                logger.debug(f"[PROXY] Streaming failed, falling back to non-streaming: {stream_err}")
+    def _note_served_model(self, served: Optional[str]) -> None:
+        """Record the model the server actually ran (gateway aliases lie).
 
-            # Fallback: non-streaming request
-            request_start = time.perf_counter()
-            response = client.chat.completions.create(**params)
+        The 2026-07-05 misroute (alias 'nemotron-3-super' → an ollama 12B)
+        was invisible because [PROXY] logs printed the configured alias.
+        """
+        if not served:
+            return
+        self.last_served_model = served
+        if served != self.model and not getattr(self, "_served_model_warned", False):
+            self._served_model_warned = True
+            logger.warning(
+                f"[PROXY] served model {served!r} != configured alias "
+                f"{self.model!r} — routing is gateway-side"
+            )
+
+    def _complete_once(self, client, params) -> str:
+        """Single request attempt: streaming first, non-streaming fallback."""
+        import time
+
+        request_start = time.perf_counter()
+
+        # Try streaming first for lower perceived latency
+        try:
+            stream = client.chat.completions.create(**params, stream=True)
+            chunks: list[str] = []
+            reasoning_chunks: list[str] = []
+            served_model = None
+            for chunk in stream:
+                if served_model is None and getattr(chunk, "model", None):
+                    served_model = chunk.model
+                if chunk.choices and chunk.choices[0].delta:
+                    delta = chunk.choices[0].delta
+
+                    # Extract reasoning token if present
+                    reasoning_token = None
+                    if getattr(delta, "reasoning_content", None):
+                        reasoning_token = delta.reasoning_content
+                    elif getattr(delta, "model_extra", None) and delta.model_extra.get("reasoning"):
+                        reasoning_token = delta.model_extra.get("reasoning")
+                    elif getattr(delta, "reasoning", None):
+                        reasoning_token = delta.reasoning
+
+                    if reasoning_token:
+                        reasoning_chunks.append(reasoning_token)
+
+                    if delta.content:
+                        chunks.append(delta.content)
+
+            if reasoning_chunks:
+                reasoning_str = "".join(reasoning_chunks)
+                logger.debug(f"[PROXY] Model reasoning:\n{reasoning_str}")
+
+            self._note_served_model(served_model)
+            content = "".join(chunks)
             request_time = (time.perf_counter() - request_start) * 1000
-
-            message = response.choices[0].message
-            content = message.content
-            
-            # Extract reasoning
-            reasoning = None
-            if getattr(message, "reasoning_content", None):
-                reasoning = message.reasoning_content
-            elif getattr(message, "model_extra", None) and message.model_extra.get("reasoning"):
-                reasoning = message.model_extra.get("reasoning")
-            elif getattr(message, "reasoning", None):
-                reasoning = message.reasoning
-            if reasoning:
-                logger.debug(f"[PROXY] Model reasoning:\n{reasoning}")
-            usage = getattr(response, 'usage', None)
-            tokens_info = ""
-            if usage:
-                tokens_info = f", in={usage.prompt_tokens}, out={usage.completion_tokens}"
             logger.info(
-                f"[PROXY] API: {request_time:.0f}ms, model: {self.model}{tokens_info}"
+                f"[PROXY] API (streamed): {request_time:.0f}ms, "
+                f"model: {self.model}, served: {served_model or '?'}"
             )
             return content
-        except Exception as e:
-            logger.error(f"API error: {e}")
-            return f"Error getting advice: {e}"
+        except Exception as stream_err:
+            # Streaming transport quirks fall through to non-streaming, but a
+            # real API failure (auth, 5xx, connection) would fail identically
+            # there — reclassify and re-raise those for the retry loop.
+            err = _classify_api_error(stream_err)
+            if err.retryable or err.status_code is not None:
+                raise
+            logger.debug(f"[PROXY] Streaming failed, falling back to non-streaming: {stream_err}")
+
+        # Fallback: non-streaming request
+        request_start = time.perf_counter()
+        response = client.chat.completions.create(**params)
+        request_time = (time.perf_counter() - request_start) * 1000
+
+        message = response.choices[0].message
+        content = message.content
+
+        # Extract reasoning
+        reasoning = None
+        if getattr(message, "reasoning_content", None):
+            reasoning = message.reasoning_content
+        elif getattr(message, "model_extra", None) and message.model_extra.get("reasoning"):
+            reasoning = message.model_extra.get("reasoning")
+        elif getattr(message, "reasoning", None):
+            reasoning = message.reasoning
+        if reasoning:
+            logger.debug(f"[PROXY] Model reasoning:\n{reasoning}")
+        served_model = getattr(response, "model", None)
+        self._note_served_model(served_model)
+        usage = getattr(response, 'usage', None)
+        tokens_info = ""
+        if usage:
+            tokens_info = f", in={usage.prompt_tokens}, out={usage.completion_tokens}"
+        logger.info(
+            f"[PROXY] API: {request_time:.0f}ms, model: {self.model}, "
+            f"served: {served_model or '?'}{tokens_info}"
+        )
+        return content
 
     def complete_with_image(
         self,
