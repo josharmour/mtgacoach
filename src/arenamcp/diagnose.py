@@ -70,7 +70,7 @@ def check_venv() -> bool:
     _check("Virtual environment", PASS if in_venv else WARN,
            sys.prefix if in_venv else "Running with system Python")
     if not in_venv:
-        _fix("Recommended: run install.bat or create a venv manually")
+        _fix("Recommended: run the Repair tab (or `mtgacoach-repair` in a terminal) or create a venv manually")
     return True  # not fatal
 
 

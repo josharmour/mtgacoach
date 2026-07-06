@@ -1,9 +1,12 @@
-"""Windows launcher/install helpers for mtgacoach.
+"""BOOTSTRAP-ONLY module — do not add features here.
 
-This module is intentionally stdlib-only so it can be reused by the GUI
-launcher, setup flows, and future installer entry points before the full
-Python environment is initialized.
+This is the stdlib-only fallback used by launcher_gui.py when the venv/Qt
+runtime is broken. The maintained implementations live in
+src/arenamcp/desktop/runtime.py and src/arenamcp/platform_integration.py;
+this copy exists solely so a dead runtime can still show a repair window.
+(Repair-audit #23: the two copies silently diverged — fixes landed in one.)
 """
+
 
 from __future__ import annotations
 

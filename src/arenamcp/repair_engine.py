@@ -183,6 +183,28 @@ class RepairEngine:
             )
             with urllib.request.urlopen(req, timeout=8) as resp:
                 if resp.status == 200:
+                    # Audit #24: month-old clients ride gateway aliases that
+                    # have already misrouted once — verify the configured
+                    # model is actually served.
+                    try:
+                        import json as _json
+
+                        served = {
+                            m.get("id")
+                            for m in _json.load(resp).get("data", [])
+                        }
+                        configured = get_settings().get("model")
+                        if configured and served and configured not in served:
+                            get_settings().set("model", None)
+                            return CheckResult(
+                                "license", "License / online backend",
+                                "fixed",
+                                f"License OK, but your saved model "
+                                f"'{configured}' is no longer served — "
+                                "reset to the server default.",
+                            )
+                    except Exception:
+                        pass
                     return CheckResult(
                         "license", "License / online backend", "ok",
                         "License key accepted by the gateway.",

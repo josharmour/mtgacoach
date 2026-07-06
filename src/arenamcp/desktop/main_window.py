@@ -736,12 +736,35 @@ class MainWindow(QMainWindow):
         if sender is not None and sender is not self._process:
             return
 
-        self._status_bar.showMessage(f"Coach exited ({exit_code}). Restarting...")
+        # Audit #18: an unconditional 250ms restart turned a crashing coach
+        # into a GUI-freezing loop that hid the cause and yanked the user
+        # off the Repair tab. Back off, and stop after 3 rapid crashes.
+        import time as _time
+
+        now = _time.monotonic()
+        if now - getattr(self, "_last_coach_exit_ts", 0.0) > 60.0:
+            self._coach_crash_count = 0
+        self._last_coach_exit_ts = now
+        self._coach_crash_count = getattr(self, "_coach_crash_count", 0) + 1
+
         if self._process is not None:
             self.coach_tab.detach_process()
             self._process.deleteLater()
             self._process = None
-        QTimer.singleShot(250, lambda: self._start_coach(*self._launch_flags))
+
+        if self._coach_crash_count >= 3:
+            self._status_bar.showMessage(
+                f"Coach crashed {self._coach_crash_count} times (exit "
+                f"{exit_code}) — not restarting. Open the Repair tab."
+            )
+            self._show_repair_view()
+            return
+
+        delay_ms = 250 * (4 ** (self._coach_crash_count - 1))  # 250ms, 1s
+        self._status_bar.showMessage(
+            f"Coach exited ({exit_code}). Restarting in {delay_ms / 1000:.1f}s..."
+        )
+        QTimer.singleShot(delay_ms, lambda: self._start_coach(*self._launch_flags))
 
     def _build_theme_menu(self) -> None:
         theme_menu = self.menuBar().addMenu("Theme")

@@ -145,3 +145,13 @@ iscc installer/mtgacoach.iss
 ## License
 
 MIT
+
+## Repair & recovery
+
+- In the app: the **Repair** tab runs one "Check & Repair" pass over your
+  whole setup (runtime, license, MTGA, BepInEx bridge) and fixes what it
+  safely can.
+- From a terminal (works even when the GUI won't start):
+  `mtgacoach-repair` — same checklist, no Qt required.
+  `mtgacoach-repair --set-license sk-...` — set your license key.
+  `mtgacoach-repair --update` — update the app via pip and re-check.

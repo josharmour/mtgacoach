@@ -10,6 +10,10 @@ Runs with system Python (no venv needed). Uses only stdlib modules.
 """
 
 import argparse
+
+# Modes invoked by automation (launch.bat, setup splash, Repair) — these
+# must never prompt or block on stdin.
+_AUTOMATION_FLAGS = {"--setup-environment", "--create-venv"}
 import io
 import json
 import os
@@ -276,7 +280,13 @@ def _resolve_root() -> Path:
         if _is_repo_dir(saved_path):
             return saved_path
 
-    # 3. Interactive -- ask the user
+    # 3. Interactive -- ask the user. NEVER in automation modes: the
+    # parent (launch.bat / setup splash / Repair) holds our stdin pipe and
+    # prompt_choice would block or spin-flood forever (audit #16).
+    if _AUTOMATION_FLAGS & set(sys.argv[1:]):
+        print("    ERROR: mtgacoach files not found and this is an automated")
+        print("    run — cannot prompt. Reinstall the app.")
+        sys.exit(2)
     print()
     print("    The setup wizard could not find the mtgacoach files.")
     print()
@@ -637,8 +647,25 @@ def step_virtual_environment() -> bool:
     """Step 2: Create or reuse venv, upgrade pip."""
     print_header(2, "Virtual Environment")
 
+    venv_alive = False
     if VENV_DIR.exists() and PIP_PATH.exists():
-        ok("venv/ exists")
+        # Repair-audit #4: existence is not health. A venv whose base
+        # interpreter was uninstalled/upgraded fails every pip run forever;
+        # probe it and REBUILD instead of dooming every retry.
+        try:
+            probe = subprocess.run(
+                [str(PYTHON_PATH), "-c", "import pip"],
+                capture_output=True, text=True, timeout=20,
+            )
+            venv_alive = probe.returncode == 0
+        except Exception:
+            venv_alive = False
+        if not venv_alive:
+            info("venv/ exists but is broken (its Python cannot run) — rebuilding")
+            shutil.rmtree(VENV_DIR, ignore_errors=True)
+
+    if venv_alive:
+        ok("venv/ exists and responds")
     else:
         python = _find_system_python()
         RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
@@ -1204,12 +1231,6 @@ def _pause() -> None:
     except EOFError:
         pass
 
-
-# Modes invoked by automation (launch.bat, the desktop setup splash, the
-# Repair tab) — these must never block on "Press Enter to exit", or the
-# parent waits forever (hidden-console deadlock via launch.vbs; QProcess
-# timeout in the setup splash).
-_AUTOMATION_FLAGS = {"--setup-environment", "--create-venv"}
 
 if __name__ == "__main__":
     _interactive = not (_AUTOMATION_FLAGS & set(sys.argv[1:]))

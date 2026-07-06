@@ -230,6 +230,35 @@ def _check_python_runtime(python_exe: Optional[str]) -> tuple[bool, str]:
     return (False, detail)
 
 
+_PYTHON_PROBE_CACHE: dict[str, bool] = {}
+
+
+def _python_responds(path: Path) -> bool:
+    """Does this python actually run? (repair-audit #4/#14)
+
+    An exists() check trusts two liars: a present-but-dead venv python
+    (base interpreter uninstalled) and the 0-byte Microsoft Store
+    WindowsApps alias stub (exits 9009 / opens the Store). A 5s
+    ``--version`` probe rejects both.
+    """
+    key = str(path)
+    cached = _PYTHON_PROBE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        result = subprocess.run(
+            [key, "--version"],
+            capture_output=True,
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        ok = result.returncode == 0
+    except Exception:
+        ok = False
+    _PYTHON_PROBE_CACHE[key] = ok
+    return ok
+
+
 def find_python_executable() -> tuple[Optional[str], str]:
     runtime_root = Path(get_runtime_root())
     app_root = Path(get_app_root())
@@ -250,11 +279,11 @@ def find_python_executable() -> tuple[Optional[str], str]:
     candidates.append((app_root / ".venv" / scripts_dir / py_exe, "app_venv"))
 
     for candidate, source in candidates:
-        if candidate.exists():
+        if candidate.exists() and _python_responds(candidate):
             return (str(candidate), source)
 
     from_path, path_source = _find_python_on_path()
-    if from_path:
+    if from_path and _python_responds(Path(from_path)):
         return (from_path, path_source)
 
     return (None, "not_found")
@@ -762,6 +791,7 @@ def run_setup_wizard(mode: str | None = None) -> subprocess.Popen[str]:
 def install_bepinex(mtga_dir: str) -> str:
     if is_mtga_running():
         raise RuntimeError("Close MTGA before installing BepInEx")
+    _require_writable(mtga_dir)
 
     state = detect_runtime_state()
     if not state.bepinex_bundle:
@@ -823,9 +853,25 @@ def find_plugin_dll() -> Optional[Path]:
     return None
 
 
+def _require_writable(mtga_dir: str) -> None:
+    """Audit #20: unelevated writes into admin-ACL'd game dirs surfaced raw
+    [WinError 5]. Probe first and say what to do."""
+    probe = Path(mtga_dir) / ".mtgacoach_write_probe"
+    try:
+        probe.write_text("probe")
+        probe.unlink()
+    except OSError as e:
+        raise PermissionError(
+            f"No write access to {mtga_dir} ({e}). Run the app as "
+            "administrator once, or grant your user write access to the "
+            "MTGA folder, then run Check & Repair again."
+        ) from e
+
+
 def install_plugin(mtga_dir: str) -> str:
     if is_mtga_running():
         raise RuntimeError("Close MTGA before installing the plugin")
+    _require_writable(mtga_dir)
 
     source_dll = find_plugin_dll()
     if source_dll is None:
@@ -864,6 +910,25 @@ def repair_bridge_stack(mtga_dir: str) -> list[str]:
 
 
 
+def _invalidate_mtga_running_cache() -> None:
+    global _running_cache_time, _running_cache_value
+    _running_cache_time = 0.0
+    _running_cache_value = None
+
+
+def _wait_for_mtga_exit(timeout_s: float = 10.0) -> None:
+    """Audit #17: 'Fix Everything' re-gated on a 1s-stale running cache
+    right after close_mtga, failing with 'Close MTGA before installing'.
+    Wait for the process to actually die and drop the cache."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        _invalidate_mtga_running_cache()
+        if not is_mtga_running():
+            return
+        time.sleep(0.5)
+    _invalidate_mtga_running_cache()
+
+
 def close_mtga() -> bool:
     if not is_mtga_running():
         return False
@@ -879,7 +944,9 @@ def close_mtga() -> bool:
         if result.returncode != 0 and result.returncode != 1:
             detail = (result.stderr or result.stdout).strip() or "pkill failed"
             raise RuntimeError(detail)
-        return True
+        _wait_for_mtga_exit()
+        _wait_for_mtga_exit()
+    return True
 
     result = subprocess.run(
         ["taskkill", "/IM", "MTGA.exe", "/T", "/F"],
@@ -892,6 +959,7 @@ def close_mtga() -> bool:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or "taskkill failed"
         raise RuntimeError(detail)
+    _wait_for_mtga_exit()
     return True
 
 

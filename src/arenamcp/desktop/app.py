@@ -146,8 +146,11 @@ def main() -> int:
 
     apply_theme(app, load_saved_theme())
 
-    if not _run_first_run_setup(app):
-        return 1
+    # Audit blocker #5: never gate the main window on the setup splash —
+    # its own failure text says "open the Repair tab", which only exists
+    # inside MainWindow. MainWindow degrades gracefully when the runtime
+    # is unprovisioned, and the Repair tab is the recovery surface.
+    _run_first_run_setup(app)
 
     window = MainWindow()
     window.show()
@@ -210,6 +213,9 @@ def _run_first_run_setup(app) -> bool:
         app.processEvents(QEventLoop.WaitForMoreEvents, 100)
 
     if not splash.setup_success:
-        _write_log("first-run setup cancelled or failed; exiting")
+        _write_log(
+            "first-run setup cancelled or failed; continuing to the main "
+            "window so the Repair tab is reachable"
+        )
         return False
     return True

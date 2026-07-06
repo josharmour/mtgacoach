@@ -118,8 +118,12 @@ class Settings:
     def __init__(self) -> None:
         """Initialize settings, loading from disk if available."""
         self._data: dict[str, Any] = DEFAULTS.copy()
+        # Keys this instance changed via set() — the only keys allowed to
+        # override newer on-disk values at save time (audit #19).
+        self._dirty: set[str] = set()
         self._load()
         if self._ensure_install_id():
+            self._dirty.add("install_id")
             self.save()
 
     def _load(self) -> None:
@@ -170,6 +174,18 @@ class Settings:
 
         try:
             SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+            # Audit #19: other components (repair engine, runtime helpers)
+            # write keys like mtga_install_dir directly to disk; rewriting
+            # from this instance's startup snapshot deleted their fixes on
+            # every exit — the user re-repaired the same thing each session.
+            # Merge unknown on-disk keys under ours before writing.
+            try:
+                on_disk = json.loads(SETTINGS_FILE.read_text())
+                for key, value in on_disk.items():
+                    if key not in self._dirty:
+                        self._data[key] = value
+            except Exception:
+                pass
             tmp = SETTINGS_FILE.with_suffix(".json.tmp")
             with open(tmp, "w") as f:
                 json.dump(self._data, f, indent=2)
@@ -206,6 +222,7 @@ class Settings:
         if key == "mode" and value != "online":
             value = "online"
         self._data[key] = value
+        self._dirty.add(key)
         if save:
             self.save()
 
