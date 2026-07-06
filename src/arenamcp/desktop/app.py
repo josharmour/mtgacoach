@@ -164,6 +164,17 @@ def _run_first_run_setup(app) -> bool:
     setup was needed but failed/cancelled (caller should exit). When no setup is
     needed this returns ``True`` immediately and shows nothing.
     """
+    # This function runs from main() AFTER QApplication was constructed, so
+    # PySide6 (and the whole app environment) is already proven working. A
+    # pip/uv install has a complete environment by definition; the
+    # provisioning splash is a relic of the old bootstrap-launcher/fat-venv
+    # model and here would only try to run setup_wizard.py — which isn't
+    # shipped in the wheel — and fail (v2.7.1 "Setup failed" screenshot).
+    # Runtime provisioning now belongs to the stdlib launcher and the
+    # Repair tab, never to the already-running Qt app.
+    if "PySide6" in sys.modules:
+        return True
+
     try:
         from .runtime import detect_runtime_state
     except Exception as exc:  # pragma: no cover - defensive
