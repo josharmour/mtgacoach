@@ -151,3 +151,28 @@ def test_live_pending_request_verification(monkeypatch):
 
     eng._gre_bridge = _DeadBridge()
     assert eng._live_pending_request_is("PayCosts") is None
+
+
+def test_reusable_advice_same_window_only(monkeypatch):
+    # P2-3: coach fall-through reuses the plan advice for the SAME window.
+    import time as _time
+
+    eng = _engine(monkeypatch)
+    state = {
+        "_bridge_game_state_id": 42,
+        "_bridge_request_type": "ActionsAvailable",
+        "pending_decision": "Action Required",
+        "turn": {"turn_number": 7, "phase": "Main1", "step": ""},
+    }
+    eng._last_plan_advice = (
+        eng._priority_window_signature(state), "Cast the thing.", _time.time()
+    )
+    assert eng.get_reusable_advice(state) == "Cast the thing."
+
+    moved = dict(state, _bridge_game_state_id=43)
+    assert eng.get_reusable_advice(moved) is None
+
+    eng._last_plan_advice = (
+        eng._priority_window_signature(state), "Cast the thing.", _time.time() - 30
+    )
+    assert eng.get_reusable_advice(state) is None

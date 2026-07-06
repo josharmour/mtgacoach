@@ -329,6 +329,9 @@ class AutopilotEngine:
         # R2: game-plan reform runs off the critical path; this guards
         # against stacking concurrent reform threads.
         self._game_plan_reform_inflight = threading.Event()
+        # P2-3: (window signature, advice text, ts) of the last computed
+        # plan, for coach fall-through reuse.
+        self._last_plan_advice: Optional[tuple[Any, str, float]] = None
 
         # Statistics
         self._actions_executed = 0
@@ -755,6 +758,23 @@ class AutopilotEngine:
         actions = game_state.get("_bridge_actions")
         n = len(actions) if isinstance(actions, list) else -1
         return (gsid, rtype, n)
+
+    def get_reusable_advice(self, game_state: dict[str, Any]) -> Optional[str]:
+        """Advice from the plan just computed for this same decision window.
+
+        The coach fall-through used to re-run plan_actions on the identical
+        state (8 duplicate calls / ~58s on 2026-07-05) — P2-3. Returns None
+        when the window changed or the plan is older than 20s.
+        """
+        entry = self._last_plan_advice
+        if not entry:
+            return None
+        sig, advice, ts = entry
+        if not advice or time.time() - ts > 20.0:
+            return None
+        if sig != self._priority_window_signature(game_state):
+            return None
+        return advice
 
     def _live_pending_request_is(self, expected_norm: str) -> Optional[bool]:
         """Live-verify the pending bridge request family.
@@ -2765,6 +2785,13 @@ class AutopilotEngine:
             _plan_started_at = time.perf_counter()
             plan = self._planner.plan_actions(
                 game_state, trigger, legal_actions, decision_context
+            )
+            # P2-3: remember this window's advice so a coach fall-through on
+            # the same window reuses it instead of re-running plan_actions.
+            self._last_plan_advice = (
+                self._priority_window_signature(game_state),
+                plan.voice_advice or plan.overall_strategy or "",
+                time.time(),
             )
             # Opt-in trajectory capture for real-match data collection. No-op
             # unless a recorder was attached (engine._trajectory_recorder).

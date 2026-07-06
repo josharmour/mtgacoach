@@ -3266,13 +3266,32 @@ class StandaloneCoach:
                             # both autopilot actions AND coaching advice. The
                             # planner constrains itself to legal actions only.
                             if self._autopilot and hasattr(self._autopilot, '_planner'):
-                                legal_actions = self._autopilot._get_legal_actions(curr_state)
-                                decision_context = curr_state.get("decision_context")
-                                plan = self._autopilot._planner.plan_actions(
-                                    curr_state, trigger, legal_actions, decision_context
-                                )
-                                advice = plan.voice_advice or plan.overall_strategy
-                                if not advice and plan.actions:
+                                # P2-3: when autopilot just planned this exact
+                                # window and fell through, reuse its advice
+                                # instead of re-running plan_actions on the
+                                # identical state (8 duplicate calls / ~58s on
+                                # 2026-07-05, incl. the night's largest 28.8s
+                                # call — most of it then discarded as stale).
+                                plan = None
+                                reused = None
+                                try:
+                                    reused = self._autopilot.get_reusable_advice(curr_state)
+                                except Exception:
+                                    reused = None
+                                if reused:
+                                    logger.info(
+                                        "Coach: reusing autopilot plan advice for "
+                                        "this window (no duplicate LLM call)"
+                                    )
+                                    advice = reused
+                                else:
+                                    legal_actions = self._autopilot._get_legal_actions(curr_state)
+                                    decision_context = curr_state.get("decision_context")
+                                    plan = self._autopilot._planner.plan_actions(
+                                        curr_state, trigger, legal_actions, decision_context
+                                    )
+                                    advice = plan.voice_advice or plan.overall_strategy
+                                if not advice and plan is not None and plan.actions:
                                     advice = str(plan.actions[0])
                                 if not advice:
                                     advice = "No actionable play right now."
@@ -3284,7 +3303,7 @@ class StandaloneCoach:
                                 # stale highlighted ring on the board after
                                 # the action fires is distracting.
                                 try:
-                                    if not self._autopilot_enabled:
+                                    if not self._autopilot_enabled and plan is not None:
                                         emit = getattr(self.ui, "emit_suggested_actions", None)
                                         if callable(emit):
                                             emit(self._actions_to_event_payload(plan, curr_state))
