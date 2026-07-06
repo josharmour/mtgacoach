@@ -3236,6 +3236,27 @@ class AutopilotEngine:
                     self._state = AutopilotState.IDLE
                     return True
 
+                # P1-6: "no-op, window closed" means the action did NOT
+                # happen. Counting it executed let a coach-mandated lethal
+                # attack silently evaporate on 2026-07-05 23:02:30 — the
+                # no-op was "verified" by unrelated phase drift, marked
+                # "Plan complete", and never re-attempted (and the false
+                # completion fed a hallucinated "we attacked" into the next
+                # prompt). Keep the turn-plan step pending (attack intent
+                # survives for the next DeclareAttackers window) and yield.
+                if click_result.error and "window closed" in click_result.error:
+                    logger.warning(
+                        f"Autopilot: {action.action_type.value} was a "
+                        "window-closed no-op — not executed; keeping the plan "
+                        "step pending and yielding to next cycle"
+                    )
+                    self._notify(
+                        "AUTOPILOT",
+                        f"Window closed before {action.action_type.value} — will retry",
+                    )
+                    self._state = AutopilotState.IDLE
+                    return True
+
                 self._actions_executed += 1
                 self._last_exec_success_ts = time.time()
                 # P0-9: plan-executed actions belong in the match packet too
