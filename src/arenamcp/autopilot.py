@@ -3362,6 +3362,12 @@ class AutopilotEngine:
                 # a "Replanned: ..." note before the panel hides — the
                 # next own-turn LLM call will produce a fresh plan.
                 if action_verified:
+                    # P1-7: the verified execution is the ONLY source of
+                    # "Already executed this turn" prompt facts.
+                    try:
+                        self._planner.note_executed(action)
+                    except Exception as e:
+                        logger.debug(f"note_executed failed: {e}")
                     try:
                         outcome = self._planner.advance_turn_plan(action)
                     except Exception as e:

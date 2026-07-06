@@ -162,3 +162,29 @@ def test_system_prompt_includes_ok_trust_rule():
     from arenamcp.action_planner import AUTOPILOT_SYSTEM_PROMPT
     assert "TRUST [OK]" in AUTOPILOT_SYSTEM_PROMPT
     assert "hybrid" in AUTOPILOT_SYSTEM_PROMPT.lower()
+
+
+def test_turn_executed_only_records_verified_actions():
+    # P1-7: guardrail-rejected proposals must not appear as "already
+    # executed"; only note_executed (verified callback) records.
+    from arenamcp.action_planner import ActionType as AT, GameAction
+
+    backend = _ScriptedBackend([
+        _cast_response("Bolt", "Burn plan"),
+        _cast_response("Goblin", "Continue plan"),
+    ])
+    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
+    legal = ["Cast Bolt [OK]", "Cast Goblin [OK]", "Pass"]
+    state = _state()
+
+    p.plan_actions(state, "decision_required", legal, {"type": "actions_available"})
+    # Second window WITHOUT a verified execution — nothing assumed executed.
+    p.plan_actions(state, "decision_required", legal, {"type": "actions_available"})
+    assert p._turn_executed == []
+
+    # Verified execution records.
+    p.note_executed(GameAction(action_type=AT.CAST_SPELL, card_name="Bolt"))
+    assert p._turn_executed == ["cast_spell(Bolt)"]
+    # Idempotent.
+    p.note_executed(GameAction(action_type=AT.CAST_SPELL, card_name="Bolt"))
+    assert p._turn_executed == ["cast_spell(Bolt)"]

@@ -379,14 +379,12 @@ class ActionPlanner:
             # Reset the per-turn plan_turn attempt guard so the new turn
             # gets one attempt to build a fresh plan.
             self._turn_plan_attempted_for_turn = -1
-        # Mark the last-memoized action as executed if we're in a new priority
-        # window of the same turn (the action we proposed last time either
-        # fired or became irrelevant — either way, don't re-propose it).
-        elif self._turn_memo and self._turn_memo.actions:
-            last = self._turn_memo.actions[0]
-            last_repr = f"{last.action_type.value}({last.card_name})" if last.card_name else last.action_type.value
-            if last_repr not in self._turn_executed:
-                self._turn_executed.append(last_repr)
+        # P1-7: _turn_executed is now appended ONLY from the autopilot's
+        # verified-execution callback (note_executed). The old
+        # executed-by-assumption append here recorded guardrail-rejected
+        # proposals as done — a land drop that never hit the battlefield
+        # showed up as "Already executed this turn: play_land(Forest)"
+        # (2026-07-05 22:47).
 
         diag: dict[str, Any] = {
             "timestamp": time.time(),
@@ -929,6 +927,18 @@ class ActionPlanner:
                 plan.mark_current_done()
                 return "advanced"
         return "diverged"
+
+    def note_executed(self, action: GameAction) -> None:
+        """Record a VERIFIED executed action for this turn's prompts (P1-7)."""
+        if action is None:
+            return
+        rep = (
+            f"{action.action_type.value}({action.card_name})"
+            if action.card_name
+            else action.action_type.value
+        )
+        if rep not in self._turn_executed:
+            self._turn_executed.append(rep)
 
     def has_pending_attack_intent(self) -> bool:
         """True if the active turn plan still has an un-executed attack step.
