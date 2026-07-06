@@ -204,6 +204,9 @@ RULES:
 - MANA IS AUTO-PAID. The engine taps lands/rocks automatically when you cast
   or activate. NEVER try to tap a permanent for mana as your action — mana
   activations are not in your menu for exactly this reason.
+- play_land ONLY when a "Play Land:" (or PlayMDFC) entry is in the menu.
+  "#N" suffixes on battlefield names (e.g. "Forest #3") are display
+  disambiguators for permanents already in play — never playable cards.
 - TRUST [OK] tags. "[OK]" on a Cast or Activate Ability action means MTGA's mana solver already verified the cost is payable from your current mana — including hybrid, phyrexian, cost reductions, and affinity. Do NOT recompute the cost yourself or claim you "lack the mana": the Mana summary shows floating mana only, not what your untapped lands can produce. If an action is [OK] in the legal list, you CAN take it. Failing to play affordable [OK] actions wastes the turn. Every action in the legal list is offered by MTGA as currently legal — a missing [OK] on an Activate Ability does NOT mean it is unaffordable; tap/sacrifice activations cost no mana at all (e.g. cracking a fetch land — which also triggers landfall).
 - If a pending decision is shown, resolve that decision (not a new cast/play).
 - ONE action per plan. Don't sequence (no "play land" + "cast spell").

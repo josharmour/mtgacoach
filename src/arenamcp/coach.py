@@ -2686,10 +2686,19 @@ class CoachEngine:
         mana_lines, total_mana, mana_pool = self._format_mana_info(your_cards, turn_num)
         lines.extend(mana_lines)
 
-        # Land drop status
+        # Land drop status. P2-9: lands_played is inferred post-message and
+        # lags for seconds after a drop — the CURRENT window's menu is the
+        # authority. "Land: AVAILABLE" with no "Play Land:" entry produced
+        # play_land hallucinations (Forest #3, 2026-07-05 22:50).
         lands_played = local_player.get("lands_played", 0) if local_player else 0
-        if is_your_turn and lands_played == 0:
+        has_land_entry = any(
+            str(la).strip().lower().startswith(("play land:", "action: playmdfc"))
+            for la in (game_state.get("legal_actions") or [])
+        )
+        if is_your_turn and lands_played == 0 and has_land_entry:
             lines.append("Land: AVAILABLE")
+        elif is_your_turn and lands_played == 0:
+            lines.append("Land: not playable in this window (no Play Land action)")
         elif is_your_turn:
             lines.append(f"Land: USED ({lands_played})")
         else:
