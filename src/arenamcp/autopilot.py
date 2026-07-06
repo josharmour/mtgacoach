@@ -313,6 +313,10 @@ class AutopilotEngine:
         # P1-8: recent takeover records (by-reference extras) awaiting
         # possible self_recovered_replan reclassification.
         self._recent_takeovers: list[dict[str, Any]] = []
+        # P1-4: manual-play detection state.
+        self._last_seen_own_stack: set[str] = set()
+        self._manual_play_cooldown_until: float = 0.0
+        self._recent_bot_submissions: list[tuple[float, str]] = []
         self._max_fallback_bugs_per_match: int = 5
 
         # State
@@ -761,6 +765,54 @@ class AutopilotEngine:
         actions = game_state.get("_bridge_actions")
         n = len(actions) if isinstance(actions, list) else -1
         return (gsid, rtype, n)
+
+    # P1-4: how long autopilot stays advise-only after spotting a manual play.
+    _MANUAL_PLAY_COOLDOWN_S = 20.0
+    # Bot submissions within this window explain an own stack object.
+    _MANUAL_PLAY_BOT_WINDOW_S = 15.0
+
+    def _detect_manual_play(self, game_state: dict[str, Any]) -> bool:
+        """True when a NEW own-controlled stack object wasn't bot-submitted.
+
+        Tracks the set of own stack names between polls; a new one that no
+        recent bot submission explains means the user is casting manually —
+        the autopilot enters an advise-only cooldown and says so instead of
+        fighting the user's plays (P1-4, live 2026-07-06 01:02).
+        """
+        local_seat = game_state.get("local_seat_id")
+        if local_seat is None:
+            return False
+        own_stack = {
+            str(e.get("name") or "").strip().lower()
+            for e in (game_state.get("stack") or [])
+            if isinstance(e, dict)
+            and (e.get("controller_seat_id") or e.get("owner_seat_id")) == local_seat
+            and e.get("name")
+        }
+        new_names = own_stack - self._last_seen_own_stack
+        self._last_seen_own_stack = own_stack
+        if not new_names:
+            return False
+        now = time.monotonic()
+        recent_bot_names = {
+            name for ts, name in self._recent_bot_submissions
+            if now - ts <= self._MANUAL_PLAY_BOT_WINDOW_S
+        }
+        unexplained = {n for n in new_names if n not in recent_bot_names}
+        if not unexplained:
+            return False
+        already_cooling = time.time() < self._manual_play_cooldown_until
+        self._manual_play_cooldown_until = time.time() + self._MANUAL_PLAY_COOLDOWN_S
+        if not already_cooling:
+            logger.info(
+                f"Autopilot: manual play detected ({sorted(unexplained)}) — "
+                f"advise-only for {self._MANUAL_PLAY_COOLDOWN_S:.0f}s"
+            )
+            self._notify(
+                "AUTOPILOT",
+                "You're playing — autopilot standing by (advice only)",
+            )
+        return True
 
     def get_reusable_advice(self, game_state: dict[str, Any]) -> Optional[str]:
         """Advice from the plan just computed for this same decision window.
@@ -2109,6 +2161,20 @@ class AutopilotEngine:
                 self._request_tracker.reset()
             self._max_seen_turn = max(self._max_seen_turn, turn_num)
 
+            # P1-4: the user casting manually while autopilot runs. On
+            # 2026-07-06 01:02 the bot fought the user's manual plays for
+            # ~50s (activated the user's aura 3x, target attempts failing
+            # "Pending is null"). When an own-controlled stack object
+            # appears that WE didn't submit, stand down to advise-only for
+            # a cooldown instead of racing the user.
+            if self._detect_manual_play(game_state):
+                return False  # fall through to coaching (advise-only)
+            if time.time() < self._manual_play_cooldown_until:
+                logger.info(
+                    "Autopilot: user is playing — standing by (advise-only)"
+                )
+                return False
+
             # Silent-rollback detection: we submitted a cast, and the SAME
             # cast is being offered again in a later priority window while
             # nothing of ours sits on the stack. The 2026-07-01 wedges rolled
@@ -3343,6 +3409,11 @@ class AutopilotEngine:
                             action.card_name.strip().lower(),
                         )
                         self._last_cast_submitted_ts = time.monotonic()
+                        # P1-4: bot submissions explain own stack objects.
+                        self._recent_bot_submissions.append(
+                            (time.monotonic(), action.card_name.strip().lower())
+                        )
+                        del self._recent_bot_submissions[:-12]
 
                 # --- 4. VERIFYING ---
                 action_verified = True
