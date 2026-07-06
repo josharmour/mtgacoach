@@ -453,7 +453,14 @@ class MainWindow(QMainWindow):
         self.menuBar().addAction(refresh_action)
         self._build_theme_menu()
         self._build_view_menu()
-        self._build_model_menu()
+        # The Model/endpoint dialog is dev-only tooling (it defaults the API
+        # key to the local "vllm" value and probes for served models — it
+        # shows customers a confusing "No models found"). The online product
+        # always uses the server-assigned model, so hide it unless
+        # MTGACOACH_DEV is set.
+        import os as _os
+        if _os.environ.get("MTGACOACH_DEV"):
+            self._build_model_menu()
 
         self._apply_window_geometry()
         self.refresh_state()

@@ -15,11 +15,16 @@ dependencies = [
     "sounddevice>=0.4.6",
     "numpy>=1.24.0",
     "keyboard>=0.13.5",
-    # The product IS the desktop app + online coach — these are not
-    # optional (pristine-install test 2026-07-06: a bare wheel install
-    # couldn't launch the GUI or reach the gateway).
+    # The product IS the desktop VOICE coach + online gateway — these are
+    # not optional. A bare `uv tool install <wheel>` used to strand them in
+    # extras, so the installed app couldn't launch the GUI, reach the
+    # gateway, or speak (2026-07-06: "Kokoro worker exited (1)", grey
+    # Coach/Bridge dots). onnxruntime comes transitively via kokoro-onnx.
     "PySide6>=6.7.0",
     "openai>=1.0.0",
+    "kokoro-onnx",         # TTS (spoken advice)
+    "soundfile>=0.12.0",   # audio I/O for TTS/STT
+    "faster-whisper>=1.0.0",  # STT (push-to-talk voice input)
 ]
 
 [project.optional-dependencies]
