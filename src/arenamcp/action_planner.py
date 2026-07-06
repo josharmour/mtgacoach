@@ -14,6 +14,12 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# Sentinel returned by plan_decision_options when the safe move is to
+# DECLINE the pending window (cancel / pause for manual) rather than pick
+# any option. Live 2026-07-05: a harmful SelectTargets whose only legal
+# candidates were the user's own permanents must not be auto-submitted.
+DECLINE_DECISION = "__decline__"
+
 
 _ACTIONS_AVAILABLE_BRIDGE_REQUESTS = {
     "ActionsAvailable",
@@ -158,6 +164,7 @@ class TurnPlan:
 # JSON schema embedded in the system prompt for constrained output
 ACTION_SCHEMA = """{
   "actions": [{
+    "pick": 0,
     "action_type": "play_land|cast_spell|declare_attackers|declare_blockers|select_target|select_n|modal_choice|mulligan_keep|mulligan_mull|pass_priority|resolve|draft_pick|click_button|activate_ability|order_blockers|assign_damage|order_combat_damage|pay_costs|search_library|distribute|numeric_input|choose_starting_player|select_replacement|select_counters|casting_options|order_triggers",
     "card_name": "string (card name, empty if not applicable)",
     "target_names": ["string (target card/player names)"],
@@ -169,17 +176,29 @@ ACTION_SCHEMA = """{
     "numeric_value": 0,
     "distribution": {"target_name": 0},
     "play_or_draw": "play|draw",
-    "reasoning": "string (brief explanation)"
+    "reasoning": "string (brief explanation, max ~10 words)"
   }],
   "overall_strategy": "string (1-sentence strategy summary)",
   "voice_advice": "string (1-2 sentence spoken coaching advice for the player, concise and actionable)"
-}"""
+}
+OMIT every field that does not apply. A menu pick needs ONLY "pick" (plus a
+short "reasoning"); a structured action needs ONLY action_type + its own
+fields. Never emit empty placeholder fields."""
 
 
 AUTOPILOT_SYSTEM_PROMPT = """You are an MTG Arena autopilot. Given the game state and trigger, output a JSON action plan to execute.
 
 RULES:
-- ONLY pick actions from the "Legal:" line. Never invent actions.
+- PREFERRED OUTPUT: the "Legal:" menu is NUMBERED. For a simple play (cast,
+  play land, activate, pass), answer with {"pick": <number>} — the number of
+  the menu entry you choose. Use structured action_type fields ONLY for
+  combat declarations, targeting, distribution, and other decisions that
+  need extra data.
+- ONLY pick actions from the "Legal:" menu. Never invent actions. Never
+  propose anything under EXCLUDED.
+- MANA IS AUTO-PAID. The engine taps lands/rocks automatically when you cast
+  or activate. NEVER try to tap a permanent for mana as your action — mana
+  activations are not in your menu for exactly this reason.
 - TRUST [OK] tags. "[OK]" on a Cast or Activate Ability action means MTGA's mana solver already verified the cost is payable from your current mana — including hybrid, phyrexian, cost reductions, and affinity. Do NOT recompute the cost yourself or claim you "lack the mana": the Mana summary shows floating mana only, not what your untapped lands can produce. If an action is [OK] in the legal list, you CAN take it. Failing to play affordable [OK] actions wastes the turn. Every action in the legal list is offered by MTGA as currently legal — a missing [OK] on an Activate Ability does NOT mean it is unaffordable; tap/sacrifice activations cost no mana at all (e.g. cracking a fetch land — which also triggers landfall).
 - If a pending decision is shown, resolve that decision (not a new cast/play).
 - ONE action per plan. Don't sequence (no "play land" + "cast spell").
@@ -207,6 +226,21 @@ PER-DECISION FIELDS:
 
 SCHEMA:
 """ + ACTION_SCHEMA
+
+
+# P0-8 (2026-07-05): plan_turn used to reuse AUTOPILOT_SYSTEM_PROMPT, whose
+# "Output ONLY JSON matching the schema" hard-demanded the actions envelope
+# while the user message asked for turn_plan — a model-dependent coin flip
+# that yielded ZERO turn plans for match 1 (the 12B obeyed the system prompt
+# all 3 times, perfectly valid JSON in the wrong shape).
+TURN_PLAN_SYSTEM_PROMPT = """You are an MTG Arena turn planner. Given the game state, output the ordered list of user-visible plays for this whole turn.
+
+RULES:
+- TRUST [OK] tags: MTGA's mana solver already verified those costs are payable.
+- Skip mana abilities, casting-time sub-decisions, and search prompts — list only user-visible plays (Play Land, Cast X, Activate X, Attack).
+- Output ONLY a JSON object of this exact shape (no prose, no markdown):
+{"turn_plan": {"steps": [{"action_type": "play_land|cast_spell|activate_ability|declare_attackers", "card_name": "string", "target_names": [], "rationale": "string (max 10 words)"}]}}
+"""
 
 
 def _strip_attacker_annotations(tail: str) -> str:
@@ -249,6 +283,9 @@ class ActionPlanner:
         self._land_drop_first = land_drop_first
         # Recent planning diagnostics ring buffer for debug reports
         self._recent_diagnostics: list[dict[str, Any]] = []
+        # R3: the numbered menu shown in the most recent prompt; {"pick": N}
+        # answers resolve against it (1-based).
+        self._last_menu: list[str] = []
         # Turn-consistency memo: cache the last plan we produced for a turn
         # so subsequent priority windows in the same turn see it and are
         # nudged to stay committed to the same strategy instead of re-reasoning
@@ -388,30 +425,62 @@ class ActionPlanner:
                 )
                 return preflight_plan
 
-        # First non-trivial own-turn LLM call: build a multi-step turn
-        # plan. This is an additional LLM call that runs before the main
-        # per-window action call, so subsequent prompts (and the UI) see
-        # the full ordered list of plays we expect to make this turn.
-        # The attempt guard prevents repeating the call across priority
-        # windows after a failure (parse error, timeout, etc.).
-        if (
+        # P2-6: a menu with no real choice needs no LLM. 7+ full calls on
+        # 2026-07-05 fired on Wait-only / pass-only windows (incl. every
+        # combat trigger while the opponent held priority) and every
+        # response was discarded or auto-picked anyway.
+        _trivial = {"pass", "action: activate_mana", "action: floatmana"}
+        has_real_choice = any(
+            a.strip().lower() not in _trivial
+            and not a.strip().lower().startswith("wait (")
+            for a in effective_legal_actions
+        )
+        if effective_legal_actions and not has_real_choice:
+            plan = self._fallback_plan("", effective_legal_actions)
+            if plan.actions:
+                plan.trigger = trigger
+                plan.turn_number = current_turn
+                diag["preflight"] = "trivial_window_no_llm"
+                diag["elapsed_ms"] = (time.perf_counter() - start) * 1000
+                diag["planned_actions"] = len(plan.actions)
+                self._record_diagnostic(diag)
+                logger.info(
+                    "Planner short-circuit: trivial window "
+                    f"({effective_legal_actions}) — no LLM call"
+                )
+                return plan
+
+        # R2: the turn plan rides along on the FIRST own-turn action call
+        # instead of being a separate blocking LLM call. The old serial
+        # game_plan → plan_turn → plan_actions chain took 17-23s on slow
+        # backends and self-induced its own staleness discards (2026-07-05,
+        # four calls / 23.0s / net effect zero at 22:46:17). The attempt
+        # guard prevents re-requesting across priority windows after a
+        # failure (parse error, timeout, etc.).
+        want_turn_plan = (
             self._active_turn_plan is None
             and self._turn_plan_attempted_for_turn != current_turn
             and self._is_own_actions_available_window(game_state, decision_context)
-        ):
+        )
+        if want_turn_plan:
             self._turn_plan_attempted_for_turn = current_turn
-            try:
-                self.plan_turn(
-                    game_state, effective_legal_actions, decision_context
-                )
-            except Exception as e:
-                logger.warning(f"plan_turn call failed (non-fatal): {e}")
 
         # Build the prompt
         system_prompt = AUTOPILOT_SYSTEM_PROMPT
         user_message = self._build_action_prompt(
             game_state, trigger, effective_legal_actions, decision_context
         )
+        if want_turn_plan:
+            user_message += (
+                "\n\nADDITIONALLY: this is the first decision of your turn. "
+                "Include a top-level \"turn_plan\" key in the SAME JSON "
+                "response with the full ordered list of user-visible plays "
+                "for this turn (3-7 items; skip mana abilities and "
+                "sub-decisions): "
+                '{"turn_plan": {"steps": [{"action_type": "play_land", '
+                '"card_name": "Forest", "rationale": "fix mana"}]}}. '
+                "Your actions[0] must be the first step you can take right now."
+            )
         diag["prompt_len"] = len(user_message)
 
         # Call LLM with enforced timeout.
@@ -427,12 +496,17 @@ class ActionPlanner:
             # alive for ~10 minutes (OpenAI SDK default), which then keeps
             # this with-block from exiting.
             try:
+                # raise_on_error: never let the "Error getting advice: ..."
+                # sentinel string reach the JSON parser — during a backend
+                # outage the parse yields 0 actions and _fallback_plan would
+                # submit a real game action (blind passes, 2026-07-05).
                 return self._backend.complete(
                     system_prompt,
                     user_message,
                     4096,
                     temperature=0.0,
                     request_timeout_s=self._timeout,
+                    raise_on_error=True,
                 )
             except TypeError:
                 try:
@@ -464,6 +538,31 @@ class ActionPlanner:
         diag["elapsed_ms"] = (time.perf_counter() - start) * 1000
         diag["response_len"] = len(response) if response else 0
         diag["response_preview"] = (response or "")[:300]
+
+        # Belt-and-braces for backends that still return the error sentinel
+        # as a string (raise_on_error TypeError fallback, third-party
+        # backends): never feed it to the parser / fallback picker.
+        if response and response.lstrip().startswith("Error getting advice"):
+            logger.error(f"Backend returned error sentinel; no plan: {response[:160]}")
+            diag["failure"] = "llm_error_sentinel"
+            self._record_diagnostic(diag)
+            return ActionPlan(trigger=trigger)
+
+        # R2: extract the piggybacked turn plan from the same response.
+        if want_turn_plan and response:
+            try:
+                tp = self._parse_turn_plan_response(response, current_turn)
+                if tp and tp.steps:
+                    self._active_turn_plan = tp
+                    logger.info(
+                        f"Turn plan locked (turn {current_turn}, merged call): "
+                        + ", ".join(
+                            (f"{s.action_type}:{s.card_name}" if s.card_name else s.action_type)
+                            for s in tp.steps
+                        )
+                    )
+            except Exception as e:
+                logger.debug(f"merged turn-plan parse failed (non-fatal): {e}")
 
         # Parse response — pass bridge request + decision context so we can
         # accept decision-type actions (select_n, search_library, etc.) even
@@ -657,19 +756,20 @@ class ActionPlanner:
         def _complete() -> str:
             try:
                 return self._backend.complete(
-                    AUTOPILOT_SYSTEM_PROMPT,
+                    TURN_PLAN_SYSTEM_PROMPT,
                     user_message,
                     4096,
                     temperature=0.0,
                     request_timeout_s=self._timeout,
+                    raise_on_error=True,
                 )
             except TypeError:
                 try:
                     return self._backend.complete(
-                        AUTOPILOT_SYSTEM_PROMPT, user_message, 4096, temperature=0.0
+                        TURN_PLAN_SYSTEM_PROMPT, user_message, 4096, temperature=0.0
                     )
                 except TypeError:
-                    return self._backend.complete(AUTOPILOT_SYSTEM_PROMPT, user_message)
+                    return self._backend.complete(TURN_PLAN_SYSTEM_PROMPT, user_message)
 
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -726,6 +826,18 @@ class ActionPlanner:
             steps_data = block.get("steps", [])
         else:
             steps_data = data.get("steps", [])
+
+        # P0-8 belt-and-braces: a model that obeyed the actions envelope
+        # anyway still described the turn — map actions→steps
+        # (reasoning→rationale) instead of discarding the whole response.
+        if (not isinstance(steps_data, list) or not steps_data) and isinstance(
+            data.get("actions"), list
+        ):
+            steps_data = [
+                {**a, "rationale": a.get("rationale") or a.get("reasoning", "")}
+                for a in data["actions"]
+                if isinstance(a, dict)
+            ]
 
         if not isinstance(steps_data, list):
             return None
@@ -1228,7 +1340,9 @@ class ActionPlanner:
         battlefield = game_state.get("battlefield", []) or []
         opp_permanents = [
             c for c in battlefield
-            if (c.get("controller_id") or c.get("owner_seat_id")) != local_seat
+            # gamestate emits controller_seat_id (never controller_id);
+            # controller beats owner so stolen permanents classify right.
+            if (c.get("controller_seat_id") or c.get("owner_seat_id")) != local_seat
             and "land" not in str(c.get("type_line") or "").lower()
         ]
 
@@ -1278,6 +1392,45 @@ class ActionPlanner:
         except Exception as e:
             logger.warning(f"Failed to use CoachEngine formatter: {e}")
             context = self._fallback_format(game_state)
+
+        # R1/P0-5: one list must feed both the prompt and the validator.
+        # The context formatter builds its Legal: line from the raw
+        # game_state, which can disagree with the filtered list this
+        # planner validates against (Silkguard X-cost: the prompt said
+        # "Cast Silkguard [OK]" while the validator had stripped it —
+        # 6 identical propose→drop cycles on 2026-07-05). Rewrite the
+        # line from the effective list and name the exclusions.
+        if legal_actions is not None:
+            full = list(game_state.get("legal_actions") or [])
+            excluded = [a for a in full if a not in legal_actions]
+            # R3: numbered menu. Mana/float activations are auto-paid by the
+            # engine and were the #1 source of unmatchable proposals (6 drops
+            # on 2026-07-05: "tap Talisman/Forest for mana") — keep them out
+            # of the menu entirely.
+            menu = [
+                a for a in legal_actions
+                if a.strip().lower() not in (
+                    "action: activate_mana", "action: floatmana"
+                )
+            ]
+            self._last_menu = menu
+            if menu:
+                menu_lines = "\n".join(
+                    f"  {i + 1}. {a}" for i, a in enumerate(menu)
+                )
+                eff_str = f"(pick by number)\n{menu_lines}"
+            else:
+                eff_str = 'NONE — say "pass priority"'
+            context, n = re.subn(
+                r"(?m)^Legal: .*$", f"Legal: {eff_str}", context, count=1
+            )
+            if n == 0:
+                context = f"Legal: {eff_str}\n{context}"
+            if excluded:
+                context += (
+                    "\nEXCLUDED (autopilot cannot execute these — do NOT "
+                    "propose them): " + ", ".join(excluded[:6])
+                )
 
         # Build trigger description
         trigger_descriptions = {
@@ -1481,7 +1634,30 @@ class ActionPlanner:
 
         # Parse actions
         for action_data in data.get("actions", []):
-            action = self._parse_action(action_data)
+            # R3: a menu pick resolves to the exact legal-action string we
+            # showed — the action is legal by construction, so name
+            # hallucination is structurally impossible on this path.
+            action = None
+            pick = action_data.get("pick") if isinstance(action_data, dict) else None
+            if pick is not None:
+                try:
+                    idx = int(pick) - 1
+                except (TypeError, ValueError):
+                    idx = -1
+                if 0 <= idx < len(self._last_menu):
+                    action = self._legal_action_to_action(self._last_menu[idx])
+                    if action is not None:
+                        action.reasoning = str(action_data.get("reasoning", "") or "")
+                        logger.debug(
+                            f"Menu pick {pick} → {self._last_menu[idx]!r}"
+                        )
+                if action is None:
+                    logger.warning(
+                        f"Planner pick {pick!r} out of menu range "
+                        f"(1..{len(self._last_menu)}); trying structured fields"
+                    )
+            if action is None:
+                action = self._parse_action(action_data)
             if action and self._is_action_legal(
                 action, legal_actions, decision_context, bridge_request
             ):
@@ -1519,6 +1695,12 @@ class ActionPlanner:
             logger.debug("Planner fallback: no legal actions available")
             return plan
 
+        # A backend error sentinel is not advice — auto-picking a real game
+        # action from it submitted blind passes during the 2026-07-05 outage.
+        if response and response.lstrip().startswith("Error getting advice"):
+            logger.warning("Planner fallback skipped: backend error, not model output")
+            return plan
+
         selected = self._match_legal_action_in_text(response, legal_actions)
         if not selected:
             logger.debug("Planner fallback: no text match in response, trying heuristic")
@@ -1545,11 +1727,110 @@ class ActionPlanner:
     # Typed-decision planning (fable-improvements.md item 1, Phase B)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _extract_first_json(text: str) -> Optional[str]:
+        """Pull the first JSON object out of a possibly prose-wrapped reply.
+
+        Models routinely prefix a sentence before the JSON despite "reply
+        ONLY with JSON" instructions (0/5 typed-decision parses on
+        2026-07-05 failed this way). Strips markdown fences, extracts the
+        first {...} block, and drops trailing commas.
+        """
+        s = (text or "").strip()
+        fence = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", s, re.DOTALL)
+        if fence:
+            s = fence.group(1).strip()
+        m = re.search(r"\{.*\}", s, re.DOTALL)
+        if not m:
+            return None
+        return re.sub(r",\s*([\]}])", r"\1", m.group(0))
+
+    _PAY_DECLINE_SYSTEM_PROMPT = (
+        "You decide whether to PAY an optional cost in a Magic: The "
+        "Gathering Arena game (a 'you may pay ...' trigger or ability). "
+        "Paying commits you to the effect that follows, including choosing "
+        "targets for it. If the effect's targeting restriction means no "
+        "opponent permanent is a legal target (so it would be forced onto "
+        "your own permanents), you MUST decline. Reply ONLY with JSON: "
+        '{"pay": true, "reasoning": "<one short sentence>"} — no prose '
+        "before or after."
+    )
+
+    def plan_pay_or_decline(
+        self,
+        source_name: str,
+        oracle_text: str,
+        game_state: dict[str, Any],
+    ) -> Optional[bool]:
+        """One-shot pay/decline call for an out-of-band optional cost.
+
+        Returns True (pay), False (decline), or None when the LLM path is
+        unavailable or unparseable — the caller picks the conservative
+        default for the effect type.
+        """
+        local_seat = game_state.get("local_seat_id")
+        own: list[str] = []
+        theirs: list[str] = []
+        for obj in game_state.get("battlefield", []) or []:
+            name = obj.get("name") or "?"
+            pt = ""
+            if obj.get("power") is not None or obj.get("toughness") is not None:
+                pt = f" ({obj.get('power')}/{obj.get('toughness')})"
+            ctrl = obj.get("controller_seat_id") or obj.get("owner_seat_id")
+            (own if ctrl == local_seat else theirs).append(f"{name}{pt}")
+        user_message = "\n".join([
+            f"Optional cost from: {source_name or 'unknown source'}",
+            f"Effect text: {oracle_text or 'unknown'}",
+            f"Your battlefield: {', '.join(own) or '(empty)'}",
+            f"Opponent battlefield: {', '.join(theirs) or '(empty)'}",
+            "",
+            "Should you pay this optional cost?",
+        ])
+        try:
+            try:
+                response = self._backend.complete(
+                    self._PAY_DECLINE_SYSTEM_PROMPT,
+                    user_message,
+                    256,
+                    temperature=0.0,
+                    request_timeout_s=min(self._timeout, 8.0),
+                    raise_on_error=True,
+                )
+            except TypeError:
+                response = self._backend.complete(
+                    self._PAY_DECLINE_SYSTEM_PROMPT, user_message
+                )
+        except Exception as e:
+            logger.info(f"plan_pay_or_decline LLM call failed: {e}")
+            return None
+        json_str = self._extract_first_json(response)
+        if not json_str:
+            logger.info(
+                f"plan_pay_or_decline unparseable: {(response or '')[:120]!r}"
+            )
+            return None
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError:
+            logger.info(f"plan_pay_or_decline bad JSON: {json_str[:120]!r}")
+            return None
+        pay = data.get("pay")
+        if isinstance(pay, bool):
+            logger.info(
+                f"plan_pay_or_decline: pay={pay} "
+                f"({str(data.get('reasoning', ''))[:100]})"
+            )
+            return pay
+        return None
+
     _DECISION_SYSTEM_PROMPT = (
         "You decide one pending choice in a Magic: The Gathering Arena game. "
         "You get the game state and a list of legal options, each with an "
-        "option_id. Reply ONLY with JSON: "
+        "option_id. Output ONLY a JSON object — no prose before or after, "
+        "no markdown, English only: "
         '{"option_ids": ["<id>", ...], "reasoning": "<one short sentence>"}. '
+        'Example: {"option_ids": ["tgt:123"], "reasoning": "kills the '
+        'biggest threat"}. '
         "Pick between min_select and max_select options FROM THE LIST — any "
         "other id is invalid. Prefer plays that advance your board and "
         "remove the biggest threat; never pick options marked 'cannot "
@@ -1579,6 +1860,10 @@ class ActionPlanner:
             logger.info(f"plan_decision_options LLM path failed: {e}")
         if decision.request_type == "SelectTargets":
             picked = self._targeting_fallback_pick(decision, game_state)
+            if picked == [DECLINE_DECISION]:
+                # Harmful targeting forced onto own permanents — never let
+                # the blind deterministic pick submit it either.
+                return picked
             if picked:
                 logger.info(
                     "plan_decision_options: controller-aware target fallback "
@@ -1667,7 +1952,7 @@ class ActionPlanner:
         own = [
             iid for iid in candidates
             if local_seat is not None
-            and (battlefield.get(iid, {}).get("controller_id")
+            and (battlefield.get(iid, {}).get("controller_seat_id")
                  or battlefield.get(iid, {}).get("owner_seat_id")) == local_seat
         ]
         theirs = [
@@ -1676,9 +1961,19 @@ class ActionPlanner:
         ]
 
         if harmful:
-            # Opponent's biggest threat; if the spell can only hit our own
-            # permanents (forced), throw away the least valuable one.
-            pool = sorted(theirs, key=_power, reverse=True) or sorted(own, key=_power)
+            # Opponent's biggest threat. When the spell can only hit our
+            # own permanents, DO NOT pick one — signal decline so the
+            # caller cancels or hands to the user (2026-07-05: this branch
+            # "threw away the least valuable one" and destroyed the user's
+            # own Spirit).
+            if not theirs and own:
+                logger.warning(
+                    "Targeting fallback: harmful source with only own "
+                    "permanents as candidates — declining instead of "
+                    "sacrificing one"
+                )
+                return [DECLINE_DECISION]
+            pool = sorted(theirs, key=_power, reverse=True)
         else:
             # Beneficial: our biggest creature; never buff the opponent's
             # board just because it's the first candidate.
@@ -1718,18 +2013,29 @@ class ActionPlanner:
                 512,
                 temperature=0.0,
                 request_timeout_s=min(self._timeout, 12.0),
+                raise_on_error=True,
             )
         except TypeError:
             response = self._backend.complete(
                 self._DECISION_SYSTEM_PROMPT, user_message
             )
 
-        json_str = (response or "").strip()
-        fence = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", json_str, re.DOTALL)
-        if fence:
-            json_str = fence.group(1).strip()
-        json_str = re.sub(r",\s*([\]}])", r"\1", json_str)
-        data = json.loads(json_str)
+        # P1-1: models prose-prefix the JSON despite "reply ONLY with JSON"
+        # (0/5 typed-decision parses on 2026-07-05, one reply in Chinese) —
+        # extract the first JSON object instead of parsing the whole string,
+        # and log a preview when even that fails so the failure is
+        # diagnosable from the log.
+        json_str = self._extract_first_json(response)
+        if not json_str:
+            logger.info(
+                f"typed-decision: no JSON object in response: {(response or '')[:160]!r}"
+            )
+            raise ValueError("typed-decision response contained no JSON object")
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError:
+            logger.info(f"typed-decision: bad JSON: {json_str[:160]!r}")
+            raise
         ids = data.get("option_ids") or []
         return [str(i) for i in ids if isinstance(i, (str, int))]
 

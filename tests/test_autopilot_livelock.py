@@ -186,8 +186,10 @@ def test_rolled_back_cast_hidden_from_planner(monkeypatch):
     # most one rollback), so re-set it between notes like a real
     # submit → rollback → resubmit → rollback cycle.
     eng._last_cast_submitted = (3, "momentum breaker")
+    eng._last_cast_submitted_ts = time.monotonic()
     eng._note_cast_rollback("PayCosts cancelled (test)")
     eng._last_cast_submitted = (3, "momentum breaker")
+    eng._last_cast_submitted_ts = time.monotonic()
     eng._note_cast_rollback("PayCosts cancelled (test)")
 
     legal = [
@@ -212,6 +214,7 @@ def test_cast_rollback_game_limit_survives_turn_changes(monkeypatch):
     eng = _engine(monkeypatch)
     for turn in (3, 4, 5):
         eng._last_cast_submitted = (turn, "patriar's humiliation")
+        eng._last_cast_submitted_ts = time.monotonic()
         eng._note_cast_rollback("timer rollback (test)")
 
     legal = ["Cast Patriar's Humiliation [OK]", "Pass"]
@@ -223,6 +226,7 @@ def test_cast_rollback_game_limit_survives_turn_changes(monkeypatch):
 def test_single_rollback_does_not_suppress(monkeypatch):
     eng = _engine(monkeypatch)
     eng._last_cast_submitted = (3, "momentum breaker")
+    eng._last_cast_submitted_ts = time.monotonic()
     eng._note_cast_rollback("once is allowed")
     legal = ["Cast Momentum Breaker", "Pass"]
     assert eng._filter_rolled_back_casts(legal, _state(3)) == legal
@@ -247,6 +251,7 @@ def test_auto_respond_escape_budget_per_turn(monkeypatch):
 def test_escape_on_casting_window_counts_as_cast_rollback(monkeypatch):
     eng = _engine(monkeypatch)
     eng._last_cast_submitted = (5, "ruthless negotiation")
+    eng._last_cast_submitted_ts = time.monotonic()
     gs = _state(5, _bridge_request_type="SelectTargets")
     eng._try_auto_respond_escape(gs, "test")
     assert eng._cast_rollback_counts.get((5, "ruthless negotiation")) == 1
@@ -307,7 +312,28 @@ def test_new_match_clears_rollback_memory(monkeypatch):
     eng._max_seen_turn = 9
     eng._cast_rollback_counts[(9, "shock")] = 2
     eng._last_cast_submitted = (9, "shock")
+    eng._last_cast_submitted_ts = time.monotonic()
     # Turn counter goes backwards → new match.
     eng.process_trigger(_state(1), "decision_required")
     assert eng._cast_rollback_counts == {}
     assert eng._last_cast_submitted is None
+
+
+def test_rolled_back_ability_hidden_from_planner(monkeypatch):
+    # P0-6 (2026-07-05): Utter Insignificance's exile ability was activated
+    # 3x into an unpayable {C}, each cancelling at PayCosts, and the
+    # cast-only rollback machinery never suppressed it.
+    eng = _engine(monkeypatch)
+    for _ in range(2):
+        eng._last_cast_submitted = (14, "utter insignificance")
+        eng._last_cast_submitted_ts = time.monotonic()
+        eng._note_cast_rollback("PayCosts cancelled (test)")
+
+    legal = [
+        "Activate Ability: Utter Insignificance",
+        "Cast Witch Enchanter [OK]",
+        "Pass",
+    ]
+    filtered = eng._filter_rolled_back_casts(legal, _state(14))
+    assert "Activate Ability: Utter Insignificance" not in filtered
+    assert "Cast Witch Enchanter [OK]" in filtered
