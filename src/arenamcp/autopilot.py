@@ -3201,6 +3201,22 @@ class AutopilotEngine:
 
                 self._actions_executed += 1
                 self._last_exec_success_ts = time.time()
+                # P0-9: plan-executed actions belong in the match packet too
+                # (only typed decisions were recorded before — match 1 on
+                # 2026-07-05 saved decisions=0 despite 8 submissions).
+                try:
+                    from arenamcp.match_packets import get_current_packet
+                    _packet = get_current_packet()
+                    if _packet:
+                        _packet.add_executed_action(
+                            action.action_type.value,
+                            card_name=action.card_name or "",
+                            detail=str(action)[:200],
+                            turn=(game_state.get("turn") or {}).get("turn_number"),
+                            path=str(getattr(click_result, "description", "") or ""),
+                        )
+                except Exception as e:
+                    logger.debug(f"MatchPacket executed-action record failed: {e}")
                 # Clear the persistent-failure counter for this action key
                 # so a future failure starts counting from 0 (#231).
                 self._reset_persistent_failure(action, game_state)

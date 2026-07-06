@@ -2492,7 +2492,7 @@ class StandaloneCoach:
                         try:
                             from arenamcp.match_packets import start_match_packet
                             packet = start_match_packet(curr_match_id)
-                            if self._coach:
+                            if packet and self._coach:
                                 packet.deck_strategy = self._coach._deck_strategy
                         except Exception as e:
                             logger.warning(f"Failed to start match packet: {e}")

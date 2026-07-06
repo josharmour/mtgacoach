@@ -49,6 +49,33 @@ class MatchPacket:
             "timestamp": time.time(),
         })
 
+    def add_executed_action(
+        self,
+        action_type: str,
+        card_name: str = "",
+        detail: str = "",
+        turn: Optional[int] = None,
+        path: str = "",
+    ) -> None:
+        """Log a plan-executed autopilot action (cast/land/attack/pass...).
+
+        Typed decisions go through add_decision; executor actions were
+        invisible before this — match 1 on 2026-07-05 saved decisions=0
+        despite 8 successful bridge submissions, gutting the packet's value
+        as training/telemetry data (P0-9).
+        """
+        self.decisions.append({
+            "executed_action": {
+                "action_type": action_type,
+                "card_name": card_name,
+                "detail": detail,
+                "turn": turn,
+                "path": path,
+            },
+            "outcome": "executed",
+            "timestamp": time.time(),
+        })
+
     def update_outcome(self, fp: tuple, outcome: str) -> None:
         """Settle a pending decision with its final execution outcome."""
         for entry in reversed(self.decisions):
@@ -86,6 +113,7 @@ class MatchPacket:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = target_dir / f"packet_{ts}_{self.match_id}.json"
             path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            mark_match_finalized(self.match_id)
             _rotate(target_dir)
             logger.info(
                 f"Match packet recorded: {path.name} (decisions={len(self.decisions)}, result={self.result})"
@@ -112,15 +140,34 @@ def _rotate(target_dir: Path) -> None:
 # Global singleton instance managed by standalone loop
 _current_packet: Optional[MatchPacket] = None
 
+# Match ids whose packet already hit disk this session. The server's late
+# "Completed match event for unseen match" re-surfaces a finished match id
+# after finalization, which restarted recording and saved a junk
+# decisions=0/result=unknown packet at the next boundary (P0-9,
+# 2026-07-05 22:55:22).
+_finalized_match_ids: set[str] = set()
 
-def start_match_packet(match_id: str) -> MatchPacket:
+
+def mark_match_finalized(match_id: str) -> None:
+    _finalized_match_ids.add(match_id)
+
+
+def start_match_packet(match_id: str) -> Optional[MatchPacket]:
     """Initialize a fresh match packet.
+
+    Returns None (no recording) when this match id was already finalized —
+    a late re-surfacing of a finished match must not restart recording.
 
     If a previous packet is still active (its game-end event never fired —
     crash, missed boundary), salvage it to disk as result="abandoned"
     instead of silently discarding its recorded decisions.
     """
     global _current_packet
+    if match_id in _finalized_match_ids:
+        logger.info(
+            f"Not restarting match packet for already-finalized match {match_id}"
+        )
+        return None
     prev = _current_packet
     if prev is not None and prev.match_id != match_id and prev.decisions:
         prev.result = "abandoned"
