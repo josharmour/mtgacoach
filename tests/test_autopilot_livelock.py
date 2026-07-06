@@ -337,3 +337,25 @@ def test_rolled_back_ability_hidden_from_planner(monkeypatch):
     filtered = eng._filter_rolled_back_casts(legal, _state(14))
     assert "Activate Ability: Utter Insignificance" not in filtered
     assert "Cast Witch Enchanter [OK]" in filtered
+
+
+def test_commander_exempt_from_game_wide_suppression(monkeypatch):
+    # #40 (live 2026-07-06): 3 PayCosts failures game-locked Hei Bai (the
+    # commander). Command-zone cards keep the per-turn limit but never the
+    # game-wide one.
+    eng = _engine(monkeypatch)
+    eng._cast_rollback_totals["hei bai, forest guardian"] = 3
+
+    state = _state(9)
+    state["command"] = [{"name": "Hei Bai, Forest Guardian"}]
+    legal = ["Cast Hei Bai, Forest Guardian [OK]", "Pass"]
+    assert "Cast Hei Bai, Forest Guardian [OK]" in eng._filter_rolled_back_casts(legal, state)
+
+    # A non-commander card with the same record stays suppressed.
+    state["command"] = []
+    assert "Cast Hei Bai, Forest Guardian [OK]" not in eng._filter_rolled_back_casts(legal, state)
+
+    # The per-turn limit still applies to the commander.
+    state["command"] = [{"name": "Hei Bai, Forest Guardian"}]
+    eng._cast_rollback_counts[(9, "hei bai, forest guardian")] = 2
+    assert "Cast Hei Bai, Forest Guardian [OK]" not in eng._filter_rolled_back_casts(legal, state)

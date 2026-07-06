@@ -118,3 +118,61 @@ def test_llm_decision_options_tolerates_prose_prefix():
         _decision([607, 812]), _state(own_ids=(607,), their_ids=(812,))
     )
     assert picked == ["tgt:812"]
+
+
+class _OwnPickBackend:
+    """LLM that picks the user's own creature for a harmful spell."""
+
+    def complete(self, *a, **k):
+        return '{"option_ids": ["tgt:607"], "reasoning": "remove threat"}'
+
+
+def test_harmful_llm_pick_of_own_creature_overridden():
+    # #38 (live 2026-07-06): LLM aimed Utter Insignificance at the user's
+    # own Nessian Wanderer. With opponent candidates available, the gate
+    # overrides to the opponent's biggest threat.
+    p = _planner()
+    p._timeout = 1.0
+    p._backend = _OwnPickBackend()
+    picked = p.plan_decision_options(
+        _decision([607, 812]), _state(own_ids=(607,), their_ids=(812,))
+    )
+    assert picked == ["tgt:812"]
+
+
+def test_harmful_llm_pick_own_only_declines():
+    p = _planner()
+    p._timeout = 1.0
+    p._backend = _OwnPickBackend()
+    picked = p.plan_decision_options(_decision([607]), _state(own_ids=(607,)))
+    assert picked == [DECLINE_DECISION]
+
+
+def test_beneficial_llm_pick_of_own_creature_kept():
+    p = _planner()
+    p._timeout = 1.0
+    p._backend = _OwnPickBackend()
+    picked = p.plan_decision_options(
+        _decision([607, 812]),
+        _state(own_ids=(607,), their_ids=(812,),
+               oracle="target creature gains hexproof"),
+    )
+    assert picked == ["tgt:607"]
+
+
+def test_target_options_labeled_with_controller():
+    p = _planner()
+    p._timeout = 1.0
+    captured = {}
+
+    class _CapturingBackend:
+        def complete(self, system, user, *a, **k):
+            captured["user"] = user
+            return '{"option_ids": ["tgt:812"]}'
+
+    p._backend = _CapturingBackend()
+    p.plan_decision_options(
+        _decision([607, 812]), _state(own_ids=(607,), their_ids=(812,))
+    )
+    assert "tgt:607: target 607 (YOURS)" in captured["user"]
+    assert "tgt:812: target 812 (opponent's)" in captured["user"]

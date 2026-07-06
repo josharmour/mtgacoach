@@ -76,6 +76,10 @@ class GameAction:
     reasoning: str = ""
     confidence: float = 1.0
     gre_action_ref: Optional[Any] = None  # GREActionRef from gre_action_matcher
+    # Land play via the MDFC back face ("Action: PlayMDFC" menu entries) —
+    # the matcher must resolve it to the raw PlayMDFC action, not a plain
+    # Play (#39, live 2026-07-06).
+    mdfc: bool = False
 
     def __str__(self) -> str:
         parts = [self.action_type.value]
@@ -191,7 +195,8 @@ AUTOPILOT_SYSTEM_PROMPT = """You are an MTG Arena autopilot. Given the game stat
 RULES:
 - PREFERRED OUTPUT: the "Legal:" menu is NUMBERED. For a simple play (cast,
   play land, activate, pass), answer with {"pick": <number>} — the number of
-  the menu entry you choose. Use structured action_type fields ONLY for
+  the menu entry you choose. "pick" MUST be a bare integer (e.g. 3), never
+  text. Respond in English only. Use structured action_type fields ONLY for
   combat declarations, targeting, distribution, and other decisions that
   need extra data.
 - ONLY pick actions from the "Legal:" menu. Never invent actions. Never
@@ -1624,6 +1629,27 @@ class ActionPlanner:
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
+            # #37 (live 2026-07-06): DSV4 sporadically emits unquoted garbage
+            # tokens as the pick value ('"pick": 什么人') which invalidates the
+            # whole JSON. The pick intent is usually still recoverable —
+            # salvage the first integer pick and resolve it against the menu
+            # before giving up.
+            m = re.search(r'"pick"\s*:\s*(\d+)', json_str)
+            if m and self._last_menu:
+                idx = int(m.group(1)) - 1
+                if 0 <= idx < len(self._last_menu):
+                    action = self._legal_action_to_action(self._last_menu[idx])
+                    if action is not None:
+                        logger.warning(
+                            f"Malformed plan JSON ({e}); salvaged pick "
+                            f"{m.group(1)} → {self._last_menu[idx]!r}"
+                        )
+                        plan.actions = [action]
+                        plan.overall_strategy = f"[pick-salvage] {self._last_menu[idx]}"
+                        plan.voice_advice = self._humanize_legal_action(
+                            self._last_menu[idx]
+                        )
+                        return plan
             logger.error(f"Failed to parse action plan JSON: {e}")
             logger.debug(f"Raw response: {response[:500]}")
             return plan
@@ -1726,6 +1752,28 @@ class ActionPlanner:
     # ------------------------------------------------------------------
     # Typed-decision planning (fable-improvements.md item 1, Phase B)
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _split_creature_list(payload: str) -> list[str]:
+        """Split 'A (2/2), B (5/5)' into creature names, comma-safely.
+
+        Card names contain commas ('Hei Bai, Forest Guardian'), so a blind
+        comma split shreds them into bogus names that fail the combat
+        legality subset check (#41, live 2026-07-06 — a planned attack was
+        silently never submitted). (P/T) decorations mark the real
+        boundaries when present; without them the payload is one name.
+        """
+        s = (payload or "").strip()
+        if not s:
+            return []
+        if ")" in s:
+            parts = re.split(r"\)\s*,\s*", s)
+            return [
+                (p if p.rstrip().endswith(")") else p + ")").strip()
+                for p in parts
+                if p.strip()
+            ]
+        return [s]
 
     @staticmethod
     def _extract_first_json(text: str) -> Optional[str]:
@@ -1848,6 +1896,12 @@ class ActionPlanner:
             chosen = self._llm_decision_options(decision, game_state)
             valid = decision.option_ids()
             chosen = [c for c in chosen if c in valid]
+            if chosen and decision.request_type == "SelectTargets":
+                chosen = self._gate_harmful_llm_target_picks(
+                    decision, game_state, chosen
+                )
+                if chosen == [DECLINE_DECISION]:
+                    return chosen
             if chosen:
                 limit = max(decision.min_select or 1, 1)
                 limit = max(limit, min(len(chosen), decision.max_select or 1))
@@ -1888,6 +1942,94 @@ class ActionPlanner:
         "loses flying",
     )
 
+    def _decision_source_is_harmful(
+        self, decision: Any, game_state: dict[str, Any]
+    ) -> Optional[bool]:
+        """Classify the targeting decision's source spell as harmful.
+
+        Source resolution: decision source_label matched on the stack, else
+        top of stack. Returns None when no oracle text resolves — callers
+        must treat that as "cannot judge", not "safe".
+        """
+        stack = game_state.get("stack", []) or []
+        source_label = str(getattr(decision, "source_label", "") or "").strip().lower()
+        picked_entry = None
+        if source_label:
+            for entry in stack:
+                if str(entry.get("name") or "").strip().lower() == source_label:
+                    picked_entry = entry
+                    break
+        if picked_entry is None and stack:
+            picked_entry = stack[-1]
+        oracle = str((picked_entry or {}).get("oracle_text") or "").lower()
+        if not oracle:
+            return None
+        return any(p in oracle for p in self._HARMFUL_TARGET_ORACLE_PHRASES)
+
+    def _battlefield_controllers(
+        self, game_state: dict[str, Any]
+    ) -> tuple[Optional[int], dict[int, Optional[int]]]:
+        """(local_seat, {instance_id: controller_seat}) for target labeling."""
+        local_seat = game_state.get("local_seat_id")
+        if local_seat is None:
+            for p in game_state.get("players", []) or []:
+                if p.get("is_local"):
+                    local_seat = p.get("seat_id")
+                    break
+        controllers: dict[int, Optional[int]] = {}
+        for c in game_state.get("battlefield", []) or []:
+            try:
+                iid = int(c.get("instance_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if iid:
+                controllers[iid] = (
+                    c.get("controller_seat_id") or c.get("owner_seat_id")
+                )
+        return local_seat, controllers
+
+    def _gate_harmful_llm_target_picks(
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        chosen: list[str],
+    ) -> list[str]:
+        """Override harmful-source LLM picks that hit our own permanents.
+
+        Live 2026-07-06 00:58: the typed-decision LLM picked the user's own
+        Nessian Wanderer for Utter Insignificance despite planning "remove
+        opponent's key creature". When the source is harmful and the pick is
+        own-controlled while other candidates exist, defer to the
+        controller-aware fallback (opponent's biggest threat, or
+        DECLINE_DECISION when only own permanents are targetable).
+        """
+        if self._decision_source_is_harmful(decision, game_state) is not True:
+            return chosen
+        local_seat, controllers = self._battlefield_controllers(game_state)
+        if local_seat is None:
+            return chosen
+        picked_own = False
+        for oid in chosen:
+            if not str(oid).startswith("tgt:"):
+                continue
+            try:
+                iid = int(str(oid)[4:])
+            except ValueError:
+                continue
+            if controllers.get(iid) == local_seat:
+                picked_own = True
+                break
+        if not picked_own:
+            return chosen
+        override = self._targeting_fallback_pick(decision, game_state)
+        if override:
+            logger.warning(
+                f"Overriding harmful LLM target pick {chosen} (own permanent) "
+                f"with {override}"
+            )
+            return override
+        return chosen
+
     def _targeting_fallback_pick(
         self, decision: Any, game_state: dict[str, Any]
     ) -> list[str]:
@@ -1926,22 +2068,10 @@ class ActionPlanner:
             if iid:
                 battlefield[iid] = card
 
-        # Source spell oracle: match the decision's source label on the
-        # stack, else take the top of the stack (the spell awaiting targets).
-        stack = game_state.get("stack", []) or []
-        source_label = str(getattr(decision, "source_label", "") or "").strip().lower()
-        picked_entry = None
-        if source_label:
-            for entry in stack:
-                if str(entry.get("name") or "").strip().lower() == source_label:
-                    picked_entry = entry
-                    break
-        if picked_entry is None and stack:
-            picked_entry = stack[-1]
-        oracle = str((picked_entry or {}).get("oracle_text") or "").lower()
-        if not oracle:
+        harmful_opt = self._decision_source_is_harmful(decision, game_state)
+        if harmful_opt is None:
             return []
-        harmful = any(p in oracle for p in self._HARMFUL_TARGET_ORACLE_PHRASES)
+        harmful = harmful_opt
 
         def _power(iid: int) -> int:
             try:
@@ -1991,11 +2121,23 @@ class ActionPlanner:
             f"{decision.max_select} option(s).",
             "OPTIONS:",
         ]
+        # #38: without controller labels the model cannot tell its own
+        # permanents from the opponent's in a target list (live 2026-07-06:
+        # it aimed Utter Insignificance at the user's own Nessian Wanderer).
+        local_seat, controllers = self._battlefield_controllers(game_state)
         for o in decision.options:
             note = ""
             if o.payable is False:
                 note = "  [cannot auto-pay — do not pick]"
-            lines.append(f"- {o.option_id}: {o.label}{note}")
+            side = ""
+            if o.option_id.startswith("tgt:") and local_seat is not None:
+                try:
+                    ctrl = controllers.get(int(o.option_id[4:]))
+                except ValueError:
+                    ctrl = None
+                if ctrl is not None:
+                    side = " (YOURS)" if ctrl == local_seat else " (opponent's)"
+            lines.append(f"- {o.option_id}: {o.label}{side}{note}")
         lines.append("")
         lines.append("GAME STATE:")
         lines.append(self._fallback_format(game_state))
@@ -2194,11 +2336,11 @@ class ActionPlanner:
         if lower.startswith("activate "):
             return GameAction(action_type=ActionType.ACTIVATE_ABILITY, card_name=self._strip_decoration(act[9:]))
         if lower.startswith("declare attackers:"):
-            names = [self._strip_decoration(n) for n in act.split(":", 1)[1].split(",")]
+            names = [self._strip_decoration(n) for n in self._split_creature_list(act.split(":", 1)[1])]
             names = [n for n in names if n]
             return GameAction(action_type=ActionType.DECLARE_ATTACKERS, attacker_names=names)
         if lower.startswith("attack with:"):
-            names = [self._strip_decoration(n) for n in act.split(":", 1)[1].split(",")]
+            names = [self._strip_decoration(n) for n in self._split_creature_list(act.split(":", 1)[1])]
             names = [n for n in names if n]
             return GameAction(action_type=ActionType.DECLARE_ATTACKERS, attacker_names=names)
         if lower.startswith("block with:"):
@@ -2212,6 +2354,11 @@ class ActionPlanner:
                 action_type=ActionType.SELECT_TARGET,
                 target_names=[self._strip_decoration(act.split(":", 1)[1])],
             )
+        if lower.startswith("action: playmdfc"):
+            # MDFC land face (#39): playable land side of a modal
+            # double-faced card in hand. The name isn't in the menu line;
+            # the matcher resolves via the raw PlayMDFC action.
+            return GameAction(action_type=ActionType.PLAY_LAND, mdfc=True)
         if lower.startswith("pay costs for") or "auto-pay" in lower:
             return GameAction(action_type=ActionType.PAY_COSTS)
         if "choose: play" in lower:

@@ -263,6 +263,25 @@ def match_action_to_gre(
 
     # --- PLAY LAND -----------------------------------------------------
     if atype == ActionType.PLAY_LAND:
+        # MDFC land-face plays (#39): prefer the raw PlayMDFC action; the
+        # menu entry carries no card name to match on.
+        if getattr(action, "mdfc", False):
+            mdfcs = [
+                r for r in raw_actions
+                if _norm_atype(r.get("actionType", "")) == "playmdfc"
+            ]
+            if len(mdfcs) == 1:
+                ref = GREActionRef.from_raw(mdfcs[0])
+                logger.info(
+                    f"Matched PLAY_LAND (MDFC) -> grpId={mdfcs[0].get('grpId', 0)}"
+                )
+                return ref
+            if mdfcs:
+                logger.warning(
+                    f"{len(mdfcs)} PlayMDFC actions and no name to pick by; "
+                    "not matching"
+                )
+                return None
         for raw in raw_actions:
             if _norm_atype(raw.get("actionType", "")) not in _PLAY_ATYPES:
                 continue

@@ -1313,11 +1313,25 @@ class AutopilotEngine:
                     self._cast_rollback_totals.get(name, 0)
                     >= self._CAST_ROLLBACK_GAME_LIMIT
                 ):
-                    logger.info(
-                        f"Suppressing legal action {la!r} — rolled back "
-                        f"{self._CAST_ROLLBACK_GAME_LIMIT}+ times this game"
-                    )
-                    continue
+                    # #40: never game-lock the commander — it's the deck's
+                    # centerpiece and its PayCosts failures are usually the
+                    # late-autotap-child bridge gap, not unpayability. The
+                    # per-turn limit above still breaks live loops.
+                    command_names = {
+                        str(c.get("name") or "").strip().lower()
+                        for c in game_state.get("command", []) or []
+                    }
+                    if name in command_names:
+                        logger.info(
+                            f"Not game-suppressing {la!r} — command-zone card "
+                            "(per-turn limit still applies)"
+                        )
+                    else:
+                        logger.info(
+                            f"Suppressing legal action {la!r} — rolled back "
+                            f"{self._CAST_ROLLBACK_GAME_LIMIT}+ times this game"
+                        )
+                        continue
             out.append(la)
         return out
 
@@ -2323,7 +2337,22 @@ class AutopilotEngine:
                 if not self._config.dry_run and (
                     self._gre_bridge.connected or self._gre_bridge.connect()
                 ):
-                    if self._gre_bridge.submit_auto_tap():
+                    auto_tap_ok = self._gre_bridge.submit_auto_tap()
+                    if not auto_tap_ok:
+                        # #40 (live 2026-07-06): the AutoTapActionsRequest
+                        # child can populate a beat AFTER the PayCostsRequest
+                        # appears — an immediate poll saw "no AutoTapActions-
+                        # Request available" on an [OK]-tagged commander cast,
+                        # cancelled, and 3 strikes game-suppressed Hei Bai.
+                        # One short retry before concluding it's unpayable.
+                        time.sleep(0.4)
+                        auto_tap_ok = self._gre_bridge.submit_auto_tap()
+                        if auto_tap_ok:
+                            logger.info(
+                                "Autopilot: AutoTap child arrived late — "
+                                "retry succeeded"
+                            )
+                    if auto_tap_ok:
                         self._log_execution_path(
                             ExecutionPath.GRE_AWARE, "auto_pay via submit_auto_tap"
                         )
