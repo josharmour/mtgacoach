@@ -22,6 +22,17 @@
             color: var(--ink);
             line-height: 1.65;
             font-size: 17px;
+            position: relative;
+        }
+        /* Faint candlelight over the table */
+        body::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background:
+                radial-gradient(1100px 520px at 72% -8%, rgba(212, 161, 60, 0.08), transparent 62%),
+                radial-gradient(900px 700px at 8% 30%, rgba(74, 106, 138, 0.05), transparent 60%);
         }
         a { color: var(--accent); text-decoration: none; }
         a:hover { text-decoration: underline; text-underline-offset: 3px; }
@@ -48,6 +59,18 @@
         nav a:hover { color: var(--ink); text-decoration: none; }
 
         .hero { padding: 96px 0 64px; }
+        .hero .wrap { position: relative; }
+        .hero-art {
+            position: absolute;
+            right: -260px;
+            top: -30px;
+            width: 300px;
+            opacity: 0.9;
+            pointer-events: none;
+            user-select: none;
+            z-index: -1;
+        }
+        @media (max-width: 1220px) { .hero-art { display: none; } }
         .kicker {
             font-family: -apple-system, "Segoe UI", sans-serif;
             font-size: 0.72rem;
@@ -181,6 +204,36 @@
 
     <section class="hero">
         <div class="wrap">
+            <svg class="hero-art" viewBox="0 0 340 400" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <!-- a fanned hand of five cards, one pip per color of the pie -->
+                <g stroke-linejoin="round">
+                    <g transform="rotate(-26 170 420)">
+                        <rect x="110" y="105" width="120" height="170" rx="9" fill="#1d1913" stroke="#3f382a"/>
+                        <rect x="119" y="114" width="102" height="152" rx="5" fill="none" stroke="#2b2519"/>
+                        <circle cx="170" cy="190" r="7" fill="#cfc49a" opacity="0.75"/>
+                    </g>
+                    <g transform="rotate(-13 170 420)">
+                        <rect x="110" y="98" width="120" height="170" rx="9" fill="#1d1913" stroke="#3f382a"/>
+                        <rect x="119" y="107" width="102" height="152" rx="5" fill="none" stroke="#2b2519"/>
+                        <circle cx="170" cy="183" r="7" fill="#4a7fa8" opacity="0.7"/>
+                    </g>
+                    <g>
+                        <rect x="110" y="95" width="120" height="170" rx="9" fill="#201b14" stroke="#4a412f"/>
+                        <rect x="119" y="104" width="102" height="152" rx="5" fill="none" stroke="#2e2719"/>
+                        <circle cx="170" cy="180" r="7" fill="#7a6a8e" opacity="0.7"/>
+                    </g>
+                    <g transform="rotate(13 170 420)">
+                        <rect x="110" y="98" width="120" height="170" rx="9" fill="#1d1913" stroke="#3f382a"/>
+                        <rect x="119" y="107" width="102" height="152" rx="5" fill="none" stroke="#2b2519"/>
+                        <circle cx="170" cy="183" r="7" fill="#b25b47" opacity="0.7"/>
+                    </g>
+                    <g transform="rotate(26 170 420)">
+                        <rect x="110" y="105" width="120" height="170" rx="9" fill="#1d1913" stroke="#3f382a"/>
+                        <rect x="119" y="114" width="102" height="152" rx="5" fill="none" stroke="#2b2519"/>
+                        <circle cx="170" cy="190" r="7" fill="#5d8a5a" opacity="0.7"/>
+                    </g>
+                </g>
+            </svg>
             <div class="kicker">For Magic: The Gathering Arena</div>
             <h1>A coach in your ear, <em>every turn</em> of the game.</h1>
             <p>mtgacoach watches your Arena games as you play and talks you
@@ -254,7 +307,16 @@
 
     <section class="closing">
         <div class="wrap">
-            <div class="fleuron">&#10087;</div>
+            <div class="fleuron" aria-hidden="true">
+                <svg width="64" height="60" viewBox="0 0 64 60" xmlns="http://www.w3.org/2000/svg">
+                    <!-- the color pie -->
+                    <circle cx="32" cy="10" r="4" fill="#cfc49a" opacity="0.8"/>
+                    <circle cx="53" cy="25" r="4" fill="#4a7fa8" opacity="0.8"/>
+                    <circle cx="45" cy="50" r="4" fill="#7a6a8e" opacity="0.8"/>
+                    <circle cx="19" cy="50" r="4" fill="#b25b47" opacity="0.8"/>
+                    <circle cx="11" cy="25" r="4" fill="#5d8a5a" opacity="0.8"/>
+                </svg>
+            </div>
             <p>&ldquo;The difference between a good player and a great one is
             somebody standing behind them asking: are you sure?&rdquo;</p>
             <a class="button" href="/subscribe">Get mtgacoach</a>

@@ -21,6 +21,17 @@
             color: var(--ink);
             line-height: 1.65;
             font-size: 17px;
+            position: relative;
+        }
+        /* Faint candlelight over the table */
+        body::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background:
+                radial-gradient(1100px 520px at 72% -8%, rgba(212, 161, 60, 0.08), transparent 62%),
+                radial-gradient(900px 700px at 8% 30%, rgba(74, 106, 138, 0.05), transparent 60%);
         }
         a { color: var(--accent); text-decoration: none; }
         a:hover { text-decoration: underline; text-underline-offset: 3px; }
@@ -34,6 +45,18 @@
         nav a:hover { color: var(--ink); text-decoration: none; }
 
         .hero { padding: 84px 0 48px; }
+        .hero .wrap { position: relative; }
+        .hero-art {
+            position: absolute;
+            right: -190px;
+            top: -26px;
+            width: 250px;
+            opacity: 0.9;
+            pointer-events: none;
+            user-select: none;
+            z-index: -1;
+        }
+        @media (max-width: 1120px) { .hero-art { display: none; } }
         .kicker {
             font-family: -apple-system, "Segoe UI", sans-serif;
             font-size: 0.72rem;
@@ -139,6 +162,26 @@
 
     <section class="hero">
         <div class="wrap">
+            <svg class="hero-art" viewBox="0 0 260 320" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <!-- a small fan of three cards -->
+                <g stroke-linejoin="round">
+                    <g transform="rotate(-16 130 340)">
+                        <rect x="75" y="85" width="110" height="156" rx="8" fill="#1d1913" stroke="#3f382a"/>
+                        <rect x="83" y="93" width="94" height="140" rx="5" fill="none" stroke="#2b2519"/>
+                        <circle cx="130" cy="163" r="6" fill="#4a7fa8" opacity="0.7"/>
+                    </g>
+                    <g>
+                        <rect x="75" y="80" width="110" height="156" rx="8" fill="#201b14" stroke="#4a412f"/>
+                        <rect x="83" y="88" width="94" height="140" rx="5" fill="none" stroke="#2e2719"/>
+                        <circle cx="130" cy="158" r="6" fill="#d4a13c" opacity="0.7"/>
+                    </g>
+                    <g transform="rotate(16 130 340)">
+                        <rect x="75" y="85" width="110" height="156" rx="8" fill="#1d1913" stroke="#3f382a"/>
+                        <rect x="83" y="93" width="94" height="140" rx="5" fill="none" stroke="#2b2519"/>
+                        <circle cx="130" cy="163" r="6" fill="#b25b47" opacity="0.7"/>
+                    </g>
+                </g>
+            </svg>
             <div class="kicker">Subscribe</div>
             <h1>One plan. The whole coach.</h1>
             <p><span class="price">$9.99 a month</span>, billed through Patreon.
