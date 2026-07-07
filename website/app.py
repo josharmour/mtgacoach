@@ -13,7 +13,13 @@ from typing import Any, Optional
 import httpx
 import yaml
 from fastapi import FastAPI, Request, HTTPException, Depends
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -1367,8 +1373,15 @@ app.include_router(patreon_router)
 #  Admin API (for managing subscribers + messages)
 # =========================================================================
 
-@app.get("/admin", response_class=HTMLResponse)
+@app.get("/admin")
 async def admin_page(request: Request):
+    # Key/subscription management moved to the LiteLLM gateway UI.
+    # The legacy dashboard is still reachable at /admin/legacy.
+    return RedirectResponse("https://api.mtgacoach.com/ui", status_code=302)
+
+
+@app.get("/admin/legacy", response_class=HTMLResponse)
+async def admin_legacy_page(request: Request):
     return templates.TemplateResponse(request=request, name="admin.html")
 
 

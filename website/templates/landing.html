@@ -3,203 +3,269 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>mtgacoach.com - AI-Powered MTGA Coaching</title>
+    <title>mtgacoach — a coach in your ear for MTG Arena</title>
+    <meta name="description" content="mtgacoach watches your Magic: The Gathering Arena games and talks you through them — line by line, in real time.">
     <style>
         :root {
-            --bg: #0a0a0f;
-            --surface: #12121a;
-            --border: #2a2a3a;
-            --text: #e0e0e8;
-            --muted: #888;
-            --accent: #6366f1;
-            --accent-hover: #818cf8;
-            --green: #22c55e;
-            --gold: #f59e0b;
+            --bg: #16130f;
+            --ink: #e6ddcc;
+            --faint: #97907f;
+            --rule: #353026;
+            --accent: #d4a13c;
+            --accent-dim: #8a6b2b;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
             background: var(--bg);
-            color: var(--text);
-            line-height: 1.6;
+            color: var(--ink);
+            line-height: 1.65;
+            font-size: 17px;
         }
-        .container { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; text-underline-offset: 3px; }
+        .wrap { max-width: 680px; margin: 0 auto; padding: 0 24px; }
 
-        /* Nav */
-        nav {
-            border-bottom: 1px solid var(--border);
-            padding: 16px 0;
+        header {
+            padding: 28px 0 0;
         }
-        nav .container { display: flex; justify-content: space-between; align-items: center; }
-        .logo { font-size: 1.4rem; font-weight: 700; color: var(--accent); text-decoration: none; }
-        nav a { color: var(--muted); text-decoration: none; margin-left: 24px; }
-        nav a:hover { color: var(--text); }
+        header .wrap {
+            display: flex; justify-content: space-between; align-items: baseline;
+        }
+        .wordmark {
+            font-style: italic;
+            font-size: 1.15rem;
+            color: var(--ink);
+            letter-spacing: 0.02em;
+        }
+        .wordmark:hover { text-decoration: none; color: var(--accent); }
+        nav a {
+            color: var(--faint);
+            font-size: 0.9rem;
+            margin-left: 22px;
+        }
+        nav a:hover { color: var(--ink); text-decoration: none; }
 
-        /* Hero */
-        .hero {
-            text-align: center;
-            padding: 80px 0 60px;
+        .hero { padding: 96px 0 64px; }
+        .kicker {
+            font-family: -apple-system, "Segoe UI", sans-serif;
+            font-size: 0.72rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--accent-dim);
+            margin-bottom: 20px;
         }
-        .hero h1 {
-            font-size: 3rem;
-            font-weight: 800;
-            margin-bottom: 16px;
-            background: linear-gradient(135deg, var(--accent), var(--green));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+        h1 {
+            font-weight: 500;
+            font-size: 2.6rem;
+            line-height: 1.18;
+            letter-spacing: -0.01em;
+            max-width: 15em;
         }
+        h1 em { font-style: italic; color: var(--accent); }
         .hero p {
+            margin-top: 24px;
+            font-size: 1.12rem;
+            color: var(--faint);
+            max-width: 32em;
+        }
+        .hero-actions { margin-top: 36px; }
+        .button {
+            display: inline-block;
+            font-family: -apple-system, "Segoe UI", sans-serif;
+            font-size: 0.92rem;
+            padding: 11px 26px;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            letter-spacing: 0.03em;
+        }
+        .button:hover { background: var(--accent); color: var(--bg); text-decoration: none; }
+        .hero-actions .aside {
+            margin-left: 18px;
+            font-size: 0.92rem;
+            color: var(--faint);
+        }
+
+        hr {
+            border: 0;
+            border-top: 1px solid var(--rule);
+            margin: 0;
+        }
+
+        section { padding: 64px 0; }
+        .label {
+            font-family: -apple-system, "Segoe UI", sans-serif;
+            font-size: 0.72rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--faint);
+            margin-bottom: 36px;
+        }
+
+        dl.features dt {
+            font-size: 1.15rem;
+            font-style: italic;
+            margin-top: 30px;
+        }
+        dl.features dt:first-of-type { margin-top: 0; }
+        dl.features dd {
+            color: var(--faint);
+            margin-top: 4px;
+            max-width: 36em;
+        }
+
+        ol.steps {
+            list-style: none;
+            counter-reset: step;
+        }
+        ol.steps li {
+            counter-increment: step;
+            padding: 22px 0;
+            border-top: 1px solid var(--rule);
+            display: grid;
+            grid-template-columns: 3.5rem 1fr;
+            gap: 8px;
+        }
+        ol.steps li:first-child { border-top: 0; padding-top: 0; }
+        ol.steps li::before {
+            content: counter(step, upper-roman) ".";
+            font-style: italic;
+            color: var(--accent-dim);
+            font-size: 1.1rem;
+        }
+        ol.steps h3 { font-weight: 500; font-size: 1.05rem; display: inline; }
+        ol.steps p { color: var(--faint); margin-top: 2px; }
+        ol.steps code {
+            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+            font-size: 0.85em;
+            color: var(--ink);
+            background: #221e17;
+            padding: 1px 6px;
+        }
+
+        .closing { text-align: center; padding: 72px 0 88px; }
+        .closing .fleuron { color: var(--accent-dim); font-size: 1.3rem; margin-bottom: 28px; }
+        .closing p {
+            font-style: italic;
             font-size: 1.25rem;
-            color: var(--muted);
-            max-width: 600px;
+            max-width: 26em;
             margin: 0 auto 32px;
         }
-        .cta {
-            display: inline-block;
-            background: var(--accent);
-            color: white;
-            padding: 14px 36px;
-            border-radius: 8px;
-            text-decoration: none;
-            font-weight: 600;
-            font-size: 1.1rem;
-            transition: background 0.2s;
-        }
-        .cta:hover { background: var(--accent-hover); }
 
-        /* Features */
-        .features {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 24px;
-            padding: 40px 0 80px;
-        }
-        .feature {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 28px;
-        }
-        .feature h3 {
-            font-size: 1.1rem;
-            margin-bottom: 8px;
-            color: var(--accent);
-        }
-        .feature p { color: var(--muted); font-size: 0.95rem; }
-
-        /* How it works */
-        .steps {
-            padding: 40px 0 80px;
-            text-align: center;
-        }
-        .steps h2 { font-size: 2rem; margin-bottom: 40px; }
-        .step-list {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 32px;
-            text-align: left;
-        }
-        .step { padding: 20px; }
-        .step-num {
-            display: inline-block;
-            width: 36px;
-            height: 36px;
-            background: var(--accent);
-            color: white;
-            border-radius: 50%;
-            text-align: center;
-            line-height: 36px;
-            font-weight: 700;
-            margin-bottom: 12px;
-        }
-        .step h4 { margin-bottom: 8px; }
-        .step p { color: var(--muted); font-size: 0.9rem; }
-
-        /* Footer */
         footer {
-            border-top: 1px solid var(--border);
-            padding: 32px 0;
-            text-align: center;
-            color: var(--muted);
-            font-size: 0.85rem;
+            border-top: 1px solid var(--rule);
+            padding: 28px 0 40px;
+            color: var(--faint);
+            font-size: 0.82rem;
+        }
+        footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+        @media (max-width: 560px) {
+            h1 { font-size: 2rem; }
+            .hero { padding: 64px 0 48px; }
+            .hero-actions .aside { display: block; margin: 14px 0 0; }
         }
     </style>
 </head>
 <body>
-    <nav>
-        <div class="container">
-            <a href="/" class="logo">mtgacoach</a>
-            <div>
+    <header>
+        <div class="wrap">
+            <a href="/" class="wordmark">mtgacoach</a>
+            <nav>
                 <a href="/subscribe">Subscribe</a>
                 <a href="https://github.com/josharmour/mtgacoach">GitHub</a>
-            </div>
+            </nav>
         </div>
-    </nav>
+    </header>
 
     <section class="hero">
-        <div class="container">
-            <h1>AI Coaching for MTGA</h1>
-            <p>Real-time strategic advice during your Magic: The Gathering Arena games. Powered by the best AI models, delivered through voice.</p>
-            <a href="/subscribe" class="cta">Get Started</a>
-        </div>
-    </section>
-
-    <section class="container">
-        <div class="features">
-            <div class="feature">
-                <h3>Real-Time Advice</h3>
-                <p>Get spoken coaching during every phase of your game. The AI sees your board, hand, and legal actions.</p>
-            </div>
-            <div class="feature">
-                <h3>Best-in-Class AI</h3>
-                <p>Powered by Claude, GPT, and Gemini. We route to the fastest, most capable model available.</p>
-            </div>
-            <div class="feature">
-                <h3>Voice Output</h3>
-                <p>Advice is spoken aloud so you can focus on the game. Multiple voices and speeds available.</p>
-            </div>
-            <div class="feature">
-                <h3>Draft Helper</h3>
-                <p>17lands-powered draft ratings and pick recommendations. Know the best pick in every pack.</p>
-            </div>
-            <div class="feature">
-                <h3>Autopilot Mode</h3>
-                <p>Let the AI play for you when you're AFK. It handles lands, passes priority, and makes combat decisions.</p>
-            </div>
-            <div class="feature">
-                <h3>Local Model Support</h3>
-                <p>Run with Ollama or LM Studio for free, offline play. Switch between local and online anytime.</p>
+        <div class="wrap">
+            <div class="kicker">For Magic: The Gathering Arena</div>
+            <h1>A coach in your ear, <em>every turn</em> of the game.</h1>
+            <p>mtgacoach watches your Arena games as you play and talks you
+            through them — attacks, blocks, sequencing, the line you didn't
+            see. Out loud, while it matters, not in a post-mortem.</p>
+            <div class="hero-actions">
+                <a class="button" href="/subscribe">Subscribe</a>
+                <span class="aside">$9.99 a month, through Patreon.</span>
             </div>
         </div>
     </section>
 
-    <section class="steps">
-        <div class="container">
-            <h2>How It Works</h2>
-            <div class="step-list">
-                <div class="step">
-                    <div class="step-num">1</div>
-                    <h4>Install</h4>
-                    <p>Download the app and run the installer. Works on Windows with MTGA.</p>
-                </div>
-                <div class="step">
-                    <div class="step-num">2</div>
-                    <h4>Subscribe</h4>
-                    <p>Get a license key and enter it in the app with /key. Or use a local model for free.</p>
-                </div>
-                <div class="step">
-                    <div class="step-num">3</div>
-                    <h4>Play</h4>
-                    <p>Launch MTGA, then launch mtgacoach. The AI reads your game log and coaches you in real time.</p>
-                </div>
-            </div>
+    <div class="wrap"><hr></div>
+
+    <section>
+        <div class="wrap">
+            <div class="label">What it does</div>
+            <dl class="features">
+                <dt>Live table talk</dt>
+                <dd>It reads the real game state — your hand, the board, the
+                stack, every legal action — and speaks its advice so your eyes
+                never leave the game.</dd>
+
+                <dt>Draft picks, with receipts</dt>
+                <dd>Pack-by-pack pick ratings built on 17lands data, so you
+                draft the deck the numbers like and not just the rare.</dd>
+
+                <dt>An autopilot that actually plays</dt>
+                <dd>Step away and it takes the wheel: lands on curve, sensible
+                combat, priority passed on time. Come back to a game still in
+                progress, not a concession.</dd>
+
+                <dt>Our own table, our own stakes</dt>
+                <dd>Coaching runs on dedicated GPU hardware we operate
+                ourselves. No per-token metering — your subscription is the
+                whole bill.</dd>
+            </dl>
+        </div>
+    </section>
+
+    <div class="wrap"><hr></div>
+
+    <section>
+        <div class="wrap">
+            <div class="label">How it works</div>
+            <ol class="steps">
+                <li>
+                    <div>
+                        <h3>Install the app.</h3>
+                        <p>Grab the Windows installer from GitHub, or
+                        <code>pip install mtgacoach</code> anywhere Python runs.</p>
+                    </div>
+                </li>
+                <li>
+                    <div>
+                        <h3>Add your license key.</h3>
+                        <p>Subscribe on Patreon, link your account, and paste the
+                        key into the app under Settings.</p>
+                    </div>
+                </li>
+                <li>
+                    <div>
+                        <h3>Queue up.</h3>
+                        <p>Launch Arena, launch mtgacoach, and play. The coaching
+                        starts with your first priority.</p>
+                    </div>
+                </li>
+            </ol>
+        </div>
+    </section>
+
+    <section class="closing">
+        <div class="wrap">
+            <div class="fleuron">&#10087;</div>
+            <p>&ldquo;The difference between a good player and a great one is
+            somebody standing behind them asking: are you sure?&rdquo;</p>
+            <a class="button" href="/subscribe">Get mtgacoach</a>
         </div>
     </section>
 
     <footer>
-        <div class="container">
-            mtgacoach.com &mdash; Not affiliated with Wizards of the Coast.
-            Magic: The Gathering is a trademark of Wizards of the Coast LLC.
+        <div class="wrap">
+            <span>&copy; mtgacoach.com</span>
+            <span>Unofficial fan software. Magic: The Gathering is a trademark
+            of Wizards of the Coast LLC.</span>
         </div>
     </footer>
 </body>

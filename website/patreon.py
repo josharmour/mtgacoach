@@ -327,14 +327,21 @@ def _membership_allows_key(identity: dict) -> tuple[bool, str]:
 
 _PAGE_STYLE = """
 <style>
-    body { font-family: -apple-system, sans-serif; background: #0a0a0f; color: #e0e0e8; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
-    .card { background: #12121a; border: 1px solid #2a2a3a; border-radius: 16px; padding: 40px; text-align: center; max-width: 500px; }
-    h1 { color: #22c55e; }
-    h1.err { color: #ef4444; }
-    .key { font-family: monospace; background: #0a0a0f; padding: 16px; border-radius: 8px; word-break: break-all; margin: 16px 0; cursor: pointer; font-size: 0.9rem; }
-    .key:hover { background: #2a2a3a; }
-    code { background: #2a2a3a; padding: 2px 8px; border-radius: 4px; }
-    a { color: #22c55e; }
+    body { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+           background: #16130f; color: #e6ddcc; line-height: 1.65;
+           display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+    .card { border-top: 1px solid #353026; border-bottom: 1px solid #353026;
+            padding: 48px 32px; text-align: center; max-width: 520px; }
+    h1 { font-weight: 500; font-style: italic; color: #d4a13c; margin: 0 0 12px; }
+    h1.err { color: #b3543f; }
+    p { color: #97907f; margin: 12px 0; }
+    a { color: #d4a13c; }
+    .key { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+           color: #e6ddcc; background: #221e17; border: 1px solid #353026;
+           padding: 16px; word-break: break-all; margin: 20px 0; cursor: pointer; font-size: 0.9rem; }
+    .key:hover { border-color: #d4a13c; }
+    code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+           background: #221e17; padding: 1px 6px; font-size: 0.9em; color: #e6ddcc; }
 </style>
 """
 
