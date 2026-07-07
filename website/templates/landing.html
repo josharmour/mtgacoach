@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mtgacoach.com - AI-Powered MTGA Coaching</title>
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --surface: #12121a;
+            --border: #2a2a3a;
+            --text: #e0e0e8;
+            --muted: #888;
+            --accent: #6366f1;
+            --accent-hover: #818cf8;
+            --green: #22c55e;
+            --gold: #f59e0b;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+        .container { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+
+        /* Nav */
+        nav {
+            border-bottom: 1px solid var(--border);
+            padding: 16px 0;
+        }
+        nav .container { display: flex; justify-content: space-between; align-items: center; }
+        .logo { font-size: 1.4rem; font-weight: 700; color: var(--accent); text-decoration: none; }
+        nav a { color: var(--muted); text-decoration: none; margin-left: 24px; }
+        nav a:hover { color: var(--text); }
+
+        /* Hero */
+        .hero {
+            text-align: center;
+            padding: 80px 0 60px;
+        }
+        .hero h1 {
+            font-size: 3rem;
+            font-weight: 800;
+            margin-bottom: 16px;
+            background: linear-gradient(135deg, var(--accent), var(--green));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .hero p {
+            font-size: 1.25rem;
+            color: var(--muted);
+            max-width: 600px;
+            margin: 0 auto 32px;
+        }
+        .cta {
+            display: inline-block;
+            background: var(--accent);
+            color: white;
+            padding: 14px 36px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 1.1rem;
+            transition: background 0.2s;
+        }
+        .cta:hover { background: var(--accent-hover); }
+
+        /* Features */
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 24px;
+            padding: 40px 0 80px;
+        }
+        .feature {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 28px;
+        }
+        .feature h3 {
+            font-size: 1.1rem;
+            margin-bottom: 8px;
+            color: var(--accent);
+        }
+        .feature p { color: var(--muted); font-size: 0.95rem; }
+
+        /* How it works */
+        .steps {
+            padding: 40px 0 80px;
+            text-align: center;
+        }
+        .steps h2 { font-size: 2rem; margin-bottom: 40px; }
+        .step-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 32px;
+            text-align: left;
+        }
+        .step { padding: 20px; }
+        .step-num {
+            display: inline-block;
+            width: 36px;
+            height: 36px;
+            background: var(--accent);
+            color: white;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 36px;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+        .step h4 { margin-bottom: 8px; }
+        .step p { color: var(--muted); font-size: 0.9rem; }
+
+        /* Footer */
+        footer {
+            border-top: 1px solid var(--border);
+            padding: 32px 0;
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+    <nav>
+        <div class="container">
+            <a href="/" class="logo">mtgacoach</a>
+            <div>
+                <a href="/subscribe">Subscribe</a>
+                <a href="https://github.com/josharmour/mtgacoach">GitHub</a>
+            </div>
+        </div>
+    </nav>
+
+    <section class="hero">
+        <div class="container">
+            <h1>AI Coaching for MTGA</h1>
+            <p>Real-time strategic advice during your Magic: The Gathering Arena games. Powered by the best AI models, delivered through voice.</p>
+            <a href="/subscribe" class="cta">Get Started</a>
+        </div>
+    </section>
+
+    <section class="container">
+        <div class="features">
+            <div class="feature">
+                <h3>Real-Time Advice</h3>
+                <p>Get spoken coaching during every phase of your game. The AI sees your board, hand, and legal actions.</p>
+            </div>
+            <div class="feature">
+                <h3>Best-in-Class AI</h3>
+                <p>Powered by Claude, GPT, and Gemini. We route to the fastest, most capable model available.</p>
+            </div>
+            <div class="feature">
+                <h3>Voice Output</h3>
+                <p>Advice is spoken aloud so you can focus on the game. Multiple voices and speeds available.</p>
+            </div>
+            <div class="feature">
+                <h3>Draft Helper</h3>
+                <p>17lands-powered draft ratings and pick recommendations. Know the best pick in every pack.</p>
+            </div>
+            <div class="feature">
+                <h3>Autopilot Mode</h3>
+                <p>Let the AI play for you when you're AFK. It handles lands, passes priority, and makes combat decisions.</p>
+            </div>
+            <div class="feature">
+                <h3>Local Model Support</h3>
+                <p>Run with Ollama or LM Studio for free, offline play. Switch between local and online anytime.</p>
+            </div>
+        </div>
+    </section>
+
+    <section class="steps">
+        <div class="container">
+            <h2>How It Works</h2>
+            <div class="step-list">
+                <div class="step">
+                    <div class="step-num">1</div>
+                    <h4>Install</h4>
+                    <p>Download the app and run the installer. Works on Windows with MTGA.</p>
+                </div>
+                <div class="step">
+                    <div class="step-num">2</div>
+                    <h4>Subscribe</h4>
+                    <p>Get a license key and enter it in the app with /key. Or use a local model for free.</p>
+                </div>
+                <div class="step">
+                    <div class="step-num">3</div>
+                    <h4>Play</h4>
+                    <p>Launch MTGA, then launch mtgacoach. The AI reads your game log and coaches you in real time.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="container">
+            mtgacoach.com &mdash; Not affiliated with Wizards of the Coast.
+            Magic: The Gathering is a trademark of Wizards of the Coast LLC.
+        </div>
+    </footer>
+</body>
+</html>

@@ -17,13 +17,16 @@ nul
 @eaDir/
 *.planning/
 bug_reports/
-# Server-side proxy (not public)
-proxy-server/
 # Synology/deployment configs
 docker-compose.yml
 config.yaml
 *.db
 data/
+# ...except tracked infra-as-code (no secrets; env refs only)
+!gateway/config.yaml
+!gateway/docker-compose.yml
+!website/config.yaml
+!website/docker-compose.yml
 # Dev-only (not for public repo)
 tests/
 tools/
