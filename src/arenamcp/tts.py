@@ -83,6 +83,13 @@ def _native_play_sound(path: Optional[str], flags: int) -> bool:
 def _samples_to_wav_bytes(samples, sample_rate: int) -> bytes:
     """Convert float32 numpy samples to WAV bytes in memory."""
     _ensure_numpy()
+    # Kokoro does not guarantee peaks <= 1.0; without normalization hot
+    # samples hard-clip at int16 conversion and speech sounds maxed-out /
+    # crackly. Only ever scale DOWN, to 0.95 headroom.
+    if len(samples):
+        peak = float(np.max(np.abs(samples)))
+        if peak > 0.95:
+            samples = samples * (0.95 / peak)
     int_samples = np.clip(samples * 32767, -32768, 32767).astype(np.int16)
     buf = io.BytesIO()
     with wave.open(buf, 'wb') as wf:
