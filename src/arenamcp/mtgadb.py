@@ -54,7 +54,31 @@ MTGA_PATHS = [
     Path.home() / ".steam/steam/steamapps/common/MTGA",
     Path.home() / ".local/share/Steam/steamapps/common/MTGA",
     Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common/MTGA",
+    # macOS native Steam — MTGA_Data (incl. Downloads/Raw card DB) sits next
+    # to MTGA.app in the Steam common dir (verified on real hardware).
+    Path.home() / "Library/Application Support/Steam/steamapps/common/MTGA",
+    # macOS Epic Games (native build, same layout)
+    Path("/Users/Shared/Epic Games/MagicTheGathering"),
+    # macOS direct (non-Steam) install: com.wizards.mtga IS the data folder —
+    # it holds Downloads/Raw directly, without an MTGA_Data level (same
+    # convention the 17Lands tools use).
+    Path.home() / "Library/Application Support/com.wizards.mtga",
 ]
+
+
+def _darwin_crossover_paths() -> list[Path]:
+    """MTGA install dirs inside CrossOver bottles (Windows build on macOS)."""
+    bottles = Path.home() / "Library/Application Support/CrossOver/Bottles"
+    paths: list[Path] = []
+    for win_dir in (
+        "Program Files/Wizards of the Coast/MTGA",
+        "Program Files (x86)/Wizards of the Coast/MTGA",
+        "Program Files (x86)/Steam/steamapps/common/MTGA",
+    ):
+        paths.extend(
+            Path(p) for p in glob.glob(str(bottles / "*" / "drive_c" / win_dir))
+        )
+    return paths
 
 
 def find_mtga_database() -> Optional[Path]:
@@ -68,9 +92,12 @@ def find_mtga_database() -> Optional[Path]:
         Path to the database file, or None if not found.
     """
     candidates = []
-    
+
     # 1. Start with MTGA_PATHS
     search_paths = list(MTGA_PATHS)
+    import sys
+    if sys.platform == "darwin":
+        search_paths.extend(_darwin_crossover_paths())
 
     # 2. Check settings for mtga_install_dir (imported locally to avoid circular dependencies)
     try:
@@ -84,8 +111,14 @@ def find_mtga_database() -> Optional[Path]:
         logger.debug(f"Could not read mtga_install_dir from settings: {e}")
     
     for base_path in search_paths:
-        raw_dir = base_path / "MTGA_Data" / "Downloads" / "Raw"
-        if raw_dir.exists():
+        # Standard layout has an MTGA_Data level; the macOS direct-install
+        # data folder (com.wizards.mtga) holds Downloads/Raw directly.
+        for raw_dir in (
+            base_path / "MTGA_Data" / "Downloads" / "Raw",
+            base_path / "Downloads" / "Raw",
+        ):
+            if not raw_dir.exists():
+                continue
             # Find the CardDatabase file (name includes hash)
             pattern = str(raw_dir / "Raw_CardDatabase_*.mtga")
             matches = glob.glob(pattern)

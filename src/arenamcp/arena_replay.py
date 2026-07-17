@@ -260,10 +260,32 @@ def find_replay_files(replay_dir: Optional[Path] = None) -> list[Path]:
     """
     if replay_dir is None:
         # Default Arena replay location
+        import glob as _glob
         import os
+        import sys
         appdata = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         if appdata:
             replay_dir = Path(appdata).parent / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Replays"
+        elif sys.platform == "darwin":
+            # Native Mac client: Unity persistentDataPath lives under the
+            # bundle-id folder in Application Support.
+            replay_dir = (
+                Path.home() / "Library" / "Application Support"
+                / "com.wizards.mtga" / "Replays"
+            )
+            if not replay_dir.is_dir():
+                # CrossOver bottle running the Windows build keeps the
+                # Windows LocalLow layout inside the bottle.
+                bottle_dirs = _glob.glob(
+                    str(
+                        Path.home() / "Library" / "Application Support"
+                        / "CrossOver" / "Bottles" / "*" / "drive_c" / "users"
+                        / "*" / "AppData" / "LocalLow" / "Wizards Of The Coast"
+                        / "MTGA" / "Replays"
+                    )
+                )
+                if bottle_dirs:
+                    replay_dir = Path(bottle_dirs[0])
         else:
             replay_dir = Path.cwd()
     

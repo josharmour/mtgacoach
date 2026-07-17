@@ -171,8 +171,31 @@ def _windows_path_to_wsl(path: str) -> Path:
 
 
 def _default_log_path() -> str:
-    """Best-effort default MTGA Player.log path for Windows/WSL/Linux."""
+    """Best-effort default MTGA Player.log path for Windows/WSL/Linux/macOS."""
     import sys
+    if sys.platform == "darwin":
+        # Native Mac client (Steam/Epic IL2CPP build) — verified location.
+        mac_log = (
+            Path.home() / "Library" / "Logs" / "Wizards Of The Coast"
+            / "MTGA" / "Player.log"
+        )
+        if mac_log.exists():
+            return str(mac_log)
+        # Windows build inside a CrossOver bottle writes to the bottle's
+        # LocalLow instead (bridge-capable setup, see PLATFORM_PARITY.md B1).
+        bottle_logs = glob.glob(
+            str(
+                Path.home() / "Library" / "Application Support" / "CrossOver"
+                / "Bottles" / "*" / "drive_c" / "users" / "*" / "AppData"
+                / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+            )
+        )
+        if bottle_logs:
+            return bottle_logs[0]
+        # Neither exists yet — the native path is still the right default
+        # (mirrors the Linux fallback-to-first-candidate behavior).
+        return str(mac_log)
+
     if sys.platform.startswith("linux") and not _is_wsl():
         linux_candidates = [
             Path.home() / ".steam/steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log",

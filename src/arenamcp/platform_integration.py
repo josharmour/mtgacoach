@@ -1,10 +1,11 @@
-"""Cross-platform MTGA discovery and integration (Windows / Linux).
+"""Cross-platform MTGA discovery and integration (Windows / Linux / macOS).
 
 One seam for everything OS-specific about finding and instrumenting MTGA:
 where the game is installed, where Player.log lives, and (Linux) whether
-the Steam launch options let BepInEx inject under Proton. macOS is
-structured as an add-a-backend job but intentionally unclaimed until it
-can be tested on real hardware.
+the Steam launch options let BepInEx inject under Proton. The macOS
+backend covers the native Steam/Epic builds (log tier — coach/draft) and
+CrossOver bottles running the Windows Mono build (the only route to the
+BepInEx bridge on a Mac; see docs/PLATFORM_PARITY.md §B1).
 
 The desktop runtime and the repair engine consume this module instead of
 hardcoding per-OS paths (repair-audit follow-up: the old Linux probe
@@ -31,15 +32,34 @@ _PLAYER_LOG_WIN_SUFFIX = (
     Path("AppData") / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
 )
 
+# macOS: the native (IL2CPP) client writes its Player.log here — verified on
+# real hardware 2026-07-16 (dir name is "Wizards Of The Coast", capital O/T;
+# APFS is case-insensitive by default but don't rely on that).
+_PLAYER_LOG_DARWIN_SUFFIX = (
+    Path("Library") / "Logs" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+)
+
 
 @dataclass
 class MtgaInstall:
-    """A located MTGA installation."""
+    """A located MTGA installation.
 
-    install_dir: Path            # game files (MTGA.exe, MTGA_Data, BepInEx)
+    ``platform`` values:
+      - ``"windows"``
+      - ``"linux-steam"`` / ``"linux-steam-flatpak"`` (Windows build under Proton)
+      - ``"darwin-steam"`` / ``"darwin-epic"`` (native IL2CPP Mac build —
+        log tier only, no Mono → no BepInEx bridge)
+      - ``"darwin-crossover"`` (Windows Mono build in a CrossOver bottle —
+        the bridge CAN work here, mirroring the Linux/Proton recipe)
+
+    Callers that gate on ``.startswith("linux")`` / ``== "windows"`` are
+    unaffected by the darwin values by construction.
+    """
+
+    install_dir: Path            # game files (MTGA.exe / MTGA.app, MTGA_Data, BepInEx)
     player_log: Optional[Path]   # Player.log (None when undetectable)
-    platform: str                # "windows" | "linux-steam" | "linux-steam-flatpak"
-    steam_root: Optional[Path] = None  # Linux: the Steam root that owns it
+    platform: str                # see class docstring
+    steam_root: Optional[Path] = None  # Linux/macOS Steam: the Steam root that owns it
 
 
 def current_platform() -> str:
@@ -186,6 +206,97 @@ def _find_mtga_windows() -> Optional[MtgaInstall]:
 
 
 # ---------------------------------------------------------------------------
+# macOS
+# ---------------------------------------------------------------------------
+
+# Epic Games Launcher on macOS defaults game installs to /Users/Shared/Epic
+# Games; the per-user location shows up when users relocate the library.
+# Module-level so tests (and exotic setups) can extend it.
+_DARWIN_EPIC_CANDIDATES = [
+    Path("/Users/Shared/Epic Games/MagicTheGathering"),
+]
+
+
+def _darwin_native_log(home: Path) -> Optional[Path]:
+    """Native-client Player.log path, or None when MTGA never ran."""
+    log = home / _PLAYER_LOG_DARWIN_SUFFIX
+    return log if log.parent.is_dir() else None
+
+
+def _find_mtga_darwin_crossover(home: Path) -> Optional[MtgaInstall]:
+    """Windows MTGA build inside a CrossOver bottle (bridge-capable)."""
+    bottles_root = home / "Library" / "Application Support" / "CrossOver" / "Bottles"
+    if not bottles_root.is_dir():
+        return None
+    win_dirs = (
+        Path("Program Files") / "Wizards of the Coast" / "MTGA",
+        Path("Program Files (x86)") / "Wizards of the Coast" / "MTGA",
+        Path("Program Files (x86)") / "Steam" / "steamapps" / "common" / "MTGA",
+    )
+    try:
+        bottles = sorted(p for p in bottles_root.iterdir() if p.is_dir())
+    except OSError:
+        return None
+    for bottle in bottles:
+        for win_dir in win_dirs:
+            game_dir = bottle / "drive_c" / win_dir
+            if not (game_dir / "MTGA.exe").is_file():
+                continue
+            # The bottle's Windows user dir is usually "crossover" but the
+            # naming isn't guaranteed — glob instead of assuming.
+            player_log: Optional[Path] = None
+            users_dir = bottle / "drive_c" / "users"
+            for user_dir in sorted(users_dir.glob("*")):
+                if user_dir.name.lower() == "public" or not user_dir.is_dir():
+                    continue
+                candidate = user_dir / _PLAYER_LOG_WIN_SUFFIX
+                if candidate.parent.is_dir():
+                    player_log = candidate
+                    break
+            return MtgaInstall(
+                install_dir=game_dir,
+                player_log=player_log,
+                platform="darwin-crossover",
+            )
+    return None
+
+
+def _find_mtga_darwin() -> Optional[MtgaInstall]:
+    """Locate MTGA on macOS.
+
+    Priority: native Steam bundle, then Epic, then a CrossOver bottle
+    holding the Windows build. The native client is IL2CPP (no BepInEx),
+    so it serves the log tier only; a bottle install is bridge-capable.
+    """
+    home = Path.home()
+
+    # (a) Native Steam: ~/Library/Application Support/Steam/steamapps/common/MTGA
+    # holds MTGA.app *and* MTGA_Data (card DB) side by side — verified on
+    # real hardware 2026-07-16.
+    steam_root = home / "Library" / "Application Support" / "Steam"
+    steam_dir = steam_root / "steamapps" / "common" / "MTGA"
+    if (steam_dir / "MTGA.app").is_dir():
+        return MtgaInstall(
+            install_dir=steam_dir,
+            player_log=_darwin_native_log(home),
+            platform="darwin-steam",
+            steam_root=steam_root,
+        )
+
+    # (b) Epic Games (native build, same MTGA.app layout).
+    for epic_dir in _DARWIN_EPIC_CANDIDATES:
+        if (epic_dir / "MTGA.app").is_dir():
+            return MtgaInstall(
+                install_dir=epic_dir,
+                player_log=_darwin_native_log(home),
+                platform="darwin-epic",
+            )
+
+    # (c) CrossOver bottle running the Windows Mono build.
+    return _find_mtga_darwin_crossover(home)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -205,6 +316,7 @@ def find_mtga() -> Optional[MtgaInstall]:
             detected = (
                 _find_mtga_linux() if current_platform() == "linux"
                 else _find_mtga_windows() if current_platform() == "windows"
+                else _find_mtga_darwin() if current_platform() == "darwin"
                 else None
             )
             if detected and detected.install_dir == install.install_dir:
@@ -224,4 +336,6 @@ def find_mtga() -> Optional[MtgaInstall]:
         return _find_mtga_windows()
     if plat == "linux":
         return _find_mtga_linux()
-    return None  # darwin: backend not yet implemented (untested hardware)
+    if plat == "darwin":
+        return _find_mtga_darwin()
+    return None

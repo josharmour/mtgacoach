@@ -108,6 +108,19 @@ def check_settings_json() -> bool:
         return False
 
 
+def _fallback_player_log_path() -> Path:
+    """Platform-appropriate default Player.log path (no runtime detection)."""
+    if sys.platform == "darwin":
+        return (
+            Path.home() / "Library" / "Logs" / "Wizards Of The Coast"
+            / "MTGA" / "Player.log"
+        )
+    local_low = os.environ.get("LOCALAPPDATA", "")
+    if local_low:
+        return Path(local_low).parent / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+    return Path.home() / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+
+
 def check_mtga_log() -> bool:
     """Check MTGA Player.log exists and is readable."""
     custom = os.environ.get("MTGA_LOG_PATH")
@@ -119,11 +132,7 @@ def check_mtga_log() -> bool:
             state = detect_runtime_state()
             log_path = Path(state.player_log)
         except Exception:
-            local_low = os.environ.get("LOCALAPPDATA", "")
-            if local_low:
-                log_path = Path(local_low).parent / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
-            else:
-                log_path = Path.home() / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+            log_path = _fallback_player_log_path()
 
     if log_path.exists():
         size_mb = log_path.stat().st_size / (1024 * 1024)
@@ -290,11 +299,7 @@ def check_log_health() -> bool:
         state = detect_runtime_state()
         default_path = Path(state.player_log)
     except Exception:
-        local_low = os.environ.get("LOCALAPPDATA", "")
-        if local_low:
-            default_path = Path(local_low).parent / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
-        else:
-            default_path = Path.home() / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+        default_path = _fallback_player_log_path()
 
     # Warn if custom path differs from default
     if custom:

@@ -9,8 +9,9 @@ logger = logging.getLogger(__name__)
 def _resolve_player_log_path() -> str:
     """MTGA_LOG_PATH env override first, then the watcher's cross-platform
     default (Windows LOCALAPPDATA, WSL /mnt/c, Linux Steam/Proton incl.
-    Flatpak). The old Windows-only fallback here logged literal
-    '%USERPROFILE%\\...' errors on every Linux session (#237)."""
+    Flatpak, macOS ~/Library/Logs). The old Windows-only fallback here
+    logged literal '%USERPROFILE%\\...' errors on every Linux session
+    (#237)."""
     env_path = os.environ.get("MTGA_LOG_PATH", "").strip()
     if env_path:
         return env_path
@@ -18,6 +19,12 @@ def _resolve_player_log_path() -> str:
         from arenamcp.watcher import DEFAULT_LOG_PATH
         return DEFAULT_LOG_PATH
     except Exception:
+        import sys
+        if sys.platform == "darwin":
+            return os.path.join(
+                os.path.expanduser("~"),
+                "Library", "Logs", "Wizards Of The Coast", "MTGA", "Player.log",
+            )
         local_appdata = os.environ.get("LOCALAPPDATA", "")
         if local_appdata:
             return os.path.join(
