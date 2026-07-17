@@ -584,7 +584,7 @@ class StandaloneCoach:
         # explanatory). Legacy values "concise"/"verbose" are still accepted.
         self.advice_style = "quick"
         self._advice_frequency = self.settings.get("advice_frequency", "start_of_turn")
-        self._auto_deck_strategy = bool(self.settings.get("auto_deck_strategy", False))
+        self._auto_deck_strategy = bool(self.settings.get("auto_deck_strategy", True))
         self._auto_post_match_analysis = bool(
             self.settings.get("auto_post_match_analysis", False)
         )

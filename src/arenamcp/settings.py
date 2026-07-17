@@ -36,7 +36,11 @@ DEFAULTS = {
     "voice_speed": 1.0,
     "muted": False,
     "auto_speak": True,
-    "auto_deck_strategy": False,
+    # Generate + inject a per-deck strategy brief at match start (one LLM
+    # call per match, background thread). Without it the in-game advisor is
+    # strategy-blind — e.g. it told Josh to cast Ephemerate on a random
+    # creature instead of saving it for his commander (2026-07-16).
+    "auto_deck_strategy": True,
     "auto_post_match_analysis": False,
     "voice_mode": "ptt",
     "device_index": None,
