@@ -4583,7 +4583,26 @@ class CoachEngine:
                             matches = True
                             break
 
-            if not matches:
+            if not matches and advice.lstrip().startswith("Error getting advice:"):
+                # Transport/auth failure — NEVER mask it as coaching. On
+                # 2026-07-16 an empty license key produced 435 silent 401s
+                # while the fallback scorer replaced every response with a
+                # plausible legal action; the user debugged "bad advice"
+                # for hours when the truth was "the LLM never spoke once".
+                low = advice.lower()
+                if "401" in advice or "403" in advice or "virtual key" in low or "auth" in low:
+                    advice = (
+                        "No coaching available: the gateway rejected your "
+                        "license key. Open the Repair tab and run Fix "
+                        "Everything."
+                    )
+                else:
+                    advice = (
+                        "No coaching available: cannot reach the AI service "
+                        "right now."
+                    )
+                logger.error(f"LLM failure surfaced to user (not masked): {advice}")
+            elif not matches:
                 # Force to best legal action to avoid illegal recommendations
                 turn = game_state.get("turn", {})
                 phase = str(turn.get("phase", "") or "").lower()
