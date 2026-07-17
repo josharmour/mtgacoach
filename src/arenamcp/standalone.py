@@ -4176,6 +4176,11 @@ class StandaloneCoach:
         report["autopilot"] = self._collect_autopilot_info()
         report["bridge_state"] = self._collect_bridge_state()
         report["errors"] = list(self._recent_errors) if hasattr(self, '_recent_errors') else []
+        # The in-memory error list only sees errors explicitly recorded via
+        # _record_error — on 2026-07-16 it read [] while standalone.log held
+        # 435 proxy 401s, so the report's "Recent Errors" section actively
+        # misled debugging. Pull ERROR-level lines straight from the log.
+        report["recent_log_errors"] = self._tail_log_errors()
         report["uptime_seconds"] = (
             (datetime.now() - self._start_time).total_seconds()
             if hasattr(self, '_start_time') else None
@@ -4612,6 +4617,24 @@ class StandaloneCoach:
                 )
         except Exception as e:
             logger.debug(f"Advice recording failed (non-fatal): {e}")
+
+    def _tail_log_errors(self, max_lines: int = 20, tail_bytes: int = 262144) -> list[str]:
+        """Last ERROR-level lines from the live log file, for bug reports."""
+        try:
+            from arenamcp.logging_config import LOG_FILE
+
+            with open(LOG_FILE, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - tail_bytes))
+                text = f.read().decode("utf-8", errors="replace")
+            errors = [
+                line.strip() for line in text.splitlines()
+                if "| ERROR " in line or "| WARNING " in line
+            ]
+            return errors[-max_lines:]
+        except Exception:
+            return []
 
     def _record_error(self, error: str, context: str = None) -> None:
         """Record error for debug history."""

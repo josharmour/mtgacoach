@@ -144,6 +144,15 @@ def build_issue_payload(
     else:
         lines.append("- No recent recorded errors.")
 
+    # ERROR/WARNING lines pulled straight from standalone.log — the recorded
+    # list above only sees explicitly-recorded errors and read [] while the
+    # log held 435 proxy 401s (2026-07-16). The log never lies.
+    log_errors = report_data.get("recent_log_errors") or []
+    if log_errors:
+        lines.extend(["", "## Recent Log Errors", ""])
+        for line in log_errors[-10:]:
+            lines.append(f"- `{str(line)[:220]}`")
+
     if post_match_feedback:
         lines.extend(["", "## Coaching Feedback", ""])
         match_result = str(post_match_feedback.get("match_result") or "").strip()

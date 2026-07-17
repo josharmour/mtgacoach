@@ -305,6 +305,21 @@ class GREBridge:
         if time.monotonic() - self._server_started_at < self._NO_PLUGIN_HINT_AFTER_S:
             return
         self._no_plugin_warned = True
+        try:
+            from arenamcp.platform_integration import bridge_capable
+
+            if not bridge_capable():
+                # Native Mac client: no plugin will ever connect — that's the
+                # designed log-only state, not a fault. A WARNING here would
+                # land in every Mac bug report's error section as a red
+                # herring ("check BepInEx is installed" — it can't be).
+                logger.info(
+                    "GRE bridge: no plugin (native macOS client — log-only "
+                    "coaching is the designed state)."
+                )
+                return
+        except Exception:
+            pass
         if sys.platform.startswith("linux"):
             hint = (
                 "On Linux/Proton, BepInEx only injects when the Steam launch "
