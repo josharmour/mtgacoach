@@ -51,6 +51,16 @@ PATRON_KEY_MODELS = ["deepseek-v4-flash", "gemma-4-12b-it"]
 PATRON_KEY_BUDGET = float(os.environ.get("MTGACOACH_PATRON_BUDGET", "25"))
 PATRON_KEY_BUDGET_DURATION = "30d"
 
+# Free trial keys: same models as patrons, a fraction of the budget, and a
+# hard key lifetime enforced by LiteLLM itself via ``duration``.
+TRIAL_KEY_DURATION = "7d"
+TRIAL_KEY_BUDGET = float(
+    os.environ.get(
+        "MTGACOACH_TRIAL_BUDGET",
+        str(PATRON_KEY_BUDGET * 0.25 if PATRON_KEY_BUDGET > 0 else 5.0),
+    )
+)
+
 # Optional key-delivery email. Unset SMTP_HOST = skip emailing (the OAuth
 # callback page is the primary delivery path either way).
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
@@ -112,6 +122,45 @@ async def mint_litellm_key(email: str, name: str, patron_id: str) -> str:
         # key (e.g. re-subscribe after cancel) collides — retry once suffixed.
         if attempt == 1 and resp.status_code == 400:
             payload["key_alias"] = f"patreon-{email}-{secrets.token_hex(3)}"
+            continue
+        raise RuntimeError(
+            f"LiteLLM /key/generate failed: {resp.status_code} {resp.text[:300]}"
+        )
+    raise RuntimeError("unreachable")
+
+
+async def mint_trial_key(machine_id: str) -> str:
+    """Create a 7-day free-trial LiteLLM key for a machine and return it.
+
+    LiteLLM enforces expiry (``duration``) and spend cap (``max_budget``)
+    gateway-side, so a leaked trial key dies on its own.
+    """
+    payload: dict[str, Any] = {
+        "models": PATRON_KEY_MODELS,
+        "key_alias": f"trial-{machine_id[:12]}",
+        "duration": TRIAL_KEY_DURATION,
+        "max_budget": TRIAL_KEY_BUDGET,
+        "metadata": {
+            "trial": True,
+            "machine_id": machine_id,
+            "source": "trial",
+        },
+    }
+    for attempt in (1, 2):
+        resp = await _http().post(
+            f"{LITELLM_URL}/key/generate", json=payload, headers=_admin_headers()
+        )
+        if resp.status_code == 200:
+            key = resp.json().get("key", "")
+            if not key:
+                raise RuntimeError(f"LiteLLM /key/generate returned no key: {resp.text[:200]}")
+            logger.info(f"LiteLLM trial key minted (alias {payload['key_alias']})")
+            return key
+        # key_alias must be unique gateway-wide; a stale alias from an earlier
+        # trial key (e.g. expired but not yet purged) collides — retry once
+        # suffixed.
+        if attempt == 1 and resp.status_code == 400:
+            payload["key_alias"] = f"trial-{machine_id[:12]}-{secrets.token_hex(3)}"
             continue
         raise RuntimeError(
             f"LiteLLM /key/generate failed: {resp.status_code} {resp.text[:300]}"

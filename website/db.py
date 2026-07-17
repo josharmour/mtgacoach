@@ -94,6 +94,13 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_usage_key ON usage_log(license_key);
             CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_log(timestamp);
 
+            CREATE TABLE IF NOT EXISTS trials (
+                machine_id TEXT PRIMARY KEY,
+                litellm_key TEXT,
+                created_at TEXT,
+                expires_at TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS eval_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 target TEXT NOT NULL,
@@ -224,6 +231,27 @@ def delete_subscriber(key: str) -> bool:
     with get_db() as conn:
         cursor = conn.execute("DELETE FROM subscribers WHERE license_key = ?", (key,))
     return cursor.rowcount > 0
+
+
+# --- Free trials (machine_id -> LiteLLM trial key) ---
+
+def get_trial(machine_id: str) -> Optional[dict]:
+    """Look up the trial record for a machine. Returns None if absent."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM trials WHERE machine_id = ?", (machine_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def create_trial(machine_id: str, litellm_key: str, created_at: str, expires_at: str) -> None:
+    """Record a newly-minted trial key for a machine (one trial per machine, ever)."""
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO trials (machine_id, litellm_key, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?)",
+            (machine_id, litellm_key, created_at, expires_at),
+        )
 
 
 # --- Messages ---

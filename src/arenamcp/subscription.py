@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 # API base URL for subscription validation
 API_BASE = "https://api.mtgacoach.com"
 
+# Website base URL (trial provisioning, signup)
+WEBSITE_BASE = "https://mtgacoach.com"
+
 # Subscription page URL (opened in browser when user needs to subscribe)
 SUBSCRIBE_URL = "https://mtgacoach.com/subscribe"
 
@@ -215,3 +218,97 @@ def _save_cache(license_key: str, result: SubscriptionStatus) -> None:
             json.dump(data, f, indent=2)
     except Exception as e:
         logger.debug(f"Could not cache subscription status: {e}")
+
+
+# ── Free trial provisioning ──────────────────────────────────────────────
+#
+# First-run doctrine: the app must work with NO key. The client asks the
+# website for a 7-day trial key tied to a stable machine hash; when the
+# trial lapses the gateway rejects the key and the repair surface points
+# the user at Patreon. Server side: website/app.py POST /api/trial.
+
+
+def get_machine_id() -> str:
+    """Stable, anonymous machine hash for trial bookkeeping.
+
+    sha256 of the primary MAC + hostname — not reversible, not hardware
+    serial, stable across launches. Spoofable, which is acceptable: trial
+    keys carry a hard budget cap on the gateway side.
+    """
+    import hashlib
+    import platform
+    import uuid
+
+    raw = f"{uuid.getnode()}:{platform.node()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def request_trial_key(timeout: int = 10) -> dict:
+    """Ask the website for a trial license key for this machine.
+
+    Returns a dict with:
+      status: "created" | "existing" | "trial_expired" | "offline" | "error"
+      key, expires_at: present for created/existing
+      message: human-readable detail for the repair surface
+    """
+    from arenamcp import __version__
+
+    body = json.dumps(
+        {"machine_id": get_machine_id(), "app_version": __version__}
+    ).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    headers.update(get_client_headers())
+    req = urllib.request.Request(
+        f"{WEBSITE_BASE}/api/trial", data=body, headers=headers, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+        key = (data.get("key") or "").strip()
+        if not key:
+            return {"status": "error", "message": "Trial endpoint returned no key."}
+        return {
+            "status": data.get("status", "created"),
+            "key": key,
+            "expires_at": data.get("expires_at", ""),
+            "message": "",
+        }
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            return {
+                "status": "trial_expired",
+                "message": (
+                    "Your free trial has ended. Subscribe at "
+                    f"{SUBSCRIBE_URL} to keep coaching."
+                ),
+            }
+        if e.code == 404:
+            # Endpoint not deployed yet — behave like offline, not like a bug.
+            return {"status": "offline", "message": "Trial service unavailable."}
+        return {"status": "error", "message": f"Trial request failed (HTTP {e.code})."}
+    except Exception as e:
+        return {"status": "offline", "message": f"Could not reach {WEBSITE_BASE} ({e})."}
+
+
+def ensure_license_key() -> dict:
+    """Auto-provision a trial key when no license key is configured.
+
+    Returns the request_trial_key() result dict, plus status "existing_key"
+    when a key is already configured (nothing to do). On success the key and
+    trial expiry are persisted to settings.
+    """
+    from arenamcp.settings import get_settings
+
+    settings = get_settings()
+    if (settings.get("license_key") or "").strip():
+        return {"status": "existing_key", "message": ""}
+
+    result = request_trial_key()
+    if result.get("key"):
+        settings.set("license_key", result["key"], save=False)
+        settings.set("trial_expires_at", result.get("expires_at", ""), save=True)
+        logger.info(
+            "Provisioned %s trial key (expires %s)",
+            result.get("status"), result.get("expires_at"),
+        )
+    return result

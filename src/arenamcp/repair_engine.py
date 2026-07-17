@@ -193,14 +193,40 @@ class RepairEngine:
         """
         from arenamcp.settings import get_settings
 
+        trial_note = ""
         key = (get_settings().get("license_key") or "").strip()
         if not key:
-            return CheckResult(
-                "license", "License / online backend", "action_needed",
-                "No license key is configured — the app is online-only and "
-                "cannot coach without one.",
-                "Enter your license key below.",
-            )
+            # First-run: auto-provision a free 7-day trial key instead of
+            # stranding the user at a key prompt (product decision
+            # 2026-07-16, docs/DECISIONS.md). Falls through to the normal
+            # gateway validation below when a key is obtained.
+            try:
+                from arenamcp.subscription import SUBSCRIBE_URL, ensure_license_key
+
+                trial = ensure_license_key()
+            except Exception as e:
+                trial = {"status": "error", "message": str(e)}
+            if trial.get("key"):
+                key = trial["key"]
+                trial_note = (
+                    f" (free trial until {trial.get('expires_at', 'unknown')[:10]})"
+                    if trial.get("expires_at") else " (free trial)"
+                )
+            elif trial.get("status") == "trial_expired":
+                return CheckResult(
+                    "license", "License / online backend", "action_needed",
+                    "Your free trial has ended.",
+                    f"Subscribe at {SUBSCRIBE_URL} to keep coaching, or "
+                    "enter a license key below.",
+                )
+            else:
+                return CheckResult(
+                    "license", "License / online backend", "action_needed",
+                    "No license key is configured and a free trial could "
+                    f"not be started ({trial.get('message') or trial.get('status')}).",
+                    "Check your internet connection and press Fix Everything "
+                    "again, or enter a license key below.",
+                )
         try:
             import urllib.request
 
@@ -241,11 +267,19 @@ class RepairEngine:
                         pass
                     return CheckResult(
                         "license", "License / online backend", "ok",
-                        "License key accepted by the gateway.",
+                        f"License key accepted by the gateway{trial_note}.",
                     )
                 status = resp.status
         except urllib.error.HTTPError as e:  # type: ignore[attr-defined]
             if e.code in (401, 403):
+                if (get_settings().get("trial_expires_at") or "").strip():
+                    return CheckResult(
+                        "license", "License / online backend", "action_needed",
+                        "Your free trial key was rejected by the gateway — "
+                        "the trial has most likely ended.",
+                        "Subscribe at https://mtgacoach.com/subscribe to keep "
+                        "coaching, or enter a license key below.",
+                    )
                 return CheckResult(
                     "license", "License / online backend", "action_needed",
                     "The gateway rejected your license key (expired or wrong).",
@@ -539,6 +573,8 @@ def set_license_key(key: str) -> CheckResult:
     from arenamcp.settings import get_settings
 
     settings = get_settings()
-    settings.set("license_key", key.strip())
-    settings.save()
+    settings.set("license_key", key.strip(), save=False)
+    # A manually entered key supersedes any auto-provisioned trial — clear
+    # the marker so trial-specific messaging can't misfire on a real key.
+    settings.set("trial_expires_at", "", save=True)
     return RepairEngine()._check_license()

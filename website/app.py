@@ -1,10 +1,12 @@
 """mtgacoach.com proxy server — routes AI requests and manages subscriptions."""
 
 from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import logging.handlers
 import os
+import re
 import secrets
 import time
 from pathlib import Path
@@ -1364,9 +1366,82 @@ async def subscribe_request(request: Request):
 #  Patreon integration -> LiteLLM keys (see patreon.py)
 # =========================================================================
 
+import patreon  # noqa: E402
 from patreon import router as patreon_router  # noqa: E402
 
 app.include_router(patreon_router)
+
+
+# =========================================================================
+#  Free trial (desktop app first run — no Patreon required)
+# =========================================================================
+
+# machine_id is a sha256 hex digest computed client-side; nothing else is
+# accepted, so the endpoint can't be used to mint keys for arbitrary strings.
+_MACHINE_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+TRIAL_DAYS = 7
+
+
+def _trial_iso(dt: datetime) -> str:
+    """ISO8601 UTC with a trailing Z, second precision."""
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _parse_trial_iso(value: str) -> datetime:
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+@app.post("/api/trial")
+async def request_trial(request: Request):
+    """Auto-provision a 7-day trial key on the desktop app's first run.
+
+    One trial per machine_id, ever. While the trial is active, repeat calls
+    return the same key; after it lapses, 403 gates on a Patreon subscription.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Invalid JSON body")
+
+    machine_id = str(body.get("machine_id", "")).strip().lower()
+    app_version = str(body.get("app_version", "")).strip()
+    if not _MACHINE_ID_RE.fullmatch(machine_id):
+        raise HTTPException(422, "machine_id must be a 64-character sha256 hex digest")
+
+    now = datetime.now(timezone.utc)
+
+    existing = db.get_trial(machine_id)
+    if existing:
+        try:
+            expires = _parse_trial_iso(existing["expires_at"] or "")
+        except ValueError:
+            expires = now  # unparseable record — treat as lapsed
+        if expires > now:
+            return {
+                "key": existing["litellm_key"],
+                "expires_at": existing["expires_at"],
+                "status": "existing",
+            }
+        raise HTTPException(403, "trial_expired")
+
+    try:
+        key = await patreon.mint_trial_key(machine_id)
+    except Exception as e:
+        logger.error(f"Trial mint failed for machine {machine_id[:12]}...: {e}")
+        raise HTTPException(503, "Trial provisioning is temporarily unavailable. Try again later.")
+
+    expires_at = _trial_iso(now + timedelta(days=TRIAL_DAYS))
+    db.create_trial(machine_id, key, _trial_iso(now), expires_at)
+    logger.info(
+        f"Trial key issued for machine {machine_id[:12]}... "
+        f"(app_version={app_version or 'unknown'}, expires {expires_at})"
+    )
+    return {"key": key, "expires_at": expires_at, "status": "created"}
 
 
 # =========================================================================
