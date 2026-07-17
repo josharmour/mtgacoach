@@ -22,10 +22,7 @@ except ImportError:
     win32con = None
     win32gui = None
 
-try:
-    import pygetwindow as gw
-except (ImportError, NotImplementedError):
-    gw = None
+from arenamcp.desktop.window_tracking import get_mtga_window_rect
 
 try:
     from arenamcp.input_controller import find_mtga_hwnd, get_client_rect
@@ -106,8 +103,10 @@ class CardOverlayWindow(QWidget):
 
     Key design points (matches untapped.gg):
     - Frameless, always-on-top, translucent background
-    - Click-through via Win32 WS_EX_TRANSPARENT
-    - Tracks MTGA window bounds via pygetwindow; repositions every 500ms
+    - Click-through via Qt's WA_TransparentForMouseEvents on every platform,
+      plus Win32 WS_EX_TRANSPARENT as a Windows-only enhancement
+    - Tracks MTGA window bounds via window_tracking (win32 client rect /
+      pygetwindow, xwininfo on Linux, Quartz on macOS); repositions every 500ms
     - Card positions hardcoded as fractions of MTGA client area
     - Aspect-ratio aware (16:9 vs 16:10)
     """
@@ -115,11 +114,6 @@ class CardOverlayWindow(QWidget):
     # Refresh interval for window-follow (ms). Shorter = smoother tracking,
     # but keep reasonable since MTGA rarely moves during a draft.
     FOLLOW_INTERVAL_MS = 500
-
-    def setVisible(self, visible: bool) -> None:
-        if visible and os.name != "nt":
-            return
-        super().setVisible(visible)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -314,18 +308,9 @@ class CardOverlayWindow(QWidget):
         DWM-frame padding that `pygetwindow` includes.
         """
         left_px = top_px = width_px = height_px = None
-        if os.name != "nt":
-            try:
-                from arenamcp.desktop.runtime import get_linux_window_geometry
-                geom = get_linux_window_geometry("MTGA")
-                if geom and not geom.get("is_minimized"):
-                    left_px = geom["left"]
-                    top_px = geom["top"]
-                    width_px = geom["width"]
-                    height_px = geom["height"]
-            except Exception:
-                pass
-        else:
+        if os.name == "nt":
+            # Windows enhancement: prefer the exact client rect (excludes
+            # title bar / DWM frame) via win32 so grid fractions line up.
             if find_mtga_hwnd is not None and get_client_rect is not None:
                 try:
                     hwnd = find_mtga_hwnd()
@@ -336,22 +321,12 @@ class CardOverlayWindow(QWidget):
                 except Exception:
                     left_px = None
 
-            if left_px is None:
-                if gw is None:
-                    return None
-                try:
-                    windows = [w for w in gw.getWindowsWithTitle("MTGA") if w.title == "MTGA"]
-                    if not windows:
-                        return None
-                    m = windows[0]
-                    if m.isMinimized:
-                        return None
-                    left_px, top_px, width_px, height_px = m.left, m.top, m.width, m.height
-                except Exception:
-                    return None
-
         if left_px is None:
-            return None
+            # Cross-platform locator (pygetwindow / xwininfo / Quartz).
+            rect = get_mtga_window_rect()
+            if rect is None:
+                return None
+            left_px, top_px, width_px, height_px = rect
 
         ratio = 1.0
         try:
@@ -379,10 +354,6 @@ class CardOverlayWindow(QWidget):
 
     def _tick(self) -> None:
         """Periodic: match MTGA bounds and redraw if visible."""
-        if os.name != "nt":
-            if self.isVisible():
-                self.hide()
-            return
         rect = self._get_mtga_rect()
         if rect is None or not self._should_show or not self._user_enabled:
             if self.isVisible():

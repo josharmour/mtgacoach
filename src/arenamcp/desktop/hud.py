@@ -20,17 +20,18 @@ except ImportError:
     win32con = None
     win32gui = None
 
-try:
-    import pygetwindow as gw
-except (ImportError, NotImplementedError):
-    gw = None
+from arenamcp.desktop.window_tracking import get_mtga_window_rect
 
 
 class HudWindow(QWidget):
-    def setVisible(self, visible: bool) -> None:
-        if visible and os.name != "nt":
-            return
-        super().setVisible(visible)
+    """Frameless always-on-top HUD that follows the MTGA window.
+
+    Works on every platform via Qt-native mechanisms (FramelessWindowHint |
+    WindowStaysOnTopHint | Tool, WA_TranslucentBackground, and
+    WA_TransparentForMouseEvents for click-through). On Windows the win32
+    WS_EX_TRANSPARENT | WS_EX_LAYERED styles are additionally applied as an
+    enhancement for system-level click-through.
+    """
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -105,11 +106,16 @@ class HudWindow(QWidget):
             self.hide()
 
     def set_click_through(self, enabled: bool = True) -> None:
+        # Qt-native click-through (all platforms).
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled)
+        self._is_click_through = enabled
+        # Windows-only enhancement: system-level click-through via extended
+        # window styles. Not required — WA_TransparentForMouseEvents already
+        # forwards input within Qt; WS_EX_TRANSPARENT makes the OS itself
+        # route clicks to the window underneath.
         if os.name != "nt" or win32gui is None or win32con is None:
             return
 
-        self._is_click_through = enabled
         hwnd = int(self.winId())
         style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
         if enabled:
@@ -126,23 +132,9 @@ class HudWindow(QWidget):
             )
 
     def _follow_mtga(self) -> None:
-        if os.name != "nt":
-            if self.isVisible():
-                self.hide()
-            return
-
-        if gw is None:
-            return
-
         try:
-            windows = [window for window in gw.getWindowsWithTitle("MTGA") if window.title == "MTGA"]
-            if not windows:
-                if self.isVisible():
-                    self.hide()
-                return
-
-            mtga = windows[0]
-            if mtga.isMinimized or not self._should_show:
+            rect = get_mtga_window_rect()
+            if rect is None or not self._should_show:
                 if self.isVisible():
                     self.hide()
                 return
@@ -153,8 +145,8 @@ class HudWindow(QWidget):
                     self.set_click_through(True)
 
             margin = 10
-            target_x = mtga.left + margin
-            target_y = mtga.top + margin
+            target_x = rect[0] + margin
+            target_y = rect[1] + margin
             if self.pos() != QPoint(target_x, target_y):
                 self.move(target_x, target_y)
         except Exception:
@@ -337,28 +329,12 @@ class DraftHudWindow(HudWindow):
 
     def _save_user_offset(self) -> None:
         """Store the current position as an offset from MTGA window top-left."""
-        if os.name != "nt":
-            try:
-                from arenamcp.desktop.runtime import get_linux_window_geometry
-                geom = get_linux_window_geometry("MTGA")
-                if geom:
-                    self._user_offset = QPoint(
-                        self.x() - geom["left"],
-                        self.y() - geom["top"],
-                    )
-            except Exception:
-                pass
-            return
-
-        if gw is None:
-            return
         try:
-            windows = [w for w in gw.getWindowsWithTitle("MTGA") if w.title == "MTGA"]
-            if windows:
-                mtga = windows[0]
+            rect = get_mtga_window_rect()
+            if rect is not None:
                 self._user_offset = QPoint(
-                    self.x() - mtga.left,
-                    self.y() - mtga.top,
+                    self.x() - rect[0],
+                    self.y() - rect[1],
                 )
         except Exception:
             pass
@@ -366,49 +342,9 @@ class DraftHudWindow(HudWindow):
     # -- Override _follow_mtga to respect user drag offset ---------------
 
     def _follow_mtga(self) -> None:
-        if os.name != "nt":
-            try:
-                from arenamcp.desktop.runtime import get_linux_window_geometry
-                geom = get_linux_window_geometry("MTGA")
-                if not geom or not self._should_show:
-                    if self.isVisible():
-                        self.hide()
-                    return
-
-                if geom.get("is_minimized"):
-                    if self.isVisible():
-                        self.hide()
-                    return
-
-                if not self.isVisible():
-                    self.show()
-
-                if self._user_offset is not None:
-                    target_x = geom["left"] + self._user_offset.x()
-                    target_y = geom["top"] + self._user_offset.y()
-                else:
-                    margin = 10
-                    target_x = geom["left"] + margin
-                    target_y = geom["top"] + margin
-
-                if self.pos() != QPoint(target_x, target_y):
-                    self.move(target_x, target_y)
-            except Exception:
-                pass
-            return
-
-        if gw is None:
-            return
-
         try:
-            windows = [w for w in gw.getWindowsWithTitle("MTGA") if w.title == "MTGA"]
-            if not windows:
-                if self.isVisible():
-                    self.hide()
-                return
-
-            mtga = windows[0]
-            if mtga.isMinimized or not self._should_show:
+            rect = get_mtga_window_rect()
+            if rect is None or not self._should_show:
                 if self.isVisible():
                     self.hide()
                 return
@@ -417,12 +353,12 @@ class DraftHudWindow(HudWindow):
                 self.show()
 
             if self._user_offset is not None:
-                target_x = mtga.left + self._user_offset.x()
-                target_y = mtga.top + self._user_offset.y()
+                target_x = rect[0] + self._user_offset.x()
+                target_y = rect[1] + self._user_offset.y()
             else:
                 margin = 10
-                target_x = mtga.left + margin
-                target_y = mtga.top + margin
+                target_x = rect[0] + margin
+                target_y = rect[1] + margin
 
             if self.pos() != QPoint(target_x, target_y):
                 self.move(target_x, target_y)

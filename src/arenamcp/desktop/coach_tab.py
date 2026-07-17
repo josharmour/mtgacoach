@@ -94,11 +94,23 @@ class CoachTab(QWidget):
         except Exception as exc:
             self.append_log(f"TTS worker failed to start: {exc}", role="error")
 
-        if sys.platform != "win32":
-            self.append_log(
-                "In-game overlays (HUD and card badges) are disabled on Linux/Wayland due to system compatibility constraints. Advice is available here in the Coach log and via TTS voice output.",
-                role="header"
-            )
+        # Overlays now work on every platform via Qt-native window flags.
+        # One caveat worth surfacing: on Linux under native Wayland the
+        # compositor may block precise overlay positioning (no global window
+        # geometry); XWayland + xwininfo works, pure Wayland may not.
+        if sys.platform.startswith("linux"):
+            import os as _os
+            if (
+                _os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
+                or _os.environ.get("WAYLAND_DISPLAY")
+            ):
+                self.append_log(
+                    "Wayland session detected: in-game overlays use Qt-native "
+                    "positioning and may not track the MTGA window under pure "
+                    "Wayland (XWayland works). Advice is always available here "
+                    "in the Coach log and via TTS voice output.",
+                    role="header"
+                )
 
     def attach_process(self, process: CoachProcess) -> None:
         if self._process is process:
@@ -411,10 +423,10 @@ class CoachTab(QWidget):
         top_layout.addWidget(status_container)
 
         # Toolbar: buttons clustered by function so the row reads as
-        # Coaching | Voice | Autopilot | System (+ Display on Windows).
-        # Windows-only overlay tools (Screen, Calibrate Cards, Overlay,
-        # Reset Advice Panel) are simply not created on other platforms —
-        # a row of permanently-disabled buttons is noise, not UI.
+        # Coaching | Voice | Autopilot | System | Display. Overlay tools
+        # (Calibrate Cards, Overlay, Reset Advice Panel) exist on every
+        # platform now that the overlays are Qt-native; only "Screen"
+        # (vision screenshot analysis) remains Windows-only.
         def _btn(label, tooltip, *, command=None, on_click=None):
             b = QPushButton(label)
             b.setToolTip(tooltip)
@@ -483,45 +495,56 @@ class CoachTab(QWidget):
         ]))
 
         import sys
+
+        # Match-overlay calibration: draws a thin outline around every
+        # card the plugin detects, to verify ground-truth alignment.
+        match_calib_button = QPushButton("Calibrate Cards")
+        match_calib_button.setCheckable(True)
+        match_calib_button.setToolTip(
+            "Draw border around MTGA cards reported by bridge plugin "
+            "to verify alignment"
+        )
+        match_calib_button.clicked.connect(
+            lambda checked: self._match_overlay.set_calibration(checked)
+        )
+
+        # Overlay visibility toggle — hide the whole in-game overlay
+        # when it's covering MTGA content.
+        self._overlay_toggle_btn = QPushButton("Overlay")
+        self._overlay_toggle_btn.setCheckable(True)
+        self._overlay_toggle_btn.setChecked(True)  # default: on
+        overlay_tooltip = "Show/hide the in-game overlay (pill + advice panel)"
+        if sys.platform.startswith("linux"):
+            overlay_tooltip += (
+                "\nNote: under pure Wayland the overlay may not track the "
+                "MTGA window (XWayland works)."
+            )
+        self._overlay_toggle_btn.setToolTip(overlay_tooltip)
+        self._overlay_toggle_btn.clicked.connect(
+            lambda checked: self._match_overlay.set_enabled(checked)
+        )
+
+        # Reset advice panel — drag the panel anywhere over MTGA to
+        # move it; click this to put it back.
+        self._advice_anchor_btn = _btn(
+            "Reset Advice Panel",
+            "Snap the advice panel back to its default position and size",
+            on_click=self._reset_advice_panel,
+        )
+        display_buttons = []
         if sys.platform == "win32":
-            # Match-overlay calibration: draws a thin outline around every
-            # card the plugin detects, to verify ground-truth alignment.
-            match_calib_button = QPushButton("Calibrate Cards")
-            match_calib_button.setCheckable(True)
-            match_calib_button.setToolTip(
-                "Draw border around MTGA cards reported by bridge plugin "
-                "to verify alignment"
-            )
-            match_calib_button.clicked.connect(
-                lambda checked: self._match_overlay.set_calibration(checked)
-            )
-
-            # Overlay visibility toggle — hide the whole in-game overlay
-            # when it's covering MTGA content.
-            self._overlay_toggle_btn = QPushButton("Overlay")
-            self._overlay_toggle_btn.setCheckable(True)
-            self._overlay_toggle_btn.setChecked(True)  # default: on
-            self._overlay_toggle_btn.setToolTip(
-                "Show/hide the in-game overlay (pill + advice panel)"
-            )
-            self._overlay_toggle_btn.clicked.connect(
-                lambda checked: self._match_overlay.set_enabled(checked)
-            )
-
-            # Reset advice panel — drag the panel anywhere over MTGA to
-            # move it; click this to put it back.
-            self._advice_anchor_btn = _btn(
-                "Reset Advice Panel",
-                "Snap the advice panel back to its default position and size",
-                on_click=self._reset_advice_panel,
-            )
-            button_row.addWidget(_group("Display", [
+            # Vision screenshot analysis remains Windows-only
+            # (screen capture path is win32-specific).
+            display_buttons.append(
                 _btn("Screen", "Analyze a screenshot of the game with the "
-                     "vision model", command="analyze_screen"),
-                match_calib_button,
-                self._overlay_toggle_btn,
-                self._advice_anchor_btn,
-            ]))
+                     "vision model", command="analyze_screen")
+            )
+        display_buttons += [
+            match_calib_button,
+            self._overlay_toggle_btn,
+            self._advice_anchor_btn,
+        ]
+        button_row.addWidget(_group("Display", display_buttons))
 
         button_row.addStretch()
         top_layout.addLayout(button_row)
@@ -706,33 +729,31 @@ class CoachTab(QWidget):
         except Exception as e:
             self.append_log(f"Coach screenshot failed: {e}", role="debug")
 
-        # 2. MTGA window — bounds from pygetwindow, grab via PIL ImageGrab
+        # 2. MTGA window — bounds from the cross-platform locator
+        #    (pygetwindow / xwininfo / Quartz), grab via PIL ImageGrab
+        #    (supported on Windows, macOS, and X11 Linux).
         try:
-            import pygetwindow as gw  # type: ignore
             from PIL import ImageGrab
-            wins = [w for w in gw.getWindowsWithTitle("MTGA") if w.title == "MTGA"]
-            if wins:
-                w = wins[0]
-                if not w.isMinimized:
-                    left = getattr(w, "left", None)
-                    top = getattr(w, "top", None)
-                    width = getattr(w, "width", None)
-                    height = getattr(w, "height", None)
-                    if (
-                        left is not None
-                        and top is not None
-                        and width is not None
-                        and height is not None
-                        and width > 0
-                        and height > 0
-                    ):
-                        bbox = (left, top, left + width, top + height)
-                        img = ImageGrab.grab(bbox=bbox, all_screens=True)
-                        mtga_path = bug_dir / f"bug_{timestamp}_mtga.png"
-                        img.save(str(mtga_path), "PNG")
-                        out["mtga"] = str(mtga_path)
-                    else:
-                        logger.warning(f"Invalid MTGA window bounds for screenshot: left={left}, top={top}, width={width}, height={height}")
+            from arenamcp.desktop.window_tracking import get_mtga_window_rect
+            rect = get_mtga_window_rect()
+            if rect is not None:
+                left, top, width, height = rect
+                if width > 0 and height > 0:
+                    grab_kwargs = {}
+                    if sys.platform == "win32":
+                        # all_screens is a Windows-only ImageGrab flag
+                        grab_kwargs["all_screens"] = True
+                    bbox = (left, top, left + width, top + height)
+                    img = ImageGrab.grab(bbox=bbox, **grab_kwargs)
+                    mtga_path = bug_dir / f"bug_{timestamp}_mtga.png"
+                    img.save(str(mtga_path), "PNG")
+                    out["mtga"] = str(mtga_path)
+                else:
+                    self.append_log(
+                        f"Invalid MTGA window bounds for screenshot: "
+                        f"left={left}, top={top}, width={width}, height={height}",
+                        role="debug",
+                    )
         except Exception as e:
             self.append_log(f"MTGA screenshot failed: {e}", role="debug")
 

@@ -288,28 +288,34 @@ class CompactCoachPanel(CoachTab):
             lambda _checked=False: self._send_command("restart")
         )
 
-        if sys.platform == "win32":
-            menu.addSeparator()
-            calib_action = menu.addAction("Calibrate Cards")
-            calib_action.setCheckable(True)
-            calib_action.setToolTip(
-                "Draw border around MTGA cards reported by bridge plugin to verify alignment"
+        # Overlay tools are available on every platform (Qt-native overlays).
+        menu.addSeparator()
+        calib_action = menu.addAction("Calibrate Cards")
+        calib_action.setCheckable(True)
+        calib_action.setToolTip(
+            "Draw border around MTGA cards reported by bridge plugin to verify alignment"
+        )
+        calib_action.toggled.connect(
+            lambda checked: self._match_overlay.set_calibration(checked)
+        )
+        overlay_action = menu.addAction("In-Game Overlay")
+        overlay_action.setCheckable(True)
+        overlay_action.setChecked(True)
+        overlay_tooltip = "Show/hide the in-game overlay (pill + advice panel)"
+        if sys.platform.startswith("linux"):
+            overlay_tooltip += (
+                "\nNote: under pure Wayland the overlay may not track the "
+                "MTGA window (XWayland works)."
             )
-            calib_action.toggled.connect(
-                lambda checked: self._match_overlay.set_calibration(checked)
-            )
-            overlay_action = menu.addAction("In-Game Overlay")
-            overlay_action.setCheckable(True)
-            overlay_action.setChecked(True)
-            overlay_action.setToolTip("Show/hide the in-game overlay (pill + advice panel)")
-            overlay_action.toggled.connect(
-                lambda checked: self._match_overlay.set_enabled(checked)
-            )
-            reset_action = menu.addAction("Reset Advice Panel")
-            reset_action.setToolTip(
-                "Snap the advice panel back to its default position and size"
-            )
-            reset_action.triggered.connect(lambda _checked=False: self._reset_advice_panel())
+        overlay_action.setToolTip(overlay_tooltip)
+        overlay_action.toggled.connect(
+            lambda checked: self._match_overlay.set_enabled(checked)
+        )
+        reset_action = menu.addAction("Reset Advice Panel")
+        reset_action.setToolTip(
+            "Snap the advice panel back to its default position and size"
+        )
+        reset_action.triggered.connect(lambda _checked=False: self._reset_advice_panel())
 
         menu.addSeparator()
         repair_action = menu.addAction("Setup && Repair…")

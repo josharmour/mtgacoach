@@ -59,11 +59,6 @@ class AdvicePanelWindow(QWidget):
 
     ADVICE_TTL_SEC = 25.0
 
-    def setVisible(self, visible: bool) -> None:
-        if visible and os.name != "nt":
-            return
-        super().setVisible(visible)
-
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._advice_text: str = ""

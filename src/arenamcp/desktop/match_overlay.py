@@ -31,10 +31,7 @@ except ImportError:
     win32con = None
     win32gui = None
 
-try:
-    import pygetwindow as gw
-except (ImportError, NotImplementedError):
-    gw = None
+from arenamcp.desktop.window_tracking import get_mtga_window_rect
 
 try:
     from arenamcp.input_controller import find_mtga_hwnd, get_client_rect
@@ -73,7 +70,8 @@ class MatchOverlayWindow(QWidget):
     """Transparent always-on-top window drawing numbered highlights over MTGA.
 
     - Tracks MTGA window bounds (matches CardOverlayWindow approach)
-    - Click-through via WS_EX_TRANSPARENT
+    - Click-through via Qt's WA_TransparentForMouseEvents on every platform,
+      plus WS_EX_TRANSPARENT as a Windows-only enhancement
     - Polls the BepInEx bridge for card screen rects every `position_poll_ms`
     - Receives suggested_actions events from the coach process and caches them
     - Pulses a numbered ring at each suggested card; auto-clears after TTL
@@ -85,11 +83,6 @@ class MatchOverlayWindow(QWidget):
     PULSE_MS = 1200               # pulse cycle length
 
     ADVICE_TTL_SEC = 25.0  # auto-fade advice after this many seconds
-
-    def setVisible(self, visible: bool) -> None:
-        if visible and os.name != "nt":
-            return
-        super().setVisible(visible)
 
     def __init__(self, bridge_getter=None, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -504,20 +497,10 @@ class MatchOverlayWindow(QWidget):
         `GetClientRect + ClientToScreen`.
         """
         left_px = top_px = width_px = height_px = None
-        if os.name != "nt":
-            try:
-                from arenamcp.desktop.runtime import get_linux_window_geometry
-                geom = get_linux_window_geometry("MTGA")
-                if geom and not geom.get("is_minimized"):
-                    left_px = geom["left"]
-                    top_px = geom["top"]
-                    width_px = geom["width"]
-                    height_px = geom["height"]
-            except Exception:
-                pass
-        else:
-            # Preferred: GetClientRect + ClientToScreen. Returns the render
-            # client area in physical screen pixels, matching Unity.Screen.
+        if os.name == "nt":
+            # Preferred on Windows: GetClientRect + ClientToScreen. Returns
+            # the render client area in physical screen pixels, matching
+            # Unity.Screen.
             client_rect = None
             if find_mtga_hwnd is not None and get_client_rect is not None:
                 try:
@@ -530,26 +513,16 @@ class MatchOverlayWindow(QWidget):
             if client_rect is not None:
                 left_px, top_px, width_px, height_px = client_rect
                 if width_px <= 0 or height_px <= 0:
-                    client_rect = None
-
-            # Fallback: pygetwindow full-window rect (keeps us working on
-            # environments without ctypes user32 for whatever reason).
-            if client_rect is None:
-                if gw is None:
-                    return None
-                try:
-                    wins = [w for w in gw.getWindowsWithTitle("MTGA") if w.title == "MTGA"]
-                    if not wins:
-                        return None
-                    m = wins[0]
-                    if m.isMinimized:
-                        return None
-                    left_px, top_px, width_px, height_px = m.left, m.top, m.width, m.height
-                except Exception:
-                    return None
+                    left_px = None
 
         if left_px is None:
-            return None
+            # Cross-platform locator: pygetwindow full-window rect on Windows
+            # (keeps us working without ctypes user32), xwininfo on Linux,
+            # Quartz on macOS.
+            rect = get_mtga_window_rect()
+            if rect is None:
+                return None
+            left_px, top_px, width_px, height_px = rect
 
         # Per-monitor DPI ratio so the overlay sits correctly on high-DPI displays.
         ratio = 1.0
@@ -579,12 +552,6 @@ class MatchOverlayWindow(QWidget):
         )
 
     def _tick(self) -> None:
-        if os.name != "nt":
-            if self.isVisible():
-                self.hide()
-            if self._advice_panel.isVisible():
-                self._advice_panel.hide()
-            return
         rect = self._get_mtga_rect()
         # Show the overlay whenever MTGA is visible — the small "armed"
         # badge is the user's only signal that the pipeline is alive, so
@@ -678,8 +645,6 @@ class MatchOverlayWindow(QWidget):
         """Legacy path — kept as a no-op for callers. The coach process
         now pushes positions via `update_card_positions`.
         """
-        if os.name != "nt":
-            return
         if not self._user_enabled:
             return
         if self._get_mtga_rect() is None:
