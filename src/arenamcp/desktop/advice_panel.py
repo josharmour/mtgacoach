@@ -118,6 +118,17 @@ class AdvicePanelWindow(QWidget):
     def clear_advice(self) -> None:
         self.set_advice("")
 
+    def has_content(self) -> bool:
+        """True when there is unexpired advice worth showing.
+
+        The panel is mouse-interactive by design, so an empty panel is an
+        invisible click-trap floating over other apps — callers must not
+        show it without content (first-Mac-run lesson, 2026-07-16).
+        """
+        if not self._advice_text:
+            return False
+        return self._advice_expire_at == 0.0 or time.time() < self._advice_expire_at
+
     def reset_to_default(self) -> None:
         """Restore default fractions, reposition immediately, persist."""
         self._frac_x = _DEFAULT_FRAC_X

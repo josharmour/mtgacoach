@@ -173,11 +173,11 @@ class MatchOverlayWindow(QWidget):
     def set_advice_panel_visible(self, visible: bool) -> None:
         """Show or hide just the advice panel (keeps pill + highlights)."""
         self._show_advice_panel = bool(visible)
-        if visible:
-            if self._user_enabled and self._get_mtga_rect() is not None:
-                self._advice_panel.show()
-        else:
+        if not visible:
             self._advice_panel.hide()
+        # Showing is left to _tick, which additionally requires an active
+        # match and actual advice content before parking a mouse-interactive
+        # window over the game.
 
     def reset_advice_panel_position(self) -> None:
         """Snap the advice panel back to its default position/size and
@@ -195,6 +195,7 @@ class MatchOverlayWindow(QWidget):
         self._match_active = bool(active)
         if not active:
             self.clear_actions()
+            self._advice_panel.hide()
 
     def set_calibration(self, enabled: bool) -> None:
         """Toggle calibration mode — draws a thin outline around every card
@@ -583,11 +584,20 @@ class MatchOverlayWindow(QWidget):
             self.show()
             self._apply_click_through()
 
-        # Drive the advice panel: keep it positioned relative to MTGA and
-        # visible whenever the overlay is.
+        # Drive the advice panel: keep it positioned relative to MTGA, but
+        # only show it when it has actual advice during a match. The panel
+        # accepts mouse input (drag/resize), so showing it empty parks an
+        # invisible click-stealing window over the game area.
         self._advice_panel.apply_mtga_rect(rect)
-        if self._show_advice_panel and not self._advice_panel.isVisible():
+        panel_should_show = (
+            self._show_advice_panel
+            and self._match_active
+            and self._advice_panel.has_content()
+        )
+        if panel_should_show and not self._advice_panel.isVisible():
             self._advice_panel.show()
+        elif not panel_should_show and self._advice_panel.isVisible():
+            self._advice_panel.hide()
 
         # Force topmost on every tick. MTGA's borderless-fullscreen mode
         # often pushes non-foreground windows behind it even when they have
@@ -598,7 +608,10 @@ class MatchOverlayWindow(QWidget):
     def _force_topmost(self) -> None:
         """Force the overlay to the top of the Windows z-order."""
         if os.name != "nt" or win32gui is None or win32con is None:
-            self.raise_()
+            # No per-tick raise off-Windows: WindowStaysOnTopHint already
+            # floats us above normal windows, and calling raise_() every
+            # 250ms fights the user for z-order — clicking into any other
+            # app pulled the overlay straight back over it (first Mac run).
             return
         try:
             hwnd = int(self.winId())

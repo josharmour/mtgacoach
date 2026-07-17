@@ -20,6 +20,7 @@ windows poll concurrently) so a burst of calls costs one lookup.
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -127,9 +128,17 @@ def _darwin_rect(title: str) -> Optional[Rect]:
     # Exact owner-name match beats a substring match: third-party companion
     # apps like "MTGA_Draft_Tool" also contain "MTGA" in their owner name and
     # can sit in front of the game in the (front-to-back) window list.
+    own_pid = os.getpid()
     substring_match: Optional[Rect] = None
     for info in window_list or []:
         try:
+            # Never match our own windows: this process is "MTGA Coach", so a
+            # substring scan for "MTGA" would lock the overlay onto the app's
+            # own main window when the game isn't running — a feedback loop
+            # observed live on the first Mac run (overlay parked at the main
+            # window's rect, stealing clicks).
+            if int(info.get("kCGWindowOwnerPID") or 0) == own_pid:
+                continue
             owner = str(info.get("kCGWindowOwnerName") or "")
             if title not in owner:
                 continue
