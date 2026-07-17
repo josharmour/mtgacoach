@@ -207,13 +207,30 @@ def build_issue_payload(
     return title, "\n".join(lines)
 
 
-def build_issue_url(title: str, body: str, max_body_chars: int = 6000) -> str:
-    """Build a prefilled GitHub issue URL.
+def build_issue_url(title: str, body: str, max_url_chars: int = 7600) -> str:
+    """Build a prefilled GitHub issue URL that GitHub will actually accept.
 
-    Browser URL lengths are limited, so keep the fallback body compact.
+    The limit must be enforced on the ENCODED url, not the raw body:
+    URL-encoding inflates JSON-heavy report bodies ~3x (braces, quotes,
+    newlines all become %XX), so a 6000-char body could exceed GitHub's
+    ~8K request-line limit and bounce with "URL too long" (field report
+    2026-07-16). Binary-search the largest body prefix whose encoded URL
+    fits.
     """
-    trimmed_body = body
-    if len(trimmed_body) > max_body_chars:
-        trimmed_body = trimmed_body[: max_body_chars - 32].rstrip() + "\n\n... browser draft truncated ..."
-    query = urlencode({"title": title, "body": trimmed_body})
-    return f"{GITHUB_ISSUES_NEW_URL}?{query}"
+    marker = "\n\n... browser draft truncated — full JSON report saved locally ..."
+
+    def _url(b: str) -> str:
+        return f"{GITHUB_ISSUES_NEW_URL}?{urlencode({'title': title, 'body': b})}"
+
+    url = _url(body)
+    if len(url) <= max_url_chars:
+        return url
+
+    lo, hi = 0, len(body)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(_url(body[:mid].rstrip() + marker)) <= max_url_chars:
+            lo = mid
+        else:
+            hi = mid - 1
+    return _url(body[:lo].rstrip() + marker)

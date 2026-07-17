@@ -43,10 +43,24 @@ def test_build_issue_payload_includes_core_context(tmp_path: Path) -> None:
 
 
 def test_build_issue_url_truncates_long_body() -> None:
-    url = build_issue_url("Title", "x" * 20000, max_body_chars=500)
+    url = build_issue_url("Title", "x" * 20000, max_url_chars=2000)
 
-    assert len(url) < 4000
+    assert len(url) <= 2000
     assert "browser+draft+truncated" in url
+
+
+def test_build_issue_url_limits_encoded_length_of_json_heavy_body() -> None:
+    # JSON-heavy bodies inflate ~3x under URL-encoding; the cap must hold
+    # on the final URL (GitHub bounces ~8K+ request lines).
+    body = ('{"key": "value", "nested": {"a": [1, 2, 3]}}\n' * 500)
+    url = build_issue_url("Desktop bug report: something", body)
+    assert len(url) <= 7600
+    assert "browser+draft+truncated" in url
+
+
+def test_build_issue_url_short_body_untouched() -> None:
+    url = build_issue_url("T", "short body")
+    assert "truncated" not in url
 
 
 def test_build_issue_payload_includes_post_match_feedback(tmp_path: Path) -> None:
