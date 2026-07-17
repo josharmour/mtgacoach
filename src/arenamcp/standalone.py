@@ -58,7 +58,7 @@ from arenamcp.logging_config import configure_logging, LOG_DIR, LOG_FILE
 configure_logging(console=False)
 
 WATCHDOG_SCREENSHOT_DIR = LOG_DIR / "watchdog_screenshots"
-WATCHDOG_SCREENSHOT_DIR.mkdir(exist_ok=True)
+WATCHDOG_SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 WATCHDOG_SCREENSHOT_MAX = 20  # Keep last N screenshots (pruned at match end)
 
 logger = logging.getLogger(__name__)
@@ -256,11 +256,17 @@ def copy_to_clipboard(text: str) -> bool:
 
 
 # Import dependencies
-try:
-    import keyboard
-except ImportError:
-    keyboard = None
-    logger.warning("keyboard module not available - hotkeys disabled")
+# The `keyboard` package must never be imported on macOS: its darwin backend
+# calls abort() during import when the process lacks root/Accessibility
+# rights, killing the interpreter before any except clause can run.
+keyboard = None
+if sys.platform != "darwin":
+    try:
+        import keyboard
+    except ImportError:
+        logger.warning("keyboard module not available - hotkeys disabled")
+else:
+    logger.info("keyboard hotkeys disabled on macOS (unsupported backend)")
 
 
 class UIAdapter:
