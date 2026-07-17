@@ -94,6 +94,33 @@ def _coerce_str_list(value: Any) -> list[str]:
     return [str(item) for item in _ensure_list(value) if item not in (None, "")]
 
 
+def _parse_attack_state(value: Any) -> bool:
+    """True iff a GameObjectInfo.attackState value means "is an attacker".
+
+    Protobuf JSON serializes the enum by name ("AttackState_Declared" /
+    "AttackState_Attacking"); tolerate raw ints (1=Declared, 2=Attacking)
+    in case a serializer emits numbers.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value in (1, 2)
+    return str(value) in ("AttackState_Declared", "AttackState_Attacking")
+
+
+def _parse_block_state(value: Any) -> bool:
+    """True iff a GameObjectInfo.blockState value means "is a blocker".
+
+    Blocked(3)/Unblocked(4) describe an *attacker*'s fate and must not set
+    is_blocking; only Declared(1)/Blocking(2) mark the object as a blocker.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value in (1, 2)
+    return str(value) in ("BlockState_Declared", "BlockState_Blocking")
+
+
 def _bounded_gre_copy(
     value: Any,
     *,
@@ -1759,6 +1786,17 @@ class GameState:
         if "isAttacking" in obj_data: is_attacking = bool(obj_data["isAttacking"])
         if "isBlocking" in obj_data: is_blocking = bool(obj_data["isBlocking"])
 
+        # Player.log (protobuf JSON) never carries an "isAttacking" boolean —
+        # combat status arrives as the attackState/blockState enums on the
+        # GameObjectInfo (re-output/GreProtobuf .../AttackState.cs,
+        # BlockState.cs). Without parsing these, is_attacking stayed False on
+        # the log-only path (no bridge), so the coach's block-combat analysis
+        # never knew which creatures were attacking (issue #420).
+        if "attackState" in obj_data:
+            is_attacking = _parse_attack_state(obj_data["attackState"])
+        if "blockState" in obj_data:
+            is_blocking = _parse_block_state(obj_data["blockState"])
+
         if "cardTypes" in obj_data:
             card_types = _coerce_str_list(obj_data["cardTypes"])
 
@@ -3240,6 +3278,7 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
         req = msg.get("declareBlockersReq", {})
         legal_blockers = _ensure_list(req.get("blockers", req.get("qualifiedBlockers", [])))
         blocker_names, blocker_ids = [], []
+        attacker_id_set: set[int] = set()
         for blk in legal_blockers:
             obj_id = blk if isinstance(blk, int) else _coerce_int(
                 blk.get("instanceId", blk.get("blockerInstanceId", 0)),
@@ -3249,12 +3288,31 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
             if obj:
                 blocker_names.append(game_state._resolve_card_name(obj.grp_id))
                 blocker_ids.append(obj_id)
-        logger.info(f"Captured Decision: Declare Blockers ({len(blocker_names)} legal)")
+            # Each Blocker entry names the attackers it may legally block
+            # (GreProtobuf Blocker.attackerInstanceIds). Their union is the
+            # authoritative attacker set for this combat — the only place
+            # the log states it during DeclareBlockers (issue #420).
+            if isinstance(blk, dict):
+                attacker_id_set.update(_ensure_int_list(blk.get("attackerInstanceIds", [])))
+        attacker_names, attacker_ids = [], []
+        for atk_id in sorted(attacker_id_set):
+            atk_obj = game_state.game_objects.get(atk_id)
+            if atk_obj:
+                attacker_names.append(game_state._resolve_card_name(atk_obj.grp_id))
+                attacker_ids.append(atk_id)
+                # Flag on the object so snapshots/combat analysis see the
+                # attacker even if the attackState annotation was missed.
+                atk_obj.is_attacking = True
+        logger.info(
+            f"Captured Decision: Declare Blockers ({len(blocker_names)} legal, "
+            f"{len(attacker_ids)} attackers)"
+        )
         game_state.pending_decision = "Declare Blockers"
         game_state.decision_timestamp = _time.time()
         game_state.decision_context = {
             "type": "declare_blockers", "legal_blockers": blocker_names,
             "legal_blocker_ids": blocker_ids, "raw_blockers": legal_blockers,
+            "attacker_ids": attacker_ids, "attackers": attacker_names,
         }
         return False
 

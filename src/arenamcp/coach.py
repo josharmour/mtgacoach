@@ -631,7 +631,7 @@ Give ONE action for the CURRENT phase only. You will be re-consulted as the turn
 PHASE GUIDE:
 - Main phase: Suggest ONE play (land OR spell). You'll advise again after it resolves.
 - Combat/DeclareAttack: Say who to attack with (or "don't attack").
-- Combat/DeclareBlock: Say how to block (or "don't block, take the damage").
+- Combat/DeclareBlock: Name each assignment — "Block [attacker] with [blocker]" (or "don't block, take the damage"). Never say "block with X" without naming which attacker X blocks.
 - Opponent's turn: React to what's happening (instants/abilities only).
 - Stack: Say whether to respond or let it resolve.
 
@@ -724,6 +724,13 @@ Priority (discard FIRST):
 3. Redundant copies of cards already in play
 4. KEEP: Removal, counters, win conditions
 Answer: "Discard [card name]" with brief reason (1 sentence).
+""",
+    "declare_blockers": """
+DECLARE BLOCKERS: Decide the exact block assignments.
+- For EACH blocker you use, name the attacker it blocks: "Block [attacker] with [blocker]".
+- Or say "No blocks" / "Don't block, take the damage" with the life math.
+- Follow the "Computed optimal blocks" line unless a combat trick or removal changes the math.
+Answer with explicit attacker->blocker assignments only — NEVER "block with X" without naming the attacker X blocks.
 """,
     "target_selection": """
 TARGET SELECTION: Choose the best target for this spell/ability.
@@ -1780,7 +1787,14 @@ class CoachEngine:
                 lines.append(f"!!! DECISION: DECLARE BLOCKERS ({len(legal)} legal) !!!")
                 if legal:
                     lines.append(f"Can block: {', '.join(legal[:8])}")
+                lines.extend(self._format_block_decision_details(game_state, decision_context))
                 lines.append("Choose: trade up, double-block threats, protect life total")
+                lines.append(
+                    'ANSWER FORMAT: name every assignment — "Block [attacker] with '
+                    '[blocker]" for each blocker you use — or say "No blocks" with '
+                    'the damage you accept. NEVER say "block with X" without naming '
+                    "which attacker X blocks."
+                )
             elif dec_type == "pay_costs":
                 source = decision_context.get("source_card", "spell")
                 mana_cost = decision_context.get("mana_cost", "")
@@ -2132,12 +2146,23 @@ class CoachEngine:
 
     def _format_block_combat(self, your_cards: list[dict], opp_cards: list[dict],
                              local_player: Optional[dict], turn_num: int,
-                             phase: str, _inferred_atk_ids: set[int]) -> list[str]:
+                             phase: str, _inferred_atk_ids: set[int],
+                             decision_context: Optional[dict[str, Any]] = None) -> list[str]:
         """Format the block-side combat analysis (opponent's turn)."""
         lines: list[str] = []
+        ctx = decision_context or {}
         attacking = [c for c in opp_cards if c.get("is_attacking")]
         if not attacking and _inferred_atk_ids:
             attacking = [c for c in opp_cards if c.get("instance_id") in _inferred_atk_ids]
+        if not attacking:
+            # GRE-authoritative attacker ids from the DeclareBlockersReq
+            # decision context (log path parity, issue #420).
+            ctx_atk_ids = self._attacker_ids_from_decision_context(ctx)
+            if ctx_atk_ids:
+                attacking = [
+                    c for c in opp_cards
+                    if int(c.get("instance_id") or 0) in ctx_atk_ids
+                ]
         flying_atk = [c for c in attacking if "flying" in self._remove_reminder_text(c.get("oracle_text", "")).lower()]
         ground_atk = [c for c in attacking if c not in flying_atk]
         your_creatures = [c for c in your_cards if "creature" in c.get("type_line", "").lower() and not c.get("is_tapped") and not self._is_impending(c)]
@@ -2209,9 +2234,34 @@ class CoachEngine:
         # than letting it guess. The LLM should follow this unless it
         # has a specific reason (e.g. a combat trick in hand).
         try:
-            from arenamcp.combat_solver import optimal_blocks
+            from arenamcp.combat_solver import (
+                blocker_allowed_attackers_map,
+                optimal_blocks,
+            )
             usable_blockers = [c for c in your_creatures if not c.get("is_tapped")]
-            solver_plan = optimal_blocks(attacking, usable_blockers, your_life)
+            # Restrict to the GRE's legal blockers when the decision context
+            # names them (creatures that can't block are excluded upstream).
+            legal_blocker_ids: set[int] = set()
+            if str(ctx.get("type") or "") == "declare_blockers":
+                for bid in ctx.get("legal_blocker_ids") or []:
+                    try:
+                        legal_blocker_ids.add(int(bid))
+                    except (TypeError, ValueError):
+                        continue
+            if legal_blocker_ids:
+                gre_blockers = [
+                    c for c in usable_blockers
+                    if int(c.get("instance_id") or 0) in legal_blocker_ids
+                ]
+                if gre_blockers:
+                    usable_blockers = gre_blockers
+            allowed_map = blocker_allowed_attackers_map(
+                ctx.get("raw_blockers") or []
+            )
+            solver_plan = optimal_blocks(
+                attacking, usable_blockers, your_life,
+                blocker_allowed_attackers=allowed_map or None,
+            )
             if solver_plan is not None:
                 lines.append(f"Computed optimal blocks: {solver_plan.explanation}")
         except Exception as e:
@@ -2737,9 +2787,20 @@ class CoachEngine:
 
             # Pre-compute inferred attackers for DeclareBlock display
             _inferred_atk_ids: set[int] = set()
-            if "Combat" in phase and not is_your_turn and "DeclareBlock" in step:
+            _dec_ctx = game_state.get("decision_context") or {}
+            _in_block_decision = (
+                ("Combat" in phase and not is_your_turn and "DeclareBlock" in step)
+                or str(_dec_ctx.get("type") or "") == "declare_blockers"
+            )
+            if _in_block_decision:
                 has_explicit_atk = any(c.get("is_attacking") for c in opp_cards)
                 if not has_explicit_atk:
+                    # GRE-authoritative attacker ids from the DeclareBlockersReq
+                    # (log path) / bridge blockers payload beat the tapped-
+                    # creature heuristic — vigilance attackers stay untapped and
+                    # mana-tapped creatures aren't attacking (issue #420).
+                    _inferred_atk_ids |= self._attacker_ids_from_decision_context(_dec_ctx)
+                if not has_explicit_atk and not _inferred_atk_ids:
                     for c in opp_cards:
                         c_type = c.get("type_line", "").lower()
                         c_oracle = self._remove_reminder_text(c.get("oracle_text", "")).lower()
@@ -2779,7 +2840,8 @@ class CoachEngine:
                 ))
             elif "Combat" in phase and not is_your_turn:
                 lines.extend(self._format_block_combat(
-                    your_cards, opp_cards, local_player, turn_num, phase, _inferred_atk_ids
+                    your_cards, opp_cards, local_player, turn_num, phase, _inferred_atk_ids,
+                    decision_context=game_state.get("decision_context"),
                 ))
         else:
             lines.append("")
@@ -2846,6 +2908,151 @@ class CoachEngine:
                 return filtered
 
         return list(legal_attackers)
+
+    @staticmethod
+    def _attacker_ids_from_decision_context(
+        decision_context: Optional[dict[str, Any]],
+    ) -> set[int]:
+        """Attacker instance ids named by a declare_blockers decision context.
+
+        The GRE DeclareBlockersReq is the authoritative statement of who is
+        attacking: each blockers[] entry lists the attackerInstanceIds it may
+        block. Both the log path (gamestate.py DeclareBlockersReq handler) and
+        the bridge enrichment (gre_bridge._apply_bridge_blockers) surface that
+        as ``attacker_ids`` + ``raw_blockers`` on decision_context.
+        """
+        ctx = decision_context or {}
+        if str(ctx.get("type") or "") != "declare_blockers":
+            return set()
+        ids: set[int] = set()
+        for aid in ctx.get("attacker_ids") or []:
+            try:
+                ids.add(int(aid))
+            except (TypeError, ValueError):
+                continue
+        for blk in ctx.get("raw_blockers") or []:
+            if not isinstance(blk, dict):
+                continue
+            for aid in blk.get("attackerInstanceIds") or []:
+                try:
+                    ids.add(int(aid))
+                except (TypeError, ValueError):
+                    continue
+        return ids
+
+    def _collect_block_decision_attackers(
+        self, game_state: dict[str, Any]
+    ) -> list[dict]:
+        """Resolve the attacking creatures for the current block decision.
+
+        Prefers battlefield ``is_attacking`` flags (attackState from the log,
+        or bridge enrichment); falls back to the decision_context attacker ids
+        so the log path stays precise even if the attackState annotation was
+        missed (issue #420).
+        """
+        battlefield = game_state.get("battlefield", []) or []
+        local_seat = None
+        for p in game_state.get("players", []) or []:
+            if p.get("is_local"):
+                local_seat = p.get("seat_id")
+                break
+        opp_cards = [c for c in battlefield if c.get("owner_seat_id") != local_seat]
+        attacking = [c for c in opp_cards if c.get("is_attacking")]
+        if attacking:
+            return attacking
+        ctx_ids = self._attacker_ids_from_decision_context(
+            game_state.get("decision_context")
+        )
+        if ctx_ids:
+            return [
+                c for c in opp_cards
+                if int(c.get("instance_id") or 0) in ctx_ids
+            ]
+        return []
+
+    _COMBAT_KEYWORDS = (
+        "flying", "deathtouch", "trample", "first strike", "double strike",
+        "menace", "lifelink", "vigilance", "indestructible",
+    )
+
+    def _combat_keyword_flags(self, card: dict) -> str:
+        """Compact ``[FLYING,DEATHTOUCH]``-style suffix for combat listings."""
+        oracle = self._remove_reminder_text(card.get("oracle_text", "")).lower()
+        found = [
+            kw.upper().replace(" ", "-")
+            for kw in self._COMBAT_KEYWORDS
+            if kw in oracle
+        ]
+        return f" [{','.join(found)}]" if found else ""
+
+    def _attacker_label_map(self, attackers: list[dict]) -> dict[int, str]:
+        """instance_id -> ``Name #N P/T [KEYWORDS]`` labels, deduped by name."""
+        names = [c.get("name", "?") for c in attackers]
+        counts = Counter(names)
+        seen: dict[str, int] = {}
+        out: dict[int, str] = {}
+        for c, n in zip(attackers, names):
+            p = c.get("power") or 0
+            t = c.get("toughness") or 0
+            label = n
+            if counts[n] > 1:
+                seen[n] = seen.get(n, 0) + 1
+                label = f"{n} #{seen[n]}"
+            out[int(c.get("instance_id") or 0)] = (
+                f"{label} {p}/{t}{self._combat_keyword_flags(c)}"
+            )
+        return out
+
+    def _format_block_decision_details(
+        self, game_state: dict[str, Any], decision_context: dict[str, Any]
+    ) -> list[str]:
+        """Enumerate attackers (name, P/T, keywords) for a block decision.
+
+        Also lists per-blocker legal-attacker candidates when the GRE says a
+        blocker is restricted to a subset of the attackers (covers menace /
+        skulk-style restrictions that keyword scans can't see). Log-path
+        parity for issue #420: without these lines the LLM saw only blocker
+        names and could not name which attacker to block.
+        """
+        lines: list[str] = []
+        attackers = self._collect_block_decision_attackers(game_state)
+        if not attackers:
+            return lines
+        label_by_id = self._attacker_label_map(attackers)
+        lines.append(
+            "Attackers: "
+            + ", ".join(
+                label_by_id[int(a.get("instance_id") or 0)] for a in attackers
+            )
+        )
+
+        # Per-blocker candidate restrictions from the raw GRE blockers payload.
+        raw_blockers = decision_context.get("raw_blockers") or []
+        blocker_ids = decision_context.get("legal_blocker_ids") or []
+        blocker_names = decision_context.get("legal_blockers") or []
+        name_by_blocker_id: dict[int, str] = {}
+        if len(blocker_ids) == len(blocker_names):
+            for bid, bname in zip(blocker_ids, blocker_names):
+                try:
+                    name_by_blocker_id[int(bid)] = bname
+                except (TypeError, ValueError):
+                    continue
+        try:
+            from arenamcp.combat_solver import blocker_allowed_attackers_map
+            allowed_map = blocker_allowed_attackers_map(raw_blockers)
+        except Exception:
+            allowed_map = {}
+        all_attacker_ids = set(label_by_id)
+        for bid, allowed in allowed_map.items():
+            if not allowed or allowed >= all_attacker_ids:
+                continue  # unrestricted — no extra line needed
+            bname = name_by_blocker_id.get(bid, f"Creature {bid}")
+            atk_labels = [
+                label_by_id[a] for a in sorted(allowed) if a in label_by_id
+            ]
+            if atk_labels:
+                lines.append(f"  {bname} can ONLY block: {', '.join(atk_labels)}")
+        return lines
 
     def _extract_card_name_words(self, game_state: dict[str, Any]) -> set[str]:
         """Extract all words from card names in the current game state.
@@ -3076,7 +3283,7 @@ class CoachEngine:
                     "spell_resolved": "A spell just resolved. What is the best next play? Explain why.",
                     "priority_gained": "You have priority. Should you respond or pass? Explain your reasoning.",
                     "combat_attackers": "Combat: Declare attackers. Which creatures should attack and why? Default: attack with ALL eligible creatures unless you have a specific reason to hold one back (e.g., need a blocker to survive crackback). Explain the combat math.",
-                    "combat_blockers": "Combat: Opponent is attacking. How should you block and why? Explain the trade-offs.",
+                    "combat_blockers": "Combat: Opponent is attacking. How should you block and why? Name the attacker each blocker blocks (\"Block [attacker] with [blocker]\") and explain the trade-offs.",
                     "low_life": "Your life is dangerously low! What's the survival plan? Explain the reasoning.",
                     "opponent_low_life": "Opponent's life is low — can you finish them? Explain the line.",
                     "stack_spell": "Something was just cast. Should you respond or let it resolve? Explain why.",
@@ -3100,7 +3307,7 @@ class CoachEngine:
                     "spell_resolved": "A spell just resolved. What is the ONE next play?",
                     "priority_gained": "You have priority. Respond or pass?",
                     "combat_attackers": "Combat: Declare attackers. Which creatures should attack? Default: attack with ALL eligible creatures unless you have a specific reason to hold one back (e.g., need a blocker to survive crackback).",
-                    "combat_blockers": "Combat: Opponent is attacking. How should you block?",
+                    "combat_blockers": "Combat: Opponent is attacking. How should you block? Name the attacker each blocker blocks (\"Block [attacker] with [blocker]\").",
                     "low_life": "Your life is dangerously low! What's the survival plan?",
                     "opponent_low_life": "Opponent's life is low — can you finish them?",
                     "stack_spell": "Something was just cast. Respond or let it resolve?",
@@ -4394,7 +4601,242 @@ class CoachEngine:
         if str(game_state.get("pending_decision", "") or "").lower() == "declare blockers":
             advice = re.sub(r"(?i)^Done \(confirm blockers\)$", "Don't block", advice)
 
+        # 6. Block advice must name the attacker. "Block with Veteran Survivor"
+        # is useless with multiple attackers on board (issue #420) — repair it
+        # with the deterministic solver's assignment so the spoken line is
+        # always actionable.
+        advice = self._ensure_block_advice_names_attacker(advice, game_state)
+
         return advice
+
+    _NEGATIVE_BLOCK_PHRASES = (
+        "don't block", "don’t block", "do not block", "no block",
+        "take the damage", "take the hit",
+    )
+
+    def _collect_block_decision_blockers(
+        self, game_state: dict[str, Any]
+    ) -> list[dict]:
+        """Resolve the legal blockers for the current block decision.
+
+        Prefers the GRE-authoritative ``legal_blocker_ids`` from the
+        decision context; falls back to our untapped creatures.
+        """
+        battlefield = game_state.get("battlefield", []) or []
+        ctx = game_state.get("decision_context") or {}
+        ids: set[int] = set()
+        if str(ctx.get("type") or "") == "declare_blockers":
+            for bid in ctx.get("legal_blocker_ids") or []:
+                try:
+                    ids.add(int(bid))
+                except (TypeError, ValueError):
+                    continue
+        if ids:
+            cards = [
+                c for c in battlefield
+                if int(c.get("instance_id") or 0) in ids
+            ]
+            if cards:
+                return cards
+        local_seat = None
+        for p in game_state.get("players", []) or []:
+            if p.get("is_local"):
+                local_seat = p.get("seat_id")
+                break
+        return [
+            c for c in battlefield
+            if c.get("owner_seat_id") == local_seat
+            and "creature" in (c.get("type_line") or "").lower()
+            and not c.get("is_tapped")
+            and not self._is_impending(c)
+        ]
+
+    @staticmethod
+    def _spoken_name_map(cards: list[dict]) -> dict[int, str]:
+        """instance_id -> plain spoken name, ``#N``-deduped for duplicates."""
+        names = [c.get("name") or "?" for c in cards]
+        counts = Counter(names)
+        seen: dict[str, int] = {}
+        out: dict[int, str] = {}
+        for c, n in zip(cards, names):
+            label = n
+            if counts[n] > 1:
+                seen[n] = seen.get(n, 0) + 1
+                label = f"{n} #{seen[n]}"
+            out[int(c.get("instance_id") or 0)] = label
+        return out
+
+    def _solver_block_assignment_sentence(
+        self,
+        game_state: dict[str, Any],
+        attackers: list[dict],
+        blockers: list[dict],
+        advice: str,
+    ) -> str:
+        """Deterministic "block A with X; block B with Y" sentence.
+
+        Uses combat_solver.optimal_blocks (honoring the GRE per-blocker
+        candidate restrictions when available). When the solver prefers no
+        blocks but the advice insists on blocking, points the mentioned (or
+        first) blocker at the biggest attacker it can legally block so the
+        spoken line stays actionable.
+        """
+        if not attackers or not blockers:
+            return ""
+        try:
+            from arenamcp.combat_solver import (
+                blocker_allowed_attackers_map,
+                optimal_blocks,
+            )
+        except Exception:
+            return ""
+        players = game_state.get("players", []) or []
+        local_player = next((p for p in players if p.get("is_local")), None)
+        your_life = local_player.get("life_total", 20) if local_player else 20
+        ctx = game_state.get("decision_context") or {}
+        allowed_map = blocker_allowed_attackers_map(ctx.get("raw_blockers") or [])
+
+        atk_names = self._spoken_name_map(attackers)
+        blk_names = self._spoken_name_map(blockers)
+
+        # When the advice already names specific blockers, repair THOSE lines
+        # (the LLM may have a reason the solver can't see — Calculator+Coach:
+        # the solver supplies the missing attacker, it doesn't override the
+        # pick). Fall back to the full blocker pool if that yields nothing.
+        advice_lower = advice.lower()
+        mentioned = [
+            b for b in blockers
+            if (b.get("name") or "").lower()
+            and (b.get("name") or "").lower() in advice_lower
+        ]
+        candidate_pools: list[list[dict]] = []
+        if mentioned:
+            candidate_pools.append(mentioned)
+        candidate_pools.append(blockers)
+
+        assignments: dict[int, int] = {}
+        for pool in candidate_pools:
+            try:
+                plan = optimal_blocks(
+                    attackers, pool, your_life,
+                    blocker_allowed_attackers=allowed_map or None,
+                )
+            except Exception as e:
+                logger.debug(f"combat solver (block repair) failed: {e}")
+                continue
+            if plan is not None and plan.assignments:
+                assignments = plan.assignments
+                break
+
+        clauses: list[str] = []
+        if assignments:
+            by_attacker: dict[int, list[int]] = {}
+            for bid, aid in assignments.items():
+                by_attacker.setdefault(int(aid), []).append(int(bid))
+            for aid in sorted(by_attacker):
+                a_label = atk_names.get(aid)
+                b_labels = [
+                    blk_names.get(bid, f"creature {bid}")
+                    for bid in sorted(by_attacker[aid])
+                ]
+                if a_label:
+                    clauses.append(f"block {a_label} with {' and '.join(b_labels)}")
+        else:
+            # Solver says no blocks, but the advice recommends blocking —
+            # keep the line actionable: aim the mentioned (or first) blocker
+            # at the biggest attacker it can legally block.
+            for b in (mentioned or blockers[:1]):
+                bid = int(b.get("instance_id") or 0)
+                allowed = allowed_map.get(bid) if allowed_map else None
+                candidates = []
+                for a in attackers:
+                    aid = int(a.get("instance_id") or 0)
+                    if allowed is not None and aid not in allowed:
+                        continue
+                    if self._compute_combat_trade(a, b) is None:
+                        continue  # can't legally block it (e.g. flying)
+                    candidates.append(a)
+                if not candidates:
+                    continue
+                biggest = max(candidates, key=lambda c: c.get("power") or 0)
+                aid = int(biggest.get("instance_id") or 0)
+                a_label = atk_names.get(aid)
+                if a_label:
+                    clauses.append(
+                        f"block {a_label} with {blk_names.get(bid, b.get('name', '?'))}"
+                    )
+        if not clauses:
+            return ""
+        return "Assignment: " + "; ".join(clauses) + "."
+
+    def _ensure_block_advice_names_attacker(
+        self, advice: str, game_state: dict[str, Any]
+    ) -> str:
+        """Repair DeclareBlockers advice that names a blocker but no attacker.
+
+        "Block with Veteran Survivor" is useless when multiple creatures are
+        attacking (issue #420, first Mac match). If the advice recommends
+        blocking but names no attacker from the current combat, append the
+        deterministic solver's attacker->blocker assignment so the spoken
+        line is always actionable. Negative advice ("don't block") and advice
+        that already names an attacker pass through untouched.
+        """
+        if not advice:
+            return advice
+        pending = str(game_state.get("pending_decision") or "").lower()
+        ctx = game_state.get("decision_context") or {}
+        if (
+            pending != "declare blockers"
+            and str(ctx.get("type") or "") != "declare_blockers"
+        ):
+            return advice
+
+        import re
+
+        advice_lower = advice.lower()
+        if any(p in advice_lower for p in self._NEGATIVE_BLOCK_PHRASES):
+            return advice
+
+        attackers = self._collect_block_decision_attackers(game_state)
+        if not attackers:
+            return advice
+
+        # Already names an attacker? Full-name match, or any distinctive
+        # (len >= 4) word from an attacker's name appearing in the advice.
+        advice_words = set(re.findall(r"[a-z'’]+", advice_lower))
+        for atk in attackers:
+            name = (atk.get("name") or "").lower()
+            if not name:
+                continue
+            if name in advice_lower:
+                return advice
+            for word in re.findall(r"[a-z'’]+", name):
+                if len(word) >= 4 and word in advice_words:
+                    return advice
+
+        # Only repair advice that is actually recommending a block.
+        blockers = self._collect_block_decision_blockers(game_state)
+        blocker_named = any(
+            (b.get("name") or "").lower() in advice_lower
+            for b in blockers
+            if b.get("name")
+        )
+        if "block" not in advice_lower and not blocker_named:
+            return advice
+
+        assignment = self._solver_block_assignment_sentence(
+            game_state, attackers, blockers, advice
+        )
+        if not assignment:
+            return advice
+        base = advice.rstrip()
+        if base and base[-1] not in ".!?":
+            base += "."
+        logger.info(
+            "Block advice named no attacker; appended solver assignment: %s",
+            assignment,
+        )
+        return f"{base} {assignment}"
 
     def _is_similar(self, a: str, b: str, threshold: float = 0.7) -> bool:
         """Check if two strings are similar using simple character overlap."""
