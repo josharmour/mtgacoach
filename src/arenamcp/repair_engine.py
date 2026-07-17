@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +29,13 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 ProgressCb = Optional[Callable[[str], None]]
+
+# MTGA prints this marker into Player.log at startup on every platform.
+# When DISABLED, the log carries zero GRE data and the coach is blind.
+_DETAILED_LOGS_RE = re.compile(rb"DETAILED LOGS:\s*(ENABLED|DISABLED)")
+# The marker sits near the top of the log; scan the head plus a generous
+# tail so a mid-session re-toggle (or format drift) is still caught.
+_MARKER_SCAN_BYTES = 200 * 1024
 
 
 @dataclass
@@ -89,6 +97,7 @@ class RepairEngine:
             self._check_license,
             self._check_mtga_install,
             self._check_player_log,
+            self._check_detailed_logs,
             self._check_bepinex,
             self._check_plugin,
             self._check_launch_options,
@@ -111,6 +120,31 @@ class RepairEngine:
             if result is not None:
                 report.results.append(result)
         return report
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _is_native_mac(install) -> bool:
+        """True for the native macOS MTGA client (IL2CPP build).
+
+        The native client has no CLR, so BepInEx/the bridge can NEVER load
+        into it — only a Wine/CrossOver bottle running the Windows Mono
+        build can host the plugin (docs/PLATFORM_PARITY.md §B1). Written
+        defensively against the exact platform tag: anything darwin that
+        is not explicitly a wine-style bottle counts as native.
+        """
+        plat = (getattr(install, "platform", "") or "").lower()
+        if not plat.startswith("darwin"):
+            return False
+        return not any(t in plat for t in ("wine", "crossover", "bottle", "proton"))
+
+    @staticmethod
+    def _bridge_not_applicable(key: str, label: str) -> CheckResult:
+        return CheckResult(
+            key, label, "ok",
+            "Not applicable: native Mac client cannot host the bridge "
+            "(coaching works from the log; autopilot requires the Windows "
+            "build under Wine/CrossOver — see docs/PLATFORM_PARITY.md).",
+        )
 
     # ------------------------------------------------------------------
     def _check_python_runtime(self) -> CheckResult:
@@ -239,8 +273,8 @@ class RepairEngine:
             return CheckResult(
                 "mtga", "MTGA installation", "action_needed",
                 "Could not find MTGA on this machine.",
-                "Install MTGA (Steam on Linux, or the official installer on "
-                "Windows), or set its folder in Settings.",
+                "Install MTGA (the official installer on Windows, Steam on "
+                "Linux or macOS), or set its folder in Settings.",
             )
         # Persist the detection so every other component agrees (fix).
         settings = get_settings()
@@ -287,10 +321,63 @@ class RepairEngine:
             "Player.log present and recent.",
         )
 
+    def _check_detailed_logs(self) -> Optional[CheckResult]:
+        """The #1 silent-blindness cause on EVERY platform.
+
+        MTGA writes a 'DETAILED LOGS: ENABLED/DISABLED' marker into
+        Player.log at startup. When the in-game toggle is off the log
+        contains no GRE data at all, so the entire coach sees nothing —
+        and until now nothing surfaced that to the user. Verified live:
+        disabled logs literally contain 'DETAILED LOGS: DISABLED'.
+        """
+        install = self._install
+        log = install.player_log if install is not None else None
+        if log is None or not log.exists():
+            # _check_player_log already reported the missing log with the
+            # same enable-detailed-logs hint; don't duplicate the row.
+            return None
+        try:
+            size = log.stat().st_size
+            with open(log, "rb") as f:
+                head = f.read(_MARKER_SCAN_BYTES)
+                tail = b""
+                if size > _MARKER_SCAN_BYTES:
+                    f.seek(size - _MARKER_SCAN_BYTES)
+                    tail = f.read(_MARKER_SCAN_BYTES)
+        except OSError as e:
+            return CheckResult(
+                "detailed_logs", "Detailed logs (plugin support)", "error",
+                f"Cannot read Player.log: {e}",
+            )
+        # Newest marker wins (head matches first, then tail — a marker in
+        # the tail is by definition newer than one in the head).
+        markers = _DETAILED_LOGS_RE.findall(head) + _DETAILED_LOGS_RE.findall(tail)
+        if not markers:
+            return CheckResult(
+                "detailed_logs", "Detailed logs (plugin support)", "ok",
+                "Player.log has no detailed-logs marker in the scanned "
+                "region — could not verify, assuming enabled.",
+            )
+        if markers[-1] == b"DISABLED":
+            return CheckResult(
+                "detailed_logs", "Detailed logs (plugin support)",
+                "action_needed",
+                "MTGA's detailed logging is OFF — Player.log contains no "
+                "game data, so the coach cannot see your matches.",
+                "Enable Options → Account → Detailed Logs (Plugin Support) "
+                "in MTGA, then restart MTGA.",
+            )
+        return CheckResult(
+            "detailed_logs", "Detailed logs (plugin support)", "ok",
+            "Detailed logs are enabled — Player.log carries full game data.",
+        )
+
     def _check_bepinex(self) -> Optional[CheckResult]:
         install = self._install
         if install is None:
             return None
+        if self._is_native_mac(install):
+            return self._bridge_not_applicable("bepinex", "BepInEx loader")
         from arenamcp.desktop import runtime as _runtime
 
         mtga_dir = install.install_dir
@@ -330,6 +417,8 @@ class RepairEngine:
         install = self._install
         if install is None:
             return None
+        if self._is_native_mac(install):
+            return self._bridge_not_applicable("plugin", "Bridge plugin")
         from arenamcp.desktop import runtime as _runtime
 
         packaged = _runtime.find_plugin_dll()
@@ -401,13 +490,29 @@ class RepairEngine:
         install = self._install
         if install is None:
             return None
+        if self._is_native_mac(install):
+            return self._bridge_not_applicable("bridge", "Bridge injection")
         log = install.install_dir / "BepInEx" / "LogOutput.log"
         if not log.exists():
+            if install.platform.startswith("darwin"):
+                # Wine/CrossOver bottle (native Mac was handled above):
+                # there are no Steam launch options; the doorstop override
+                # lives in the bottle's DLL settings instead.
+                hint = (
+                    'In your Wine/CrossOver bottle, set the "winhttp" DLL '
+                    'override to "native, builtin" (WINEDLLOVERRIDES='
+                    '"winhttp=n,b"), start MTGA once, then run Check & '
+                    "Repair again."
+                )
+            else:
+                hint = (
+                    "Start MTGA once (on Linux, after fixing the launch "
+                    "options above), then run Check & Repair again."
+                )
             return CheckResult(
                 "bridge", "Bridge injection", "action_needed",
                 "BepInEx has never produced a log — it has not injected yet.",
-                "Start MTGA once (on Linux, after fixing the launch options "
-                "above), then run Check & Repair again.",
+                hint,
             )
         try:
             text = log.read_text(errors="replace")
