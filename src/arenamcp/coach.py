@@ -7,6 +7,7 @@ with support for online (mtgacoach.com) and local (Ollama/LM Studio) modes.
 import json
 import logging
 import os
+import re
 import time
 from collections import Counter
 from typing import Any, Optional
@@ -1781,6 +1782,18 @@ class CoachEngine:
                 lines.append(f"!!! DECISION: DECLARE ATTACKERS ({len(legal)} legal) !!!")
                 if legal:
                     lines.append(f"Can attack: {', '.join(legal[:8])}")
+                try:
+                    local_seat = next(
+                        (p.get("seat_id") for p in game_state.get("players", [])
+                         if p.get("is_local")), None,
+                    )
+                    opp_cards = [
+                        c for c in game_state.get("battlefield", [])
+                        if c.get("owner_seat_id") != local_seat
+                    ]
+                    lines.extend(self._attack_tax_lines(opp_cards, game_state))
+                except Exception:
+                    pass
                 lines.append("Choose: maximize damage while keeping safe blockers back")
             elif dec_type == "declare_blockers":
                 legal = decision_context.get("legal_blockers", [])
@@ -2049,11 +2062,67 @@ class CoachEngine:
                     lines.append(f"       {att_oracle}")
         return lines
 
+    # Matches attack-tax permanents (Ghostly Prison, Propaganda, War Tax
+    # activations aside): "...can't attack you unless their controller pays
+    # {2} for each creature...". Arena oracle text encodes costs as {o2}.
+    _ATTACK_TAX_RE = re.compile(
+        r"can't attack(?: you| you or planeswalkers you control)? unless"
+        r".{0,80}?pays?[^.{]*\{o?(\d+)\}",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def _detect_attack_taxes(self, opp_cards: list[dict]) -> list[tuple[str, int]]:
+        """Find opponent permanents taxing each attacker, with cost each."""
+        taxes: list[tuple[str, int]] = []
+        for card in opp_cards:
+            oracle = card.get("oracle_text", "") or ""
+            m = self._ATTACK_TAX_RE.search(oracle)
+            if m:
+                try:
+                    taxes.append((card.get("name", "Unknown"), int(m.group(1))))
+                except ValueError:
+                    continue
+        return taxes
+
+    def _attack_tax_lines(
+        self, opp_cards: list[dict], game_state: Optional[dict[str, Any]]
+    ) -> list[str]:
+        """Warning lines when attacking costs extra mana per creature.
+
+        Field report 2026-07-16: opponent had Ghostly Prison and the coach
+        advised casting spells until empty, then attacking with six
+        creatures — a {12} tax it never counted. This is calculator work,
+        not LLM judgment: state the price and the affordable attacker count.
+        """
+        taxes = self._detect_attack_taxes(opp_cards)
+        if not taxes:
+            return []
+        per_attacker = sum(cost for _, cost in taxes)
+        names = ", ".join(f"{n} (+{{{c}}} per attacker)" for n, c in taxes)
+        lines = [f"!! ATTACK TAX: {names} — attacking costs {{{per_attacker}}} PER CREATURE."]
+        if game_state is not None:
+            try:
+                mana = self._available_mana_now(game_state)
+                afford = mana // per_attacker if per_attacker else 0
+                lines.append(
+                    f"   With {mana} mana available you can pay for at most "
+                    f"{afford} attacker(s). BUDGET MANA BEFORE CASTING SPELLS "
+                    "if you plan to attack this turn."
+                )
+            except Exception:
+                lines.append(
+                    "   Reserve mana for the tax before casting spells if you "
+                    "plan to attack this turn."
+                )
+        return lines
+
     def _format_attack_combat(self, your_cards: list[dict], opp_cards: list[dict],
                               local_player: Optional[dict], opponent_player: Optional[dict],
-                              turn_num: int, valid_attackers: list[dict]) -> list[str]:
+                              turn_num: int, valid_attackers: list[dict],
+                              game_state: Optional[dict[str, Any]] = None) -> list[str]:
         """Format the attack-side combat analysis (your turn attacking)."""
         lines: list[str] = []
+        lines.extend(self._attack_tax_lines(opp_cards, game_state))
         your_creatures = [c for c in your_cards if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)]
         opp_creatures = [c for c in opp_cards if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)]
         opp_blockers = [c for c in opp_creatures if not c.get("is_tapped")]
@@ -2836,7 +2905,7 @@ class CoachEngine:
                 ]
                 lines.extend(self._format_attack_combat(
                     your_cards, opp_cards, local_player, opponent_player,
-                    turn_num, valid_attackers
+                    turn_num, valid_attackers, game_state=game_state
                 ))
             elif "Combat" in phase and not is_your_turn:
                 lines.extend(self._format_block_combat(
