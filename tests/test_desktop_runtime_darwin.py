@@ -380,3 +380,68 @@ def test_release_single_instance_lock_noop_when_unheld(monkeypatch) -> None:
     monkeypatch.setattr(desktop_app, "_INSTANCE_LOCK_FILE", None)
     monkeypatch.setattr(desktop_app, "_INSTANCE_MUTEX", None)
     desktop_app._release_single_instance_lock()  # must not raise
+
+
+# ── bridge_applicable / is_fully_provisioned gating ──────────────────────
+
+
+def _minimal_state(**overrides):
+    """Build a RuntimeState with sane defaults for gating tests."""
+    from arenamcp.desktop.runtime import RuntimeState
+
+    base = dict(
+        repo_dir="/repo",
+        repo_checkout=True,
+        runtime_root="/rt",
+        runtime_venv_dir="/rt/venv",
+        runtime_venv_exists=True,
+        python_exe="/rt/venv/bin/python",
+        python_source="runtime_venv",
+        python_ready=True,
+        python_ready_detail="ok",
+        mtga_dir=None,
+        mtga_dir_source="none",
+        mtga_exe_path=None,
+        mtga_running=False,
+        player_log="/tmp/Player.log",
+        bepinex_log=None,
+        bepinex_dir=None,
+        bepinex_installed=False,
+        plugin_install_path=None,
+        plugin_installed=False,
+        plugin_build_path=None,
+        plugin_built=False,
+        bepinex_bundle=None,
+        restart_mtga_required=False,
+    )
+    base.update(overrides)
+    return RuntimeState(**base)
+
+
+def test_native_mac_install_is_provisioned_without_bridge(monkeypatch, tmp_path):
+    """Native Mac client (no MTGA.exe) must not gate provisioning on BepInEx."""
+    monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    (tmp_path / "MTGA.app").mkdir()
+    state = _minimal_state(mtga_dir=str(tmp_path))
+    assert state.bridge_applicable is False
+    assert state.bridge_ready is False
+    assert state.is_fully_provisioned is True
+
+
+def test_crossover_bottle_still_requires_bridge(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    (tmp_path / "MTGA.exe").write_bytes(b"MZ")
+    state = _minimal_state(mtga_dir=str(tmp_path))
+    assert state.bridge_applicable is True
+    assert state.is_fully_provisioned is False
+
+
+def test_windows_still_requires_bridge(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime.sys, "platform", "win32")
+    state = _minimal_state(mtga_dir=str(tmp_path))
+    assert state.bridge_applicable is True
+    assert state.is_fully_provisioned is False
+    provisioned = _minimal_state(
+        mtga_dir=str(tmp_path), bepinex_installed=True, plugin_installed=True
+    )
+    assert provisioned.is_fully_provisioned is True

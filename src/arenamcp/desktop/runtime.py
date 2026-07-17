@@ -86,12 +86,30 @@ class RuntimeState:
         )
 
     @property
+    def bridge_applicable(self) -> bool:
+        """Whether the BepInEx bridge can exist for this install at all.
+
+        The bridge only loads into the Windows Mono build (native Windows,
+        Proton, or a Wine/CrossOver bottle). The native macOS client is
+        IL2CPP — no CLR to host the plugin — so coaching runs log-only there
+        and the bridge must not gate provisioning (docs/PLATFORM_PARITY.md).
+        A bottle install is recognizable by its MTGA.exe.
+        """
+        if sys.platform != "darwin":
+            return True
+        if self.mtga_dir is None:
+            return True
+        return (Path(self.mtga_dir) / "MTGA.exe").exists()
+
+    @property
     def is_launchable(self) -> bool:
         return self.has_ready_python_runtime
 
     @property
     def is_fully_provisioned(self) -> bool:
-        return self.has_ready_python_runtime and self.bridge_ready
+        if not self.has_ready_python_runtime:
+            return False
+        return self.bridge_ready or not self.bridge_applicable
 
 
 def _is_app_root(path: Path) -> bool:
