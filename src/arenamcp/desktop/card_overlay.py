@@ -22,7 +22,10 @@ except ImportError:
     win32con = None
     win32gui = None
 
-from arenamcp.desktop.window_tracking import get_mtga_window_rect
+from arenamcp.desktop.window_tracking import (
+    apply_system_click_through,
+    get_mtga_window_rect,
+)
 
 try:
     from arenamcp.input_controller import find_mtga_hwnd, get_client_rect
@@ -167,6 +170,7 @@ class CardOverlayWindow(QWidget):
             self._should_show = True
             # Disable click-through so painted content renders reliably
             self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+            apply_system_click_through(self, False)
             if os.name == "nt" and win32gui is not None and win32con is not None:
                 try:
                     hwnd = int(self.winId())
@@ -262,6 +266,7 @@ class CardOverlayWindow(QWidget):
     def _apply_click_through(self) -> None:
         """Make mouse events pass through to MTGA."""
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        apply_system_click_through(self, True)
         if os.name != "nt" or win32gui is None or win32con is None:
             return
         try:

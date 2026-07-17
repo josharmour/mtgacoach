@@ -194,3 +194,44 @@ def clear_cache() -> None:
     """Drop cached lookups (used by tests and after display changes)."""
     with _cache_lock:
         _cache_value.clear()
+
+
+def apply_system_click_through(widget: Any, enabled: bool = True) -> bool:
+    """OS-level click-through for a top-level Qt window.
+
+    Qt's ``WA_TransparentForMouseEvents`` only makes *Qt* ignore mouse
+    events — the native window still receives clicks from the OS and
+    swallows anything that should reach the app underneath. Windows
+    overlays solve this with ``WS_EX_TRANSPARENT``; the macOS analogue is
+    ``NSWindow.ignoresMouseEvents``, which Qt never sets. Without it an
+    invisible overlay steals every click over the game (observed live
+    2026-07-16 on the first Mac run).
+
+    Returns True when a system-level setting was applied. X11/Wayland have
+    no portable equivalent here; callers keep the Qt attribute regardless.
+    """
+    if sys.platform != "darwin":
+        return False
+    try:
+        import ctypes
+
+        import objc  # pyobjc — same dependency as the Quartz locator
+        from PySide6.QtGui import QGuiApplication
+
+        # winId() is only an NSView* under the real cocoa QPA — under
+        # "offscreen" (tests) it's a fake handle and dereferencing it via
+        # objc would crash the interpreter.
+        if QGuiApplication.platformName() != "cocoa":
+            return False
+
+        wid = int(widget.winId())  # NSView* on macOS
+        if not wid:
+            return False
+        view = objc.objc_object(c_void_p=ctypes.c_void_p(wid))
+        window = view.window()
+        if window is None:
+            return False
+        window.setIgnoresMouseEvents_(bool(enabled))
+        return True
+    except Exception:
+        return False

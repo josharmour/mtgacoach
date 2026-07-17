@@ -20,7 +20,10 @@ except ImportError:
     win32con = None
     win32gui = None
 
-from arenamcp.desktop.window_tracking import get_mtga_window_rect
+from arenamcp.desktop.window_tracking import (
+    apply_system_click_through,
+    get_mtga_window_rect,
+)
 
 
 class HudWindow(QWidget):
@@ -109,10 +112,11 @@ class HudWindow(QWidget):
         # Qt-native click-through (all platforms).
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled)
         self._is_click_through = enabled
-        # Windows-only enhancement: system-level click-through via extended
-        # window styles. Not required — WA_TransparentForMouseEvents already
-        # forwards input within Qt; WS_EX_TRANSPARENT makes the OS itself
-        # route clicks to the window underneath.
+        # System-level click-through: WA_TransparentForMouseEvents only stops
+        # Qt from handling events — the OS still delivers clicks to this
+        # window instead of the app underneath. macOS needs
+        # NSWindow.ignoresMouseEvents; Windows needs WS_EX_TRANSPARENT.
+        apply_system_click_through(self, enabled)
         if os.name != "nt" or win32gui is None or win32con is None:
             return
 
