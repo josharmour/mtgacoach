@@ -445,6 +445,10 @@ class CompactCoachPanel(CoachTab):
         bridge_lower = bridge.lower()
         if "connected" in bridge_lower and "disconnected" not in bridge_lower:
             bridge_color = ok
+        elif "log mode" in bridge_lower:
+            # Native Mac client: log-only coaching is the designed state,
+            # not a failure — show it healthy, not red.
+            bridge_color = ok
         elif bridge == "-":
             bridge_color = muted
         else:

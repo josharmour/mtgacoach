@@ -339,3 +339,24 @@ def find_mtga() -> Optional[MtgaInstall]:
     if plat == "darwin":
         return _find_mtga_darwin()
     return None
+
+
+def bridge_capable() -> bool:
+    """Whether the BepInEx GRE bridge can exist for the detected install.
+
+    The bridge loads only into the Windows Mono build — native Windows,
+    Proton on Linux, or a Wine/CrossOver bottle on macOS. The native Mac
+    client is IL2CPP (no CLR): coaching runs log-only there and UI surfaces
+    must present that as the designed state, not a disconnection
+    (docs/PLATFORM_PARITY.md).
+    """
+    import sys
+
+    if sys.platform != "darwin":
+        return True
+    try:
+        install = find_mtga()
+    except Exception:
+        return False
+    plat = str(getattr(install, "platform", "") or "") if install else ""
+    return any(tag in plat for tag in ("wine", "crossover", "bottle"))

@@ -2783,7 +2783,11 @@ class StandaloneCoach:
                         if bridge_trigger:
                             self._bridge_poller.enrich_snapshot(curr_state)
 
-                        # Update bridge status in UI (only on change)
+                        # Update bridge status in UI (only on change). Where a
+                        # bridge can never exist (native Mac client), report
+                        # the designed state — "Log mode" — instead of an
+                        # alarming red "Disconnected" for something that was
+                        # never going to connect.
                         _bridge_now = self._bridge_poller.connected
                         if not hasattr(self, '_last_bridge_ui_status'):
                             self._last_bridge_ui_status = None
@@ -2791,8 +2795,10 @@ class StandaloneCoach:
                             self._last_bridge_ui_status = _bridge_now
                             if _bridge_now:
                                 self.ui.status("BRIDGE", "Connected")
-                            else:
+                            elif self._bridge_capable_install():
                                 self.ui.status("BRIDGE", "Disconnected")
+                            else:
+                                self.ui.status("BRIDGE", "Log mode")
 
                         # BRIDGE-DRIVEN MATCH END:
                         # The bridge sees IntermissionRequest as soon as MTGA
@@ -4386,6 +4392,19 @@ class StandaloneCoach:
             except Exception as e:
                 versions[display_name] = f"error: {e}"
         return versions
+
+    def _bridge_capable_install(self) -> bool:
+        """Cached: can a BepInEx bridge ever exist for this install?"""
+        cached = getattr(self, "_bridge_capable_cache", None)
+        if cached is None:
+            try:
+                from arenamcp.platform_integration import bridge_capable
+
+                cached = bridge_capable()
+            except Exception:
+                cached = True  # fail toward the normal Disconnected message
+            self._bridge_capable_cache = cached
+        return cached
 
     def _get_served_model(self) -> str:
         """The model the gateway actually ran for the last completion."""
