@@ -1771,7 +1771,15 @@ class CoachEngine:
                 lines.append("Keep: want to draw | Graveyard: synergy or digging")
             elif dec_type == "target_selection":
                 lines.append(f"!!! DECISION: TARGET for {decision_context.get('source_card', 'spell')} !!!")
-                lines.append("Choose: biggest threat or best value target")
+                lines.append(
+                    "FIRST decide whether this spell HELPS its target (ramp, "
+                    "pump, protection, value auras) or HARMS it (damage, "
+                    "destroy, exile, debuff, tax). Helpful effects target "
+                    "YOUR permanents (YOURS); harmful ones target the "
+                    "opponent's (OPP). Then pick the best candidate of that "
+                    "side. Never put a beneficial aura on an opponent's "
+                    "permanent."
+                )
             elif dec_type == "modal_choice":
                 lines.append(f"!!! DECISION: CHOOSE MODE ({decision_context.get('num_options', '?')} options) !!!")
                 lines.append("Evaluate: which mode solves current problem best")

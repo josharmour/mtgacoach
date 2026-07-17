@@ -514,7 +514,14 @@ class RulesEngine:
                 key=lambda c: RulesEngine._score_target(c, prefer_opponent),
                 reverse=True,
             )
-            names = [c.get("name", "Unknown") for c in matches[:3]]
+            # Owner tags are load-bearing: without them the LLM enchanted an
+            # opponent's land with the player's own Wolfwillow Haven — the
+            # candidates were just "Mountain" and it had no way to know whose
+            # (field report 2026-07-16).
+            names = []
+            for c in matches[:3]:
+                owner = "YOURS" if c.get("owner_seat_id") == local_seat else "OPP"
+                names.append(f"{c.get('name', 'Unknown')} ({owner})")
             for name in RulesEngine._disambiguate_names(names):
                 actions.append(f"Select target: {name}")
 
