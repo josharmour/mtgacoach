@@ -46,29 +46,24 @@ class AudioPlayback:
                 except Exception:
                     return False
         else:
+            if sys.platform == "darwin":
+                # Always use afplay on macOS, even when sounddevice is
+                # available: PortAudio snapshots the device list at init, so
+                # audio keeps playing from the built-in speakers after the
+                # user switches to (or connects) Bluetooth headphones.
+                # afplay follows the live system default output.
+                with cls._lock:
+                    cls._stop_unlocked()
+                    return cls._play_via_cli_unlocked(full_path, ("afplay",))
+
             if sd is None or sf is None:
-                # Fallback: platform-appropriate command-line players.
-                # macOS ships afplay (plays wav/mp3 natively); Linux desktops
-                # typically have one of paplay/aplay/play/pw-play.
-                import shutil
-                import subprocess
-                if sys.platform == "darwin":
-                    players: tuple[str, ...] = ("afplay",)
-                else:
-                    players = ("paplay", "aplay", "play", "pw-play")
-                for player in players:
-                    if shutil.which(player):
-                        try:
-                            # Run in background to be asynchronous
-                            subprocess.Popen(
-                                [player, str(full_path)],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL
-                            )
-                            return True
-                        except Exception:
-                            pass
-                return False
+                # Fallback: command-line players. Linux desktops typically
+                # have one of paplay/aplay/play/pw-play.
+                with cls._lock:
+                    cls._stop_unlocked()
+                    return cls._play_via_cli_unlocked(
+                        full_path, ("paplay", "aplay", "play", "pw-play")
+                    )
 
             with cls._lock:
                 cls._stop_unlocked()
@@ -78,6 +73,28 @@ class AudioPlayback:
                     return True
                 except Exception:
                     return False
+
+    _cli_process = None
+
+    @classmethod
+    def _play_via_cli_unlocked(cls, full_path: Path, players: tuple[str, ...]) -> bool:
+        import shutil
+        import subprocess
+
+        for player in players:
+            if shutil.which(player):
+                try:
+                    # Run in background to be asynchronous; track the process
+                    # so stop() can interrupt playback.
+                    cls._cli_process = subprocess.Popen(
+                        [player, str(full_path)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return True
+                except Exception:
+                    pass
+        return False
 
     @classmethod
     def stop(cls) -> None:
@@ -95,5 +112,12 @@ class AudioPlayback:
             if sd is not None:
                 try:
                     sd.stop()
+                except Exception:
+                    pass
+            proc = cls._cli_process
+            cls._cli_process = None
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
                 except Exception:
                     pass

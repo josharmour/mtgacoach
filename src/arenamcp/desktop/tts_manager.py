@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -26,6 +28,13 @@ class TtsManager(QObject):
         self._generation = 0
         self._pending_request: Optional[dict[str, Any]] = None
         self._current_audio_path: Optional[Path] = None
+        # When the Kokoro worker can't serve (init failure, dead process),
+        # macOS falls back to the built-in `say` voice instead of silence —
+        # the coach's speech must never silently disappear.
+        self._worker_failed = False
+        self._say_process: Optional[subprocess.Popen] = None
+        self._last_text: str = ""
+        self._last_speed: float = 1.0
 
     @property
     def is_running(self) -> bool:
@@ -82,8 +91,23 @@ class TtsManager(QObject):
         if not text or not text.strip():
             return
 
+        self._last_text = text
+        self._last_speed = float(speed)
+
+        if self._worker_failed and sys.platform == "darwin":
+            self._speak_via_say(text, speed)
+            return
+
         if not self.is_running:
-            self.start()
+            try:
+                self.start()
+            except Exception as exc:
+                self._worker_failed = True
+                self.error_line.emit(str(exc))
+                if sys.platform == "darwin":
+                    self.status_line.emit("Kokoro unavailable — using macOS voice.")
+                    self._speak_via_say(text, speed)
+                return
 
         self._generation += 1
         self._pending_request = {
@@ -101,11 +125,36 @@ class TtsManager(QObject):
         self._generation += 1
         self._pending_request = None
         self._stop_playback()
+        self._stop_say()
+
+    def _speak_via_say(self, text: str, speed: float) -> None:
+        """macOS built-in voice fallback (darwin only)."""
+        self._stop_say()
+        try:
+            wpm = max(90, min(450, int(175 * (speed or 1.0))))
+            self._say_process = subprocess.Popen(
+                ["say", "-r", str(wpm)], stdin=subprocess.PIPE
+            )
+            assert self._say_process.stdin is not None
+            self._say_process.stdin.write(text.encode("utf-8"))
+            self._say_process.stdin.close()
+        except Exception as exc:
+            self.error_line.emit(f"macOS say fallback failed: {exc}")
+
+    def _stop_say(self) -> None:
+        proc = self._say_process
+        self._say_process = None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
 
     def shutdown(self) -> None:
         self._closing = True
         self._pending_request = None
         self._stop_playback()
+        self._stop_say()
 
         process = self._process
         if process is None:
@@ -208,6 +257,19 @@ class TtsManager(QObject):
             trace = str(payload.get("traceback", "")).strip()
             if trace:
                 self.log_line.emit(trace)
+            if "init failed" in message:
+                # Kokoro can't come up at all (usually missing model files).
+                # Downgrade permanently for this session and voice the advice
+                # that just failed rather than dropping it.
+                self._worker_failed = True
+                if sys.platform == "darwin" and self._last_text:
+                    self.status_line.emit("Kokoro unavailable — using macOS voice.")
+                    self._speak_via_say(self._last_text, self._last_speed)
+                return
+            if sys.platform == "darwin" and self._last_text:
+                # Transient render failure: keep Kokoro for next time, but
+                # don't lose this utterance.
+                self._speak_via_say(self._last_text, self._last_speed)
             self._dispatch_pending()
             return
 
@@ -229,6 +291,11 @@ class TtsManager(QObject):
 
         if not self._closing:
             self.error_line.emit(f"Kokoro worker exited ({exit_code}).")
+            if exit_code != 0:
+                self._worker_failed = True
+                if sys.platform == "darwin" and self._last_text:
+                    self.status_line.emit("Kokoro unavailable — using macOS voice.")
+                    self._speak_via_say(self._last_text, self._last_speed)
 
     def _on_error(self, _error: QProcess.ProcessError) -> None:
         if self._process is not None:
