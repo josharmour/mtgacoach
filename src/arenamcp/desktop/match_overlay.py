@@ -16,6 +16,7 @@ import json
 import logging
 import math
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -915,6 +916,41 @@ class MatchOverlayWindow(QWidget):
             painter.setFont(font)
             painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, str(sequence))
 
+    def _bridge_possible(self) -> bool:
+        """Whether a BepInEx bridge can ever exist for this install.
+
+        Native macOS MTGA is IL2CPP — no bridge, coaching runs log-only
+        (docs/PLATFORM_PARITY.md). Only Wine/CrossOver bottles (MTGA.exe)
+        are bridge-capable on darwin. Cached: the answer can't change
+        within a session.
+        """
+        cached = getattr(self, "_bridge_possible_cache", None)
+        if cached is not None:
+            return cached
+        result = True
+        if sys.platform == "darwin":
+            try:
+                from arenamcp.platform_integration import find_mtga
+
+                install = find_mtga()
+                plat = str(getattr(install, "platform", "") or "") if install else ""
+                result = any(tag in plat for tag in ("wine", "crossover", "bottle"))
+            except Exception:
+                result = False
+        self._bridge_possible_cache = result
+        return result
+
+    def _armed_badge_label(self) -> tuple[str, bool]:
+        """(label, healthy) for the armed badge — never promise the bridge
+        where it cannot exist ('waiting for bridge' forever on native Mac).
+        """
+        card_count = len(self._card_positions)
+        if card_count:
+            return f"● mtgacoach • {card_count} cards", True
+        if self._bridge_possible():
+            return "● mtgacoach • waiting for bridge", False
+        return "● mtgacoach • coaching from log", True
+
     def _draw_armed_badge(self, painter: QPainter) -> None:
         """Small unobtrusive badge confirming the overlay is alive in a match.
 
@@ -922,9 +958,8 @@ class MatchOverlayWindow(QWidget):
         Displays the number of detected cards from the BepInEx bridge so the
         user can tell at a glance whether ground-truth positions are flowing.
         """
-        card_count = len(self._card_positions)
-        dot_color = QColor(74, 222, 128) if card_count > 0 else QColor(251, 191, 36)
-        label = f"● mtgacoach • {card_count} cards" if card_count else "● mtgacoach • waiting for bridge"
+        label, healthy = self._armed_badge_label()
+        dot_color = QColor(74, 222, 128) if healthy else QColor(251, 191, 36)
 
         font = QFont()
         font.setPixelSize(11)
