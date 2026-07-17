@@ -129,7 +129,12 @@ def test_execute_action_retries_bridge_after_reconnect(monkeypatch):
     assert len(attempts) == 2
 
 
-def test_no_plugin_warning_fires_once(caplog):
+def test_no_plugin_warning_fires_once(caplog, monkeypatch):
+    # Pin a bridge-capable install: on a native Mac (bridge_capable False)
+    # the warning is intentionally replaced by an informational log-mode line.
+    monkeypatch.setattr(
+        "arenamcp.platform_integration.bridge_capable", lambda: True
+    )
     bridge = GREBridge()
     bridge._server_socket = object()
     bridge._server_started_at = time.monotonic() - 60.0
@@ -140,6 +145,24 @@ def test_no_plugin_warning_fires_once(caplog):
         r for r in caplog.records if "plugin is not loading" in r.getMessage()
     ]
     assert len(warnings) == 1
+
+
+def test_no_plugin_log_mode_instead_of_warning_when_bridge_impossible(
+    caplog, monkeypatch
+):
+    monkeypatch.setattr(
+        "arenamcp.platform_integration.bridge_capable", lambda: False
+    )
+    bridge = GREBridge()
+    bridge._server_socket = object()
+    bridge._server_started_at = time.monotonic() - 60.0
+    with caplog.at_level(logging.INFO, logger="arenamcp.gre_bridge"):
+        bridge._maybe_warn_no_plugin()
+    assert not any(
+        "plugin is not loading" in r.getMessage()
+        for r in caplog.records if r.levelno >= logging.WARNING
+    )
+    assert any("log-only" in r.getMessage() for r in caplog.records)
 
 
 def test_no_plugin_warning_suppressed_after_any_connection(caplog):
