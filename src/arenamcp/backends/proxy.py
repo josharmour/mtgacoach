@@ -365,7 +365,13 @@ class ProxyBackend:
         """
         if not served:
             return
+        previous = self.last_served_model
         self.last_served_model = served
+        if served != previous:
+            # Discoverability: one INFO line on first use and on every
+            # routing change, so "what model am I talking to?" is always
+            # answerable from the logs without living in the UI.
+            logger.info(f"[PROXY] gateway served model: {served}")
         if served != self.model and not getattr(self, "_served_model_warned", False):
             self._served_model_warned = True
             logger.warning(

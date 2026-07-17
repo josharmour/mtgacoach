@@ -120,7 +120,8 @@ def build_issue_payload(
             "## Runtime",
             "",
             f"- Backend: `{config.get('backend', 'unknown')}`",
-            f"- Model: `{config.get('model') or 'default'}`",
+            f"- Model: `{config.get('served_model') or config.get('model') or 'default'}`"
+            + (" (gateway-served)" if config.get("served_model") else ""),
             f"- Advice style: `{config.get('advice_style', 'unknown')}`",
             f"- Voice: `{voice.get('tts_voice')}`",
             f"- Auto speak: `{config.get('auto_speak')}`",

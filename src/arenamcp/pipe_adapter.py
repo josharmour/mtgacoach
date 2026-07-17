@@ -421,12 +421,15 @@ class PipeAdapter:
                     bridge_connected = bool(getattr(get_bridge(), "connected", False))
                 except Exception:
                     pass
+                backend = getattr(getattr(coach, "_coach", None), "_backend", None)
                 self._emit({
                     "type": "status_report",
                     "autopilot_enabled": bool(getattr(coach, "_autopilot_enabled", False)),
                     "autopilot_initialized": ap is not None,
                     "autopilot_state": str(getattr(ap, "_state", "") or ""),
                     "bridge_connected": bridge_connected,
+                    "model_alias": str(getattr(backend, "model", "") or ""),
+                    "served_model": str(getattr(backend, "last_served_model", "") or ""),
                 })
             elif action == "toggle_mute":
                 if coach._voice_output:

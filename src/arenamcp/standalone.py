@@ -3363,7 +3363,23 @@ class StandaloneCoach:
                             # Unified advice path: use the action planner for
                             # both autopilot actions AND coaching advice. The
                             # planner constrains itself to legal actions only.
-                            if self._autopilot and hasattr(self._autopilot, '_planner'):
+                            #
+                            # Exception (2026-07-16): the planner's voice_advice
+                            # is terse by design ("Play Forest"), which silently
+                            # overrode the user's chatty style — advice-mode
+                            # chatty routes to the style-aware LLM instead so
+                            # the coach narrates the turn (what to do with the
+                            # mana, not just the land drop). Autopilot and the
+                            # quick style keep the fast planner path.
+                            use_planner_advice = (
+                                self._autopilot
+                                and hasattr(self._autopilot, '_planner')
+                                and (
+                                    self._autopilot_enabled
+                                    or self.advice_style not in ("chatty", "verbose")
+                                )
+                            )
+                            if use_planner_advice:
                                 # P2-3: when autopilot just planned this exact
                                 # window and fell through, reuse its advice
                                 # instead of re-running plan_actions on the
@@ -4093,6 +4109,9 @@ class StandaloneCoach:
         report["config"] = {
             "backend": self.backend_name,
             "model": self.model_name,
+            # What the gateway actually ran, from response payloads — the
+            # configured alias can lie (2026-07-05 misroute).
+            "served_model": self._get_served_model(),
             "voice_mode": self.voice_mode,
             "advice_style": self.advice_style,
             "advice_frequency": self.advice_frequency,
@@ -4367,6 +4386,14 @@ class StandaloneCoach:
             except Exception as e:
                 versions[display_name] = f"error: {e}"
         return versions
+
+    def _get_served_model(self) -> str:
+        """The model the gateway actually ran for the last completion."""
+        try:
+            backend = getattr(self._coach, "_backend", None)
+            return str(getattr(backend, "last_served_model", "") or "")
+        except Exception:
+            return ""
 
     def _get_mtga_log_status(self) -> dict:
         """Get MTGA Player.log file status."""
