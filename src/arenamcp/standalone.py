@@ -5129,10 +5129,16 @@ class StandaloneCoach:
             self.ui.error(f"Seat swap failed: {e}")
             logger.error(f"Seat swap error: {e}")
 
-    def _compute_library_summary(self, game_state: dict) -> str:
+    def _compute_library_summary(self, game_state: dict, detailed: bool = True) -> str:
         """Compute remaining library by subtracting visible cards from deck_cards.
 
         Returns a compact summary like "~28 cards: 2x Mountain, 1x Lightning Bolt, ..."
+
+        Args:
+            game_state: Snapshot dict with deck_cards, players, and zone lists.
+            detailed: When True, append mana cost and oracle text per card
+                (win-plan/tutor prompts). When False, emit the compact
+                counts-and-draw-odds form used in every advice prompt.
         """
         deck_cards = game_state.get("deck_cards", [])
         if not deck_cards:
@@ -5182,9 +5188,6 @@ class StandaloneCoach:
         total = len(remaining)
         shown = sum(count for _, count in sorted_cards)
 
-        # Build detailed summary with oracle text for non-basic lands
-        # so the LLM doesn't hallucinate card abilities
-        lines = [f"~{total} cards remaining in library:"]
         # Reverse map: name -> grp_id (for info lookup)
         name_to_grp: dict[str, int] = {}
         for grp_id, info in card_info_cache.items():
@@ -5192,6 +5195,24 @@ class StandaloneCoach:
             if name not in name_to_grp:
                 name_to_grp[name] = grp_id
 
+        if not detailed:
+            # Compact form for every advice prompt: counts + per-card draw
+            # odds, no oracle text. Keeps the prompt lean while letting the
+            # LLM reason about draw probability and remaining outs.
+            parts = [
+                f"{count}x {name} ({count / total:.0%})"
+                for name, count in sorted_cards
+            ]
+            if shown < total:
+                parts.append(f"+{total - shown} more")
+            return (
+                f"MY LIBRARY ({total} cards left, deck-minus-seen; "
+                f"% = draw chance per card drawn): " + ", ".join(parts)
+            )
+
+        # Build detailed summary with oracle text for non-basic lands
+        # so the LLM doesn't hallucinate card abilities
+        lines = [f"~{total} cards remaining in library:"]
         for name, count in sorted_cards:
             grp_id = name_to_grp.get(name)
             info = card_info_cache.get(grp_id, {}) if grp_id else {}
@@ -5333,14 +5354,22 @@ class StandaloneCoach:
         return "\n".join(lines)
 
     def _inject_library_summary_if_needed(self, game_state: dict) -> None:
-        """If hand has a tutor/search spell, inject library targets into game_state."""
-        if self._has_tutor_in_hand(game_state):
-            try:
+        """Inject remaining-library knowledge into game_state for prompts.
+
+        Always injects the compact deck-minus-seen summary so the coach can
+        reason about draw odds and remaining outs at every decision; when a
+        tutor/search spell is in hand, upgrades to the detailed mana-value
+        target breakdown instead.
+        """
+        try:
+            if self._has_tutor_in_hand(game_state):
                 summary = self._compute_tutor_library_targets(game_state)
-                if summary:
-                    game_state["library_summary"] = summary
-            except Exception as e:
-                logger.debug(f"Library summary computation failed: {e}")
+            else:
+                summary = self._compute_library_summary(game_state, detailed=False)
+            if summary:
+                game_state["library_summary"] = summary
+        except Exception as e:
+            logger.debug(f"Library summary computation failed: {e}")
 
     def _on_win_plan_hotkey(self, turns: int) -> None:
         """Handle win-in-N-turns hotkey press (keys 2-8)."""

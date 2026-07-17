@@ -594,6 +594,8 @@ class PipeAdapter:
             return
         try:
             game_state = coach._mcp.get_game_state() if coach._mcp else {}
+            if game_state:
+                coach._inject_library_summary_if_needed(game_state)
             response = coach._coach.get_advice(game_state, question=text)
             if response:
                 self.advice(response, "CHAT")
