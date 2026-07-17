@@ -146,7 +146,21 @@ def get_runtime_root() -> str:
         if local_appdata:
             return str(Path(local_appdata) / "mtgacoach")
 
-    return str(Path.home() / ".local" / "share" / "mtgacoach")
+    xdg_root = Path.home() / ".local" / "share" / "mtgacoach"
+
+    if sys.platform == "darwin":
+        # Backward compat: earlier builds treated every non-Windows platform as
+        # Linux and used the XDG path on macOS too. If that directory already
+        # has content (venv, .env, logs, ...), keep using it rather than
+        # stranding existing state.
+        try:
+            if xdg_root.is_dir() and any(xdg_root.iterdir()):
+                return str(xdg_root)
+        except OSError:
+            pass
+        return str(Path.home() / "Library" / "Application Support" / "mtgacoach")
+
+    return str(xdg_root)
 
 
 def _is_real_python(path: Path) -> bool:
@@ -364,6 +378,14 @@ def find_mtga_install_dir() -> tuple[Optional[str], str]:
     if from_registry:
         return (from_registry, "registry")
 
+    if sys.platform == "darwin":
+        mac_paths = [
+            Path.home() / "Library/Application Support/Steam/steamapps/common/MTGA",
+        ]
+        for candidate in mac_paths:
+            if candidate.is_dir():
+                return (str(candidate), "mac_steam_path")
+
     if sys.platform != "win32":
         linux_paths = [
             Path.home() / ".steam/steam/steamapps/compatdata/2141910/pfx/drive_c/Program Files/Wizards of the Coast/MTGA",
@@ -386,6 +408,20 @@ _running_cache_time: float = 0.0
 _running_cache_lock = threading.Lock()
 
 
+def _mtga_process_patterns() -> list[str]:
+    """pgrep/pkill -f patterns that identify a running MTGA client.
+
+    On macOS the native Steam build runs as
+    ``.../MTGA.app/Contents/MacOS/MTGA`` — match the bundle-internal binary
+    path so plain "MTGA" substrings elsewhere don't false-positive. The
+    ``MTGA.exe`` pattern additionally covers the Windows build running under
+    Wine/CrossOver (and is the only pattern needed for Linux/Proton).
+    """
+    if sys.platform == "darwin":
+        return [r"MTGA\.app/Contents/MacOS/MTGA", r"MTGA\.exe"]
+    return [r"MTGA\.exe"]
+
+
 def is_mtga_running() -> bool:
     global _running_cache_value, _running_cache_time
     now = time.monotonic()
@@ -400,14 +436,19 @@ def is_mtga_running() -> bool:
 
         if sys.platform != "win32":
             try:
-                result = subprocess.run(
-                    ["pgrep", "-f", "MTGA.exe"],
-                    capture_output=True,
-                    text=True,
-                    timeout=3,
-                    check=False,
-                )
-                _running_cache_value = bool(result.stdout.strip())
+                running = False
+                for pattern in _mtga_process_patterns():
+                    result = subprocess.run(
+                        ["pgrep", "-f", pattern],
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                        check=False,
+                    )
+                    if result.stdout.strip():
+                        running = True
+                        break
+                _running_cache_value = running
             except Exception:
                 _running_cache_value = False
         else:
@@ -964,19 +1005,21 @@ def close_mtga() -> bool:
         return False
 
     if sys.platform != "win32":
-        result = subprocess.run(
-            ["pkill", "-f", "MTGA.exe"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        if result.returncode != 0 and result.returncode != 1:
-            detail = (result.stderr or result.stdout).strip() or "pkill failed"
-            raise RuntimeError(detail)
+        # pkill exit codes: 0 = matched, 1 = no process matched (fine — a
+        # different pattern may have matched, or it exited already), >1 = error.
+        for pattern in _mtga_process_patterns():
+            result = subprocess.run(
+                ["pkill", "-f", pattern],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if result.returncode not in (0, 1):
+                detail = (result.stderr or result.stdout).strip() or "pkill failed"
+                raise RuntimeError(detail)
         _wait_for_mtga_exit()
-        _wait_for_mtga_exit()
-    return True
+        return True
 
     result = subprocess.run(
         ["taskkill", "/IM", "MTGA.exe", "/T", "/F"],
@@ -993,7 +1036,34 @@ def close_mtga() -> bool:
     return True
 
 
+def _find_mac_app_bundle(mtga_dir: str) -> Optional[Path]:
+    """Locate the native MTGA.app bundle for a macOS install dir.
+
+    Accepts either the Steam install dir containing ``MTGA.app`` (e.g.
+    ``~/Library/Application Support/Steam/steamapps/common/MTGA``) or a path
+    to the ``.app`` bundle itself.
+    """
+    base = Path(mtga_dir)
+    if base.suffix == ".app" and base.is_dir():
+        return base
+    candidate = base / "MTGA.app"
+    if candidate.is_dir():
+        return candidate
+    return None
+
+
 def launch_mtga(mtga_dir: str) -> str:
+    if sys.platform == "darwin":
+        app_bundle = _find_mac_app_bundle(mtga_dir)
+        if app_bundle is not None:
+            subprocess.Popen(["/usr/bin/open", str(app_bundle)])
+            return str(app_bundle)
+        # No native bundle (e.g. Steam-managed install elsewhere, or a Wine/
+        # CrossOver bottle): ask Steam to launch it via the URL scheme.
+        subprocess.Popen(["/usr/bin/open", "steam://rungameid/2141910"])
+        executable = Path(mtga_dir) / "MTGA.exe"
+        return str(executable if executable.exists() else Path(mtga_dir))
+
     executable = Path(mtga_dir) / "MTGA.exe"
     if not executable.exists():
         raise FileNotFoundError(f"MTGA.exe not found at {executable}")
@@ -1025,6 +1095,10 @@ def open_path(path: str) -> None:
         return
     if sys.platform == "win32":
         os.startfile(str(target))  # type: ignore[attr-defined]
+        return
+    if sys.platform == "darwin":
+        # xdg-open does not exist on macOS; /usr/bin/open is the equivalent.
+        subprocess.Popen(["/usr/bin/open", str(target)])
         return
     xdg_open = shutil.which("xdg-open")
     if xdg_open:

@@ -10,6 +10,7 @@ from pathlib import Path
 
 _LOG_HANDLE = None
 _INSTANCE_MUTEX = None
+_INSTANCE_LOCK_FILE = None
 
 
 def _log_path() -> Path:
@@ -70,7 +71,7 @@ def _acquire_single_instance_lock() -> bool:
     global _INSTANCE_MUTEX
 
     if os.name != "nt":
-        return True
+        return _acquire_posix_instance_lock()
 
     try:
         import ctypes
@@ -89,19 +90,71 @@ def _acquire_single_instance_lock() -> bool:
         return True
 
 
-def _release_single_instance_lock() -> None:
-    global _INSTANCE_MUTEX
+def _acquire_posix_instance_lock() -> bool:
+    """flock-based single-instance guard for macOS/Linux.
 
-    if _INSTANCE_MUTEX is None or os.name != "nt":
-        return
+    Holds an exclusive, non-blocking flock on a lock file in the runtime
+    root for the lifetime of the process. The OS releases the lock on any
+    exit (including crashes), so no stale-lock cleanup is needed. Fails
+    open on unexpected errors, mirroring the Windows mutex behavior.
+    """
+    global _INSTANCE_LOCK_FILE
 
     try:
-        import ctypes
+        import fcntl
 
-        ctypes.windll.kernel32.CloseHandle(_INSTANCE_MUTEX)
+        from .runtime import get_runtime_root
+
+        runtime_root = Path(get_runtime_root())
+        runtime_root.mkdir(parents=True, exist_ok=True)
+        lock_path = runtime_root / "desktop.lock"
+        handle = open(lock_path, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            return False
+        try:
+            handle.seek(0)
+            handle.truncate()
+            handle.write(str(os.getpid()))
+            handle.flush()
+        except OSError:
+            pass
+        _INSTANCE_LOCK_FILE = handle
+        return True
+    except Exception:
+        return True
+
+
+def _release_single_instance_lock() -> None:
+    global _INSTANCE_MUTEX, _INSTANCE_LOCK_FILE
+
+    if os.name == "nt":
+        if _INSTANCE_MUTEX is None:
+            return
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.CloseHandle(_INSTANCE_MUTEX)
+        except Exception:
+            pass
+        _INSTANCE_MUTEX = None
+        return
+
+    if _INSTANCE_LOCK_FILE is None:
+        return
+    try:
+        import fcntl
+
+        fcntl.flock(_INSTANCE_LOCK_FILE.fileno(), fcntl.LOCK_UN)
     except Exception:
         pass
-    _INSTANCE_MUTEX = None
+    try:
+        _INSTANCE_LOCK_FILE.close()
+    except Exception:
+        pass
+    _INSTANCE_LOCK_FILE = None
 
 
 def main() -> int:
