@@ -47,10 +47,16 @@ class AudioPlayback:
                     return False
         else:
             if sd is None or sf is None:
-                # Fallback: try using standard Linux command-line players like paplay, aplay, or play
+                # Fallback: platform-appropriate command-line players.
+                # macOS ships afplay (plays wav/mp3 natively); Linux desktops
+                # typically have one of paplay/aplay/play/pw-play.
                 import shutil
                 import subprocess
-                for player in ("paplay", "aplay", "play", "pw-play"):
+                if sys.platform == "darwin":
+                    players: tuple[str, ...] = ("afplay",)
+                else:
+                    players = ("paplay", "aplay", "play", "pw-play")
+                for player in players:
                     if shutil.which(player):
                         try:
                             # Run in background to be asynchronous

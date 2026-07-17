@@ -65,18 +65,54 @@ logger = logging.getLogger(__name__)
 
 
 class _SAPIVoice:
-    """Lightweight Windows SAPI TTS — no numpy, no sounddevice, no PortAudio.
+    """Lightweight OS-native TTS fallback — no numpy, no sounddevice, no PortAudio.
 
-    Uses PowerShell's System.Speech.Synthesis for speech output.
+    Windows: PowerShell's System.Speech.Synthesis (SAPI).
+    macOS: the built-in ``say`` command.
     Drop-in replacement for VoiceOutput in pipe mode.
     """
+
+    # macOS `say` speaks at ~175 words per minute by default; the app's
+    # `voice_speed` setting is a 1.0-centered multiplier, so scale from there.
+    _SAY_BASE_WPM = 175
+    _SAY_MIN_WPM = 90
+    _SAY_MAX_WPM = 450
 
     def __init__(self):
         self._proc: subprocess.Popen | None = None
         self._muted = False
+        self._is_darwin = sys.platform == "darwin"
+        self._say_voice: str | None = None
+        self._say_rate: int = self._SAY_BASE_WPM
+        if self._is_darwin:
+            speed = 1.0
+            try:
+                settings = get_settings()
+                speed = float(settings.get("voice_speed", 1.0) or 1.0)
+                # Optional passthrough for a native macOS voice name
+                # (e.g. "Samantha"); Kokoro voice IDs don't map to `say`.
+                voice = settings.get("macos_voice") or settings.get("say_voice")
+                if voice:
+                    self._say_voice = str(voice)
+            except Exception:
+                pass
+            self._say_rate = self._say_wpm(speed)
+
+    @classmethod
+    def _say_wpm(cls, speed: float) -> int:
+        """Map the 1.0-centered voice_speed multiplier to say's -r wpm."""
+        try:
+            wpm = int(round(cls._SAY_BASE_WPM * float(speed)))
+        except (TypeError, ValueError):
+            wpm = cls._SAY_BASE_WPM
+        return max(cls._SAY_MIN_WPM, min(cls._SAY_MAX_WPM, wpm))
 
     @property
     def current_voice(self) -> tuple[str, str]:
+        if self._is_darwin:
+            if self._say_voice:
+                return ("say", f"macOS say ({self._say_voice})")
+            return ("say", "macOS say")
         return ("sapi", "Windows SAPI")
 
     def speak(self, text: str, blocking: bool = True) -> None:
@@ -87,6 +123,37 @@ class _SAPIVoice:
         text = text.replace("**", "").replace("*", "").replace("#", "")
         text = text.replace("```", "").replace("`", "").replace("...", " ")
         text = re.sub(r"\[[A-Z][A-Za-z0-9_,:{}/ ]*\]", "", text)
+        try:
+            self.stop()
+            if self._is_darwin:
+                self._proc = self._spawn_say(text)
+            else:
+                self._proc = self._spawn_sapi(text)
+            if blocking and self._proc is not None:
+                self._proc.wait(timeout=30)
+        except Exception:
+            pass
+
+    def _spawn_say(self, text: str) -> subprocess.Popen:
+        """macOS: speak via the built-in `say` command (text over stdin)."""
+        cmd = ["say", "-r", str(self._say_rate)]
+        if self._say_voice:
+            cmd += ["-v", self._say_voice]
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if proc.stdin is not None:
+            try:
+                proc.stdin.write(text.encode("utf-8"))
+            finally:
+                proc.stdin.close()
+        return proc
+
+    def _spawn_sapi(self, text: str) -> subprocess.Popen:
+        """Windows: speak via PowerShell System.Speech (SAPI)."""
         # Escape for PowerShell
         safe = text.replace("'", "''").replace('"', '\\"')
         cmd = (
@@ -94,19 +161,13 @@ class _SAPIVoice:
             '$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; '
             f"$s.Speak('{safe}')"
         )
-        try:
-            self.stop()
-            self._proc = subprocess.Popen(
-                ["powershell", "-NoProfile", "-Command", cmd],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=0x08000000,  # CREATE_NO_WINDOW
-            )
-            if blocking:
-                self._proc.wait(timeout=30)
-        except Exception:
-            pass
+        return subprocess.Popen(
+            ["powershell", "-NoProfile", "-Command", cmd],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
+        )
 
     def stop(self) -> None:
         if self._proc and self._proc.poll() is None:
