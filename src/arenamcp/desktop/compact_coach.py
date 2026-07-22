@@ -112,21 +112,42 @@ class CompactCoachPanel(CoachTab):
                 b.clicked.connect(on_click)
             return b
 
-        # Voice + Speed Preset Options
+        # Full list of Kokoro Voices (US, UK, Male, Female) with speed presets
         self._VOICE_PRESETS = [
-            ("af_sky", 1.4, "Sky @ 1.4x"),
-            ("af_sky", 1.2, "Sky @ 1.2x"),
-            ("af_nicole", 1.4, "Nicole @ 1.4x"),
-            ("af_nicole", 1.2, "Nicole @ 1.2x"),
-            ("am_adam", 1.4, "Adam @ 1.4x"),
-            ("am_adam", 1.2, "Adam @ 1.2x"),
-            ("af_heart", 1.4, "Heart @ 1.4x"),
-            ("af_bella", 1.4, "Bella @ 1.4x"),
+            ("af_sky", 1.4, "Sky (US Female) @ 1.4x"),
+            ("af_sky", 1.2, "Sky (US Female) @ 1.2x"),
+            ("af_nicole", 1.4, "Nicole (US Female) @ 1.4x"),
+            ("af_nicole", 1.2, "Nicole (US Female) @ 1.2x"),
+            ("af_heart", 1.4, "Heart (US Female) @ 1.4x"),
+            ("af_bella", 1.4, "Bella (US Female) @ 1.4x"),
+            ("af_aoede", 1.4, "Aoede (US Female) @ 1.4x"),
+            ("af_kore", 1.4, "Kore (US Female) @ 1.4x"),
+            ("af_sarah", 1.4, "Sarah (US Female) @ 1.4x"),
+            ("af_alloy", 1.4, "Alloy (US Female) @ 1.4x"),
+            ("af_river", 1.4, "River (US Female) @ 1.4x"),
+            ("am_adam", 1.4, "Adam (US Male) @ 1.4x"),
+            ("am_adam", 1.2, "Adam (US Male) @ 1.2x"),
+            ("am_echo", 1.4, "Echo (US Male) @ 1.4x"),
+            ("am_eric", 1.4, "Eric (US Male) @ 1.4x"),
+            ("am_fenrir", 1.4, "Fenrir (US Male) @ 1.4x"),
+            ("am_liam", 1.4, "Liam (US Male) @ 1.4x"),
+            ("am_michael", 1.4, "Michael (US Male) @ 1.4x"),
+            ("am_onyx", 1.4, "Onyx (US Male) @ 1.4x"),
+            ("am_puck", 1.4, "Puck (US Male) @ 1.4x"),
+            ("am_santa", 1.4, "Santa (US Male) @ 1.4x"),
+            ("bf_emma", 1.4, "Emma (UK Female) @ 1.4x"),
+            ("bf_isabella", 1.4, "Isabella (UK Female) @ 1.4x"),
+            ("bf_alice", 1.4, "Alice (UK Female) @ 1.4x"),
+            ("bf_lily", 1.4, "Lily (UK Female) @ 1.4x"),
+            ("bm_george", 1.4, "George (UK Male) @ 1.4x"),
+            ("bm_fable", 1.4, "Fable (UK Male) @ 1.4x"),
+            ("bm_lewis", 1.4, "Lewis (UK Male) @ 1.4x"),
+            ("bm_daniel", 1.4, "Daniel (UK Male) @ 1.4x"),
         ]
 
         from PySide6.QtWidgets import QComboBox
         self.voice_combo = QComboBox()
-        self.voice_combo.setToolTip("Select Voice & Speed combination")
+        self.voice_combo.setToolTip("Select Kokoro Voice & Speed combination")
         self.voice_combo.setCursor(Qt.PointingHandCursor)
         for _, _, label in self._VOICE_PRESETS:
             self.voice_combo.addItem(label)
@@ -145,7 +166,7 @@ class CompactCoachPanel(CoachTab):
         row1.addWidget(self.voice_combo, stretch=2)
         row1.addWidget(_btn("Mute", "Mute / unmute spoken advice", command="toggle_mute"), stretch=1)
         row1.addWidget(
-            _btn("Debug Report", "Capture logs + game state and file a bug report",
+            _btn("Debug", "File a bug report",
                  on_click=self._submit_debug_report),
             stretch=1,
         )
@@ -154,12 +175,26 @@ class CompactCoachPanel(CoachTab):
         row2 = QHBoxLayout()
         row2.setSpacing(6)
         row2.addWidget(
+            _btn("Win Strategy", "Request immediate spoken win strategy",
+                 on_click=self._ask_win_strategy),
+            stretch=1,
+        )
+        row2.addWidget(
+            _btn("Concede?", "Evaluate whether to concede or play on",
+                 on_click=self._ask_concede_analysis),
+            stretch=1,
+        )
+        root.addLayout(row2)
+
+        row3 = QHBoxLayout()
+        row3.setSpacing(6)
+        row3.addWidget(
             _btn("🧠 Brain Stream", "Open full data inspector, reasoning traces, and concatenated turn history",
                  on_click=self.toggle_brain_stream),
             stretch=3,
         )
-        row2.addWidget(self._build_overflow_button(), stretch=1)
-        root.addLayout(row2)
+        row3.addWidget(self._build_overflow_button(), stretch=1)
+        root.addLayout(row3)
 
         chat_row = QHBoxLayout()
         chat_row.setSpacing(6)
@@ -304,6 +339,20 @@ class CompactCoachPanel(CoachTab):
             return
         self.append_log(f"> {text}", role="status")
         self._send_command("chat", text)
+
+    def _ask_win_strategy(self) -> None:
+        """Trigger immediate spoken win strategy recommendation."""
+        self.append_log("Evaluating win strategy...", role="status")
+        if hasattr(self, "chat_input"):
+            self.chat_input.setText("/strategy")
+        self.send_chat()
+
+    def _ask_concede_analysis(self) -> None:
+        """Trigger immediate concede analysis."""
+        self.append_log("Evaluating concede analysis...", role="status")
+        if hasattr(self, "chat_input"):
+            self.chat_input.setText("/concede")
+        self.send_chat()
 
     def attach_process(self, process: Any) -> None:
         """Attach process to receive IPC signals and send commands."""

@@ -595,7 +595,18 @@ class PipeAdapter:
             })
 
     def _handle_chat(self, text: str) -> None:
-        """Process a chat message from the GUI."""
+        """Process a chat message or slash command from the GUI."""
+        cmd_text = (text or "").strip().lower()
+        if cmd_text in ("/strategy", "/win", "win strategy", "what's the win strategy", "what is the win strategy"):
+            self._handle_deck_strategy()
+            return
+        if cmd_text in ("/concede", "concede", "concede?", "should i concede"):
+            self._handle_concede_analysis()
+            return
+        if cmd_text == "/deck":
+            self._handle_deck_strategy()
+            return
+
         coach = self._coach
         if coach is None or coach._coach is None:
             return
@@ -609,6 +620,24 @@ class PipeAdapter:
                 coach.speak_advice(response)
         except Exception as e:
             self.error(f"Chat failed: {e}")
+
+    def _handle_concede_analysis(self) -> None:
+        """Evaluate current board state, clock, and outs to recommend whether to concede or play on."""
+        coach = self._coach
+        if not coach or not coach._coach:
+            self.log("Coach not available")
+            return
+        self.log("Evaluating concede analysis...")
+        try:
+            game_state = coach._mcp.get_game_state() if coach._mcp else {}
+            coach._inject_library_summary_if_needed(game_state)
+            question = "Evaluate our board position, life totals, outs left, and clock. Should I CONCEDE or PLAY ON? Give a clear 1-2 sentence recommendation with your primary reason."
+            response = coach._coach.get_advice(game_state, question=question)
+            if response:
+                self.advice(response, "CONCEDE ANALYSIS")
+                coach.speak_advice(response, blocking=False)
+        except Exception as e:
+            self.error(f"Concede analysis error: {e}")
 
     def _handle_sync_voice_preferences(self, cmd: dict[str, Any]) -> None:
         coach = self._coach
