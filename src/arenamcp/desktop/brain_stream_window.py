@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QPalette
 from PySide6.QtWidgets import (
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -99,54 +100,87 @@ class BrainStreamWindow(QMainWindow):
         main_splitter = QSplitter(Qt.Horizontal)
         main_splitter.setChildrenCollapsible(False)
 
-        # Left Column: Live Prompt Context (Tabs)
+        # Left Column: Multi-Pane Live Context & Data Dashboard
         context_container = QFrame()
         context_container.setFrameShape(QFrame.StyledPanel)
         context_layout = QVBoxLayout(context_container)
         context_layout.setContentsMargins(6, 6, 6, 6)
 
-        context_hdr = QLabel("LIVE PROMPT CONTEXT")
-        context_hdr.setStyleSheet("font-weight: 700; color: #89b4fa; margin-bottom: 4px;")
-        context_layout.addWidget(context_hdr)
-
         self.context_tabs = QTabWidget()
         
-        # 0. Full Advice History & Stream (Concatenated across turns)
+        # --- TAB 1: Live Game Dashboard (2x2 Multi-Pane Grid) ---
+        dashboard_widget = QWidget()
+        dash_layout = QVBoxLayout(dashboard_widget)
+        dash_layout.setContentsMargins(2, 2, 2, 2)
+
+        dash_splitter_v = QSplitter(Qt.Vertical)
+        dash_splitter_v.setChildrenCollapsible(False)
+
+        top_row = QSplitter(Qt.Horizontal)
+        top_row.setChildrenCollapsible(False)
+
+        # 1. Your Hand Pane
+        hand_box = QGroupBox("🎴 YOUR HAND")
+        hand_lay = QVBoxLayout(hand_box)
+        hand_lay.setContentsMargins(4, 6, 4, 4)
+        self.hand_view = QTextEdit()
+        self.hand_view.setReadOnly(True)
+        self.hand_view.setFont(QFont("Consolas", 10))
+        hand_lay.addWidget(self.hand_view)
+        top_row.addWidget(hand_box)
+
+        # 2. Battlefield State Pane
+        bf_box = QGroupBox("⚔️ BATTLEFIELD STATE")
+        bf_lay = QVBoxLayout(bf_box)
+        bf_lay.setContentsMargins(4, 6, 4, 4)
+        self.battlefield_view = QTextEdit()
+        self.battlefield_view.setReadOnly(True)
+        self.battlefield_view.setFont(QFont("Consolas", 10))
+        bf_lay.addWidget(self.battlefield_view)
+        top_row.addWidget(bf_box)
+
+        bottom_row = QSplitter(Qt.Horizontal)
+        bottom_row.setChildrenCollapsible(False)
+
+        # 3. Draw Odds & Strategy Pane
+        odds_box = QGroupBox("📈 DRAW ODDS & STRATEGY")
+        odds_lay = QVBoxLayout(odds_box)
+        odds_lay.setContentsMargins(4, 6, 4, 4)
+        self.draw_odds_view = QTextEdit()
+        self.draw_odds_view.setReadOnly(True)
+        self.draw_odds_view.setFont(QFont("Consolas", 10))
+        odds_lay.addWidget(self.draw_odds_view)
+        bottom_row.addWidget(odds_box)
+
+        # 4. Match Turn Timeline Pane
+        hist_box = QGroupBox("📜 MATCH TURN TIMELINE")
+        hist_lay = QVBoxLayout(hist_box)
+        hist_lay.setContentsMargins(4, 6, 4, 4)
+        self.turn_history_view = QTextEdit()
+        self.turn_history_view.setReadOnly(True)
+        self.turn_history_view.setFont(QFont("Consolas", 10))
+        hist_lay.addWidget(self.turn_history_view)
+        bottom_row.addWidget(hist_box)
+
+        dash_splitter_v.addWidget(top_row)
+        dash_splitter_v.addWidget(bottom_row)
+        dash_splitter_v.setSizes([350, 350])
+        dash_layout.addWidget(dash_splitter_v)
+
+        self.context_tabs.addTab(dashboard_widget, "📊 Game Dashboard")
+
+        # --- TAB 2: Full Advice Stream (Concatenated across turns) ---
         self.advice_history_view = QTextEdit()
         self.advice_history_view.setReadOnly(True)
         self.advice_history_view.setFont(QFont("Consolas", 10))
         self.advice_history_view.setPlaceholderText("Concatenated advice history across turns will appear here...")
-        self.context_tabs.addTab(self.advice_history_view, "Advice Stream")
+        self.context_tabs.addTab(self.advice_history_view, "💬 Advice Stream")
 
-        # 1. Hand
-        self.hand_view = QTextEdit()
-        self.hand_view.setReadOnly(True)
-        self.hand_view.setFont(QFont("Consolas", 10))
-        self.context_tabs.addTab(self.hand_view, "Hand")
-
-        # 2. Battlefield
-        self.battlefield_view = QTextEdit()
-        self.battlefield_view.setReadOnly(True)
-        self.battlefield_view.setFont(QFont("Consolas", 10))
-        self.context_tabs.addTab(self.battlefield_view, "Battlefield")
-
-        # 3. Draw Odds
-        self.draw_odds_view = QTextEdit()
-        self.draw_odds_view.setReadOnly(True)
-        self.draw_odds_view.setFont(QFont("Consolas", 10))
-        self.context_tabs.addTab(self.draw_odds_view, "Draw Odds")
-
-        # 4. Turn History
-        self.turn_history_view = QTextEdit()
-        self.turn_history_view.setReadOnly(True)
-        self.turn_history_view.setFont(QFont("Consolas", 10))
-        self.context_tabs.addTab(self.turn_history_view, "Turn History")
-
-        # 5. Raw GRE State
+        # --- TAB 3: Raw GRE State ---
         self.raw_gre_view = QTextEdit()
         self.raw_gre_view.setReadOnly(True)
         self.raw_gre_view.setFont(QFont("Consolas", 9))
-        self.context_tabs.addTab(self.raw_gre_view, "Raw GRE State")
+        self.context_tabs.addTab(self.raw_gre_view, "🔍 Raw GRE State")
 
         context_layout.addWidget(self.context_tabs)
         main_splitter.addWidget(context_container)
