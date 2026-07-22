@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 from typing import Any, Optional
@@ -29,10 +30,13 @@ class BrainStreamWindow(QMainWindow):
     Provides a real-time view into the coaching engine's internal workings:
     1. Live Prompt Context: raw GRE state, hand, battlefield, draw odds, turn history.
     2. Live Reasoning Stream: token streaming of LLM reasoning traces.
-    3. Engine Telemetry: latency badge (e.g. "129ms vLLM"), trigger event log, and bridge connection state.
+    3. Engine Telemetry: latency badge (populated only from real telemetry events),
+       trigger event log, and bridge connection state.
     """
 
     window_closed = Signal()
+
+    MAX_LOG_BLOCKS = 2000
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -41,6 +45,12 @@ class BrainStreamWindow(QMainWindow):
         self.setMinimumSize(900, 600)
 
         self._trigger_count = 0
+        self._turn_history_set: set[str] = set()
+        self._last_turn_key: Optional[str] = None
+        self._last_turn_num = 0
+        self._last_match_id: Optional[str] = None
+        self._last_raw_fingerprint: Optional[tuple] = None
+        self._last_state_payload: dict[str, Any] = {}
         self._build_ui()
         self._apply_dark_theme()
 
@@ -68,7 +78,7 @@ class BrainStreamWindow(QMainWindow):
         header_layout.addStretch()
 
         # Telemetry Badges
-        self.latency_badge = QLabel("⚡ 129ms vLLM")
+        self.latency_badge = QLabel("⚡ —")
         self.latency_badge.setStyleSheet(
             "QLabel { background: #313244; color: #a6e3a1; font-weight: 600; font-size: 12px; border-radius: 12px; padding: 4px 10px; border: 1px solid #a6e3a1; }"
         )
@@ -159,6 +169,7 @@ class BrainStreamWindow(QMainWindow):
         self.turn_history_view = QTextEdit()
         self.turn_history_view.setReadOnly(True)
         self.turn_history_view.setFont(QFont("Consolas", 10))
+        self.turn_history_view.document().setMaximumBlockCount(self.MAX_LOG_BLOCKS)
         hist_lay.addWidget(self.turn_history_view)
         bottom_row.addWidget(hist_box)
 
@@ -173,6 +184,7 @@ class BrainStreamWindow(QMainWindow):
         self.advice_history_view = QTextEdit()
         self.advice_history_view.setReadOnly(True)
         self.advice_history_view.setFont(QFont("Consolas", 10))
+        self.advice_history_view.document().setMaximumBlockCount(self.MAX_LOG_BLOCKS)
         self.advice_history_view.setPlaceholderText("Concatenated advice history across turns will appear here...")
         self.context_tabs.addTab(self.advice_history_view, "💬 Advice Stream")
 
@@ -203,6 +215,7 @@ class BrainStreamWindow(QMainWindow):
         self.reasoning_view.setStyleSheet(
             "QTextEdit { background: #11111b; color: #a6e3a1; border: 1px solid #313244; border-radius: 6px; padding: 6px; }"
         )
+        self.reasoning_view.document().setMaximumBlockCount(self.MAX_LOG_BLOCKS)
         self.reasoning_view.setPlaceholderText("Waiting for live reasoning traces from LLM backend...")
         reasoning_layout.addWidget(self.reasoning_view)
 
@@ -220,6 +233,7 @@ class BrainStreamWindow(QMainWindow):
         self.trigger_log_view = QTextEdit()
         self.trigger_log_view.setReadOnly(True)
         self.trigger_log_view.setFont(QFont("Consolas", 9))
+        self.trigger_log_view.document().setMaximumBlockCount(self.MAX_LOG_BLOCKS)
         self.trigger_log_view.setStyleSheet(
             "QTextEdit { background: #11111b; color: #cdd6f4; border: 1px solid #313244; border-radius: 6px; padding: 6px; }"
         )
@@ -247,15 +261,17 @@ class BrainStreamWindow(QMainWindow):
     def update_telemetry(
         self,
         latency: str | float | int = "",
-        backend: str = "vLLM",
+        backend: str = "",
         bridge_connected: bool = False,
     ) -> None:
         """Update telemetry badges for latency, backend model name, and bridge connection."""
-        if latency != "":
+        if latency != "" and latency is not None:
             if isinstance(latency, (int, float)):
-                lat_str = f"⚡ {int(latency)}ms {backend}"
+                lat_str = f"⚡ {int(latency)}ms"
             else:
-                lat_str = f"⚡ {latency} {backend}"
+                lat_str = f"⚡ {latency}"
+            if backend:
+                lat_str += f" {backend}"
             self.latency_badge.setText(lat_str)
 
         if bridge_connected:
@@ -273,7 +289,6 @@ class BrainStreamWindow(QMainWindow):
         """Append a trigger event entry to the telemetry event log."""
         self._trigger_count += 1
         self.trigger_badge.setText(f"🎯 Triggers: {self._trigger_count}")
-        import datetime
         ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
         line = f"[{ts}] {event_name}"
         if details:
@@ -283,16 +298,49 @@ class BrainStreamWindow(QMainWindow):
         sb.setValue(sb.maximum())
 
     def update_game_state(self, state_data: dict[str, Any]) -> None:
-        """Update Live Prompt Context panels with raw GRE state, hand, battlefield, odds, history."""
+        """Update Live Prompt Context panels with raw GRE state, hand, battlefield, odds, history.
+
+        The cheap bookkeeping (last-payload capture, multi-turn history
+        accumulation, dedup state) always runs so the match record keeps
+        growing while the window is hidden; only the heavy panel rendering
+        (raw JSON serialization, hand/battlefield/odds views) is gated on
+        visibility and replayed by showEvent() on reopen.
+        """
         if not isinstance(state_data, dict):
             return
+        self._last_state_payload = state_data
+        self._accumulate_turn_history(state_data)
+        if self.isVisible():
+            self._render_board_panels(state_data)
 
-        # 1. Raw GRE State
-        try:
-            raw_json = json.dumps(state_data, indent=2)
-            self.raw_gre_view.setPlainText(raw_json)
-        except Exception:
-            self.raw_gre_view.setPlainText(str(state_data))
+    def _render_board_panels(self, state_data: dict[str, Any]) -> None:
+        """Render the heavy per-heartbeat panels (raw GRE, hand, battlefield, odds)."""
+        turn = state_data.get("turn") or {}
+        turn_num = turn.get("turn_number") or state_data.get("turn_number", 0)
+        phase = turn.get("phase") or state_data.get("phase", "") or ""
+        local_seat = state_data.get("local_seat_id")
+        match_id = state_data.get("match_id")
+
+        # 1. Raw GRE State — only serialize when the tab is showing and the state changed
+        if self.context_tabs.currentWidget() is self.raw_gre_view:
+            fingerprint = (
+                match_id,
+                state_data.get("raw_gre_event_count"),
+                turn_num,
+                phase,
+                turn.get("priority_player"),
+                state_data.get("_bridge_game_state_id"),
+            )
+            if fingerprint != self._last_raw_fingerprint:
+                self._last_raw_fingerprint = fingerprint
+                try:
+                    raw_json = json.dumps(state_data, indent=2)
+                except Exception:
+                    raw_json = str(state_data)
+                sb = self.raw_gre_view.verticalScrollBar()
+                pos = sb.value()
+                self.raw_gre_view.setPlainText(raw_json)
+                sb.setValue(min(pos, sb.maximum()))
 
         # 2. Hand
         hand = state_data.get("hand") or []
@@ -309,82 +357,114 @@ class BrainStreamWindow(QMainWindow):
         else:
             self.hand_view.setPlainText(str(hand))
 
-        # 3. Battlefield
+        # 3. Battlefield — players is a list of {seat_id, life_total, mana_pool, is_local}
         bf = state_data.get("battlefield") or []
-        players = state_data.get("players") or {}
+        players = state_data.get("players") or []
         bf_lines = []
-        if isinstance(players, dict):
-            me = players.get("hero") or players.get("me") or {}
-            opp = players.get("opponent") or players.get("opp") or {}
+        if isinstance(players, list):
+            me = next(
+                (p for p in players if isinstance(p, dict) and p.get("is_local")),
+                None,
+            )
+            opp = next(
+                (p for p in players if isinstance(p, dict) and not p.get("is_local")),
+                None,
+            )
             if me:
-                bf_lines.append(f"YOU: Life={me.get('life', '?')} Mana={me.get('mana_pool', '{}')}")
+                bf_lines.append(f"YOU: Life={me.get('life_total', '?')} Mana={me.get('mana_pool') or {}}")
             if opp:
-                bf_lines.append(f"OPP: Life={opp.get('life', '?')}")
+                bf_lines.append(f"OPP: Life={opp.get('life_total', '?')}")
             if bf_lines:
                 bf_lines.append("-" * 35)
 
         if isinstance(bf, list):
             for obj in bf:
                 if isinstance(obj, dict):
-                    owner = "You" if obj.get("controller") == 1 or obj.get("is_mine") else "Opp"
-                    name = obj.get("name") or obj.get("card_name") or f"ID {obj.get('id')}"
+                    controller = obj.get("controller_seat_id", obj.get("owner_seat_id"))
+                    owner = "You" if local_seat is not None and controller == local_seat else "Opp"
+                    name = obj.get("name") or obj.get("card_name") or f"ID {obj.get('instance_id')}"
                     pt = ""
                     if obj.get("power") is not None and obj.get("toughness") is not None:
                         pt = f" [{obj.get('power')}/{obj.get('toughness')}]"
-                    tapped = " (Tapped)" if obj.get("tapped") else ""
+                    tapped = " (Tapped)" if obj.get("is_tapped") else ""
                     bf_lines.append(f"• [{owner}] {name}{pt}{tapped}")
                 else:
                     bf_lines.append(f"• {obj}")
         self.battlefield_view.setPlainText("\n".join(bf_lines) if bf_lines else "(Battlefield empty)")
 
-        # 4. Draw Odds
+        # 4. Draw Odds — no producer emits these yet; show a placeholder rather than fake text
         odds = state_data.get("draw_odds") or state_data.get("odds") or {}
         if isinstance(odds, dict) and odds:
             odds_lines = [f"{k}: {v}" for k, v in odds.items()]
             self.draw_odds_view.setPlainText("\n".join(odds_lines))
         else:
-            self.draw_odds_view.setPlainText("Draw Odds: Calculating active deck probabilities...")
+            self.draw_odds_view.setPlainText("—")
 
-        # 5. Turn History (Concatenated & Persisted Across Turns)
-        if not hasattr(self, "_turn_history_set"):
-            self._turn_history_set = set()
-            self._last_turn_key = None
+    def _accumulate_turn_history(self, state_data: dict[str, Any]) -> None:
+        """Accumulate the multi-turn timeline (runs even while hidden).
 
+        Appending to the (possibly hidden) turn_history_view is cheap; the
+        expensive work lives in _render_board_panels.
+        """
         turn = state_data.get("turn") or {}
         turn_num = turn.get("turn_number") or state_data.get("turn_number", 0)
-        phase = turn.get("phase") or state_data.get("phase", "") or "Main"
-        active_p = state_data.get("active_player") or turn.get("active_player") or ""
+        phase = turn.get("phase") or state_data.get("phase", "") or ""
+        active_p = turn.get("active_player") or state_data.get("active_player") or 0
+        local_seat = state_data.get("local_seat_id")
+        match_id = state_data.get("match_id")
 
-        # Reset turn history accumulator when Turn 1 starts in a new match
-        if turn_num == 1 and phase in ("Beginning", "Main 1", "Main") and getattr(self, "_last_turn_num", 0) > 1:
+        # Turn History (Concatenated & Persisted Across Turns)
+        # Reset the accumulator whenever a new match starts (match id change or
+        # the turn counter dropping back down).
+        new_match = False
+        if match_id and match_id != self._last_match_id:
+            new_match = self._last_match_id is not None
+            self._last_match_id = match_id
+        if turn_num and self._last_turn_num and turn_num < self._last_turn_num:
+            new_match = True
+        if new_match:
             self._turn_history_set.clear()
             self.turn_history_view.clear()
+            self._last_turn_key = None
+        if turn_num:
+            self._last_turn_num = turn_num
 
-        self._last_turn_num = turn_num
+        try:
+            active_seat = int(active_p)
+        except (TypeError, ValueError):
+            active_seat = 0
+        try:
+            local_seat_int = int(local_seat) if local_seat is not None else 0
+        except (TypeError, ValueError):
+            local_seat_int = 0
 
         turn_key = f"T{turn_num}_{phase}_{active_p}"
         if turn_num > 0 and turn_key != self._last_turn_key:
             self._last_turn_key = turn_key
-            import datetime
-            ts = datetime.datetime.now().strftime("%H:%M:%S")
-            who = "HERO" if str(active_p) in ("1", "hero", "me") else ("OPPONENT" if active_p else "ACTIVE")
-            entry_line = f"[{ts}] Turn {turn_num} ({phase}) — {who}'s Turn"
-            if entry_line not in self._turn_history_set:
-                self._turn_history_set.add(entry_line)
-                self.turn_history_view.append(entry_line)
+            if active_seat and local_seat_int:
+                who = "HERO" if active_seat == local_seat_int else "OPPONENT"
+            else:
+                who = "ACTIVE"
+            phase_display = str(phase).replace("Phase_", "") or "?"
+            if turn_key not in self._turn_history_set:
+                self._turn_history_set.add(turn_key)
+                ts = datetime.datetime.now().strftime("%H:%M:%S")
+                self.turn_history_view.append(
+                    f"[{ts}] Turn {turn_num} ({phase_display}) — {who}'s Turn"
+                )
 
-        # Append any structural history items passed in payload
+        # Append any structural history items passed in payload (deduped per turn,
+        # so a repeated event on a later turn is not silently dropped forever)
         history = state_data.get("turn_history") or state_data.get("history") or []
         if isinstance(history, list):
             for item in history:
-                item_str = f"  • {item}"
-                if item_str not in self._turn_history_set:
-                    self._turn_history_set.add(item_str)
-                    self.turn_history_view.append(item_str)
+                dedup_key = f"T{turn_num}|{item}"
+                if dedup_key not in self._turn_history_set:
+                    self._turn_history_set.add(dedup_key)
+                    self.turn_history_view.append(f"  • {item}")
 
     def append_advice_history(self, seat_info: str, text: str) -> None:
         """Append an advice entry to the concatenated multi-turn advice stream."""
-        import datetime
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         prefix = f"[{ts}] COACH ({seat_info})" if seat_info else f"[{ts}] COACH"
         entry = f"{prefix}\n{text}\n" + ("-" * 40)
@@ -409,6 +489,16 @@ class BrainStreamWindow(QMainWindow):
         self.reasoning_view.clear()
         self.trigger_log_view.clear()
         self.advice_history_view.clear()
+        self.turn_history_view.clear()
+        self._turn_history_set.clear()
+        self._last_turn_key = None
+
+    def showEvent(self, event) -> None:
+        # Repaint the heavy panels from the last payload received while
+        # hidden so reopening does not wait for the next heartbeat.
+        super().showEvent(event)
+        if self._last_state_payload:
+            self._render_board_panels(self._last_state_payload)
 
     def closeEvent(self, event) -> None:
         self.window_closed.emit()
