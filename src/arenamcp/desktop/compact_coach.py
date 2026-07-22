@@ -216,7 +216,7 @@ class CompactCoachPanel(CoachTab):
         self._apply_activity_expanded(bool(get_settings().get("compact_log_expanded", True)))
 
     def _on_voice_preset_changed(self, index: int) -> None:
-        """Apply combined voice and speed preset."""
+        """Apply combined voice and speed preset and speak audio sample confirmation."""
         if index < 0 or index >= len(self._VOICE_PRESETS):
             return
         voice_id, speed_val, label = self._VOICE_PRESETS[index]
@@ -224,8 +224,11 @@ class CompactCoachPanel(CoachTab):
         settings.set("voice", voice_id)
         settings.set("voice_speed", speed_val)
         if self._process is not None:
-            self._process.send_command(f"set_voice {voice_id}")
-            self._process.send_command(f"set_speed {speed_val}")
+            self._process.send_command("sync_voice_preferences", {
+                "voice": voice_id,
+                "voice_speed": speed_val,
+            })
+            self._send_command("chat", f"Voice set to {label}")
         self.append_log(f"Voice preset: {label}", role="status")
 
     def _build_overflow_button(self) -> QToolButton:
