@@ -102,6 +102,24 @@ class TieredDeckSuggestion:
     is_fully_owned: bool
     fits_inventory: bool
 
+    @property
+    def name(self) -> str:
+        return f"{self.color_pair_name} {self.archetype}" if self.color_pair_name not in self.archetype else self.archetype
+
+    def to_arena_import(self) -> str:
+        """Format as standard MTGA import string (Deck + Sideboard)."""
+        lines = ["Deck"]
+        full_main = dict(self.maindeck)
+        for land, count in self.lands.items():
+            full_main[land] = full_main.get(land, 0) + count
+        for card, count in full_main.items():
+            lines.append(f"{count} {card}")
+        if self.sideboard:
+            lines.append("\nSideboard")
+            for card, count in self.sideboard.items():
+                lines.append(f"{count} {card}")
+        return "\n".join(lines)
+
 
 FORMAT_META_TEMPLATES: dict[str, list[dict[str, Any]]] = {
     "standard": [

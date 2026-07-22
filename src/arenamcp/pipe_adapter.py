@@ -819,11 +819,12 @@ class PipeAdapter:
                     continue
                 lines.append(f"\n#### {tier_name}")
                 for d in deck_list:
-                    lines.append(f"- **{d.name}** ({d.colors}) — *Score: {d.score:.1f}*")
+                    lines.append(f"- **{d.name}** ({d.main_colors}) — *Score: {d.score:.1f}*")
                     if d.craft_cost.total > 0:
                         lines.append(f"  *Craft Cost*: {d.craft_cost}")
                     else:
                         lines.append("  *Status*: 100% Owned (0 Wildcards Needed!)")
+                    lines.append("```mtga\n" + d.to_arena_import() + "\n```")
 
             text = "\n".join(lines) if len(lines) > 1 else f"No format templates found for {fmt}."
             self.advice(text, "DECK SUGGESTIONS")
