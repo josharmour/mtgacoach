@@ -460,6 +460,14 @@ def evaluate_pack(
     # Normalize locked color pair if provided
     locked_pair: Optional[str] = normalize_color_pair(locked_color_pair or "")
 
+    # A mono-color lock applies to every two-color pair containing that color
+    locked_pairs: list[str] = []
+    if locked_pair:
+        if len(locked_pair) == 1:
+            locked_pairs = [p for p in TWO_COLOR_PAIRS if locked_pair in p]
+        else:
+            locked_pairs = [locked_pair]
+
     # Weighted commitment signal per color (stronger than binary on/off)
     commitment = compute_color_commitment(picked_cards, scryfall, draft_stats, set_code)
 
@@ -471,8 +479,8 @@ def evaluate_pack(
     # Affinity per pair based on user commitment + format strength
     pair_affinities = _compute_pair_affinities(commitment, pair_stats)
 
-    if locked_pair:
-        pair_affinities[locked_pair] = pair_affinities.get(locked_pair, 0.0) + 100.0
+    for p in locked_pairs:
+        pair_affinities[p] = pair_affinities.get(p, 0.0) + 100.0
 
     # Color-commitment discipline (fixes #375 — "all colors suggested, never
     # centralizes").
@@ -629,8 +637,13 @@ def evaluate_pack(
             per_pair[pair] = weighted
 
         if locked_pair:
-            best_pair = locked_pair
-            final_score = per_pair.get(locked_pair, base_score)
+            locked_scores = {p: per_pair[p] for p in locked_pairs if p in per_pair}
+            if locked_scores:
+                best_pair = max(locked_scores, key=locked_scores.get)
+                final_score = locked_scores[best_pair]
+            else:
+                best_pair = locked_pair
+                final_score = base_score
         else:
             best_pair = max(per_pair, key=per_pair.get) if per_pair else None
             final_score = per_pair[best_pair] if best_pair and best_pair in per_pair else base_score
@@ -664,12 +677,11 @@ def evaluate_pack(
             best_pair=best_pair,
             alsa=alsa,
             synergy_badge=syn_badge,
-            is_locked=card_is_locked or bool(locked_pair and best_pair == locked_pair),
-            locked_color_pair=locked_pair,
+            is_locked=card_is_locked,
+            locked_color_pair=locked_pair if card_is_locked else None,
         ))
 
     evaluations.sort(key=lambda e: e.score, reverse=True)
-    return evaluations
     return evaluations
 
 

@@ -165,7 +165,7 @@ FORMAT_META_TEMPLATES: dict[str, list[dict[str, Any]]] = {
                 "Get Lost": 3,
                 "Sunfall": 4,
                 "Temporary Lockdown": 3,
-                "Deducate": 4,
+                "Deduce": 4,
                 "Memory Deluge": 3,
                 "The Wandering Emperor": 3,
                 "Plains": 8,
@@ -180,7 +180,7 @@ FORMAT_META_TEMPLATES: dict[str, list[dict[str, Any]]] = {
                 "Get Lost": "rare",
                 "Sunfall": "rare",
                 "Temporary Lockdown": "rare",
-                "Deducate": "common",
+                "Deduce": "common",
                 "Memory Deluge": "rare",
                 "The Wandering Emperor": "mythic",
                 "Meticulous Archive": "rare",
@@ -285,6 +285,7 @@ class DeckBuilderV2:
         """
         self.draft_stats = draft_stats
         self.enrich_fn = enrich_fn
+        self._mtga_db: Any = None
 
     def _get_card_info(self, grp_id: int, set_code: str) -> Optional[CardRating]:
         """Get card rating info from draft stats + enrichment.
@@ -550,7 +551,6 @@ class DeckBuilderV2:
 
         maindeck = best_maindeck
         sideboard = best_sideboard
-        archetype["lands"] = best_lands
         total_cards = sum(maindeck.values())
 
         # Recalculate metrics from optimized deck
@@ -558,7 +558,7 @@ class DeckBuilderV2:
         total_cmc = sum(card_ratings[c].cmc * ct for c, ct in maindeck.items())
 
         # Calculate lands
-        lands = self._suggest_lands(colors, archetype["lands"])
+        lands = self._suggest_lands(colors, best_lands)
 
         # Calculate metrics
         total_gihwr = sum(
@@ -646,6 +646,18 @@ class DeckBuilderV2:
 
         return dict(owned)
 
+    def _get_mtga_db(self):
+        """Lazily open the local MTGA card database for rarity lookups."""
+        if self._mtga_db is None:
+            try:
+                from arenamcp.mtgadb import MTGADatabase
+                self._mtga_db = MTGADatabase()
+            except Exception as e:
+                logger.debug(f"MTGA database unavailable for rarity lookups: {e}")
+                self._mtga_db = False
+        db = self._mtga_db
+        return db if db and db.available else None
+
     def _resolve_card_rarity(
         self, card_name: str, custom_rarities: Optional[dict[str, str]] = None
     ) -> str:
@@ -653,13 +665,14 @@ class DeckBuilderV2:
         if custom_rarities and card_name in custom_rarities:
             return custom_rarities[card_name].lower()
 
-        if self.draft_stats:
-            stats = self.draft_stats.get_draft_rating(card_name, "")
-            if stats and stats.rarity:
-                return stats.rarity.lower()
-
         if card_name in self.BASIC_LANDS:
             return "common"
+
+        db = self._get_mtga_db()
+        if db:
+            rarity = db.get_rarity_by_name(card_name)
+            if rarity:
+                return rarity
 
         return "common"
 

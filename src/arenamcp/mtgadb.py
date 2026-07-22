@@ -148,6 +148,16 @@ class MTGADatabase:
     of all Arena cards.
     """
 
+    # MTGA Cards.Rarity column values -> wildcard rarity names
+    # (1 = basic land, 2 = common, 3 = uncommon, 4 = rare, 5 = mythic)
+    RARITY_NAMES = {
+        1: "common",
+        2: "common",
+        3: "uncommon",
+        4: "rare",
+        5: "mythic",
+    }
+
     def __init__(self, db_path: Optional[Path] = None):
         """Initialize the database reader.
 
@@ -158,6 +168,7 @@ class MTGADatabase:
         self._conn: Optional[sqlite3.Connection] = None
         self._conn_lock = threading.RLock()
         self._card_cache: dict[int, MTGACard] = {}
+        self._rarity_cache: dict[str, Optional[str]] = {}
         self._available = False
         self._error_count = 0  # Track consecutive errors for reconnection
 
@@ -176,6 +187,7 @@ class MTGADatabase:
             self._available = False
             self._error_count = 0
             self._card_cache.clear()
+            self._rarity_cache.clear()
 
             if not self._db_path or not self._db_path.exists():
                 logger.warning("MTGA database not available")
@@ -424,10 +436,61 @@ class MTGADatabase:
         with self._conn_lock:
             return self.get_cards_batch(clean_ids)
 
+    def get_rarity_by_name(self, name: str) -> Optional[str]:
+        """Look up a card's rarity by English name.
+
+        Uses the lowest rarity among non-token printings (the cheapest
+        craftable version, matching Arena wildcard costs). Misses are
+        cached so repeated lookups of unknown names stay free.
+
+        Args:
+            name: English card name.
+
+        Returns:
+            'common', 'uncommon', 'rare', or 'mythic', or None if not found.
+        """
+        key = (name or "").strip().lower()
+        if not key:
+            return None
+
+        with self._conn_lock:
+            if key in self._rarity_cache:
+                return self._rarity_cache[key]
+
+            if not self._available or not self._conn:
+                return None
+
+            try:
+                cursor = self._conn.execute("""
+                    SELECT MIN(c.Rarity) as Rarity
+                    FROM Cards c
+                    JOIN Localizations_enUS l ON c.TitleId = l.LocId AND l.Formatted = 1
+                    WHERE l.Loc = ? COLLATE NOCASE
+                      AND c.IsToken = 0
+                      AND c.Rarity >= 1
+                """, (name.strip(),))
+                row = cursor.fetchone()
+                self._error_count = 0
+                rarity = None
+                if row and row["Rarity"] is not None:
+                    rarity = self.RARITY_NAMES.get(row["Rarity"])
+                self._rarity_cache[key] = rarity
+                return rarity
+            except Exception as e:
+                self._error_count += 1
+                if self._error_count <= 3:
+                    logger.error(f"Rarity lookup error for '{name}': {e}")
+                if self._error_count >= 5:
+                    logger.warning("MTGA database: too many errors, attempting reconnect")
+                    self._connect()
+
+        return None
+
     def clear_cache(self) -> None:
         """Clear internal in-memory card lookup cache."""
         with self._conn_lock:
             self._card_cache.clear()
+            self._rarity_cache.clear()
 
     def get_ability_text(self, ability_id: int) -> Optional[str]:
         """Look up text for an ability ID (e.g. stack object).
