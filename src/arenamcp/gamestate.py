@@ -603,6 +603,13 @@ class GameState:
         # _pre_reset_snapshot directly in a few places.
         self._pre_reset_snapshot: Optional[dict] = None
 
+        # Last-game stash for Bo3 sideboarding: the IntermissionReq handler
+        # calls reset() between games, wiping played_cards/players BEFORE the
+        # sideboard screen. prepare_for_game_end() refreshes this stash right
+        # before that reset; bounded to the last completed game only.
+        self._last_game_played_cards: dict[int, list[int]] = {}
+        self._last_game_opponent_seat: Optional[int] = None
+
         # Published immutable snapshot for lock-safe readers
         self._state_lock = threading.RLock()
         self._published_snapshot: dict[str, Any] = {}
@@ -652,6 +659,15 @@ class GameState:
             }
             # Keep backward-compatible alias for external readers
             self._pre_reset_snapshot = final_snapshot
+
+            # 3b. Stash opponent play history for between-games sideboarding:
+            # the upcoming reset() wipes played_cards and players, and the
+            # sideboard screen only appears after that reset. Overwritten on
+            # every game end so it stays bounded to the last game.
+            self._last_game_played_cards = {
+                seat_id: list(cards) for seat_id, cards in self.played_cards.items()
+            }
+            self._last_game_opponent_seat = self.opponent_seat_id
 
         # 4. Signal the coaching loop (Event.set is thread-safe on its own)
         self.game_ended_event.set()
@@ -1324,6 +1340,25 @@ class GameState:
         if self.opponent_seat_id is None:
             return []
         return self.played_cards.get(self.opponent_seat_id, [])
+
+    def get_last_game_opponent_played_cards(self) -> list[int]:
+        """Get the opponent's revealed cards from the last completed game.
+
+        Captured by ``prepare_for_game_end()`` right before the
+        IntermissionReq reset() wipes ``played_cards``, so Bo3 sideboarding
+        (which happens after that reset) can still see what the opponent
+        played. Bounded to the last game only -- each game end overwrites
+        the stash.
+
+        Returns:
+            List of grp_ids the opponent revealed last game, or [] if no
+            game has ended yet.
+        """
+        with self._state_lock:
+            seat_id = self._last_game_opponent_seat
+            if seat_id is None:
+                return []
+            return list(self._last_game_played_cards.get(seat_id, []))
 
     def get_pending_combat_steps(self) -> list[dict]:
         """Get combat steps that occurred since last check.
@@ -2272,17 +2307,15 @@ class GameState:
 
             unresolved = [g for g in missing_ids if g not in self._card_name_cache]
             if unresolved:
+                # Never do bridge round-trips here: this runs on the parser
+                # thread under _state_lock. Queue the ids for the bridge poll
+                # loop to resolve opportunistically (resolve_pending_dynamic_cards).
                 try:
-                    from arenamcp.gre_bridge import get_bridge
-                    bridge = get_bridge()
-                    if bridge.connected:
-                        names = bridge.resolve_grp_ids(unresolved)
-                        for gid, name in names.items():
-                            if name:
-                                self._card_name_cache[gid] = name
-                                count += 1
+                    from arenamcp import dynamic_cards
+                    for gid in unresolved:
+                        dynamic_cards.note_unresolved(gid)
                 except Exception as e:
-                    logger.debug(f"Bridge resolution during prewarm failed: {e}")
+                    logger.debug(f"Queueing unresolved grp_ids during prewarm failed: {e}")
         except Exception as e:
             logger.warning(f"Error pre-warming card cache in GameState: {e}")
 
@@ -3601,6 +3634,35 @@ def _handle_select_n_req(game_state: GameState, msg: dict) -> bool:
     return False
 
 
+def _build_rules_engine_snapshot(game_state: GameState) -> dict:
+    """Build the minimal snapshot dict shape RulesEngine mana helpers expect."""
+    from arenamcp import server
+
+    battlefield = []
+    for obj in game_state.battlefield:
+        entry = {
+            "owner_seat_id": obj.owner_seat_id,
+            "is_tapped": obj.is_tapped,
+            "turn_entered_battlefield": obj.turn_entered_battlefield,
+            "name": "",
+            "type_line": "",
+            "oracle_text": "",
+        }
+        if obj.grp_id:
+            try:
+                info = server.get_card_info(obj.grp_id)
+                entry["name"] = info.get("name", "") or ""
+                entry["type_line"] = info.get("type_line", "") or ""
+                entry["oracle_text"] = info.get("oracle_text", "") or ""
+            except Exception:
+                pass
+        battlefield.append(entry)
+    return {
+        "battlefield": battlefield,
+        "turn": {"turn_number": game_state.turn_info.turn_number},
+    }
+
+
 def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
     """Handle ActionsAvailableReq messages. Returns True if snapshot_dirty."""
     import time as _time
@@ -3659,6 +3721,7 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
     game_state.legal_actions_raw = enriched_actions
 
     legal_list = []
+    rules_mana_pool = None
     for action in raw_actions:
         atype = action.get("actionType", "")
         if atype == "ActionType_Pass":
@@ -3687,12 +3750,17 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
                 or action.get("manaPaymentOptions") is not None
                 or action.get("manaPaymentOptionsCount", 0) > 0
             )
-            if not castable and info.get("mana_cost") is not None:
+            if not castable and info.get("mana_cost"):
                 try:
                     from arenamcp.rules_engine import RulesEngine
-                    mana_pool = RulesEngine._get_mana_pool(game_state, game_state.local_seat_id)
-                    castable = RulesEngine._can_afford(info.get("mana_cost", ""), mana_pool)
-                except Exception: pass
+                    if rules_mana_pool is None:
+                        rules_mana_pool = RulesEngine._get_mana_pool(
+                            _build_rules_engine_snapshot(game_state),
+                            game_state.local_seat_id,
+                        )
+                    castable = RulesEngine._can_afford(info.get("mana_cost", ""), rules_mana_pool)
+                except Exception:
+                    logger.debug("RulesEngine affordability fallback failed", exc_info=True)
 
             suffix = " [OK]" if castable else ""
             legal_list.append(f"Cast {name}{suffix}")
@@ -3886,7 +3954,10 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
         gre_event = payload.get("greToClientEvent", {})
         if not isinstance(gre_event, dict):
             gre_event = {}
-        messages = _ensure_list(gre_event.get("greToClientMessages", []))
+        messages = _ensure_list(
+            gre_event.get("greToClientMessages")
+            or payload.get("greToClientMessages", [])
+        )
         snapshot_dirty = False
 
         def apply_game_state_update(msg_payload: dict) -> None:

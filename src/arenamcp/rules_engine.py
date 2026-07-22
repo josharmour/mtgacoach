@@ -18,10 +18,17 @@ class RulesEngine:
         return pool["total"]
 
     @staticmethod
-    def _get_mana_pool(game_state: Dict[str, Any], local_seat: int) -> Dict[str, int]:
-        """Get available mana pool with color breakdown from untapped sources."""
+    def _get_mana_pool(game_state: Dict[str, Any], local_seat: int) -> Dict[str, Any]:
+        """Get available mana pool with color breakdown from untapped sources.
+
+        Besides the per-color counts, ``pool["_sources"]`` holds one frozenset
+        of producible colors per source so ``_can_afford`` can match pips to
+        sources exactly — a dual land bumps both its color counts but is still
+        a single source that can only produce one mana.
+        """
         battlefield = game_state.get("battlefield", [])
-        pool = {"W": 0, "U": 0, "B": 0, "R": 0, "G": 0, "C": 0, "Any": 0, "total": 0}
+        pool: Dict[str, Any] = {"W": 0, "U": 0, "B": 0, "R": 0, "G": 0, "C": 0, "Any": 0, "total": 0}
+        sources: List[frozenset] = []
         turn_num = game_state.get("turn", {}).get("turn_number", 0)
         creature_mana_source_count = 0
         your_cards = [c for c in battlefield if c.get("owner_seat_id") == local_seat]
@@ -47,20 +54,29 @@ class RulesEngine:
                 pool["total"] += 1
                 if is_creature and has_mana_ability and not is_sick:
                     creature_mana_source_count += 1
+                colors: set = set()
                 if "Plains" in name or "plains" in type_line or "{W}" in oracle:
                     pool["W"] += 1
+                    colors.add("W")
                 if "Island" in name or "island" in type_line or "{U}" in oracle:
                     pool["U"] += 1
+                    colors.add("U")
                 if "Swamp" in name or "swamp" in type_line or "{B}" in oracle:
                     pool["B"] += 1
+                    colors.add("B")
                 if "Mountain" in name or "mountain" in type_line or "{R}" in oracle:
                     pool["R"] += 1
+                    colors.add("R")
                 if "Forest" in name or "forest" in type_line or "{G}" in oracle:
                     pool["G"] += 1
+                    colors.add("G")
                 if "{C}" in oracle:
                     pool["C"] += 1
+                    colors.add("C")
                 if "any color" in oracle.lower():
                     pool["Any"] += 1
+                    colors = set("WUBRGC")
+                sources.append(frozenset(colors))
 
         # Detect bonus-mana effects: "whenever you tap a creature for mana, add"
         if creature_mana_source_count > 0:
@@ -72,23 +88,121 @@ class RulesEngine:
                     pool["total"] += creature_mana_source_count
                     if bonus_color in pool:
                         pool[bonus_color] += creature_mana_source_count
+                    bonus_set = frozenset({bonus_color}) if bonus_color in "WUBRGC" else frozenset()
+                    sources.extend([bonus_set] * creature_mana_source_count)
+        pool["_sources"] = sources
         return pool
 
     @staticmethod
-    def _can_afford(mana_cost: str, mana_pool: Dict[str, int]) -> bool:
-        """Check if a spell can be cast with the available mana pool (total + colors)."""
+    def _can_afford(mana_cost: str, mana_pool: Dict[str, Any]) -> bool:
+        """Check if a spell can be cast with the available mana pool (total + colors).
+
+        An empty/unknown cost is treated as NOT affordable (a DB gap must not
+        tag a spell castable). Hybrid pips are payable if any half is payable;
+        Phyrexian pips are always payable (life). Every source can pay at most
+        one pip: when the pool carries per-source color sets (``_sources``
+        from ``_get_mana_pool``), pips are matched to sources exactly;
+        otherwise the per-color counts are consumed as commitments so
+        multiple hybrid pips can't reuse one surplus source.
+        """
         if not mana_cost:
-            return True
+            return False
         cmc = RulesEngine._parse_cmc(mana_cost)
         if mana_pool["total"] < cmc:
             return False
-        # Check each color requirement
-        for color in "WUBRGC":
-            count = len(re.findall(rf"\{{{color}\}}", mana_cost))
-            if count > 0:
-                if mana_pool.get(color, 0) + mana_pool.get("Any", 0) < count:
+        pips = {c: 0 for c in "WUBRGC"}
+        hybrid_pips: List[List[str]] = []
+        for symbol in re.findall(r"\{([^}]+)\}", mana_cost):
+            parts = [p.strip().upper() for p in symbol.split("/")]
+            if len(parts) == 1:
+                if parts[0] in pips:
+                    pips[parts[0]] += 1
+                continue
+            if "P" in parts:
+                # Phyrexian: payable with life
+                continue
+            if any(p.isdigit() for p in parts):
+                # {2/W}-style: payable generically, covered by the cmc check
+                continue
+            halves = [p for p in parts if p in "WUBRG"]
+            if halves:
+                hybrid_pips.append(halves)
+
+        # Exact path: per-source color-capability sets from _get_mana_pool.
+        # The cmc-vs-total check above already covers the generic portion
+        # (leftover sources pay it), so only the colored pips need matching.
+        sources = mana_pool.get("_sources")
+        if isinstance(sources, list):
+            return RulesEngine._match_pips_to_sources(pips, hybrid_pips, sources)
+
+        # Legacy path (plain per-color dicts from other callers): the color
+        # counts may double-count multi-color sources, but commitments are
+        # still tracked so one surplus source can't pay two hybrid pips.
+        # True colorless {C} can only be paid by colorless sources
+        if pips["C"] > mana_pool.get("C", 0):
+            return False
+        # Colored pips: direct color first, any-color sources as a shared budget
+        any_budget = mana_pool.get("Any", 0)
+        surplus: Dict[str, int] = {}
+        for color in "WUBRG":
+            short = pips[color] - mana_pool.get(color, 0)
+            if short > 0:
+                any_budget -= short
+                if any_budget < 0:
                     return False
+                surplus[color] = 0
+            else:
+                surplus[color] = -short
+        # Hybrid pips: commit one uncommitted source (or Any budget) per pip
+        for halves in hybrid_pips:
+            best = max(
+                (c for c in halves if surplus.get(c, 0) > 0),
+                key=lambda c: surplus[c],
+                default=None,
+            )
+            if best is not None:
+                surplus[best] -= 1
+                continue
+            any_budget -= 1
+            if any_budget < 0:
+                return False
         return True
+
+    @staticmethod
+    def _match_pips_to_sources(
+        pips: Dict[str, int],
+        hybrid_pips: List[List[str]],
+        sources: List[frozenset],
+    ) -> bool:
+        """Exact bipartite matching between colored pips and mana sources.
+
+        Each pip is a set of acceptable colors (fixed pip = one color, hybrid
+        pip = the union of its halves); each source is the frozenset of colors
+        it can produce. A pip may consume a source iff the sets intersect, and
+        each source pays at most one pip. DFS augmenting paths — trivial at
+        MTGA cost/board scale.
+        """
+        pip_sets: List[frozenset] = []
+        for color, count in pips.items():
+            pip_sets.extend([frozenset({color})] * count)
+        for halves in hybrid_pips:
+            pip_sets.append(frozenset(halves))
+        if not pip_sets:
+            return True
+
+        match_of_source: List[int] = [-1] * len(sources)
+
+        def try_assign(pip_idx: int, visited: set) -> bool:
+            for s_idx, src in enumerate(sources):
+                if s_idx in visited or not (pip_sets[pip_idx] & src):
+                    continue
+                visited.add(s_idx)
+                if match_of_source[s_idx] == -1 or try_assign(match_of_source[s_idx], visited):
+                    match_of_source[s_idx] = pip_idx
+                    return True
+            return False
+
+        return all(try_assign(i, set()) for i in range(len(pip_sets)))
 
     @staticmethod
     def _parse_cmc(mana_cost: str) -> int:

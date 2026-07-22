@@ -578,15 +578,15 @@ class GREBridge:
     def prewarm_grp_ids(self, grp_ids: list[int]) -> dict[int, str]:
         """Pre-warm grp_id -> card name lookups during match loading (`ConnectResp`).
 
-        Pre-warms the SQLite card database cache and resolves any unknown/dynamic
-        grp_ids via the connected client plugin, eliminating card resolution overhead
-        during turn triggers and decision prompts.
+        Pre-warms the SQLite card database cache and queues any unknown/dynamic
+        grp_ids for the poll loop's client resolution, eliminating card resolution
+        overhead during turn triggers and decision prompts.
 
         Args:
             grp_ids: List of GrpIds to pre-warm.
 
         Returns:
-            Dict mapping grp_id to resolved card name.
+            Dict mapping grp_id to resolved card name (SQLite-resolved only).
         """
         if not grp_ids:
             return {}
@@ -606,14 +606,17 @@ class GREBridge:
         except Exception as e:
             logger.debug(f"SQLite card prewarm failed in gre_bridge: {e}")
 
-        # Resolve any remaining GrpIds via running client if connected
+        # Defer remaining GrpIds to the dynamic-card queue: the poll loop
+        # drains it via resolve_pending_dynamic_cards(), keeping the extra
+        # client round-trip off the decision hot path.
         unresolved = [g for g in clean_ids if g not in resolved]
-        if unresolved and self._connected:
+        if unresolved:
             try:
-                client_names = self.resolve_grp_ids(unresolved)
-                resolved.update(client_names)
+                from arenamcp import dynamic_cards
+                for gid in unresolved:
+                    dynamic_cards.note_unresolved(gid)
             except Exception as e:
-                logger.debug(f"Client grp_id resolution failed in gre_bridge: {e}")
+                logger.debug(f"Queueing unresolved grp_ids failed in gre_bridge: {e}")
 
         return resolved
 
