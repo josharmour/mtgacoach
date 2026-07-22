@@ -538,8 +538,8 @@ CRITICAL GAME RULES:
 - Do NOT suggest attacking with [SS] or [LOCKED] creatures. Check the "Declare Attackers:" list for legal attackers.
 - DEFAULT: You can only play ONE LAND per turn unless a card grants additional land drops.
 - Check the LAND DROP status to see if a land can still be played this turn.
-- LAND DROP PRIORITY: If the LAND status shows 'AVAILABLE' and you have lands in hand, ALWAYS suggest playing a land FIRST before any spell. Land drops are free and should not be skipped. Say 'Play [land name]' as your advice when a land drop is available, UNLESS you specifically need to cast a spell first for strategic reasons (e.g., you need to tap specific lands before playing a new one).
-- THEN LINE: If a "THEN:" line appears after Legal, it shows what spells become castable after playing each land. ALWAYS give the full play sequence: "Play [land], then cast [spell]". Choose the land that enables the best follow-up spell.
+- LAND DROP EVALUATION: If a land drop is AVAILABLE and you have lands in hand, consider playing a land to develop your mana. You may play the land first, or hold it/play it post-combat for strategic reasons (e.g., hiding information or holding up mana for interaction).
+- THEN LINE: If a "THEN:" line appears after Legal, it shows what spells become castable after playing each land. You may recommend "Play [land], then cast [spell]", or hold up mana if holding up interaction is strategically superior.
 - Cards marked [INSTANT] or [I] can be cast anytime you have priority
 - Cards marked [SORCERY SPEED] or [S] can ONLY be cast during YOUR Main phase with empty stack
 - During opponent's turn or combat: ONLY suggest instants/flash cards or activated abilities
@@ -580,22 +580,15 @@ STRATEGIC VALUE — BEFORE suggesting any spell, evaluate whether it advances yo
 - Do NOT cast auras, buffs, or combat tricks on opponent's creatures unless it outright kills them. Buffing an opponent's creature just to trigger a "draw a card" effect is a terrible trade.
 - PROTECTIVE / LIFE-PAYMENT ABILITIES: Do NOT pay life (or any resource) to give a creature indestructible, hexproof, protection, or a temporary defensive buff unless there is a CONCRETE threat to that creature RIGHT NOW — it is blocked by something that would kill it, it is the target of removal/burn on the stack, or it must survive incoming combat/damage this step. An unblocked attacker or a creature facing no removal does NOT need protection. Paying 4 life for indestructible "just in case" is pure life loss for zero benefit. "Can activate" does not mean "should activate" — if nothing threatens the creature, PASS instead.
 
-CRITICAL BLOCKING RULES:
-- Creatures tagged [FLYING] can ONLY be blocked by creatures with [FLYING] or [REACH].
-- Do NOT suggest blocking a [FLYING] creature with a ground creature (no [FLYING]/[REACH]).
-- If enemy attackers have [FLYING] and you have no flyers/reach, you CANNOT block them.
-- HOWEVER: A creature WITH [FLYING] CAN block ground creatures! Flying only restricts what blocks THEM, not what they block. A flyer is a valid blocker for any attacker.
-- DEATHTOUCH [DTH]: A creature with deathtouch KILLS any creature that blocks it, regardless of toughness. Do NOT block a deathtouch creature with a valuable creature just to prevent 1-2 damage — you lose the blocker! Only block deathtouch if the blocker is expendable or you MUST block to survive.
-
-CRITICAL STRATEGY RULES:
+STRATEGIC EVALUATION & DECISIONS:
 - LETHAL CHECK: Before anything else, count your total attack power vs opponent life and blockers.
   If you can deal lethal, go aggressive — remove a blocker or just attack. Don't play defensively!
 - ONLY claim "lethal" if the combat summary line shows "Atk: ... vs LETHAL".
 - TRADE CHECK: Read the "If X blocks Y:" lines below the Atk: summary. Lines marked "BAD" mean the attacker dies for free or bounces off. Do NOT attack into a BAD trade unless it enables lethal or a critical strategy. If every possible block is BAD, don't attack with that creature.
 - WORST-CASE BLOCKING: The opponent WILL choose the block that's best for THEM. If ANY "If X blocks Y:" line shows BAD for your attacker, assume the opponent will make that block. Don't suggest attacking because one blocker gives a GOOD trade when another blocker kills your creature — the opponent won't cooperate with your plan.
-- ATTACK DEFAULT: When declaring attackers, attack with ALL eligible creatures (listed after "can attack:" in the Atk: line) unless you have a concrete reason to hold one back (e.g., BAD trade, need it to block a lethal crackback). Do NOT suggest attacking with only one creature when multiple are available without explaining why the others should stay back.
-- MAIN PHASE ACTION DEFAULT: When YOU have priority on YOUR own Main Phase and either an unplayed land is in hand OR any card or activated ability shows [OK]/[CAN CAST], you should almost always recommend taking an action — not "pass priority". Default play sequence: play a land if available, then cast your highest-impact [OK] spell or use your highest-impact [OK] activated ability (e.g. Hei Bai token generation, land abilities). The bar to pass on your own turn with castable plays or active abilities is HIGH. Never pass just because you're unsure — pick the best [OK] play or ability activation.
-- PASS PRIORITY is correct when: (a) it's NOT your turn and you have no instant-speed plays, (b) you have NO [OK] cards or [OK] activated abilities AND no land drop available on your main phase, (c) end-of-turn/upkeep with no triggers or responses to make. Before advising "Pass priority", ALWAYS check all `Activate Ability: ... [OK]` options in the legal actions list.
+- ATTACK EVALUATION: Evaluate attacks dynamically. Attack with profitable attackers, hold back blockers if needed to survive crackback, and attack with your full team when favorable or for lethal.
+- MAIN PHASE EVALUATION: Evaluate whether to advance your board state with [OK] spells/land drops OR to pass priority to hold up mana for instant-speed interaction, activated abilities, or combat tricks on opponent's turn. Choose whichever path gives the higher strategic advantage.
+- PASS PRIORITY is correct when: (a) it's NOT your turn and you have no instant-speed plays, (b) holding up mana/interaction for opponent's turn is strategically superior to tapping out, (c) you have NO [OK] cards or abilities, or (d) end-of-turn/upkeep with no triggers or responses to make.
 - CRACKBACK CHECK: Before attacking, count opponent's total power on board vs YOUR life total.
   If opponent can kill you on their next attack and you need creatures to block, do NOT attack with them.
   Holding back blockers to survive is more important than dealing a few damage.
@@ -652,7 +645,7 @@ STRATEGY:
 - ONLY claim "lethal" if the combat summary line shows "Atk: ... vs LETHAL".
 - TRADE CHECK: Read "If X blocks Y:" lines. "BAD" = attacker dies for free. Don't attack into BAD trades unless it enables lethal.
 - WORST-CASE BLOCKING: The opponent chooses which creature blocks. If ANY blocker gives a BAD result for your attacker, assume that's what happens — don't attack hoping the opponent picks the favorable block.
-- ATTACK DEFAULT: Attack with ALL eligible creatures (listed after "can attack:" in the Atk: line) unless the trade is BAD or you need to hold back a blocker to survive crackback. Never say a creature is your "only" attacker without checking the full list.
+- ATTACK EVALUATION: Evaluate attacks dynamically. Attack with profitable attackers, hold back blockers if needed to survive crackback, and attack with your full team when favorable or for lethal.
 - CRACKBACK CHECK: Before attacking, count opponent's total power vs YOUR life. If they can kill you next turn and you need blockers to survive, do NOT attack with those creatures. The "Crackback:" line already accounts for your blockers — trust its damage-through number.
 - BLOCKING MATH: The "Best blocks → X dmg" line shows MINIMUM damage after optimal blocking. Use this number for survival math, not the "No blocks" total. Do NOT re-derive blocking math yourself.
 - DOUBLE-BLOCK RULE: A non-trample attacker deals its power in damage regardless of how many blockers face it. Double-blocking only makes sense when (a) attacker has trample, (b) you MUST kill this specific attacker and a single blocker can't, or (c) a 2-for-1 trade is explicitly worth it. Otherwise chump-block with ONE creature and save the other — the damage prevented is the same.
@@ -675,8 +668,8 @@ RULES:
 - RESOURCE EFFICIENCY: If a card shows [OK], you already have enough. Don't pay extra life/mana unnecessarily.
 - STRATEGIC VALUE: "Can cast" ≠ "should cast." Hold removal for real threats. Proactive plays that advance your win condition beat reactive plays against weak targets. Consider if the card would be better saved for later.
 - PROTECTIVE ABILITIES: Don't pay life for indestructible/hexproof/protection unless a concrete threat exists NOW (blocked by a killer, removal on the stack, lethal damage incoming). An unblocked attacker needs no protection — paying life "just in case" is wasted life. PASS instead.
-- LAND DROP PRIORITY: If LAND status shows 'AVAILABLE' and you have lands in hand, suggest playing a land FIRST.
-- THEN LINE: If "THEN:" appears after Legal, give the full sequence: "Play [land], then cast [spell]". Pick the land enabling the best follow-up.
+- LAND DROP EVALUATION: If LAND status shows 'AVAILABLE', consider playing a land to develop mana, or hold it if strategic.
+- THEN LINE: If "THEN:" appears, you may recommend "Play [land], then cast [spell]" or hold up interaction.
 - Use exact FULL card names from the game state. Never abbreviate.
 - Only suggest lands shown in HAND. If no land in hand, don't suggest playing one.
 - Say "pass priority" not just "pass" to avoid sounding like a card name.
@@ -4523,10 +4516,6 @@ class CoachEngine:
                 ):
                     # During blocker declaration, avoid replacing with activations.
                     score -= 100
-
-                # Penalize "wait/pass" actions if anything else exists
-                if "wait" in act or "pass priority" in act:
-                    score -= 50
 
                 # During combat, "Pass" (the Next button) is usually correct
                 # when no cast/play/declare actions are available
