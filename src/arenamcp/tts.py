@@ -606,7 +606,12 @@ class VoiceOutput:
         if new_speed <= 0:
             return self._speed
 
+        changed = new_speed != self._speed
         self._speed = new_speed
+
+        # Recreate TTS engine so the new speed takes effect
+        if changed and self._tts_engine is not None:
+            self._tts_engine = None
 
         self._settings.set("voice_speed", self._speed)
         return self._speed
@@ -624,14 +629,24 @@ class VoiceOutput:
         if not voice_id:
             return self._voice
 
-        self._voice = voice_id
+        found = False
         for idx, (vid, _) in enumerate(self.VOICES):
             if vid == voice_id:
                 self._voice_index = idx
+                found = True
                 break
 
-        if self._tts_engine is not None:
+        if not found:
+            logger.warning(f"Voice {voice_id} not found, ignoring.")
+            return self._voice
+
+        changed = voice_id != self._voice
+        self._voice = voice_id
+
+        # Recreate TTS engine with new voice
+        if changed and self._tts_engine is not None:
             self._tts_engine = None
+            self._ensure_tts()
 
         self._settings.set("voice", voice_id)
         return self._voice
@@ -645,11 +660,11 @@ class VoiceOutput:
         if not text or not text.strip():
             return None
 
-        self._ensure_tts()
-
         with self._speak_lock:
+            self._ensure_tts()
+            engine = self._tts_engine
             try:
-                samples, sample_rate = self._tts_engine.synthesize(text)
+                samples, sample_rate = engine.synthesize(text)
             except (ImportError, FileNotFoundError) as e:
                 logger.warning(
                     "Kokoro unavailable while rendering pipe audio (%s); "
@@ -681,32 +696,6 @@ class VoiceOutput:
                 text[:50],
             )
             return path, duration
-
-    def set_voice(self, voice_id: str) -> None:
-        """Set the current voice directly by ID.
-        
-        Args:
-            voice_id: The ID of the voice to set (e.g. 'am_adam', 'af_heart')
-        """
-        # Find index
-        found = False
-        for i, (vid, _) in enumerate(self.VOICES):
-            if vid == voice_id:
-                self._voice_index = i
-                self._voice = voice_id
-                found = True
-                break
-        
-        if not found:
-            logger.warning(f"Voice {voice_id} not found, ignoring.")
-            return
-
-        # Recreate TTS engine
-        if self._tts_engine is not None:
-            self._tts_engine = None
-            self._ensure_tts()
-            
-        self._settings.set("voice", voice_id)
 
     @property
     def is_speaking(self) -> bool:
