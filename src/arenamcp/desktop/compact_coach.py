@@ -335,6 +335,61 @@ class CompactCoachPanel(CoachTab):
         more.setMenu(menu)
         return more
 
+    # -- chat & command handlers ----------------------------------------------
+
+    def _suggest_deck(self) -> None:
+        """Trigger deck suggestions for active format."""
+        self.append_log("Evaluating MTGA inventory & wildcards for deck suggestions...", role="status")
+        if hasattr(self, "chat_input"):
+            self.chat_input.setText("/deck")
+        self.send_chat()
+
+    def send_chat(self) -> None:
+        """Process chat input or command from compact UI."""
+        text = ""
+        if hasattr(self, "chat_input"):
+            text = self.chat_input.text().strip()
+            self.chat_input.clear()
+        if not text:
+            return
+        self.append_log(f"> {text}", role="status")
+        self._send_command("chat", text)
+
+    def attach_process(self, process: Any) -> None:
+        """Attach process to receive IPC signals and send commands."""
+        self._process = process
+        try:
+            process.log_emitted.connect(self._on_ipc_log)
+            process.message_emitted.connect(self._on_ipc_message)
+            process.status_emitted.connect(self._on_ipc_status)
+        except Exception as e:
+            logger.warning("Failed to connect process signals: %s", e)
+
+    def detach_process(self) -> None:
+        """Detach process handlers."""
+        proc = getattr(self, "_process", None)
+        if proc is not None:
+            try:
+                proc.log_emitted.disconnect(self._on_ipc_log)
+                proc.message_emitted.disconnect(self._on_ipc_message)
+                proc.status_emitted.disconnect(self._on_ipc_status)
+            except Exception:
+                pass
+            self._process = None
+
+    def _send_command(self, command: str, text: str = "") -> None:
+        """Send command over IPC pipe to coach process."""
+        proc = getattr(self, "_process", None)
+        if proc is None and hasattr(self, "parent"):
+            parent = self.parent()
+            if hasattr(parent, "_process"):
+                proc = parent._process
+
+        if proc is not None:
+            proc.send_command(command, text)
+        else:
+            logger.warning("Coach process unavailable for command: %s", command)
+
     # -- activity log collapse -------------------------------------------------
 
     def _toggle_activity_log(self) -> None:
