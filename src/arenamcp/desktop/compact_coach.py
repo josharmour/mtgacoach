@@ -357,22 +357,26 @@ class CompactCoachPanel(CoachTab):
 
     def attach_process(self, process: Any) -> None:
         """Attach process to receive IPC signals and send commands."""
+        if self._process is process:
+            return
+        self.detach_process()
         self._process = process
-        try:
-            process.log_emitted.connect(self._on_ipc_log)
-            process.message_emitted.connect(self._on_ipc_message)
-            process.status_emitted.connect(self._on_ipc_status)
-        except Exception as e:
-            logger.warning("Failed to connect process signals: %s", e)
+        if process is not None:
+            try:
+                process.event_received.connect(self._handle_event)
+                process.stderr_line.connect(self._handle_stderr)
+                process.exited.connect(self._handle_process_exit)
+                self.append_log("Coach process started.", role="status")
+            except Exception as e:
+                logger.warning("Failed to connect process signals: %s", e)
 
     def detach_process(self) -> None:
         """Detach process handlers."""
-        proc = getattr(self, "_process", None)
-        if proc is not None:
+        if self._process is not None:
             try:
-                proc.log_emitted.disconnect(self._on_ipc_log)
-                proc.message_emitted.disconnect(self._on_ipc_message)
-                proc.status_emitted.disconnect(self._on_ipc_status)
+                self._process.event_received.disconnect(self._handle_event)
+                self._process.stderr_line.disconnect(self._handle_stderr)
+                self._process.exited.disconnect(self._handle_process_exit)
             except Exception:
                 pass
             self._process = None
