@@ -586,11 +586,33 @@ class VoiceOutput:
 
         self._speed = new_speed
 
+        self._settings.set("voice_speed", self._speed)
+        return self._speed
+
+    def set_voice(self, voice_id: str) -> str:
+        """Set active TTS voice directly by voice ID.
+
+        Args:
+            voice_id: Identifier of the target voice (e.g. 'af_sky', 'am_adam').
+
+        Returns:
+            The applied voice ID.
+        """
+        voice_id = (voice_id or "").strip()
+        if not voice_id:
+            return self._voice
+
+        self._voice = voice_id
+        for idx, (vid, _) in enumerate(self.VOICES):
+            if vid == voice_id:
+                self._voice_index = idx
+                break
+
         if self._tts_engine is not None:
             self._tts_engine = None
 
-        self._settings.set("voice_speed", self._speed)
-        return self._speed
+        self._settings.set("voice", voice_id)
+        return self._voice
 
     def render_to_wav_file(self, text: str) -> tuple[str, float] | None:
         """Render speech to a temp WAV file for parent-process playback."""
