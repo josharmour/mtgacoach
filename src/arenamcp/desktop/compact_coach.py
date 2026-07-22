@@ -83,79 +83,20 @@ class CompactCoachPanel(CoachTab):
         self.status_dots.setAlignment(Qt.AlignCenter)
         root.addWidget(self.status_dots)
 
-        # Hero advice card: the latest coach advice, always visible on top.
-        card = QFrame()
-        card.setObjectName("adviceCard")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(10, 8, 10, 9)
-        card_layout.setSpacing(4)
-        meta_row = QHBoxLayout()
-        meta_row.setContentsMargins(0, 0, 0, 0)
-        title = QLabel("COACH")
-        title.setObjectName("adviceTitle")
-        self._card_title = title
-        self.advice_meta = QLabel("")
-        self.advice_meta.setObjectName("adviceMeta")
-        meta_row.addWidget(title)
-        meta_row.addStretch()
-        meta_row.addWidget(self.advice_meta)
-        card_layout.addLayout(meta_row)
-        self.advice_label = QLabel("Advice will appear here once a match starts.")
-        self.advice_label.setObjectName("adviceText")
-        self.advice_label.setTextFormat(Qt.RichText)
-        self.advice_label.setWordWrap(True)
-        self.advice_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        card_layout.addWidget(self.advice_label)
-        root.addWidget(card)
-        self._advice_card = card
-
-        # Sticky autopilot turn-plan panel (inherited update/style logic).
-        self.turn_plan_label = QLabel()
-        self.turn_plan_label.setObjectName("turnPlanPanel")
-        self.turn_plan_label.setWordWrap(True)
-        self.turn_plan_label.setTextFormat(Qt.PlainText)
-        self.turn_plan_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self._apply_turn_plan_style()
-        self.turn_plan_label.setVisible(False)
-        root.addWidget(self.turn_plan_label)
-
-        # Board view and activity log share a vertical splitter.
-        self.game_state_view = QTextEdit()
-        self.game_state_view.setObjectName("gameStateView")
-        self.game_state_view.setReadOnly(True)
-        self.game_state_view.setAcceptRichText(True)
-        self.game_state_view.setHtml(self._build_waiting_game_state_html())
-
+        # Spoken Advice Activity History (Subtitle Track)
         activity = QWidget()
         activity_layout = QVBoxLayout(activity)
         activity_layout.setContentsMargins(0, 0, 0, 0)
-        activity_layout.setSpacing(2)
-        self._log_toggle_btn = QPushButton()
-        self._log_toggle_btn.setObjectName("activityToggle")
-        self._log_toggle_btn.setFlat(True)
-        self._log_toggle_btn.setCursor(Qt.PointingHandCursor)
-        self._log_toggle_btn.setToolTip(
-            "Show/hide the spoken-advice history.\n"
-            "View → Show Debug Logging adds autopilot/status chatter."
-        )
-        self._log_toggle_btn.clicked.connect(self._toggle_activity_log)
-        activity_layout.addWidget(self._log_toggle_btn)
+        activity_layout.setSpacing(4)
+
         self.log_view = QTextEdit()
         self.log_view.setObjectName("logView")
         self.log_view.setReadOnly(True)
         activity_layout.addWidget(self.log_view)
 
-        splitter = QSplitter(Qt.Vertical)
-        splitter.setChildrenCollapsible(False)
-        splitter.addWidget(self.game_state_view)
-        splitter.addWidget(activity)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        splitter.setSizes([520, 260])
-        root.addWidget(splitter, stretch=1)
-        self._content_splitter = splitter
+        root.addWidget(activity, stretch=1)
 
-        # Controls: two rows of the most-used actions; everything else in ⋯.
+        # Controls: Minimal Audio-Primary Buttons
         def _btn(label, tooltip, *, command=None, on_click=None, object_name=None):
             b = QPushButton(label)
             b.setToolTip(tooltip)
@@ -206,11 +147,6 @@ class CompactCoachPanel(CoachTab):
         row1.addWidget(
             _btn("Debug Report", "Capture logs + game state and file a bug report",
                  on_click=self._submit_debug_report),
-            stretch=1,
-        )
-        row1.addWidget(
-            _btn("Suggest Deck", "Request deck recommendations for active format",
-                 on_click=self._suggest_deck),
             stretch=1,
         )
         root.addLayout(row1)
