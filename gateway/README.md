@@ -3,12 +3,12 @@
 This is the **live LLM gateway** (since 2026-07). All customer traffic goes:
 
 ```
-client (sk- key) → api.mtgacoach.com → Cloudflare tunnel → 10.0.0.10:8444 / plex
+client (sk- key) → api.mtgacoach.com → Cloudflare tunnel → 10.0.0.100:8444 (plex)
                  → LiteLLM (container `litellm`) → vLLM / Ollama backends
 ```
 
 - `config.yaml` — tracked copy of the live config at
-  `/home/joshu/docker-stack/litellm/config.yaml` on `10.0.0.10`. Edit here, then
+  `/home/joshu/docker-stack/litellm/config.yaml` on plex (`10.0.0.100`). Edit here, then
   copy to host and restart (below). No secrets — env refs only.
 - `docker-compose.yml` — tracked copy of the live stack definition at
   `/home/joshu/docker-stack/litellm/docker-compose.yml`
