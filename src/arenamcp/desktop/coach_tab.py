@@ -863,7 +863,9 @@ class CoachTab(QWidget):
                         self._brain_stream_window.log_trigger_event("GAME_STATE", f"Turn {turn_num}")
                 elif event_type == "advice":
                     text = str(payload.get("text", ""))
+                    seat_info = str(payload.get("seat_info", ""))
                     self._brain_stream_window.set_reasoning_text(text)
+                    self._brain_stream_window.append_advice_history(seat_info, text)
                     self._brain_stream_window.log_trigger_event("ADVICE_RECEIVED")
                 elif event_type in ("reasoning", "reasoning_token"):
                     token = str(payload.get("token") or payload.get("text") or "")

@@ -111,6 +111,13 @@ class BrainStreamWindow(QMainWindow):
 
         self.context_tabs = QTabWidget()
         
+        # 0. Full Advice History & Stream (Concatenated across turns)
+        self.advice_history_view = QTextEdit()
+        self.advice_history_view.setReadOnly(True)
+        self.advice_history_view.setFont(QFont("Consolas", 10))
+        self.advice_history_view.setPlaceholderText("Concatenated advice history across turns will appear here...")
+        self.context_tabs.addTab(self.advice_history_view, "Advice Stream")
+
         # 1. Hand
         self.hand_view = QTextEdit()
         self.hand_view.setReadOnly(True)
@@ -314,6 +321,16 @@ class BrainStreamWindow(QMainWindow):
                 hist_lines.append(f"• {entry}")
         self.turn_history_view.setPlainText("\n".join(hist_lines))
 
+    def append_advice_history(self, seat_info: str, text: str) -> None:
+        """Append an advice entry to the concatenated multi-turn advice stream."""
+        import datetime
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        prefix = f"[{ts}] COACH ({seat_info})" if seat_info else f"[{ts}] COACH"
+        entry = f"{prefix}\n{text}\n" + ("-" * 40)
+        self.advice_history_view.append(entry)
+        sb = self.advice_history_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
     def append_reasoning_token(self, token: str) -> None:
         """Stream a single reasoning token or trace chunk from the LLM backend."""
         self.reasoning_view.moveCursor(self.reasoning_view.textCursor().End)
@@ -330,6 +347,7 @@ class BrainStreamWindow(QMainWindow):
     def clear_all(self) -> None:
         self.reasoning_view.clear()
         self.trigger_log_view.clear()
+        self.advice_history_view.clear()
 
     def closeEvent(self, event) -> None:
         self.window_closed.emit()

@@ -97,9 +97,8 @@ class MatchOverlayWindow(QWidget):
         self._suggested_actions: list[dict[str, Any]] = []
         self._actions_expire_at: float = 0.0
         self._card_positions: dict[int, dict[str, Any]] = {}
-        self._screen_w: int = 0
-        self._screen_h: int = 0
-        self._user_enabled = True
+        # Default overlay UI to False on macOS (sys.platform == 'darwin') per user preference
+        self._user_enabled = False if sys.platform == "darwin" else True
         self._match_active = False
         self._calibration_mode = False
         # Affine post-transform applied on top of the auto-derived window

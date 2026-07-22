@@ -171,34 +171,45 @@ class CompactCoachPanel(CoachTab):
                 b.clicked.connect(on_click)
             return b
 
+        # Voice + Speed Preset Options
+        self._VOICE_PRESETS = [
+            ("af_sky", 1.4, "Sky @ 1.4x"),
+            ("af_sky", 1.2, "Sky @ 1.2x"),
+            ("af_nicole", 1.4, "Nicole @ 1.4x"),
+            ("af_nicole", 1.2, "Nicole @ 1.2x"),
+            ("am_adam", 1.4, "Adam @ 1.4x"),
+            ("am_adam", 1.2, "Adam @ 1.2x"),
+            ("af_heart", 1.4, "Heart @ 1.4x"),
+            ("af_bella", 1.4, "Bella @ 1.4x"),
+        ]
+
+        from PySide6.QtWidgets import QComboBox
+        self.voice_combo = QComboBox()
+        self.voice_combo.setToolTip("Select Voice & Speed combination")
+        self.voice_combo.setCursor(Qt.PointingHandCursor)
+        for _, _, label in self._VOICE_PRESETS:
+            self.voice_combo.addItem(label)
+        
+        # Match current settings
+        cur_v = _str_value(get_settings().get("voice", "af_sky"))
+        cur_s = float(get_settings().get("voice_speed", 1.4))
+        for idx, (vid, spd, _) in enumerate(self._VOICE_PRESETS):
+            if vid == cur_v and abs(spd - cur_s) < 0.05:
+                self.voice_combo.setCurrentIndex(idx)
+                break
+        self.voice_combo.currentIndexChanged.connect(self._on_voice_preset_changed)
+
         row1 = QHBoxLayout()
         row1.setSpacing(6)
-        ap_btn = _btn(
-            "AP",
-            "Toggle autopilot — plays the game for you via the GRE bridge",
-            command="toggle_autopilot",
-            object_name="apButton",
-        )
-        ap_btn.setProperty("apOn", "false")
-        row1.addWidget(ap_btn, stretch=2)
-        stop_btn = _btn(
-            "STOP",
-            "Force-stop autopilot: halts it AND clears the in-flight plan/turn "
-            "intent so re-enabling doesn't resume the same loop",
-            command="force_stop",
-            object_name="forceStopButton",
-        )
-        stop_btn.setStyleSheet(
-            "QPushButton#forceStopButton { color: #ff5252; font-weight: bold; }"
-        )
-        row1.addWidget(stop_btn, stretch=1)
+        row1.addWidget(self.voice_combo, stretch=2)
+        row1.addWidget(_btn("Mute", "Mute / unmute spoken advice", command="toggle_mute"), stretch=1)
         row1.addWidget(
-            _btn("Quick", "Cycle the advice style (quick / concise / verbose ...)",
-                 command="toggle_style"),
+            _btn("Debug Report", "Capture logs + game state and file a bug report",
+                 on_click=self._submit_debug_report),
             stretch=1,
         )
         row1.addWidget(
-            _btn("Suggest Deck", "Request deck recommendations for current format",
+            _btn("Suggest Deck", "Request deck recommendations for active format",
                  on_click=self._suggest_deck),
             stretch=1,
         )
@@ -206,22 +217,12 @@ class CompactCoachPanel(CoachTab):
 
         row2 = QHBoxLayout()
         row2.setSpacing(6)
-        row2.addWidget(_btn("Voice", "Cycle the TTS voice", command="cycle_voice"), stretch=1)
-        if self._developer_mode:
-            # Dev machines only: cycle through the online gateway's served
-            # models (same pipe command the classic tab's Model button sends).
-            row2.addWidget(
-                _btn("Model", "Cycle through the online gateway's models",
-                     command="cycle_model"),
-                stretch=1,
-            )
         row2.addWidget(
-            _btn("Debug Report", "Capture logs + game state and file a bug report",
-                 on_click=self._submit_debug_report),
-            stretch=1,
+            _btn("🧠 Brain Stream", "Open full data inspector, reasoning traces, and concatenated turn history",
+                 on_click=self.toggle_brain_stream),
+            stretch=3,
         )
-        row2.addWidget(_btn("Mute", "Mute / unmute spoken advice", command="toggle_mute"), stretch=1)
-        row2.addWidget(self._build_overflow_button())
+        row2.addWidget(self._build_overflow_button(), stretch=1)
         root.addLayout(row2)
 
         chat_row = QHBoxLayout()
@@ -242,6 +243,19 @@ class CompactCoachPanel(CoachTab):
         self._apply_compact_style()
         self._refresh_status_dots()
         self._apply_activity_expanded(bool(get_settings().get("compact_log_expanded", True)))
+
+    def _on_voice_preset_changed(self, index: int) -> None:
+        """Apply combined voice and speed preset."""
+        if index < 0 or index >= len(self._VOICE_PRESETS):
+            return
+        voice_id, speed_val, label = self._VOICE_PRESETS[index]
+        settings = get_settings()
+        settings.set("voice", voice_id)
+        settings.set("voice_speed", speed_val)
+        if self._process is not None:
+            self._process.send_command(f"set_voice {voice_id}")
+            self._process.send_command(f"set_speed {speed_val}")
+        self.append_log(f"Voice preset: {label}", role="status")
 
     def _build_overflow_button(self) -> QToolButton:
         """The ⋯ menu holding secondary/system tools from both classic screens."""
