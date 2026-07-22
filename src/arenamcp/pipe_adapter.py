@@ -774,18 +774,64 @@ class PipeAdapter:
             self.error(f"Win probability error: {e}")
 
     def _handle_deck_strategy(self) -> None:
-        """Generate or recall deck strategy."""
+        """Generate or recall deck strategy in match, or format deck suggestions out of match."""
         coach = self._coach
         if not coach:
             self.log("Coach not available")
             return
-        existing = coach.get_deck_strategy()
-        if existing:
-            self.advice(existing, "DECK STRATEGY")
-            coach.speak_advice(existing, blocking=False)
+
+        game_state = coach._mcp.get_game_state() if coach._mcp else {}
+        is_in_match = bool(game_state and (game_state.get("in_match") or game_state.get("turn_number", 0) > 0))
+
+        if is_in_match:
+            existing = coach.get_deck_strategy()
+            if existing:
+                self.advice(existing, "DECK STRATEGY")
+                coach.speak_advice(existing, blocking=False)
+                return
+            self.log("Generating deck strategy brief...")
+            coach._generate_deck_strategy_brief()
             return
-        self.log("Generating deck strategy...")
-        coach._generate_deck_strategy_brief()
+
+        # Out-of-match or Event view: generate tiered format deck suggestions
+        fmt = game_state.get("active_event_format") or "Standard"
+        self.log(f"Evaluating inventory & wildcards for '{fmt}' deck suggestions...")
+
+        try:
+            from arenamcp.deck_builder import DeckBuilderV2
+            builder = DeckBuilderV2(
+                draft_stats=getattr(coach, "draft_stats", None),
+                enrich_fn=lambda gid: coach._mcp.get_card_info(gid) if coach._mcp else {},
+            )
+            player_cards = game_state.get("player_cards") or {}
+            wildcards = game_state.get("player_wildcards") or {}
+
+            suggestions = builder.suggest_tiered_decks(
+                player_cards=player_cards,
+                wildcards=wildcards,
+                format_name=fmt,
+                top_n_per_tier=2,
+            )
+
+            lines = [f"### 🎴 Deck Suggestions for Format: {fmt.title()}"]
+            for tier_name, deck_list in suggestions.items():
+                if not deck_list:
+                    continue
+                lines.append(f"\n#### {tier_name}")
+                for d in deck_list:
+                    lines.append(f"- **{d.name}** ({d.colors}) — *Score: {d.score:.1f}*")
+                    if d.craft_cost.total > 0:
+                        lines.append(f"  *Craft Cost*: {d.craft_cost}")
+                    else:
+                        lines.append("  *Status*: 100% Owned (0 Wildcards Needed!)")
+
+            text = "\n".join(lines) if len(lines) > 1 else f"No format templates found for {fmt}."
+            self.advice(text, "DECK SUGGESTIONS")
+            if getattr(coach, "_voice_output", None):
+                coach.speak_advice(f"Generated deck suggestions for {fmt}.", blocking=False)
+        except Exception as e:
+            logger.error("Deck suggestions failed: %s", e)
+            self.error(f"Deck suggestions failed: {e}")
 
     def _handle_bugreport(
         self,
