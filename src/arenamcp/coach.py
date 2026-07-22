@@ -4616,8 +4616,20 @@ class CoachEngine:
                 "wait", "no response", "don't respond", "don\u2019t respond",
                 "nothing to do", "pass", "resolve",
             ]
+            # Check if we have playable [OK] spells or land drops on our Main Phase
+            has_ok_actions = any(
+                ("[ok]" in act.lower() or "play land:" in act.lower())
+                and act.lower().startswith(("cast ", "play land:", "activate "))
+                for act in legal_actions
+            )
+            turn = game_state.get("turn", {})
+            phase = str(turn.get("phase", "") or "").lower()
+            is_my_main = "main" in phase and turn.get("active_player") == game_state.get("local_seat_id")
+
             if not matches and any(p in advice_lower for p in PASSTHROUGH_PHRASES):
-                matches = True
+                is_pass_phrase = any(p in advice_lower for p in ["pass priority", "pass", "nothing to do"])
+                if not (is_my_main and has_ok_actions and is_pass_phrase):
+                    matches = True
 
             # Enhanced advice matching for partial card names, generic attacks/blocks, activations
             if not matches:
