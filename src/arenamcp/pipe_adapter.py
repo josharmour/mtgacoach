@@ -600,8 +600,8 @@ class PipeAdapter:
         if cmd_text in ("/assess", "/strategy", "/concede", "/win", "game assessment", "win strategy", "concede", "concede?"):
             self._handle_game_assessment()
             return
-        if cmd_text == "/deck":
-            self._handle_deck_strategy()
+        if cmd_text in ("/deck", "/recommend_deck", "suggest deck"):
+            self._handle_out_of_match_deck_suggestions()
             return
 
         coach = self._coach
@@ -624,9 +624,18 @@ class PipeAdapter:
         if not coach or not coach._coach:
             self.log("Coach not available")
             return
+
+        game_state = coach._mcp.get_game_state() if coach._mcp else {}
+        is_in_match = bool(game_state and (game_state.get("in_match") or game_state.get("turn_number", 0) > 0 or game_state.get("hand") or game_state.get("battlefield")))
+
+        if not is_in_match:
+            msg = "No active match in progress. Enter an MTGA match to get a live game assessment & win plan."
+            self.log(msg)
+            coach.speak_advice(msg, blocking=False)
+            return
+
         self.log("Evaluating game assessment & win plan...")
         try:
-            game_state = coach._mcp.get_game_state() if coach._mcp else {}
             coach._inject_library_summary_if_needed(game_state)
             question = (
                 "Assess our full game position. What is our primary win strategy and path to victory? "
@@ -806,14 +815,14 @@ class PipeAdapter:
             self.error(f"Win probability error: {e}")
 
     def _handle_deck_strategy(self) -> None:
-        """Generate or recall deck strategy in match, or format deck suggestions out of match."""
+        """Generate or recall deck strategy in match."""
         coach = self._coach
         if not coach:
             self.log("Coach not available")
             return
 
         game_state = coach._mcp.get_game_state() if coach._mcp else {}
-        is_in_match = bool(game_state and (game_state.get("in_match") or game_state.get("turn_number", 0) > 0))
+        is_in_match = bool(game_state and (game_state.get("in_match") or game_state.get("turn_number", 0) > 0 or game_state.get("hand") or game_state.get("battlefield")))
 
         if is_in_match:
             existing = coach.get_deck_strategy()
@@ -821,11 +830,20 @@ class PipeAdapter:
                 self.advice(existing, "DECK STRATEGY")
                 coach.speak_advice(existing, blocking=False)
                 return
-            self.log("Generating deck strategy brief...")
-            coach._generate_deck_strategy_brief()
+            self._handle_game_assessment()
+        else:
+            msg = "No active match in progress. Start an MTGA match to get a live win strategy."
+            self.log(msg)
+            coach.speak_advice(msg, blocking=False)
+
+    def _handle_out_of_match_deck_suggestions(self) -> None:
+        """Generate tiered format deck suggestions for out-of-match or event view."""
+        coach = self._coach
+        if not coach:
+            self.log("Coach not available")
             return
 
-        # Out-of-match or Event view: generate tiered format deck suggestions
+        game_state = coach._mcp.get_game_state() if coach._mcp else {}
         fmt = game_state.get("active_event_format") or "Standard"
         self.log(f"Evaluating inventory & wildcards for '{fmt}' deck suggestions...")
 
