@@ -4615,8 +4615,9 @@ class CoachEngine:
                 "wait", "no response", "don't respond", "don\u2019t respond",
                 "nothing to do", "pass", "resolve",
             ]
-            # Check if LLM based a pass priority on a FALSE "no mana / cannot cast" claim
-            # while castable [OK] spells exist. Strategic passing (holding up mana for instants/counterspells/abilities) is ALWAYS allowed.
+            has_ok_actions = any(
+                "[ok]" in act.lower() for act in legal_actions if not act.lower().startswith("pass")
+            )
             false_no_mana_claim = any(
                 claim in advice_lower for claim in [
                     "lack the mana", "lacks the mana", "don't have the mana", "dont have the mana",
