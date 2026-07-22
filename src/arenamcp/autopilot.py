@@ -2305,8 +2305,10 @@ class AutopilotEngine:
             # --- TYPED-DECISION PATH (fable Phase B) ---
             # Interactive request families flow as structured options:
             # the planner picks option ids, submission is by id, and no
-            # display string is parsed. ActionsAvailable stays on the
-            # legacy strategic path until Phase C migrates it.
+            # display string is parsed. ActionsAvailable migrated here in
+            # Phase E, so priority windows are typed-path-owned too; the
+            # legacy strategic path below only runs when the typed path
+            # declines (returns None: no bridge, no options, dry run).
             typed_handled = self._try_typed_decision_path(game_state, trigger)
             if typed_handled is not None:
                 return typed_handled
@@ -4323,9 +4325,9 @@ class AutopilotEngine:
 
     # --- Action Execution Handlers ---
 
-    # Interactive families served by the typed-decision path. Mulligan is
-    # included; ActionsAvailable intentionally is NOT (legacy strategic
-    # planning is still richer there — Phase C migrates it).
+    # Interactive families served by the typed-decision path, including
+    # Mulligan and — since Phase E — ActionsAvailable (priority windows),
+    # which previously stayed on the legacy strategic path.
     _TYPED_DECISION_FAMILIES = frozenset({"SelectTargets", "SelectN", "Search", "Mulligan", "Group", "ActionsAvailable"})
 
     def _try_typed_decision_path(
