@@ -175,13 +175,8 @@ class CompactCoachPanel(CoachTab):
         row2 = QHBoxLayout()
         row2.setSpacing(6)
         row2.addWidget(
-            _btn("Win Strategy", "Request immediate spoken win strategy",
-                 on_click=self._ask_win_strategy),
-            stretch=1,
-        )
-        row2.addWidget(
-            _btn("Concede?", "Evaluate whether to concede or play on",
-                 on_click=self._ask_concede_analysis),
+            _btn("📊 Game Assessment", "Assess full game state: state win strategy & path to victory, or advise concede if no realistic outs remain",
+                 on_click=self._ask_game_assessment),
             stretch=1,
         )
         root.addLayout(row2)
@@ -343,18 +338,11 @@ class CompactCoachPanel(CoachTab):
         self.append_log(f"> {text}", role="status")
         self._send_command("chat", text)
 
-    def _ask_win_strategy(self) -> None:
-        """Trigger immediate spoken win strategy recommendation."""
-        self.append_log("Evaluating win strategy...", role="status")
+    def _ask_game_assessment(self) -> None:
+        """Trigger comprehensive game assessment (win plan & concede evaluation)."""
+        self.append_log("Evaluating game assessment & win plan...", role="status")
         if hasattr(self, "chat_input"):
-            self.chat_input.setText("/strategy")
-        self.send_chat()
-
-    def _ask_concede_analysis(self) -> None:
-        """Trigger immediate concede analysis."""
-        self.append_log("Evaluating concede analysis...", role="status")
-        if hasattr(self, "chat_input"):
-            self.chat_input.setText("/concede")
+            self.chat_input.setText("/assess")
         self.send_chat()
 
     def attach_process(self, process: Any) -> None:

@@ -597,11 +597,8 @@ class PipeAdapter:
     def _handle_chat(self, text: str) -> None:
         """Process a chat message or slash command from the GUI."""
         cmd_text = (text or "").strip().lower()
-        if cmd_text in ("/strategy", "/win", "win strategy", "what's the win strategy", "what is the win strategy"):
-            self._handle_deck_strategy()
-            return
-        if cmd_text in ("/concede", "concede", "concede?", "should i concede"):
-            self._handle_concede_analysis()
+        if cmd_text in ("/assess", "/strategy", "/concede", "/win", "game assessment", "win strategy", "concede", "concede?"):
+            self._handle_game_assessment()
             return
         if cmd_text == "/deck":
             self._handle_deck_strategy()
@@ -621,23 +618,29 @@ class PipeAdapter:
         except Exception as e:
             self.error(f"Chat failed: {e}")
 
-    def _handle_concede_analysis(self) -> None:
-        """Evaluate current board state, clock, and outs to recommend whether to concede or play on."""
+    def _handle_game_assessment(self) -> None:
+        """Perform a full game state assessment: evaluate win plan, path to victory, and concede decision."""
         coach = self._coach
         if not coach or not coach._coach:
             self.log("Coach not available")
             return
-        self.log("Evaluating concede analysis...")
+        self.log("Evaluating game assessment & win plan...")
         try:
             game_state = coach._mcp.get_game_state() if coach._mcp else {}
             coach._inject_library_summary_if_needed(game_state)
-            question = "Evaluate our board position, life totals, outs left, and clock. Should I CONCEDE or PLAY ON? Give a clear 1-2 sentence recommendation with your primary reason."
+            question = (
+                "Assess our full game position. What is our primary win strategy and path to victory? "
+                "If we have a viable path, outline the key steps. If there is NO realistic path to victory left, "
+                "explicitly advise to CONCEDE and state why. Keep spoken advice to 2 clear sentences."
+            )
             response = coach._coach.get_advice(game_state, question=question)
             if response:
-                self.advice(response, "CONCEDE ANALYSIS")
+                self.advice(response, "GAME ASSESSMENT")
                 coach.speak_advice(response, blocking=False)
+            else:
+                self.log("Game assessment unavailable.")
         except Exception as e:
-            self.error(f"Concede analysis error: {e}")
+            self.error(f"Game assessment error: {e}")
 
     def _handle_sync_voice_preferences(self, cmd: dict[str, Any]) -> None:
         coach = self._coach
