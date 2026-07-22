@@ -332,13 +332,32 @@ class VoiceOutput:
 
     # Available Kokoro voices (name, description)
     VOICES = [
-        ("am_adam", "Adam"),
-        ("am_michael", "Michael"),
-        ("af_heart", "Heart"),
-        ("af_bella", "Bella"),
-        ("af_nicole", "Nicole"),
-        ("af_sarah", "Sarah"),
-        ("af_sky", "Sky"),
+        ("af_sky", "Sky (US Female)"),
+        ("af_nicole", "Nicole (US Female)"),
+        ("af_heart", "Heart (US Female)"),
+        ("af_bella", "Bella (US Female)"),
+        ("af_aoede", "Aoede (US Female)"),
+        ("af_kore", "Kore (US Female)"),
+        ("af_sarah", "Sarah (US Female)"),
+        ("af_alloy", "Alloy (US Female)"),
+        ("af_river", "River (US Female)"),
+        ("am_adam", "Adam (US Male)"),
+        ("am_echo", "Echo (US Male)"),
+        ("am_eric", "Eric (US Male)"),
+        ("am_fenrir", "Fenrir (US Male)"),
+        ("am_liam", "Liam (US Male)"),
+        ("am_michael", "Michael (US Male)"),
+        ("am_onyx", "Onyx (US Male)"),
+        ("am_puck", "Puck (US Male)"),
+        ("am_santa", "Santa (US Male)"),
+        ("bf_emma", "Emma (UK Female)"),
+        ("bf_isabella", "Isabella (UK Female)"),
+        ("bf_alice", "Alice (UK Female)"),
+        ("bf_lily", "Lily (UK Female)"),
+        ("bm_george", "George (UK Male)"),
+        ("bm_fable", "Fable (UK Male)"),
+        ("bm_lewis", "Lewis (UK Male)"),
+        ("bm_daniel", "Daniel (UK Male)"),
     ]
 
     def __init__(
@@ -497,7 +516,10 @@ class VoiceOutput:
     @property
     def current_voice(self) -> tuple[str, str]:
         """Get current voice (id, description)."""
-        return self.VOICES[self._voice_index]
+        for vid, desc in self.VOICES:
+            if vid == self._voice:
+                return (vid, desc)
+        return (self._voice, self._voice)
 
     @property
     def speed(self) -> float:
