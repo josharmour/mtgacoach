@@ -36,8 +36,8 @@ class BrainStreamWindow(QMainWindow):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Brain Stream Inspector — mtgacoach")
-        self.resize(1150, 780)
-        self.setMinimumSize(850, 550)
+        self.resize(1350, 880)
+        self.setMinimumSize(900, 600)
 
         self._trigger_count = 0
         self._build_ui()

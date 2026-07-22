@@ -621,16 +621,16 @@ class MainWindow(QMainWindow):
                 return
 
         if self._ui_mode == UI_MODE_COMPACT:
-            self.setMinimumWidth(380)
+            self.setMinimumWidth(220)
             screen = self.screen() or QGuiApplication.primaryScreen()
             if screen is not None:
                 avail = screen.availableGeometry()
-                width = 440
-                height = max(700, avail.height() - 60)
+                width = 260
+                height = max(600, avail.height() - 60)
                 self.resize(width, height)
                 self.move(avail.right() - width - 16, avail.top() + 24)
             else:
-                self.resize(440, 1000)
+                self.resize(260, 900)
         else:
             self.setMinimumWidth(0)
             self.resize(1400, 980)
