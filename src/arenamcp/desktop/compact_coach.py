@@ -352,21 +352,8 @@ class CompactCoachPanel(CoachTab):
         get_settings().set("compact_log_expanded", expanded)
 
     def _apply_activity_expanded(self, expanded: bool) -> None:
-        # Tracked explicitly — isVisible() is unreliable while the panel
-        # itself is hidden (during startup, or on the Repair page).
         self._activity_expanded = expanded
-        splitter = self._content_splitter
-        if expanded:
-            self.log_view.setVisible(True)
-            sizes = self._saved_split_sizes
-            if sizes and len(sizes) == 2 and min(sizes) > 0:
-                splitter.setSizes(sizes)
-        else:
-            self._saved_split_sizes = splitter.sizes()
-            self.log_view.setVisible(False)
-            header_h = max(24, self._log_toggle_btn.sizeHint().height())
-            total = sum(self._saved_split_sizes) or 800
-            splitter.setSizes([max(1, total - header_h), header_h])
+        self.log_view.setVisible(expanded)
         self._refresh_activity_toggle_text()
 
     def _render_log_line(self, role: str, text: str) -> None:
@@ -428,9 +415,10 @@ class CompactCoachPanel(CoachTab):
         self.log_view.verticalScrollBar().setValue(0)
 
     def _refresh_activity_toggle_text(self) -> None:
-        arrow = "▾" if self._activity_expanded else "▸"
-        label = "ACTIVITY (DEBUG)" if self._show_debug_logging else "SPOKEN ADVICE"
-        self._log_toggle_btn.setText(f"{arrow}  {label}")
+        if hasattr(self, "_log_toggle_btn"):
+            arrow = "▾" if self._activity_expanded else "▸"
+            label = "ACTIVITY (DEBUG)" if self._show_debug_logging else "SPOKEN ADVICE"
+            self._log_toggle_btn.setText(f"{arrow}  {label}")
 
     def set_debug_logging(self, enabled: bool) -> None:
         super().set_debug_logging(enabled)
