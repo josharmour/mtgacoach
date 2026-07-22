@@ -1618,16 +1618,26 @@ class CoachEngine:
         if not hand_lands:
             return lines
 
+        has_spelunking = any(
+            c.get("owner_seat_id") == local_seat and "spelunking" in (c.get("name") or "").lower()
+            for c in bf
+        )
+
         post_land_parts = []
         for land_name, land_card in hand_lands.items():
-            post_mana = cur_mana + 1
             land_oracle = land_card.get("oracle_text", "")
+            oracle_low = land_oracle.lower()
+            enters_tapped = (
+                "enters tapped" in oracle_low or "enters the battlefield tapped" in oracle_low
+            ) and not has_spelunking
+
+            post_mana = cur_mana if enters_tapped else cur_mana + 1
             land_colors: set[str] = set()
             for color, basic in [("W", "Plains"), ("U", "Island"), ("B", "Swamp"),
                                  ("R", "Mountain"), ("G", "Forest")]:
                 if basic in land_name or f"{{{color}}}" in land_oracle:
                     land_colors.add(color)
-            if "any color" in land_oracle.lower():
+            if "any color" in oracle_low:
                 land_colors = {"W", "U", "B", "R", "G"}
 
             # Pre-compute whether we have any creatures for targeting checks
