@@ -5,7 +5,7 @@ import sys
 from typing import Any, Optional
 
 from PySide6.QtCore import QEvent, QProcess, QProcessEnvironment, Qt, QTimer, Signal
-from PySide6.QtGui import QPalette
+from PySide6.QtGui import QAction, QPalette
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -39,16 +39,21 @@ from .match_overlay import MatchOverlayWindow
 
 
 class PTTWaveformWidget(QFrame):
-    clicked = Signal()
+    """Passive voice-activity indicator. Push-to-talk audio capture lives in
+    the coach process (hold F4 while it runs); this widget only mirrors the
+    backend's speech events — it does not start or stop capture itself.
+    """
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setFrameShape(QFrame.StyledPanel)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("Push-To-Talk Audio Indicator — Hold Space or click to speak")
+        self.setToolTip(
+            "Voice activity indicator — lights up while advice is being "
+            "spoken. Push-to-talk capture is handled by the coach process "
+            "(hold F4)."
+        )
         self.setStyleSheet(
             "QFrame { background: rgba(30, 30, 46, 0.9); border: 1px solid rgba(137, 180, 250, 0.4); border-radius: 6px; padding: 4px 10px; }"
-            "QFrame:hover { background: rgba(45, 45, 68, 0.9); border-color: rgba(137, 180, 250, 0.8); }"
         )
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -58,17 +63,13 @@ class PTTWaveformWidget(QFrame):
         self._icon_lbl.setStyleSheet("font-size: 16px;")
         layout.addWidget(self._icon_lbl)
 
-        self._status_lbl = QLabel("PTT: Space (Ready)")
+        self._status_lbl = QLabel("PTT: F4 (Ready)")
         self._status_lbl.setStyleSheet("font-weight: 600; color: #89b4fa; font-size: 12px;")
         layout.addWidget(self._status_lbl)
 
         self._bars_lbl = QLabel(" ▂▃▅▇ ")
         self._bars_lbl.setStyleSheet("color: #a6e3a1; font-weight: bold; font-family: monospace;")
         layout.addWidget(self._bars_lbl)
-
-    def mousePressEvent(self, event) -> None:
-        self.clicked.emit()
-        super().mousePressEvent(event)
 
     def set_status(self, text: str, active: bool = False, speaking: bool = False) -> None:
         if speaking:
@@ -83,7 +84,7 @@ class PTTWaveformWidget(QFrame):
             self._bars_lbl.setText("▇▅▃▅▇")
         else:
             self._icon_lbl.setText("🎙")
-            self._status_lbl.setText(text or "PTT: Space (Ready)")
+            self._status_lbl.setText(text or "PTT: F4 (Ready)")
             self._status_lbl.setStyleSheet("font-weight: 600; color: #89b4fa; font-size: 12px;")
             self._bars_lbl.setText(" ▂▃▅▇ ")
 
@@ -505,9 +506,8 @@ class CoachTab(QWidget):
         button_row = QHBoxLayout()
         button_row.setSpacing(10)
 
-        # 1. PTT Waveform / Status Indicator
+        # 1. PTT Waveform / Status Indicator (passive — mirrors backend speech)
         self.ptt_indicator = PTTWaveformWidget()
-        self.ptt_indicator.clicked.connect(self._on_ptt_clicked)
         button_row.addWidget(self.ptt_indicator)
 
         # 2. Mute Button
@@ -539,27 +539,47 @@ class CoachTab(QWidget):
         button_row.addStretch()
 
         # Secondary Overflow Menu (⋯) for advanced diagnostic & overlay tools
-        self._self_play_btn = _btn(
-            "Self-Play",
-            "Headless bot-vs-bot session",
-            on_click=lambda _checked=False: self._toggle_self_play(),
-        )
-        self._overlay_toggle_btn = QPushButton("Overlay")
-        self._overlay_toggle_btn.setCheckable(True)
-        self._overlay_toggle_btn.setChecked(True)
-        self._overlay_toggle_btn.clicked.connect(
-            lambda checked: self._match_overlay.set_enabled(checked)
-        )
-        self._advice_anchor_btn = _btn(
-            "Reset Advice Panel",
-            "Snap advice panel to default position",
-            on_click=self._reset_advice_panel,
-        )
-
         self._overflow_btn = QToolButton()
         self._overflow_btn.setText("⋯")
         self._overflow_btn.setToolTip("More diagnostic tools & overlay options")
         self._overflow_menu = QMenu(self)
+        self._overflow_menu.setToolTipsVisible(True)
+
+        # QAction supports the same setText/setEnabled calls the self-play
+        # lifecycle and status handlers make against toolbar buttons.
+        self._self_play_btn = QAction("Self-Play", self)
+        self._self_play_btn.setToolTip("Headless bot-vs-bot session")
+        self._self_play_btn.triggered.connect(
+            lambda _checked=False: self._toggle_self_play()
+        )
+        self._overflow_menu.addAction(self._self_play_btn)
+
+        voice_act = QAction("Voice", self)
+        voice_act.setToolTip("Cycle the TTS voice")
+        voice_act.triggered.connect(
+            lambda _checked=False: self._send_command("cycle_voice")
+        )
+        self._overflow_menu.addAction(voice_act)
+        # Registered under its command so status updates retitle it
+        # ("Voice: Sky (US Female)") just like a toolbar button.
+        self._buttons["cycle_voice"] = voice_act
+
+        speed_act = QAction("Speed", self)
+        speed_act.setToolTip("Cycle the speaking speed")
+        speed_act.triggered.connect(
+            lambda _checked=False: self._send_command("cycle_speed")
+        )
+        self._overflow_menu.addAction(speed_act)
+        self._buttons["cycle_speed"] = speed_act
+
+        if sys.platform == "win32":
+            screen_act = self._overflow_menu.addAction("Analyze Screen")
+            screen_act.setToolTip(
+                "Analyze a screenshot of the game with the vision model"
+            )
+            screen_act.triggered.connect(
+                lambda _checked=False: self._send_command("analyze_screen")
+            )
 
         analyze_act = self._overflow_menu.addAction("Analyze Match")
         analyze_act.triggered.connect(lambda: self._send_command("analyze_match"))
@@ -572,6 +592,28 @@ class CoachTab(QWidget):
 
         debug_act = self._overflow_menu.addAction("Debug Report")
         debug_act.triggered.connect(self._submit_debug_report)
+
+        self._overflow_menu.addSeparator()
+
+        calib_act = self._overflow_menu.addAction("Calibrate Cards")
+        calib_act.setCheckable(True)
+        calib_act.setToolTip(
+            "Draw border around MTGA cards reported by bridge plugin to verify alignment"
+        )
+        calib_act.toggled.connect(
+            lambda checked: self._match_overlay.set_calibration(checked)
+        )
+
+        self._overlay_toggle_btn = QAction("In-Game Overlay", self)
+        self._overlay_toggle_btn.setCheckable(True)
+        self._overlay_toggle_btn.setChecked(True)
+        self._overlay_toggle_btn.setToolTip(
+            "Show/hide the in-game overlay (pill + advice panel)"
+        )
+        self._overlay_toggle_btn.toggled.connect(
+            lambda checked: self._match_overlay.set_enabled(checked)
+        )
+        self._overflow_menu.addAction(self._overlay_toggle_btn)
 
         reset_panel_act = self._overflow_menu.addAction("Reset Advice Panel")
         reset_panel_act.triggered.connect(self._reset_advice_panel)
@@ -643,11 +685,6 @@ class CoachTab(QWidget):
         if self._process is not None:
             self._process.send_command("chat", text)
 
-    def _on_ptt_clicked(self) -> None:
-        if hasattr(self, "ptt_indicator"):
-            self.ptt_indicator.set_status("Listening...", active=True)
-            QTimer.singleShot(2500, lambda: self.ptt_indicator.set_status("PTT: Space (Ready)", active=False))
-
     def _suggest_deck(self) -> None:
         self.chat_input.setText("/deck")
         self.send_chat()
@@ -656,14 +693,25 @@ class CoachTab(QWidget):
         if getattr(self, "_brain_stream_window", None) is None:
             from .brain_stream_window import BrainStreamWindow
             self._brain_stream_window = BrainStreamWindow(self)
-            if hasattr(self, "_last_game_state_payload") and self._last_game_state_payload:
-                self._brain_stream_window.update_game_state(self._last_game_state_payload)
+            self._brain_stream_window.window_closed.connect(self._on_brain_stream_closed)
         if self._brain_stream_window.isVisible():
             self._brain_stream_window.hide()
         else:
+            # show() first: the window gates heavy rendering on visibility
+            # and repaints itself from its stored payload in showEvent.
             self._brain_stream_window.show()
+            if self._last_game_state_payload:
+                # Seed a freshly created window with the snapshot that
+                # arrived before it existed (no-op duplicates are deduped).
+                self._brain_stream_window.update_game_state(self._last_game_state_payload)
             self._brain_stream_window.raise_()
             self._brain_stream_window.activateWindow()
+
+    def _on_brain_stream_closed(self) -> None:
+        # X-close only hides the window; the instance (and its accumulated
+        # multi-turn match history) stays alive so toggle_brain_stream can
+        # reopen it with the full record intact.
+        pass
 
     def _send_command(self, command: str) -> None:
         # Restart is handled by the main window (stop + relaunch process).
@@ -852,36 +900,41 @@ class CoachTab(QWidget):
 
         event_type = payload.get("type")
 
-        # Forward live event stream to Brain Stream Inspector if active
-        if getattr(self, "_brain_stream_window", None) is not None:
+        # Passive voice indicator mirrors real backend speech events.
+        if event_type == "speak_request" and hasattr(self, "ptt_indicator"):
+            self.ptt_indicator.set_status("Speaking advice...", speaking=True)
+
+        # Forward live event stream to Brain Stream Inspector whenever it
+        # exists — the window itself gates heavy rendering on visibility, so
+        # a hidden window still accumulates multi-turn history cheaply.
+        brain_stream = getattr(self, "_brain_stream_window", None)
+        if brain_stream is not None:
             try:
                 if event_type == "game_state":
                     data = payload.get("data")
                     if isinstance(data, dict):
-                        self._brain_stream_window.update_game_state(data)
+                        brain_stream.update_game_state(data)
                         turn_num = data.get("turn_number") or (data.get("turn") or {}).get("turn_number", 0)
-                        self._brain_stream_window.log_trigger_event("GAME_STATE", f"Turn {turn_num}")
+                        brain_stream.log_trigger_event("GAME_STATE", f"Turn {turn_num}")
                 elif event_type == "advice":
                     text = str(payload.get("text", ""))
                     seat_info = str(payload.get("seat_info", ""))
-                    self._brain_stream_window.set_reasoning_text(text)
-                    self._brain_stream_window.append_advice_history(seat_info, text)
-                    self._brain_stream_window.log_trigger_event("ADVICE_RECEIVED")
+                    brain_stream.set_reasoning_text(text)
+                    brain_stream.append_advice_history(seat_info, text)
+                    brain_stream.log_trigger_event("ADVICE_RECEIVED")
                 elif event_type in ("reasoning", "reasoning_token"):
                     token = str(payload.get("token") or payload.get("text") or "")
-                    self._brain_stream_window.append_reasoning_token(token)
+                    brain_stream.append_reasoning_token(token)
                 elif event_type == "status":
                     key = str(payload.get("key", ""))
                     val = str(payload.get("value", ""))
                     if key == "BRIDGE":
-                        self._brain_stream_window.update_telemetry(bridge_connected=("CONNECTED" in val.upper()))
-                    self._brain_stream_window.log_trigger_event(f"STATUS_{key}", val)
+                        brain_stream.update_telemetry(bridge_connected=("CONNECTED" in val.upper()))
+                    brain_stream.log_trigger_event(f"STATUS_{key}", val)
                 elif event_type == "telemetry":
                     lat = payload.get("latency_ms") or payload.get("latency", "")
                     backend = str(payload.get("backend", "vLLM"))
-                    self._brain_stream_window.update_telemetry(latency=lat, backend=backend)
-                elif event_type == "speak_request" and hasattr(self, "ptt_indicator"):
-                    self.ptt_indicator.set_status("Speaking advice...", speaking=True)
+                    brain_stream.update_telemetry(latency=lat, backend=backend)
             except Exception:
                 pass
         if event_type == "log":
@@ -1347,7 +1400,9 @@ class CoachTab(QWidget):
             current_index = 0
         else:
             current_index = voices.index(current_voice)
-        next_index = (current_index + 2) % len(voices)
+        # Step by 1 — a stride of 2 over the even-sized catalog kept the
+        # cycle stuck on half the voices.
+        next_index = (current_index + 1) % len(voices)
         settings.set("voice", voices[next_index])
 
     def _persist_speed_cycle(self) -> None:
