@@ -198,8 +198,8 @@ class CompactCoachPanel(CoachTab):
             stretch=1,
         )
         row1.addWidget(
-            _btn("Analyze Match", "Full post-match analysis of the last game",
-                 command="analyze_match"),
+            _btn("Suggest Deck", "Request deck recommendations for current format",
+                 on_click=self._suggest_deck),
             stretch=1,
         )
         root.addLayout(row1)
