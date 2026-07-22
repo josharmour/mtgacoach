@@ -7,6 +7,7 @@ through the same OpenAI-compatible chat completions interface.
 import json
 import logging
 import os
+import re
 import threading
 import time
 from typing import Optional
@@ -53,6 +54,49 @@ def _maybe_capture_prompt(
     except Exception as e:
         # Capture must never break a real coach call.
         logger.debug(f"prompt-capture write failed: {e}")
+
+# Closed think-tag blocks inside reasoning text (DeepSeek/Qwen style).
+_THINK_BLOCK_RE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.IGNORECASE | re.DOTALL)
+
+# Leading phrases that mark deliberation rather than a final answer.
+_COT_MARKERS = (
+    "okay,", "okay ", "ok,", "ok ", "hmm", "wait,", "let me", "let's",
+    "i need to", "i should", "we need", "we should", "the user", "first,",
+    "so the", "thinking about", "looking at",
+)
+
+
+def _salvage_reasoning_answer(reasoning: str) -> str:
+    """Extract a clean final answer from reasoning text, or return "".
+
+    Some OpenAI-compatible servers put the entire response in the reasoning
+    field when the visible content is empty. Speaking raw chain-of-thought
+    to the user is worse than no advice, so this is deliberately
+    conservative: strip closed think-tag blocks (the remainder is the real
+    answer), reject truncated/unclosed thinking, and for tag-free text keep
+    only a trailing paragraph that doesn't read like deliberation. An empty
+    return sends the caller down the existing empty-advice fallback path.
+    """
+    text = (reasoning or "").strip()
+    if not text:
+        return ""
+    stripped = _THINK_BLOCK_RE.sub("", text).strip()
+    if "<think" in stripped.lower():
+        # Unclosed think block — truncated chain-of-thought, no final answer.
+        return ""
+    if stripped and stripped != text:
+        return stripped
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", stripped) if p.strip()]
+    if not paragraphs:
+        return ""
+    candidate = paragraphs[-1]
+    if any(candidate.lower().startswith(m) for m in _COT_MARKERS):
+        return ""
+    if len(paragraphs) == 1 and len(candidate) > 1200:
+        # One giant undifferentiated block reads as chain-of-thought.
+        return ""
+    return candidate
+
 
 # Online mode: hardcoded API endpoint
 ONLINE_BASE_URL = "https://api.mtgacoach.com/v1"
@@ -420,7 +464,19 @@ class ProxyBackend:
             self._note_served_model(served_model)
             content = "".join(chunks)
             if not content and reasoning_chunks:
-                content = "".join(reasoning_chunks)
+                salvaged = _salvage_reasoning_answer("".join(reasoning_chunks))
+                if salvaged:
+                    logger.warning(
+                        f"[PROXY] Empty streamed content — using answer "
+                        f"salvaged from reasoning text ({len(salvaged)} chars)"
+                    )
+                    content = salvaged
+                else:
+                    logger.warning(
+                        "[PROXY] Empty streamed content and reasoning text "
+                        "has no clean final answer — returning empty so the "
+                        "caller's fallback advice takes over"
+                    )
             request_time = (time.perf_counter() - request_start) * 1000
             logger.info(
                 f"[PROXY] API (streamed): {request_time:.0f}ms, "
@@ -456,7 +512,19 @@ class ProxyBackend:
             logger.debug(f"[PROXY] Model reasoning:\n{reasoning}")
 
         if not content and reasoning:
-            content = reasoning
+            salvaged = _salvage_reasoning_answer(reasoning)
+            if salvaged:
+                logger.warning(
+                    f"[PROXY] Empty content — using answer salvaged from "
+                    f"reasoning text ({len(salvaged)} chars)"
+                )
+                content = salvaged
+            else:
+                logger.warning(
+                    "[PROXY] Empty content and reasoning text has no clean "
+                    "final answer — returning empty so the caller's "
+                    "fallback advice takes over"
+                )
 
         served_model = getattr(response, "model", None)
         self._note_served_model(served_model)
