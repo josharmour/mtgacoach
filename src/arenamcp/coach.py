@@ -1661,7 +1661,7 @@ class CoachEngine:
                                 if bsc in bf_name or f"{{{clr}}}" in bf_oracle:
                                     existing_colors.add(clr)
                     available_colors = land_colors | existing_colors
-                    if not colored_pips or colored_pips & available_colors:
+                    if not colored_pips or colored_pips.issubset(available_colors):
                         # Skip spells that need creature targets we don't have
                         c_oracle = (c.get("oracle_text", "") or "").lower()
                         needs_my_creature = (
@@ -4837,6 +4837,29 @@ class CoachEngine:
             advice = re.sub(r"(?i)^Done \(confirm attackers\)$", "Don't attack", advice)
         if str(game_state.get("pending_decision", "") or "").lower() == "declare blockers":
             advice = re.sub(r"(?i)^Done \(confirm blockers\)$", "Don't block", advice)
+
+        # Sequence validator: If advice says "Play [land] then cast [spell]" or "Play [land] and cast [spell]"
+        # but [spell] is illegal and not in post-land THEN options, strip the illegal spell clause.
+        if " then cast " in advice.lower() or " and cast " in advice.lower():
+            match_seq = re.search(r"(?i)^(Play\s+[\w\s'—]+?)(?:\s+(?:then|and)\s+cast\s+([\w\s'—]+))$", advice.strip())
+            if match_seq:
+                land_part = match_seq.group(1).strip()
+                spell_part = match_seq.group(2).strip()
+                spell_short = re.split(r'[,—/]', spell_part)[0].strip().lower()
+                
+                spell_is_legal = any(
+                    spell_short in act.lower() for act in legal_actions if act.lower().startswith("cast ")
+                )
+                then_lines = [l for l in legal_actions if l.startswith("THEN:")]
+                if not then_lines and isinstance(game_state, dict):
+                    prompt_lines = game_state.get("_last_prompt_lines", [])
+                    then_lines = [l for l in prompt_lines if l.startswith("THEN:")]
+
+                spell_in_then = any(spell_short in tl.lower() for tl in then_lines)
+
+                if not spell_is_legal and not spell_in_then:
+                    logger.info(f"Stripped illegal post-land spell '{spell_part}' from advice '{advice}' -> '{land_part}'")
+                    advice = land_part
 
         # 6. Block advice must name the attacker. "Block with Veteran Survivor"
         # is useless with multiple attackers on board (issue #420) — repair it
