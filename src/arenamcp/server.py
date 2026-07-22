@@ -25,6 +25,7 @@ from arenamcp.parser import LogParser
 from arenamcp.scryfall import ScryfallCache
 from arenamcp.draftstats import DraftStatsCache
 from arenamcp.draftstate import DraftState, create_draft_handler, extract_set_code
+from arenamcp import draft_guidance
 from arenamcp.draft_eval import evaluate_pack, format_pick_recommendation
 from arenamcp.sealed_eval import analyze_sealed_pool, format_sealed_recommendation, format_sealed_detailed
 from arenamcp.mtgadb import MTGADatabase
@@ -1794,20 +1795,38 @@ def get_draft_pack() -> dict[str, Any]:
     # Try composite scoring (on-color, synergy, card type + 17lands WR)
     eval_map: dict[str, Any] = {}
     try:
-        _scryfall = _get_scryfall()
-        _mtga = _get_mtgadb()
-        evaluations = evaluate_pack(
-            cards_in_pack=pack_cards,
-            picked_cards=picked_cards,
-            set_code=set_code,
-            scryfall=_scryfall,
-            draft_stats=draft_stats_cache,
-            mtgadb=_mtga,
+        fmt_context = None
+        if set_code:
+            pair_stats = draft_stats_cache.get_color_pair_stats(set_code)
+            fmt_context = draft_guidance.format_context_from_pair_stats(pair_stats)
+        
+        pool_cards_data = []
+        for grp_id in picked_cards:
+            card_info = enrich_with_oracle_text(grp_id)
+            stats = None
+            if set_code and card_info.get("name") and "Unknown" not in card_info["name"]:
+                stats = draft_stats_cache.get_draft_rating(card_info["name"], set_code)
+            pool_cards_data.append(draft_guidance.normalize_card(card_info, stats=stats))
+            
+        pack_cards_data = []
+        for grp_id in pack_cards:
+            card_info = enrich_with_oracle_text(grp_id)
+            stats = None
+            if set_code and card_info.get("name") and "Unknown" not in card_info["name"]:
+                stats = draft_stats_cache.get_draft_rating(card_info["name"], set_code)
+            pack_cards_data.append(draft_guidance.normalize_card(card_info, stats=stats))
+
+        evaluations = draft_guidance.evaluate_pack(
+            pack=pack_cards_data,
+            pool=pool_cards_data,
+            pick_number=pick_number,
+            pack_number=pack_number,
+            fmt=fmt_context
         )
         for ev in evaluations:
             eval_map[ev.grp_id] = ev
     except Exception as e:
-        logger.debug(f"Composite draft eval failed, falling back to GIH WR: {e}")
+        logger.debug(f"Guidance draft eval failed, falling back to GIH WR: {e}")
 
     # Build card list with details and ratings.
     # Track the original MTGA pack order via a pack_index field; the HUD sorts
@@ -1821,13 +1840,13 @@ def get_draft_pack() -> dict[str, Any]:
 
         ev = eval_map.get(grp_id)
         if ev:
-            card_info["gih_wr"] = ev.gih_wr
+            card_info["gih_wr"] = ev.gih_wr_pct / 100.0 if ev.gih_wr_pct else None
             card_info["composite_score"] = ev.score
-            card_info["pick_reason"] = ev.reason
-            card_info["all_reasons"] = ev.all_reasons
+            card_info["pick_reason"] = ev.reasons[0] if ev.reasons else ""
+            card_info["all_reasons"] = ev.reasons
             card_info["tier"] = ev.tier
-            card_info["best_pair"] = ev.best_pair
-            card_info["per_pair_scores"] = ev.per_pair_scores
+            card_info["best_pair"] = ev.lane
+            card_info["wheel_probability"] = ev.wheel_probability
             # Backfill alsa/iwd from 17lands
             if set_code and "Unknown" not in card_info["name"]:
                 stats = draft_stats_cache.get_draft_rating(card_info["name"], set_code)
@@ -1937,6 +1956,66 @@ def evaluate_draft_pack_for_standalone() -> dict[str, Any]:
             for e in evaluations[:5]  # Top 5 for display
         ],
         "picked_count": len(draft_state.picked_cards),
+    }
+
+
+@mcp.tool()
+def get_draft_guidance() -> dict[str, Any]:
+    """Get draft guidance using the pure guidance engine."""
+    if not draft_state.is_active or draft_state.is_sealed:
+        return {"is_active": False}
+    
+    if not draft_state.cards_in_pack:
+        return {"is_active": True, "evaluations": []}
+
+    draft_stats_cache = _get_draft_stats()
+    set_code = draft_state.set_code
+    
+    fmt_context = None
+    if set_code:
+        pair_stats = draft_stats_cache.get_color_pair_stats(set_code)
+        fmt_context = draft_guidance.format_context_from_pair_stats(pair_stats)
+    
+    pool_cards_data = []
+    for grp_id in draft_state.picked_cards:
+        card_info = enrich_with_oracle_text(grp_id)
+        stats = None
+        if set_code and card_info.get("name") and "Unknown" not in card_info["name"]:
+            stats = draft_stats_cache.get_draft_rating(card_info["name"], set_code)
+        pool_cards_data.append(draft_guidance.normalize_card(card_info, stats=stats))
+
+    pack_cards_data = []
+    for grp_id in draft_state.cards_in_pack:
+        card_info = enrich_with_oracle_text(grp_id)
+        stats = None
+        if set_code and card_info.get("name") and "Unknown" not in card_info["name"]:
+            stats = draft_stats_cache.get_draft_rating(card_info["name"], set_code)
+        pack_cards_data.append(draft_guidance.normalize_card(card_info, stats=stats))
+
+    evaluations = draft_guidance.evaluate_pack(
+        pack=pack_cards_data,
+        pool=pool_cards_data,
+        pick_number=draft_state.pick_number,
+        pack_number=draft_state.pack_number,
+        fmt=fmt_context
+    )
+    
+    return {
+        "is_active": True,
+        "pack_number": draft_state.pack_number,
+        "pick_number": draft_state.pick_number,
+        "evaluations": [
+            {
+                "grp_id": e.grp_id,
+                "name": e.name,
+                "score": e.score,
+                "tier": e.tier,
+                "reasons": e.reasons,
+                "lane": e.lane,
+                "wheel_probability": e.wheel_probability,
+            }
+            for e in evaluations
+        ]
     }
 
 

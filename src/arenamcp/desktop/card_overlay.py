@@ -75,10 +75,11 @@ class CardBadge(QLabel):
         self._tier: str = ""
         self._pair: str = ""
 
-    def set_data(self, score: Optional[float], tier: Optional[str], pair: Optional[str]) -> None:
+    def set_data(self, score: Optional[float], tier: Optional[str], pair: Optional[str], reason: Optional[str] = None) -> None:
         self._score = float(score) if score is not None else 0.0
         self._tier = tier or ""
         self._pair = pair or ""
+        self._reason = reason or ""
         self._refresh()
 
     def _refresh(self) -> None:
@@ -86,7 +87,8 @@ class CardBadge(QLabel):
         fg = "black" if self._tier in ("GOLD", "SILVER", "FIRE") else "white"
         score_text = f"{int(round(self._score))}" if self._score else "?"
         pair_text = f"<br><span style='font-size:9px;'>→ {self._pair}</span>" if self._pair else ""
-        self.setText(f"<b>{score_text}</b>{pair_text}")
+        reason_text = f"<br><span style='font-size:9px;'>{self._reason}</span>" if hasattr(self, "_reason") and self._reason else ""
+        self.setText(f"<b>{score_text}</b>{pair_text}{reason_text}")
         self.setStyleSheet(
             f"""
             background: {bg};
@@ -451,10 +453,11 @@ class CardOverlayWindow(QWidget):
                 score=card.get("composite_score"),
                 tier=card.get("tier"),
                 pair=card.get("best_pair"),
+                reason=card.get("pick_reason"),
             )
             # Size the badge relative to cell size
-            bw = max(48, int(cell_w * 0.30))
-            bh = max(28, int(cell_h * 0.14))
+            bw = max(48, int(cell_w * 0.35))
+            bh = max(28, int(cell_h * 0.20))
             # Position: top-left corner of each card cell, inset a little
             badge_x = cx + int(cell_w * 0.05)
             badge_y = cy + int(cell_h * 0.04)

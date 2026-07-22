@@ -494,6 +494,10 @@ namespace MtgaCoachBridge
                     HandleCancelAction(cmd);
                     break;
 
+                case "queue_bot_match":
+                    HandleQueueBotMatch(cmd);
+                    break;
+
                 case "get_game_state":
                     HandleGetGameState(cmd);
                     break;
@@ -3227,6 +3231,44 @@ namespace MtgaCoachBridge
 
         // Phase 2: get_game_state — full game state from MtgGameState
         // -------------------------------------------------------------------
+
+        private void HandleQueueBotMatch(PipeCommand cmd)
+        {
+            try
+            {
+                var home = UnityEngine.Object.FindObjectOfType<HomePageContentController>();
+                if (home == null)
+                {
+                    cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "HomePageContentController not found" });
+                    return;
+                }
+
+                Guid deckId = Guid.Empty;
+                string deckIdStr = cmd.Json.Value<string>("deck_id");
+                if (!string.IsNullOrEmpty(deckIdStr))
+                {
+                    Guid.TryParse(deckIdStr, out deckId);
+                }
+
+                var method = typeof(HomePageContentController).GetMethod(
+                    "JoinMatchMaking",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+
+                if (method != null)
+                {
+                    method.Invoke(home, new object[] { "AIBotMatch", deckId });
+                    cmd.SetResponse(new JObject { ["ok"] = true });
+                }
+                else
+                {
+                    cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "JoinMatchMaking method not found" });
+                }
+            }
+            catch (Exception ex)
+            {
+                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = ex.Message });
+            }
+        }
 
         private void HandleGetGameState(PipeCommand cmd)
         {

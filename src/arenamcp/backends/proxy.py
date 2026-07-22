@@ -148,7 +148,7 @@ class ProxyBackend:
             # routing. Default to the REAL served model name, not the legacy
             # 'nemotron-3-super' alias (which just routes to deepseek-v4-flash
             # and confusingly implies a Nemotron model that isn't there).
-            model=model or "deepseek-v4-flash",
+            model=model or "gemma-4-12b-it",
             base_url=ONLINE_BASE_URL,
             api_key=license_key,
         )
@@ -307,6 +307,7 @@ class ProxyBackend:
                     params["reasoning_effort"] = "medium"
                     params["verbosity"] = "medium"
             else:
+                extra["think"] = False
                 if "claude" in model_lower:
                     extra["thinking"] = {"type": "disabled"}
                 if is_gemini:
@@ -418,12 +419,14 @@ class ProxyBackend:
 
             self._note_served_model(served_model)
             content = "".join(chunks)
+            if not content and reasoning_chunks:
+                content = "".join(reasoning_chunks)
             request_time = (time.perf_counter() - request_start) * 1000
             logger.info(
                 f"[PROXY] API (streamed): {request_time:.0f}ms, "
                 f"model: {self.model}, served: {served_model or '?'}"
             )
-            return content
+            return content or ""
         except Exception as stream_err:
             # Streaming transport quirks fall through to non-streaming, but a
             # real API failure (auth, 5xx, connection) would fail identically
@@ -451,6 +454,10 @@ class ProxyBackend:
             reasoning = message.reasoning
         if reasoning:
             logger.debug(f"[PROXY] Model reasoning:\n{reasoning}")
+
+        if not content and reasoning:
+            content = reasoning
+
         served_model = getattr(response, "model", None)
         self._note_served_model(served_model)
         usage = getattr(response, 'usage', None)
@@ -461,7 +468,7 @@ class ProxyBackend:
             f"[PROXY] API: {request_time:.0f}ms, model: {self.model}, "
             f"served: {served_model or '?'}{tokens_info}"
         )
-        return content
+        return content or ""
 
     # Consecutive image-completion failures before the vision path disables
     # itself. Live 2026-07-06: the gateway model (deepseek-v4-flash) can't

@@ -77,7 +77,7 @@ launcher surface through the installer.
 2. Pull a model:
 ```bash
 ollama pull llama3.2      # Fast, 2GB VRAM
-ollama pull gemma3:12b    # Better quality, 8GB VRAM
+ollama pull gemma4:12b    # Better quality, 8GB VRAM
 ```
 3. In the coach TUI, type: `/local ollama`
 

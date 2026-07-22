@@ -3,15 +3,15 @@
 This is the **live LLM gateway** (since 2026-07). All customer traffic goes:
 
 ```
-client (sk- key) → api.mtgacoach.com → Cloudflare tunnel → NAS 10.0.0.2:8444
+client (sk- key) → api.mtgacoach.com → Cloudflare tunnel → 10.0.0.10:8444 / plex
                  → LiteLLM (container `litellm`) → vLLM / Ollama backends
 ```
 
 - `config.yaml` — tracked copy of the live config at
-  `/volume1/docker/appdata/litellm/config.yaml` on the NAS. Edit here, then
-  copy to the NAS and restart (below). No secrets — env refs only.
+  `/home/joshu/docker-stack/litellm/config.yaml` on `10.0.0.10`. Edit here, then
+  copy to host and restart (below). No secrets — env refs only.
 - `docker-compose.yml` — tracked copy of the live stack definition at
-  `/volume1/docker/appdata/litellm/docker-compose.yml`
+  `/home/joshu/docker-stack/litellm/docker-compose.yml`
   (LiteLLM `main-stable` + Postgres 16 for key storage).
 
 Secrets live in `/volume1/docker/appdata/litellm/.env` on the NAS only:

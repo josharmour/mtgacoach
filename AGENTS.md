@@ -12,7 +12,7 @@ Python package `arenamcp` under `src/arenamcp/`, desktop PySide6 GUI at `src/are
 - **`src/arenamcp/coach.py`** — Coach engine with pluggable LLM backends
 - **`src/arenamcp/standalone.py`** — TUI/"standalone" client (voice + MCP client)
 - **`src/arenamcp/autopilot.py`** — AI autoplay engine
-- **`tests/`** — pytest test suite (58 tests)
+- **`tests/`** — pytest test suite (600+ tests)
 
 ## Developer Commands
 ```bash

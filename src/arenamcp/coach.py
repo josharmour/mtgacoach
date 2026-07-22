@@ -594,8 +594,8 @@ CRITICAL STRATEGY RULES:
 - TRADE CHECK: Read the "If X blocks Y:" lines below the Atk: summary. Lines marked "BAD" mean the attacker dies for free or bounces off. Do NOT attack into a BAD trade unless it enables lethal or a critical strategy. If every possible block is BAD, don't attack with that creature.
 - WORST-CASE BLOCKING: The opponent WILL choose the block that's best for THEM. If ANY "If X blocks Y:" line shows BAD for your attacker, assume the opponent will make that block. Don't suggest attacking because one blocker gives a GOOD trade when another blocker kills your creature — the opponent won't cooperate with your plan.
 - ATTACK DEFAULT: When declaring attackers, attack with ALL eligible creatures (listed after "can attack:" in the Atk: line) unless you have a concrete reason to hold one back (e.g., BAD trade, need it to block a lethal crackback). Do NOT suggest attacking with only one creature when multiple are available without explaining why the others should stay back.
-- MAIN PHASE ACTION DEFAULT: When YOU have priority on YOUR own Main Phase and either an unplayed land is in hand OR any card shows [OK]/[CAN CAST], you should almost always recommend taking an action — not "pass priority". Default play sequence: play a land if available, then cast your highest-impact [OK] spell. The bar to pass on your own turn with castable plays is HIGH. Only pass on your own main phase if you have a specific reason (e.g., holding mana up for a known counter on opponent's turn, holding a combat trick for declare-attackers). Never pass just because you're unsure — pick the best [OK] play.
-- PASS PRIORITY is correct when: (a) it's NOT your turn and you have no instant-speed plays, (b) you have NO [OK] cards AND no land drop available on your main phase, (c) end-of-turn/upkeep with no triggers or responses to make. Otherwise, recommend an action.
+- MAIN PHASE ACTION DEFAULT: When YOU have priority on YOUR own Main Phase and either an unplayed land is in hand OR any card or activated ability shows [OK]/[CAN CAST], you should almost always recommend taking an action — not "pass priority". Default play sequence: play a land if available, then cast your highest-impact [OK] spell or use your highest-impact [OK] activated ability (e.g. Hei Bai token generation, land abilities). The bar to pass on your own turn with castable plays or active abilities is HIGH. Never pass just because you're unsure — pick the best [OK] play or ability activation.
+- PASS PRIORITY is correct when: (a) it's NOT your turn and you have no instant-speed plays, (b) you have NO [OK] cards or [OK] activated abilities AND no land drop available on your main phase, (c) end-of-turn/upkeep with no triggers or responses to make. Before advising "Pass priority", ALWAYS check all `Activate Ability: ... [OK]` options in the legal actions list.
 - CRACKBACK CHECK: Before attacking, count opponent's total power on board vs YOUR life total.
   If opponent can kill you on their next attack and you need creatures to block, do NOT attack with them.
   Holding back blockers to survive is more important than dealing a few damage.
@@ -4451,10 +4451,10 @@ class CoachEngine:
 
             advice_lower = advice.lower()
             legal_lower = [a.lower() for a in legal_actions]
-            # Strip [OK], [NEED:x], etc. markers before matching so
-            # "Cast Destiny Spinner" matches "Cast Destiny Spinner [OK]"
+            # Strip [OK], [NEED:x], [NO TARGETS] etc. markers before matching so
+            # "Cast Northern Air Temple" matches "Cast Northern Air Temple [NEED:B]"
             legal_lower_stripped = [
-                re.sub(r'\s*\[(?:OK|NEED:\d+|NO TARGETS)\]', '', a).strip()
+                re.sub(r'\s*\[[^\]]+\]', '', a).strip()
                 for a in legal_lower
             ]
             matches = (
@@ -4485,7 +4485,7 @@ class CoachEngine:
             if not matches:
                 for act in legal_actions:
                     act_lower = act.lower()
-                    act_clean = re.sub(r'\s*\[(?:OK|NEED:\d+|NO TARGETS)\]', '', act_lower).strip()
+                    act_clean = re.sub(r'\s*\[[^\]]+\]', '', act_lower).strip()
                     
                     # 1. Cast actions (e.g., "cast michelangelo, weirdness to 11")
                     if act_clean.startswith("cast "):
@@ -4657,7 +4657,10 @@ class CoachEngine:
                     else:
                         best = max(_candidates, key=_score_action)
                 else:
-                    best = max(_candidates, key=_score_action)
+                    if legal_pass_action and ("need:" in advice.lower() or "[need:" in advice.lower()):
+                        best = legal_pass_action
+                    else:
+                        best = max(_candidates, key=_score_action)
                 best = _normalize_best_legal_action(best)
                 logger.info(f"Replaced illegal advice with legal action: {best} (original: {advice[:80]})")
                 advice = best

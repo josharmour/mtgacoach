@@ -4,11 +4,11 @@
 
 ## Development
 
-Use the repo-backed launcher described in [DEV.md](/home/joshu/repos/ArenaMCP/DEV.md):
+Use the repo-backed launcher described in [DEV.md](DEV.md):
 
 - Runtime/interpreter: `%LOCALAPPDATA%\mtgacoach\venv`
 - Source of truth: repo `src\`
-- Desktop shortcut target: `pythonw.exe Z:\ArenaMCP\scripts\launch_desktop.py`
+- Desktop shortcut target: `pythonw.exe Z:\mtgacoach\scripts\launch_desktop.py`
 
 This path is for source iteration only.
 
@@ -19,7 +19,7 @@ Customer installs should use the packaged PySide installer, not the repo launche
 Build it on Windows with:
 
 ```powershell
-cd Z:\ArenaMCP\installer
+cd Z:\mtgacoach\installer
 .\build-installer.ps1
 ```
 

@@ -672,6 +672,31 @@ class GREBridge:
             logger.warning(f"GRE bridge pass error: {e}")
             return False
 
+    def queue_bot_match(self, deck_id: Optional[str] = None) -> bool:
+        """Queue for a bot match (AIBotMatch event).
+        
+        Args:
+            deck_id: Optional UUID string of the deck to use.
+                     If omitted, the default deck will be used by the client.
+        
+        Returns:
+            True if the match was queued successfully.
+        """
+        try:
+            req = {"action": "queue_bot_match"}
+            if deck_id:
+                req["deck_id"] = deck_id
+                
+            resp = self._send_safe(req, timeout=10.0)
+            if resp.get("ok"):
+                logger.info("GRE bridge queued bot match successfully")
+                return True
+            logger.warning(f"GRE bridge queue_bot_match failed: {resp.get('error')}")
+            return False
+        except GREBridgeError as e:
+            logger.warning(f"GRE bridge queue_bot_match error: {e}")
+            return False
+
     def return_to_home(self) -> bool:
         """Leave the post-match result screen and return to the Home screen.
 

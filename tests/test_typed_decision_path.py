@@ -135,7 +135,7 @@ def test_typed_path_rejects_hallucinated_ids_then_falls_back(monkeypatch):
     assert bridge.submitted == [("targets", [2])]  # mechanical fallback
 
 
-def test_typed_path_declines_actions_available(monkeypatch):
+def test_typed_path_handles_actions_available(monkeypatch):
     poll = {
         "has_pending": True,
         "request_type": "ActionsAvailable",
@@ -145,9 +145,9 @@ def test_typed_path_declines_actions_available(monkeypatch):
     bridge = _TypedBridge(poll)
     planner = _planner_with('{"option_ids": ["pass"]}')
     eng = _engine(monkeypatch, bridge, planner)
-    # Legacy strategic path keeps ActionsAvailable until Phase C.
-    assert eng._try_typed_decision_path(_state(), "decision_required") is None
-    assert bridge.submitted == []
+    # ActionsAvailable migrated to typed decision path in Phase E.
+    assert eng._try_typed_decision_path(_state(), "decision_required") is True
+    assert bridge.submitted == [("pass",)]
 
 
 def test_typed_path_handles_mulligan(monkeypatch):

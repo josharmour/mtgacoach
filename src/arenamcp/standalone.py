@@ -2652,7 +2652,7 @@ class StandaloneCoach:
                     logger.info("Cleared advice history for new match")
 
                 # Announce seat detection when game starts
-                if not seat_announced and turn_num > 0:
+                if not seat_announced:
                     players = curr_state.get("players", [])
                     for p in players:
                         if p.get("is_local"):
@@ -2665,13 +2665,11 @@ class StandaloneCoach:
                             self._enable_replay_recording()
                             break
 
-                # Deck strategy analysis (once per match, after seat is confirmed)
+                # Deck strategy analysis (once per match, as soon as deck cards are known)
                 if (
                     self._auto_deck_strategy
                     and not self._deck_analyzed
                     and self._coach
-                    and turn_num > 0
-                    and seat_announced
                 ):
                     deck_cards = list(curr_state.get("deck_cards") or [])
 

@@ -39,6 +39,7 @@ from .compact_coach import CompactCoachPanel
 from .repair_tab import RepairTab
 from .runtime import RuntimeState, open_url, read_version
 from .theme import THEME_LABELS, apply_theme, available_themes, load_saved_theme, save_theme
+from .hotkeys import HotkeyManager
 
 logger = logging.getLogger(__name__)
 
@@ -475,6 +476,23 @@ class MainWindow(QMainWindow):
         self._update_ready.connect(self._on_update_ready)
         QTimer.singleShot(2500, self._start_update_check)
 
+        self._hotkeys = HotkeyManager(self)
+        self._hotkeys.register("F3", self._on_f3)
+        self._hotkeys.register("F4", self._on_f4)
+        self._hotkeys.register("F5", self._on_f5)
+
+    def _on_f3(self):
+        if self._process:
+            self._process.send_payload({"cmd": "toggle_frequency"})
+
+    def _on_f4(self):
+        if self._process:
+            self._process.send_payload({"cmd": "replay_advice"})
+
+    def _on_f5(self):
+        if self._process:
+            self._process.send_payload({"cmd": "force_advice"})
+
     def _start_update_check(self) -> None:
         def _work() -> None:
             try:
@@ -753,6 +771,7 @@ class MainWindow(QMainWindow):
             self._process.deleteLater()
             self._process = None
         self.coach_tab.shutdown()
+        self._hotkeys.unregister_all()
         super().closeEvent(event)
 
     def _auto_start(self) -> None:

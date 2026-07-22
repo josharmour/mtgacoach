@@ -2918,6 +2918,9 @@ class GameState:
         if new_turn != prev_turn:
             for player in self.players.values():
                 player.lands_played = 0
+            for obj in self.game_objects.values():
+                obj.is_attacking = False
+                obj.is_blocking = False
 
         turn_changed = new_turn != prev_turn
         new_priority = turn_data.get("priorityPlayer", prev_priority)
@@ -3294,6 +3297,12 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
             # the log states it during DeclareBlockers (issue #420).
             if isinstance(blk, dict):
                 attacker_id_set.update(_ensure_int_list(blk.get("attackerInstanceIds", [])))
+
+        # Clear stale is_attacking on all objects before flagging current attackers
+        for obj in game_state.game_objects.values():
+            if obj.is_attacking and obj.instance_id not in attacker_id_set:
+                obj.is_attacking = False
+
         attacker_names, attacker_ids = [], []
         for atk_id in sorted(attacker_id_set):
             atk_obj = game_state.game_objects.get(atk_id)
@@ -3476,17 +3485,28 @@ def _handle_select_n_req(game_state: GameState, msg: dict) -> bool:
         if prior_prompt:
             decision_text = game_state.decision_context.get("text", "Select Items")
 
-    # Resolve option IDs to card names
+    # Resolve option IDs to card names (handles both game objects and direct grp_ids from library searches)
     option_cards: list[str] = []
     for oid in option_ids[:20]:
+        grp_id = 0
         obj = game_state.game_objects.get(oid)
         if obj and obj.grp_id:
+            grp_id = obj.grp_id
+        else:
+            grp_id = oid
+
+        if grp_id:
             try:
                 from arenamcp import server
-                info = server.get_card_info(obj.grp_id)
-                option_cards.append(info.get("name", f"Card#{obj.grp_id}"))
+                info = server.get_card_info(grp_id)
+                name = info.get("name") if info else None
+                if name and not name.startswith("Card#"):
+                    option_cards.append(name)
+                else:
+                    resolved_name = game_state._resolve_card_name(grp_id)
+                    option_cards.append(resolved_name if resolved_name else f"Card#{grp_id}")
             except Exception:
-                option_cards.append(f"Card#{obj.grp_id}")
+                option_cards.append(f"Card#{grp_id}")
 
     logger.info(f"Captured Decision: {decision_text} ({num_to_select} items, type={selection_type}, options={option_cards or option_ids[:5]})")
     game_state.pending_decision = decision_text

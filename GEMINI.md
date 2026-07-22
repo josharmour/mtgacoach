@@ -36,7 +36,7 @@
 
 ## Release Rules
 
-When revving a release (currently version `2.3.4`):
+When revving a release (currently version `2.7.3`):
 1. Bump version in:
    - `pyproject.toml`
    - `src/arenamcp/__init__.py`

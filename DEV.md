@@ -7,20 +7,20 @@ Use exactly one desktop app during development: the PySide6 app in this repo.
 Run this command on Windows:
 
 ```powershell
-C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe -m pip install -e Z:\ArenaMCP[desktop]
+C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe -m pip install -e Z:\mtgacoach[desktop]
 ```
 
 `pip install -e` is important: the desktop app runs directly from the repo source tree.
 `[desktop]` now includes the PySide app plus Kokoro desktop-worker dependencies.
 
-This repo already contains a Linux `.venv` for WSL work. Do not try to use `Z:\ArenaMCP\.venv` as the Windows launch environment.
+This repo already contains a Linux `.venv` for WSL work. Do not try to use `Z:\mtgacoach\.venv` as the Windows launch environment.
 
 ## Launch
 
 Use exactly one launch target:
 
 ```powershell
-C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\pythonw.exe Z:\ArenaMCP\scripts\launch_desktop.py
+C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\pythonw.exe Z:\mtgacoach\scripts\launch_desktop.py
 ```
 
 Recommended shortcut target:
@@ -29,11 +29,11 @@ Recommended shortcut target:
 
 Recommended shortcut arguments:
 
-- `Z:\ArenaMCP\scripts\launch_desktop.py`
+- `Z:\mtgacoach\scripts\launch_desktop.py`
 
 Recommended shortcut "Start in":
 
-- `Z:\ArenaMCP`
+- `Z:\mtgacoach`
 
 ## What Updates On Next Launch
 
@@ -45,7 +45,7 @@ Recommended shortcut "Start in":
 If you change Python dependencies or entrypoints, rerun:
 
 ```powershell
-C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe -m pip install -e Z:\ArenaMCP[desktop]
+C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe -m pip install -e Z:\mtgacoach[desktop]
 ```
 
 ## Do Not Use During Development
@@ -67,7 +67,7 @@ C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe -m arenamcp.deskt
 Run tests:
 
 ```powershell
-C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe -m pytest Z:\ArenaMCP\tests -q
+C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe -m pytest Z:\mtgacoach\tests -q
 ```
 
 ## Logs

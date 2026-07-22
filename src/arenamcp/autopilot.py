@@ -4326,7 +4326,7 @@ class AutopilotEngine:
     # Interactive families served by the typed-decision path. Mulligan is
     # included; ActionsAvailable intentionally is NOT (legacy strategic
     # planning is still richer there — Phase C migrates it).
-    _TYPED_DECISION_FAMILIES = frozenset({"SelectTargets", "SelectN", "Search", "Mulligan", "Group"})
+    _TYPED_DECISION_FAMILIES = frozenset({"SelectTargets", "SelectN", "Search", "Mulligan", "Group", "ActionsAvailable"})
 
     def _try_typed_decision_path(
         self, game_state: dict[str, Any], trigger: str
