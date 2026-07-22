@@ -3674,14 +3674,26 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
             legal_list.append(f"Play Land: {name}")
         elif atype == "ActionType_Cast":
             name = "Spell"
+            info = {}
             if action.get("grpId"):
                 try:
                     from arenamcp import server
                     info = server.get_card_info(action["grpId"])
                     name = info.get("name", "Spell")
                 except Exception: pass
-            # Include castability from AutoTap
-            castable = action.get("autoTapSolution") is not None
+            # Include castability from AutoTap, manaPaymentOptions, or RulesEngine affordability
+            castable = (
+                action.get("autoTapSolution") is not None
+                or action.get("manaPaymentOptions") is not None
+                or action.get("manaPaymentOptionsCount", 0) > 0
+            )
+            if not castable and info.get("mana_cost") is not None:
+                try:
+                    from arenamcp.rules_engine import RulesEngine
+                    mana_pool = RulesEngine._get_mana_pool(game_state, game_state.local_seat_id)
+                    castable = RulesEngine._can_afford(info.get("mana_cost", ""), mana_pool)
+                except Exception: pass
+
             suffix = " [OK]" if castable else ""
             legal_list.append(f"Cast {name}{suffix}")
         elif atype == "ActionType_Activate":
@@ -3692,12 +3704,11 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
                     info = server.get_card_info(action["grpId"])
                     name = info.get("name", "")
                 except Exception: pass
-            # Same payability signal casts get: an autoTapSolution means
-            # MTGA's mana solver verified the activation cost is payable
-            # right now. Without this tag the LLM recomputes the cost from
-            # the (often zero) floating-mana summary and wrongly passes
-            # (bug_20260610_121152: "cannot activate Sapling Nursery").
-            payable = action.get("autoTapSolution") is not None
+            payable = (
+                action.get("autoTapSolution") is not None
+                or action.get("manaPaymentOptions") is not None
+                or action.get("manaPaymentOptionsCount", 0) > 0
+            )
             suffix = " [OK]" if payable else ""
             if name:
                 legal_list.append(f"Activate Ability: {name}{suffix}")
