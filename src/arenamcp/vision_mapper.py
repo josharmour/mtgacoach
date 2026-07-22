@@ -196,6 +196,33 @@ class LocalVLM:
         self._available: Optional[bool] = None
         self._detected_api: str = "ollama"
 
+    _VLM_NAME_RE = re.compile(
+        r"llava|moondream|bakllava|minicpm-v|vision|qwen[0-9.]*-?vl(?![a-z])",
+        re.IGNORECASE,
+    )
+
+    def _resolve_model_name(self, models: list) -> Optional[str]:
+        """Match self.model against a served model list, tolerating naming
+        variants like 'qwen2.5-vl:3b' vs 'qwen2.5vl:3b'."""
+        prefix = self.model.split(":")[0].split("/")[0]
+        for m in models:
+            if self.model in m or m.startswith(prefix):
+                return m
+        norm = self.model.replace("-", "").replace(".", "")
+        norm_prefix = prefix.replace("-", "").replace(".", "")
+        for m in models:
+            mn = m.replace("-", "").replace(".", "")
+            if norm in mn or mn.startswith(norm_prefix):
+                return m
+        return None
+
+    def _pick_any_vlm(self, models: list) -> Optional[str]:
+        """Pick any vision-capable model from a served model list."""
+        for m in models:
+            if self._VLM_NAME_RE.search(m):
+                return m
+        return None
+
     @property
     def available(self) -> bool:
         """Check if local VLM endpoint is running and the model is available."""
@@ -220,7 +247,20 @@ class LocalVLM:
                     data = json.loads(resp.read())
                     raw_models = data.get("data", [])
                     model_names = [m.get("id", "") for m in raw_models if isinstance(m, dict)]
-                    if model_names or self.api_type == "openai":
+                    if self.api_type == "openai":
+                        self._detected_api = "openai"
+                        self._available = True
+                        logger.info("LocalVLM: OpenAI-compatible VLM endpoint detected at %s", models_url)
+                        return True
+                    # auto mode: only accept this endpoint if the configured
+                    # model (or another vision model) is actually served,
+                    # resolving naming variants; otherwise fall through to
+                    # the Ollama probe below.
+                    matched = self._resolve_model_name(model_names) or self._pick_any_vlm(model_names)
+                    if matched:
+                        if matched != self.model:
+                            logger.info("LocalVLM model '%s' resolved to '%s'", self.model, matched)
+                            self.model = matched
                         self._detected_api = "openai"
                         self._available = True
                         logger.info("LocalVLM: OpenAI-compatible VLM endpoint detected at %s", models_url)
@@ -235,20 +275,7 @@ class LocalVLM:
                 with urllib.request.urlopen(req, timeout=3) as resp:
                     data = json.loads(resp.read())
                     models = [m.get("name", "") for m in data.get("models", [])]
-                    prefix = self.model.split(":")[0].split("/")[0]
-                    matched = None
-                    for m in models:
-                        if self.model in m or m.startswith(prefix):
-                            matched = m
-                            break
-                    if matched is None:
-                        norm = self.model.replace("-", "").replace(".", "")
-                        norm_prefix = prefix.replace("-", "").replace(".", "")
-                        for m in models:
-                            mn = m.replace("-", "").replace(".", "")
-                            if norm in mn or mn.startswith(norm_prefix):
-                                matched = m
-                                break
+                    matched = self._resolve_model_name(models)
                     if matched:
                         if matched != self.model:
                             logger.info("Ollama model '%s' resolved to '%s'", self.model, matched)
@@ -258,14 +285,13 @@ class LocalVLM:
                         return True
                     elif models and self.api_type == "auto":
                         # Any VLM model available in Ollama
-                        vlm_keywords = ["vl", "llava", "qwen2", "vision", "moondream", "bakllava"]
-                        for m in models:
-                            if any(k in m.lower() for k in vlm_keywords):
-                                logger.info("Resolved default VLM model to '%s'", m)
-                                self.model = m
-                                self._detected_api = "ollama"
-                                self._available = True
-                                return True
+                        fallback = self._pick_any_vlm(models)
+                        if fallback:
+                            logger.info("Resolved default VLM model to '%s'", fallback)
+                            self.model = fallback
+                            self._detected_api = "ollama"
+                            self._available = True
+                            return True
             except Exception as e:
                 logger.info("Ollama endpoint not available: %s", e)
 

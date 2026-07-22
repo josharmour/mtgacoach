@@ -4,14 +4,32 @@ This module provides push-to-talk (PTT) and voice activation (VOX) triggers
 for controlling when audio is captured and transcribed.
 
 NOTE: The keyboard library requires admin/root privileges on Linux but
-works normally on Windows without elevation.
+works normally on Windows without elevation. It is never imported on
+macOS, where PTT is disabled (use VOX instead).
 """
 
+from __future__ import annotations
+
+import logging
+import sys
 import time
 from typing import Callable, Optional
 
-import keyboard
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
+# The `keyboard` package must never be imported on macOS: its darwin backend
+# calls abort() during import when the process lacks root/Accessibility
+# rights, killing the interpreter before any except clause can run.
+keyboard = None
+if sys.platform != "darwin":
+    try:
+        import keyboard
+    except ImportError:
+        logger.warning("keyboard module not available - PTT hotkeys disabled")
+else:
+    logger.info("keyboard hotkeys disabled on macOS (unsupported backend)")
 
 
 class PTTHandler:
@@ -58,9 +76,18 @@ class PTTHandler:
         """Register global hotkey listeners.
 
         Begins listening for the configured hotkey globally.
-        Does nothing if already started.
+        Does nothing if already started, or if the keyboard backend is
+        unavailable on this platform (e.g. macOS).
         """
         if self._active:
+            return
+
+        if keyboard is None:
+            logger.warning(
+                "PTT hotkey '%s' not registered: keyboard module unavailable "
+                "on this platform",
+                self.hotkey,
+            )
             return
 
         # Use hook_key to capture both press and release in a single hook

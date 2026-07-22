@@ -17,7 +17,6 @@ from arenamcp.desktop.hotkeys_darwin import (
     MACOS_KEY_CODES,
     HOTKEY_PURPOSES,
 )
-from arenamcp.desktop.hotkeys import HotkeyManager
 from arenamcp.vision_mapper import LocalVLM, OllamaVLM, VisionMapper
 
 
@@ -108,6 +107,9 @@ def test_darwin_hotkey_listener_registration_and_callback(monkeypatch):
 
 def test_hotkey_manager_cross_platform_dispatch(monkeypatch):
     """HotkeyManager selects DarwinHotkeyListener on macOS, keyboard on Windows, or QShortcut fallback."""
+    hotkeys = pytest.importorskip("arenamcp.desktop.hotkeys")
+    # Stub keyboard so no code path can import the real package (aborts on darwin)
+    monkeypatch.setitem(sys.modules, "keyboard", MagicMock())
     # Test macOS branch with DarwinHotkeyListener
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr("os.name", "posix")
@@ -116,7 +118,7 @@ def test_hotkey_manager_cross_platform_dispatch(monkeypatch):
     mock_listener.is_available = True
     mock_listener.register.return_value = True
 
-    manager = HotkeyManager()
+    manager = hotkeys.HotkeyManager()
     manager._darwin_listener = mock_listener
 
     called = []
