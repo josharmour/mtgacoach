@@ -97,6 +97,10 @@ class MatchOverlayWindow(QWidget):
         self._suggested_actions: list[dict[str, Any]] = []
         self._actions_expire_at: float = 0.0
         self._card_positions: dict[int, dict[str, Any]] = {}
+        # Unity-reported screen size from the last card_positions payload /
+        # bridge poll; paintEvent's calibration header reads these directly.
+        self._screen_w: int = 0
+        self._screen_h: int = 0
         # Default overlay UI to False on macOS (sys.platform == 'darwin') per user preference
         self._user_enabled = False if sys.platform == "darwin" else True
         self._match_active = False

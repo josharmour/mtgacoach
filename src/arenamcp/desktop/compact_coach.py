@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import html
+import logging
 import sys
 from typing import Any
 
 from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMenu,
     QPushButton,
-    QSplitter,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
@@ -24,6 +23,8 @@ from arenamcp.settings import get_settings
 
 from .coach_tab import CoachTab, _int_value, _str_value
 
+logger = logging.getLogger(__name__)
+
 
 class CompactCoachPanel(CoachTab):
     """Single-column sidebar layout of the coach UI (~440px wide).
@@ -32,8 +33,8 @@ class CompactCoachPanel(CoachTab):
     widget layout and game-state composition differ. Information is ordered
     by glance priority for use during a match:
 
-        turn strip → status dots → latest advice (hero card) → turn plan
-        → board state / activity log (splitter) → controls → chat
+        turn strip → status dots → turn plan → spoken advice log
+        → controls → chat
 
     Secondary tools (self-play, debug report, overlay calibration, repair)
     live behind the ⋯ overflow menu so the always-visible surface stays
@@ -60,7 +61,6 @@ class CompactCoachPanel(CoachTab):
 
     def _build_ui(self) -> None:
         self._dot_values: dict[str, str] = {}
-        self._saved_split_sizes: list[int] | None = None
         self._activity_expanded = True
         self._game_plan: dict[str, Any] = {}
         self._latest_advice: tuple[str, str] | None = None
@@ -88,6 +88,17 @@ class CompactCoachPanel(CoachTab):
         activity_layout = QVBoxLayout(activity)
         activity_layout.setContentsMargins(0, 0, 0, 0)
         activity_layout.setSpacing(4)
+
+        # Sticky autopilot turn-plan panel, same contract as the classic
+        # layout: wholesale-replaced on `turn_plan` events, hidden when empty.
+        self.turn_plan_label = QLabel()
+        self.turn_plan_label.setObjectName("turnPlanPanel")
+        self.turn_plan_label.setWordWrap(True)
+        self.turn_plan_label.setTextFormat(Qt.PlainText)
+        self.turn_plan_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._apply_turn_plan_style()
+        self.turn_plan_label.setVisible(False)
+        activity_layout.addWidget(self.turn_plan_label)
 
         self.log_view = QTextEdit()
         self.log_view.setObjectName("logView")
@@ -219,11 +230,24 @@ class CompactCoachPanel(CoachTab):
         settings.set("voice", voice_id)
         settings.set("voice_speed", speed_val)
         if self._process is not None:
-            self._process.send_command("sync_voice_preferences", {
+            # pipe_adapter reads voice/voice_speed at the top level of the
+            # command payload, so send_payload — not send_command's "text".
+            self._process.send_payload({
+                "cmd": "sync_voice_preferences",
                 "voice": voice_id,
                 "voice_speed": speed_val,
             })
-            self._send_command("chat", f"Voice set to {label}")
+        # Deterministic local sample in the newly selected voice — no LLM
+        # round trip.
+        try:
+            self._tts.request_speech(
+                text=f"Voice set to {label}",
+                voice_id=voice_id,
+                voice_name=label,
+                speed=speed_val,
+            )
+        except Exception as e:
+            logger.debug("Voice sample playback failed: %s", e)
         self.append_log(f"Voice preset: {label}", role="status")
 
     def _build_overflow_button(self) -> QToolButton:
@@ -345,51 +369,22 @@ class CompactCoachPanel(CoachTab):
             self.chat_input.setText("/assess")
         self.send_chat()
 
-    def attach_process(self, process: Any) -> None:
-        """Attach process to receive IPC signals and send commands."""
-        if self._process is process:
-            return
-        self.detach_process()
-        self._process = process
-        if process is not None:
-            try:
-                process.event_received.connect(self._handle_event)
-                process.stderr_line.connect(self._handle_stderr)
-                process.exited.connect(self._handle_process_exit)
-                self.append_log("Coach process started.", role="status")
-            except Exception as e:
-                logger.warning("Failed to connect process signals: %s", e)
-
-    def detach_process(self) -> None:
-        """Detach process handlers."""
-        if self._process is not None:
-            try:
-                self._process.event_received.disconnect(self._handle_event)
-                self._process.stderr_line.disconnect(self._handle_stderr)
-                self._process.exited.disconnect(self._handle_process_exit)
-            except Exception:
-                pass
-            self._process = None
-
     def _send_command(self, command: str, text: str = "") -> None:
-        """Send command over IPC pipe to coach process."""
-        proc = getattr(self, "_process", None)
-        if proc is None and hasattr(self, "parent"):
-            parent = self.parent()
-            if hasattr(parent, "_process"):
-                proc = parent._process
+        """Send command over IPC pipe to coach process.
 
-        if proc is not None:
-            proc.send_command(command, text)
+        Plain commands delegate to the base class so restart routing and
+        voice/speed/mute settings persistence keep working; only commands
+        carrying a text payload (chat) are piped directly.
+        """
+        if not text:
+            super()._send_command(command)
+            return
+        if self._process is not None:
+            self._process.send_command(command, text)
         else:
             logger.warning("Coach process unavailable for command: %s", command)
 
     # -- activity log collapse -------------------------------------------------
-
-    def _toggle_activity_log(self) -> None:
-        expanded = not self._activity_expanded
-        self._apply_activity_expanded(expanded)
-        get_settings().set("compact_log_expanded", expanded)
 
     def _apply_activity_expanded(self, expanded: bool) -> None:
         self._activity_expanded = expanded
@@ -564,7 +559,12 @@ class CompactCoachPanel(CoachTab):
         renders the WIN/PATH/THREAT/NEXT hierarchy (autopilot's plan when AP
         drives, the coach's otherwise); without one it falls back to the
         latest strategic/coach advice line.
+
+        The current compact layout has no hero-card widgets — state is still
+        tracked so a layout that provides them renders immediately.
         """
+        if not hasattr(self, "_card_title"):
+            return
         if self._game_plan:
             self._card_title.setText("STRATEGY")
             meta_bits = []
@@ -613,12 +613,16 @@ class CompactCoachPanel(CoachTab):
     # -- game state -----------------------------------------------------------
 
     def _update_game_state(self, data: dict[str, Any]) -> None:
+        # The compact layout has no game_state_view document — track the
+        # payload and refresh the turn strip instead of delegating to the
+        # classic renderer.
+        self._last_game_state_payload = data
         self._refresh_turn_strip(data)
-        super()._update_game_state(data)
 
     def refresh_game_state_view(self) -> None:
-        super().refresh_game_state_view()
-        if not self._last_game_state_payload:
+        if self._last_game_state_payload:
+            self._refresh_turn_strip(self._last_game_state_payload)
+        else:
             self.turn_strip.setText("Waiting for MTGA…")
             self.turn_strip.setProperty("who", "none")
             self._repolish(self.turn_strip)
