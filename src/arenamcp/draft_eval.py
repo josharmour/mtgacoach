@@ -414,6 +414,19 @@ def _compute_pair_affinities(
     return affinities
 
 
+def normalize_color_pair(pair_str: str) -> Optional[str]:
+    """Normalize a color pair string to standard two-color pair key (e.g. 'UR', 'WB')."""
+    if not pair_str:
+        return None
+    raw = "".join([c for c in pair_str.upper() if c in "WUBRG"])
+    for pair in TWO_COLOR_PAIRS:
+        if set(raw) == set(pair):
+            return pair
+    if len(raw) == 1 and raw in "WUBRG":
+        return raw
+    return None
+
+
 def evaluate_pack(
     cards_in_pack: list[int],
     picked_cards: list[int],
@@ -445,13 +458,7 @@ def evaluate_pack(
     pick_depth = len(picked_cards)
 
     # Normalize locked color pair if provided
-    locked_pair: Optional[str] = None
-    if locked_color_pair:
-        clean_cp = "".join(sorted([c for c in locked_color_pair.upper() if c in "WUBRG"]))
-        if len(clean_cp) == 2:
-            locked_pair = clean_cp
-        elif len(clean_cp) == 1:
-            locked_pair = clean_cp
+    locked_pair: Optional[str] = normalize_color_pair(locked_color_pair or "")
 
     # Weighted commitment signal per color (stronger than binary on/off)
     commitment = compute_color_commitment(picked_cards, scryfall, draft_stats, set_code)
