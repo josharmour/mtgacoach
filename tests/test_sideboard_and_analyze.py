@@ -183,6 +183,82 @@ def test_standalone_get_sideboard_recommendations():
         mock_ui.advice.assert_called_with(rec, "SIDEBOARD")
 
 
+def test_gamestate_last_game_opponent_cards_survive_intermission_reset():
+    """prepare_for_game_end() must stash played_cards before reset() wipes them."""
+    from arenamcp.gamestate import GameState, Player
+
+    gs = GameState()
+    gs.set_local_seat_id(1, source=2)
+    gs.players[1] = Player(seat_id=1)
+    gs.players[2] = Player(seat_id=2)
+    gs.played_cards = {1: [100], 2: [301, 302]}
+
+    # IntermissionReq handler order between Bo3 games: capture, then reset.
+    gs.prepare_for_game_end()
+    gs.reset()
+
+    assert gs.get_opponent_played_cards() == []
+    assert gs.get_last_game_opponent_played_cards() == [301, 302]
+
+    # Bounded to the last game: the next game end overwrites the stash.
+    gs.set_local_seat_id(1, source=2)
+    gs.players[1] = Player(seat_id=1)
+    gs.players[2] = Player(seat_id=2)
+    gs.played_cards = {2: [999]}
+    gs.prepare_for_game_end()
+    gs.reset()
+    assert gs.get_last_game_opponent_played_cards() == [999]
+
+
+def test_standalone_sideboard_falls_back_to_pre_reset_stash():
+    """Between Bo3 games the IntermissionReq reset() has wiped played_cards —
+    /sideboard must fall back to the pre-reset game-end stash."""
+    from arenamcp import server
+    from arenamcp.gamestate import GameState, Player
+
+    gs = GameState()
+    gs.set_local_seat_id(1, source=2)
+    gs.players[1] = Player(seat_id=1)
+    gs.players[2] = Player(seat_id=2)
+    gs.played_cards = {2: [301]}
+    gs.prepare_for_game_end()
+    gs.reset()
+    assert gs.get_opponent_played_cards() == []
+
+    mock_mcp = MagicMock()
+    mock_mcp.get_game_state.return_value = {
+        "deck_cards": [101],
+        "sideboard_cards": [201],
+        # No opponent_played_cards in the snapshot (the between-games case).
+    }
+    mock_mcp.get_card_info.side_effect = lambda cid: {
+        101: {"name": "Llanowar Elves", "type_line": "Creature", "oracle_text": "{T}: Add {G}."},
+        201: {"name": "Plummet", "type_line": "Instant", "oracle_text": "Destroy target creature with flying."},
+        301: {"name": "Serra Angel", "type_line": "Creature", "oracle_text": "Flying, vigilance"},
+    }.get(cid, {})
+
+    mock_coach_engine = MagicMock()
+    mock_coach_engine.recommend_sideboard.return_value = (
+        "IN:\n- 1x Plummet\nOUT:\n- 1x Llanowar Elves\nPLAN:\nAnswer flyer."
+    )
+
+    with patch.object(StandaloneCoach, "_init_mcp"), \
+         patch.object(server, "get_opponent_played_cards", return_value=[]), \
+         patch.object(server, "game_state", gs):
+        standalone = StandaloneCoach()
+        standalone._mcp = mock_mcp
+        standalone._coach = mock_coach_engine
+        standalone.ui = MagicMock()
+
+        rec = standalone.get_sideboard_recommendations()
+
+    assert rec is not None
+    mock_coach_engine.recommend_sideboard.assert_called_once()
+    _, kwargs = mock_coach_engine.recommend_sideboard.call_args
+    opp_seen = kwargs["opponent_cards_seen"]
+    assert any("Serra Angel" in str(entry) for entry in opp_seen)
+
+
 def test_pipe_adapter_slash_command_sideboard():
     """Test PipeAdapter slash command handler for /sideboard and /sb."""
     adapter = PipeAdapter()

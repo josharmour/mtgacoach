@@ -522,6 +522,14 @@ class PipeAdapter:
                 threading.Thread(
                     target=self._handle_sideboard_recommendation, daemon=True
                 ).start()
+            elif action == "toggle_frequency":
+                coach._on_frequency_toggle_hotkey()
+            elif action == "replay_advice":
+                self._handle_replay_advice()
+            elif action == "force_advice":
+                threading.Thread(
+                    target=self._handle_force_advice, daemon=True
+                ).start()
             elif action == "chat":
                 text = cmd.get("text", "")
                 if text:
@@ -598,7 +606,10 @@ class PipeAdapter:
         """Process a chat message or slash command from the GUI."""
         cmd_text = (text or "").strip().lower()
         if cmd_text in ("/assess", "/strategy", "/concede", "/win", "game assessment", "win strategy", "concede", "concede?"):
-            self._handle_game_assessment()
+            # Pass natural-language phrasings through so the LLM answers the
+            # user's actual words, not just the canned assessment question.
+            user_text = "" if cmd_text.startswith("/") else text.strip()
+            self._handle_game_assessment(user_text=user_text)
             return
         if cmd_text in ("/deck", "/recommend_deck", "suggest deck"):
             self._handle_out_of_match_deck_suggestions()
@@ -618,7 +629,28 @@ class PipeAdapter:
         except Exception as e:
             self.error(f"Chat failed: {e}")
 
-    def _handle_game_assessment(self) -> None:
+    @staticmethod
+    def _is_in_match(game_state: dict[str, Any]) -> bool:
+        """True when the snapshot shows a live match.
+
+        The get_game_state snapshot nests the turn counter under ``turn``
+        (there is no top-level ``turn_number`` or ``in_match`` key); the
+        hand/battlefield checks cover early states before turn 1 and
+        topdeck/board-wipe states are still covered by the turn counter.
+        """
+        if not game_state:
+            return False
+        try:
+            turn_number = int((game_state.get("turn") or {}).get("turn_number") or 0)
+        except (TypeError, ValueError):
+            turn_number = 0
+        return bool(
+            turn_number > 0
+            or game_state.get("hand")
+            or game_state.get("battlefield")
+        )
+
+    def _handle_game_assessment(self, user_text: str = "") -> None:
         """Perform a full game state assessment: evaluate win plan, path to victory, and concede decision."""
         coach = self._coach
         if not coach or not coach._coach:
@@ -626,7 +658,7 @@ class PipeAdapter:
             return
 
         game_state = coach._mcp.get_game_state() if coach._mcp else {}
-        is_in_match = bool(game_state and (game_state.get("in_match") or game_state.get("turn_number", 0) > 0 or game_state.get("hand") or game_state.get("battlefield")))
+        is_in_match = self._is_in_match(game_state)
 
         if not is_in_match:
             msg = "No active match in progress. Enter an MTGA match to get a live game assessment & win plan."
@@ -642,6 +674,8 @@ class PipeAdapter:
                 "If we have a viable path, outline the key steps. If there is NO realistic path to victory left, "
                 "explicitly advise to CONCEDE and state why. Keep spoken advice to 2 clear sentences."
             )
+            if user_text:
+                question = f"The player asked: {user_text!r}. Answer that directly. {question}"
             response = coach._coach.get_advice(game_state, question=question)
             if response:
                 self.advice(response, "GAME ASSESSMENT")
@@ -815,16 +849,15 @@ class PipeAdapter:
             self.error(f"Win probability error: {e}")
 
     def _handle_deck_strategy(self) -> None:
-        """Generate or recall deck strategy in match."""
+        """Generate or recall deck strategy in match; suggest decks otherwise."""
         coach = self._coach
         if not coach:
             self.log("Coach not available")
             return
 
         game_state = coach._mcp.get_game_state() if coach._mcp else {}
-        is_in_match = bool(game_state and (game_state.get("in_match") or game_state.get("turn_number", 0) > 0 or game_state.get("hand") or game_state.get("battlefield")))
 
-        if is_in_match:
+        if self._is_in_match(game_state):
             existing = coach.get_deck_strategy()
             if existing:
                 self.advice(existing, "DECK STRATEGY")
@@ -832,9 +865,9 @@ class PipeAdapter:
                 return
             self._handle_game_assessment()
         else:
-            msg = "No active match in progress. Start an MTGA match to get a live win strategy."
-            self.log(msg)
-            coach.speak_advice(msg, blocking=False)
+            # Out of match, /deck means "what should I play?" — delegate to
+            # the tiered deck-suggestion flow instead of a dead-end message.
+            self._handle_out_of_match_deck_suggestions()
 
     def _handle_out_of_match_deck_suggestions(self) -> None:
         """Generate tiered format deck suggestions for out-of-match or event view."""
@@ -844,6 +877,10 @@ class PipeAdapter:
             return
 
         game_state = coach._mcp.get_game_state() if coach._mcp else {}
+        # The log parser does not surface the active event format yet, so
+        # this key is absent today — the Standard default is an assumption
+        # we make explicit in the output below.
+        format_known = bool(game_state.get("active_event_format"))
         fmt = game_state.get("active_event_format") or "Standard"
         self.log(f"Evaluating inventory & wildcards for '{fmt}' deck suggestions...")
 
@@ -853,8 +890,19 @@ class PipeAdapter:
                 draft_stats=getattr(coach, "draft_stats", None),
                 enrich_fn=lambda gid: coach._mcp.get_card_info(gid) if coach._mcp else {},
             )
+            # Collection/wildcard counts are likewise not log-derivable yet;
+            # empty means "assume the player owns nothing" — degraded but
+            # honest, and flagged in the output rather than silently wrong.
             player_cards = game_state.get("player_cards") or {}
             wildcards = game_state.get("player_wildcards") or {}
+            collection_known = bool(player_cards or wildcards)
+            if not collection_known and not getattr(self, "_warned_no_collection_data", False):
+                self._warned_no_collection_data = True
+                logger.warning(
+                    "Deck suggestions: collection/wildcard data is not "
+                    "available from the log parser — assuming an empty "
+                    "collection, so craft costs show the full deck cost."
+                )
 
             suggestions = builder.suggest_tiered_decks(
                 player_cards=player_cards,
@@ -864,9 +912,11 @@ class PipeAdapter:
             )
 
             lines = [f"### 🎴 Deck Suggestions for Format: {fmt.title()}"]
+            has_suggestions = False
             for tier_name, deck_list in suggestions.items():
                 if not deck_list:
                     continue
+                has_suggestions = True
                 lines.append(f"\n#### {tier_name}")
                 for d in deck_list:
                     lines.append(f"- **{d.name}** ({d.main_colors}) — *Score: {d.score:.1f}*")
@@ -876,13 +926,79 @@ class PipeAdapter:
                         lines.append("  *Status*: 100% Owned (0 Wildcards Needed!)")
                     lines.append("```mtga\n" + d.to_arena_import() + "\n```")
 
-            text = "\n".join(lines) if len(lines) > 1 else f"No format templates found for {fmt}."
+            notes = []
+            if not format_known:
+                notes.append("format assumed Standard (active event format not detected)")
+            if not collection_known:
+                notes.append(
+                    "collection/wildcard data unavailable — craft costs "
+                    "assume you own none of these cards"
+                )
+            if has_suggestions and notes:
+                lines.append("\n*Note: " + "; ".join(notes) + ".*")
+
+            text = "\n".join(lines) if has_suggestions else f"No format templates found for {fmt}."
             self.advice(text, "DECK SUGGESTIONS")
             if getattr(coach, "_voice_output", None):
                 coach.speak_advice(f"Generated deck suggestions for {fmt}.", blocking=False)
         except Exception as e:
             logger.error("Deck suggestions failed: %s", e)
             self.error(f"Deck suggestions failed: {e}")
+
+    def _handle_replay_advice(self) -> None:
+        """Re-emit and re-speak the most recent advice (F4)."""
+        coach = self._coach
+        if not coach:
+            self.log("Coach not available")
+            return
+        history = getattr(coach, "_advice_history", None) or []
+        last = history[-1] if history else {}
+        advice = str(last.get("advice") or "").strip()
+        if not advice:
+            self.status("REPLAY", "No advice yet")
+            self.log("No advice to replay yet.")
+            return
+        trigger = str(last.get("trigger") or "advice")
+        self.status("REPLAY", "Replaying last advice")
+        self.advice(advice, f"REPLAY|{trigger}")
+        # Speak via the voice output directly: an explicit replay request
+        # should bypass the passive-advice and pass-narration mute filters.
+        voice = getattr(coach, "_voice_output", None)
+        if voice is not None:
+            try:
+                voice.speak(advice, blocking=False)
+            except Exception as e:
+                logger.debug("Replay advice TTS failed: %s", e)
+
+    def _handle_force_advice(self) -> None:
+        """Request fresh advice for the current game state right now (F5)."""
+        coach = self._coach
+        if not coach or not coach._coach:
+            self.log("Coach not available")
+            return
+        self.status("ADVICE", "Requested")
+        self.log("Advice requested — analyzing current game state...")
+        try:
+            if coach._mcp:
+                coach._mcp.poll_log()
+                game_state = coach._mcp.get_game_state()
+            else:
+                game_state = {}
+            coach._inject_library_summary_if_needed(game_state)
+            advice = coach._coach.get_advice(
+                game_state, trigger="user_request", style=coach.advice_style
+            )
+            if advice and advice.strip():
+                coach._record_advice(advice, "force_advice", game_state=game_state)
+                self.advice(advice, "ON DEMAND")
+                coach.speak_advice(advice, blocking=False)
+                self.status("ADVICE", "Delivered")
+            else:
+                self.status("ADVICE", "Unavailable")
+                self.log("No advice available right now.")
+        except Exception as e:
+            self.status("ADVICE", "Failed")
+            self.error(f"Force advice failed: {e}")
 
     def _handle_bugreport(
         self,

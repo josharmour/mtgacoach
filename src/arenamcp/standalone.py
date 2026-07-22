@@ -5211,7 +5211,27 @@ class StandaloneCoach:
 
         maindeck_cards = game_state.get("deck_cards", [])
         sideboard_cards = game_state.get("sideboard_cards", [])
+        # The get_game_state snapshot doesn't carry opponent_played_cards —
+        # fetch it from the dedicated server tool (same as _get_match_context).
         opp_cards_seen = game_state.get("opponent_played_cards", [])
+        if not opp_cards_seen:
+            try:
+                from arenamcp.server import get_opponent_played_cards
+                opp_cards_seen = get_opponent_played_cards() or []
+            except Exception as e:
+                logger.debug(f"Could not get opponent played cards for sideboarding: {e}")
+                opp_cards_seen = []
+        if not opp_cards_seen:
+            # Between Bo3 games the IntermissionReq handler has already
+            # reset() the game state, wiping played_cards — fall back to the
+            # pre-reset stash captured by prepare_for_game_end() (last game
+            # only). Returns grp_ids; _resolve_card_list enriches them.
+            try:
+                from arenamcp.server import game_state as _server_game_state
+                opp_cards_seen = _server_game_state.get_last_game_opponent_played_cards() or []
+            except Exception as e:
+                logger.debug(f"Could not read last-game opponent cards for sideboarding: {e}")
+                opp_cards_seen = []
 
         def _resolve_card_list(card_list: list[Any]) -> list[Any]:
             resolved = []
@@ -5973,7 +5993,7 @@ class StandaloneCoach:
         """F6 - Cycle TTS voice."""
         if self._voice_output:
             try:
-                voice_id, desc = self._voice_output.next_voice(step=2)
+                voice_id, desc = self._voice_output.next_voice()
                 self.ui.status("VOICE_ID", desc)
                 self.ui.log(f"\n[VOICE] Changed to: {desc}\n")
                 self.speak_advice("Voice changed.", blocking=False)
