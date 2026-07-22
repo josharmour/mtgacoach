@@ -10,6 +10,8 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Optional
 
+from typing import Any, Optional, Union
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,6 +30,49 @@ class CardRating:
 
 
 @dataclass
+class WildcardInventory:
+    """Player's available wildcards by rarity (from PlayerInventory)."""
+    common: int = 0
+    uncommon: int = 0
+    rare: int = 0
+    mythic: int = 0
+
+    @classmethod
+    def from_dict(cls, data: Union["WildcardInventory", dict[str, Any], None]) -> "WildcardInventory":
+        if isinstance(data, cls):
+            return data
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            common=int(data.get("common", data.get("Common", data.get("wcCommon", 0)))),
+            uncommon=int(data.get("uncommon", data.get("Uncommon", data.get("wcUncommon", 0)))),
+            rare=int(data.get("rare", data.get("Rare", data.get("wcRare", 0)))),
+            mythic=int(data.get("mythic", data.get("Mythic", data.get("wcMythic", 0)))),
+        )
+
+
+@dataclass
+class CraftCost:
+    """Wildcard craft requirements for a deck."""
+    common: int = 0
+    uncommon: int = 0
+    rare: int = 0
+    mythic: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.common + self.uncommon + self.rare + self.mythic
+
+    def fits_in(self, inventory: WildcardInventory) -> bool:
+        return (
+            self.common <= inventory.common
+            and self.uncommon <= inventory.uncommon
+            and self.rare <= inventory.rare
+            and self.mythic <= inventory.mythic
+        )
+
+
+@dataclass
 class DeckSuggestion:
     """Represents a suggested deck configuration."""
     archetype: str  # "Aggro", "Midrange", or "Control"
@@ -39,6 +84,136 @@ class DeckSuggestion:
     avg_gihwr: float
     penalty: float
     score: float
+
+
+@dataclass
+class TieredDeckSuggestion:
+    """Deck suggestion categorized by budget/crafting tier."""
+    tier: str  # "0-Wildcard", "Budget Crafting", "Meta Top-Tier"
+    archetype: str
+    main_colors: str
+    color_pair_name: str
+    maindeck: dict[str, int]
+    sideboard: dict[str, int]
+    lands: dict[str, int]
+    avg_gihwr: float
+    score: float
+    craft_cost: CraftCost
+    is_fully_owned: bool
+    fits_inventory: bool
+
+
+FORMAT_META_TEMPLATES: dict[str, list[dict[str, Any]]] = {
+    "standard": [
+        {
+            "name": "Mono Red Aggro",
+            "colors": "R",
+            "archetype": "Aggro",
+            "maindeck": {
+                "Monastery Swiftspear": 4,
+                "Slickshot Show-Off": 4,
+                "Emberheart Challenger": 4,
+                "Hired Claw": 4,
+                "Lightning Strike": 4,
+                "Shock": 4,
+                "Monstrous Rage": 4,
+                "Demonic Ruckus": 4,
+                "Mountain": 20,
+                "Rockface Village": 4,
+            },
+            "sideboard": {"Urabrask's Forge": 3, "Torch the Tower": 4},
+            "rarities": {
+                "Slickshot Show-Off": "rare",
+                "Emberheart Challenger": "rare",
+                "Rockface Village": "rare",
+                "Hired Claw": "rare",
+                "Monastery Swiftspear": "uncommon",
+                "Lightning Strike": "uncommon",
+                "Demonic Ruckus": "uncommon",
+                "Monstrous Rage": "uncommon",
+                "Shock": "common",
+                "Mountain": "common",
+                "Urabrask's Forge": "rare",
+                "Torch the Tower": "uncommon",
+            },
+            "score": 88.0,
+        },
+        {
+            "name": "Azorius Control",
+            "colors": "WU",
+            "archetype": "Control",
+            "maindeck": {
+                "No More Lies": 4,
+                "Get Lost": 3,
+                "Sunfall": 4,
+                "Temporary Lockdown": 3,
+                "Deducate": 4,
+                "Memory Deluge": 3,
+                "The Wandering Emperor": 3,
+                "Plains": 8,
+                "Island": 8,
+                "Meticulous Archive": 4,
+                "Restless Anchorage": 4,
+                "Adarkar Wastes": 4,
+            },
+            "sideboard": {"Negate": 3, "Elspeth's Smite": 3},
+            "rarities": {
+                "No More Lies": "uncommon",
+                "Get Lost": "rare",
+                "Sunfall": "rare",
+                "Temporary Lockdown": "rare",
+                "Deducate": "common",
+                "Memory Deluge": "rare",
+                "The Wandering Emperor": "mythic",
+                "Meticulous Archive": "rare",
+                "Restless Anchorage": "rare",
+                "Adarkar Wastes": "rare",
+                "Plains": "common",
+                "Island": "common",
+                "Negate": "common",
+                "Elspeth's Smite": "uncommon",
+            },
+            "score": 86.5,
+        },
+        {
+            "name": "Golgari Midrange",
+            "colors": "BG",
+            "archetype": "Midrange",
+            "maindeck": {
+                "Deep-Cavern Bat": 4,
+                "Mosswood Dreadknight": 4,
+                "Glissa Sunslayer": 3,
+                "Preacher of the Schism": 4,
+                "Go for the Throat": 4,
+                "Cut Down": 3,
+                "Liliana of the Veil": 2,
+                "Swamp": 8,
+                "Forest": 7,
+                "Restless Cottage": 4,
+                "Llanowar Wastes": 4,
+                "Underground Mortuary": 3,
+            },
+            "sideboard": {"Duress": 3, "Tranquil Frillback": 3},
+            "rarities": {
+                "Deep-Cavern Bat": "uncommon",
+                "Mosswood Dreadknight": "rare",
+                "Glissa Sunslayer": "rare",
+                "Preacher of the Schism": "rare",
+                "Go for the Throat": "uncommon",
+                "Cut Down": "uncommon",
+                "Liliana of the Veil": "mythic",
+                "Restless Cottage": "rare",
+                "Llanowar Wastes": "rare",
+                "Underground Mortuary": "rare",
+                "Swamp": "common",
+                "Forest": "common",
+                "Duress": "common",
+                "Tranquil Frillback": "rare",
+            },
+            "score": 85.0,
+        },
+    ]
+}
 
 
 class DeckBuilderV2:
@@ -421,3 +596,199 @@ class DeckBuilderV2:
     def _get_color_pair_name(self, colors: str) -> str:
         """Get human-readable color pair name."""
         return self.COLOR_PAIR_NAMES.get(colors, colors)
+
+    def _normalize_collection(self, player_cards: dict[Union[int, str], int]) -> dict[str, int]:
+        """Normalize player collection (GetPlayerCardsV3) to card_name -> count owned."""
+        owned: Counter = Counter()
+        if not player_cards:
+            return {}
+
+        for key, count in player_cards.items():
+            qty = max(0, int(count))
+            if qty == 0:
+                continue
+
+            # If key is string card name
+            if isinstance(key, str) and not key.isdigit():
+                owned[key] += qty
+                continue
+
+            # If key is grp_id
+            grp_id = int(key)
+            name = None
+            if self.enrich_fn:
+                info = self.enrich_fn(grp_id)
+                if info and info.get("name") and "Unknown" not in info["name"]:
+                    name = info["name"]
+
+            if name:
+                owned[name] += qty
+            else:
+                owned[str(grp_id)] += qty
+
+        return dict(owned)
+
+    def _resolve_card_rarity(
+        self, card_name: str, custom_rarities: Optional[dict[str, str]] = None
+    ) -> str:
+        """Resolve rarity for a card ('common', 'uncommon', 'rare', 'mythic')."""
+        if custom_rarities and card_name in custom_rarities:
+            return custom_rarities[card_name].lower()
+
+        if self.draft_stats:
+            stats = self.draft_stats.get_draft_rating(card_name, "")
+            if stats and stats.rarity:
+                return stats.rarity.lower()
+
+        if card_name in self.BASIC_LANDS:
+            return "common"
+
+        return "common"
+
+    def calculate_craft_cost(
+        self,
+        deck_cards: dict[str, int],
+        owned_cards: dict[str, int],
+        custom_rarities: Optional[dict[str, str]] = None,
+    ) -> CraftCost:
+        """Calculate missing wildcards needed to build deck_cards from owned_cards."""
+        craft = CraftCost()
+
+        for card_name, required in deck_cards.items():
+            if card_name in self.BASIC_LANDS:
+                continue
+
+            owned = owned_cards.get(card_name, 0)
+            missing = max(0, required - owned)
+            if missing <= 0:
+                continue
+
+            rarity = self._resolve_card_rarity(card_name, custom_rarities)
+            if rarity in ("mythic", "mythic rare"):
+                craft.mythic += missing
+            elif rarity == "rare":
+                craft.rare += missing
+            elif rarity in ("uncommon", "uc"):
+                craft.uncommon += missing
+            else:
+                craft.common += missing
+
+        return craft
+
+    def suggest_tiered_decks(
+        self,
+        player_cards: Optional[dict[Union[int, str], int]] = None,
+        wildcards: Optional[Union[WildcardInventory, dict[str, Any]]] = None,
+        format_name: str = "standard",
+        candidate_decks: Optional[list[dict[str, Any]]] = None,
+        draft_grp_ids: Optional[list[int]] = None,
+        set_code: Optional[str] = None,
+        top_n_per_tier: int = 3,
+    ) -> dict[str, list[TieredDeckSuggestion]]:
+        """Suggest 3-tiered deck configurations for any event format.
+
+        Tiers:
+          - 0-Wildcard Decks (100% buildable from owned collection)
+          - Budget Crafting (fits within user's exact wildcard count)
+          - Meta Top-Tier (top format archetypes with exact wildcard craft costs)
+
+        Args:
+            player_cards: GetPlayerCardsV3 collection map (grp_id/name -> count).
+            wildcards: PlayerInventory wildcard counts (Common/Uncommon/Rare/Mythic).
+            format_name: Format string (e.g. "standard", "pioneer", "alchemy").
+            candidate_decks: Optional custom deck templates.
+            draft_grp_ids: Optional list of drafted card IDs (for limited format).
+            set_code: Optional set code for 17lands lookups.
+            top_n_per_tier: Max deck suggestions per tier.
+
+        Returns:
+            Dict mapping tier names to lists of TieredDeckSuggestion.
+        """
+        from dataclasses import replace
+
+        owned_cards = self._normalize_collection(player_cards or {})
+        wc_inv = WildcardInventory.from_dict(wildcards)
+        fmt_key = format_name.lower()
+
+        candidates: list[dict[str, Any]] = []
+        if candidate_decks:
+            candidates.extend(candidate_decks)
+
+        if draft_grp_ids:
+            draft_suggestions = self.suggest_deck(draft_grp_ids, set_code or "", top_n=5)
+            for ds in draft_suggestions:
+                candidates.append({
+                    "name": f"{ds.color_pair_name} {ds.archetype}",
+                    "colors": ds.main_colors,
+                    "archetype": ds.archetype,
+                    "maindeck": ds.maindeck,
+                    "sideboard": ds.sideboard,
+                    "lands": ds.lands,
+                    "score": ds.score,
+                    "avg_gihwr": ds.avg_gihwr,
+                })
+
+        meta_templates = FORMAT_META_TEMPLATES.get(
+            fmt_key, FORMAT_META_TEMPLATES.get("standard", [])
+        )
+        for t in meta_templates:
+            if not any(c.get("name") == t["name"] for c in candidates):
+                candidates.append(t)
+
+        zero_wc: list[TieredDeckSuggestion] = []
+        budget: list[TieredDeckSuggestion] = []
+        meta_top: list[TieredDeckSuggestion] = []
+
+        for cand in candidates:
+            main = cand.get("maindeck", {})
+            side = cand.get("sideboard", {})
+            lands = cand.get("lands", {})
+            rarities = cand.get("rarities", {})
+
+            full_cards: Counter = Counter(main)
+            full_cards.update(side)
+
+            craft_cost = self.calculate_craft_cost(
+                dict(full_cards), owned_cards, rarities
+            )
+            is_fully_owned = (craft_cost.total == 0)
+            fits_inventory = craft_cost.fits_in(wc_inv)
+
+            score = cand.get("score", 75.0)
+            avg_gihwr = cand.get("avg_gihwr", 0.55)
+            colors = cand.get("colors", "")
+            archetype_name = cand.get("archetype", cand.get("name", "Custom"))
+
+            base_sug = TieredDeckSuggestion(
+                tier="",
+                archetype=cand.get("name", archetype_name),
+                main_colors=colors,
+                color_pair_name=self._get_color_pair_name(colors),
+                maindeck=main,
+                sideboard=side,
+                lands=lands,
+                avg_gihwr=avg_gihwr,
+                score=score,
+                craft_cost=craft_cost,
+                is_fully_owned=is_fully_owned,
+                fits_inventory=fits_inventory,
+            )
+
+            meta_top.append(replace(base_sug, tier="Meta Top-Tier"))
+
+            if is_fully_owned:
+                zero_wc.append(replace(base_sug, tier="0-Wildcard"))
+
+            if fits_inventory:
+                budget.append(replace(base_sug, tier="Budget Crafting"))
+
+        zero_wc.sort(key=lambda s: s.score, reverse=True)
+        budget.sort(key=lambda s: (s.craft_cost.total, -s.score))
+        meta_top.sort(key=lambda s: s.score, reverse=True)
+
+        return {
+            "0-Wildcard": zero_wc[:top_n_per_tier],
+            "Budget Crafting": budget[:top_n_per_tier],
+            "Meta Top-Tier": meta_top[:top_n_per_tier],
+        }
+

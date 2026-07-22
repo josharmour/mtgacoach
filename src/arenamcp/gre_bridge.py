@@ -575,6 +575,48 @@ class GREBridge:
             )
         return added
 
+    def prewarm_grp_ids(self, grp_ids: list[int]) -> dict[int, str]:
+        """Pre-warm grp_id -> card name lookups during match loading (`ConnectResp`).
+
+        Pre-warms the SQLite card database cache and resolves any unknown/dynamic
+        grp_ids via the connected client plugin, eliminating card resolution overhead
+        during turn triggers and decision prompts.
+
+        Args:
+            grp_ids: List of GrpIds to pre-warm.
+
+        Returns:
+            Dict mapping grp_id to resolved card name.
+        """
+        if not grp_ids:
+            return {}
+
+        clean_ids = list(set(int(g) for g in grp_ids if g))
+        resolved: dict[int, str] = {}
+
+        try:
+            from arenamcp.card_db import get_card_database
+            card_db = get_card_database()
+            card_db.prewarm_cards(clean_ids)
+
+            for gid in clean_ids:
+                info = card_db.get_card_by_arena_id(gid)
+                if info and info.name and not info.name.startswith("Unknown"):
+                    resolved[gid] = info.name
+        except Exception as e:
+            logger.debug(f"SQLite card prewarm failed in gre_bridge: {e}")
+
+        # Resolve any remaining GrpIds via running client if connected
+        unresolved = [g for g in clean_ids if g not in resolved]
+        if unresolved and self._connected:
+            try:
+                client_names = self.resolve_grp_ids(unresolved)
+                resolved.update(client_names)
+            except Exception as e:
+                logger.debug(f"Client grp_id resolution failed in gre_bridge: {e}")
+
+        return resolved
+
     def submit_action_by_index(
         self,
         action_index: int,
@@ -2138,6 +2180,13 @@ class BridgeDecisionPoller:
                 f"Bridge detected decision: {label} "
                 f"(type={request_type}, actions={len(actions)})"
             )
+            # Pre-warm grp_ids in actions to eliminate resolution overhead during decision prompts
+            act_grp_ids = [a.get("grpId") for a in actions if a.get("grpId")]
+            if act_grp_ids:
+                try:
+                    self._bridge.prewarm_grp_ids(act_grp_ids)
+                except Exception as e:
+                    logger.debug(f"Action grp_ids prewarm failed: {e}")
         else:
             logger.info(f"Bridge detected decision cleared (was: {self._last_request_type})")
 

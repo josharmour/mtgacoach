@@ -74,26 +74,49 @@ class CardBadge(QLabel):
         self._score: float = 0.0
         self._tier: str = ""
         self._pair: str = ""
+        self._reason: str = ""
+        self._synergy_badge: str = ""
+        self._is_locked: bool = False
 
-    def set_data(self, score: Optional[float], tier: Optional[str], pair: Optional[str], reason: Optional[str] = None) -> None:
+    def set_data(
+        self,
+        score: Optional[float],
+        tier: Optional[str],
+        pair: Optional[str],
+        reason: Optional[str] = None,
+        synergy_badge: Optional[str] = None,
+        is_locked: bool = False,
+    ) -> None:
         self._score = float(score) if score is not None else 0.0
         self._tier = tier or ""
         self._pair = pair or ""
         self._reason = reason or ""
+        self._synergy_badge = synergy_badge or ""
+        self._is_locked = is_locked
         self._refresh()
 
     def _refresh(self) -> None:
         bg = TIER_COLORS.get(self._tier, "#1f2937")
         fg = "black" if self._tier in ("GOLD", "SILVER", "FIRE") else "white"
         score_text = f"{int(round(self._score))}" if self._score else "?"
-        pair_text = f"<br><span style='font-size:9px;'>→ {self._pair}</span>" if self._pair else ""
-        reason_text = f"<br><span style='font-size:9px;'>{self._reason}</span>" if hasattr(self, "_reason") and self._reason else ""
-        self.setText(f"<b>{score_text}</b>{pair_text}{reason_text}")
+
+        if self._is_locked and self._pair:
+            pair_text = f"<br><span style='font-size:9px;'>🔒 {self._pair}</span>"
+        elif self._pair:
+            pair_text = f"<br><span style='font-size:9px;'>→ {self._pair}</span>"
+        else:
+            pair_text = ""
+
+        reason_text = f"<br><span style='font-size:9px;'>{self._reason}</span>" if self._reason else ""
+        synergy_text = f"<br><span style='font-size:9px; font-weight: bold;'>{self._synergy_badge}</span>" if self._synergy_badge else ""
+
+        border_style = "2px solid #3b82f6" if self._is_locked else "1px solid rgba(0,0,0,180)"
+        self.setText(f"<b>{score_text}</b>{pair_text}{synergy_text}{reason_text}")
         self.setStyleSheet(
             f"""
             background: {bg};
             color: {fg};
-            border: 1px solid rgba(0,0,0,180);
+            border: {border_style};
             border-radius: 4px;
             padding: 2px 4px;
             font-size: 14px;
@@ -126,6 +149,7 @@ class CardOverlayWindow(QWidget):
         self._last_cards_data: list[dict[str, Any]] = []
         self._should_show = False
         self._user_enabled = True
+        self._locked_color_pair: Optional[str] = None
         # Calibration mode draws a red outline around the computed card grid
         # and cell boundaries, so we can see whether the hardcoded coords match
         # MTGA's actual card layout. Toggle via set_calibration(True).
@@ -378,6 +402,12 @@ class CardOverlayWindow(QWidget):
         # Repaint badge positions (layout may depend on current geometry)
         self._reposition_and_draw()
 
+    def set_locked_color_pair(self, color_pair: Optional[str]) -> None:
+        """Lock color-pair preference (e.g. 'UR' or 'WB') for draft badge rendering."""
+        self._locked_color_pair = color_pair
+        if self._last_cards_data:
+            self._reposition_and_draw()
+
     # -- Badge drawing -----------------------------------------------------
 
     def _reposition_and_draw(self) -> None:
@@ -391,9 +421,6 @@ class CardOverlayWindow(QWidget):
         if w <= 0 or h <= 0:
             return
 
-        # Server sorts cards by composite_score but MTGA displays them in pack
-        # order. Re-sort by pack_index (populated in server.py) so badges line
-        # up with the actual on-screen card positions.
         cards_by_pack = sorted(
             self._last_cards_data,
             key=lambda c: c.get("pack_index", 999),
@@ -401,22 +428,12 @@ class CardOverlayWindow(QWidget):
         cards = cards_by_pack
         num_cards = len(cards)
 
-        # Always use the 3×5 list view layout. MTGA keeps cards in their
-        # original grid slots even after picks (leaves gaps rather than
-        # reflowing), so sorting by pack_index handles the gaps naturally.
         layout = GRID_LAYOUT_LIST_VIEW
         rows, cols, top_frac, height_frac, width_frac, left_off_frac = layout
 
-        # MTGA content may have letterbox bars. As a simple first pass,
-        # assume the game fills the window (Steam launcher windowed mode).
-        # TODO: subtract black bars when running fullscreen with mismatched
-        # aspect ratio.
-
-        # Determine target aspect ratio (16:9 or 16:10)
         ratio = w / h if h > 0 else 1.78
         is_16_10 = abs(ratio - 1.6) < 0.05
 
-        # vh-equivalent: fractions are of render height
         grid_top = int(h * top_frac)
         grid_height = int(h * height_frac)
         grid_width = int(h * width_frac)
@@ -425,7 +442,6 @@ class CardOverlayWindow(QWidget):
         cell_w = grid_width / cols
         cell_h = grid_height / rows
 
-        # Ensure we have the right number of badges
         while len(self._badges) < num_cards:
             b = CardBadge(self)
             b.show()
@@ -435,7 +451,6 @@ class CardOverlayWindow(QWidget):
             b.hide()
             b.deleteLater()
 
-        # Collect calibration rectangles (outer grid + per-cell)
         calib: list[QRect] = [QRect(grid_left, grid_top, grid_width, grid_height)]
 
         for i, card in enumerate(cards):
@@ -444,21 +459,25 @@ class CardOverlayWindow(QWidget):
             row = i // cols
             col = i % cols
 
-            # Badge sits in the top-right of the card for visibility
             cx = grid_left + int(col * cell_w)
             cy = grid_top + int(row * cell_h)
+
+            card_pair = card.get("best_pair")
+            is_locked = bool(card.get("is_locked")) or bool(card.get("locked_color_pair"))
+            if self._locked_color_pair and card_pair == self._locked_color_pair:
+                is_locked = True
 
             badge = self._badges[i]
             badge.set_data(
                 score=card.get("composite_score"),
                 tier=card.get("tier"),
-                pair=card.get("best_pair"),
+                pair=card_pair,
                 reason=card.get("pick_reason"),
+                synergy_badge=card.get("synergy_badge"),
+                is_locked=is_locked,
             )
-            # Size the badge relative to cell size
             bw = max(48, int(cell_w * 0.35))
             bh = max(28, int(cell_h * 0.20))
-            # Position: top-left corner of each card cell, inset a little
             badge_x = cx + int(cell_w * 0.05)
             badge_y = cy + int(cell_h * 0.04)
             badge.setGeometry(badge_x, badge_y, bw, bh)

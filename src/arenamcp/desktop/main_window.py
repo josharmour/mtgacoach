@@ -899,6 +899,12 @@ class MainWindow(QMainWindow):
         self._debug_logging_action = debug_action
         self._set_debug_logging(debug_action.isChecked())
 
+        brain_stream_action = QAction("Brain Stream Inspector", self)
+        brain_stream_action.setShortcut("Ctrl+B")
+        brain_stream_action.setToolTip("Open live streaming inspector for Prompt Context, Reasoning, and Telemetry")
+        brain_stream_action.triggered.connect(lambda: self.coach_tab.toggle_brain_stream() if self.coach_tab else None)
+        view_menu.addAction(brain_stream_action)
+
     def _set_debug_logging(self, enabled: bool) -> None:
         self.coach_tab.set_debug_logging(enabled)
         self._settings.set("desktop_debug_logging", bool(enabled))

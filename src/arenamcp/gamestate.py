@@ -558,6 +558,8 @@ class GameState:
         "engine_busy_until": 0.0,
         # Sideboard cards (populated between BO3 games from SubmitDeckReq)
         "sideboard_cards": list,
+        # Pre-warmed card name cache (grp_id -> name)
+        "_card_name_cache": dict,
     }
 
     def _apply_field_defaults(self) -> None:
@@ -2212,16 +2214,79 @@ class GameState:
         return True
 
     def _resolve_card_name(self, grp_id: int) -> str:
-        """Resolve a grp_id to a card name, with fallback."""
+        """Resolve a grp_id to a card name, using in-memory pre-warmed cache first."""
         if not grp_id:
             return "Unknown"
+        grp_id = int(grp_id)
+        cached = self._card_name_cache.get(grp_id)
+        if cached:
+            return cached
         try:
             from arenamcp import server
             info = server.get_card_info(grp_id)
-            return info.get("name", f"Card#{grp_id}")
+            name = info.get("name", f"Card#{grp_id}")
+            if name and not name.startswith("Card#") and not name.startswith("Unknown"):
+                self._card_name_cache[grp_id] = name
+            return name
         except Exception as e:
             logger.debug(f"Card name resolution failed for grp_id={grp_id}: {e}")
             return f"Card#{grp_id}"
+
+    def prewarm_card_cache(self, grp_ids: list[int]) -> int:
+        """Pre-warm grp_id -> card name cache during match loading or state updates.
+
+        Batch-queries the SQLite MTGA card database for all GrpIds in deck/sideboard/game
+        and stores them in `self._card_name_cache`, ensuring zero resolution latency
+        during turn triggers and decision prompts.
+
+        Args:
+            grp_ids: List of GrpIds to pre-warm.
+
+        Returns:
+            Number of card names successfully added to cache.
+        """
+        if not grp_ids:
+            return 0
+
+        clean_ids = list(set(int(g) for g in grp_ids if g))
+        if not clean_ids:
+            return 0
+
+        missing_ids = [g for g in clean_ids if g not in self._card_name_cache]
+        if not missing_ids:
+            return 0
+
+        count = 0
+        try:
+            from arenamcp.card_db import get_card_database
+            card_db = get_card_database()
+            card_db.prewarm_cards(missing_ids)
+
+            for gid in missing_ids:
+                if gid in self._card_name_cache:
+                    continue
+                info = card_db.get_card_by_arena_id(gid)
+                if info and info.name:
+                    self._card_name_cache[gid] = info.name
+                    count += 1
+
+            unresolved = [g for g in missing_ids if g not in self._card_name_cache]
+            if unresolved:
+                try:
+                    from arenamcp.gre_bridge import get_bridge
+                    bridge = get_bridge()
+                    if bridge.connected:
+                        names = bridge.resolve_grp_ids(unresolved)
+                        for gid, name in names.items():
+                            if name:
+                                self._card_name_cache[gid] = name
+                                count += 1
+                except Exception as e:
+                    logger.debug(f"Bridge resolution during prewarm failed: {e}")
+        except Exception as e:
+            logger.warning(f"Error pre-warming card cache in GameState: {e}")
+
+        return count
 
     def _process_annotations(self, annotations: list[dict]) -> None:
         """Process GRE annotations from a GameStateMessage.
@@ -3249,10 +3314,20 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
 
     elif msg_type == "GREMessageType_ConnectResp":
         connect_resp = msg.get("connectResp", {})
-        deck_cards = _ensure_int_list(connect_resp.get("deckMessage", {}).get("deckCards", []))
+        deck_msg = connect_resp.get("deckMessage", {})
+        deck_cards = _ensure_int_list(deck_msg.get("deckCards", []))
+        sideboard_cards = _ensure_int_list(deck_msg.get("sideboardCards", []))
+        commander_cards = _ensure_int_list(deck_msg.get("commanderGrpIds", []))
         if deck_cards:
             game_state.deck_cards = deck_cards
             logger.info(f"Captured deck list from ConnectResp: {len(deck_cards)} cards")
+        if sideboard_cards:
+            game_state.sideboard_cards = sideboard_cards
+
+        all_match_cards = list(set(deck_cards + sideboard_cards + commander_cards))
+        if all_match_cards:
+            prewarmed_count = game_state.prewarm_card_cache(all_match_cards)
+            logger.info(f"Pre-warmed {prewarmed_count} grp_id card lookups from ConnectResp")
         return False
 
     elif msg_type == "GREMessageType_DeclareAttackersReq":

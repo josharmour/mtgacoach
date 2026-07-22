@@ -188,6 +188,23 @@ class MTGADatabaseAdapter:
         """Batch lookup (MTGA-specific). Returns raw MTGACard objects."""
         return self._db.get_cards_batch(grp_ids)
 
+    def prewarm_cards(self, grp_ids: list[int]) -> dict[int, CardInfo]:
+        """Pre-warm MTGA database card cache for GrpIds."""
+        cards = self._db.prewarm_cards(grp_ids)
+        res = {}
+        for grp_id, card in cards.items():
+            res[grp_id] = CardInfo(
+                name=card.name or "",
+                oracle_text=card.oracle_text or "",
+                type_line=card.types or "",
+                mana_cost="",
+                cmc=0.0,
+                colors=card.colors.split(",") if card.colors else [],
+                arena_id=card.grp_id,
+                source="mtgadb",
+            )
+        return res
+
     @property
     def raw(self) -> Any:
         """Access the underlying MTGADatabase for MTGA-specific operations."""
@@ -357,6 +374,12 @@ class FallbackCardDatabase:
         if self._mtga_adapter:
             return self._mtga_adapter.get_ability_text(ability_id)
         return None
+
+    def prewarm_cards(self, grp_ids: list[int]) -> dict[int, CardInfo]:
+        """Pre-warm card database lookups for GrpIds across sources."""
+        if self._mtga_adapter:
+            return self._mtga_adapter.prewarm_cards(grp_ids)
+        return {}
 
     def get_raw_mtgadb(self) -> Optional[Any]:
         """Get the underlying MTGADatabase for MTGA-specific operations.

@@ -254,6 +254,14 @@ class CompactCoachPanel(CoachTab):
         menu = QMenu(more)
         menu.setToolTipsVisible(True)
 
+        bs_action = menu.addAction("Brain Stream Inspector")
+        bs_action.setToolTip("Open live streaming inspector for Prompt Context, Reasoning, and Telemetry")
+        bs_action.triggered.connect(lambda _checked=False: self.toggle_brain_stream())
+
+        deck_action = menu.addAction("Suggest Deck")
+        deck_action.setToolTip("Request deck recommendations & suggestions")
+        deck_action.triggered.connect(lambda _checked=False: self._suggest_deck())
+
         if sys.platform == "win32":
             screen_action = menu.addAction("Analyze Screen")
             screen_action.setToolTip("Analyze a screenshot of the game with the vision model")

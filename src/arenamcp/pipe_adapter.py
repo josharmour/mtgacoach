@@ -518,6 +518,10 @@ class PipeAdapter:
                 threading.Thread(
                     target=self._handle_analyze_match, daemon=True
                 ).start()
+            elif action in ("sideboard", "sideboard_recommendation"):
+                threading.Thread(
+                    target=self._handle_sideboard_recommendation, daemon=True
+                ).start()
             elif action == "chat":
                 text = cmd.get("text", "")
                 if text:
@@ -739,7 +743,11 @@ class PipeAdapter:
         if t == "/analyze":
             threading.Thread(target=self._handle_analyze_match, daemon=True).start()
             return True
+        if t in ("/sideboard", "/sb"):
+            threading.Thread(target=self._handle_sideboard_recommendation, daemon=True).start()
+            return True
         return False
+
 
     # --- Handler implementations ---
 
@@ -978,3 +986,15 @@ class PipeAdapter:
             coach.trigger_match_analysis()
         except Exception as e:
             self.error(f"Match analysis failed: {e}")
+
+    def _handle_sideboard_recommendation(self) -> None:
+        """Run Bo3 sideboarding recommendation."""
+        coach = self._coach
+        if not coach:
+            self.log("Coach not available")
+            return
+        try:
+            coach.get_sideboard_recommendations()
+        except Exception as e:
+            self.error(f"Sideboarding recommendation failed: {e}")
+

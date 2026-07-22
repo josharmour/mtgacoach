@@ -17,7 +17,12 @@ from arenamcp.card_db import (
     create_card_database,
 )
 from arenamcp.draft_eval import evaluate_pack, format_pick_recommendation, CardEvaluation
-from arenamcp.server import mcp, start_watching, stop_watching
+try:
+    from arenamcp.server import mcp, start_watching, stop_watching
+except ImportError:
+    mcp = None  # type: ignore[assignment]
+    start_watching = None  # type: ignore[assignment]
+    stop_watching = None  # type: ignore[assignment]
 # Voice/TTS imports deferred — sounddevice initializes PortAudio on import
 # which can hang if an audio device/driver is misbehaving.
 # These are imported lazily on first use instead.

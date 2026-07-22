@@ -1,9 +1,7 @@
 name: build-installer
 
 # Builds mtgacoach-Setup.exe on a Windows runner and attaches it to the
-# release for the pushed tag. This replaced the manual Windows build after
-# the dev Windows machine was retired (2026-06-09) — the Linux dev box
-# cannot run Inno Setup.
+# release for the pushed tag, alongside the Python wheel (.whl) artifact.
 on:
   push:
     tags: ["v*"]
@@ -21,6 +19,19 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build hatchling
+
+      - name: Build Python wheel
+        run: python -m build --wheel
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
@@ -42,10 +53,21 @@ jobs:
           $tag = "${{ inputs.release_tag }}"
           if (-not $tag) { $tag = "${{ github.ref_name }}" }
           gh release upload "$tag" dist/installer/mtgacoach-Setup.exe --clobber
+          Get-ChildItem -Path dist\*.whl | ForEach-Object {
+            gh release upload "$tag" $_.FullName --clobber
+          }
 
-      - name: Upload artifact (non-tag runs)
+      - name: Upload installer artifact (non-tag runs)
         if: ${{ !startsWith(github.ref, 'refs/tags/') && inputs.release_tag == '' }}
         uses: actions/upload-artifact@v4
         with:
           name: mtgacoach-Setup
           path: dist/installer/mtgacoach-Setup.exe
+
+      - name: Upload wheel artifact (non-tag runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && inputs.release_tag == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtgacoach-wheel
+          path: dist/*.whl
+

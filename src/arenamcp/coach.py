@@ -851,6 +851,25 @@ CRITICAL: ONLY reference card names that appear in the provided match log. Do NO
 At the very end, on its own line, add a short TTS summary prefixed with "SPOKEN:" (2-3 sentences, under 40 words). This will be read aloud."""
 
 
+SIDEBOARD_RECOMMENDATION_PROMPT = """You are a Magic: The Gathering competitive sideboarding expert.
+Analyze the user's maindeck, 15-card sideboard, and the opponent's cards revealed in previous game(s) of this Best-of-Three (Bo3) match.
+
+Provide clear, actionable sideboarding recommendations:
+1. **Cards to Swap Out (Maindeck -> Sideboard)**: Identify 1 to 5 cards from the maindeck that are slow, inefficient, or ineffective in this matchup.
+2. **Cards to Swap In (Sideboard -> Maindeck)**: Select specific cards from the sideboard that directly answer the opponent's strategy, improve efficiency, or counter key threats.
+3. **Strategic Rationale**: Provide 2-3 concise sentences explaining why these swaps give the player a strategic advantage in Game 2 or 3.
+4. **Card Count Balance**: Ensure the exact number of cards swapped in equals the number swapped out (e.g. +3 IN, -3 OUT) so maindeck size remains valid.
+
+Format the output clearly using these exact section headers:
+**IN**:
+- [quantity]x [Card Name] — [reason]
+**OUT**:
+- [quantity]x [Card Name] — [reason]
+**PLAN**:
+[Strategic rationale]
+"""
+
+
 # Words that tend to be overused by LLMs in coaching contexts
 OVERUSE_CANDIDATES = {
     "consider",
@@ -3908,6 +3927,125 @@ class CoachEngine:
             return ""
 
         return response
+
+    def recommend_sideboard(
+        self,
+        maindeck_cards: list[Any],
+        sideboard_cards: list[Any],
+        opponent_cards_seen: list[Any],
+        game_history: Optional[list[dict[str, Any]]] = None,
+        backend: Optional[Any] = None,
+    ) -> Optional[str]:
+        """Generate Best-of-Three (Bo3) sideboarding recommendations.
+
+        Args:
+            maindeck_cards: Maindeck card list (tuples, dicts, or strings)
+            sideboard_cards: 15-card sideboard list (tuples, dicts, or strings)
+            opponent_cards_seen: Opponent cards revealed in previous game(s)
+            game_history: Match context (e.g. Game 1 result, turn count)
+            backend: Optional backend override
+
+        Returns:
+            Recommended swaps and strategic reasoning, or None on failure.
+        """
+        import time
+
+        be = backend or self._backend
+        if not be:
+            return None
+
+        start = time.perf_counter()
+
+        def _format_card_list(cards: list[Any]) -> str:
+            if not cards:
+                return "(None revealed or listed)"
+            from collections import Counter
+            counts = Counter()
+            details: dict[str, tuple[str, str]] = {}
+
+            for item in cards:
+                if isinstance(item, tuple) and len(item) >= 2:
+                    name = item[0]
+                    card_type = item[1] if len(item) > 1 else ""
+                    oracle = item[2] if len(item) > 2 else ""
+                elif isinstance(item, dict):
+                    name = item.get("name", "Unknown")
+                    card_type = item.get("type_line", item.get("type", ""))
+                    oracle = item.get("oracle_text", item.get("text", ""))
+                elif isinstance(item, str):
+                    name = item
+                    card_type = ""
+                    oracle = ""
+                else:
+                    name = str(item)
+                    card_type = ""
+                    oracle = ""
+
+                counts[name] += 1
+                if name not in details:
+                    details[name] = (card_type, oracle)
+
+            lines = []
+            for name, count in counts.most_common():
+                card_type, oracle = details.get(name, ("", ""))
+                type_short = card_type.split("—")[0].strip() if card_type else ""
+                line = f"{count}x {name}"
+                if type_short:
+                    line += f" ({type_short})"
+                if oracle and "basic" not in card_type.lower():
+                    short_oracle = self._remove_reminder_text(oracle).strip()
+                    if short_oracle:
+                        if len(short_oracle) > 100:
+                            short_oracle = short_oracle[:97] + "..."
+                        line += f" — {short_oracle}"
+                lines.append(line)
+            return "\n".join(lines)
+
+        maindeck_text = _format_card_list(maindeck_cards)
+        sideboard_text = _format_card_list(sideboard_cards)
+        opp_text = _format_card_list(opponent_cards_seen)
+
+        prompt_lines = [
+            "BEST-OF-THREE (Bo3) MATCH SIDEBOARDING CONTEXT:",
+        ]
+
+        if game_history:
+            history_parts = []
+            for i, g in enumerate(game_history, 1):
+                res = g.get("result", "unknown")
+                turns = g.get("turns", "?")
+                history_parts.append(f"Game {i}: {res} ({turns} turns)")
+            prompt_lines.append(f"Match History: {', '.join(history_parts)}")
+
+        prompt_lines.extend([
+            f"\nPLAYER MAINDECK:\n{maindeck_text}",
+            f"\nPLAYER SIDEBOARD:\n{sideboard_text}",
+            f"\nOPPONENT CARDS SEEN:\n{opp_text}",
+        ])
+
+        user_message = "\n".join(prompt_lines)
+
+        try:
+            import inspect
+            sig = inspect.signature(be.complete)
+            accepts_kwargs = len(sig.parameters) > 2 or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            )
+            if accepts_kwargs:
+                rec = be.complete(SIDEBOARD_RECOMMENDATION_PROMPT, user_message, max_tokens=2048)
+            else:
+                rec = be.complete(SIDEBOARD_RECOMMENDATION_PROMPT, user_message)
+
+            if not rec or rec.startswith("Error"):
+                logger.warning(f"Sideboard recommendation failed: {rec[:80] if rec else 'empty'}")
+                return None
+
+            elapsed = (time.perf_counter() - start) * 1000
+            logger.info(f"Sideboard recommendation complete: {elapsed:.0f}ms, {len(rec)} chars")
+            return rec
+        except Exception as e:
+            logger.error(f"Sideboard recommendation error: {e}")
+            return None
 
     def generate_win_probability(self, game_state: dict[str, Any],
                                   opponent_played_cards: list[dict] = None) -> str:

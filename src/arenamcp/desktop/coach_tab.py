@@ -15,10 +15,12 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -34,6 +36,56 @@ from .tts_manager import TtsManager
 from .card_overlay import CardOverlayWindow
 from .hud import DraftHudWindow
 from .match_overlay import MatchOverlayWindow
+
+
+class PTTWaveformWidget(QFrame):
+    clicked = Signal()
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("Push-To-Talk Audio Indicator — Hold Space or click to speak")
+        self.setStyleSheet(
+            "QFrame { background: rgba(30, 30, 46, 0.9); border: 1px solid rgba(137, 180, 250, 0.4); border-radius: 6px; padding: 4px 10px; }"
+            "QFrame:hover { background: rgba(45, 45, 68, 0.9); border-color: rgba(137, 180, 250, 0.8); }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(8)
+
+        self._icon_lbl = QLabel("🎙")
+        self._icon_lbl.setStyleSheet("font-size: 16px;")
+        layout.addWidget(self._icon_lbl)
+
+        self._status_lbl = QLabel("PTT: Space (Ready)")
+        self._status_lbl.setStyleSheet("font-weight: 600; color: #89b4fa; font-size: 12px;")
+        layout.addWidget(self._status_lbl)
+
+        self._bars_lbl = QLabel(" ▂▃▅▇ ")
+        self._bars_lbl.setStyleSheet("color: #a6e3a1; font-weight: bold; font-family: monospace;")
+        layout.addWidget(self._bars_lbl)
+
+    def mousePressEvent(self, event) -> None:
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+    def set_status(self, text: str, active: bool = False, speaking: bool = False) -> None:
+        if speaking:
+            self._icon_lbl.setText("🔊")
+            self._status_lbl.setText("SPEAKING...")
+            self._status_lbl.setStyleSheet("font-weight: 700; color: #a6e3a1; font-size: 12px;")
+            self._bars_lbl.setText("▃▅▇▅▃")
+        elif active:
+            self._icon_lbl.setText("🎙")
+            self._status_lbl.setText("LISTENING...")
+            self._status_lbl.setStyleSheet("font-weight: 700; color: #f9e2af; font-size: 12px;")
+            self._bars_lbl.setText("▇▅▃▅▇")
+        else:
+            self._icon_lbl.setText("🎙")
+            self._status_lbl.setText(text or "PTT: Space (Ready)")
+            self._status_lbl.setStyleSheet("font-weight: 600; color: #89b4fa; font-size: 12px;")
+            self._bars_lbl.setText(" ▂▃▅▇ ")
 
 
 class CoachTab(QWidget):
@@ -64,6 +116,7 @@ class CoachTab(QWidget):
         self._status_labels: dict[str, QLabel] = {}
         self._status_values: dict[str, str] = {}
         self._buttons: dict[str, QPushButton] = {}
+        self._brain_stream_window = None
         self._show_debug_logging = bool(get_settings().get("desktop_debug_logging", False))
         # Developer machines only (MTGACOACH_DEV env / local settings flag,
         # never shipped): unlocks model cycling in online mode.
@@ -448,105 +501,85 @@ class CoachTab(QWidget):
                 lay.addWidget(b)
             return box
 
+        # Audio-Primary Minimal Toolbar
         button_row = QHBoxLayout()
         button_row.setSpacing(10)
 
-        # NOTE: "Win Plan" (read_win_plan) was removed from the toolbar —
-        # the win-plan worker needs a thinking-capable model and is
-        # disabled on the default online backend, so the button did
-        # nothing for most users. Re-add when the worker supports the
-        # online path.
-        button_row.addWidget(_group("Coaching", [
-            _btn("Quick", "Cycle the advice style (quick / concise / verbose ...)",
-                 command="toggle_style"),
-            _btn("Analyze Match", "Full post-match analysis of the last game",
-                 command="analyze_match"),
-        ]))
+        # 1. PTT Waveform / Status Indicator
+        self.ptt_indicator = PTTWaveformWidget()
+        self.ptt_indicator.clicked.connect(self._on_ptt_clicked)
+        button_row.addWidget(self.ptt_indicator)
 
-        button_row.addWidget(_group("Voice", [
-            _btn("Voice", "Cycle the TTS voice", command="cycle_voice"),
-            _btn("Speed", "Cycle the speaking speed", command="cycle_speed"),
-            _btn("Mute", "Mute / unmute spoken advice", command="toggle_mute"),
-        ]))
+        # 2. Mute Button
+        mute_btn = _btn("Mute", "Mute / unmute spoken advice", command="toggle_mute")
+        button_row.addWidget(mute_btn)
 
-        button_row.addWidget(_group("Autopilot", [
-            _btn("AP", "Toggle autopilot — plays the game for you via the "
-                 "GRE bridge", command="toggle_autopilot"),
-            _btn("STOP", "Force-stop autopilot: halts it AND clears the "
-                 "in-flight plan/turn intent so re-enabling doesn't resume "
-                 "the same loop", command="force_stop"),
-        ]))
+        # 3. Quick/Chatty Toggle Button
+        style_btn = _btn("Quick", "Cycle advice style (Quick / Concise / Chatty)", command="toggle_style")
+        button_row.addWidget(style_btn)
 
-        # Self-play (bots): stops the live coach to free the bridge port
-        # (44222), then runs a headless bot-vs-bot session whose output
-        # streams into the Coach Log. Toggles to a Stop control while running.
+        # 4. AP Toggle Button
+        ap_btn = _btn("AP", "Toggle autopilot — plays the game via GRE bridge", command="toggle_autopilot")
+        button_row.addWidget(ap_btn)
+
+        # 5. Suggest Deck Button
+        suggest_deck_btn = _btn("Suggest Deck", "Request deck recommendations & suggestions", on_click=self._suggest_deck)
+        button_row.addWidget(suggest_deck_btn)
+
+        # 6. Brain Stream Inspector Toggle Button
+        self.brain_stream_btn = QPushButton("🧠 Brain Stream")
+        self.brain_stream_btn.setToolTip("Open/Toggle the Brain Stream Inspector window")
+        self.brain_stream_btn.setStyleSheet(
+            "QPushButton { font-weight: bold; background: #313244; color: #89b4fa; border: 1px solid #89b4fa; border-radius: 4px; padding: 5px 12px; }"
+            "QPushButton:hover { background: #45475a; }"
+        )
+        self.brain_stream_btn.clicked.connect(self.toggle_brain_stream)
+        button_row.addWidget(self.brain_stream_btn)
+
+        button_row.addStretch()
+
+        # Secondary Overflow Menu (⋯) for advanced diagnostic & overlay tools
         self._self_play_btn = _btn(
             "Self-Play",
-            "Stop live coaching and run a headless bot-vs-bot self-play session.\n"
-            "This frees the GRE bridge (port 44222) for the self-play process.\n"
-            "Output streams into the Coach Log.",
+            "Headless bot-vs-bot session",
             on_click=lambda _checked=False: self._toggle_self_play(),
         )
-        button_row.addWidget(_group("System", [
-            _btn("Restart", "Restart the coaching engine", command="restart"),
-            _btn("Debug Report", "Capture logs + game state and file a bug report",
-                 on_click=self._submit_debug_report),
-            self._self_play_btn,
-        ]))
-
-        import sys
-
-        # Match-overlay calibration: draws a thin outline around every
-        # card the plugin detects, to verify ground-truth alignment.
-        match_calib_button = QPushButton("Calibrate Cards")
-        match_calib_button.setCheckable(True)
-        match_calib_button.setToolTip(
-            "Draw border around MTGA cards reported by bridge plugin "
-            "to verify alignment"
-        )
-        match_calib_button.clicked.connect(
-            lambda checked: self._match_overlay.set_calibration(checked)
-        )
-
-        # Overlay visibility toggle — hide the whole in-game overlay
-        # when it's covering MTGA content.
         self._overlay_toggle_btn = QPushButton("Overlay")
         self._overlay_toggle_btn.setCheckable(True)
-        self._overlay_toggle_btn.setChecked(True)  # default: on
-        overlay_tooltip = "Show/hide the in-game overlay (pill + advice panel)"
-        if sys.platform.startswith("linux"):
-            overlay_tooltip += (
-                "\nNote: under pure Wayland the overlay may not track the "
-                "MTGA window (XWayland works)."
-            )
-        self._overlay_toggle_btn.setToolTip(overlay_tooltip)
+        self._overlay_toggle_btn.setChecked(True)
         self._overlay_toggle_btn.clicked.connect(
             lambda checked: self._match_overlay.set_enabled(checked)
         )
-
-        # Reset advice panel — drag the panel anywhere over MTGA to
-        # move it; click this to put it back.
         self._advice_anchor_btn = _btn(
             "Reset Advice Panel",
-            "Snap the advice panel back to its default position and size",
+            "Snap advice panel to default position",
             on_click=self._reset_advice_panel,
         )
-        display_buttons = []
-        if sys.platform == "win32":
-            # Vision screenshot analysis remains Windows-only
-            # (screen capture path is win32-specific).
-            display_buttons.append(
-                _btn("Screen", "Analyze a screenshot of the game with the "
-                     "vision model", command="analyze_screen")
-            )
-        display_buttons += [
-            match_calib_button,
-            self._overlay_toggle_btn,
-            self._advice_anchor_btn,
-        ]
-        button_row.addWidget(_group("Display", display_buttons))
 
-        button_row.addStretch()
+        self._overflow_btn = QToolButton()
+        self._overflow_btn.setText("⋯")
+        self._overflow_btn.setToolTip("More diagnostic tools & overlay options")
+        self._overflow_menu = QMenu(self)
+
+        analyze_act = self._overflow_menu.addAction("Analyze Match")
+        analyze_act.triggered.connect(lambda: self._send_command("analyze_match"))
+
+        stop_act = self._overflow_menu.addAction("Force Stop AP")
+        stop_act.triggered.connect(lambda: self._send_command("force_stop"))
+
+        restart_act = self._overflow_menu.addAction("Restart Engine")
+        restart_act.triggered.connect(lambda: self._send_command("restart"))
+
+        debug_act = self._overflow_menu.addAction("Debug Report")
+        debug_act.triggered.connect(self._submit_debug_report)
+
+        reset_panel_act = self._overflow_menu.addAction("Reset Advice Panel")
+        reset_panel_act.triggered.connect(self._reset_advice_panel)
+
+        self._overflow_btn.setMenu(self._overflow_menu)
+        self._overflow_btn.setPopupMode(QToolButton.InstantPopup)
+        button_row.addWidget(self._overflow_btn)
+
         top_layout.addLayout(button_row)
 
         game_box = QGroupBox("Game State")
@@ -609,6 +642,28 @@ class CoachTab(QWidget):
         self.append_log(f"> {text}", role="status")
         if self._process is not None:
             self._process.send_command("chat", text)
+
+    def _on_ptt_clicked(self) -> None:
+        if hasattr(self, "ptt_indicator"):
+            self.ptt_indicator.set_status("Listening...", active=True)
+            QTimer.singleShot(2500, lambda: self.ptt_indicator.set_status("PTT: Space (Ready)", active=False))
+
+    def _suggest_deck(self) -> None:
+        self.chat_input.setText("/deck")
+        self.send_chat()
+
+    def toggle_brain_stream(self) -> None:
+        if getattr(self, "_brain_stream_window", None) is None:
+            from .brain_stream_window import BrainStreamWindow
+            self._brain_stream_window = BrainStreamWindow(self)
+            if hasattr(self, "_last_game_state_payload") and self._last_game_state_payload:
+                self._brain_stream_window.update_game_state(self._last_game_state_payload)
+        if self._brain_stream_window.isVisible():
+            self._brain_stream_window.hide()
+        else:
+            self._brain_stream_window.show()
+            self._brain_stream_window.raise_()
+            self._brain_stream_window.activateWindow()
 
     def _send_command(self, command: str) -> None:
         # Restart is handled by the main window (stop + relaunch process).
@@ -796,6 +851,37 @@ class CoachTab(QWidget):
             return
 
         event_type = payload.get("type")
+
+        # Forward live event stream to Brain Stream Inspector if active
+        if getattr(self, "_brain_stream_window", None) is not None:
+            try:
+                if event_type == "game_state":
+                    data = payload.get("data")
+                    if isinstance(data, dict):
+                        self._brain_stream_window.update_game_state(data)
+                        turn_num = data.get("turn_number") or (data.get("turn") or {}).get("turn_number", 0)
+                        self._brain_stream_window.log_trigger_event("GAME_STATE", f"Turn {turn_num}")
+                elif event_type == "advice":
+                    text = str(payload.get("text", ""))
+                    self._brain_stream_window.set_reasoning_text(text)
+                    self._brain_stream_window.log_trigger_event("ADVICE_RECEIVED")
+                elif event_type in ("reasoning", "reasoning_token"):
+                    token = str(payload.get("token") or payload.get("text") or "")
+                    self._brain_stream_window.append_reasoning_token(token)
+                elif event_type == "status":
+                    key = str(payload.get("key", ""))
+                    val = str(payload.get("value", ""))
+                    if key == "BRIDGE":
+                        self._brain_stream_window.update_telemetry(bridge_connected=("CONNECTED" in val.upper()))
+                    self._brain_stream_window.log_trigger_event(f"STATUS_{key}", val)
+                elif event_type == "telemetry":
+                    lat = payload.get("latency_ms") or payload.get("latency", "")
+                    backend = str(payload.get("backend", "vLLM"))
+                    self._brain_stream_window.update_telemetry(latency=lat, backend=backend)
+                elif event_type == "speak_request" and hasattr(self, "ptt_indicator"):
+                    self.ptt_indicator.set_status("Speaking advice...", speaking=True)
+            except Exception:
+                pass
         if event_type == "log":
             self.append_log(str(payload.get("message", "")), role="dim")
         elif event_type == "advice":

@@ -172,78 +172,108 @@ Output ONLY a JSON object:
 
 If you cannot read any card names clearly:
 {{"cards": []}}"""
-
-
 # ---------------------------------------------------------------------------
-# Ollama VLM Client
+# Local VLM Client (Qwen2-VL / Llava / Ollama / OpenAI-compat)
 # ---------------------------------------------------------------------------
 
-class OllamaVLM:
-    """Fast local VLM via Ollama for screen analysis."""
+class LocalVLM:
+    """Fast local VLM client supporting Ollama and OpenAI-compatible endpoints (vLLM, LM Studio, etc.).
+    
+    Supports models such as Qwen2-VL, Qwen2.5-VL, Llava, Moondream, and Llama 3.2 Vision.
+    """
 
     def __init__(
         self,
         model: str = "qwen2.5-vl:3b",
         endpoint: str = "http://localhost:11434",
         timeout: float = 20.0,
+        api_type: str = "auto",  # "auto", "ollama", "openai"
     ):
         self.model = model
         self.endpoint = endpoint.rstrip("/")
         self.timeout = timeout
+        self.api_type = api_type.lower()
         self._available: Optional[bool] = None
+        self._detected_api: str = "ollama"
 
     @property
     def available(self) -> bool:
-        """Check if Ollama is running and the model is available."""
+        """Check if local VLM endpoint is running and the model is available."""
         if self._available is not None:
             return self._available
-        try:
-            import urllib.request
-            req = urllib.request.Request(
-                f"{self.endpoint}/api/tags",
-                method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                data = json.loads(resp.read())
-                models = [m.get("name", "") for m in data.get("models", [])]
-                # Check if our model (or a prefix of it) is available
-                prefix = self.model.split(":")[0]
-                matched = None
-                for m in models:
-                    if self.model in m or m.startswith(prefix):
-                        matched = m
-                        break
-                # Fuzzy: strip hyphens to handle naming variants
-                # e.g. "qwen2.5-vl:3b" matches "qwen2.5vl:3b"
-                if matched is None:
-                    norm = self.model.replace("-", "")
-                    norm_prefix = prefix.replace("-", "")
+
+        import urllib.request
+
+        # 1. Try OpenAI-compatible endpoint if specified or /v1 in path or auto
+        if self.api_type in ("openai", "auto") or "/v1" in self.endpoint:
+            base = self.endpoint
+            if not base.endswith("/v1") and "/v1" not in base and not base.endswith("/chat/completions"):
+                models_url = f"{base}/v1/models"
+            elif base.endswith("/chat/completions"):
+                models_url = base.replace("/chat/completions", "/models")
+            else:
+                models_url = f"{base}/models"
+
+            try:
+                req = urllib.request.Request(models_url, method="GET")
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    data = json.loads(resp.read())
+                    raw_models = data.get("data", [])
+                    model_names = [m.get("id", "") for m in raw_models if isinstance(m, dict)]
+                    if model_names or self.api_type == "openai":
+                        self._detected_api = "openai"
+                        self._available = True
+                        logger.info("LocalVLM: OpenAI-compatible VLM endpoint detected at %s", models_url)
+                        return True
+            except Exception:
+                pass
+
+        # 2. Try Ollama endpoint
+        if self.api_type in ("ollama", "auto"):
+            try:
+                req = urllib.request.Request(f"{self.endpoint}/api/tags", method="GET")
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    data = json.loads(resp.read())
+                    models = [m.get("name", "") for m in data.get("models", [])]
+                    prefix = self.model.split(":")[0].split("/")[0]
+                    matched = None
                     for m in models:
-                        mn = m.replace("-", "")
-                        if norm in mn or mn.startswith(norm_prefix):
+                        if self.model in m or m.startswith(prefix):
                             matched = m
                             break
-                if matched:
-                    if matched != self.model:
-                        logger.info(
-                            f"Ollama model '{self.model}' resolved to '{matched}'"
-                        )
-                        self.model = matched
-                    self._available = True
-                else:
-                    self._available = False
-                    logger.warning(
-                        f"Ollama model '{self.model}' not found. "
-                        f"Available: {models}. Run: ollama pull {self.model}"
-                    )
-                return self._available
-        except Exception as e:
-            logger.info(f"Ollama not available: {e}")
-            self._available = False
-            return False
+                    if matched is None:
+                        norm = self.model.replace("-", "").replace(".", "")
+                        norm_prefix = prefix.replace("-", "").replace(".", "")
+                        for m in models:
+                            mn = m.replace("-", "").replace(".", "")
+                            if norm in mn or mn.startswith(norm_prefix):
+                                matched = m
+                                break
+                    if matched:
+                        if matched != self.model:
+                            logger.info("Ollama model '%s' resolved to '%s'", self.model, matched)
+                            self.model = matched
+                        self._detected_api = "ollama"
+                        self._available = True
+                        return True
+                    elif models and self.api_type == "auto":
+                        # Any VLM model available in Ollama
+                        vlm_keywords = ["vl", "llava", "qwen2", "vision", "moondream", "bakllava"]
+                        for m in models:
+                            if any(k in m.lower() for k in vlm_keywords):
+                                logger.info("Resolved default VLM model to '%s'", m)
+                                self.model = m
+                                self._detected_api = "ollama"
+                                self._available = True
+                                return True
+            except Exception as e:
+                logger.info("Ollama endpoint not available: %s", e)
+
+        self._available = False
+        return False
 
     def analyze(self, prompt: str, image_bytes: bytes) -> Optional[dict]:
-        """Send image + prompt to Ollama and parse JSON response."""
+        """Send image + prompt to local VLM and parse JSON response."""
         if not self.available:
             return None
 
@@ -251,43 +281,94 @@ class OllamaVLM:
             import urllib.request
 
             b64_image = base64.b64encode(image_bytes).decode("utf-8")
-
-            payload = json.dumps({
-                "model": self.model,
-                "prompt": prompt,
-                "images": [b64_image],
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,
-                    "num_predict": 2048,
-                },
-            }).encode("utf-8")
-
-            req = urllib.request.Request(
-                f"{self.endpoint}/api/generate",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-
             start = time.perf_counter()
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                result = json.loads(resp.read())
 
-            elapsed_ms = (time.perf_counter() - start) * 1000
-            response_text = result.get("response", "")
-            logger.info(f"[Ollama] {self.model}: {elapsed_ms:.0f}ms, {len(response_text)} chars")
+            if self._detected_api == "openai":
+                url = self.endpoint
+                if not url.endswith("/chat/completions"):
+                    if not url.endswith("/v1"):
+                        url = f"{url}/v1/chat/completions"
+                    else:
+                        url = f"{url}/chat/completions"
 
-            # Extract JSON from response (may be wrapped in markdown fences)
-            return self._parse_json(response_text)
+                payload = json.dumps({
+                    "model": self.model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:image/png;base64,{b64_image}"},
+                                },
+                            ],
+                        }
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 2048,
+                }).encode("utf-8")
+
+                req = urllib.request.Request(
+                    url,
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    result = json.loads(resp.read())
+
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                choices = result.get("choices", [])
+                response_text = ""
+                if choices:
+                    msg = choices[0].get("message", {})
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        response_text = content
+                    elif isinstance(content, list):
+                        response_text = "".join(
+                            item.get("text", "") for item in content if isinstance(item, dict)
+                        )
+                logger.info(f"[OpenAI-VLM] {self.model}: {elapsed_ms:.0f}ms, {len(response_text)} chars")
+                return self._parse_json(response_text)
+
+            else:
+                # Ollama protocol
+                payload = json.dumps({
+                    "model": self.model,
+                    "prompt": prompt,
+                    "images": [b64_image],
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1,
+                        "num_predict": 2048,
+                    },
+                }).encode("utf-8")
+
+                req = urllib.request.Request(
+                    f"{self.endpoint}/api/generate",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    result = json.loads(resp.read())
+
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                response_text = result.get("response", "")
+                logger.info(f"[Ollama-VLM] {self.model}: {elapsed_ms:.0f}ms, {len(response_text)} chars")
+                return self._parse_json(response_text)
 
         except Exception as e:
-            logger.error(f"Ollama analyze failed: {e}")
+            logger.error(f"Local VLM analyze failed: {e}")
             return None
 
     @staticmethod
     def _parse_json(text: str) -> Optional[dict]:
         """Extract JSON from VLM response text."""
+        if not text:
+            return None
         # Try direct parse
         try:
             return json.loads(text)
@@ -306,13 +387,16 @@ class OllamaVLM:
         match = re.search(r'\{[\s\S]*\}', text)
         if match:
             try:
-                # Clean trailing commas
                 cleaned = re.sub(r',\s*([}\]])', r'\1', match.group(0))
                 return json.loads(cleaned)
             except json.JSONDecodeError:
                 pass
 
         return None
+
+
+# Backward compatibility alias
+OllamaVLM = LocalVLM
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +408,7 @@ class VisionMapper:
 
     Three-tier resolution:
       1. Layout cache (< 1ms) — from recent VLM scan of entire screen
-      2. Local VLM    (~500ms) — Ollama for targeted element search
+      2. Local VLM    (~500ms) — Ollama/Qwen2-VL/Llava for targeted element search
       3. Cloud VLM    (~2-4s)  — ProxyBackend for complex/ambiguous cases
 
     Cache invalidation triggers:
@@ -337,13 +421,22 @@ class VisionMapper:
 
     def __init__(
         self,
-        ollama_model: str = "qwen2.5vl:3b",
+        ollama_model: str = "qwen2.5-vl:3b",
         ollama_endpoint: str = "http://localhost:11434",
         cache_max_age: float = 30.0,
         enable_local_vlm: bool = True,
         enable_cloud_vlm: bool = True,
+        local_vlm_model: Optional[str] = None,
+        local_vlm_endpoint: Optional[str] = None,
+        api_type: str = "auto",
     ):
-        self._local_vlm = OllamaVLM(ollama_model, ollama_endpoint) if enable_local_vlm else None
+        model = local_vlm_model or ollama_model
+        endpoint = local_vlm_endpoint or ollama_endpoint
+        self._local_vlm = (
+            LocalVLM(model=model, endpoint=endpoint, api_type=api_type)
+            if enable_local_vlm
+            else None
+        )
         self._cloud_backend: Any = None  # Set via set_cloud_backend()
         self._enable_cloud = enable_cloud_vlm
         self._cache_max_age = cache_max_age

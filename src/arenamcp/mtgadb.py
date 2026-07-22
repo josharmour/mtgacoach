@@ -157,6 +157,7 @@ class MTGADatabase:
         self._db_path = db_path or find_mtga_database()
         self._conn: Optional[sqlite3.Connection] = None
         self._conn_lock = threading.RLock()
+        self._card_cache: dict[int, MTGACard] = {}
         self._available = False
         self._error_count = 0  # Track consecutive errors for reconnection
 
@@ -174,6 +175,7 @@ class MTGADatabase:
             self._conn = None
             self._available = False
             self._error_count = 0
+            self._card_cache.clear()
 
             if not self._db_path or not self._db_path.exists():
                 logger.warning("MTGA database not available")
@@ -265,7 +267,11 @@ class MTGADatabase:
         Returns:
             MTGACard with card data, or None if not found.
         """
+        grp_id = int(grp_id)
         with self._conn_lock:
+            if grp_id in self._card_cache:
+                return self._card_cache[grp_id]
+
             if not self._available or not self._conn:
                 return None
 
@@ -285,7 +291,7 @@ class MTGADatabase:
                     FROM Cards c
                     LEFT JOIN Localizations_enUS l ON c.TitleId = l.LocId AND l.Formatted = 1
                     WHERE c.GrpId = ?
-                """, (int(grp_id),))
+                """, (grp_id,))
 
                 row = cursor.fetchone()
                 if row:
@@ -297,7 +303,7 @@ class MTGADatabase:
                         name = re.sub(r"<[^>]+>", "", name)
 
                     self._error_count = 0
-                    return MTGACard(
+                    card = MTGACard(
                         grp_id=row["GrpId"],
                         name=name,
                         types=row["Types"],
@@ -308,6 +314,8 @@ class MTGADatabase:
                         expansion_code=row["ExpansionCode"] or "",
                         oracle_text=oracle_text
                     )
+                    self._card_cache[grp_id] = card
+                    return card
             except Exception as e:
                 self._error_count += 1
                 if self._error_count <= 3:
@@ -327,17 +335,28 @@ class MTGADatabase:
         Returns:
             Dict mapping grp_id to MTGACard for found cards.
         """
-        grp_ids = [int(grp_id) for grp_id in grp_ids]
-        if not grp_ids:
+        clean_ids = [int(grp_id) for grp_id in grp_ids if grp_id]
+        if not clean_ids:
             return {}
 
         with self._conn_lock:
-            if not self._available or not self._conn:
-                return {}
+            results: dict[int, MTGACard] = {}
+            missing_ids: list[int] = []
 
-            results = {}
+            for gid in clean_ids:
+                if gid in self._card_cache:
+                    results[gid] = self._card_cache[gid]
+                else:
+                    missing_ids.append(gid)
+
+            if not missing_ids:
+                return results
+
+            if not self._available or not self._conn:
+                return results
+
             try:
-                placeholders = ",".join("?" * len(grp_ids))
+                placeholders = ",".join("?" * len(missing_ids))
                 cursor = self._conn.execute(f"""
                     SELECT
                         c.GrpId,
@@ -353,7 +372,7 @@ class MTGADatabase:
                     FROM Cards c
                     LEFT JOIN Localizations_enUS l ON c.TitleId = l.LocId AND l.Formatted = 1
                     WHERE c.GrpId IN ({placeholders})
-                """, grp_ids)
+                """, missing_ids)
 
                 for row in cursor.fetchall():
                     oracle_text = self._resolve_oracle_text(row["AbilityIds"])
@@ -374,6 +393,7 @@ class MTGADatabase:
                         expansion_code=row["ExpansionCode"] or "",
                         oracle_text=oracle_text
                     )
+                    self._card_cache[card.grp_id] = card
                     results[card.grp_id] = card
                 self._error_count = 0
             except Exception as e:
@@ -384,6 +404,30 @@ class MTGADatabase:
                     self._connect()
 
         return results
+
+    def prewarm_cards(self, grp_ids: list[int]) -> dict[int, MTGACard]:
+        """Pre-warm in-memory card cache for a batch of GrpIds.
+
+        Executes a single SQLite batch query for any GrpIds not currently in cache,
+        eliminating card resolution overhead during turn triggers and decision prompts.
+
+        Args:
+            grp_ids: List of GrpIds to pre-warm.
+
+        Returns:
+            Dict mapping grp_id to MTGACard for all pre-warmed cards.
+        """
+        clean_ids = [int(g) for g in grp_ids if g]
+        if not clean_ids:
+            return {}
+
+        with self._conn_lock:
+            return self.get_cards_batch(clean_ids)
+
+    def clear_cache(self) -> None:
+        """Clear internal in-memory card lookup cache."""
+        with self._conn_lock:
+            self._card_cache.clear()
 
     def get_ability_text(self, ability_id: int) -> Optional[str]:
         """Look up text for an ability ID (e.g. stack object).

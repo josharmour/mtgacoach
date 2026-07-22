@@ -5196,7 +5196,73 @@ class StandaloneCoach:
         self.ui.log(f"[yellow]Saved missed decisions locally: {path}[/]")
         logger.info(f"Saved {len(missed)} missed decisions to {path}")
 
+    def get_sideboard_recommendations(self) -> Optional[str]:
+        """Generate Bo3 sideboarding recommendations between games."""
+        if not self._coach:
+            self.ui.log("[yellow]Coach engine not initialized.[/]")
+            return None
+
+        self.ui.log("[cyan]Evaluating Bo3 sideboarding options...[/]")
+        try:
+            game_state = self._mcp.get_game_state() if self._mcp else {}
+        except Exception as e:
+            logger.debug(f"Could not fetch game state for sideboarding: {e}")
+            game_state = {}
+
+        maindeck_cards = game_state.get("deck_cards", [])
+        sideboard_cards = game_state.get("sideboard_cards", [])
+        opp_cards_seen = game_state.get("opponent_played_cards", [])
+
+        def _resolve_card_list(card_list: list[Any]) -> list[Any]:
+            resolved = []
+            for item in card_list:
+                if isinstance(item, int) and self._mcp:
+                    try:
+                        info = self._mcp.get_card_info(item)
+                        if info:
+                            resolved.append((
+                                info.get("name", f"Card({item})"),
+                                info.get("type_line", ""),
+                                info.get("oracle_text", ""),
+                            ))
+                            continue
+                    except Exception:
+                        pass
+                resolved.append(item)
+            return resolved
+
+        resolved_maindeck = _resolve_card_list(maindeck_cards)
+        resolved_sideboard = _resolve_card_list(sideboard_cards)
+        resolved_opp = _resolve_card_list(opp_cards_seen)
+
+        game_history = []
+        if self._advice_history:
+            turns = [
+                e.get("game_snapshot", {}).get("turn_number", 0)
+                for e in self._advice_history
+                if e.get("game_snapshot")
+            ]
+            max_turn = max(turns) if turns else 0
+            game_history.append({"result": self._detect_match_result() or "Game 1", "turns": max_turn})
+
+        rec = self._coach.recommend_sideboard(
+            maindeck_cards=resolved_maindeck,
+            sideboard_cards=resolved_sideboard,
+            opponent_cards_seen=resolved_opp,
+            game_history=game_history,
+        )
+
+        if rec:
+            self.ui.advice(rec, "SIDEBOARD")
+            if self._voice_output:
+                self.speak_advice(rec, blocking=False)
+            return rec
+        else:
+            self.ui.log("[yellow]Could not generate sideboard recommendations.[/]")
+            return None
+
     def trigger_match_analysis(self) -> None:
+
         """Manually trigger post-match analysis (from Analyze Match button).
 
         Prefer the most recently completed match if one was staged already.
