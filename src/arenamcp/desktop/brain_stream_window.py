@@ -311,15 +311,42 @@ class BrainStreamWindow(QMainWindow):
         else:
             self.draw_odds_view.setPlainText("Draw Odds: Calculating active deck probabilities...")
 
-        # 5. Turn History
-        history = state_data.get("turn_history") or state_data.get("history") or []
+        # 5. Turn History (Concatenated & Persisted Across Turns)
+        if not hasattr(self, "_turn_history_set"):
+            self._turn_history_set = set()
+            self._last_turn_key = None
+
         turn = state_data.get("turn") or {}
         turn_num = turn.get("turn_number") or state_data.get("turn_number", 0)
-        hist_lines = [f"Current Turn: {turn_num} ({turn.get('phase', 'Main')})"]
+        phase = turn.get("phase") or state_data.get("phase", "") or "Main"
+        active_p = state_data.get("active_player") or turn.get("active_player") or ""
+
+        # Reset turn history accumulator when Turn 1 starts in a new match
+        if turn_num == 1 and phase in ("Beginning", "Main 1", "Main") and getattr(self, "_last_turn_num", 0) > 1:
+            self._turn_history_set.clear()
+            self.turn_history_view.clear()
+
+        self._last_turn_num = turn_num
+
+        turn_key = f"T{turn_num}_{phase}_{active_p}"
+        if turn_num > 0 and turn_key != self._last_turn_key:
+            self._last_turn_key = turn_key
+            import datetime
+            ts = datetime.datetime.now().strftime("%H:%M:%S")
+            who = "HERO" if str(active_p) in ("1", "hero", "me") else ("OPPONENT" if active_p else "ACTIVE")
+            entry_line = f"[{ts}] Turn {turn_num} ({phase}) — {who}'s Turn"
+            if entry_line not in self._turn_history_set:
+                self._turn_history_set.add(entry_line)
+                self.turn_history_view.append(entry_line)
+
+        # Append any structural history items passed in payload
+        history = state_data.get("turn_history") or state_data.get("history") or []
         if isinstance(history, list):
-            for entry in history:
-                hist_lines.append(f"• {entry}")
-        self.turn_history_view.setPlainText("\n".join(hist_lines))
+            for item in history:
+                item_str = f"  • {item}"
+                if item_str not in self._turn_history_set:
+                    self._turn_history_set.add(item_str)
+                    self.turn_history_view.append(item_str)
 
     def append_advice_history(self, seat_info: str, text: str) -> None:
         """Append an advice entry to the concatenated multi-turn advice stream."""
