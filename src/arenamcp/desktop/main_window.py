@@ -418,6 +418,10 @@ class ModelEndpointDialog(QDialog):
 class MainWindow(QMainWindow):
     # (local_version, remote_version) — emitted from the update-check thread.
     _update_ready = Signal(str, str)
+    # Hotkey callbacks can fire on a background listener thread (keyboard
+    # library on Windows, event tap on macOS); QProcess is not thread-safe,
+    # so pipe commands are marshaled onto the Qt main thread via this signal.
+    _hotkey_command = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -476,22 +480,29 @@ class MainWindow(QMainWindow):
         self._update_ready.connect(self._on_update_ready)
         QTimer.singleShot(2500, self._start_update_check)
 
+        self._hotkey_command.connect(self._send_hotkey_command)
         self._hotkeys = HotkeyManager(self)
-        self._hotkeys.register("F3", self._on_f3)
-        self._hotkeys.register("F4", self._on_f4)
-        self._hotkeys.register("F5", self._on_f5)
+        # The desktop app always spawns the backend in pipe mode, and in that
+        # mode the backend's global keyboard hooks (Windows only) cover just
+        # F1/F4/F12 (standalone.py _register_hotkeys). The GUI therefore
+        # provides F3/F5/F10 on every platform; F4 is left alone so the
+        # backend's autopilot-abort hook is never shadowed on Windows.
+        self._hotkeys.register("F3", self._on_toggle_frequency)
+        self._hotkeys.register("F5", self._on_force_advice)
+        self._hotkeys.register("F10", self._on_replay_advice)
 
-    def _on_f3(self):
-        if self._process:
-            self._process.send_payload({"cmd": "toggle_frequency"})
+    def _on_toggle_frequency(self):
+        self._hotkey_command.emit("toggle_frequency")
 
-    def _on_f4(self):
-        if self._process:
-            self._process.send_payload({"cmd": "replay_advice"})
+    def _on_replay_advice(self):
+        self._hotkey_command.emit("replay_advice")
 
-    def _on_f5(self):
+    def _on_force_advice(self):
+        self._hotkey_command.emit("force_advice")
+
+    def _send_hotkey_command(self, command: str) -> None:
         if self._process:
-            self._process.send_payload({"cmd": "force_advice"})
+            self._process.send_payload({"cmd": command})
 
     def _start_update_check(self) -> None:
         def _work() -> None:
