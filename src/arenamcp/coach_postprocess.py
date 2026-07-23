@@ -1,0 +1,1071 @@
+"""Advice post-processing helpers for CoachEngine, extracted from coach.py.
+
+Pure move: methods are unchanged and mixed back into CoachEngine."""
+
+import logging
+from collections import Counter
+from typing import Any
+
+from arenamcp.backend_health import is_backend_error_text
+from arenamcp.coach_prompt_utils import (
+    _NON_PASSABLE_REQUEST_CLASSES,
+    _NON_PASSABLE_REQUEST_TYPES,
+    _fallback_non_action_advice,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class _AdvicePostprocessMixin:
+    def _postprocess_advice(self, advice: str, game_state: dict[str, Any], style: str = "quick") -> str:
+        """Post-process LLM advice to fix common issues with smaller models.
+
+        1. Strip markdown formatting (headers, bold, bullets) for spoken output
+        2. Truncate overly long responses when style is concise
+        3. Remove 'Play [Land]' suggestions when no land is in hand
+        4. Fix typos in card names using fuzzy matching against the game state
+
+        This is a band-aid layer over freeform LLM prose. The cleaner long-term
+        fix is to switch the coach to structured JSON output (action + say
+        fields) the way the autopilot planner does — that way the action gets
+        validated against legal actions before TTS reads it, and most of these
+        regex passes go away. Tracked separately; for now we keep the cleanup
+        targeted and data-driven rather than hardcoded.
+        """
+        if not advice:
+            return ""
+
+        import re
+
+        # 0a. Strip markdown formatting — this is spoken aloud, not rendered
+        # Remove headers (# Header or ##Header — with or without space)
+        advice = re.sub(r"^#{1,6}\s*", "", advice, flags=re.MULTILINE)
+        # Remove bold/italic markers
+        advice = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", advice)
+        # Remove bullet markers at start of line (•, -, *)
+        advice = re.sub(r"^\s*[•\-\*]\s+", "", advice, flags=re.MULTILINE)
+        # Remove inline bullet characters (•)
+        advice = advice.replace("•", "")
+        # Collapse multiple newlines into single space
+        advice = re.sub(r"\n+", " ", advice)
+        # Clean up resulting whitespace
+        advice = re.sub(r"\s+", " ", advice).strip()
+
+        # 0b. Enforce style-specific length limits.
+        # Quick: under 20 words (LLM sometimes ignores the prompt).
+        # Chatty: under ~80 words so TTS stays under ~25 seconds.
+        # Legacy names accepted: concise==quick, verbose==chatty.
+        style_norm = (style or "").lower()
+        if style_norm in ("quick", "concise"):
+            word_cap, sent_cap = 22, 2
+        elif style_norm in ("chatty", "verbose"):
+            word_cap, sent_cap = 80, 5
+        else:
+            word_cap, sent_cap = 60, 4  # normal/default
+
+        words = advice.split()
+        if len(words) > word_cap + 5:  # small slack before truncating
+            sentences = re.split(r"(?<=[.!?])\s+", advice)
+            truncated = []
+            count = 0
+            for sent in sentences[:sent_cap]:
+                sw = sent.split()
+                if count + len(sw) > word_cap and truncated:
+                    break
+                truncated.append(sent)
+                count += len(sw)
+            advice = " ".join(truncated).strip()
+            if advice and advice[-1] not in ".!?":
+                advice += "."
+
+        def _combat_attack_summary() -> tuple[int, int, int] | None:
+            """Return (attack_power, opp_life, opp_blockers) if computable."""
+            turn = game_state.get("turn", {})
+            turn_num = turn.get("turn_number", 0)
+            phase = turn.get("phase", "")
+
+            players = game_state.get("players", [])
+            local_player = next((p for p in players if p.get("is_local")), None)
+            if not local_player:
+                return None
+            local_seat = local_player.get("seat_id")
+            opponent_player = next((p for p in players if p.get("seat_id") != local_seat), None)
+            if not opponent_player:
+                return None
+
+            if turn.get("active_player") != local_seat:
+                return None
+            if "Main" not in phase and "Combat" not in phase:
+                return None
+
+            battlefield = game_state.get("battlefield", [])
+            your_creatures = [
+                c
+                for c in battlefield
+                if c.get("owner_seat_id") == local_seat
+                and "creature" in c.get("type_line", "").lower()
+                and not self._is_impending(c)
+            ]
+
+            def _has_haste(card: dict[str, Any]) -> bool:
+                return "haste" in self._remove_reminder_text(card.get("oracle_text", "")).lower()
+
+            valid_attackers = [
+                c
+                for c in your_creatures
+                if not c.get("is_tapped")
+                and not (c.get("turn_entered_battlefield") == turn_num and not _has_haste(c))
+            ]
+            attack_power = sum(c.get("power") or 0 for c in valid_attackers)
+
+            opp_creatures = [
+                c
+                for c in battlefield
+                if c.get("owner_seat_id") != local_seat
+                and "creature" in c.get("type_line", "").lower()
+                and not self._is_impending(c)
+            ]
+            opp_blockers = len([c for c in opp_creatures if not c.get("is_tapped")])
+            opp_life = opponent_player.get("life_total", 20)
+
+            return attack_power, opp_life, opp_blockers
+
+        # Get cards in hand
+        hand_cards = game_state.get("hand", [])
+        {c.get("name", "").lower() for c in hand_cards}
+
+        # Get all card names in game state for fuzzy matching
+        all_cards = []
+        for zone in ["hand", "battlefield", "graveyard", "stack", "exile"]:
+            all_cards.extend(game_state.get(zone, []))
+        all_card_names = {c.get("name", "") for c in all_cards if c.get("name")}
+
+        # Build the set of land card names known to this game. Anything with
+        # "Land" in its type_line counts — covers basics, snow, Triomes,
+        # shocks, fetch, Cavern of Souls, etc. The hardcoded basic-only list
+        # we used to keep here missed every modern land.
+        known_land_names = {
+            (c.get("name") or "").lower()
+            for c in all_cards
+            if "land" in (c.get("type_line") or "").lower() and c.get("name")
+        }
+        # Generic words the LLM might use even when no specific land card is
+        # actually visible. Kept here (not in a regex literal) so the set is
+        # easy to extend.
+        generic_land_terms = {"a land", "any land", "land"}
+
+        # Check whether any land sits in the local player's hand.
+        local_seat = None
+        for p in game_state.get("players", []):
+            if p.get("is_local"):
+                local_seat = p.get("seat_id")
+                break
+        lands_in_hand: set[str] = set()
+        for c in hand_cards:
+            type_line = (c.get("type_line") or "").lower()
+            name = (c.get("name") or "").lower()
+            if "land" in type_line and name:
+                lands_in_hand.add(name)
+
+        # 1. Remove "Play <X>" suggestions when there's no land in hand.
+        # We match X against actual land card names from this game's state
+        # plus a small set of generic land phrases. This is data-driven
+        # instead of a hardcoded basic-lands list, so Triomes / shocks /
+        # snow basics all get caught too.
+        if not lands_in_hand:
+            removable_land_names = known_land_names | generic_land_terms
+            if removable_land_names:
+                # Sort longest first so multi-word names match before substrings
+                land_alternatives = sorted(removable_land_names, key=len, reverse=True)
+                land_pattern = re.compile(
+                    r"Play\s+(?:" + "|".join(re.escape(n) for n in land_alternatives) + r")[.,]?\s*",
+                    flags=re.IGNORECASE,
+                )
+                advice = land_pattern.sub("", advice)
+                # Clean up any resulting double spaces or leading/trailing spaces
+                advice = re.sub(r"\s+", " ", advice).strip()
+
+        # 2. Fix typos in card names by fuzzy-matching against the actual
+        # card names in this game's state. The previous hardcoded
+        # typo-fixes dict (Gemma 3N misreads of specific card names) is
+        # gone — it never scaled past the handful of cards we'd seen
+        # break, and the fuzzy pass below catches the same misspellings
+        # generically as long as the real card is somewhere in state.
+        # Split advice into words and check for near-matches
+        for card_name in all_card_names:
+            if len(card_name) < 4:
+                continue  # Skip short names to avoid false matches
+            # Check if card name appears with typos (simple Levenshtein-like check)
+            card_words = card_name.lower().split()
+            for word in card_words:
+                if len(word) < 4:
+                    continue
+                # Look for similar words in advice
+                advice_words = advice.lower().split()
+                for i, advice_word in enumerate(advice_words):
+                    if len(advice_word) >= 4 and self._is_similar(word, advice_word):
+                        # Replace the typo with correct spelling
+                        # Find the actual word in original advice and replace
+                        original_words = advice.split()
+                        if i < len(original_words):
+                            # Only replace if first letter matches (to avoid false positives)
+                            if original_words[i][0].lower() == word[0].lower():
+                                original_words[i] = (
+                                    word.capitalize() if original_words[i][0].isupper() else word
+                                )
+                                advice = " ".join(original_words)
+
+        # 3. Remove Cast suggestions for cards that cost more mana than available
+        # Calculate available mana (lands on battlefield + land drop potential)
+        battlefield = game_state.get("battlefield", [])
+        # local_seat already resolved above when computing land state.
+
+        # Count untapped lands we control
+        untapped_lands = 0
+        for card in battlefield:
+            if card.get("controller_seat_id") == local_seat or card.get("owner_seat_id") == local_seat:
+                type_line = card.get("type_line", "").lower()
+                if "land" in type_line and not card.get("is_tapped"):
+                    untapped_lands += 1
+
+        # Check if we have a land in hand (potential +1 mana)
+        has_land_in_hand = lands_in_hand  # already computed above
+        potential_mana = untapped_lands + (1 if has_land_in_hand else 0)
+
+        # Check each card in hand for mana cost violations
+        seen_card_names = set()
+        for card in hand_cards:
+            card_name = card.get("name", "")
+            mana_cost = card.get("mana_cost", "")
+            if card_name in seen_card_names:
+                continue
+            seen_card_names.add(card_name)
+            if not card_name or not mana_cost:
+                continue
+
+            # Parse CMC from mana cost (simple heuristic)
+            cmc = 0
+            import re as re_inner
+
+            # Count {X} symbols
+            symbols = re_inner.findall(r"\{([^}]+)\}", mana_cost)
+            for sym in symbols:
+                if sym.isdigit():
+                    cmc += int(sym)
+                elif sym in ["W", "U", "B", "R", "G", "C"] or "/" in sym:
+                    cmc += 1
+
+            # If this card costs more than we can have, remove Cast suggestions for it
+            if cmc > potential_mana:
+                # Remove "then [cast] Card" sequences (e.g. "Play land then Earthbender Ascension")
+                then_pattern = re.compile(
+                    rf",?\s*then\s+(?:cast\s+)?{re.escape(card_name)}[.,]?\s*",
+                    re.IGNORECASE,
+                )
+                if then_pattern.search(advice):
+                    advice = then_pattern.sub(". ", advice).strip()
+                    logger.debug(
+                        f"Removed uncastable 'then' sequence: {card_name} (needs {cmc}, have {potential_mana})"
+                    )
+                    continue
+
+                # Remove "Cast [Card Name]" as a standalone command (e.g. "Cast X." or "Cast X,")
+                # but NOT when the card name appears mid-sentence (e.g. "find mana to cast X or Y")
+                # to avoid leaving garbled text like "find mana to or Y"
+                standalone_pattern = re.compile(
+                    rf"(?:^|(?<=\.\s)|(?<=\n))Cast\s+{re.escape(card_name)}[.,]?\s*",
+                    re.IGNORECASE,
+                )
+                if standalone_pattern.search(advice):
+                    advice = standalone_pattern.sub("", advice)
+                    logger.debug(
+                        f"Removed uncastable suggestion: {card_name} (needs {cmc}, have {potential_mana})"
+                    )
+                else:
+                    # Card mentioned mid-sentence — replace name with "[uncastable]" hint
+                    # so the sentence stays grammatical
+                    mid_pattern = re.compile(rf"(?:cast\s+)?{re.escape(card_name)}", re.IGNORECASE)
+                    if mid_pattern.search(advice):
+                        advice = mid_pattern.sub(f"{card_name} (not enough mana)", advice, count=1)
+                        logger.debug(
+                            f"Annotated uncastable mid-sentence: {card_name} (needs {cmc}, have {potential_mana})"
+                        )
+
+        # 4. Remove incorrect lethal/win claims when math doesn't support it
+        if re.search(r"(?i)\blethal\b|\bfor the win\b|\bthat'?s the win\b|\bwin!\b", advice):
+            summary = _combat_attack_summary()
+            if summary:
+                attack_power, opp_life, opp_blockers = summary
+                if opp_blockers > 0 or attack_power < opp_life:
+                    advice = re.sub(r"(?i)\blethal\b", "damage", advice)
+                    advice = re.sub(r"(?i)\bfor the win\b", "for damage", advice)
+                    advice = re.sub(r"(?i)\bthat'?s the win\b", "", advice)
+                    advice = re.sub(r"(?i)\bwin!\b", "", advice)
+                    advice = advice.replace("lethal on board", "pressure on board")
+
+        # Clean up double spaces
+        advice = re.sub(r"\s+", " ", advice).strip()
+
+        def _augment_legal_actions_from_decision_context(
+            actions: list[str],
+        ) -> list[str]:
+            """Add high-signal combat actions from decision context when missing.
+
+            RulesEngine legal actions can lag behind GRE decision context during
+            declare-attack/block windows. In those states, prefer the concrete
+            attacker/blocker sets from decision_context over generic activate/cast
+            options so fallback advice remains action-appropriate.
+            """
+            augmented = list(actions)
+            decision_context = game_state.get("decision_context") or {}
+            dec_type = str(decision_context.get("type", "") or "").lower()
+
+            if dec_type == "declare_attackers":
+                legal_attackers = self._filter_legal_attacker_names(
+                    game_state, decision_context.get("legal_attackers") or []
+                )
+                if legal_attackers:
+                    attack_action = f"Declare Attackers: {', '.join(legal_attackers)}"
+                    if all(a.lower() != attack_action.lower() for a in augmented):
+                        augmented.append(attack_action)
+
+            if dec_type == "declare_blockers":
+                legal_blockers = decision_context.get("legal_blockers") or []
+                if legal_blockers:
+                    block_action = f"Block with: {', '.join(legal_blockers)}"
+                    if all(a.lower() != block_action.lower() for a in augmented):
+                        augmented.append(block_action)
+
+            return augmented
+
+        # 5. Enforce Legal actions only (hard filter)
+        # MULLIGAN OVERRIDE: During mulligan, RulesEngine returns "Wait (Opponent
+        # has priority)" because priority_player != local_seat. Override here just
+        # like _format_game_context does (line ~1384).
+        pending = game_state.get("pending_decision")
+        if pending == "Mulligan":
+            legal_actions = ["KEEP", "MULLIGAN"]
+        elif pending == "Mulligan Bottom":
+            # During bottom-card selection, any card name advice is valid
+            legal_actions = []
+        else:
+            try:
+                from arenamcp.rules_engine import RulesEngine
+
+                legal_actions = RulesEngine.get_legal_actions(game_state) or []
+                legal_actions = _augment_legal_actions_from_decision_context(legal_actions)
+            except Exception as e:
+                logger.warning(f"RulesEngine error in postprocess: {e}")
+                legal_actions = []
+
+        if legal_actions:
+
+            def _score_action(action: str) -> int:
+                """Heuristic score for legal actions (higher is better)."""
+                score = 0
+                act = action.lower()
+                turn = game_state.get("turn", {})
+                phase = turn.get("phase", "").lower()
+                step = turn.get("step", "").lower()
+                pending_decision = str(game_state.get("pending_decision", "") or "").lower()
+                players = game_state.get("players", [])
+                local_player = next((p for p in players if p.get("is_local")), None)
+                local_seat = local_player.get("seat_id") if local_player else None
+
+                # Prefer land drop if available
+                if act.startswith("play land:"):
+                    score += 80
+
+                # Combat step priorities
+                if "declare attackers" in act and "combat" in phase and "declareattack" in step:
+                    score += 90
+                if "declare attackers" in act and "declare attackers" in pending_decision:
+                    score += 120
+                if "block with" in act and "combat" in phase and "declareblock" in step:
+                    score += 120
+                if "block with" in act and "declare blockers" in pending_decision:
+                    score += 120
+
+                # Strongly prefer actions confirmed castable by the game engine
+                if "[ok]" in act:
+                    score += 50
+
+                # Casting is generally higher priority than activating
+                if act.startswith("cast "):
+                    if "[ok]" in act:
+                        score += 60  # confirmed castable
+                    else:
+                        score += 10  # may not have mana — low priority
+                if act.startswith("activate "):
+                    score += 40
+                if act.startswith("activate ") and (
+                    ("combat" in phase and "declareblock" in step) or ("declare blockers" in pending_decision)
+                ):
+                    # During blocker declaration, avoid replacing with activations.
+                    score -= 100
+
+                # During combat, "Pass" (the Next button) is usually correct
+                # when no cast/play/declare actions are available
+                if act == "pass" and "combat" in phase:
+                    score += 10
+
+                # Penalize mana-only actions (not real decisions)
+                if act.startswith("action: "):
+                    score -= 10
+
+                # If we can detect a legal "Play Land" and lands available, boost it
+                if "play land" in act and local_seat is not None:
+                    # If a land is in hand, it's likely valid to play
+                    hand = game_state.get("hand", [])
+                    if any("land" in c.get("type_line", "").lower() for c in hand):
+                        score += 15
+
+                return score
+
+            def _normalize_best_legal_action(action: str) -> str:
+                """Normalize fallback combat actions against visible legality."""
+                act_lower = action.lower()
+
+                if act_lower.startswith("declare attackers:"):
+                    names = [n.strip() for n in action.split(":", 1)[1].split(",") if n.strip()]
+                    filtered_names = self._filter_legal_attacker_names(game_state, names)
+                    if not filtered_names:
+                        return "Don't attack"
+                    return f"Declare Attackers: {', '.join(filtered_names)}"
+
+                if act_lower.startswith("block with:"):
+                    names = [n.strip() for n in action.split(":", 1)[1].split(",") if n.strip()]
+                    if not names:
+                        return "Don't block"
+
+                return action
+
+            def _get_legal_pass_action(actions: list[str]) -> str | None:
+                """Return the concrete legal Pass action when available."""
+                for action in actions:
+                    if action.strip().lower() == "pass":
+                        return action
+                return None
+
+            def _has_pass_intent(text: str) -> bool:
+                """Detect advice that means "do nothing now and let play proceed"."""
+                lead_clause = re.split(r"(?<=[.!?;])\s+", text.strip(), maxsplit=1)[0].lower()
+                pass_intent_patterns = (
+                    r"\blet (?:it|that|this|them) resolve\b",
+                    r"\bpass priority\b",
+                    r"^\s*pass\b",
+                    r"^\s*wait\b",
+                    r"\bno response\b",
+                    r"\bdon['’]?t respond\b",
+                    r"\bdo not respond\b",
+                    r"\blet them have it\b",
+                    r"\bnothing to do\b",
+                )
+                return any(re.search(pattern, lead_clause) for pattern in pass_intent_patterns)
+
+            advice_lower = advice.lower()
+            legal_lower = [a.lower() for a in legal_actions]
+            # Strip [OK], [NEED:x], [NO TARGETS] etc. markers before matching so
+            # "Cast Northern Air Temple" matches "Cast Northern Air Temple [NEED:B]"
+            legal_lower_stripped = [re.sub(r"\s*\[[^\]]+\]", "", a).strip() for a in legal_lower]
+            matches = any(l in advice_lower for l in legal_lower) or any(
+                l in advice_lower for l in legal_lower_stripped
+            )
+            legal_pass_action = _get_legal_pass_action(legal_actions)
+
+            if not matches and legal_pass_action and _has_pass_intent(advice):
+                advice = legal_pass_action
+                advice_lower = advice.lower()
+                matches = True
+
+            # "Don't attack", "don't block", "pass priority", "no attacks" are
+            # always valid strategic choices — the player can decline to act.
+            PASSTHROUGH_PHRASES = [
+                "don't attack",
+                "don\u2019t attack",
+                "do not attack",
+                "no attack",
+                "don't block",
+                "don\u2019t block",
+                "do not block",
+                "no block",
+                "pass priority",
+                "take the damage",
+                "let it resolve",
+                "let them resolve",
+                "let that resolve",
+                "wait",
+                "no response",
+                "don't respond",
+                "don\u2019t respond",
+                "nothing to do",
+                "pass",
+                "resolve",
+            ]
+            has_ok_actions = any(
+                "[ok]" in act.lower() for act in legal_actions if not act.lower().startswith("pass")
+            )
+            false_no_mana_claim = any(
+                claim in advice_lower
+                for claim in [
+                    "lack the mana",
+                    "lacks the mana",
+                    "don't have the mana",
+                    "dont have the mana",
+                    "not enough mana",
+                    "no castable spells",
+                    "cannot cast any",
+                    "can't cast any",
+                    "no legal spells",
+                    "no playable spells",
+                ]
+            )
+
+            if not matches and any(p in advice_lower for p in PASSTHROUGH_PHRASES):
+                if not (has_ok_actions and false_no_mana_claim):
+                    matches = True
+
+            # Enhanced advice matching for partial card names, generic attacks/blocks, activations
+            if not matches:
+                for act in legal_actions:
+                    act_lower = act.lower()
+                    act_clean = re.sub(r"\s*\[[^\]]+\]", "", act_lower).strip()
+
+                    # 1. Cast actions (e.g., "cast michelangelo, weirdness to 11")
+                    if act_clean.startswith("cast "):
+                        card_name = act_clean[5:].strip()
+                        short_name = re.split(r"[,—/]", card_name)[0].strip()
+                        if short_name and short_name in advice_lower:
+                            matches = True
+                            break
+
+                    # 2. Play land actions (e.g., "play land: forest")
+                    elif act_clean.startswith("play land:"):
+                        card_name = act_clean[10:].strip()
+                        short_name = re.split(r"[,—/]", card_name)[0].strip()
+                        if short_name and (
+                            short_name in advice_lower
+                            or "play land" in advice_lower
+                            or "play a land" in advice_lower
+                        ):
+                            matches = True
+                            break
+
+                    # 3. Activate actions (e.g., "activate bristly bill, spine sower")
+                    elif act_clean.startswith("activate "):
+                        card_name = act_clean[9:].strip()
+                        short_name = re.split(r"[,—/]", card_name)[0].strip()
+                        if short_name and short_name in advice_lower:
+                            matches = True
+                            break
+
+                    # 4. Declare attackers (e.g., "declare attackers: bristly bill, spine sower...")
+                    elif act_clean.startswith("declare attackers:"):
+                        names_str = act_clean.split(":", 1)[1]
+                        names = [n.strip() for n in re.split(r"[,#\d]", names_str) if n.strip()]
+                        name_matched = any(name in advice_lower for name in names if len(name) > 2)
+
+                        is_negative = any(
+                            neg in advice_lower
+                            for neg in [
+                                "don't",
+                                "dont",
+                                "do not",
+                                "no attack",
+                                "not attack",
+                                "hold back",
+                                "never attack",
+                                "avoid attacking",
+                                "decline to attack",
+                            ]
+                        )
+                        generic_attack = any(
+                            phrase in advice_lower
+                            for phrase in [
+                                "attack with all",
+                                "attack with everything",
+                                "all attack",
+                                "swing with all",
+                                "swing with everything",
+                                "attack all",
+                                "swing all",
+                                "attack with everyone",
+                                "swing with everyone",
+                                "all in",
+                                "all-in",
+                                "attack with all creatures",
+                                "swing with all creatures",
+                                "all creatures attack",
+                                "attack with your creatures",
+                                "swing with your creatures",
+                                "attack with all of your",
+                                "swing with all of your",
+                                "attack with all available",
+                                "swing with all available",
+                                "attack with your team",
+                                "swing with your team",
+                                "attack with the team",
+                                "swing with the team",
+                                "attack!",
+                                "attack.",
+                                "swing!",
+                                "swing.",
+                            ]
+                        ) or advice_lower.strip() in ("attack", "swing")
+
+                        if (name_matched or generic_attack) and not is_negative:
+                            matches = True
+                            break
+
+                    # 5. Block actions (e.g., "block with: ...")
+                    elif act_clean.startswith("block with:"):
+                        is_negative = any(
+                            neg in advice_lower
+                            for neg in [
+                                "don't",
+                                "dont",
+                                "do not",
+                                "no block",
+                                "not block",
+                                "never block",
+                                "avoid blocking",
+                                "decline to block",
+                                "no blocks",
+                            ]
+                        )
+                        generic_block = any(
+                            phrase in advice_lower
+                            for phrase in [
+                                "block with all",
+                                "block with everything",
+                                "all block",
+                                "block all",
+                                "block with everyone",
+                                "block with all creatures",
+                                "block with your creatures",
+                                "block with all available",
+                                "block with your team",
+                                "block with the team",
+                                "block!",
+                                "block.",
+                            ]
+                        ) or advice_lower.strip() in ("block", "blocking")
+
+                        if generic_block and not is_negative:
+                            matches = True
+                            break
+
+                    # 6. Done (confirm attackers) - matches if LLM recommends attacking
+                    elif act_clean == "done (confirm attackers)":
+                        is_negative = any(
+                            neg in advice_lower
+                            for neg in [
+                                "don't",
+                                "dont",
+                                "do not",
+                                "no attack",
+                                "not attack",
+                                "hold back",
+                                "never attack",
+                                "avoid attacking",
+                                "decline to attack",
+                            ]
+                        )
+                        has_attack_intent = any(
+                            phrase in advice_lower
+                            for phrase in ["attack", "swing", "lethal", "all in", "all-in", "combat"]
+                        )
+                        if has_attack_intent and not is_negative:
+                            matches = True
+                            break
+
+                    # 7. Done (confirm blockers) - matches if LLM recommends blocking
+                    elif act_clean == "done (confirm blockers)":
+                        is_negative = any(
+                            neg in advice_lower
+                            for neg in [
+                                "don't",
+                                "dont",
+                                "do not",
+                                "no block",
+                                "not block",
+                                "never block",
+                                "avoid blocking",
+                                "decline to block",
+                                "no blocks",
+                            ]
+                        )
+                        has_block_intent = any(
+                            phrase in advice_lower for phrase in ["block", "chump", "trade"]
+                        )
+                        if has_block_intent and not is_negative:
+                            matches = True
+                            break
+
+            if not matches and is_backend_error_text(advice):
+                # Transport/auth failure — NEVER mask it as coaching. On
+                # 2026-07-16 an empty license key produced 435 silent 401s
+                # while the fallback scorer replaced every response with a
+                # plausible legal action; the user debugged "bad advice"
+                # for hours when the truth was "the LLM never spoke once".
+                low = advice.lower()
+                if "401" in advice or "403" in advice or "virtual key" in low or "auth" in low:
+                    advice = (
+                        "No coaching available: the gateway rejected your "
+                        "license key. Open the Repair tab and run Fix "
+                        "Everything."
+                    )
+                else:
+                    advice = "No coaching available: cannot reach the AI service right now."
+                logger.error(f"LLM failure surfaced to user (not masked): {advice}")
+            elif not matches:
+                # Force to best legal action to avoid illegal recommendations
+                turn = game_state.get("turn", {})
+                phase = str(turn.get("phase", "") or "").lower()
+                step = str(turn.get("step", "") or "").lower()
+                pending_decision = str(game_state.get("pending_decision", "") or "").lower()
+
+                # Filter out [NO TARGETS] cards — casting them wastes the card.
+                # Recompute from game state: spells needing "target creature you
+                # control" when we have no creatures (Sagas exempt).
+                _no_target_names: set[str] = set()
+                _hand = game_state.get("hand", [])
+                _bf = game_state.get("battlefield", [])
+                _lp = next((p for p in game_state.get("players", []) if p.get("is_local")), None)
+                _ls = _lp.get("seat_id") if _lp else None
+                _my_creatures = [
+                    c
+                    for c in _bf
+                    if c.get("owner_seat_id") == _ls
+                    and c.get("power") is not None
+                    and "land" not in c.get("type_line", "").lower()
+                ]
+                if not _my_creatures:
+                    for _hc in _hand:
+                        _oracle = (_hc.get("oracle_text") or "").lower()
+                        _tl = (_hc.get("type_line") or "").lower()
+                        if "land" not in _tl and "creature" not in _tl and "saga" not in _tl:
+                            if (
+                                "target creature you control" in _oracle
+                                or "creature you control fights" in _oracle
+                            ):
+                                _hname = _hc.get("name")
+                                if _hname:
+                                    _no_target_names.add(_hname)
+
+                # Build candidate pool excluding [NO TARGETS] cards
+                if _no_target_names:
+                    _candidates = [
+                        a
+                        for a in legal_actions
+                        if not any(f"Cast {nt}".lower() in a.lower() for nt in _no_target_names)
+                    ]
+                else:
+                    _candidates = legal_actions
+                if not _candidates:
+                    _candidates = legal_actions  # fallback to unfiltered
+
+                in_declare_blockers = ("combat" in phase and "declareblock" in step) or (
+                    "declare blockers" in pending_decision
+                )
+                if in_declare_blockers:
+                    blocker_actions = [a for a in _candidates if a.lower().startswith("block with:")]
+                    if blocker_actions:
+                        best = max(blocker_actions, key=_score_action)
+                    else:
+                        best = max(_candidates, key=_score_action)
+                else:
+                    if legal_pass_action and ("need:" in advice.lower() or "[need:" in advice.lower()):
+                        best = legal_pass_action
+                    else:
+                        best = max(_candidates, key=_score_action)
+                best = _normalize_best_legal_action(best)
+                logger.info(f"Replaced illegal advice with legal action: {best} (original: {advice[:80]})")
+                advice = best
+        else:
+            # No legal_actions reported. For passable idle windows this
+            # means "pass priority" — but for SelectTargets/Search/Modal/
+            # PayCosts the LLM's targeted answer is the best signal we
+            # have (RulesEngine can't enumerate candidates for these).
+            # Keep the model's advice unless it's clearly useless; only
+            # then fall back to the context-appropriate manual prompt.
+            req_class = str(game_state.get("_bridge_request_class") or "")
+            req_type = str(game_state.get("_bridge_request_type") or "")
+            non_passable = (
+                req_class in _NON_PASSABLE_REQUEST_CLASSES
+                or req_type in _NON_PASSABLE_REQUEST_TYPES
+                or game_state.get("_bridge_can_pass") is False
+            )
+            stripped = (advice or "").strip()
+            looks_useful = (
+                bool(stripped)
+                and len(stripped) >= 3
+                and "pass priority" not in stripped.lower()
+                and "pass" not in stripped.lower().split()[:1]
+            )
+            if non_passable and looks_useful:
+                # Trust the LLM's targeted advice on non-passable requests.
+                pass
+            else:
+                advice = _fallback_non_action_advice(game_state)
+
+        # Clean up internal action format for spoken output:
+        # "Play Land: Plains" → "Play Plains"
+        advice = re.sub(r"(?i)^Play Land:\s*", "Play ", advice)
+        advice = re.sub(r"(?i)Play Land:\s*", "Play ", advice)
+        if str(game_state.get("pending_decision", "") or "").lower() == "declare attackers":
+            advice = re.sub(r"(?i)^Done \(confirm attackers\)$", "Don't attack", advice)
+        if str(game_state.get("pending_decision", "") or "").lower() == "declare blockers":
+            advice = re.sub(r"(?i)^Done \(confirm blockers\)$", "Don't block", advice)
+
+        # Sequence validator: If advice says "Play [land] then cast [spell]" or "Play [land] and cast [spell]"
+        # but [spell] is illegal and not in post-land THEN options, strip the illegal spell clause.
+        if " then cast " in advice.lower() or " and cast " in advice.lower():
+            match_seq = re.search(
+                r"(?i)^(Play\s+[\w\s'—]+?)(?:\s+(?:then|and)\s+cast\s+([\w\s'—]+))$", advice.strip()
+            )
+            if match_seq:
+                land_part = match_seq.group(1).strip()
+                spell_part = match_seq.group(2).strip()
+                spell_short = re.split(r"[,—/]", spell_part)[0].strip().lower()
+
+                spell_is_legal = any(
+                    spell_short in act.lower() for act in legal_actions if act.lower().startswith("cast ")
+                )
+                then_lines = [l for l in legal_actions if l.startswith("THEN:")]
+                if not then_lines and isinstance(game_state, dict):
+                    prompt_lines = game_state.get("_last_prompt_lines", [])
+                    then_lines = [l for l in prompt_lines if l.startswith("THEN:")]
+
+                spell_in_then = any(spell_short in tl.lower() for tl in then_lines)
+
+                if not spell_is_legal and not spell_in_then:
+                    logger.info(
+                        f"Stripped illegal post-land spell '{spell_part}' from advice '{advice}' -> '{land_part}'"
+                    )
+                    advice = land_part
+
+        # 6. Block advice must name the attacker. "Block with Veteran Survivor"
+        # is useless with multiple attackers on board (issue #420) — repair it
+        # with the deterministic solver's assignment so the spoken line is
+        # always actionable.
+        advice = self._ensure_block_advice_names_attacker(advice, game_state)
+
+        return advice
+
+    def _collect_block_decision_blockers(self, game_state: dict[str, Any]) -> list[dict]:
+        """Resolve the legal blockers for the current block decision.
+
+        Prefers the GRE-authoritative ``legal_blocker_ids`` from the
+        decision context; falls back to our untapped creatures.
+        """
+        battlefield = game_state.get("battlefield", []) or []
+        ctx = game_state.get("decision_context") or {}
+        ids: set[int] = set()
+        if str(ctx.get("type") or "") == "declare_blockers":
+            for bid in ctx.get("legal_blocker_ids") or []:
+                try:
+                    ids.add(int(bid))
+                except (TypeError, ValueError):
+                    continue
+        if ids:
+            cards = [c for c in battlefield if int(c.get("instance_id") or 0) in ids]
+            if cards:
+                return cards
+        local_seat = None
+        for p in game_state.get("players", []) or []:
+            if p.get("is_local"):
+                local_seat = p.get("seat_id")
+                break
+        return [
+            c
+            for c in battlefield
+            if c.get("owner_seat_id") == local_seat
+            and "creature" in (c.get("type_line") or "").lower()
+            and not c.get("is_tapped")
+            and not self._is_impending(c)
+        ]
+
+    @staticmethod
+    def _spoken_name_map(cards: list[dict]) -> dict[int, str]:
+        """instance_id -> plain spoken name, ``#N``-deduped for duplicates."""
+        names = [c.get("name") or "?" for c in cards]
+        counts = Counter(names)
+        seen: dict[str, int] = {}
+        out: dict[int, str] = {}
+        for c, n in zip(cards, names, strict=False):
+            label = n
+            if counts[n] > 1:
+                seen[n] = seen.get(n, 0) + 1
+                label = f"{n} #{seen[n]}"
+            out[int(c.get("instance_id") or 0)] = label
+        return out
+
+    def _solver_block_assignment_sentence(
+        self,
+        game_state: dict[str, Any],
+        attackers: list[dict],
+        blockers: list[dict],
+        advice: str,
+    ) -> str:
+        """Deterministic "block A with X; block B with Y" sentence.
+
+        Uses combat_solver.optimal_blocks (honoring the GRE per-blocker
+        candidate restrictions when available). When the solver prefers no
+        blocks but the advice insists on blocking, points the mentioned (or
+        first) blocker at the biggest attacker it can legally block so the
+        spoken line stays actionable.
+        """
+        if not attackers or not blockers:
+            return ""
+        try:
+            from arenamcp.combat_solver import (
+                blocker_allowed_attackers_map,
+                optimal_blocks,
+            )
+        except Exception:
+            return ""
+        players = game_state.get("players", []) or []
+        local_player = next((p for p in players if p.get("is_local")), None)
+        your_life = local_player.get("life_total", 20) if local_player else 20
+        ctx = game_state.get("decision_context") or {}
+        allowed_map = blocker_allowed_attackers_map(ctx.get("raw_blockers") or [])
+
+        atk_names = self._spoken_name_map(attackers)
+        blk_names = self._spoken_name_map(blockers)
+
+        # When the advice already names specific blockers, repair THOSE lines
+        # (the LLM may have a reason the solver can't see — Calculator+Coach:
+        # the solver supplies the missing attacker, it doesn't override the
+        # pick). Fall back to the full blocker pool if that yields nothing.
+        advice_lower = advice.lower()
+        mentioned = [
+            b
+            for b in blockers
+            if (b.get("name") or "").lower() and (b.get("name") or "").lower() in advice_lower
+        ]
+        candidate_pools: list[list[dict]] = []
+        if mentioned:
+            candidate_pools.append(mentioned)
+        candidate_pools.append(blockers)
+
+        assignments: dict[int, int] = {}
+        for pool in candidate_pools:
+            try:
+                plan = optimal_blocks(
+                    attackers,
+                    pool,
+                    your_life,
+                    blocker_allowed_attackers=allowed_map or None,
+                )
+            except Exception as e:
+                logger.debug(f"combat solver (block repair) failed: {e}")
+                continue
+            if plan is not None and plan.assignments:
+                assignments = plan.assignments
+                break
+
+        clauses: list[str] = []
+        if assignments:
+            by_attacker: dict[int, list[int]] = {}
+            for bid, aid in assignments.items():
+                by_attacker.setdefault(int(aid), []).append(int(bid))
+            for aid in sorted(by_attacker):
+                a_label = atk_names.get(aid)
+                b_labels = [blk_names.get(bid, f"creature {bid}") for bid in sorted(by_attacker[aid])]
+                if a_label:
+                    clauses.append(f"block {a_label} with {' and '.join(b_labels)}")
+        else:
+            # Solver says no blocks, but the advice recommends blocking —
+            # keep the line actionable: aim the mentioned (or first) blocker
+            # at the biggest attacker it can legally block.
+            for b in mentioned or blockers[:1]:
+                bid = int(b.get("instance_id") or 0)
+                allowed = allowed_map.get(bid) if allowed_map else None
+                candidates = []
+                for a in attackers:
+                    aid = int(a.get("instance_id") or 0)
+                    if allowed is not None and aid not in allowed:
+                        continue
+                    if self._compute_combat_trade(a, b) is None:
+                        continue  # can't legally block it (e.g. flying)
+                    candidates.append(a)
+                if not candidates:
+                    continue
+                biggest = max(candidates, key=lambda c: c.get("power") or 0)
+                aid = int(biggest.get("instance_id") or 0)
+                a_label = atk_names.get(aid)
+                if a_label:
+                    clauses.append(f"block {a_label} with {blk_names.get(bid, b.get('name', '?'))}")
+        if not clauses:
+            return ""
+        return "Assignment: " + "; ".join(clauses) + "."
+
+    def _ensure_block_advice_names_attacker(self, advice: str, game_state: dict[str, Any]) -> str:
+        """Repair DeclareBlockers advice that names a blocker but no attacker.
+
+        "Block with Veteran Survivor" is useless when multiple creatures are
+        attacking (issue #420, first Mac match). If the advice recommends
+        blocking but names no attacker from the current combat, append the
+        deterministic solver's attacker->blocker assignment so the spoken
+        line is always actionable. Negative advice ("don't block") and advice
+        that already names an attacker pass through untouched.
+        """
+        if not advice:
+            return advice
+        pending = str(game_state.get("pending_decision") or "").lower()
+        ctx = game_state.get("decision_context") or {}
+        if pending != "declare blockers" and str(ctx.get("type") or "") != "declare_blockers":
+            return advice
+
+        import re
+
+        advice_lower = advice.lower()
+        if any(p in advice_lower for p in self._NEGATIVE_BLOCK_PHRASES):
+            return advice
+
+        attackers = self._collect_block_decision_attackers(game_state)
+        if not attackers:
+            return advice
+
+        # Already names an attacker? Full-name match, or any distinctive
+        # (len >= 4) word from an attacker's name appearing in the advice.
+        advice_words = set(re.findall(r"[a-z'’]+", advice_lower))
+        for atk in attackers:
+            name = (atk.get("name") or "").lower()
+            if not name:
+                continue
+            if name in advice_lower:
+                return advice
+            for word in re.findall(r"[a-z'’]+", name):
+                if len(word) >= 4 and word in advice_words:
+                    return advice
+
+        # Only repair advice that is actually recommending a block.
+        blockers = self._collect_block_decision_blockers(game_state)
+        blocker_named = any((b.get("name") or "").lower() in advice_lower for b in blockers if b.get("name"))
+        if "block" not in advice_lower and not blocker_named:
+            return advice
+
+        assignment = self._solver_block_assignment_sentence(game_state, attackers, blockers, advice)
+        if not assignment:
+            return advice
+        base = advice.rstrip()
+        if base and base[-1] not in ".!?":
+            base += "."
+        logger.info(
+            "Block advice named no attacker; appended solver assignment: %s",
+            assignment,
+        )
+        return f"{base} {assignment}"
+
+    def _is_similar(self, a: str, b: str, threshold: float = 0.7) -> bool:
+        """Check if two strings are similar using simple character overlap."""
+        if a == b:
+            return True
+        if abs(len(a) - len(b)) > 3:
+            return False
+        # Count matching characters
+        matches = sum(1 for c1, c2 in zip(a.lower(), b.lower(), strict=False) if c1 == c2)
+        similarity = matches / max(len(a), len(b))
+        return similarity >= threshold
