@@ -28,12 +28,14 @@ data/
 !website/config.yaml
 !website/docker-compose.yml
 # Dev-only (not for public repo)
-tests/
 tools/
 docs/
 CLAUDE.md
 *.spec
 venv/
+.venv/
+.venv_*/
+test_env/
 # BepInEx plugin build artifacts
 bepinex-plugin/**/bin/
 bepinex-plugin/**/obj/

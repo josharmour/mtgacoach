@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "arenamcp"
-version = "2.7.3"
+dynamic = ["version"]
 description = "AI-powered real-time coaching and autopilot for Magic: The Gathering Arena"
 requires-python = ">=3.10"
 license = "MIT"
@@ -49,25 +49,21 @@ Releases = "https://github.com/josharmour/mtgacoach/releases"
 Issues = "https://github.com/josharmour/mtgacoach/issues"
 
 [project.optional-dependencies]
+# DEPRECATED (2026-07): PySide6/kokoro-onnx/faster-whisper/soundfile moved to
+# core dependencies — bare installs used to strand the GUI/voice stack in
+# extras. Empty extras kept so `.[desktop]` / `.[voice]` don't error.
 desktop = [
-    "PySide6>=6.7.0",
-    "kokoro-onnx",
 ]
 voice = [
-    "faster-whisper>=1.0.0",
-    "kokoro-onnx",
-    "soundfile>=0.12.0",
 ]
 llm = [
     "google-genai>=1.0.0",
     "anthropic>=0.18.0",
     "ollama>=0.1.0",
-    "openai>=1.0.0",
 ]
 autopilot = [
     "pyautogui>=0.9.54",
     "pydirectinput-rgx>=1.0.0",
-    "Pillow>=10.0.0",
 ]
 scraping = [
     "beautifulsoup4>=4.12.0",
@@ -76,12 +72,15 @@ scraping = [
     "networkx>=3.0",
 ]
 full = [
-    "arenamcp[desktop,voice,llm,autopilot,scraping]",
+    "arenamcp[llm,autopilot,scraping]",
     "websocket-client>=1.6.0",
     "scipy>=1.10.0",
 ]
 dev = [
     "pytest>=7.0.0",
+    "ruff>=0.6.0",
+    "mypy>=1.10.0",
+    "pre-commit>=3.5.0",
 ]
 
 [project.scripts]
@@ -92,3 +91,53 @@ mtgacoach-desktop = "arenamcp.desktop.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/arenamcp"]
+
+[tool.hatch.version]
+path = "src/arenamcp/__init__.py"
+
+# ---------------------------------------------------------------------------
+# Tooling (added 2026-07-22)
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+target-version = "py310"
+line-length = 110
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "C90", # mccabe complexity
+]
+ignore = [
+    "E501",   # long lines: formatter's domain, too noisy on legacy prompts
+    "SIM108", # ternary suggestions — noisy on this codebase
+    "B008",   # function call in default arg — intentional patterns here
+    "C901",   # complexity gate advisory-only until god objects are split
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["arenamcp"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011", "SIM117"]
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "src"
+packages = ["arenamcp"]
+# Advisory baseline — not yet gating. Tighten module-by-module.
+ignore_missing_imports = true
+follow_imports = "silent"
+strict_optional = false
+warn_redundant_casts = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

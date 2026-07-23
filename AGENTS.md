@@ -32,6 +32,17 @@ PYTHONPATH=src python -m arenamcp.desktop
 python -m arenamcp.standalone --backend online
 ```
 
+## Local venvs (macOS dev machine)
+- `.venv_mac_311/` — Python 3.11, the working macOS venv (pip, pytest, editable arenamcp). Use this on mac.
+- `.venv/` — Linux/WSL-era venv; pip shebang broken on macOS (points at old ArenaMCP path).
+- Deleted 2026-07-22: `.venv_mac/`, `test_env/` (Python 3.9 — below requires-python >=3.10).
+
+## Tooling (added 2026-07-22)
+- **ruff** (lint + format) and **mypy** (advisory) — configs in `pyproject.toml`.
+- **pre-commit** — `.pre-commit-config.yaml`; `pre-commit install` to enable.
+- **CI** — `.github/workflows/tests.yml` runs ruff + pytest on push/PR (installer.yml unchanged).
+- Version single-sourced in `src/arenamcp/__init__.py` (`__version__`); pyproject reads it via hatch dynamic versioning.
+
 ## BepInEx C# Plugin (Linux dev)
 - **Do NOT** use Wine's `csc` — too old for C# 9.0.
 - Use `dotnet` (`.NET 10 SDK` installed).
