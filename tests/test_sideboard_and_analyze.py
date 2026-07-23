@@ -1,17 +1,17 @@
 """Tests for Bo3 sideboarding recommendations and post-match /analyze review prompt generator."""
 
-import pytest
 from unittest.mock import MagicMock, patch
-from pathlib import Path
 
-from arenamcp.coach import CoachEngine, SIDEBOARD_RECOMMENDATION_PROMPT
+from arenamcp.coach import SIDEBOARD_RECOMMENDATION_PROMPT, CoachEngine
 from arenamcp.match_history import MatchRecord, generate_match_review_prompt
-from arenamcp.standalone import StandaloneCoach
 from arenamcp.pipe_adapter import PipeAdapter
+from arenamcp.standalone import StandaloneCoach
 
 
 class DummyBackend:
-    def __init__(self, response: str = "IN:\n- 2x Disdainful Stroke\nOUT:\n- 2x Cut Down\nPLAN:\nCounter big threats."):
+    def __init__(
+        self, response: str = "IN:\n- 2x Disdainful Stroke\nOUT:\n- 2x Cut Down\nPLAN:\nCounter big threats."
+    ):
         self.response = response
         self.last_prompt = None
         self.last_user = None
@@ -146,7 +146,9 @@ def test_match_history_generate_match_review_prompt():
         advice_history=advice_history,
         opponent_cards=opp_cards,
     )
-    assert method_prompt == generate_match_review_prompt(record, advice_history=advice_history, opponent_cards=opp_cards)
+    assert method_prompt == generate_match_review_prompt(
+        record, advice_history=advice_history, opponent_cards=opp_cards
+    )
 
 
 def test_standalone_get_sideboard_recommendations():
@@ -160,12 +162,18 @@ def test_standalone_get_sideboard_recommendations():
     mock_mcp.get_card_info.side_effect = lambda cid: {
         101: {"name": "Llanowar Elves", "type_line": "Creature", "oracle_text": "{T}: Add {G}."},
         102: {"name": "Giant Growth", "type_line": "Instant", "oracle_text": "Target creature gets +3/+3."},
-        201: {"name": "Plummet", "type_line": "Instant", "oracle_text": "Destroy target creature with flying."},
+        201: {
+            "name": "Plummet",
+            "type_line": "Instant",
+            "oracle_text": "Destroy target creature with flying.",
+        },
         301: {"name": "Serra Angel", "type_line": "Creature", "oracle_text": "Flying, vigilance"},
     }.get(cid, {})
 
     mock_coach_engine = MagicMock()
-    mock_coach_engine.recommend_sideboard.return_value = "IN:\n- 1x Plummet\nOUT:\n- 1x Giant Growth\nPLAN:\nAnswer flyer."
+    mock_coach_engine.recommend_sideboard.return_value = (
+        "IN:\n- 1x Plummet\nOUT:\n- 1x Giant Growth\nPLAN:\nAnswer flyer."
+    )
 
     mock_ui = MagicMock()
 
@@ -233,7 +241,11 @@ def test_standalone_sideboard_falls_back_to_pre_reset_stash():
     }
     mock_mcp.get_card_info.side_effect = lambda cid: {
         101: {"name": "Llanowar Elves", "type_line": "Creature", "oracle_text": "{T}: Add {G}."},
-        201: {"name": "Plummet", "type_line": "Instant", "oracle_text": "Destroy target creature with flying."},
+        201: {
+            "name": "Plummet",
+            "type_line": "Instant",
+            "oracle_text": "Destroy target creature with flying.",
+        },
         301: {"name": "Serra Angel", "type_line": "Creature", "oracle_text": "Flying, vigilance"},
     }.get(cid, {})
 
@@ -242,9 +254,11 @@ def test_standalone_sideboard_falls_back_to_pre_reset_stash():
         "IN:\n- 1x Plummet\nOUT:\n- 1x Llanowar Elves\nPLAN:\nAnswer flyer."
     )
 
-    with patch.object(StandaloneCoach, "_init_mcp"), \
-         patch.object(server, "get_opponent_played_cards", return_value=[]), \
-         patch.object(server, "game_state", gs):
+    with (
+        patch.object(StandaloneCoach, "_init_mcp"),
+        patch.object(server, "get_opponent_played_cards", return_value=[]),
+        patch.object(server, "game_state", gs),
+    ):
         standalone = StandaloneCoach()
         standalone._mcp = mock_mcp
         standalone._coach = mock_coach_engine

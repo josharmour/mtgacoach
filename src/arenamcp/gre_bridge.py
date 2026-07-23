@@ -13,17 +13,17 @@ and what the valid options are, replacing reactive log-diff detection.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import re
 import select
 import socket
-import struct
 import sys
 import threading
 import time
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -41,15 +41,16 @@ _GENERIC_SELECTION_LABELS = {"Group Selection", "Order Cards", "Select Cards"}
 
 class GREBridgeError(Exception):
     """Error communicating with the GRE bridge plugin."""
+
     pass
 
 
 def _infer_specific_decision_type(
     existing_ctx: dict[str, Any],
     request_payload: Any,
-    request_type: Optional[str],
-    request_class: Optional[str],
-) -> Optional[str]:
+    request_type: str | None,
+    request_class: str | None,
+) -> str | None:
     """Infer a concrete decision type from generic bridge selection payloads."""
     values: list[str] = []
     for key in (
@@ -104,7 +105,7 @@ def _infer_specific_decision_type(
     return None
 
 
-def _label_for_decision_type(decision_type: str, count: Any = None) -> Optional[str]:
+def _label_for_decision_type(decision_type: str, count: Any = None) -> str | None:
     if decision_type == "scry":
         suffix = f" {count}" if count not in (None, "", 1) else ""
         return f"Scry{suffix}"
@@ -131,7 +132,7 @@ class GREBridge:
         self._connected = False
         # Keepalive thread — proactively reconnects after disconnect and
         # pings periodically so we detect silently-broken sockets quickly.
-        self._keepalive_thread: Optional[threading.Thread] = None
+        self._keepalive_thread: threading.Thread | None = None
         self._keepalive_stop = threading.Event()
         self._last_connect_attempt = 0.0
         self._reconnect_cooldown = 0.5  # seconds between reconnect attempts
@@ -141,7 +142,7 @@ class GREBridge:
         self._ping_max_age = 5.0
         self._server_socket = None  # The listening TCP socket
         self._client_socket = None  # The accepted client TCP socket
-        self._pipe_file = None      # Wrapped file object for writing/reading
+        self._pipe_file = None  # Wrapped file object for writing/reading
         # _send_command holds this lock and tears the connection down on its
         # write-error/timeout paths via _disconnect_locked() (which assumes the
         # lock is already held), so the lock stays non-reentrant.
@@ -151,7 +152,7 @@ class GREBridge:
         # connects, the plugin isn't running (most often BepInEx isn't
         # injected). Warn once with an actionable hint instead of staying
         # silently "offline" all match (live failure 2026-06-07).
-        self._server_started_at: Optional[float] = None
+        self._server_started_at: float | None = None
         self._ever_connected = False
         self._no_plugin_warned = False
 
@@ -314,8 +315,7 @@ class GREBridge:
                 # land in every Mac bug report's error section as a red
                 # herring ("check BepInEx is installed" — it can't be).
                 logger.info(
-                    "GRE bridge: no plugin (native macOS client — log-only "
-                    "coaching is the designed state)."
+                    "GRE bridge: no plugin (native macOS client — log-only coaching is the designed state)."
                 )
                 return
         except Exception:
@@ -323,7 +323,7 @@ class GREBridge:
         if sys.platform.startswith("linux"):
             hint = (
                 "On Linux/Proton, BepInEx only injects when the Steam launch "
-                "options for MTGA include: WINEDLLOVERRIDES=\"winhttp=n,b\" "
+                'options for MTGA include: WINEDLLOVERRIDES="winhttp=n,b" '
                 "%command% — check they weren't overwritten."
             )
         else:
@@ -372,7 +372,7 @@ class GREBridge:
     def _send_command(
         self,
         cmd: dict[str, Any],
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         """Send a JSON command and read the JSON response.
 
@@ -397,7 +397,7 @@ class GREBridge:
                 line = json.dumps(cmd, separators=(",", ":")) + "\n"
                 self._pipe_file.write(line.encode("utf-8"))
                 self._pipe_file.flush()
-            except (BrokenPipeError, OSError, IOError) as e:
+            except (BrokenPipeError, OSError) as e:
                 self._disconnect_locked()
                 raise GREBridgeError(f"Pipe write error: {e}")
 
@@ -444,9 +444,7 @@ class GREBridge:
                     action_name,
                 )
                 self._disconnect_locked()
-                raise GREBridgeError(
-                    f"Pipe read timeout ({timeout:.1f}s) for action={action_name}"
-                )
+                raise GREBridgeError(f"Pipe read timeout ({timeout:.1f}s) for action={action_name}")
 
             if exc:
                 err = exc[0]
@@ -478,12 +476,11 @@ class GREBridge:
     def _send_safe(
         self,
         cmd: dict[str, Any],
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         """Send command with auto-reconnect on failure."""
-        if not self._connected:
-            if not self.connect():
-                raise GREBridgeError("Not connected to GRE bridge")
+        if not self._connected and not self.connect():
+            raise GREBridgeError("Not connected to GRE bridge")
 
         try:
             return self._send_command(cmd, timeout=timeout)
@@ -497,7 +494,7 @@ class GREBridge:
     # Public API
     # -------------------------------------------------------------------
 
-    def ping(self) -> Optional[str]:
+    def ping(self) -> str | None:
         """Ping the bridge. Returns plugin version or None."""
         try:
             resp = self._send_safe({"action": "ping"})
@@ -507,7 +504,7 @@ class GREBridge:
             pass
         return None
 
-    def get_pending_actions(self) -> Optional[dict[str, Any]]:
+    def get_pending_actions(self) -> dict[str, Any] | None:
         """Get the current pending actions from the game.
 
         Returns a dict with:
@@ -537,10 +534,12 @@ class GREBridge:
         if not grp_ids:
             return {}
         try:
-            resp = self._send_safe({
-                "action": "resolve_grp_ids",
-                "ids": [int(g) for g in grp_ids],
-            })
+            resp = self._send_safe(
+                {
+                    "action": "resolve_grp_ids",
+                    "ids": [int(g) for g in grp_ids],
+                }
+            )
             if resp.get("ok"):
                 names = resp.get("names") or {}
                 # MTGA's title provider returns "Unknown Card Title <id>"
@@ -596,6 +595,7 @@ class GREBridge:
 
         try:
             from arenamcp.card_db import get_card_database
+
             card_db = get_card_database()
             card_db.prewarm_cards(clean_ids)
 
@@ -613,6 +613,7 @@ class GREBridge:
         if unresolved:
             try:
                 from arenamcp import dynamic_cards
+
                 for gid in unresolved:
                     dynamic_cards.note_unresolved(gid)
             except Exception as e:
@@ -635,11 +636,13 @@ class GREBridge:
             True if the action was submitted successfully.
         """
         try:
-            resp = self._send_safe({
-                "action": "submit_action",
-                "action_index": action_index,
-                "auto_pass": auto_pass,
-            })
+            resp = self._send_safe(
+                {
+                    "action": "submit_action",
+                    "action_index": action_index,
+                    "auto_pass": auto_pass,
+                }
+            )
             if resp.get("ok"):
                 logger.info(
                     f"GRE bridge submitted action [{action_index}]: "
@@ -687,9 +690,7 @@ class GREBridge:
             return False
 
         # Find best matching action
-        best_idx = self._find_matching_action(
-            actions, action_type, grp_id, instance_id, ability_grp_id
-        )
+        best_idx = self._find_matching_action(actions, action_type, grp_id, instance_id, ability_grp_id)
 
         if best_idx is None:
             logger.warning(
@@ -717,13 +718,13 @@ class GREBridge:
             logger.warning(f"GRE bridge pass error: {e}")
             return False
 
-    def queue_bot_match(self, deck_id: Optional[str] = None) -> bool:
+    def queue_bot_match(self, deck_id: str | None = None) -> bool:
         """Queue for a bot match (AIBotMatch event).
-        
+
         Args:
             deck_id: Optional UUID string of the deck to use.
                      If omitted, the default deck will be used by the client.
-        
+
         Returns:
             True if the match was queued successfully.
         """
@@ -731,7 +732,7 @@ class GREBridge:
             req = {"action": "queue_bot_match"}
             if deck_id:
                 req["deck_id"] = deck_id
-                
+
             resp = self._send_safe(req, timeout=10.0)
             if resp.get("ok"):
                 logger.info("GRE bridge queued bot match successfully")
@@ -776,10 +777,12 @@ class GREBridge:
         Returns True if submitted successfully.
         """
         try:
-            resp = self._send_safe({
-                "action": "submit_blockers",
-                "assignments": assignments,
-            })
+            resp = self._send_safe(
+                {
+                    "action": "submit_blockers",
+                    "assignments": assignments,
+                }
+            )
             if resp.get("ok"):
                 logger.info(f"GRE bridge submitted {len(assignments)} blocker assignments")
                 return True
@@ -806,10 +809,12 @@ class GREBridge:
         Returns True if submitted successfully.
         """
         try:
-            resp = self._send_safe({
-                "action": "submit_attackers",
-                "attackers": attackers,
-            })
+            resp = self._send_safe(
+                {
+                    "action": "submit_attackers",
+                    "attackers": attackers,
+                }
+            )
             logger.info(f"GRE bridge submit_attackers response: {resp}")
             if resp.get("ok"):
                 logger.info(f"GRE bridge submitted {len(attackers)} attackers")
@@ -824,17 +829,19 @@ class GREBridge:
     def submit_attackers_raw(
         self,
         attackers: list[dict[str, Any]],
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Submit attacker declarations and return full response dict.
 
         Unlike submit_attackers(), returns the full response so callers can
         check needs_finalize for the two-step UpdateAttacker/SubmitAttackers flow.
         """
         try:
-            resp = self._send_safe({
-                "action": "submit_attackers",
-                "attackers": attackers,
-            })
+            resp = self._send_safe(
+                {
+                    "action": "submit_attackers",
+                    "attackers": attackers,
+                }
+            )
             logger.info(f"GRE bridge submit_attackers_raw response: {resp}")
             return resp
         except GREBridgeError as e:
@@ -913,7 +920,7 @@ class GREBridge:
             logger.warning(f"GRE bridge submit_numeric error: {e}")
         return False
 
-    def submit_targets(self, target_instance_id: "int | list[int]") -> bool:
+    def submit_targets(self, target_instance_id: int | list[int]) -> bool:
         """Submit target selection by instance ID(s).
 
         Accepts a single instance id or a list — one per TargetSelection
@@ -933,11 +940,14 @@ class GREBridge:
             # timeout=8: the plugin defers the SubmitTargetsReq commit until
             # the GRE round-trips the updated request (up to ~3s), so this
             # call legitimately outlives the default 5s pipe read timeout.
-            resp = self._send_safe({
-                "action": "submit_targets",
-                "target_instance_id": ids[0],
-                "target_instance_ids": ids,
-            }, timeout=8.0)
+            resp = self._send_safe(
+                {
+                    "action": "submit_targets",
+                    "target_instance_id": ids[0],
+                    "target_instance_ids": ids,
+                },
+                timeout=8.0,
+            )
             if resp.get("ok"):
                 logger.info(f"GRE bridge submitted target(s): instance_ids={ids}")
                 return True
@@ -982,7 +992,7 @@ class GREBridge:
             logger.warning(f"GRE bridge submit_distribution error: {e}")
         return False
 
-    def submit_order(self, ids: Optional[list[int]] = None) -> bool:
+    def submit_order(self, ids: list[int] | None = None) -> bool:
         """Submit a stack/library ordering decision.
 
         ids: ordered list of instance IDs. None = submit current order as-is.
@@ -1084,10 +1094,12 @@ class GREBridge:
     def submit_auto_tap(self, solution_index: int = 0) -> bool:
         """Submit an auto-tap solution by index (default = first)."""
         try:
-            resp = self._send_safe({
-                "action": "submit_auto_tap",
-                "solution_index": int(solution_index),
-            })
+            resp = self._send_safe(
+                {
+                    "action": "submit_auto_tap",
+                    "solution_index": int(solution_index),
+                }
+            )
             if resp.get("ok"):
                 logger.info(f"GRE bridge submitted auto_tap: index {solution_index}")
                 return True
@@ -1113,8 +1125,8 @@ class GREBridge:
 
     def submit_select_n_group(
         self,
-        ids: Optional[list[int]] = None,
-        single_id: Optional[int] = None,
+        ids: list[int] | None = None,
+        single_id: int | None = None,
     ) -> bool:
         """Submit a select-N-group request. Provide `ids` (list) or `single_id`."""
         try:
@@ -1137,8 +1149,8 @@ class GREBridge:
 
     def submit_search_from_groups(
         self,
-        zone: Optional[int] = None,
-        groups: Optional[list[dict[str, Any]]] = None,
+        zone: int | None = None,
+        groups: list[dict[str, Any]] | None = None,
     ) -> bool:
         """Submit search-from-groups (pick a zone, or pick groups within one)."""
         try:
@@ -1198,7 +1210,9 @@ class GREBridge:
             resp = self._send_safe({"action": "cancel_action"})
             if resp.get("ok"):
                 cancelled = resp.get("cancelled", False)
-                logger.info(f"GRE bridge cancel_action: cancelled={cancelled}, {resp.get('request_class', '?')}")
+                logger.info(
+                    f"GRE bridge cancel_action: cancelled={cancelled}, {resp.get('request_class', '?')}"
+                )
                 return True
             logger.warning(f"GRE bridge cancel_action failed: {resp.get('error')}")
         except GREBridgeError as e:
@@ -1209,7 +1223,7 @@ class GREBridge:
     # Phase 2: new game state commands
     # -------------------------------------------------------------------
 
-    def get_game_state(self) -> Optional[dict[str, Any]]:
+    def get_game_state(self) -> dict[str, Any] | None:
         """Get full game state directly from MTGA's MtgGameState.
 
         Returns the complete game state including zones, cards, players,
@@ -1228,7 +1242,7 @@ class GREBridge:
             logger.debug(f"get_game_state error: {e}")
             return None
 
-    def get_draft_state(self) -> Optional[dict[str, Any]]:
+    def get_draft_state(self) -> dict[str, Any] | None:
         """Get draft state directly from DraftContentController via MTGA bridge.
 
         Returns draft mode, pack info, pick info, and picked cards.
@@ -1245,7 +1259,7 @@ class GREBridge:
             logger.debug(f"get_draft_state error: {e}")
             return None
 
-    def get_card_positions(self) -> Optional[dict[str, Any]]:
+    def get_card_positions(self) -> dict[str, Any] | None:
         """Get on-screen rectangles for every visible card in the current match.
 
         Queries the BepInEx plugin which walks Unity's DuelScene_CDC objects,
@@ -1283,7 +1297,7 @@ class GREBridge:
             logger.debug(f"get_card_positions error: {e}")
             return None
 
-    def get_timer_state(self) -> Optional[dict[str, Any]]:
+    def get_timer_state(self) -> dict[str, Any] | None:
         """Get timer/chess clock state from the game.
 
         Returns per-player timer info including time remaining,
@@ -1300,7 +1314,7 @@ class GREBridge:
             logger.debug(f"get_timer_state error: {e}")
             return None
 
-    def get_match_info(self) -> Optional[dict[str, Any]]:
+    def get_match_info(self) -> dict[str, Any] | None:
         """Get match metadata (game number, format, stage, etc.).
 
         Returns match-level info not available from individual GRE messages.
@@ -1320,7 +1334,7 @@ class GREBridge:
     # Phase 3: Replay recording commands
     # -------------------------------------------------------------------
 
-    def enable_replay(self, replay_name: str = "mtgacoach") -> Optional[dict[str, Any]]:
+    def enable_replay(self, replay_name: str = "mtgacoach") -> dict[str, Any] | None:
         """Enable MTGA's built-in replay recording.
 
         Replays are saved as .rply files (line-delimited JSON with timestamps).
@@ -1346,7 +1360,7 @@ class GREBridge:
         except GREBridgeError:
             return False
 
-    def get_replay_status(self) -> Optional[dict[str, Any]]:
+    def get_replay_status(self) -> dict[str, Any] | None:
         """Check if replay recording is active and get current status."""
         try:
             resp = self._send_safe({"action": "get_replay_status"})
@@ -1356,7 +1370,7 @@ class GREBridge:
         except GREBridgeError:
             return None
 
-    def list_replays(self) -> Optional[dict[str, Any]]:
+    def list_replays(self) -> dict[str, Any] | None:
         """List available replay files (most recent first, max 50)."""
         try:
             resp = self._send_safe({"action": "list_replays"})
@@ -1377,7 +1391,7 @@ class GREBridge:
         grp_id: int,
         instance_id: int,
         ability_grp_id: int,
-    ) -> Optional[int]:
+    ) -> int | None:
         """Find the best matching action index.
 
         Scoring:
@@ -1398,7 +1412,11 @@ class GREBridge:
             act_type = act.get("actionType", "")
 
             # Match action type (handle both "Cast" and "ActionType_Cast")
-            if act_type != at_normalized and f"ActionType_{act_type}" != at_normalized and act_type != f"ActionType_{at_normalized}":
+            if (
+                act_type != at_normalized
+                and f"ActionType_{act_type}" != at_normalized
+                and act_type != f"ActionType_{at_normalized}"
+            ):
                 # Try removing prefix
                 act_short = act_type.replace("ActionType_", "")
                 at_short = at_normalized.replace("ActionType_", "")
@@ -1612,16 +1630,15 @@ _NON_ACTIONABLE_BRIDGE_REQUESTS = _INTERMISSION_BRIDGE_REQUESTS
 
 # Tracks the last logged (from, to) pair for pending_decision overrides
 # so the poll loop (~4 Hz) only emits one INFO line per transition.
-_LAST_OVERRIDE_LOG: Optional[tuple[str, str]] = None
+_LAST_OVERRIDE_LOG: tuple[str, str] | None = None
 
 
 def _get_bridge_decision_type(
-    request_type: Optional[str],
-    request_class: Optional[str] = None,
-) -> Optional[str]:
-    mapped = (
-        _BRIDGE_REQUEST_TO_DECISION_TYPE.get(request_type or "")
-        or _BRIDGE_REQUEST_TO_DECISION_TYPE.get(request_class or "")
+    request_type: str | None,
+    request_class: str | None = None,
+) -> str | None:
+    mapped = _BRIDGE_REQUEST_TO_DECISION_TYPE.get(request_type or "") or _BRIDGE_REQUEST_TO_DECISION_TYPE.get(
+        request_class or ""
     )
     if mapped:
         return mapped
@@ -1631,8 +1648,8 @@ def _get_bridge_decision_type(
 
 
 def _get_bridge_request_label(
-    request_type: Optional[str],
-    request_class: Optional[str] = None,
+    request_type: str | None,
+    request_class: str | None = None,
 ) -> str:
     if _get_bridge_decision_type(request_type, request_class) == UNMAPPED_INTERACTION_TYPE:
         return "Manual Required"
@@ -1647,9 +1664,9 @@ def _get_bridge_request_label(
 
 def enrich_snapshot_from_pending_response(
     snapshot: dict[str, Any],
-    poll: Optional[dict[str, Any]],
+    poll: dict[str, Any] | None,
     *,
-    bridge_connected: Optional[bool] = None,
+    bridge_connected: bool | None = None,
 ) -> None:
     """Overlay a raw get_pending_actions() response onto a snapshot dict.
 
@@ -1693,15 +1710,11 @@ def enrich_snapshot_from_pending_response(
     _apply_pending_decision_label(snapshot, request_type, request_class)
 
     decision_type = _get_bridge_decision_type(request_type, request_class)
-    plugin_provided_type = bool(
-        bridge_decision_context and bridge_decision_context.get("type")
-    )
+    plugin_provided_type = bool(bridge_decision_context and bridge_decision_context.get("type"))
     existing_ctx = _merge_decision_context_from_bridge(
         snapshot, bridge_decision_context, request_type, request_class
     )
-    existing_ctx = _resolve_decision_context_type(
-        existing_ctx, decision_type, plugin_provided_type
-    )
+    existing_ctx = _resolve_decision_context_type(existing_ctx, decision_type, plugin_provided_type)
     existing_ctx = _refine_generic_selection_type(
         snapshot,
         existing_ctx,
@@ -1723,9 +1736,7 @@ def enrich_snapshot_from_pending_response(
     _apply_bridge_blockers(snapshot, poll)
 
 
-def _apply_bridge_blockers(
-    snapshot: dict[str, Any], poll: dict[str, Any]
-) -> None:
+def _apply_bridge_blockers(snapshot: dict[str, Any], poll: dict[str, Any]) -> None:
     """Merge the plugin's DeclareBlockers `blockers` payload into the snapshot.
 
     Writes `raw_blockers` + `legal_blocker_ids` onto decision_context (the
@@ -1808,10 +1819,9 @@ def _normalize_poll(poll: dict[str, Any]) -> dict[str, Any]:
     request_payload = poll.get("request_payload")
     bridge_decision_context = poll.get("decision_context") or {}
 
-    is_intermission = (
-        (request_type or "") in _INTERMISSION_BRIDGE_REQUESTS
-        or (request_class or "") in _INTERMISSION_BRIDGE_REQUESTS
-    )
+    is_intermission = (request_type or "") in _INTERMISSION_BRIDGE_REQUESTS or (
+        request_class or ""
+    ) in _INTERMISSION_BRIDGE_REQUESTS
     if has_pending and _is_non_actionable_bridge_request(request_type, request_class):
         has_pending = False
         request_type = None
@@ -1838,26 +1848,18 @@ def _stamp_bridge_fields(
 ) -> None:
     """Write the `_bridge_*` overlay fields onto the snapshot."""
     has_pending = normalized["has_pending"]
-    snapshot["_bridge_request_type"] = (
-        normalized["request_type"] if has_pending else None
-    )
-    snapshot["_bridge_request_class"] = (
-        normalized["request_class"] if has_pending else None
-    )
+    snapshot["_bridge_request_type"] = normalized["request_type"] if has_pending else None
+    snapshot["_bridge_request_class"] = normalized["request_class"] if has_pending else None
     actions = normalized["actions"]
     snapshot["_bridge_actions"] = actions if actions else None
     snapshot["_bridge_can_pass"] = poll.get("can_pass", False)
     snapshot["_bridge_can_cancel"] = poll.get("can_cancel", False)
     snapshot["_bridge_allow_undo"] = poll.get("allow_undo", False)
     request_payload = normalized["request_payload"]
-    snapshot["_bridge_request_payload"] = (
-        request_payload if has_pending and request_payload else None
-    )
+    snapshot["_bridge_request_payload"] = request_payload if has_pending and request_payload else None
 
 
-def _clear_snapshot_for_no_pending(
-    snapshot: dict[str, Any], bridge_connected: Optional[bool]
-) -> None:
+def _clear_snapshot_for_no_pending(snapshot: dict[str, Any], bridge_connected: bool | None) -> None:
     """No bridge decision pending — clear stale decision/legal-action hints.
 
     Only does the clear when the bridge is *connected*. If we're disconnected,
@@ -1875,8 +1877,8 @@ def _clear_snapshot_for_no_pending(
 
 def _apply_pending_decision_label(
     snapshot: dict[str, Any],
-    request_type: Optional[str],
-    request_class: Optional[str],
+    request_type: str | None,
+    request_class: str | None,
 ) -> None:
     """Set or override `pending_decision` from the bridge request label.
 
@@ -1896,25 +1898,19 @@ def _apply_pending_decision_label(
 
     global _LAST_OVERRIDE_LOG
     key = (existing, label)
-    if _LAST_OVERRIDE_LOG != key:
-        logger.info(
-            f"Bridge overriding stale pending_decision: "
-            f"{existing!r} → {label!r}"
-        )
+    if key != _LAST_OVERRIDE_LOG:
+        logger.info(f"Bridge overriding stale pending_decision: {existing!r} → {label!r}")
         _LAST_OVERRIDE_LOG = key
     else:
-        logger.debug(
-            f"Bridge overriding stale pending_decision: "
-            f"{existing!r} → {label!r} (repeat)"
-        )
+        logger.debug(f"Bridge overriding stale pending_decision: {existing!r} → {label!r} (repeat)")
     snapshot["pending_decision"] = label
 
 
 def _merge_decision_context_from_bridge(
     snapshot: dict[str, Any],
     bridge_decision_context: dict[str, Any],
-    request_type: Optional[str],
-    request_class: Optional[str],
+    request_type: str | None,
+    request_class: str | None,
 ) -> dict[str, Any]:
     """Overlay bridge-provided decision_context onto the snapshot's, then
     backfill requestType / requestClass tags. Returns the merged dict.
@@ -1937,7 +1933,7 @@ def _merge_decision_context_from_bridge(
 
 def _resolve_decision_context_type(
     existing_ctx: dict[str, Any],
-    decision_type: Optional[str],
+    decision_type: str | None,
     plugin_provided_type: bool,
 ) -> dict[str, Any]:
     """Pick the freshest `type` value for decision_context.
@@ -1950,21 +1946,13 @@ def _resolve_decision_context_type(
     if not decision_type:
         return existing_ctx
     existing_type = existing_ctx.get("type")
-    stale_disagrees = bool(
-        existing_type
-        and existing_type != decision_type
-        and not plugin_provided_type
-    )
+    stale_disagrees = bool(existing_type and existing_type != decision_type and not plugin_provided_type)
     needs_update = (
-        not existing_type
-        or existing_type in {"unknown_req", UNMAPPED_INTERACTION_TYPE}
-        or stale_disagrees
+        not existing_type or existing_type in {"unknown_req", UNMAPPED_INTERACTION_TYPE} or stale_disagrees
     )
     if not needs_update:
         return existing_ctx
-    logger.debug(
-        f"Bridge enriched decision_context: {existing_type} → {decision_type}"
-    )
+    logger.debug(f"Bridge enriched decision_context: {existing_type} → {decision_type}")
     return {**existing_ctx, "type": decision_type, "_bridge_source": True}
 
 
@@ -1972,9 +1960,9 @@ def _refine_generic_selection_type(
     snapshot: dict[str, Any],
     existing_ctx: dict[str, Any],
     request_payload: Any,
-    request_type: Optional[str],
-    request_class: Optional[str],
-    decision_type: Optional[str],
+    request_type: str | None,
+    request_class: str | None,
+    decision_type: str | None,
 ) -> dict[str, Any]:
     """Promote a generic "selection" type into a more specific one when the
     request payload has enough hints (count, ZoneToSearch, etc.).
@@ -1983,22 +1971,15 @@ def _refine_generic_selection_type(
     current one is also generic.
     """
     current_type = str(existing_ctx.get("type") or "")
-    if (
-        current_type not in _GENERIC_SELECTION_TYPES
-        and decision_type not in _GENERIC_SELECTION_TYPES
-    ):
+    if current_type not in _GENERIC_SELECTION_TYPES and decision_type not in _GENERIC_SELECTION_TYPES:
         return existing_ctx
 
-    inferred_type = _infer_specific_decision_type(
-        existing_ctx, request_payload, request_type, request_class
-    )
+    inferred_type = _infer_specific_decision_type(existing_ctx, request_payload, request_type, request_class)
     if not inferred_type:
         return existing_ctx
 
     if snapshot.get("pending_decision") in _GENERIC_SELECTION_LABELS:
-        better_label = _label_for_decision_type(
-            inferred_type, existing_ctx.get("count")
-        )
+        better_label = _label_for_decision_type(inferred_type, existing_ctx.get("count"))
         if better_label:
             snapshot["pending_decision"] = better_label
     logger.debug(
@@ -2010,13 +1991,12 @@ def _refine_generic_selection_type(
 
 
 def _is_non_actionable_bridge_request(
-    request_type: Optional[str],
-    request_class: Optional[str] = None,
+    request_type: str | None,
+    request_class: str | None = None,
 ) -> bool:
-    return (
-        (request_type or "") in _NON_ACTIONABLE_BRIDGE_REQUESTS
-        or (request_class or "") in _NON_ACTIONABLE_BRIDGE_REQUESTS
-    )
+    return (request_type or "") in _NON_ACTIONABLE_BRIDGE_REQUESTS or (
+        request_class or ""
+    ) in _NON_ACTIONABLE_BRIDGE_REQUESTS
 
 
 class BridgeDecisionPoller:
@@ -2038,10 +2018,10 @@ class BridgeDecisionPoller:
 
     def __init__(self, bridge: GREBridge):
         self._bridge = bridge
-        self._last_request_type: Optional[str] = None
-        self._last_action_sig: Optional[str] = None
+        self._last_request_type: str | None = None
+        self._last_action_sig: str | None = None
         self._last_has_pending: bool = False
-        self._last_poll_result: Optional[dict[str, Any]] = None
+        self._last_poll_result: dict[str, Any] | None = None
         self._consecutive_errors: int = 0
         self._fallback_mode: bool = False
         self._was_connected: bool = False
@@ -2051,7 +2031,7 @@ class BridgeDecisionPoller:
         """Whether bridge polling is active (connected and not in fallback)."""
         return self._bridge.connected and not self._fallback_mode
 
-    def poll(self) -> Optional[dict[str, Any]]:
+    def poll(self) -> dict[str, Any] | None:
         """Poll bridge for decision state changes.
 
         Returns a trigger dict when the decision state changes, None otherwise.
@@ -2078,14 +2058,13 @@ class BridgeDecisionPoller:
                 return None
 
         # Ensure connection
-        if not self._bridge.connected:
-            if not self._bridge.connect():
-                if self._was_connected:
-                    self._was_connected = False
-                    logger.info("Bridge disconnected, falling back to log-based detection")
-                # NOT connected yet — don't count as error, just wait.
-                # The bridge may not exist yet (MTGA still starting).
-                return None
+        if not self._bridge.connected and not self._bridge.connect():
+            if self._was_connected:
+                self._was_connected = False
+                logger.info("Bridge disconnected, falling back to log-based detection")
+            # NOT connected yet — don't count as error, just wait.
+            # The bridge may not exist yet (MTGA still starting).
+            return None
 
         if not self._was_connected:
             self._was_connected = True
@@ -2124,9 +2103,7 @@ class BridgeDecisionPoller:
         ignored_request = _is_non_actionable_bridge_request(request_type, request_class)
         has_pending = raw_has_pending and not ignored_request
         if ignored_request:
-            logger.debug(
-                f"Bridge ignoring non-actionable request: {request_type or request_class}"
-            )
+            logger.debug(f"Bridge ignoring non-actionable request: {request_type or request_class}")
             request_type = None
             request_class = None
             actions = []
@@ -2134,7 +2111,7 @@ class BridgeDecisionPoller:
 
         # Detect state change
         changed = False
-        trigger_name: Optional[str] = None
+        trigger_name: str | None = None
 
         if has_pending and not self._last_has_pending:
             # New decision appeared
@@ -2179,10 +2156,7 @@ class BridgeDecisionPoller:
 
         if trigger_name == "decision_required":
             label = _get_bridge_request_label(request_type, request_class)
-            logger.info(
-                f"Bridge detected decision: {label} "
-                f"(type={request_type}, actions={len(actions)})"
-            )
+            logger.info(f"Bridge detected decision: {label} (type={request_type}, actions={len(actions)})")
             # Pre-warm grp_ids in actions to eliminate resolution overhead during decision prompts
             act_grp_ids = [a.get("grpId") for a in actions if a.get("grpId")]
             if act_grp_ids:
@@ -2234,8 +2208,8 @@ class BridgeDecisionPoller:
 
 
 # Module-level singleton for convenience
-_bridge: Optional[GREBridge] = None
-_poller: Optional[BridgeDecisionPoller] = None
+_bridge: GREBridge | None = None
+_poller: BridgeDecisionPoller | None = None
 
 
 def get_bridge() -> GREBridge:
@@ -2322,22 +2296,15 @@ class BotBattlePipeServer:
             except Exception as e:
                 logger.warning(f"Error handling bot battle request: {e}")
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     pipe_file.close()
-                except Exception:
-                    pass
-                try:
+                with contextlib.suppress(Exception):
                     client_sock.close()
-                except Exception:
-                    pass
 
         self._server_socket = None
 
     def stop(self):
         self.running = False
         if self._server_socket:
-            try:
+            with contextlib.suppress(Exception):
                 self._server_socket.close()
-            except Exception:
-                pass
-

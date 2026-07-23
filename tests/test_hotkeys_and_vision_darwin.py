@@ -10,17 +10,18 @@ Covers:
 import json
 import sys
 from unittest.mock import MagicMock, patch
+
 import pytest
 
 from arenamcp.desktop.hotkeys_darwin import (
-    DarwinHotkeyListener,
-    MACOS_KEY_CODES,
     HOTKEY_PURPOSES,
+    MACOS_KEY_CODES,
+    DarwinHotkeyListener,
 )
 from arenamcp.vision_mapper import LocalVLM, OllamaVLM, VisionMapper
 
-
 # ── DarwinHotkeyListener & Key Mappings ──────────────────────────────────
+
 
 def test_darwin_key_codes_mapping():
     assert MACOS_KEY_CODES["F3"] == 99
@@ -105,6 +106,7 @@ def test_darwin_hotkey_listener_registration_and_callback(monkeypatch):
 
 # ── HotkeyManager Integration ──────────────────────────────────────────
 
+
 def test_hotkey_manager_cross_platform_dispatch(monkeypatch):
     """HotkeyManager selects DarwinHotkeyListener on macOS, keyboard on Windows, or QShortcut fallback."""
     hotkeys = pytest.importorskip("arenamcp.desktop.hotkeys")
@@ -131,20 +133,25 @@ def test_hotkey_manager_cross_platform_dispatch(monkeypatch):
 
 # ── LocalVLM & VisionMapper (Qwen2-VL / Llava) ──────────────────────────
 
+
 def test_local_vlm_ollama_protocol():
     """Test LocalVLM querying Ollama API."""
     vlm = LocalVLM(model="qwen2.5-vl:3b", endpoint="http://localhost:11434")
 
-    tags_response = json.dumps({
-        "models": [
-            {"name": "qwen2.5-vl:3b"},
-            {"name": "llava:7b"},
-        ]
-    }).encode("utf-8")
+    tags_response = json.dumps(
+        {
+            "models": [
+                {"name": "qwen2.5-vl:3b"},
+                {"name": "llava:7b"},
+            ]
+        }
+    ).encode("utf-8")
 
-    gen_response = json.dumps({
-        "response": '```json\n{"elements": [{"name": "Done", "zone": "button", "x": 0.9, "y": 0.8, "confidence": 0.95}], "phase_hint": "main_phase"}\n```'
-    }).encode("utf-8")
+    gen_response = json.dumps(
+        {
+            "response": '```json\n{"elements": [{"name": "Done", "zone": "button", "x": 0.9, "y": 0.8, "confidence": 0.95}], "phase_hint": "main_phase"}\n```'
+        }
+    ).encode("utf-8")
 
     def mock_urlopen(req, timeout=None):
         url = req.full_url if hasattr(req, "full_url") else str(req)
@@ -168,19 +175,19 @@ def test_local_vlm_openai_protocol():
     """Test LocalVLM querying OpenAI-compatible VLM endpoint (vLLM / LM Studio / Qwen2-VL)."""
     vlm = LocalVLM(model="Qwen/Qwen2-VL-7B-Instruct", endpoint="http://localhost:8000/v1", api_type="openai")
 
-    models_response = json.dumps({
-        "data": [{"id": "Qwen/Qwen2-VL-7B-Instruct"}]
-    }).encode("utf-8")
+    models_response = json.dumps({"data": [{"id": "Qwen/Qwen2-VL-7B-Instruct"}]}).encode("utf-8")
 
-    chat_response = json.dumps({
-        "choices": [
-            {
-                "message": {
-                    "content": '{"elements": [{"name": "Pass", "zone": "button", "x": 0.92, "y": 0.88, "confidence": 0.98}]}'
+    chat_response = json.dumps(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"elements": [{"name": "Pass", "zone": "button", "x": 0.92, "y": 0.88, "confidence": 0.98}]}'
+                    }
                 }
-            }
-        ]
-    }).encode("utf-8")
+            ]
+        }
+    ).encode("utf-8")
 
     def mock_urlopen(req, timeout=None):
         url = req.full_url if hasattr(req, "full_url") else str(req)

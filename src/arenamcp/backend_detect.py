@@ -7,7 +7,6 @@ validate connectivity, and pick the best default mode.
 import json
 import logging
 import urllib.request
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +35,7 @@ def _is_online_available() -> bool:
     """Check if online mode is available (has license key + API reachable)."""
     try:
         from arenamcp.settings import get_settings
+
         license_key = get_settings().get("license_key", "")
         if not license_key:
             return False
@@ -44,9 +44,12 @@ def _is_online_available() -> bool:
 
     try:
         from arenamcp.backends.proxy import ONLINE_BASE_URL
-        req = urllib.request.Request(f"{ONLINE_BASE_URL}/models", method="GET",
-                                     headers={"Authorization": f"Bearer {license_key}",
-                                              "User-Agent": "mtgacoach-client/1.0"})
+
+        req = urllib.request.Request(
+            f"{ONLINE_BASE_URL}/models",
+            method="GET",
+            headers={"Authorization": f"Bearer {license_key}", "User-Agent": "mtgacoach-client/1.0"},
+        )
         with urllib.request.urlopen(req, timeout=2):
             return True
     except Exception as e:
@@ -55,6 +58,7 @@ def _is_online_available() -> bool:
         # even if the API is momentarily unreachable
         try:
             from arenamcp.subscription import check_subscription
+
             status = check_subscription(license_key)
             return status.is_valid
         except Exception:
@@ -86,6 +90,7 @@ def _validate_online() -> tuple[bool, str]:
     """Check online mode: license key valid + API reachable."""
     try:
         from arenamcp.settings import get_settings
+
         license_key = get_settings().get("license_key", "")
     except Exception:
         return False, "Could not load settings"
@@ -95,6 +100,7 @@ def _validate_online() -> tuple[bool, str]:
 
     try:
         from arenamcp.subscription import check_subscription
+
         status = check_subscription(license_key)
         if status.is_valid:
             return True, ""
@@ -107,6 +113,7 @@ def _validate_local() -> tuple[bool, str]:
     """Check local mode: endpoint reachable with at least one model."""
     try:
         from arenamcp.settings import get_settings
+
         local_url = get_settings().get("local_url") or "http://localhost:8000/v1"
     except Exception:
         local_url = "http://localhost:8000/v1"
@@ -136,7 +143,7 @@ def _validate_local() -> tuple[bool, str]:
         return False, f"Local endpoint not reachable at {local_url}. Is Ollama/LM Studio running?"
 
 
-def auto_select_mode() -> tuple[str, Optional[str]]:
+def auto_select_mode() -> tuple[str, str | None]:
     """Auto-select the best available mode.
 
     Returns:

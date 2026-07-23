@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sys
 import traceback
 from pathlib import Path
 from typing import Any
-
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +40,8 @@ def main() -> int:
         if probe is None:
             raise RuntimeError("Kokoro warmup probe produced no audio")
         probe_path, _ = probe
-        try:
+        with contextlib.suppress(OSError):
             Path(probe_path).unlink(missing_ok=True)
-        except OSError:
-            pass
         voice_id, voice_name = voice.current_voice
         _emit(
             {

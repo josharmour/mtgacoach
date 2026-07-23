@@ -10,7 +10,6 @@ import os
 import re
 import threading
 import time
-from typing import Optional
 
 from arenamcp.client_metadata import get_client_headers
 
@@ -48,21 +47,35 @@ def _maybe_capture_prompt(
             "prompt_variant": os.environ.get("MTGACOACH_PROMPT_VARIANT", "default").lower(),
         }
         line = json.dumps(record, ensure_ascii=False)
-        with _CAPTURE_LOCK:
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+        with _CAPTURE_LOCK, open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
     except Exception as e:
         # Capture must never break a real coach call.
         logger.debug(f"prompt-capture write failed: {e}")
+
 
 # Closed think-tag blocks inside reasoning text (DeepSeek/Qwen style).
 _THINK_BLOCK_RE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.IGNORECASE | re.DOTALL)
 
 # Leading phrases that mark deliberation rather than a final answer.
 _COT_MARKERS = (
-    "okay,", "okay ", "ok,", "ok ", "hmm", "wait,", "let me", "let's",
-    "i need to", "i should", "we need", "we should", "the user", "first,",
-    "so the", "thinking about", "looking at",
+    "okay,",
+    "okay ",
+    "ok,",
+    "ok ",
+    "hmm",
+    "wait,",
+    "let me",
+    "let's",
+    "i need to",
+    "i should",
+    "we need",
+    "we should",
+    "the user",
+    "first,",
+    "so the",
+    "thinking about",
+    "looking at",
 )
 
 
@@ -119,8 +132,8 @@ class BackendError(Exception):
         message: str,
         *,
         retryable: bool = False,
-        retry_after_s: Optional[float] = None,
-        status_code: Optional[int] = None,
+        retry_after_s: float | None = None,
+        status_code: int | None = None,
     ):
         super().__init__(message)
         self.retryable = retryable
@@ -135,7 +148,7 @@ _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 def _classify_api_error(e: Exception) -> BackendError:
     """Wrap an SDK/network exception in a BackendError with retry semantics."""
     status = getattr(e, "status_code", None)
-    retry_after: Optional[float] = None
+    retry_after: float | None = None
     body = getattr(e, "body", None)
     if isinstance(body, dict):
         ra = body.get("retry_after")
@@ -152,9 +165,7 @@ def _classify_api_error(e: Exception) -> BackendError:
             "APITimeoutError",
             "ConnectionError",
         )
-    return BackendError(
-        str(e), retryable=retryable, retry_after_s=retry_after, status_code=status
-    )
+    return BackendError(str(e), retryable=retryable, retry_after_s=retry_after, status_code=status)
 
 
 class ProxyBackend:
@@ -169,8 +180,8 @@ class ProxyBackend:
         self,
         model: str = "gemma-4-12b-it",
         enable_thinking: bool = False,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
     ):
         self.model = model
         self.enable_thinking = enable_thinking
@@ -178,14 +189,14 @@ class ProxyBackend:
         self._api_key = api_key
         self._client = None
         # What the server said it actually ran (R4: gateway aliases lie).
-        self.last_served_model: Optional[str] = None
+        self.last_served_model: str | None = None
         self._served_model_warned = False
 
         # Fire-and-forget warmup for any local backend to pre-load weights/KV cache
         self._local_warmup()
 
     @classmethod
-    def create_online(cls, model: Optional[str] = None, license_key: str = "") -> "ProxyBackend":
+    def create_online(cls, model: str | None = None, license_key: str = "") -> "ProxyBackend":
         """Create a backend configured for online mode (mtgacoach.com)."""
         return cls(
             # The api.mtgacoach.com gateway (LiteLLM on the NAS) owns model
@@ -200,9 +211,9 @@ class ProxyBackend:
     @classmethod
     def create_local(
         cls,
-        model: Optional[str] = None,
-        url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        model: str | None = None,
+        url: str | None = None,
+        api_key: str | None = None,
     ) -> "ProxyBackend":
         """Create a backend configured for local mode (vLLM/Ollama/LM Studio)."""
         return cls(
@@ -255,8 +266,7 @@ class ProxyBackend:
         if not url or url == ONLINE_BASE_URL:
             return
         # Only warm up obvious local URLs to avoid surprising arbitrary endpoints.
-        is_local = ("localhost" in url or "127.0.0.1" in url or
-                    url.startswith("http://0.0.0.0"))
+        is_local = "localhost" in url or "127.0.0.1" in url or url.startswith("http://0.0.0.0")
         if not is_local:
             return
 
@@ -286,7 +296,7 @@ class ProxyBackend:
         # target: online models are unaffected.
         max_tokens: int = 4096,
         temperature: float = 0.3,
-        request_timeout_s: Optional[float] = None,
+        request_timeout_s: float | None = None,
         raise_on_error: bool = False,
     ) -> str:
         """Get completion from the API endpoint.
@@ -327,7 +337,9 @@ class ProxyBackend:
             }
 
             model_lower = self.model.lower()
-            is_gpt5 = "gpt-5" in model_lower or "gpt5" in model_lower or "o1" in model_lower or "o3" in model_lower
+            is_gpt5 = (
+                "gpt-5" in model_lower or "gpt5" in model_lower or "o1" in model_lower or "o3" in model_lower
+            )
             is_gemini = "gemini" in model_lower
 
             if is_gpt5:
@@ -369,7 +381,7 @@ class ProxyBackend:
             # Bounded retry: one extra attempt for transient failures
             # (429/5xx/connection). A 60s Retry-After is useless mid-match —
             # skip the retry entirely when the server asks for a long wait.
-            last_err: Optional[BackendError] = None
+            last_err: BackendError | None = None
             for attempt in (1, 2):
                 try:
                     return self._complete_once(client, params)
@@ -381,9 +393,7 @@ class ProxyBackend:
                         and (err.retry_after_s is None or err.retry_after_s <= 5.0)
                     ):
                         wait = min(err.retry_after_s or 0.5, 1.0)
-                        logger.warning(
-                            f"API error (retryable): {e} — one retry in {wait:.1f}s"
-                        )
+                        logger.warning(f"API error (retryable): {e} — one retry in {wait:.1f}s")
                         time.sleep(wait)
                         continue
                     last_err = err
@@ -402,7 +412,7 @@ class ProxyBackend:
                 raise _classify_api_error(e) from e
             return f"Error getting advice: {e}"
 
-    def _note_served_model(self, served: Optional[str]) -> None:
+    def _note_served_model(self, served: str | None) -> None:
         """Record the model the server actually ran (gateway aliases lie).
 
         The 2026-07-05 misroute (alias 'nemotron-3-super' → an ollama 12B)
@@ -528,7 +538,7 @@ class ProxyBackend:
 
         served_model = getattr(response, "model", None)
         self._note_served_model(served_model)
-        usage = getattr(response, 'usage', None)
+        usage = getattr(response, "usage", None)
         tokens_info = ""
         if usage:
             tokens_info = f", in={usage.prompt_tokens}, out={usage.completion_tokens}"
@@ -549,17 +559,14 @@ class ProxyBackend:
         system_prompt: str,
         user_message: str,
         image_bytes: bytes,
-        request_timeout_s: Optional[float] = None,
+        request_timeout_s: float | None = None,
     ) -> str:
         """Get completion with an image via the OpenAI multimodal message format."""
         import base64
         import time
 
         if getattr(self, "_vision_dead", False):
-            return (
-                "Error getting vision analysis: vision endpoint disabled "
-                "after repeated failures"
-            )
+            return "Error getting vision analysis: vision endpoint disabled after repeated failures"
 
         try:
             client = self._get_client()
@@ -571,10 +578,13 @@ class ProxyBackend:
                 "model": self.model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": [
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-                        {"type": "text", "text": user_message},
-                    ]},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                            {"type": "text", "text": user_message},
+                        ],
+                    },
                 ],
                 "max_completion_tokens": 600,
                 "temperature": 0.3,

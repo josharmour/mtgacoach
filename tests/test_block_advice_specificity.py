@@ -21,8 +21,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from arenamcp.coach import CoachEngine
 from arenamcp.gamestate import (
     GameObject,
@@ -30,7 +28,6 @@ from arenamcp.gamestate import (
     _parse_attack_state,
     _parse_block_state,
 )
-
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -45,8 +42,7 @@ def _make_coach() -> CoachEngine:
     return CoachEngine(backend=_Stub())
 
 
-def _attacker(iid: int, name: str, power: int, toughness: int,
-              oracle: str = "") -> dict[str, Any]:
+def _attacker(iid: int, name: str, power: int, toughness: int, oracle: str = "") -> dict[str, Any]:
     return {
         "instance_id": iid,
         "name": name,
@@ -55,7 +51,7 @@ def _attacker(iid: int, name: str, power: int, toughness: int,
         "toughness": toughness,
         "oracle_text": oracle,
         "owner_seat_id": 2,
-        "is_tapped": False,   # vigilance-style: NOT tapped — heuristic misses it
+        "is_tapped": False,  # vigilance-style: NOT tapped — heuristic misses it
     }
 
 
@@ -145,14 +141,10 @@ def test_declare_blockers_req_captures_attackers_from_log():
     from arenamcp.gamestate import _handle_decision_message
 
     gs = GameState()
-    gs.game_objects[10] = GameObject(
-        instance_id=10, grp_id=1001, zone_id=1, owner_seat_id=1)
-    gs.game_objects[50] = GameObject(
-        instance_id=50, grp_id=2001, zone_id=1, owner_seat_id=2)
-    gs.game_objects[51] = GameObject(
-        instance_id=51, grp_id=2002, zone_id=1, owner_seat_id=2)
-    names = {1001: "Veteran Survivor", 2001: "Grizzly Bears",
-             2002: "Colossal Dreadmaw"}
+    gs.game_objects[10] = GameObject(instance_id=10, grp_id=1001, zone_id=1, owner_seat_id=1)
+    gs.game_objects[50] = GameObject(instance_id=50, grp_id=2001, zone_id=1, owner_seat_id=2)
+    gs.game_objects[51] = GameObject(instance_id=51, grp_id=2002, zone_id=1, owner_seat_id=2)
+    names = {1001: "Veteran Survivor", 2001: "Grizzly Bears", 2002: "Colossal Dreadmaw"}
     gs._resolve_card_name = lambda grp_id: names.get(grp_id, f"Card {grp_id}")
 
     msg = {
@@ -237,7 +229,12 @@ def test_format_block_combat_lights_up_from_decision_context():
     your_cards = [c for c in state["battlefield"] if c["owner_seat_id"] == 1]
     opp_cards = [c for c in state["battlefield"] if c["owner_seat_id"] == 2]
     lines = coach._format_block_combat(
-        your_cards, opp_cards, state["players"][0], 6, "Phase_Combat", set(),
+        your_cards,
+        opp_cards,
+        state["players"][0],
+        6,
+        "Phase_Combat",
+        set(),
         decision_context=state["decision_context"],
     )
     blob = "\n".join(lines)
@@ -326,9 +323,7 @@ def test_repair_respects_gre_blocker_restrictions():
     # Only one legal blocker in this scenario
     state["decision_context"]["legal_blockers"] = ["Veteran Survivor"]
     state["decision_context"]["legal_blocker_ids"] = [10]
-    state["decision_context"]["raw_blockers"] = [
-        state["decision_context"]["raw_blockers"][0]
-    ]
+    state["decision_context"]["raw_blockers"] = [state["decision_context"]["raw_blockers"][0]]
     attackers = coach._collect_block_decision_attackers(state)
     blockers = coach._collect_block_decision_blockers(state)
     sentence = coach._solver_block_assignment_sentence(

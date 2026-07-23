@@ -7,9 +7,8 @@ replanning + repeated TTS; and a stateful toggle_autopilot raced a UI
 click, flipping autopilot off mid-match.
 """
 
-from arenamcp.decision_arbiter import ArbitratedDecision, arbitrate
+from arenamcp.decision_arbiter import arbitrate
 from arenamcp.standalone import StandaloneCoach
-
 
 # ---------------------------------------------------------------------------
 # arbitrate()
@@ -19,7 +18,7 @@ from arenamcp.standalone import StandaloneCoach
 def test_connected_idle_bridge_means_no_decision():
     state = {
         "_bridge_connected": True,
-        "pending_decision": "Select Targets",          # stale log state
+        "pending_decision": "Select Targets",  # stale log state
         "legal_actions": ["Select target for X"],
         "decision_context": {"type": "target_selection"},
     }

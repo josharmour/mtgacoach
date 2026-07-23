@@ -169,7 +169,7 @@ def test_pay_cost_source_selection_prefers_specific_then_least_flexible_sources(
                 "turn_entered_battlefield": 1,
                 "color_production": ["2"],
             },
-        ]
+        ],
     }
     decision_context = {
         "type": "pay_costs",
@@ -204,11 +204,13 @@ def test_can_afford_hybrid_pips_cannot_reuse_one_surplus_source():
     # Boros Reckoner {R/W}{R/W}{R/W} with 1 Mountain + 2 Wastes: only the
     # Mountain can pay a hybrid pip, and it can pay exactly one — the two
     # colorless sources can't cover the other hybrids.
-    pool = _pool_for([
-        _untapped_land("Mountain", "Basic Land — Mountain", "{T}: Add {R}."),
-        _untapped_land("Wastes", "Basic Land", "{T}: Add {C}."),
-        _untapped_land("Wastes", "Basic Land", "{T}: Add {C}."),
-    ])
+    pool = _pool_for(
+        [
+            _untapped_land("Mountain", "Basic Land — Mountain", "{T}: Add {R}."),
+            _untapped_land("Wastes", "Basic Land", "{T}: Add {C}."),
+            _untapped_land("Wastes", "Basic Land", "{T}: Add {C}."),
+        ]
+    )
     assert RulesEngine._can_afford("{R/W}{R/W}{R/W}", pool) is False
 
 
@@ -222,10 +224,12 @@ def test_can_afford_hybrid_pips_with_three_duals():
 def test_can_afford_multicolor_source_is_one_source_not_two():
     # {W}{U} with one W/U dual + one Wastes: the dual bumps both the W and U
     # counts but can only produce one mana — must NOT be affordable.
-    pool = _pool_for([
-        _untapped_land("Hallowed Fountain", "Land — Plains Island", "({T}: Add {W} or {U}.)"),
-        _untapped_land("Wastes", "Basic Land", "{T}: Add {C}."),
-    ])
+    pool = _pool_for(
+        [
+            _untapped_land("Hallowed Fountain", "Land — Plains Island", "({T}: Add {W} or {U}.)"),
+            _untapped_land("Wastes", "Basic Land", "{T}: Add {C}."),
+        ]
+    )
     assert pool["W"] == 1 and pool["U"] == 1
     assert RulesEngine._can_afford("{W}{U}", pool) is False
     # Either single pip alone is fine — the dual pays one or the other.
@@ -236,9 +240,11 @@ def test_can_afford_multicolor_source_is_one_source_not_two():
 def test_get_mana_pool_counts_dual_land_once():
     # A plains+island dual is a single source: total 1, one two-color entry
     # in the per-source capability list.
-    pool = _pool_for([
-        _untapped_land("Hallowed Fountain", "Land — Plains Island", "({T}: Add {W} or {U}.)"),
-    ])
+    pool = _pool_for(
+        [
+            _untapped_land("Hallowed Fountain", "Land — Plains Island", "({T}: Add {W} or {U}.)"),
+        ]
+    )
     assert pool["total"] == 1
     assert pool["_sources"] == [frozenset({"W", "U"})]
 

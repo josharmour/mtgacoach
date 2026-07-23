@@ -18,7 +18,6 @@ from typing import Any
 from arenamcp.coach import GameStateTrigger
 from arenamcp.standalone import StandaloneCoach
 
-
 # Seat 1 == local player, seat 2 == opponent (mirrors the shape every filter
 # helper reads: players[].seat_id/is_local/life_total, turn.active/priority,
 # legal_actions, pending_decision, hand, battlefield).
@@ -62,9 +61,7 @@ def _make_state(
 
 
 def _is_meaningful(state: dict[str, Any], *, has_castable_instants: bool = False) -> bool:
-    return StandaloneCoach._is_meaningful_advice_window(
-        state, has_castable_instants=has_castable_instants
-    )
+    return StandaloneCoach._is_meaningful_advice_window(state, has_castable_instants=has_castable_instants)
 
 
 # --------------------------------------------------------------------------- #
@@ -261,9 +258,7 @@ def test_integration_with_real_castable_instants_detector():
             "mana_cost": "{R}",
         }
     ]
-    battlefield = [
-        {"owner_seat_id": LOCAL_SEAT, "type_line": "Basic Land — Mountain", "is_tapped": False}
-    ]
+    battlefield = [{"owner_seat_id": LOCAL_SEAT, "type_line": "Basic Land — Mountain", "is_tapped": False}]
     state = _make_state(
         active_player=OPP_SEAT,
         priority_player=OPP_SEAT,
@@ -281,9 +276,7 @@ def test_integration_with_real_castable_instants_detector():
         priority_player=OPP_SEAT,
         legal_actions=["Wait"],
         hand=instant_hand,
-        battlefield=[
-            {"owner_seat_id": LOCAL_SEAT, "type_line": "Basic Land — Mountain", "is_tapped": True}
-        ],
+        battlefield=[{"owner_seat_id": LOCAL_SEAT, "type_line": "Basic Land — Mountain", "is_tapped": True}],
     )
     has_instants_dry = GameStateTrigger._has_castable_instants(trigger, state_no_mana)
     assert has_instants_dry is False

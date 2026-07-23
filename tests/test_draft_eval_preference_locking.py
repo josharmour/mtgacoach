@@ -1,10 +1,8 @@
 """Tests for draft evaluation color-pair preference locking and draft pool synergy badges."""
 
 from unittest.mock import MagicMock
-import pytest
 
 from arenamcp.draft_eval import (
-    CardEvaluation,
     check_synergy,
     evaluate_pack,
 )

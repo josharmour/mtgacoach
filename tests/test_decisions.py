@@ -48,10 +48,13 @@ def test_actions_available_builds_options_with_payability():
         "request_type": "ActionsAvailable",
         "can_pass": True,
         "actions": [
-            {"actionType": "ActionType_Cast", "grpId": 91644, "instanceId": 320,
-             "autoTapSolution": {"mana": []}},
-            {"actionType": "ActionType_Cast", "grpId": 94899, "instanceId": 164,
-             "autoTapSolution": None},
+            {
+                "actionType": "ActionType_Cast",
+                "grpId": 91644,
+                "instanceId": 320,
+                "autoTapSolution": {"mana": []},
+            },
+            {"actionType": "ActionType_Cast", "grpId": 94899, "instanceId": 164, "autoTapSolution": None},
             {"actionType": "ActionType_Play", "grpId": 75557, "instanceId": 167},
             {"actionType": "ActionType_Pass"},
         ],
@@ -107,9 +110,7 @@ def test_select_n_and_mulligan():
 
 
 def test_unknown_family_returns_none_for_legacy_fallback():
-    assert build_pending_decision(
-        {"has_pending": True, "request_type": "GroupRequest"}
-    ) is None
+    assert build_pending_decision({"has_pending": True, "request_type": "GroupRequest"}) is None
     assert build_pending_decision({"has_pending": False}) is None
     assert build_pending_decision(None) is None
 

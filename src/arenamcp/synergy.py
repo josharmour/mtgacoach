@@ -9,7 +9,10 @@ import logging
 import pickle
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from arenamcp.scryfall import ScryfallCache
 
 import networkx as nx
 
@@ -31,29 +34,88 @@ class SynergyGraph:
     # Synergy keywords that indicate interactions
     SYNERGY_KEYWORDS = {
         "tribal": [
-            "elf", "goblin", "merfolk", "zombie", "vampire", "dragon",
-            "angel", "demon", "human", "wizard", "warrior", "eldrazi",
-            "faerie", "rat", "spider", "knight", "soldier", "beast",
-            "elemental", "dinosaur", "cat", "dog", "bird", "squirrel",
-            "skeleton", "spirit", "rogue", "cleric", "shaman", "druid",
-            "pirate", "scout", "mole", "badger", "sphinx",
+            "elf",
+            "goblin",
+            "merfolk",
+            "zombie",
+            "vampire",
+            "dragon",
+            "angel",
+            "demon",
+            "human",
+            "wizard",
+            "warrior",
+            "eldrazi",
+            "faerie",
+            "rat",
+            "spider",
+            "knight",
+            "soldier",
+            "beast",
+            "elemental",
+            "dinosaur",
+            "cat",
+            "dog",
+            "bird",
+            "squirrel",
+            "skeleton",
+            "spirit",
+            "rogue",
+            "cleric",
+            "shaman",
+            "druid",
+            "pirate",
+            "scout",
+            "mole",
+            "badger",
+            "sphinx",
         ],
         "mechanics": [
-            "sacrifice", "draw", "discard", "counter", "destroy", "exile",
-            "token", "ETB",
+            "sacrifice",
+            "draw",
+            "discard",
+            "counter",
+            "destroy",
+            "exile",
+            "token",
+            "ETB",
         ],
         "keywords": [
-            "flying", "first strike", "deathtouch", "vigilance", "trample",
-            "lifelink", "haste", "menace", "reach", "ward", "hexproof",
+            "flying",
+            "first strike",
+            "deathtouch",
+            "vigilance",
+            "trample",
+            "lifelink",
+            "haste",
+            "menace",
+            "reach",
+            "ward",
+            "hexproof",
         ],
         "card_types": [
-            "artifact", "creature", "enchantment", "instant", "sorcery",
+            "artifact",
+            "creature",
+            "enchantment",
+            "instant",
+            "sorcery",
             "planeswalker",
         ],
         "themes": [
-            "graveyard", "lifegain", "+1/+1 counter", "ramp", "mill",
-            "energy", "food", "treasure", "clue", "blood", "role",
-            "modified", "delirium", "threshold",
+            "graveyard",
+            "lifegain",
+            "+1/+1 counter",
+            "ramp",
+            "mill",
+            "energy",
+            "food",
+            "treasure",
+            "clue",
+            "blood",
+            "role",
+            "modified",
+            "delirium",
+            "threshold",
         ],
     }
 
@@ -145,7 +207,7 @@ class SynergyGraph:
 
         for i, (card_name, card_data) in enumerate(cards):
             if (i + 1) % 2000 == 0:
-                logger.info(f"  Processed {i+1}/{total} cards... ({edge_count} edges)")
+                logger.info(f"  Processed {i + 1}/{total} cards... ({edge_count} edges)")
 
             candidates = self._get_candidates(card_name, card_data)
 
@@ -154,9 +216,7 @@ class SynergyGraph:
                     continue
 
                 candidate_data = self.graph.nodes[candidate_name]
-                synergy_score = self._calculate_synergy(
-                    card_name, card_data, candidate_name, candidate_data
-                )
+                synergy_score = self._calculate_synergy(card_name, card_data, candidate_name, candidate_data)
 
                 if synergy_score > 0.45:
                     self.graph.add_edge(
@@ -231,9 +291,7 @@ class SynergyGraph:
 
         return min(score, 1.0)
 
-    def _get_synergy_types(
-        self, card1_data: dict[str, Any], card2_data: dict[str, Any]
-    ) -> list[str]:
+    def _get_synergy_types(self, card1_data: dict[str, Any], card2_data: dict[str, Any]) -> list[str]:
         """Get list of synergy types between two cards."""
         types = []
         if set(card1_data.get("tribes", [])) & set(card2_data.get("tribes", [])):
@@ -246,9 +304,7 @@ class SynergyGraph:
             types.append("keyword")
         return types
 
-    def find_synergies_for_card(
-        self, card_name: str, top_n: int = 10
-    ) -> list[tuple[str, float, list[str]]]:
+    def find_synergies_for_card(self, card_name: str, top_n: int = 10) -> list[tuple[str, float, list[str]]]:
         """Find cards with highest synergy to the given card.
 
         Returns:
@@ -272,9 +328,7 @@ class SynergyGraph:
         synergies = self.find_synergies_for_card(card_name, top_n=50)
         return [card for card, score, _ in synergies if score >= threshold]
 
-    def get_cluster_recommendations(
-        self, seed_cards: list[str], top_n: int = 10
-    ) -> list[tuple[str, float]]:
+    def get_cluster_recommendations(self, seed_cards: list[str], top_n: int = 10) -> list[tuple[str, float]]:
         """Get card recommendations based on a cluster of seed cards.
 
         Aggregates synergy scores from all seed cards and returns
@@ -308,9 +362,7 @@ class SynergyGraph:
             for card in candidate_scores:
                 candidate_scores[card] /= len(seed_cards)
 
-        recommendations = sorted(
-            candidate_scores.items(), key=lambda x: x[1], reverse=True
-        )
+        recommendations = sorted(candidate_scores.items(), key=lambda x: x[1], reverse=True)
         return recommendations[:top_n]
 
     def build_from_scryfall(self, scryfall: "ScryfallCache") -> None:
@@ -326,7 +378,7 @@ class SynergyGraph:
         start = time.time()
 
         count = 0
-        for arena_id, card_data in scryfall._arena_index.items():
+        for _arena_id, card_data in scryfall._arena_index.items():
             name = card_data.get("name", "")
             if not name:
                 continue
@@ -334,16 +386,18 @@ class SynergyGraph:
             if card_data.get("layout") in ("token", "double_faced_token", "art_series"):
                 continue
 
-            self.add_card({
-                "name": name,
-                "oracle_text": card_data.get("oracle_text", ""),
-                "type_line": card_data.get("type_line", ""),
-                "keywords": card_data.get("keywords", []),
-                "colors": card_data.get("colors", []),
-                "cmc": card_data.get("cmc", 0),
-                "power": card_data.get("power"),
-                "toughness": card_data.get("toughness"),
-            })
+            self.add_card(
+                {
+                    "name": name,
+                    "oracle_text": card_data.get("oracle_text", ""),
+                    "type_line": card_data.get("type_line", ""),
+                    "keywords": card_data.get("keywords", []),
+                    "colors": card_data.get("colors", []),
+                    "cmc": card_data.get("cmc", 0),
+                    "power": card_data.get("power"),
+                    "toughness": card_data.get("toughness"),
+                }
+            )
             count += 1
 
         logger.info(f"Added {count} cards in {time.time() - start:.1f}s, building edges...")
@@ -416,7 +470,7 @@ class SynergyGraph:
 
         try:
             logger.info(f"Loading JSON from {GRAPH_JSON_PATH}...")
-            with open(GRAPH_JSON_PATH, "r", encoding="utf-8") as f:
+            with open(GRAPH_JSON_PATH, encoding="utf-8") as f:
                 data = json.load(f)
 
             self.graph = nx.Graph()
@@ -426,14 +480,11 @@ class SynergyGraph:
                 self.graph.add_edge(u, v, **edge_data)
 
             # Rebuild indexes
-            self.card_index = {
-                node: {"features": ndata}
-                for node, ndata in self.graph.nodes(data=True)
-            }
+            self.card_index = {node: {"features": ndata} for node, ndata in self.graph.nodes(data=True)}
             for node, ndata in self.graph.nodes(data=True):
                 self._update_index(node, ndata)
 
-            logger.info(f"Loaded JSON. Saving PKL cache for next time...")
+            logger.info("Loaded JSON. Saving PKL cache for next time...")
             try:
                 CACHE_DIR.mkdir(parents=True, exist_ok=True)
                 with open(GRAPH_PKL_PATH, "wb") as f:
@@ -456,19 +507,17 @@ class SynergyGraph:
         return {
             "num_cards": num_nodes,
             "num_synergies": num_edges,
-            "avg_synergies_per_card": (
-                2 * num_edges / num_nodes if num_nodes > 0 else 0
-            ),
+            "avg_synergies_per_card": (2 * num_edges / num_nodes if num_nodes > 0 else 0),
             "density": nx.density(self.graph),
         }
 
 
 # Lazy singleton
-_synergy_graph: Optional[SynergyGraph] = None
+_synergy_graph: SynergyGraph | None = None
 _synergy_graph_checked: bool = False
 
 
-def get_synergy_graph() -> Optional[SynergyGraph]:
+def get_synergy_graph() -> SynergyGraph | None:
     """Get or create the singleton SynergyGraph instance.
 
     Loads from disk cache if available. Returns None if no graph exists.
@@ -485,16 +534,13 @@ def get_synergy_graph() -> Optional[SynergyGraph]:
     if instance.load():
         _synergy_graph = instance
         stats = _synergy_graph.stats()
-        logger.info(
-            f"SynergyGraph ready ({stats['num_cards']} cards, "
-            f"{stats['num_synergies']} synergies)"
-        )
+        logger.info(f"SynergyGraph ready ({stats['num_cards']} cards, {stats['num_synergies']} synergies)")
     else:
         logger.info("SynergyGraph not found on disk, will auto-build when draft starts.")
     return _synergy_graph
 
 
-def ensure_synergy_graph(scryfall: Any) -> Optional[SynergyGraph]:
+def ensure_synergy_graph(scryfall: Any) -> SynergyGraph | None:
     """Get the synergy graph, building it from Scryfall data if missing.
 
     Called once at draft start to ensure the graph is available.
@@ -505,7 +551,7 @@ def ensure_synergy_graph(scryfall: Any) -> Optional[SynergyGraph]:
         return existing
 
     # Check that scryfall has data to build from
-    if not hasattr(scryfall, '_arena_index') or not scryfall._arena_index:
+    if not hasattr(scryfall, "_arena_index") or not scryfall._arena_index:
         logger.warning("Cannot build SynergyGraph: Scryfall cache has no data.")
         return None
 
@@ -516,10 +562,7 @@ def ensure_synergy_graph(scryfall: Any) -> Optional[SynergyGraph]:
         _synergy_graph = instance
         _synergy_graph_checked = True
         stats = _synergy_graph.stats()
-        logger.info(
-            f"SynergyGraph built ({stats['num_cards']} cards, "
-            f"{stats['num_synergies']} synergies)"
-        )
+        logger.info(f"SynergyGraph built ({stats['num_cards']} cards, {stats['num_synergies']} synergies)")
         return _synergy_graph
     except Exception as e:
         logger.error(f"Failed to build SynergyGraph: {e}")

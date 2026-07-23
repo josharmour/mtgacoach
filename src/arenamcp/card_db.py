@@ -8,7 +8,7 @@ each source in order until a result is found.
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class CardDatabase(Protocol):
     with the correct signatures satisfies this protocol.
     """
 
-    def get_card_by_arena_id(self, arena_id: int) -> Optional[CardInfo]:
+    def get_card_by_arena_id(self, arena_id: int) -> CardInfo | None:
         """Look up a card by MTGA arena_id / grp_id.
 
         Args:
@@ -51,7 +51,7 @@ class CardDatabase(Protocol):
         """
         ...
 
-    def get_card_by_name(self, name: str) -> Optional[CardInfo]:
+    def get_card_by_name(self, name: str) -> CardInfo | None:
         """Look up a card by name.
 
         Args:
@@ -69,7 +69,7 @@ class ScryfallAdapter:
     def __init__(self, scryfall_cache: Any) -> None:
         self._cache = scryfall_cache
 
-    def get_card_by_arena_id(self, arena_id: int) -> Optional[CardInfo]:
+    def get_card_by_arena_id(self, arena_id: int) -> CardInfo | None:
         card = self._cache.get_card_by_arena_id(arena_id)
         if card is None:
             return None
@@ -85,7 +85,7 @@ class ScryfallAdapter:
             source="scryfall",
         )
 
-    def get_card_by_name(self, name: str) -> Optional[CardInfo]:
+    def get_card_by_name(self, name: str) -> CardInfo | None:
         card = self._cache.get_card_by_name(name)
         if card is None:
             return None
@@ -108,7 +108,7 @@ class MTGJSONAdapter:
     def __init__(self, mtgjson_db: Any) -> None:
         self._db = mtgjson_db
 
-    def get_card_by_arena_id(self, arena_id: int) -> Optional[CardInfo]:
+    def get_card_by_arena_id(self, arena_id: int) -> CardInfo | None:
         if not self._db.available:
             return None
         # MTGJSONDatabase uses get_card() for arena_id lookups
@@ -126,7 +126,7 @@ class MTGJSONAdapter:
             source="mtgjson",
         )
 
-    def get_card_by_name(self, name: str) -> Optional[CardInfo]:
+    def get_card_by_name(self, name: str) -> CardInfo | None:
         if not self._db.available:
             return None
         card = self._db.get_card_by_name(name)
@@ -159,7 +159,7 @@ class MTGADatabaseAdapter:
         """Check if the underlying MTGA database is available."""
         return self._db.available
 
-    def get_card_by_arena_id(self, arena_id: int) -> Optional[CardInfo]:
+    def get_card_by_arena_id(self, arena_id: int) -> CardInfo | None:
         if not self._db.available:
             return None
         card = self._db.get_card(arena_id)
@@ -176,11 +176,11 @@ class MTGADatabaseAdapter:
             source="mtgadb",
         )
 
-    def get_card_by_name(self, name: str) -> Optional[CardInfo]:
+    def get_card_by_name(self, name: str) -> CardInfo | None:
         """MTGA local DB does not support name-based lookups."""
         return None
 
-    def get_ability_text(self, ability_id: int) -> Optional[str]:
+    def get_ability_text(self, ability_id: int) -> str | None:
         """Look up text for an ability ID (MTGA-specific)."""
         return self._db.get_ability_text(ability_id)
 
@@ -214,10 +214,10 @@ class MTGADatabaseAdapter:
 class NullCardDatabase:
     """No-op card database used when all initializations fail."""
 
-    def get_card_by_arena_id(self, arena_id: int) -> Optional[CardInfo]:
+    def get_card_by_arena_id(self, arena_id: int) -> CardInfo | None:
         return None
 
-    def get_card_by_name(self, name: str) -> Optional[CardInfo]:
+    def get_card_by_name(self, name: str) -> CardInfo | None:
         return None
 
 
@@ -234,7 +234,7 @@ class FallbackCardDatabase:
     Name-based lookups follow the same pattern.
     """
 
-    def __init__(self, sources: Optional[list[CardDatabase]] = None) -> None:
+    def __init__(self, sources: list[CardDatabase] | None = None) -> None:
         """Initialize with a list of CardDatabase sources.
 
         Args:
@@ -243,7 +243,7 @@ class FallbackCardDatabase:
         """
         self._sources: list[CardDatabase] = sources or []
         # Keep typed references for source-specific features
-        self._mtga_adapter: Optional[MTGADatabaseAdapter] = None
+        self._mtga_adapter: MTGADatabaseAdapter | None = None
         for src in self._sources:
             if isinstance(src, MTGADatabaseAdapter):
                 self._mtga_adapter = src
@@ -273,9 +273,7 @@ class FallbackCardDatabase:
         # type lines.  A real type line is always longer than 2 chars.
         if card.type_line and len(card.type_line) <= 2 and card.type_line.isdigit():
             return True
-        if not card.type_line:
-            return True
-        return False
+        return bool(not card.type_line)
 
     def _enrich_from_name(self, card: CardInfo) -> None:
         """Fill in missing mana_cost / type_line / cmc by name lookup."""
@@ -296,7 +294,7 @@ class FallbackCardDatabase:
             if name_result.colors and not card.colors:
                 card.colors = name_result.colors
 
-    def get_card_by_arena_id(self, arena_id: int) -> Optional[CardInfo]:
+    def get_card_by_arena_id(self, arena_id: int) -> CardInfo | None:
         """Look up a card by arena_id, trying each source in order.
 
         If a source returns a result without oracle_text, continues
@@ -304,7 +302,7 @@ class FallbackCardDatabase:
         After all sources are tried, enriches missing fields (mana_cost,
         type_line) via name-based lookup.
         """
-        best: Optional[CardInfo] = None
+        best: CardInfo | None = None
 
         for source in self._sources:
             try:
@@ -312,7 +310,9 @@ class FallbackCardDatabase:
             except Exception as exc:
                 logger.debug(
                     "Card lookup failed in %s for arena_id %d: %s",
-                    type(source).__name__, arena_id, exc,
+                    type(source).__name__,
+                    arena_id,
+                    exc,
                 )
                 continue
 
@@ -352,7 +352,7 @@ class FallbackCardDatabase:
 
         return best
 
-    def get_card_by_name(self, name: str) -> Optional[CardInfo]:
+    def get_card_by_name(self, name: str) -> CardInfo | None:
         """Look up a card by name, trying each source in order."""
         for source in self._sources:
             try:
@@ -360,7 +360,9 @@ class FallbackCardDatabase:
             except Exception as exc:
                 logger.debug(
                     "Card name lookup failed in %s for '%s': %s",
-                    type(source).__name__, name, exc,
+                    type(source).__name__,
+                    name,
+                    exc,
                 )
                 continue
 
@@ -369,7 +371,7 @@ class FallbackCardDatabase:
 
         return None
 
-    def get_ability_text(self, ability_id: int) -> Optional[str]:
+    def get_ability_text(self, ability_id: int) -> str | None:
         """Look up ability text (delegates to MTGA adapter if available)."""
         if self._mtga_adapter:
             return self._mtga_adapter.get_ability_text(ability_id)
@@ -381,7 +383,7 @@ class FallbackCardDatabase:
             return self._mtga_adapter.prewarm_cards(grp_ids)
         return {}
 
-    def get_raw_mtgadb(self) -> Optional[Any]:
+    def get_raw_mtgadb(self) -> Any | None:
         """Get the underlying MTGADatabase for MTGA-specific operations.
 
         Returns None if MTGA database is not available.
@@ -392,9 +394,9 @@ class FallbackCardDatabase:
 
 
 def create_card_database(
-    scryfall_cache: Optional[Any] = None,
-    mtgjson_db: Optional[Any] = None,
-    mtga_db: Optional[Any] = None,
+    scryfall_cache: Any | None = None,
+    mtgjson_db: Any | None = None,
+    mtga_db: Any | None = None,
 ) -> FallbackCardDatabase:
     """Create a FallbackCardDatabase with the standard source order.
 
@@ -426,7 +428,7 @@ def create_card_database(
 # ---------------------------------------------------------------------------
 # Module-level lazy singleton
 # ---------------------------------------------------------------------------
-_card_db: Optional[FallbackCardDatabase] = None
+_card_db: FallbackCardDatabase | None = None
 _card_db_lock = threading.Lock()
 
 
@@ -454,6 +456,7 @@ def get_card_database() -> FallbackCardDatabase:
         mtgjson_db = None
         try:
             from arenamcp.mtgjson import get_mtgjson
+
             mtgjson_db = get_mtgjson()
         except Exception as e:
             logger.warning(f"MTGJSON init failed: {e}")
@@ -462,6 +465,7 @@ def get_card_database() -> FallbackCardDatabase:
         mtga_db = None
         try:
             from arenamcp.mtgadb import MTGADatabase
+
             mtga_db = MTGADatabase()
         except Exception as e:
             logger.warning(f"MTGA database init failed: {e}")
@@ -470,6 +474,7 @@ def get_card_database() -> FallbackCardDatabase:
         scryfall_cache = None
         try:
             from arenamcp.scryfall import ScryfallCache
+
             scryfall_cache = ScryfallCache()
         except Exception as e:
             logger.warning(f"Scryfall init failed: {e}")

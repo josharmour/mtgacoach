@@ -4,6 +4,7 @@ Covers:
 - standalone._SAPIVoice: uses `say` on darwin, PowerShell SAPI on Windows
 - desktop.audio.AudioPlayback: CLI fallback chain picks afplay on darwin
 """
+
 from __future__ import annotations
 
 import pytest
@@ -11,10 +12,10 @@ import pytest
 from arenamcp import standalone
 from arenamcp.desktop import audio
 
-
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
+
 
 class FakeSettings:
     def __init__(self, data: dict | None = None) -> None:
@@ -72,15 +73,14 @@ def popen_calls(monkeypatch):
 
 def _make_darwin_voice(monkeypatch, settings_data: dict | None = None):
     monkeypatch.setattr(standalone.sys, "platform", "darwin")
-    monkeypatch.setattr(
-        standalone, "get_settings", lambda: FakeSettings(settings_data)
-    )
+    monkeypatch.setattr(standalone, "get_settings", lambda: FakeSettings(settings_data))
     return standalone._SAPIVoice()
 
 
 # ---------------------------------------------------------------------------
 # _SAPIVoice on darwin -> `say`
 # ---------------------------------------------------------------------------
+
 
 def test_darwin_speak_uses_say(monkeypatch, popen_calls) -> None:
     voice = _make_darwin_voice(monkeypatch, {"voice_speed": 1.0})
@@ -122,9 +122,7 @@ def test_darwin_voice_name_passthrough(monkeypatch, popen_calls) -> None:
     assert cmd == ["say", "-r", "175", "-v", "Samantha"]
 
 
-def test_darwin_settings_failure_falls_back_to_defaults(
-    monkeypatch, popen_calls
-) -> None:
+def test_darwin_settings_failure_falls_back_to_defaults(monkeypatch, popen_calls) -> None:
     monkeypatch.setattr(standalone.sys, "platform", "darwin")
 
     def boom():
@@ -168,6 +166,7 @@ def test_darwin_stop_terminates_running_say(monkeypatch, popen_calls) -> None:
 # _SAPIVoice on Windows -> PowerShell SAPI (unchanged behavior)
 # ---------------------------------------------------------------------------
 
+
 def test_windows_speak_uses_powershell_sapi(monkeypatch, popen_calls) -> None:
     monkeypatch.setattr(standalone.sys, "platform", "win32")
 
@@ -195,6 +194,7 @@ def test_windows_speak_uses_powershell_sapi(monkeypatch, popen_calls) -> None:
 # ---------------------------------------------------------------------------
 # desktop.audio CLI fallback chain
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def cli_fallback_env(monkeypatch, tmp_path):

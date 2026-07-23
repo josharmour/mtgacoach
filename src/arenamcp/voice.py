@@ -21,12 +21,12 @@ Example:
 
 import logging
 import threading
-from typing import Literal, Optional
+from typing import Literal
 
 import numpy as np
 import sounddevice as sd
 
-from arenamcp.audio import AudioRecorder, AudioConfig
+from arenamcp.audio import AudioConfig, AudioRecorder
 from arenamcp.transcription import WhisperTranscriber
 from arenamcp.triggers import PTTHandler, VOXDetector
 
@@ -94,20 +94,20 @@ class VoiceInput:
         self.transcription_enabled = True  # New flag to control local transcription
 
         # Components (lazy-initialized)
-        self._recorder: Optional[AudioRecorder] = None
-        self._transcriber: Optional[WhisperTranscriber] = None
-        self._trigger: Optional[PTTHandler | VOXDetector] = None
+        self._recorder: AudioRecorder | None = None
+        self._transcriber: WhisperTranscriber | None = None
+        self._trigger: PTTHandler | VOXDetector | None = None
 
         # State
         self._active = False
         self._result_ready = threading.Event()
         self._last_result: str = ""
-        self._last_audio: Optional[np.ndarray] = None  # Raw audio from last recording
+        self._last_audio: np.ndarray | None = None  # Raw audio from last recording
         self._lock = threading.Lock()
 
         # VOX mode background thread
-        self._vox_stream: Optional[sd.InputStream] = None
-        self._vox_thread: Optional[threading.Thread] = None
+        self._vox_stream: sd.InputStream | None = None
+        self._vox_thread: threading.Thread | None = None
         self._vox_buffer: list[np.ndarray] = []
         self._vox_recording = False
 
@@ -149,12 +149,12 @@ class VoiceInput:
         # Play stop beep IMMEIDATELY for responsiveness
         # Use simpler beep parameters for speed
         play_beep(frequency=660, duration=0.06, volume=0.25)
-        
+
         with self._lock:
             if self._recorder is not None:
                 audio = self._recorder.stop_recording()
                 self._last_audio = audio if len(audio) > 0 else None
-                
+
                 # Only transcribe if enabled
                 if len(audio) > 0 and self.transcription_enabled:
                     # Ensure transcriber exists (might have been skipped in init)
@@ -182,9 +182,9 @@ class VoiceInput:
                 audio = np.concatenate(self._vox_buffer)
                 if audio.ndim > 1:
                     audio = audio.flatten()
-                
+
                 self._last_audio = audio  # Save VOX audio too
-                
+
                 # Only transcribe if enabled
                 if self.transcription_enabled:
                     if self._transcriber is None:
@@ -195,7 +195,7 @@ class VoiceInput:
             else:
                 self._last_result = ""
                 self._last_audio = None
-                
+
             self._vox_buffer = []
             self._result_ready.set()
 
@@ -270,7 +270,7 @@ class VoiceInput:
 
         self._active = False
 
-    def wait_for_speech(self, timeout: Optional[float] = None) -> str:
+    def wait_for_speech(self, timeout: float | None = None) -> str:
         """Block until speech is captured and transcribed.
 
         Args:
@@ -284,7 +284,7 @@ class VoiceInput:
         self._result_ready.wait(timeout=timeout)
         return self._last_result
 
-    def get_last_audio(self) -> Optional[np.ndarray]:
+    def get_last_audio(self) -> np.ndarray | None:
         """Get the raw audio from the last recording.
 
         Returns:

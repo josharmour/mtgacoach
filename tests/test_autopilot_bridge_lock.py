@@ -93,7 +93,9 @@ class _DummyBridge:
         return False
 
 
-def _make_engine(monkeypatch, state_fn, bridge: _DummyBridge, notifications: list[str] | None = None) -> tuple[AutopilotEngine, _DummyPlanner]:
+def _make_engine(
+    monkeypatch, state_fn, bridge: _DummyBridge, notifications: list[str] | None = None
+) -> tuple[AutopilotEngine, _DummyPlanner]:
     planner = _DummyPlanner()
     mapper = _DummyMapper()
     controller = _DummyController()
@@ -109,7 +111,9 @@ def _make_engine(monkeypatch, state_fn, bridge: _DummyBridge, notifications: lis
             verification_timeout=0.01,
             post_action_delay=0.0,
         ),
-        ui_advice_fn=(lambda text, label: notifications.append(f"{label}:{text}")) if notifications is not None else None,
+        ui_advice_fn=(lambda text, label: notifications.append(f"{label}:{text}"))
+        if notifications is not None
+        else None,
     )
     return engine, planner
 
@@ -143,7 +147,13 @@ def test_process_trigger_refuses_when_bridge_idle_and_no_log_data(monkeypatch):
 
     handled = engine.process_trigger(
         {
-            "turn": {"turn_number": 4, "active_player": 1, "priority_player": 1, "phase": "Phase_Main1", "step": "Step_PreCombatMain"},
+            "turn": {
+                "turn_number": 4,
+                "active_player": 1,
+                "priority_player": 1,
+                "phase": "Phase_Main1",
+                "step": "Step_PreCombatMain",
+            },
             "players": [{"seat_id": 1, "is_local": True}],
             "_bridge_connected": True,
         },
@@ -172,7 +182,13 @@ def test_process_trigger_refuses_when_bridge_idle_despite_log_data(monkeypatch):
 
     handled = engine.process_trigger(
         {
-            "turn": {"turn_number": 4, "active_player": 1, "priority_player": 1, "phase": "Phase_Main1", "step": "Step_PreCombatMain"},
+            "turn": {
+                "turn_number": 4,
+                "active_player": 1,
+                "priority_player": 1,
+                "phase": "Phase_Main1",
+                "step": "Step_PreCombatMain",
+            },
             "players": [{"seat_id": 1, "is_local": True}],
             "_bridge_connected": True,
             "pending_decision": "Priority",
@@ -200,7 +216,13 @@ def test_process_trigger_pauses_for_unmapped_bridge_interaction(monkeypatch):
 
     handled = engine.process_trigger(
         {
-            "turn": {"turn_number": 4, "active_player": 1, "priority_player": 1, "phase": "Phase_Main1", "step": "Step_PreCombatMain"},
+            "turn": {
+                "turn_number": 4,
+                "active_player": 1,
+                "priority_player": 1,
+                "phase": "Phase_Main1",
+                "step": "Step_PreCombatMain",
+            },
             "players": [{"seat_id": 1, "is_local": True}],
             "_bridge_connected": True,
             "_bridge_request_type": "MysteryReq",
@@ -292,9 +314,7 @@ def _make_bridge_only_engine(monkeypatch, bridge: _DummyBridge):
 def test_execute_action_no_mouse_when_bridge_unavailable(monkeypatch):
     """Bridge disconnected → manual required + bug report, no mouse fallback."""
     bridge = _DummyBridge(connected=False)
-    engine, controller, notifications, bug_calls = _make_bridge_only_engine(
-        monkeypatch, bridge
-    )
+    engine, controller, notifications, bug_calls = _make_bridge_only_engine(monkeypatch, bridge)
 
     state = {
         "turn": {"turn_number": 3, "phase": "Phase_Main1", "step": "Step_PreCombatMain"},
@@ -329,9 +349,7 @@ def test_execute_action_no_mouse_when_bridge_submit_fails(monkeypatch):
         },
         connected=True,
     )
-    engine, controller, notifications, bug_calls = _make_bridge_only_engine(
-        monkeypatch, bridge
-    )
+    engine, controller, notifications, bug_calls = _make_bridge_only_engine(monkeypatch, bridge)
 
     state = {
         "turn": {"turn_number": 3, "phase": "Phase_Main1", "step": "Step_PreCombatMain"},
@@ -378,9 +396,7 @@ def test_execute_action_classifies_stale_play_land_as_planner_action_stale(monke
         },
         connected=True,
     )
-    engine, controller, notifications, bug_calls = _make_bridge_only_engine(
-        monkeypatch, bridge
-    )
+    engine, controller, notifications, bug_calls = _make_bridge_only_engine(monkeypatch, bridge)
 
     # Bridge has 6 actions — none of type "Play". This is the post-land-drop
     # state where the user already played their land for the turn.
@@ -411,9 +427,7 @@ def test_execute_action_classifies_stale_play_land_as_planner_action_stale(monke
     assert controller.calls == [], f"expected zero mouse calls, got {controller.calls}"
     assert any("MANUAL REQUIRED" in n for n in notifications)
     # Critical: no auto-bug filed for stale state mismatches
-    assert bug_calls == [], (
-        f"expected no auto-bug for planner_action_stale, got {bug_calls}"
-    )
+    assert bug_calls == [], f"expected no auto-bug for planner_action_stale, got {bug_calls}"
 
 
 def test_execute_action_files_bug_for_real_submit_failure_with_play_action_present(monkeypatch):
@@ -431,9 +445,7 @@ def test_execute_action_files_bug_for_real_submit_failure_with_play_action_prese
         },
         connected=True,
     )
-    engine, controller, notifications, bug_calls = _make_bridge_only_engine(
-        monkeypatch, bridge
-    )
+    engine, controller, notifications, bug_calls = _make_bridge_only_engine(monkeypatch, bridge)
 
     state = {
         "turn": {"turn_number": 3, "phase": "Phase_Main1", "step": "Step_PreCombatMain"},
@@ -475,7 +487,13 @@ def test_verify_action_blocks_repeated_bridge_action_when_state_id_stalls(monkey
         }
     )
     state = {
-        "turn": {"turn_number": 5, "active_player": 1, "priority_player": 1, "phase": "Phase_Main1", "step": "Step_PreCombatMain"},
+        "turn": {
+            "turn_number": 5,
+            "active_player": 1,
+            "priority_player": 1,
+            "phase": "Phase_Main1",
+            "step": "Step_PreCombatMain",
+        },
         "players": [{"seat_id": 1, "is_local": True}],
         "battlefield": [],
         "hand": [{"instance_id": 9001, "name": "Shock"}],

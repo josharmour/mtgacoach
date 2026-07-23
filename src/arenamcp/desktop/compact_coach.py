@@ -115,9 +115,7 @@ class CompactCoachPanel(CoachTab):
             if object_name:
                 b.setObjectName(object_name)
             if command is not None:
-                b.clicked.connect(
-                    lambda _checked=False, cmd=command: self._send_command(cmd)
-                )
+                b.clicked.connect(lambda _checked=False, cmd=command: self._send_command(cmd))
                 self._buttons[command] = b
             elif on_click is not None:
                 b.clicked.connect(on_click)
@@ -157,12 +155,13 @@ class CompactCoachPanel(CoachTab):
         ]
 
         from PySide6.QtWidgets import QComboBox
+
         self.voice_combo = QComboBox()
         self.voice_combo.setToolTip("Select Kokoro Voice & Speed combination")
         self.voice_combo.setCursor(Qt.PointingHandCursor)
         for _, _, label in self._VOICE_PRESETS:
             self.voice_combo.addItem(label)
-        
+
         # Match current settings
         cur_v = _str_value(get_settings().get("voice", "af_sky"))
         cur_s = float(get_settings().get("voice_speed", 1.4))
@@ -177,8 +176,7 @@ class CompactCoachPanel(CoachTab):
         row1.addWidget(self.voice_combo, stretch=2)
         row1.addWidget(_btn("Mute", "Mute / unmute spoken advice", command="toggle_mute"), stretch=1)
         row1.addWidget(
-            _btn("Debug", "File a bug report",
-                 on_click=self._submit_debug_report),
+            _btn("Debug", "File a bug report", on_click=self._submit_debug_report),
             stretch=1,
         )
         root.addLayout(row1)
@@ -186,8 +184,11 @@ class CompactCoachPanel(CoachTab):
         row2 = QHBoxLayout()
         row2.setSpacing(6)
         row2.addWidget(
-            _btn("📊 Game Assessment", "Assess full game state: state win strategy & path to victory, or advise concede if no realistic outs remain",
-                 on_click=self._ask_game_assessment),
+            _btn(
+                "📊 Game Assessment",
+                "Assess full game state: state win strategy & path to victory, or advise concede if no realistic outs remain",
+                on_click=self._ask_game_assessment,
+            ),
             stretch=1,
         )
         root.addLayout(row2)
@@ -195,8 +196,11 @@ class CompactCoachPanel(CoachTab):
         row3 = QHBoxLayout()
         row3.setSpacing(6)
         row3.addWidget(
-            _btn("🧠 Brain Stream", "Open full data inspector, reasoning traces, and concatenated turn history",
-                 on_click=self.toggle_brain_stream),
+            _btn(
+                "🧠 Brain Stream",
+                "Open full data inspector, reasoning traces, and concatenated turn history",
+                on_click=self.toggle_brain_stream,
+            ),
             stretch=3,
         )
         row3.addWidget(self._build_overflow_button(), stretch=1)
@@ -232,11 +236,13 @@ class CompactCoachPanel(CoachTab):
         if self._process is not None:
             # pipe_adapter reads voice/voice_speed at the top level of the
             # command payload, so send_payload — not send_command's "text".
-            self._process.send_payload({
-                "cmd": "sync_voice_preferences",
-                "voice": voice_id,
-                "voice_speed": speed_val,
-            })
+            self._process.send_payload(
+                {
+                    "cmd": "sync_voice_preferences",
+                    "voice": voice_id,
+                    "voice_speed": speed_val,
+                }
+            )
         # Deterministic local sample in the newly selected voice — no LLM
         # round trip.
         try:
@@ -272,9 +278,7 @@ class CompactCoachPanel(CoachTab):
         if sys.platform == "win32":
             screen_action = menu.addAction("Analyze Screen")
             screen_action.setToolTip("Analyze a screenshot of the game with the vision model")
-            screen_action.triggered.connect(
-                lambda _checked=False: self._send_command("analyze_screen")
-            )
+            screen_action.triggered.connect(lambda _checked=False: self._send_command("analyze_screen"))
 
         # QAction supports the same setText/setEnabled calls the inherited
         # self-play lifecycle code makes against the classic QPushButton.
@@ -284,9 +288,7 @@ class CompactCoachPanel(CoachTab):
             "This frees the GRE bridge (port 44222) for the self-play process.\n"
             "Output streams into the activity log."
         )
-        self._self_play_btn.triggered.connect(
-            lambda _checked=False: self._toggle_self_play()
-        )
+        self._self_play_btn.triggered.connect(lambda _checked=False: self._toggle_self_play())
         menu.addAction(self._self_play_btn)
 
         speed_action = menu.addAction("Speed")
@@ -299,37 +301,26 @@ class CompactCoachPanel(CoachTab):
 
         restart_action = menu.addAction("Restart Coach")
         restart_action.setToolTip("Restart the coaching engine")
-        restart_action.triggered.connect(
-            lambda _checked=False: self._send_command("restart")
-        )
+        restart_action.triggered.connect(lambda _checked=False: self._send_command("restart"))
 
         # Overlay tools are available on every platform (Qt-native overlays).
         menu.addSeparator()
         calib_action = menu.addAction("Calibrate Cards")
         calib_action.setCheckable(True)
-        calib_action.setToolTip(
-            "Draw border around MTGA cards reported by bridge plugin to verify alignment"
-        )
-        calib_action.toggled.connect(
-            lambda checked: self._match_overlay.set_calibration(checked)
-        )
+        calib_action.setToolTip("Draw border around MTGA cards reported by bridge plugin to verify alignment")
+        calib_action.toggled.connect(lambda checked: self._match_overlay.set_calibration(checked))
         overlay_action = menu.addAction("In-Game Overlay")
         overlay_action.setCheckable(True)
         overlay_action.setChecked(True)
         overlay_tooltip = "Show/hide the in-game overlay (pill + advice panel)"
         if sys.platform.startswith("linux"):
             overlay_tooltip += (
-                "\nNote: under pure Wayland the overlay may not track the "
-                "MTGA window (XWayland works)."
+                "\nNote: under pure Wayland the overlay may not track the MTGA window (XWayland works)."
             )
         overlay_action.setToolTip(overlay_tooltip)
-        overlay_action.toggled.connect(
-            lambda checked: self._match_overlay.set_enabled(checked)
-        )
+        overlay_action.toggled.connect(lambda checked: self._match_overlay.set_enabled(checked))
         reset_action = menu.addAction("Reset Advice Panel")
-        reset_action.setToolTip(
-            "Snap the advice panel back to its default position and size"
-        )
+        reset_action.setToolTip("Snap the advice panel back to its default position and size")
         reset_action.triggered.connect(lambda _checked=False: self._reset_advice_panel())
 
         menu.addSeparator()
@@ -439,13 +430,9 @@ class CompactCoachPanel(CoachTab):
                 )
             else:
                 color = colors.get(role, colors["default"])
-                blocks.append(
-                    f"<div style='margin-bottom:8px; color:{color};'>{escaped}</div>"
-                )
+                blocks.append(f"<div style='margin-bottom:8px; color:{color};'>{escaped}</div>")
         self.log_view.setHtml(
-            "<div style='font-family:Consolas,\"Courier New\",monospace;'>"
-            + "".join(blocks)
-            + "</div>"
+            "<div style='font-family:Consolas,\"Courier New\",monospace;'>" + "".join(blocks) + "</div>"
         )
         self.log_view.verticalScrollBar().setValue(0)
 
@@ -671,15 +658,11 @@ class CompactCoachPanel(CoachTab):
 
         players = data.get("players", [])
         local_seat = _int_value(data.get("local_seat_id"))
-        local_player = next(
-            (p for p in players if isinstance(p, dict) and p.get("is_local") is True), None
-        )
+        local_player = next((p for p in players if isinstance(p, dict) and p.get("is_local") is True), None)
         opponent_player = next(
             (p for p in players if isinstance(p, dict) and p.get("is_local") is not True), None
         )
-        opponent_seat = (
-            _int_value(opponent_player.get("seat_id")) if isinstance(opponent_player, dict) else 0
-        )
+        opponent_seat = _int_value(opponent_player.get("seat_id")) if isinstance(opponent_player, dict) else 0
 
         pending = self._render_pending_decision(
             data.get("pending_decision"),
@@ -691,11 +674,13 @@ class CompactCoachPanel(CoachTab):
         battlefield = zones.get("battlefield", [])
         battlefield = battlefield if isinstance(battlefield, list) else []
         opp_cards = [
-            card for card in battlefield
+            card
+            for card in battlefield
             if isinstance(card, dict) and self._card_controller_seat(card) == opponent_seat
         ]
         you_cards = [
-            card for card in battlefield
+            card
+            for card in battlefield
             if isinstance(card, dict) and self._card_controller_seat(card) == local_seat
         ]
 
@@ -728,7 +713,7 @@ class CompactCoachPanel(CoachTab):
         # user-facing. It still drives the hand castability colors and the
         # pending-decision options above.
         return (
-            f"<div style='font-family:Consolas,\"Courier New\",monospace; color:{tokens['text']};"
+            f'<div style=\'font-family:Consolas,"Courier New",monospace; color:{tokens["text"]};'
             f" background:{tokens['bg']}; padding:6px;'>"
             f"{pending}{opp_zone}{stack_html}{you_zone}"
             f"</div>"
@@ -745,7 +730,7 @@ class CompactCoachPanel(CoachTab):
     ) -> str:
         """One-line seat summary: tag, big life + bar, then count chips.
 
-            OPP  ♥ 17 ▰▰▰▰▰▰▰▰▱▱  ✋ 6 · 🪦 2
+        OPP  ♥ 17 ▰▰▰▰▰▰▰▰▱▱  ✋ 6 · 🪦 2
         """
         accent = tokens["opponent"] if tag == "OPP" else tokens["player"]
         life_value = _int_value(player.get("life_total")) if isinstance(player, dict) else 0
@@ -765,16 +750,20 @@ class CompactCoachPanel(CoachTab):
             chips.append(("✋", str(_int_value(zones.get("opponent_hand_count"))), "Opponent hand size"))
         else:
             library_count = zones.get("library_count")
-            chips.append((
-                "📚",
-                "?" if library_count is None else str(_int_value(library_count)),
-                "Your library count",
-            ))
-        chips.append((
-            "🪦",
-            str(len(grave_cards)),
-            f"Graveyard: {self._zone_summary(grave_cards, 8) if grave_cards else 'empty'}",
-        ))
+            chips.append(
+                (
+                    "📚",
+                    "?" if library_count is None else str(_int_value(library_count)),
+                    "Your library count",
+                )
+            )
+        chips.append(
+            (
+                "🪦",
+                str(len(grave_cards)),
+                f"Graveyard: {self._zone_summary(grave_cards, 8) if grave_cards else 'empty'}",
+            )
+        )
         # Exile is usually 0 — only spend width on it when non-empty.
         if exile_cards:
             chips.append(("⬜", str(len(exile_cards)), f"Exile: {self._zone_summary(exile_cards, 8)}"))
@@ -828,9 +817,7 @@ class CompactCoachPanel(CoachTab):
             cost = _str_value(card.get("mana_cost")).replace("{", "").replace("}", "")
             label = f"{name} {cost}".strip()
             title_attr = f" title='{html.escape(tip)}'" if tip else ""
-            rendered.append(
-                f"<span style='color:{color};'{title_attr}>{html.escape(label)}</span>"
-            )
+            rendered.append(f"<span style='color:{color};'{title_attr}>{html.escape(label)}</span>")
         if not rendered:
             return ""
         joined = "&nbsp;&nbsp;·&nbsp;&nbsp;".join(rendered)
@@ -886,31 +873,31 @@ class CompactCoachPanel(CoachTab):
         self.setStyleSheet(
             f"""
 #turnStrip {{
-    background: {t['panel2']};
-    color: {t['header']};
-    border: 1px solid {t['border']};
+    background: {t["panel2"]};
+    color: {t["header"]};
+    border: 1px solid {t["border"]};
     border-radius: 8px;
     padding: 7px 10px;
     font-size: 13px;
     font-weight: 700;
 }}
 #turnStrip[who="you"] {{
-    background: {t['castable_bg']};
-    color: {t['castable_fg']};
-    border-color: {t['castable_fg']};
+    background: {t["castable_bg"]};
+    color: {t["castable_fg"]};
+    border-color: {t["castable_fg"]};
 }}
 #turnStrip[who="opp"] {{
-    background: {t['uncastable_bg']};
-    color: {t['uncastable_fg']};
-    border-color: {t['uncastable_fg']};
+    background: {t["uncastable_bg"]};
+    color: {t["uncastable_fg"]};
+    border-color: {t["uncastable_fg"]};
 }}
 #statusDots {{
     font-size: 11px;
     padding: 0 2px;
 }}
 #adviceCard {{
-    background: {t['panel']};
-    border: 1px solid {t['border']};
+    background: {t["panel"]};
+    border: 1px solid {t["border"]};
     border-left: 4px solid {accent};
     border-radius: 10px;
 }}
@@ -920,41 +907,41 @@ class CompactCoachPanel(CoachTab):
     font-weight: 700;
 }}
 #adviceMeta {{
-    color: {t['muted']};
+    color: {t["muted"]};
     font-size: 10px;
     font-weight: 600;
 }}
 #adviceText {{
-    color: {t['text']};
+    color: {t["text"]};
     font-size: 13px;
 }}
 #activityToggle {{
     border: none;
     background: transparent;
-    color: {t['muted']};
+    color: {t["muted"]};
     text-align: left;
     font-size: 10px;
     font-weight: 700;
     padding: 2px 4px;
 }}
 #activityToggle:hover {{
-    color: {t['text']};
+    color: {t["text"]};
 }}
 QTextEdit#gameStateView, QTextEdit#logView {{
-    border: 1px solid {t['border']};
+    border: 1px solid {t["border"]};
     border-radius: 8px;
-    background: {t['bg']};
+    background: {t["bg"]};
 }}
 QPushButton#apButton {{
     font-weight: 700;
 }}
 QPushButton#apButton[apOn="true"] {{
-    background: {t['castable_bg']};
-    color: {t['castable_fg']};
-    border: 1px solid {t['castable_fg']};
+    background: {t["castable_bg"]};
+    color: {t["castable_fg"]};
+    border: 1px solid {t["castable_fg"]};
 }}
 QToolButton#overflowButton {{
-    border: 1px solid {t['border']};
+    border: 1px solid {t["border"]};
     border-radius: 6px;
     padding: 4px 10px;
     font-weight: 700;

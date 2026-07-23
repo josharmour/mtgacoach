@@ -7,8 +7,6 @@ NOTE: On first use, the Whisper model will be downloaded (~150MB for base model)
 This is a one-time download stored in the user's cache directory.
 """
 
-from typing import Optional
-
 import numpy as np
 
 try:
@@ -39,7 +37,7 @@ class WhisperTranscriber:
         model_size: str = "base",
         device: str = "cpu",
         compute_type: str = "int8",
-        language: Optional[str] = None,
+        language: str | None = None,
     ) -> None:
         """Initialize the transcriber.
 
@@ -56,13 +54,14 @@ class WhisperTranscriber:
         self._model_size = model_size
         self._device = device
         self._compute_type = compute_type
-        self._model: Optional["WhisperModel"] = None
+        self._model: WhisperModel | None = None
 
         if language is not None:
             self._language = language
         else:
             try:
                 from arenamcp.settings import get_settings
+
                 self._language = get_settings().get("language", "en")
             except Exception:
                 self._language = "en"
@@ -75,10 +74,7 @@ class WhisperTranscriber:
         """
         if self._model is None:
             if WhisperModel is None:
-                raise ImportError(
-                    "faster-whisper is not installed. "
-                    "Install with: pip install faster-whisper"
-                )
+                raise ImportError("faster-whisper is not installed. Install with: pip install faster-whisper")
             self._model = WhisperModel(
                 self._model_size,
                 device=self._device,

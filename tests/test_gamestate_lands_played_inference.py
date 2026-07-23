@@ -11,7 +11,7 @@ Fix: only count lands whose entered_via_play_land flag was set by an
 AnnotationType_ZoneTransfer with category="PlayLand".
 """
 
-from arenamcp.gamestate import GameObject, GameObjectKind, GameState, ZoneType
+from arenamcp.gamestate import GameObject, GameObjectKind, GameState
 
 
 def _land(instance_id: int, *, seat: int, turn: int, via_play_land: bool) -> GameObject:
@@ -30,10 +30,12 @@ def _land(instance_id: int, *, seat: int, turn: int, via_play_land: bool) -> Gam
 
 def _setup_player_on_battlefield(state: GameState, seat: int, *, lands_reported: int = 0) -> None:
     state.players.clear()
-    state.update_from_message({
-        "players": {"seatId": seat, "lifeTotal": 20, "landsPlayedThisTurn": lands_reported},
-        "turnInfo": {"activePlayer": seat, "turnNumber": 4, "phase": "Phase_Main1"},
-    })
+    state.update_from_message(
+        {
+            "players": {"seatId": seat, "lifeTotal": 20, "landsPlayedThisTurn": lands_reported},
+            "turnInfo": {"activePlayer": seat, "turnNumber": 4, "phase": "Phase_Main1"},
+        }
+    )
 
 
 def test_infer_counts_play_land_but_not_ramp_put():
@@ -42,14 +44,16 @@ def test_infer_counts_play_land_but_not_ramp_put():
     _setup_player_on_battlefield(state, seat=1)
 
     bf_zone_id = 999
-    state.update_from_message({
-        "zones": {
-            "zoneId": bf_zone_id,
-            "type": "ZoneType_Battlefield",
-            "ownerSeatId": 1,
-            "objectInstanceIds": [],
-        },
-    })
+    state.update_from_message(
+        {
+            "zones": {
+                "zoneId": bf_zone_id,
+                "type": "ZoneType_Battlefield",
+                "ownerSeatId": 1,
+                "objectInstanceIds": [],
+            },
+        }
+    )
 
     forest_played = _land(1, seat=1, turn=4, via_play_land=True)
     forest_played.zone_id = bf_zone_id
@@ -72,17 +76,19 @@ def test_zone_transfer_annotation_sets_play_land_flag():
     state.turn_info.turn_number = 3
     state.game_objects[5] = _land(5, seat=1, turn=3, via_play_land=False)
 
-    state._process_annotations([
-        {
-            "type": "AnnotationType_ZoneTransfer",
-            "affectedIds": [5],
-            "details": [
-                {"key": "zone_src", "valueString": "ZoneType_Hand"},
-                {"key": "zone_dest", "valueString": "ZoneType_Battlefield"},
-                {"key": "category", "valueString": "PlayLand"},
-            ],
-        }
-    ])
+    state._process_annotations(
+        [
+            {
+                "type": "AnnotationType_ZoneTransfer",
+                "affectedIds": [5],
+                "details": [
+                    {"key": "zone_src", "valueString": "ZoneType_Hand"},
+                    {"key": "zone_dest", "valueString": "ZoneType_Battlefield"},
+                    {"key": "category", "valueString": "PlayLand"},
+                ],
+            }
+        ]
+    )
 
     assert state.game_objects[5].entered_via_play_land is True
 
@@ -92,17 +98,19 @@ def test_zone_transfer_annotation_with_put_category_does_not_set_flag():
     state.turn_info.turn_number = 3
     state.game_objects[6] = _land(6, seat=1, turn=3, via_play_land=False)
 
-    state._process_annotations([
-        {
-            "type": "AnnotationType_ZoneTransfer",
-            "affectedIds": [6],
-            "details": [
-                {"key": "zone_src", "valueString": "ZoneType_Library"},
-                {"key": "zone_dest", "valueString": "ZoneType_Battlefield"},
-                {"key": "category", "valueString": "Put"},
-            ],
-        }
-    ])
+    state._process_annotations(
+        [
+            {
+                "type": "AnnotationType_ZoneTransfer",
+                "affectedIds": [6],
+                "details": [
+                    {"key": "zone_src", "valueString": "ZoneType_Library"},
+                    {"key": "zone_dest", "valueString": "ZoneType_Battlefield"},
+                    {"key": "category", "valueString": "Put"},
+                ],
+            }
+        ]
+    )
 
     assert state.game_objects[6].entered_via_play_land is False
 
@@ -114,14 +122,16 @@ def test_infer_skips_lands_with_no_play_land_flag():
     _setup_player_on_battlefield(state, seat=1)
 
     bf_zone_id = 1010
-    state.update_from_message({
-        "zones": {
-            "zoneId": bf_zone_id,
-            "type": "ZoneType_Battlefield",
-            "ownerSeatId": 1,
-            "objectInstanceIds": [],
-        },
-    })
+    state.update_from_message(
+        {
+            "zones": {
+                "zoneId": bf_zone_id,
+                "type": "ZoneType_Battlefield",
+                "ownerSeatId": 1,
+                "objectInstanceIds": [],
+            },
+        }
+    )
 
     forest_a = _land(10, seat=1, turn=5, via_play_land=False)
     forest_a.zone_id = bf_zone_id

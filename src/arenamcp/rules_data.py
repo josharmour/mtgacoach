@@ -68,7 +68,6 @@ RULES = [
         "category": "combat",
         "text": "Any abilities that triggered on declaring attackers are put on the stack. The active player gets priority.",
     },
-
     # =========================================================================
     # COMBAT — Blocking (~20 rules)
     # =========================================================================
@@ -162,7 +161,6 @@ RULES = [
         "category": "combat",
         "text": "As the end of combat step ends, all creatures and planeswalkers are removed from combat. After the end of combat step, the combat phase ends and the postcombat main phase begins.",
     },
-
     # =========================================================================
     # KEYWORDS — Evasion & Combat (~40 rules)
     # =========================================================================
@@ -298,7 +296,6 @@ RULES = [
         "category": "keywords",
         "text": "Toxic is a triggered ability. Whenever a creature with toxic deals combat damage to a player, that player gets a number of poison counters equal to the creature's toxic value.",
     },
-
     # =========================================================================
     # CASTING SPELLS (~20 rules)
     # =========================================================================
@@ -380,7 +377,6 @@ RULES = [
         "category": "casting",
         "text": "If a player is unable to pay the total cost of a spell, the casting is illegal and the game returns to the moment before the casting was proposed.",
     },
-
     # =========================================================================
     # STACK & PRIORITY (~15 rules)
     # =========================================================================
@@ -462,7 +458,6 @@ RULES = [
         "category": "stack",
         "text": "If the object that's resolving is a permanent spell, its resolution may involve several steps. The instructions are followed in order. The permanent enters the battlefield.",
     },
-
     # =========================================================================
     # TURN STRUCTURE (~20 rules)
     # =========================================================================
@@ -562,7 +557,6 @@ RULES = [
         "category": "turn_structure",
         "text": "The combat phase has five steps, which proceed in order: beginning of combat, declare attackers, declare blockers, combat damage, and end of combat.",
     },
-
     # =========================================================================
     # ZONES (~15 rules)
     # =========================================================================
@@ -638,7 +632,6 @@ RULES = [
         "category": "zones",
         "text": "The oldest permanent is the one that has been on the battlefield the longest. Tokens and copies of permanent spells that entered the battlefield are just as old as any other permanent that entered at the same time.",
     },
-
     # =========================================================================
     # CARD TYPES (~15 rules)
     # =========================================================================
@@ -720,7 +713,6 @@ RULES = [
         "category": "card_types",
         "text": "Instants and sorceries share their lists of subtypes; these subtypes are called spell types.",
     },
-
     # =========================================================================
     # DAMAGE & STATE-BASED ACTIONS (~10 rules)
     # =========================================================================
@@ -790,7 +782,6 @@ RULES = [
         "category": "damage",
         "text": "Damage marked on a creature remains until the cleanup step, even if that creature isn't a creature during that step.",
     },
-
     # =========================================================================
     # ABILITIES — Triggered, Static, Activated (~15 rules)
     # =========================================================================
@@ -872,7 +863,6 @@ RULES = [
         "category": "abilities",
         "text": "An object 'enters the battlefield' when it moves from another zone to the battlefield.",
     },
-
     # =========================================================================
     # ADDITIONAL COMBAT-RELEVANT RULES
     # =========================================================================
@@ -906,7 +896,6 @@ RULES = [
         "category": "keywords",
         "text": "Enchant is a static ability, written 'Enchant [object or player].' The enchant ability restricts what an Aura spell can target and what an Aura can be attached to.",
     },
-
     # =========================================================================
     # SPECIAL ACTIONS & MISCELLANEOUS
     # =========================================================================

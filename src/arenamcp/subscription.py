@@ -7,10 +7,9 @@ locally, and retrieves service messages for subscribers.
 import json
 import logging
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
-from typing import Optional
 
 from .client_metadata import get_client_headers
 
@@ -46,8 +45,8 @@ class SubscriptionStatus:
         self,
         status: str = "unknown",
         message: str = "",
-        expires_at: Optional[str] = None,
-        messages: Optional[list[dict]] = None,
+        expires_at: str | None = None,
+        messages: list[dict] | None = None,
     ):
         self.status = status
         self.message = message
@@ -178,10 +177,11 @@ def get_service_messages(license_key: str) -> list[dict]:
 def open_subscribe_page() -> None:
     """Open the subscription page in the default browser."""
     import webbrowser
+
     webbrowser.open(SUBSCRIBE_URL)
 
 
-def _load_cache(license_key: str, ignore_ttl: bool = False) -> Optional[SubscriptionStatus]:
+def _load_cache(license_key: str, ignore_ttl: bool = False) -> SubscriptionStatus | None:
     """Load cached subscription status if still valid."""
     if not _SUB_CACHE_FILE.exists():
         return None
@@ -253,14 +253,10 @@ def request_trial_key(timeout: int = 10) -> dict:
     """
     from arenamcp import __version__
 
-    body = json.dumps(
-        {"machine_id": get_machine_id(), "app_version": __version__}
-    ).encode("utf-8")
+    body = json.dumps({"machine_id": get_machine_id(), "app_version": __version__}).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     headers.update(get_client_headers())
-    req = urllib.request.Request(
-        f"{WEBSITE_BASE}/api/trial", data=body, headers=headers, method="POST"
-    )
+    req = urllib.request.Request(f"{WEBSITE_BASE}/api/trial", data=body, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read())
@@ -277,10 +273,7 @@ def request_trial_key(timeout: int = 10) -> dict:
         if e.code == 403:
             return {
                 "status": "trial_expired",
-                "message": (
-                    "Your free trial has ended. Subscribe at "
-                    f"{SUBSCRIBE_URL} to keep coaching."
-                ),
+                "message": (f"Your free trial has ended. Subscribe at {SUBSCRIBE_URL} to keep coaching."),
             }
         if e.code == 404:
             # Endpoint not deployed yet — behave like offline, not like a bug.
@@ -309,6 +302,7 @@ def ensure_license_key() -> dict:
         settings.set("trial_expires_at", result.get("expires_at", ""), save=True)
         logger.info(
             "Provisioned %s trial key (expires %s)",
-            result.get("status"), result.get("expires_at"),
+            result.get("status"),
+            result.get("expires_at"),
         )
     return result

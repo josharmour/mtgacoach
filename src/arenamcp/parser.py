@@ -7,7 +7,7 @@ multi-line JSON blocks and routing events to registered handlers.
 import json
 import logging
 import re
-from typing import Callable, Optional
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -17,25 +17,25 @@ logger = logging.getLogger(__name__)
 # source, since patterns may contain metacharacters (e.g. ``Draft\.Notify``)
 # whose ``pattern.pattern`` differs from the name handlers register under.
 EVENT_PATTERNS = [
-    (re.compile(r'GreToClientEvent'), 'GreToClientEvent'),
-    (re.compile(r'MatchCreated'), 'MatchCreated'),
-    (re.compile(r'MatchGameRoomStateChangedEvent'), 'MatchGameRoomStateChangedEvent'),
-    (re.compile(r'ClientToMatchServiceMessage'), 'ClientToMatchServiceMessage'),
-    (re.compile(r'MulliganReq'), 'MulliganReq'),
-    (re.compile(r'MulliganResp'), 'MulliganResp'),
-    (re.compile(r'GameStateMessage'), 'GameStateMessage'),
+    (re.compile(r"GreToClientEvent"), "GreToClientEvent"),
+    (re.compile(r"MatchCreated"), "MatchCreated"),
+    (re.compile(r"MatchGameRoomStateChangedEvent"), "MatchGameRoomStateChangedEvent"),
+    (re.compile(r"ClientToMatchServiceMessage"), "ClientToMatchServiceMessage"),
+    (re.compile(r"MulliganReq"), "MulliganReq"),
+    (re.compile(r"MulliganResp"), "MulliganResp"),
+    (re.compile(r"GameStateMessage"), "GameStateMessage"),
     # Draft-related events
-    (re.compile(r'Draft\.Notify'), 'Draft.Notify'),
-    (re.compile(r'Draft\.MakeHumanDraftPick'), 'Draft.MakeHumanDraftPick'),
-    (re.compile(r'Event_PlayerDraftMakePick'), 'Event_PlayerDraftMakePick'),
-    (re.compile(r'BotDraft_DraftPick'), 'BotDraft_DraftPick'),
-    (re.compile(r'DraftPack'), 'DraftPack'),
-    (re.compile(r'DraftStatus'), 'DraftStatus'),
-    (re.compile(r'CardsInPack'), 'CardsInPack'),
-    (re.compile(r'EventName'), 'EventName'),
+    (re.compile(r"Draft\.Notify"), "Draft.Notify"),
+    (re.compile(r"Draft\.MakeHumanDraftPick"), "Draft.MakeHumanDraftPick"),
+    (re.compile(r"Event_PlayerDraftMakePick"), "Event_PlayerDraftMakePick"),
+    (re.compile(r"BotDraft_DraftPick"), "BotDraft_DraftPick"),
+    (re.compile(r"DraftPack"), "DraftPack"),
+    (re.compile(r"DraftStatus"), "DraftStatus"),
+    (re.compile(r"CardsInPack"), "CardsInPack"),
+    (re.compile(r"EventName"), "EventName"),
     # Sealed pool events
-    (re.compile(r'CardPool'), 'CardPool'),
-    (re.compile(r'InternalEventName'), 'InternalEventName'),
+    (re.compile(r"CardPool"), "CardPool"),
+    (re.compile(r"InternalEventName"), "InternalEventName"),
 ]
 
 
@@ -55,10 +55,7 @@ class LogParser:
     then parses and routes them to registered event handlers.
     """
 
-    def __init__(
-        self,
-        on_event: Optional[Callable[[str, dict], None]] = None
-    ) -> None:
+    def __init__(self, on_event: Callable[[str, dict], None] | None = None) -> None:
         """Initialize the parser.
 
         Args:
@@ -66,7 +63,7 @@ class LogParser:
         """
         self._on_event = on_event
         self._handlers: dict[str, list[Callable[[dict], None]]] = {}
-        self._default_handler: Optional[Callable[[str, dict], None]] = None
+        self._default_handler: Callable[[str, dict], None] | None = None
 
         # JSON accumulation state
         self._buffer: list[str] = []
@@ -74,15 +71,11 @@ class LogParser:
         self._in_json: bool = False
         self._in_string: bool = False  # Track string state across lines
         self._escape_next: bool = False  # Track escape state across lines
-        self._current_event_type: Optional[str] = None
+        self._current_event_type: str | None = None
         self._pending_line: str = ""  # Incomplete line from previous chunk
-        self._last_event_hint: Optional[str] = None  # Event type from previous line
+        self._last_event_hint: str | None = None  # Event type from previous line
 
-    def register_handler(
-        self,
-        event_type: str,
-        handler: Callable[[dict], None]
-    ) -> None:
+    def register_handler(self, event_type: str, handler: Callable[[dict], None]) -> None:
         """Register a handler for a specific event type.
 
         Args:
@@ -94,10 +87,7 @@ class LogParser:
         self._handlers[event_type].append(handler)
         logger.debug(f"Registered handler for {event_type}")
 
-    def set_default_handler(
-        self,
-        handler: Callable[[str, dict], None]
-    ) -> None:
+    def set_default_handler(self, handler: Callable[[str, dict], None]) -> None:
         """Set handler for events with no registered type-specific handler.
 
         Args:
@@ -119,10 +109,10 @@ class LogParser:
             self._pending_line = ""
 
         # Split into lines, keeping track of whether last line is complete
-        lines = text.split('\n')
+        lines = text.split("\n")
 
         # If text doesn't end with newline, last "line" is incomplete
-        if text and not text.endswith('\n'):
+        if text and not text.endswith("\n"):
             self._pending_line = lines[-1]
             lines = lines[:-1]
 
@@ -137,7 +127,7 @@ class LogParser:
         """
         if not self._in_json:
             # Check if this line starts a JSON block
-            brace_idx = line.find('{')
+            brace_idx = line.find("{")
             if brace_idx != -1:
                 # Detect event type from content before the brace
                 prefix = line[:brace_idx]
@@ -255,7 +245,7 @@ class LogParser:
                 escape = False
                 continue
 
-            if ch == '\\' and in_string:
+            if ch == "\\" and in_string:
                 escape = True
                 continue
 
@@ -264,9 +254,9 @@ class LogParser:
                 continue
 
             if not in_string:
-                if ch == '{':
+                if ch == "{":
                     delta += 1
-                elif ch == '}':
+                elif ch == "}":
                     delta -= 1
 
         if stateful:
@@ -282,7 +272,7 @@ class LogParser:
         concatenated (e.g. the closing brace of one object and the
         opening brace of another appear on the same line).
         """
-        json_text = '\n'.join(self._buffer)
+        json_text = "\n".join(self._buffer)
         event_type = self._current_event_type or "Unknown"
 
         try:
@@ -300,7 +290,7 @@ class LogParser:
                     remainder = json_text[end_idx:].lstrip()
                     if remainder:
                         self._reset_json_state()
-                        for line in remainder.split('\n'):
+                        for line in remainder.split("\n"):
                             self._process_line(line)
                         return  # skip the reset below, _process_line handles state
                 except json.JSONDecodeError as e2:

@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -57,7 +56,7 @@ class RepairTab(QWidget):
     _report_ready = Signal(object)  # RepairReport, marshaled to the UI thread
     _progress = Signal(str)
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._running = False
         self._guided = False
@@ -76,8 +75,7 @@ class RepairTab(QWidget):
         root.addWidget(title)
 
         self._summary = QLabel(
-            "Checks your whole setup — runtime, license, MTGA, and the "
-            "bridge — and fixes what it safely can."
+            "Checks your whole setup — runtime, license, MTGA, and the bridge — and fixes what it safely can."
         )
         self._summary.setWordWrap(True)
         root.addWidget(self._summary)
@@ -89,9 +87,7 @@ class RepairTab(QWidget):
         buttons.addWidget(self._run_btn)
 
         self._restart_btn = QPushButton("Restart Coach")
-        self._restart_btn.clicked.connect(
-            lambda: self.restart_requested.emit(False, False, False)
-        )
+        self._restart_btn.clicked.connect(lambda: self.restart_requested.emit(False, False, False))
         self._restart_btn.hide()
         buttons.addWidget(self._restart_btn)
         buttons.addStretch(1)
@@ -164,9 +160,7 @@ class RepairTab(QWidget):
                 from arenamcp.repair_engine import CheckResult
 
                 report = RepairReport()
-                report.results.append(
-                    CheckResult("engine", "Repair engine", "error", str(e))
-                )
+                report.results.append(CheckResult("engine", "Repair engine", "error", str(e)))
             self._report_ready.emit(report)
 
         threading.Thread(target=_work, daemon=True, name="repair-run").start()
@@ -197,9 +191,7 @@ class RepairTab(QWidget):
             row.setWordWrap(True)
             row.setTextFormat(Qt.RichText)
             self._rows.addWidget(row)
-            self._details.appendPlainText(
-                f"[{r.status}] {r.label}: {r.detail} {r.action_hint}".strip()
-            )
+            self._details.appendPlainText(f"[{r.status}] {r.label}: {r.detail} {r.action_hint}".strip())
             if r.key == "license" and r.status == "action_needed":
                 needs_license = True
             if r.status == "fixed":

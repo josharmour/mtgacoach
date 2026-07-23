@@ -16,9 +16,9 @@ and silent-skipped instead of flipping autopilot to MANUAL REQUIRED.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 import importlib
 import sys
+from unittest.mock import MagicMock
 
 
 def _engine_with_method():
@@ -260,9 +260,7 @@ def test_select_n_against_actions_available_is_stale():
     """Window changed: planner picked SELECT_N but bridge moved on to a
     fresh ActionsAvailable window."""
     engine, ap = _engine_with_method()
-    action = ap.GameAction(
-        action_type=ap.ActionType.SELECT_N, select_card_names=["Forest"]
-    )
+    action = ap.GameAction(action_type=ap.ActionType.SELECT_N, select_card_names=["Forest"])
     state = {
         "_bridge_request_type": "ActionsAvailable",
         "_bridge_request_class": "ActionsAvailableRequest",

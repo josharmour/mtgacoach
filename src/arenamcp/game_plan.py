@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -134,9 +134,9 @@ class GamePlanManager:
     def __init__(self, backend: Any, timeout: float = 10.0):
         self._backend = backend
         self._timeout = timeout
-        self._plan: Optional[GamePlan] = None
-        self._seed: Optional[str] = None  # deck archetype summary, if available
-        self._last_sig: Optional[tuple] = None
+        self._plan: GamePlan | None = None
+        self._seed: str | None = None  # deck archetype summary, if available
+        self._last_sig: tuple | None = None
         self._last_reform_turn: int = -1
         # Execution-feedback: stalls since the last reform + the last thing that
         # couldn't be executed, so the next reform avoids the stuck line.
@@ -163,13 +163,13 @@ class GamePlanManager:
         if what:
             self._stall_hint = what.strip()
 
-    def seed(self, deck_strategy: Optional[str]) -> None:
+    def seed(self, deck_strategy: str | None) -> None:
         """Store the static deck archetype summary used to seed the first plan."""
         if deck_strategy and deck_strategy.strip():
             self._seed = deck_strategy.strip()
 
     @property
-    def current(self) -> Optional[GamePlan]:
+    def current(self) -> GamePlan | None:
         return self._plan
 
     def plan_text(self) -> str:
@@ -180,9 +180,7 @@ class GamePlanManager:
         return self._plan.as_coach_intro() if self._plan else ""
 
     # ----- reform decision -------------------------------------------------
-    def maybe_reform(
-        self, game_state: dict[str, Any], *, force: bool = False
-    ) -> Optional[GamePlan]:
+    def maybe_reform(self, game_state: dict[str, Any], *, force: bool = False) -> GamePlan | None:
         """(Re)form the plan iff the board changed materially; else return current.
 
         Cheap to call on every trigger — the LLM is only invoked when
@@ -228,9 +226,7 @@ class GamePlanManager:
         if turn_num - self._last_reform_turn >= self._STALE_TURNS:
             return True
         (_, my_life, opp_life, my_cr, opp_cr, my_pow, opp_pow, hand) = sig
-        (_, l_my_life, l_opp_life, l_my_cr, l_opp_cr, l_my_pow, l_opp_pow, l_hand) = (
-            self._last_sig
-        )
+        (_, l_my_life, l_opp_life, l_my_cr, l_opp_cr, l_my_pow, l_opp_pow, l_hand) = self._last_sig
         if my_cr != l_my_cr or opp_cr != l_opp_cr:
             return True
         if abs(my_life - l_my_life) >= self._LIFE_DELTA:
@@ -241,12 +237,10 @@ class GamePlanManager:
             return True
         if abs(opp_pow - l_opp_pow) >= self._POWER_DELTA:
             return True
-        if abs(hand - l_hand) >= self._HAND_DELTA:
-            return True
-        return False
+        return abs(hand - l_hand) >= self._HAND_DELTA
 
     # ----- board reading ---------------------------------------------------
-    def _local_seat(self, game_state: dict[str, Any]) -> Optional[int]:
+    def _local_seat(self, game_state: dict[str, Any]) -> int | None:
         for p in game_state.get("players", []):
             if p.get("is_local"):
                 return p.get("seat_id")
@@ -271,9 +265,11 @@ class GamePlanManager:
         bf = game_state.get("battlefield", []) or []
         if not bf:
             # Some snapshots nest zones; fall back to any list-valued "battlefield".
-            bf = game_state.get("zones", {}).get("battlefield", []) if isinstance(
-                game_state.get("zones"), dict
-            ) else []
+            bf = (
+                game_state.get("zones", {}).get("battlefield", [])
+                if isinstance(game_state.get("zones"), dict)
+                else []
+            )
         for card in bf:
             if "creature" not in str(card.get("type_line", "")).lower():
                 continue
@@ -319,7 +315,7 @@ class GamePlanManager:
             f"Cards in hand: {sig[7]}."
         )
 
-    def _reform(self, game_state: dict[str, Any], turn_num: int) -> Optional[GamePlan]:
+    def _reform(self, game_state: dict[str, Any], turn_num: int) -> GamePlan | None:
         context = self._build_context(game_state)
         user_parts = [context]
         if self._seed:
@@ -327,7 +323,7 @@ class GamePlanManager:
         if self._stall_count >= self._STALL_REFORM_THRESHOLD and self._stall_hint:
             user_parts.append(
                 f"\nPRIOR PLAN STALLED: the previous plan-advancing play "
-                f"\"{self._stall_hint}\" could NOT be executed across several "
+                f'"{self._stall_hint}" could NOT be executed across several '
                 f"attempts. Do not rely on that line again — choose a DIFFERENT, "
                 f"executable win condition / next play this time."
             )
@@ -370,7 +366,7 @@ class GamePlanManager:
                 return self._backend.complete(system_prompt, user_message)
 
     @staticmethod
-    def _parse(response: str, turn_num: int) -> Optional[GamePlan]:
+    def _parse(response: str, turn_num: int) -> GamePlan | None:
         if not response or not isinstance(response, str):
             return None
         text = response.strip()

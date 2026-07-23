@@ -15,11 +15,13 @@ The MCP server handles all game state tracking; this client just:
 - Handles voice I/O (PTT/VOX input, TTS output)
 """
 
+
 # Load .env before other imports
 def _load_dotenv():
     """Load environment variables from .env file if it exists."""
     import os
     from pathlib import Path
+
     for env_path in [Path(".env"), Path(__file__).parent.parent.parent / ".env"]:
         if env_path.exists():
             with open(env_path) as f:
@@ -30,9 +32,11 @@ def _load_dotenv():
                         os.environ.setdefault(key.strip(), value.strip())
             break
 
+
 _load_dotenv()
 
 import argparse
+import contextlib
 import importlib
 import json
 import logging
@@ -49,9 +53,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-from arenamcp.settings import get_settings
 from arenamcp.decision_arbiter import arbitrate
-from arenamcp.logging_config import configure_logging, LOG_DIR, LOG_FILE
+from arenamcp.logging_config import LOG_DIR, LOG_FILE, configure_logging
+from arenamcp.settings import get_settings
 
 # Configure logging (shared with server.py via logging_config)
 # Console handler disabled -- GUI/pipe adapter handles user-facing output.
@@ -120,6 +124,7 @@ class _SAPIVoice:
             return
         # Clean markup
         import re
+
         text = text.replace("**", "").replace("*", "").replace("#", "")
         text = text.replace("```", "").replace("`", "").replace("...", " ")
         text = re.sub(r"\[[A-Z][A-Za-z0-9_,:{}/ ]*\]", "", text)
@@ -157,8 +162,8 @@ class _SAPIVoice:
         # Escape for PowerShell
         safe = text.replace("'", "''").replace('"', '\\"')
         cmd = (
-            'Add-Type -AssemblyName System.Speech; '
-            '$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; '
+            "Add-Type -AssemblyName System.Speech; "
+            "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
             f"$s.Speak('{safe}')"
         )
         return subprocess.Popen(
@@ -213,10 +218,8 @@ class _PipeVoiceOutput:
 
         emit_request = getattr(self._ui, "emit_speech_request", None)
         if callable(emit_request):
-            try:
+            with contextlib.suppress(Exception):
                 self._inner.stop()
-            except Exception:
-                pass
 
             try:
                 voice_id, voice_name = self._inner.current_voice
@@ -289,6 +292,7 @@ def copy_to_clipboard(text: str) -> bool:
     # Try pyperclip first (if installed)
     try:
         import pyperclip
+
         pyperclip.copy(text)
         return True
     except ImportError:
@@ -299,10 +303,10 @@ def copy_to_clipboard(text: str) -> bool:
     # Fallback: Windows clip command
     try:
         process = subprocess.Popen(
-            ['clip'],
+            ["clip"],
             stdin=subprocess.PIPE,
         )
-        process.communicate(input=text.encode('utf-8'), timeout=2)
+        process.communicate(input=text.encode("utf-8"), timeout=2)
         return process.returncode == 0
     except subprocess.TimeoutExpired:
         try:
@@ -332,26 +336,47 @@ else:
 
 class UIAdapter:
     """Interface for UI feedback (CLI or pipe adapter)."""
-    def log(self, message: str) -> None: pass
-    def advice(self, text: str, seat_info: str) -> None: pass
-    def status(self, key: str, value: str) -> None: pass
-    def error(self, message: str) -> None: pass
-    def speak(self, text: str) -> None: pass
-    def subtask(self, status: str) -> None: pass
+
+    def log(self, message: str) -> None:
+        pass
+
+    def advice(self, text: str, seat_info: str) -> None:
+        pass
+
+    def status(self, key: str, value: str) -> None:
+        pass
+
+    def error(self, message: str) -> None:
+        pass
+
+    def speak(self, text: str) -> None:
+        pass
+
+    def subtask(self, status: str) -> None:
+        pass
+
 
 class CLIAdapter(UIAdapter):
     """Default adapter for CLI output."""
+
     def log(self, message: str) -> None:
         print(message)
+
     def advice(self, text: str, seat_info: str) -> None:
         print(f"\n[COACH|{seat_info}] {text}\n")
+
     def status(self, key: str, value: str) -> None:
         print(f"[{key}] {value}")
+
     def error(self, message: str) -> None:
         print(f"ERROR: {message}")
-    def speak(self, text: str) -> None: pass
+
+    def speak(self, text: str) -> None:
+        pass
+
     def subtask(self, status: str) -> None:
         print(f"  ⟳ {status}", end="\r")
+
 
 class MCPClient:
     """Simple in-process MCP client that calls server tools directly.
@@ -364,6 +389,7 @@ class MCPClient:
         """Initialize MCP client by importing server module."""
         # Import server module - this starts the log watcher
         from arenamcp import server
+
         self._server = server
 
         # Ensure watcher is running
@@ -394,7 +420,7 @@ class MCPClient:
         """Call get_card_info MCP tool."""
         return self._server.get_card_info(arena_id)
 
-    def start_draft_helper(self, set_code: Optional[str] = None) -> dict[str, Any]:
+    def start_draft_helper(self, set_code: str | None = None) -> dict[str, Any]:
         """Start the built-in draft helper."""
         return self._server.start_draft_helper_tool(set_code)
 
@@ -421,12 +447,24 @@ class MCPClient:
 
 class ConsoleAdapter(UIAdapter):
     """Fallback for CLI mode."""
-    def log(self, message: str) -> None: print(message, end='')
-    def advice(self, text: str, seat_info: str) -> None: print(f"\n[COACH|{seat_info}] {text}\n")
-    def status(self, key: str, value: str) -> None: pass
-    def error(self, message: str) -> None: print(f"ERROR: {message}")
-    def speak(self, text: str) -> None: pass
-    def subtask(self, status: str) -> None: pass
+
+    def log(self, message: str) -> None:
+        print(message, end="")
+
+    def advice(self, text: str, seat_info: str) -> None:
+        print(f"\n[COACH|{seat_info}] {text}\n")
+
+    def status(self, key: str, value: str) -> None:
+        pass
+
+    def error(self, message: str) -> None:
+        print(f"ERROR: {message}")
+
+    def speak(self, text: str) -> None:
+        pass
+
+    def subtask(self, status: str) -> None:
+        pass
 
 
 class _TempoTracker:
@@ -441,7 +479,7 @@ class _TempoTracker:
     def __init__(self, stall_threshold: float = 1.5, min_samples: int = 5):
         self._stall_threshold = stall_threshold
         self._min_samples = min_samples
-        self._last_state_hash: Optional[str] = None
+        self._last_state_hash: str | None = None
         self._last_change_time: float = 0.0
         self._intervals: list[float] = []  # Recent inter-change intervals
         self._max_intervals = 30
@@ -491,10 +529,7 @@ class _TempoTracker:
             return False  # Game not active
 
         elapsed = now - self._last_change_time
-        if len(self._intervals) >= self._min_samples and elapsed > self._stall_threshold:
-            return True
-
-        return False
+        return bool(len(self._intervals) >= self._min_samples and elapsed > self._stall_threshold)
 
     @property
     def avg_interval(self) -> float:
@@ -523,11 +558,11 @@ class StandaloneCoach:
     def __init__(
         self,
         backend: str = "proxy",
-        model: Optional[str] = None,
+        model: str | None = None,
         voice_mode: str = "ptt",
         draft_mode: bool = False,
-        set_code: Optional[str] = None,
-        ui_adapter: Optional[UIAdapter] = None,
+        set_code: str | None = None,
+        ui_adapter: UIAdapter | None = None,
         register_hotkeys: bool = True,
         autopilot: bool = False,
         dry_run: bool = False,
@@ -543,9 +578,7 @@ class StandaloneCoach:
         # through its served models instead of pointing at local servers.
         requested_backend = backend or self.settings.get("mode", "online")
         if requested_backend not in (None, "online"):
-            logger.info(
-                f"Ignoring requested backend {requested_backend!r}: app is online-only"
-            )
+            logger.info(f"Ignoring requested backend {requested_backend!r}: app is online-only")
         self._backend_name = "online"
         self._voice_mode = voice_mode or self.settings.get("voice_mode", "ptt")
 
@@ -571,13 +604,11 @@ class StandaloneCoach:
         # priority was on the user but nothing was acting on advice).
         saved_autopilot = bool(self.settings.get("autopilot_enabled", False))
         self._autopilot_enabled = bool(autopilot or saved_autopilot)
-        self._autopilot_restored_from_settings = (
-            bool(saved_autopilot) and not bool(autopilot)
-        )
+        self._autopilot_restored_from_settings = bool(saved_autopilot) and not bool(autopilot)
         self._autopilot_dry_run = dry_run
         self._autopilot_afk = afk
-        self._autopilot: Optional[Any] = None  # AutopilotEngine instance
-        self._autopilot_backend: Optional[Any] = None  # Separate LLM backend for autopilot
+        self._autopilot: Any | None = None  # AutopilotEngine instance
+        self._autopilot_backend: Any | None = None  # Separate LLM backend for autopilot
 
         # State
         # advice_style can be "quick" (terse, speakable) or "chatty" (longer,
@@ -585,9 +616,7 @@ class StandaloneCoach:
         self.advice_style = "quick"
         self._advice_frequency = self.settings.get("advice_frequency", "start_of_turn")
         self._auto_deck_strategy = bool(self.settings.get("auto_deck_strategy", True))
-        self._auto_post_match_analysis = bool(
-            self.settings.get("auto_post_match_analysis", False)
-        )
+        self._auto_post_match_analysis = bool(self.settings.get("auto_post_match_analysis", False))
 
         # TTS always enabled
         self._auto_speak = True
@@ -605,7 +634,7 @@ class StandaloneCoach:
         self._running = False
         self._restart_requested = False
         self._deck_analyzed = False
-        self._mcp: Optional[MCPClient] = None
+        self._mcp: MCPClient | None = None
 
         # Voice components
         self._voice_input = None
@@ -616,15 +645,15 @@ class StandaloneCoach:
         self._trigger = None
 
         # Threads
-        self._coaching_thread: Optional[threading.Thread] = None
-        self._voice_thread: Optional[threading.Thread] = None
+        self._coaching_thread: threading.Thread | None = None
+        self._voice_thread: threading.Thread | None = None
 
         # Background win plan
-        self._win_plan_turn = 0       # Last turn a win plan was launched
-        self._thinking_model = None   # Cached thinking model ID (lazy-init)
-        self._pending_win_plan: Optional[str] = None    # Stored viable plan text
-        self._pending_win_plan_turns: int = 0            # N in "win-in-N"
-        self._pending_win_plan_turn: int = 0             # Game turn when plan was generated
+        self._win_plan_turn = 0  # Last turn a win plan was launched
+        self._thinking_model = None  # Cached thinking model ID (lazy-init)
+        self._pending_win_plan: str | None = None  # Stored viable plan text
+        self._pending_win_plan_turns: int = 0  # N in "win-in-N"
+        self._pending_win_plan_turn: int = 0  # Game turn when plan was generated
 
         # Match tracking for LLM context
         self._match_number: int = 0  # Incremented on each new match
@@ -639,9 +668,9 @@ class StandaloneCoach:
         self._staged_analyses: dict[str, dict] = {}
         # Bug A: deep-copied snapshot from analysis-completion time,
         # plus the completed analysis text, for F7 bug reports.
-        self._post_match_snapshot: Optional[dict] = None
-        self._post_match_analysis_text: Optional[str] = None
-        self._post_match_result: Optional[str] = None
+        self._post_match_snapshot: dict | None = None
+        self._post_match_analysis_text: str | None = None
+        self._post_match_result: str | None = None
         self._game_end_handled: bool = False  # Prevents duplicate triggers
         self._match_boundary_ts: float = 0.0  # Suppress stale triggers after reset
         self._last_game_end_check_error: str = ""
@@ -650,7 +679,7 @@ class StandaloneCoach:
         # Vision watchdog: tempo anomaly detection + missed decision tracking
         self._tempo_tracker = _TempoTracker()
         self._missed_decisions: list[dict] = []  # Accumulated per match
-        self._vision_mapper: Optional[Any] = None  # VisionMapper (shared with autopilot)
+        self._vision_mapper: Any | None = None  # VisionMapper (shared with autopilot)
         self._vlm_card_cache: dict[int, str] = {}  # grpId -> resolved name (persists per match)
         self._vlm_card_failures: set[int] = set()  # grpIds we already tried and failed
         self._recent_gre_log: list[str] = []  # Ring buffer of recent GRE/decision log lines
@@ -664,21 +693,22 @@ class StandaloneCoach:
         # auth/billing errors, we temporarily switch ALL calls to Ollama
         # and show a persistent error.  Cleared when user changes provider.
         self._backend_failed: bool = False
-        self._original_backend: Optional[str] = None
-        self._original_model: Optional[str] = None
+        self._original_backend: str | None = None
+        self._original_model: str | None = None
 
         # Autopilot decision backstop: force decision triggers when parser noise
         # causes missed trigger edges after an executed action.
-        self._last_forced_decision_sig: Optional[str] = None
+        self._last_forced_decision_sig: str | None = None
         self._last_forced_decision_ts: float = 0.0
-        self._last_advised_decision_sig: Optional[str] = None
+        self._last_advised_decision_sig: str | None = None
 
         # Bridge decision poller: proactive decision detection via BepInEx plugin
         from arenamcp.gre_bridge import get_poller
+
         self._bridge_poller = get_poller()
 
     @staticmethod
-    def _build_pending_decision_signature(game_state: dict[str, Any]) -> Optional[str]:
+    def _build_pending_decision_signature(game_state: dict[str, Any]) -> str | None:
         pending = str(game_state.get("pending_decision") or "").strip()
         if not pending:
             return None
@@ -779,16 +809,14 @@ class StandaloneCoach:
         self._set_backend_status(f"OK ({self.backend_name})")
 
     @staticmethod
-    def _get_local_seat_from_state(game_state: dict[str, Any]) -> Optional[int]:
+    def _get_local_seat_from_state(game_state: dict[str, Any]) -> int | None:
         """Return the local seat id from a serialized snapshot, if known."""
         for player in game_state.get("players", []):
             if player.get("is_local"):
                 return player.get("seat_id")
         return None
 
-    def _actions_to_event_payload(
-        self, plan: Any, game_state: dict[str, Any]
-    ) -> list[dict[str, Any]]:
+    def _actions_to_event_payload(self, plan: Any, game_state: dict[str, Any]) -> list[dict[str, Any]]:
         """Convert an ActionPlan into a list of suggested_action dicts for
         the match overlay. Each dict carries the instance_id the BepInEx
         bridge uses to look up the on-screen rectangle.
@@ -840,14 +868,16 @@ class StandaloneCoach:
                 if aiid:
                     target_iids.append(aiid)
 
-            payload.append({
-                "action_type": action.action_type.value,
-                "card_name": action.card_name or "",
-                "instance_id": primary_iid,
-                "grp_id": primary_grp,
-                "target_instance_ids": target_iids,
-                "reason": action.reasoning or "",
-            })
+            payload.append(
+                {
+                    "action_type": action.action_type.value,
+                    "card_name": action.card_name or "",
+                    "instance_id": primary_iid,
+                    "grp_id": primary_grp,
+                    "target_instance_ids": target_iids,
+                    "reason": action.reasoning or "",
+                }
+            )
         return payload
 
     @classmethod
@@ -887,18 +917,17 @@ class StandaloneCoach:
         stack = game_state.get("stack", []) or []
 
         inferred_active = None
-        if decision_type == "declare_attackers" or action_types & {"ActionType_Attack", "ActionType_AttackWithGroup"}:
+        if decision_type == "declare_attackers" or action_types & {
+            "ActionType_Attack",
+            "ActionType_AttackWithGroup",
+        }:
             inferred_active = local_seat
-        elif (
-            decision_type == "declare_blockers"
-            or action_types & {"ActionType_Block", "ActionType_BlockWithGroup"}
-        ):
+        elif decision_type == "declare_blockers" or action_types & {
+            "ActionType_Block",
+            "ActionType_BlockWithGroup",
+        }:
             inferred_active = opponent_seat
-        elif (
-            action_types & {"ActionType_Play", "ActionType_PlayMDFC"}
-            and "Main" in phase
-            and not stack
-        ):
+        elif action_types & {"ActionType_Play", "ActionType_PlayMDFC"} and "Main" in phase and not stack:
             inferred_active = local_seat
 
         if inferred_active is not None and turn.get("active_player") != inferred_active:
@@ -909,18 +938,21 @@ class StandaloneCoach:
             )
             turn["active_player"] = inferred_active
 
-        if inferred_active is not None or decision_type in {
-            "actions_available",
-            "declare_attackers",
-            "declare_blockers",
-        }:
-            if turn.get("priority_player") != local_seat:
-                logger.debug(
-                    "Normalized priority_player from %s to %s using decision/actions state",
-                    turn.get("priority_player"),
-                    local_seat,
-                )
-                turn["priority_player"] = local_seat
+        if (
+            inferred_active is not None
+            or decision_type
+            in {
+                "actions_available",
+                "declare_attackers",
+                "declare_blockers",
+            }
+        ) and turn.get("priority_player") != local_seat:
+            logger.debug(
+                "Normalized priority_player from %s to %s using decision/actions state",
+                turn.get("priority_player"),
+                local_seat,
+            )
+            turn["priority_player"] = local_seat
 
         return game_state
 
@@ -1038,18 +1070,11 @@ class StandaloneCoach:
                     return True
                 break
 
-        legal_actions = [
-            str(action or "").strip()
-            for action in (game_state.get("legal_actions", []) or [])
-        ]
-        is_local_priority = (
-            local_seat is not None and turn.get("priority_player") == local_seat
-        )
+        legal_actions = [str(action or "").strip() for action in (game_state.get("legal_actions", []) or [])]
+        is_local_priority = local_seat is not None and turn.get("priority_player") == local_seat
 
         # 3. Local player holds priority with a real legal play.
-        if is_local_priority and any(
-            cls._is_meaningful_legal_action(action) for action in legal_actions
-        ):
+        if is_local_priority and any(cls._is_meaningful_legal_action(action) for action in legal_actions):
             return True
 
         # 4. Priority is not the local player's (opponent turn / opponent spell):
@@ -1061,9 +1086,7 @@ class StandaloneCoach:
         #    empty) is trivial unless we hold an instant-speed response. Any
         #    unrecognized non-pass/wait legal action biases toward speaking.
         non_pass = [
-            action
-            for action in legal_actions
-            if action.lower() not in ("", "wait", "pass", "pass priority")
+            action for action in legal_actions if action.lower() not in ("", "wait", "pass", "pass priority")
         ]
         if non_pass:
             return True
@@ -1078,7 +1101,9 @@ class StandaloneCoach:
         if pending_decision:
             actions = legal_actions[:max_items]
         else:
-            actions = [action for action in legal_actions if cls._is_meaningful_legal_action(action)][:max_items]
+            actions = [action for action in legal_actions if cls._is_meaningful_legal_action(action)][
+                :max_items
+            ]
 
         normalized: list[str] = []
         for action in actions:
@@ -1117,8 +1142,20 @@ class StandaloneCoach:
         "opponent has priority",
     )
     _ACTION_VERBS = (
-        "cast", "play", "attack", "block", "activate", "kill", "destroy",
-        "decline", "accept", "choose", "select", "keep", "mulligan", "bottom",
+        "cast",
+        "play",
+        "attack",
+        "block",
+        "activate",
+        "kill",
+        "destroy",
+        "decline",
+        "accept",
+        "choose",
+        "select",
+        "keep",
+        "mulligan",
+        "bottom",
     )
 
     @classmethod
@@ -1135,12 +1172,8 @@ class StandaloneCoach:
         clean = text.lower().strip(" .!")
         # Word-boundary match: a bare substring check muted any short advice
         # mentioning "Fabled Passage" because it contains "pass".
-        is_passive = any(
-            re.search(rf"\b{re.escape(p)}\b", clean) for p in cls._PASSIVE_PHRASES
-        )
-        has_action = any(
-            re.search(rf"\b{re.escape(v)}", clean) for v in cls._ACTION_VERBS
-        )
+        is_passive = any(re.search(rf"\b{re.escape(p)}\b", clean) for p in cls._PASSIVE_PHRASES)
+        has_action = any(re.search(rf"\b{re.escape(v)}", clean) for v in cls._ACTION_VERBS)
         return is_passive and not has_action and len(text) < 60
 
     # A pass narration ("Passing priority to let their spell resolve...") is
@@ -1188,6 +1221,7 @@ class StandaloneCoach:
                 # typically succeed.
                 try:
                     import time as _time
+
                     _time.sleep(0.1)
                     self._voice_output.speak(text, blocking=blocking)
                     logger.info("Kokoro speak retry succeeded")
@@ -1216,26 +1250,26 @@ class StandaloneCoach:
     @property
     def backend_name(self) -> str:
         return self._backend_name
-    
+
     @backend_name.setter
     def backend_name(self, value: str):
         self._backend_name = value
         self.settings.set("mode", value)
-        
+
     @property
-    def model_name(self) -> Optional[str]:
+    def model_name(self) -> str | None:
         return self._model_name
-    
+
     @model_name.setter
-    def model_name(self, value: Optional[str]):
+    def model_name(self, value: str | None):
         self._model_name = value
         if value:
             self.settings.set("model", value)
-            
+
     @property
     def voice_mode(self) -> str:
         return self._voice_mode
-    
+
     @voice_mode.setter
     def voice_mode(self, value: str):
         self._voice_mode = value
@@ -1254,7 +1288,7 @@ class StandaloneCoach:
         self._advice_frequency = value
         self.settings.set("advice_frequency", value)
 
-    def _generate_deck_strategy_brief(self, card_ids: Optional[list[int]] = None) -> None:
+    def _generate_deck_strategy_brief(self, card_ids: list[int] | None = None) -> None:
         """Generate and speak a brief deck strategy.
 
         Runs in a background thread so it doesn't block the coaching loop.
@@ -1303,23 +1337,27 @@ class StandaloneCoach:
                 # layer. For a 60-card deck the MCP indirection adds tens of
                 # ms of pointless overhead per call.
                 from arenamcp.card_db import get_card_database
+
                 card_db = get_card_database()
                 enriched = []
                 for grp_id in deck_grp_ids:
                     try:
                         info = card_db.get_card_by_arena_id(grp_id)
                         if info is not None:
-                            enriched.append((
-                                info.name or f"Unknown({grp_id})",
-                                info.type_line or "",
-                                info.oracle_text or "",
-                            ))
+                            enriched.append(
+                                (
+                                    info.name or f"Unknown({grp_id})",
+                                    info.type_line or "",
+                                    info.oracle_text or "",
+                                )
+                            )
                         else:
                             enriched.append((f"Unknown({grp_id})", "", ""))
                     except Exception:
                         enriched.append((f"Unknown({grp_id})", "", ""))
 
                 from arenamcp.coach import create_backend
+
                 brief_backend = create_backend(self._backend_name, model=self.model_name)
                 try:
                     strategy = self._coach.get_deck_strategy_brief(enriched, backend=brief_backend)
@@ -1337,7 +1375,7 @@ class StandaloneCoach:
 
         threading.Thread(target=_run, daemon=True, name="deck-strategy-brief").start()
 
-    def get_deck_strategy(self) -> Optional[str]:
+    def get_deck_strategy(self) -> str | None:
         """Return the stored deck strategy, or None if not yet analyzed."""
         if self._coach:
             return self._coach._deck_strategy
@@ -1346,15 +1384,15 @@ class StandaloneCoach:
     def _stage_post_match_analysis(
         self,
         *,
-        match_result: Optional[str],
-        final_state: Optional[dict],
-        replay_path: Optional[str],
-        match_id: Optional[str] = None,
-        advice_history: Optional[list[dict]] = None,
-        missed_decisions: Optional[list[dict]] = None,
+        match_result: str | None,
+        final_state: dict | None,
+        replay_path: str | None,
+        match_id: str | None = None,
+        advice_history: list[dict] | None = None,
+        missed_decisions: list[dict] | None = None,
         reason: str,
         announce_ready: bool = True,
-        auto_start: Optional[bool] = None,
+        auto_start: bool | None = None,
     ) -> bool:
         """Persist completed-match data so analysis can be run later."""
         # End-of-match telemetry: sample up to 5 bridge-fallback bugs
@@ -1475,11 +1513,12 @@ class StandaloneCoach:
         # "auto" mode: detect and report which backend was selected
         requested = self.backend_name
         llm_backend = create_backend(self.backend_name, model=self.model_name, progress_callback=progress_cb)
-        actual_model = getattr(llm_backend, 'model', 'unknown')
+        actual_model = getattr(llm_backend, "model", "unknown")
 
         # If auto-selected, update our backend_name to reflect the actual choice
         if requested == "auto":
             from arenamcp.backend_detect import auto_select_mode
+
             resolved_mode, _ = auto_select_mode()
             self._backend_name = resolved_mode
             self.settings.set("mode", "auto", save=False)  # Keep "auto" in settings
@@ -1507,6 +1546,7 @@ class StandaloneCoach:
         """
         try:
             from arenamcp.vision_mapper import VisionMapper
+
             backend = self._coach._backend if self._coach else None
             mapper = VisionMapper(
                 ollama_model="qwen2.5-vl:3b",
@@ -1533,7 +1573,8 @@ class StandaloneCoach:
 
         # Collect unknown cards across all zones
         import re
-        unknown_pattern = re.compile(r'Unknown|Card#\d+')
+
+        unknown_pattern = re.compile(r"Unknown|Card#\d+")
         zones_to_check: dict[str, list[dict]] = {}  # zone_name -> [card_dicts]
 
         for zone_name in ("hand", "battlefield", "stack", "graveyard", "exile"):
@@ -1563,13 +1604,22 @@ class StandaloneCoach:
             if not window_rect:
                 return
 
-            from PIL import ImageGrab
             import io as _io
+
+            from PIL import ImageGrab
+
             left, top, width, height = window_rect
-            if left is not None and top is not None and width is not None and height is not None and width > 0 and height > 0:
+            if (
+                left is not None
+                and top is not None
+                and width is not None
+                and height is not None
+                and width > 0
+                and height > 0
+            ):
                 screenshot = ImageGrab.grab(bbox=(left, top, left + width, top + height))
                 buf = _io.BytesIO()
-                screenshot.save(buf, format='PNG')
+                screenshot.save(buf, format="PNG")
                 png_bytes = buf.getvalue()
             else:
                 logger.warning(f"Invalid window_rect for card identification: {window_rect}")
@@ -1625,8 +1675,7 @@ class StandaloneCoach:
                 self._vlm_card_cache[grp_id] = resolved_name
                 card["name"] = f"{resolved_name} (vision)"
                 self.ui.log(
-                    f"[dim cyan]Vision ID: {resolved_name} "
-                    f"(grpId={grp_id}, {zone_name}, conf={conf:.0%})[/]"
+                    f"[dim cyan]Vision ID: {resolved_name} (grpId={grp_id}, {zone_name}, conf={conf:.0%})[/]"
                 )
                 self._enrich_vlm_resolved_card(card, resolved_name)
 
@@ -1635,6 +1684,7 @@ class StandaloneCoach:
         """Try to fill oracle_text using the unified card database."""
         try:
             from arenamcp.card_db import get_card_database
+
             card_db = get_card_database()
             result = card_db.get_card_by_name(name)
             if result:
@@ -1648,10 +1698,10 @@ class StandaloneCoach:
     def _init_autopilot(self) -> None:
         """Initialize autopilot components (requires LLM backend + MCP)."""
         try:
-            from arenamcp.autopilot import AutopilotEngine, AutopilotConfig
             from arenamcp.action_planner import ActionPlanner
-            from arenamcp.input_controller import InputController
+            from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
             from arenamcp.coach import create_backend
+            from arenamcp.input_controller import InputController
 
             if not self._coach:
                 self.ui.log("[red]Autopilot: no LLM backend available[/]")
@@ -1680,8 +1730,9 @@ class StandaloneCoach:
                 mapper = self._vision_mapper
             else:
                 from arenamcp.screen_mapper import ScreenMapper
+
                 mapper = ScreenMapper()
-                self.ui.log(f"[yellow]Autopilot: using static coords (VisionMapper not available)[/]")
+                self.ui.log("[yellow]Autopilot: using static coords (VisionMapper not available)[/]")
 
             controller = InputController(dry_run=self._autopilot_dry_run)
 
@@ -1694,12 +1745,8 @@ class StandaloneCoach:
                 speak_fn=self.speak_advice,
                 ui_advice_fn=self.ui.advice if self.ui else None,
                 bug_report_fn=self._auto_bug_report_bridge_fallback,
-                ui_turn_plan_fn=(
-                    self.ui.turn_plan if self.ui and hasattr(self.ui, "turn_plan") else None
-                ),
-                ui_game_plan_fn=(
-                    self.ui.game_plan if self.ui and hasattr(self.ui, "game_plan") else None
-                ),
+                ui_turn_plan_fn=(self.ui.turn_plan if self.ui and hasattr(self.ui, "turn_plan") else None),
+                ui_game_plan_fn=(self.ui.game_plan if self.ui and hasattr(self.ui, "game_plan") else None),
             )
             # Give the autopilot a way to write into advice_history so
             # auto-handled decisions (auto-target, auto-pay, etc.) show
@@ -1738,9 +1785,9 @@ class StandaloneCoach:
             self._autopilot.on_abort()
             self._autopilot_enabled = False
             # Clean up the separate autopilot backend
-            ap_backend = getattr(self, '_autopilot_backend', None)
+            ap_backend = getattr(self, "_autopilot_backend", None)
             if ap_backend:
-                if hasattr(ap_backend, 'close'):
+                if hasattr(ap_backend, "close"):
                     try:
                         ap_backend.close()
                     except Exception as e:
@@ -1764,8 +1811,7 @@ class StandaloneCoach:
                 if self._autopilot._lock.locked():
                     owner_id = self._autopilot._lock_owner_thread_id
                     owner_alive = owner_id is not None and any(
-                        t.ident == owner_id and t.is_alive()
-                        for t in threading.enumerate()
+                        t.ident == owner_id and t.is_alive() for t in threading.enumerate()
                     )
                     if owner_alive:
                         logger.error(
@@ -1777,9 +1823,7 @@ class StandaloneCoach:
                             "Try again shortly or restart the coach.[/]"
                         )
                         return False
-                    logger.warning(
-                        "Autopilot: lock owner thread is gone, safely resetting"
-                    )
+                    logger.warning("Autopilot: lock owner thread is gone, safely resetting")
                     self._autopilot._release_lock()
                 # Clear abort/skip/confirm events from previous session —
                 # on_abort() sets _abort_event which persists across toggles
@@ -1818,8 +1862,9 @@ class StandaloneCoach:
                     f"{', '.join(sorted(served))}[/]"
                 )
                 logger.warning(
-                    "Configured model %r not in served list %s — falling back "
-                    "to default", model, sorted(served)
+                    "Configured model %r not in served list %s — falling back to default",
+                    model,
+                    sorted(served),
                 )
                 self.model_name = None
                 self.settings.set("model", None, save=True)
@@ -1836,13 +1881,14 @@ class StandaloneCoach:
 
         # In pipe mode (native GUI), try Kokoro directly with a hard timeout.
         # If it hangs (numpy/PortAudio DLL issues), fall back to Windows SAPI.
-        if hasattr(self.ui, 'emit_game_state'):
+        if hasattr(self.ui, "emit_game_state"):
             self.ui.log("Initializing TTS...")
             kokoro_result = [None]  # mutable container for thread result
 
             def _try_kokoro():
                 try:
                     from arenamcp.tts import VoiceOutput
+
                     kokoro_result[0] = VoiceOutput()
                 except Exception as e:
                     logger.error(f"Kokoro init failed: {e}")
@@ -1894,10 +1940,7 @@ class StandaloneCoach:
             self.ui.status("VOICE", f"TTS Voice: {voice_desc}")
 
             # Warm up ONNX model in background so first speak() is fast
-            threading.Thread(
-                target=self._voice_output.warmup, daemon=True,
-                name="tts-warmup"
-            ).start()
+            threading.Thread(target=self._voice_output.warmup, daemon=True, name="tts-warmup").start()
         except Exception as e:
             logger.error(f"TTS init failed - disabling voice: {e}")
             self._voice_output = None
@@ -1909,6 +1952,7 @@ class StandaloneCoach:
         if self._voice_mode in ("ptt", "vox"):
             try:
                 from arenamcp.voice import VoiceInput
+
                 logger.info(f"Initializing voice input ({self.voice_mode})...")
                 self._voice_input = VoiceInput(mode=self.voice_mode)
             except Exception as e:
@@ -1926,6 +1970,7 @@ class StandaloneCoach:
         """
         try:
             from arenamcp.tts import VoiceOutput
+
             logger.info("Initializing TTS (pipe mode)...")
             self.ui.log("Initializing TTS...")
             self._voice_output = VoiceOutput()
@@ -1934,16 +1979,13 @@ class StandaloneCoach:
             self.ui.status("VOICE", f"{voice_desc}")
             self.ui.log(f"TTS ready: {voice_desc}")
             # Warm up ONNX model in background so first speak() is fast
-            threading.Thread(
-                target=self._voice_output.warmup, daemon=True,
-                name="tts-warmup"
-            ).start()
+            threading.Thread(target=self._voice_output.warmup, daemon=True, name="tts-warmup").start()
         except Exception as e:
             logger.error(f"Voice init failed: {e}")
             self.ui.status("VOICE", "TTS init failed")
             self.ui.log(f"TTS unavailable: {e}")
 
-    def _emit_control_status_snapshot(self, actual_model: Optional[str]) -> None:
+    def _emit_control_status_snapshot(self, actual_model: str | None) -> None:
         """Emit the current control-state snapshot for GUI frontends."""
         model_value = actual_model or self.model_name or "default"
         self.ui.status("MODEL", str(model_value))
@@ -1969,23 +2011,23 @@ class StandaloneCoach:
                 pass
 
             try:
-                speed = float(getattr(voice_output, "speed"))
+                speed = float(voice_output.speed)
                 self.ui.status("SPEED", f"{speed:.1f}x")
             except Exception:
                 pass
 
             try:
-                muted = bool(getattr(voice_output, "muted"))
+                muted = bool(voice_output.muted)
                 self.ui.status("MUTE", "Muted" if muted else "Unmuted")
             except Exception:
                 pass
 
     # --- Urgency-aware polling intervals ---
-    _POLL_BRIDGE = 0.15     # Bridge connected with pending decision (fast)
-    _POLL_URGENT = 0.5      # Pending decision, mulligan, stack interaction
-    _POLL_ACTIVE = 1.0      # Our turn with priority, combat phase
-    _POLL_NORMAL = 1.5      # Opponent's turn, calm board state
-    _POLL_IDLE = 2.5        # No active match
+    _POLL_BRIDGE = 0.15  # Bridge connected with pending decision (fast)
+    _POLL_URGENT = 0.5  # Pending decision, mulligan, stack interaction
+    _POLL_ACTIVE = 1.0  # Our turn with priority, combat phase
+    _POLL_NORMAL = 1.5  # Opponent's turn, calm board state
+    _POLL_IDLE = 2.5  # No active match
 
     def _get_poll_interval(self, game_state: dict[str, Any]) -> float:
         """Determine polling interval based on game state urgency.
@@ -2034,8 +2076,8 @@ class StandaloneCoach:
     def _emit_pipe_snapshots(
         self,
         *,
-        game_state: Optional[dict[str, Any]] = None,
-        draft_state: Optional[dict[str, Any]] = None,
+        game_state: dict[str, Any] | None = None,
+        draft_state: dict[str, Any] | None = None,
     ) -> None:
         """Forward pipe-mode snapshots to the desktop frontend when available."""
         emit_game_state = getattr(self.ui, "emit_game_state", None)
@@ -2066,7 +2108,7 @@ class StandaloneCoach:
         Returns True to DROP the trigger (suppress), False to LET IT THROUGH.
         """
         if not hasattr(self, "_wedge_source"):
-            self._wedge_source: Optional[int] = None
+            self._wedge_source: int | None = None
             self._wedge_since: float = 0.0
             self._wedge_notified: bool = False
 
@@ -2085,9 +2127,7 @@ class StandaloneCoach:
         except (TypeError, ValueError):
             source_id = 0
         stack_ids = {
-            int(c.get("instance_id") or 0)
-            for c in (curr_state.get("stack") or [])
-            if isinstance(c, dict)
+            int(c.get("instance_id") or 0) for c in (curr_state.get("stack") or []) if isinstance(c, dict)
         }
         if not source_id or source_id not in stack_ids:
             # Source already resolved / left the stack → genuinely stale.
@@ -2120,14 +2160,11 @@ class StandaloneCoach:
             self._wedge_notified = True
             name = str(ctx.get("source_card") or "a spell")
             logger.warning(
-                "Autopilot wedged: %s is waiting for a target the bridge can't "
-                "submit — manual action needed",
+                "Autopilot wedged: %s is waiting for a target the bridge can't submit — manual action needed",
                 name,
             )
-            try:
+            with contextlib.suppress(Exception):
                 self.ui.status("MANUAL", f"Select target for {name} in MTGA")
-            except Exception:
-                pass
         return True
 
     def _coaching_loop(self) -> None:
@@ -2143,14 +2180,11 @@ class StandaloneCoach:
         # Keep eager warmup for the legacy in-process UI, but skip it for the
         # pipe/desktop frontend where coaching responsiveness matters more than
         # hiding first-speech latency.
-        if self._voice_output and hasattr(self._voice_output, 'warmup'):
-            if hasattr(self.ui, 'emit_game_state'):
+        if self._voice_output and hasattr(self._voice_output, "warmup"):
+            if hasattr(self.ui, "emit_game_state"):
                 logger.info("Skipping eager TTS warmup in pipe mode to keep coaching loop responsive")
             else:
-                threading.Thread(
-                    target=self._voice_output.warmup, daemon=True,
-                    name="tts-warmup"
-                ).start()
+                threading.Thread(target=self._voice_output.warmup, daemon=True, name="tts-warmup").start()
 
         prev_state: dict[str, Any] = {}
         seat_announced = False
@@ -2168,7 +2202,16 @@ class StandaloneCoach:
         # Critical triggers that always fire regardless of frequency setting
         # Combat triggers removed - too noisy for "start_of_turn" mode
         # decision_required added - scry, discard, target choices need immediate advice
-        CRITICAL_PRIORITY = {"stack_spell", "stack_spell_yours", "stack_spell_opponent", "low_life", "opponent_low_life", "decision_required", "threat_detected", "losing_badly"}
+        CRITICAL_PRIORITY = {
+            "stack_spell",
+            "stack_spell_yours",
+            "stack_spell_opponent",
+            "low_life",
+            "opponent_low_life",
+            "decision_required",
+            "threat_detected",
+            "losing_badly",
+        }
 
         # Match ID tracking — reset coaching state when match changes
         last_match_id = None
@@ -2180,7 +2223,6 @@ class StandaloneCoach:
         last_draft_pack = 0
         last_draft_pick = 0
         last_active_draft_at = 0.0
-        last_inactive_log = 0
         draft_inactive_grace_seconds = 5.0
 
         while self._running:
@@ -2217,6 +2259,7 @@ class StandaloneCoach:
                     emit_cp = getattr(self.ui, "emit_card_positions", None)
                     if callable(emit_cp):
                         from arenamcp.gre_bridge import get_bridge
+
                         bridge = get_bridge()
                         if bridge and bridge.connected:
                             positions = bridge.get_card_positions()
@@ -2240,10 +2283,7 @@ class StandaloneCoach:
                     # guard the timer resets every loop and the draft-ended
                     # detection at line ~2135 never fires — meaning the post-draft
                     # pool analysis and deck suggestion are silently skipped.
-                    if not (
-                        pack_num == last_draft_pack and pick_num == last_draft_pick
-                        and in_draft_mode
-                    ):
+                    if not (pack_num == last_draft_pack and pick_num == last_draft_pick and in_draft_mode):
                         last_active_draft_at = time.time()
 
                     if is_sealed:
@@ -2308,18 +2348,24 @@ class StandaloneCoach:
                                 top_evals = eval_result["evaluations"]
                                 detail_parts = []
                                 for e in top_evals[:3]:
-                                    wr = f"{e['gih_wr']*100:.0f}%" if e.get("gih_wr") else "N/A"
+                                    wr = f"{e['gih_wr'] * 100:.0f}%" if e.get("gih_wr") else "N/A"
                                     reasons = ", ".join(e.get("all_reasons", []))
-                                    detail_parts.append(f"  {e['name']}: score={e['score']:.0f} WR={wr} [{reasons}]")
+                                    detail_parts.append(
+                                        f"  {e['name']}: score={e['score']:.0f} WR={wr} [{reasons}]"
+                                    )
                                 detail_log = "\n".join(detail_parts)
-                                self.ui.log(f"\n[DRAFT P{pack_num}P{pick_num}] ({picked} picked)\n{detail_log}\n")
+                                self.ui.log(
+                                    f"\n[DRAFT P{pack_num}P{pick_num}] ({picked} picked)\n{detail_log}\n"
+                                )
                                 logger.info(f"DRAFT: P{pack_num}P{pick_num} - {advice}")
                                 self.speak_advice(advice)
                                 last_draft_pack = pack_num
                                 last_draft_pick = pick_num
                             elif eval_result.get("is_active"):
                                 self.ui.log(f"\n[DRAFT P{pack_num}P{pick_num}] No evaluated picks\n")
-                                logger.warning(f"Draft eval returned no evaluations for P{pack_num}P{pick_num}")
+                                logger.warning(
+                                    f"Draft eval returned no evaluations for P{pack_num}P{pick_num}"
+                                )
                                 last_draft_pack = pack_num
                                 last_draft_pick = pick_num
 
@@ -2442,16 +2488,18 @@ class StandaloneCoach:
                     turn_num > 0
                     and self._vision_mapper
                     and self.backend_name == "local"
-                    and not getattr(self, '_vlm_resolve_in_progress', False)
+                    and not getattr(self, "_vlm_resolve_in_progress", False)
                 ):
                     self._vlm_resolve_in_progress = True
+
                     def _bg_resolve(state):
                         try:
                             self._resolve_unknown_cards(state)
-                        except Exception as e:
-                            logger.debug(f"VLM card resolution error: {e}")
+                        except Exception as exc:
+                            logger.debug(f"VLM card resolution error: {exc}")
                         finally:
                             self._vlm_resolve_in_progress = False
+
                     threading.Thread(target=_bg_resolve, args=(curr_state,), daemon=True).start()
 
                 # ── GAME END DETECTION ──
@@ -2460,6 +2508,7 @@ class StandaloneCoach:
                 # regardless of whether the coaching loop was blocked on LLM.
                 try:
                     from arenamcp.server import game_state as gs
+
                     if gs.game_ended_event.is_set() and not self._game_end_handled:
                         # Guard: If we haven't coached a full game yet (fresh
                         # start / reconnect), the event is stale — from a
@@ -2487,6 +2536,7 @@ class StandaloneCoach:
                             )
                             try:
                                 from arenamcp.match_packets import stop_match_packet
+
                                 packet = stop_match_packet()
                                 if packet:
                                     packet.result = game_result
@@ -2496,12 +2546,13 @@ class StandaloneCoach:
                                     if packet.replay_path:
                                         try:
                                             from arenamcp.match_history import parse_replay_cosmetics
+
                                             cosmetics = parse_replay_cosmetics(packet.replay_path)
                                             if cosmetics:
                                                 # Header shape: {Local, Opponent:{ScreenName,...}, BattlefieldId}
-                                                packet.opponent_name = (
-                                                    cosmetics.get("Opponent") or {}
-                                                ).get("ScreenName")
+                                                packet.opponent_name = (cosmetics.get("Opponent") or {}).get(
+                                                    "ScreenName"
+                                                )
                                         except Exception:
                                             pass
                                     packet.save()
@@ -2520,12 +2571,15 @@ class StandaloneCoach:
                 match_id_changed = curr_match_id != last_match_id
                 if match_id_changed and last_match_id is not None:
                     self._match_number += 1
-                    logger.info(f"Match boundary detected ({last_match_id} -> {curr_match_id}), match #{self._match_number}, resetting coaching state")
+                    logger.info(
+                        f"Match boundary detected ({last_match_id} -> {curr_match_id}), match #{self._match_number}, resetting coaching state"
+                    )
 
                     # New game state can name dynamic grpIds the previous
                     # one couldn't — allow the bridge to re-ask.
                     try:
                         from arenamcp import dynamic_cards
+
                         dynamic_cards.reset_asked()
                     except Exception:
                         pass
@@ -2541,6 +2595,7 @@ class StandaloneCoach:
                         )
                     try:
                         from arenamcp.match_packets import stop_match_packet
+
                         packet = stop_match_packet()
                         if packet:
                             packet.result = self._detect_match_result() or "unknown"
@@ -2550,12 +2605,13 @@ class StandaloneCoach:
                             if packet.replay_path:
                                 try:
                                     from arenamcp.match_history import parse_replay_cosmetics
+
                                     cosmetics = parse_replay_cosmetics(packet.replay_path)
                                     if cosmetics:
                                         # Header shape: {Local, Opponent:{ScreenName,...}, BattlefieldId}
-                                        packet.opponent_name = (
-                                            cosmetics.get("Opponent") or {}
-                                        ).get("ScreenName")
+                                        packet.opponent_name = (cosmetics.get("Opponent") or {}).get(
+                                            "ScreenName"
+                                        )
                                 except Exception:
                                     pass
                             packet.save()
@@ -2589,6 +2645,7 @@ class StandaloneCoach:
                     if curr_match_id is not None:
                         try:
                             from arenamcp.match_packets import start_match_packet
+
                             packet = start_match_packet(curr_match_id)
                             if packet and self._coach:
                                 packet.deck_strategy = self._coach._deck_strategy
@@ -2597,16 +2654,20 @@ class StandaloneCoach:
 
                 # Debug: Log if turn_num is 0 (every 30 seconds)
                 if turn_num == 0:
-                    if not hasattr(self, '_last_turn0_log'):
+                    if not hasattr(self, "_last_turn0_log"):
                         self._last_turn0_log = 0
                     if time.time() - self._last_turn0_log > 30:
-                        logger.debug(f"turn_num=0, players={len(curr_state.get('players', []))}, battlefield={len(curr_state.get('battlefield', []))}")
+                        logger.debug(
+                            f"turn_num=0, players={len(curr_state.get('players', []))}, battlefield={len(curr_state.get('battlefield', []))}"
+                        )
                         self._last_turn0_log = time.time()
 
                 # TERTIARY: Detect new game (turn number decreased) — fallback for same-match restarts
                 if turn_num > 0 and turn_num < last_advice_turn:
                     self._match_number += 1
-                    logger.info(f"New game detected in coaching loop (turn {last_advice_turn} -> {turn_num}), match #{self._match_number}, resetting advice tracking")
+                    logger.info(
+                        f"New game detected in coaching loop (turn {last_advice_turn} -> {turn_num}), match #{self._match_number}, resetting advice tracking"
+                    )
 
                     # Only launch fallback post-match analysis when we have
                     # explicit end-of-game evidence. A turn drop can also happen
@@ -2666,11 +2727,7 @@ class StandaloneCoach:
                             break
 
                 # Deck strategy analysis (once per match, as soon as deck cards are known)
-                if (
-                    self._auto_deck_strategy
-                    and not self._deck_analyzed
-                    and self._coach
-                ):
+                if self._auto_deck_strategy and not self._deck_analyzed and self._coach:
                     deck_cards = list(curr_state.get("deck_cards") or [])
 
                     # Fallback for mid-game join: ConnectResp was missed,
@@ -2689,8 +2746,7 @@ class StandaloneCoach:
                                             deck_cards.append(grp_id)
                             if deck_cards:
                                 logger.info(
-                                    f"Reconstructed deck from visible zones: "
-                                    f"{len(deck_cards)} unique cards"
+                                    f"Reconstructed deck from visible zones: {len(deck_cards)} unique cards"
                                 )
 
                     if deck_cards:
@@ -2708,13 +2764,14 @@ class StandaloneCoach:
                                         card_type = info.get("type_line", "")
                                         oracle = info.get("oracle_text", "")
                                         enriched.append((name, card_type, oracle))
-                                    except Exception as e:
-                                        logger.debug(f"Card enrichment failed for grp_id={grp_id}: {e}")
+                                    except Exception as exc:
+                                        logger.debug(f"Card enrichment failed for grp_id={grp_id}: {exc}")
                                         enriched.append((f"Unknown({grp_id})", "", ""))
 
                                 # Use a SEPARATE backend instance so deck analysis
                                 # doesn't hold the advice backend's lock
                                 from arenamcp.coach import create_backend
+
                                 deck_backend = create_backend(backend_name, model=model_name)
 
                                 # Full strategy analysis (stored, injected into every prompt)
@@ -2722,7 +2779,7 @@ class StandaloneCoach:
                                     strategy = coach.analyze_deck(enriched, backend=deck_backend)
                                     brief = coach.get_deck_strategy_brief(enriched, backend=deck_backend)
                                 finally:
-                                    if hasattr(deck_backend, 'close'):
+                                    if hasattr(deck_backend, "close"):
                                         deck_backend.close()
 
                                 if strategy:
@@ -2733,14 +2790,20 @@ class StandaloneCoach:
                                 if brief:
                                     ui.log(f"\n[bold green]DECK STRATEGY:[/] {brief}\n")
                                     speak_fn(brief, blocking=False)
-                            except Exception as e:
-                                logger.error(f"Background deck analysis failed: {e}")
+                            except Exception as exc:
+                                logger.error(f"Background deck analysis failed: {exc}")
 
                         t = threading.Thread(
                             target=_analyze_deck_bg,
-                            args=(self._coach, self._mcp, deck_cards, self.ui,
-                                  self._backend_name, self.model_name,
-                                  self.speak_advice),
+                            args=(
+                                self._coach,
+                                self._mcp,
+                                deck_cards,
+                                self.ui,
+                                self._backend_name,
+                                self.model_name,
+                                self.speak_advice,
+                            ),
                             daemon=True,
                         )
                         t.start()
@@ -2754,7 +2817,7 @@ class StandaloneCoach:
                     try:
                         draft_state = self._mcp.get_draft_pack()
                         is_draft_active = draft_state.get("is_active", False)
-                        
+
                         if is_draft_active and not self.draft_mode:
                             logger.info("Auto-detected draft - enabling draft mode")
                             self.draft_mode = True
@@ -2787,7 +2850,7 @@ class StandaloneCoach:
                         # alarming red "Disconnected" for something that was
                         # never going to connect.
                         _bridge_now = self._bridge_poller.connected
-                        if not hasattr(self, '_last_bridge_ui_status'):
+                        if not hasattr(self, "_last_bridge_ui_status"):
                             self._last_bridge_ui_status = None
                         if _bridge_now != self._last_bridge_ui_status:
                             self._last_bridge_ui_status = _bridge_now
@@ -2809,6 +2872,7 @@ class StandaloneCoach:
                         if curr_state.get("_bridge_in_intermission") and not self._game_end_handled:
                             try:
                                 from arenamcp.server import game_state as gs
+
                                 if gs.match_id and not gs.game_ended_event.is_set():
                                     logger.info(
                                         "Bridge Intermission detected (match=%s) — "
@@ -2857,24 +2921,24 @@ class StandaloneCoach:
                             # replans + re-speaks the same advice every ~2s
                             # against a window only the user can resolve.
                             _given_up = False
-                            try:
+                            with contextlib.suppress(Exception):
                                 _given_up = self._autopilot.is_window_given_up(curr_state)
-                            except Exception:
-                                pass
                             # Arbiter: never force a decision the bridge says
                             # doesn't exist (connected + idle ⇒ pending_now is
                             # stale log state).
-                            _arb = arbitrate(
-                                curr_state, bridge_connected=bool(bridge_active)
-                            )
+                            _arb = arbitrate(curr_state, bridge_connected=bool(bridge_active))
                             dec_ctx = curr_state.get("decision_context") or {}
                             dec_type = dec_ctx.get("type", "")
                             legal = curr_state.get("legal_actions", []) or []
                             sig = f"{pending_now}|{dec_type}|{len(legal)}"
                             now = time.time()
-                            if not _given_up and _arb is not None and (
-                                sig != self._last_forced_decision_sig
-                                or (now - self._last_forced_decision_ts) > 2.0
+                            if (
+                                not _given_up
+                                and _arb is not None
+                                and (
+                                    sig != self._last_forced_decision_sig
+                                    or (now - self._last_forced_decision_ts) > 2.0
+                                )
                             ):
                                 triggers.append("decision_required")
                                 self._last_forced_decision_sig = sig
@@ -2892,7 +2956,7 @@ class StandaloneCoach:
                     # a game that already ended (bridge shows Intermission).
                     # BUT: keep bridge-detected triggers — those are real
                     # (e.g. mulligan prompt in a new game).
-                    _boundary_age = time.time() - getattr(self, '_match_boundary_ts', 0)
+                    _boundary_age = time.time() - getattr(self, "_match_boundary_ts", 0)
                     if triggers and _boundary_age < 2.0 and not bridge_trigger:
                         logger.info(
                             f"Suppressing {len(triggers)} stale triggers "
@@ -2924,12 +2988,14 @@ class StandaloneCoach:
 
                     if not triggers:
                         # Log why no triggers (every 30 seconds to avoid spam)
-                        if not hasattr(self, '_last_no_trigger_log'):
+                        if not hasattr(self, "_last_no_trigger_log"):
                             self._last_no_trigger_log = 0
                         if time.time() - self._last_no_trigger_log > 30:
                             local_s = curr_state.get("turn", {}).get("active_player", 0)
                             priority = curr_state.get("turn", {}).get("priority_player", 0)
-                            logger.debug(f"No triggers: turn={turn_num}, active={local_s}, priority={priority}, phase={phase}")
+                            logger.debug(
+                                f"No triggers: turn={turn_num}, active={local_s}, priority={priority}, phase={phase}"
+                            )
                             self._last_no_trigger_log = time.time()
 
                     # Clear pending combat steps after checking (they're now processed)
@@ -2945,12 +3011,12 @@ class StandaloneCoach:
                         "losing_badly": 9,
                         "low_life": 9,
                         "opponent_low_life": 8,
-                        "land_played": 7,      # After land drop, what's next?
-                        "spell_resolved": 7,   # After spell resolves, what's next?
+                        "land_played": 7,  # After land drop, what's next?
+                        "spell_resolved": 7,  # After spell resolves, what's next?
                         "combat_attackers": 6,
                         "combat_blockers": 6,
                         "new_turn": 5,
-                        "priority_gained": 1
+                        "priority_gained": 1,
                     }
 
                     triggers.sort(key=lambda x: trigger_priorities.get(x, 0), reverse=True)
@@ -2968,9 +3034,7 @@ class StandaloneCoach:
                             # bridge is connected and idle, a log-derived
                             # pending decision is stale — drop the trigger
                             # before it reaches autopilot OR coaching/TTS.
-                            _bridge_up = bool(
-                                self._bridge_poller and self._bridge_poller.connected
-                            )
+                            _bridge_up = bool(self._bridge_poller and self._bridge_poller.connected)
                             if arbitrate(curr_state, bridge_connected=_bridge_up) is None:
                                 # Bridge idle — but if a spell is wedged on the
                                 # stack waiting for a target, reconcile before
@@ -2992,7 +3056,9 @@ class StandaloneCoach:
                                 and phase == last_advice_phase
                                 and not (self._autopilot_enabled and self._autopilot)
                             ):
-                                logger.info(f"Suppressing decision_required: 'Action Required' already advised this turn+phase")
+                                logger.info(
+                                    "Suppressing decision_required: 'Action Required' already advised this turn+phase"
+                                )
                                 continue
 
                         # New turn triggers once per turn
@@ -3000,7 +3066,7 @@ class StandaloneCoach:
                         # This prevents "missing draw" bugs where we advise before the drawn card arrives
                         if raw_new_turn:
                             # Reset seen threats on new game (turn 1)
-                            if turn_num == 1 and hasattr(self._trigger, '_seen_threats'):
+                            if turn_num == 1 and hasattr(self._trigger, "_seen_threats"):
                                 self._trigger._seen_threats.clear()
                                 logger.info("New game detected - cleared seen threats")
                             time.sleep(0.4)  # 400ms to allow Draw Step zone update
@@ -3017,7 +3083,9 @@ class StandaloneCoach:
 
                             # Clear stale pending win plan if game has advanced
                             if self._pending_win_plan and turn_num > self._pending_win_plan_turn + 1:
-                                logger.info(f"Clearing stale win plan (plan turn {self._pending_win_plan_turn}, now {turn_num})")
+                                logger.info(
+                                    f"Clearing stale win plan (plan turn {self._pending_win_plan_turn}, now {turn_num})"
+                                )
                                 self._pending_win_plan = None
                                 self.ui.status("WIN-PLAN", "")
 
@@ -3129,7 +3197,8 @@ class StandaloneCoach:
                         # Step-by-step triggers: land_played, spell_resolved, and combat
                         # BUT suppress if there's a pending decision - wait for it to resolve first
                         is_step_by_step = (
-                            trigger in ("land_played", "spell_resolved", "combat_attackers", "combat_blockers")
+                            trigger
+                            in ("land_played", "spell_resolved", "combat_attackers", "combat_blockers")
                             and not has_pending_decision
                         )
 
@@ -3143,9 +3212,9 @@ class StandaloneCoach:
                         # pass-only/no-instant filler, so these fire frequently
                         # but only when the human has a real choice.
                         is_frequent = (
-                            self.advice_frequency == "every_priority" and
-                            trigger in ("priority_gained", "combat_attackers", "combat_blockers") and
-                            (turn_num > last_advice_turn or phase != last_advice_phase)
+                            self.advice_frequency == "every_priority"
+                            and trigger in ("priority_gained", "combat_attackers", "combat_blockers")
+                            and (turn_num > last_advice_turn or phase != last_advice_phase)
                         )
 
                         # Additional check: Don't spam priority triggers if we just advised on new_turn
@@ -3155,7 +3224,11 @@ class StandaloneCoach:
 
                         # DECISION PRIORITY: If there's a decision required, skip non-critical triggers
                         # in the same batch to ensure the decision is the primary focus.
-                        if "decision_required" in triggers and trigger != "decision_required" and not is_critical:
+                        if (
+                            "decision_required" in triggers
+                            and trigger != "decision_required"
+                            and not is_critical
+                        ):
                             continue
 
                         # MEANINGFUL-WINDOW GATE: the coach should talk frequently
@@ -3202,7 +3275,9 @@ class StandaloneCoach:
                                 )
                                 continue
 
-                        should_advise = is_critical or is_new_turn or is_opponent_turn or is_step_by_step or is_frequent
+                        should_advise = (
+                            is_critical or is_new_turn or is_opponent_turn or is_step_by_step or is_frequent
+                        )
 
                         if not should_advise:
                             continue
@@ -3213,9 +3288,7 @@ class StandaloneCoach:
                             and pending_decision_sig
                             and pending_decision_sig == self._last_advised_decision_sig
                         )
-                        if suppress_coach_advice and not (
-                            self._autopilot_enabled and self._autopilot
-                        ):
+                        if suppress_coach_advice and not (self._autopilot_enabled and self._autopilot):
                             # Advice-only mode: coach already spoke this
                             # decision; nothing else to do.
                             logger.info(
@@ -3249,7 +3322,13 @@ class StandaloneCoach:
 
                         # NOISE SUPPRESSION: Skip LLM call when player has no meaningful options.
                         # Saves ~3-5s API call + TTS for obvious "pass priority" situations.
-                        QUIET_TRIGGERS = {"stack_spell_yours", "stack_spell_opponent", "priority_gained", "spell_resolved", "opponent_turn"}
+                        QUIET_TRIGGERS = {
+                            "stack_spell_yours",
+                            "stack_spell_opponent",
+                            "priority_gained",
+                            "spell_resolved",
+                            "opponent_turn",
+                        }
                         if trigger in QUIET_TRIGGERS and not has_pending_decision:
                             has_instants = self._trigger._has_castable_instants(curr_state)
                             stack = curr_state.get("stack", [])
@@ -3294,14 +3373,18 @@ class StandaloneCoach:
                                 self.speak_advice(prob)
                             continue
 
-                        if trigger == "threat_detected" and hasattr(self._trigger, '_last_threat'):
+                        if trigger == "threat_detected" and hasattr(self._trigger, "_last_threat"):
                             threat = self._trigger._last_threat
-                            advice = self._coach.get_advice(
-                                curr_state,
-                                trigger="threat_detected",
-                                style=self.advice_style,
-                                threat=threat,
-                            ) if self._coach else f"Warning! {threat['name']}. {threat['warning']}"
+                            advice = (
+                                self._coach.get_advice(
+                                    curr_state,
+                                    trigger="threat_detected",
+                                    style=self.advice_style,
+                                    threat=threat,
+                                )
+                                if self._coach
+                                else f"Warning! {threat['name']}. {threat['warning']}"
+                            )
                             logger.info(f"THREAT ALERT: {advice}")
                             self._record_advice(advice, trigger, game_state=curr_state)
                             last_advice_turn = turn_num
@@ -3317,9 +3400,7 @@ class StandaloneCoach:
                         # regular coaching so the user still gets advice.
                         if self._autopilot_enabled and self._autopilot:
                             try:
-                                handled = self._autopilot.process_trigger(
-                                    curr_state, trigger
-                                )
+                                handled = self._autopilot.process_trigger(curr_state, trigger)
                                 if handled:
                                     last_priority_progress_note = f"autopilot handled {trigger}"
                                     last_actionable_window_signature = None
@@ -3377,10 +3458,9 @@ class StandaloneCoach:
                             # quick style keep the fast planner path.
                             use_planner_advice = (
                                 self._autopilot
-                                and hasattr(self._autopilot, '_planner')
+                                and hasattr(self._autopilot, "_planner")
                                 and (
-                                    self._autopilot_enabled
-                                    or self.advice_style not in ("chatty", "verbose")
+                                    self._autopilot_enabled or self.advice_style not in ("chatty", "verbose")
                                 )
                             )
                             if use_planner_advice:
@@ -3435,9 +3515,7 @@ class StandaloneCoach:
                                     logger.debug(f"emit_suggested_actions failed: {exc}")
                             else:
                                 advice = self._coach.get_advice(
-                                    curr_state,
-                                    trigger=trigger,
-                                    style=self.advice_style
+                                    curr_state, trigger=trigger, style=self.advice_style
                                 )
                             logger.info(f"ADVICE: {advice}")
                             # Advice mode: surface the coach's (possibly just
@@ -3462,10 +3540,7 @@ class StandaloneCoach:
                                 is_stale = fresh_turn_num > pre_advice_turn + 1
                             elif trigger in ("combat_attackers", "combat_blockers"):
                                 # Combat advice: stale if no longer in combat
-                                is_stale = (
-                                    fresh_turn_num != pre_advice_turn
-                                    or "Combat" not in fresh_phase
-                                )
+                                is_stale = fresh_turn_num != pre_advice_turn or "Combat" not in fresh_phase
                             else:
                                 # General advice: only stale if the turn number changed
                                 is_stale = fresh_turn_num != pre_advice_turn
@@ -3476,9 +3551,7 @@ class StandaloneCoach:
                                     f"Discarding stale advice: turn {pre_advice_turn}->{fresh_turn_num}, "
                                     f"phase {pre_advice_phase}->{fresh_phase}"
                                 )
-                                self._record_advice(
-                                    f"{stale_label} {advice}", trigger, game_state=curr_state
-                                )
+                                self._record_advice(f"{stale_label} {advice}", trigger, game_state=curr_state)
                                 curr_state = fresh_state
                                 turn = curr_state.get("turn", {})
                                 turn_num = turn.get("turn_number", 0)
@@ -3507,29 +3580,37 @@ class StandaloneCoach:
 
                             battlefield = curr_state.get("battlefield", [])
                             your_cards = [c for c in battlefield if c.get("owner_seat_id") == local_seat]
-                            untapped_lands = sum(1 for c in your_cards
-                                                 if "land" in c.get("type_line", "").lower()
-                                                 and not c.get("is_tapped"))
-                            seat_info = f"Seat {local_seat}|{untapped_lands} mana|{self.backend_name}" if local_seat else "Seat ?"
+                            untapped_lands = sum(
+                                1
+                                for c in your_cards
+                                if "land" in c.get("type_line", "").lower() and not c.get("is_tapped")
+                            )
+                            seat_info = (
+                                f"Seat {local_seat}|{untapped_lands} mana|{self.backend_name}"
+                                if local_seat
+                                else "Seat ?"
+                            )
 
                             # Skip empty responses (e.g. from timeout/lock busy)
                             # NOTE: Do NOT update last_advice_turn before this check.
                             # Empty responses should not suppress future triggers.
                             if not advice or not advice.strip():
-                                self._consecutive_errors = getattr(self, '_consecutive_errors', 0) + 1
-                                max_errors = getattr(self, '_max_errors_before_fallback', 3)
+                                self._consecutive_errors = getattr(self, "_consecutive_errors", 0) + 1
+                                max_errors = getattr(self, "_max_errors_before_fallback", 3)
                                 logger.warning(
                                     f"Empty advice response ({self._consecutive_errors}/{max_errors}) — "
                                     "model timeout or backend hung"
                                 )
-                                self._report_backend_failure("Empty advice response (model timeout or backend hung)")
+                                self._report_backend_failure(
+                                    "Empty advice response (model timeout or backend hung)"
+                                )
                                 if self._consecutive_errors >= max_errors:
                                     # Try restarting the backend process first
                                     logger.warning("Too many empty responses, restarting backend...")
                                     self.ui.log("\n[BACKEND] Restarting (too many empty responses)...")
                                     try:
                                         be = self._coach._backend
-                                        if hasattr(be, 'close'):
+                                        if hasattr(be, "close"):
                                             be.close()
                                         self._reinit_coach()
                                         self._consecutive_errors = 0
@@ -3547,6 +3628,7 @@ class StandaloneCoach:
 
                             # Don't speak error/fallback messages aloud
                             from arenamcp.backend_detect import is_query_failure_retriable as _is_err
+
                             if (
                                 advice.startswith("Error")
                                 or "didn't catch that" in advice
@@ -3644,18 +3726,24 @@ class StandaloneCoach:
                     # Count untapped lands for mana display
                     battlefield = game_state.get("battlefield", [])
                     your_cards = [c for c in battlefield if c.get("owner_seat_id") == local_seat]
-                    untapped_lands = sum(1 for c in your_cards
-                                         if "land" in c.get("type_line", "").lower()
-                                         and not c.get("is_tapped"))
+                    untapped_lands = sum(
+                        1
+                        for c in your_cards
+                        if "land" in c.get("type_line", "").lower() and not c.get("is_tapped")
+                    )
 
-                    seat_info = f"Seat {local_seat}|{untapped_lands} mana|{self.backend_name}" if local_seat else "Seat ?"
+                    seat_info = (
+                        f"Seat {local_seat}|{untapped_lands} mana|{self.backend_name}"
+                        if local_seat
+                        else "Seat ?"
+                    )
 
                     # Check if we can use direct audio with Gemini
                     audio_data = self._voice_input.get_last_audio()
                     use_direct_audio = (
-                        audio_data is not None and
-                        len(audio_data) > 0 and
-                        hasattr(self._coach._backend, 'complete_with_audio')
+                        audio_data is not None
+                        and len(audio_data) > 0
+                        and hasattr(self._coach._backend, "complete_with_audio")
                     )
 
                     # Inject library targets when a tutor spell is in hand
@@ -3677,9 +3765,7 @@ class StandaloneCoach:
                             "Ignore your usual brevity constraints if needed to answer fully."
                         )
                         advice = self._coach._backend.complete_with_audio(
-                            self._coach._system_prompt,
-                            user_message,
-                            audio_data
+                            self._coach._system_prompt, user_message, audio_data
                         )
                     elif text and text.strip():
                         logger.info(f"QUESTION: {text}")
@@ -3688,12 +3774,15 @@ class StandaloneCoach:
                     else:
                         logger.info("QUICK ADVICE (F4 tap)")
                         self.ui.log("\n[QUICK] Analyzing...")
-                        advice = self._coach.get_advice(game_state, trigger="user_request", style=self.advice_style)
+                        advice = self._coach.get_advice(
+                            game_state, trigger="user_request", style=self.advice_style
+                        )
 
                     logger.info(f"RESPONSE: {advice}")
 
                     # Check for backend auth/billing failures → auto-fallback
                     from arenamcp.backend_detect import is_query_failure_retriable as _is_err2
+
                     is_error_response = (
                         advice.startswith("Error")
                         or "didn't catch that" in advice
@@ -3709,7 +3798,9 @@ class StandaloneCoach:
                         self.ui.error(advice)
 
                     # Record for debug history with the same game state
-                    trigger = "voice_audio" if use_direct_audio else ("voice_question" if text else "voice_quick")
+                    trigger = (
+                        "voice_audio" if use_direct_audio else ("voice_question" if text else "voice_quick")
+                    )
                     self._record_advice(advice, trigger, game_state=game_state)
 
             except Exception as e:
@@ -3740,7 +3831,6 @@ class StandaloneCoach:
         else:
             self.ui.status("VOICE", "TTS not enabled")
 
-
     def _on_speed_hotkey(self) -> None:
         """F8 - Cycle TTS speed."""
         if self._voice_output:
@@ -3759,7 +3849,7 @@ class StandaloneCoach:
         *,
         announce: bool = True,
         progress_cb=None,
-        extra_context: Optional[dict[str, Any]] = None,
+        extra_context: dict[str, Any] | None = None,
     ) -> Optional["Path"]:
         """Save comprehensive bug report and return path.
 
@@ -3831,6 +3921,7 @@ class StandaloneCoach:
             self.ui.log(f"[auto-bug] Saved: {bug_path}")
             # Attempt GitHub upload in background (non-blocking).
             import threading
+
             threading.Thread(
                 target=self._auto_upload_bug_to_github,
                 args=(bug_path, reason),
@@ -3843,10 +3934,13 @@ class StandaloneCoach:
         """Background GitHub upload for an auto-filed fallback bug report."""
         try:
             import json as _json
+
             from arenamcp.bugreport import (
-                GITHUB_REPO, build_issue_payload, build_issue_url,
+                GITHUB_REPO,
+                build_issue_payload,
             )
-            with open(bug_path, "r", encoding="utf-8") as f:
+
+            with open(bug_path, encoding="utf-8") as f:
                 report_data = _json.loads(f.read())
 
             title, body = build_issue_payload(report_data, bug_path, reason)
@@ -3860,6 +3954,7 @@ class StandaloneCoach:
             token = self._get_github_token_for_auto_bug()
             if token:
                 import requests
+
                 resp = requests.post(
                     f"https://api.github.com/repos/{GITHUB_REPO}/issues",
                     headers={
@@ -3882,22 +3977,27 @@ class StandaloneCoach:
     def _get_github_token_for_auto_bug(self) -> str:
         """Return a GitHub token for silent auto-uploads, or empty string."""
         import os
+
         token = (
-            os.environ.get("MTGACOACH_GITHUB_TOKEN", "").strip()
-            or os.environ.get("GITHUB_TOKEN", "").strip()
+            os.environ.get("MTGACOACH_GITHUB_TOKEN", "").strip() or os.environ.get("GITHUB_TOKEN", "").strip()
         )
         if token:
             return token
         # Try gh CLI (synchronous, but short timeout)
         import shutil
+
         gh = shutil.which("gh")
         if not gh:
             return ""
         try:
             import subprocess
+
             result = subprocess.run(
                 [gh, "auth", "token"],
-                capture_output=True, text=True, timeout=3, check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
             )
             if result.returncode == 0:
                 return (result.stdout or "").strip()
@@ -3916,7 +4016,11 @@ class StandaloneCoach:
 
         self._screenshot_analysis_in_progress = True
         backend_lower = self.backend_name.lower()
-        has_local_vlm = self._vision_mapper and hasattr(self._vision_mapper, '_local_vlm') and self._vision_mapper._local_vlm.available
+        has_local_vlm = (
+            self._vision_mapper
+            and hasattr(self._vision_mapper, "_local_vlm")
+            and self._vision_mapper._local_vlm.available
+        )
         vision_capable = has_local_vlm or backend_lower == "online"
 
         if not vision_capable:
@@ -3925,10 +4029,12 @@ class StandaloneCoach:
             return
 
         try:
-            from PIL import Image
             import io
-            from arenamcp.screen_capture import capture_mtga_png, is_mostly_black
+
+            from PIL import Image
+
             from arenamcp.input_controller import find_mtga_hwnd
+            from arenamcp.screen_capture import capture_mtga_png, is_mostly_black
 
             window_rect = None
             if self._vision_mapper:
@@ -3977,15 +4083,15 @@ class StandaloneCoach:
 
             ctx = ""
             if game_state:
-                turn_num = game_state.get('turn', {}).get('turn_number', '?')
-                phase = game_state.get('turn', {}).get('phase', '')
+                turn_num = game_state.get("turn", {}).get("turn_number", "?")
+                phase = game_state.get("turn", {}).get("phase", "")
                 life_you = 20
                 life_opp = 20
-                for p in game_state.get('players', []):
-                    if p.get('is_local'):
-                        life_you = p.get('life_total', 20)
+                for p in game_state.get("players", []):
+                    if p.get("is_local"):
+                        life_you = p.get("life_total", 20)
                     else:
-                        life_opp = p.get('life_total', 20)
+                        life_opp = p.get("life_total", 20)
                 ctx = f" Turn {turn_num}, {phase}. Life: You {life_you}, Opp {life_opp}."
 
             screen_prompt = (
@@ -4012,7 +4118,7 @@ class StandaloneCoach:
                 self.ui.log("[yellow]Analyzing via online backend...[/]")
                 try:
                     be = self._coach._backend
-                    if hasattr(be, 'complete_with_image'):
+                    if hasattr(be, "complete_with_image"):
                         advice = be.complete_with_image(
                             system_prompt,
                             f"What should I do here?{ctx}",
@@ -4028,18 +4134,20 @@ class StandaloneCoach:
             if not advice and has_local_vlm:
                 self.ui.log("[dim cyan]Falling back to local Ollama VLM...[/]")
                 try:
-                    import urllib.request
                     import base64
+                    import urllib.request
 
                     vlm = self._vision_mapper._local_vlm
                     b64_image = base64.b64encode(png_bytes).decode("utf-8")
-                    payload = json.dumps({
-                        "model": vlm.model,
-                        "prompt": screen_prompt,
-                        "images": [b64_image],
-                        "stream": False,
-                        "options": {"temperature": 0.3, "num_predict": 200},
-                    }).encode("utf-8")
+                    payload = json.dumps(
+                        {
+                            "model": vlm.model,
+                            "prompt": screen_prompt,
+                            "images": [b64_image],
+                            "stream": False,
+                            "options": {"temperature": 0.3, "num_predict": 200},
+                        }
+                    ).encode("utf-8")
                     req = urllib.request.Request(
                         f"{vlm.endpoint}/api/generate",
                         data=payload,
@@ -4080,10 +4188,11 @@ class StandaloneCoach:
     def _collect_debug_info(
         self,
         progress_cb=None,
-        extra_context: Optional[dict[str, Any]] = None,
+        extra_context: dict[str, Any] | None = None,
     ) -> dict:
         """Collect comprehensive debug information for bug reports."""
         import platform
+
         from arenamcp import __version__
 
         def _progress(message: str) -> None:
@@ -4150,11 +4259,7 @@ class StandaloneCoach:
         if extra_context and isinstance(extra_context.get("screenshots"), dict):
             report["screenshots"] = dict(extra_context.get("screenshots") or {})
         if extra_context:
-            event_context = {
-                key: value
-                for key, value in dict(extra_context).items()
-                if key != "screenshots"
-            }
+            event_context = {key: value for key, value in dict(extra_context).items() if key != "screenshots"}
             if event_context:
                 report["event_context"] = event_context
                 auto_bug = event_context.get("auto_fallback_bug")
@@ -4163,9 +4268,7 @@ class StandaloneCoach:
                 auto_takeover = event_context.get("auto_user_takeover")
                 if isinstance(auto_takeover, dict):
                     report["auto_user_takeover"] = dict(auto_takeover)
-        report["advice_history"] = (
-            list(self._advice_history) if hasattr(self, '_advice_history') else []
-        )
+        report["advice_history"] = list(self._advice_history) if hasattr(self, "_advice_history") else []
         report["llm_context"] = self._get_llm_context()
 
         _progress("Collecting logs and diagnostics...")
@@ -4173,15 +4276,14 @@ class StandaloneCoach:
         report["enrichment_failures"] = self._get_enrichment_failures()
         report["autopilot"] = self._collect_autopilot_info()
         report["bridge_state"] = self._collect_bridge_state()
-        report["errors"] = list(self._recent_errors) if hasattr(self, '_recent_errors') else []
+        report["errors"] = list(self._recent_errors) if hasattr(self, "_recent_errors") else []
         # The in-memory error list only sees errors explicitly recorded via
         # _record_error — on 2026-07-16 it read [] while standalone.log held
         # 435 proxy 401s, so the report's "Recent Errors" section actively
         # misled debugging. Pull ERROR-level lines straight from the log.
         report["recent_log_errors"] = self._tail_log_errors()
         report["uptime_seconds"] = (
-            (datetime.now() - self._start_time).total_seconds()
-            if hasattr(self, '_start_time') else None
+            (datetime.now() - self._start_time).total_seconds() if hasattr(self, "_start_time") else None
         )
 
         _progress("Collecting bridge and replay info...")
@@ -4193,20 +4295,12 @@ class StandaloneCoach:
     def _collect_post_match_feedback(
         self,
         *,
-        extra_context: Optional[dict[str, Any]] = None,
+        extra_context: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         context = dict(extra_context or {})
-        analysis = str(
-            context.get("analysis")
-            or self._post_match_analysis_text
-            or ""
-        ).strip()
+        analysis = str(context.get("analysis") or self._post_match_analysis_text or "").strip()
         feedback = str(context.get("user_feedback") or "").strip()
-        match_result = str(
-            context.get("match_result")
-            or self._post_match_result
-            or ""
-        ).strip()
+        match_result = str(context.get("match_result") or self._post_match_result or "").strip()
         source = str(context.get("source") or "").strip()
 
         if not any((analysis, feedback, match_result, source)):
@@ -4231,11 +4325,11 @@ class StandaloneCoach:
 
     def _collect_autopilot_info(self) -> dict:
         """Collect autopilot state for bug reports."""
-        ap = getattr(self, '_autopilot', None)
+        ap = getattr(self, "_autopilot", None)
         info: dict = {
-            "enabled": getattr(self, '_autopilot_enabled', False),
-            "dry_run": getattr(self, '_autopilot_dry_run', False),
-            "afk": getattr(self, '_autopilot_afk', False),
+            "enabled": getattr(self, "_autopilot_enabled", False),
+            "dry_run": getattr(self, "_autopilot_dry_run", False),
+            "afk": getattr(self, "_autopilot_afk", False),
             "initialized": ap is not None,
         }
         if ap:
@@ -4247,7 +4341,7 @@ class StandaloneCoach:
 
     def _collect_bridge_state(self) -> dict:
         """Collect GRE bridge/poller state for bug reports."""
-        bp = getattr(self, '_bridge_poller', None)
+        bp = getattr(self, "_bridge_poller", None)
         if not bp:
             return {"available": False}
         try:
@@ -4260,9 +4354,7 @@ class StandaloneCoach:
                 "last_has_pending": bp._last_has_pending,
                 "last_action_sig": bp._last_action_sig,
                 "consecutive_errors": bp._consecutive_errors,
-                "match_boundary_age_s": round(
-                    time.time() - getattr(self, '_match_boundary_ts', 0), 1
-                ),
+                "match_boundary_age_s": round(time.time() - getattr(self, "_match_boundary_ts", 0), 1),
             }
             # Include last poll result summary (actions count, request type)
             poll = bp._last_poll_result
@@ -4283,8 +4375,10 @@ class StandaloneCoach:
 
     def _enable_replay_recording(self) -> None:
         """Auto-enable MTGA replay recording at match start."""
+
         def _try_enable():
             import time
+
             # Bridge may not be connected yet at seat detection time —
             # retry for up to 5 seconds.
             for attempt in range(10):
@@ -4313,6 +4407,7 @@ class StandaloneCoach:
             logger.debug("Replay enable: bridge never connected after 5s")
 
         import threading
+
         threading.Thread(target=_try_enable, daemon=True).start()
 
     def _collect_replay_info(self, *, include_recent_replays: bool = True) -> dict:
@@ -4350,7 +4445,7 @@ class StandaloneCoach:
             info["error"] = str(e)
         return info
 
-    def _get_latest_replay_path(self) -> Optional[str]:
+    def _get_latest_replay_path(self) -> str | None:
         """Get the most recent replay file path from the bridge."""
         try:
             bridge = self._bridge_poller._bridge if self._bridge_poller else None
@@ -4420,13 +4515,17 @@ class StandaloneCoach:
     def _get_mtga_log_status(self) -> dict:
         """Get MTGA Player.log file status."""
         import os
+
         # Use the same path logic as watcher.py: LOCALAPPDATA (AppData\Local)
         # -> parent (AppData) -> LocalLow sibling
         _local_appdata = os.environ.get("LOCALAPPDATA", "")
         if _local_appdata:
             default_path = str(
-                Path(os.path.dirname(_local_appdata)) / "LocalLow"
-                / "Wizards Of The Coast" / "MTGA" / "Player.log"
+                Path(os.path.dirname(_local_appdata))
+                / "LocalLow"
+                / "Wizards Of The Coast"
+                / "MTGA"
+                / "Player.log"
             )
         else:
             default_path = ""
@@ -4443,14 +4542,18 @@ class StandaloneCoach:
             result["error"] = str(e)
         return result
 
-    def _read_bepinex_log(self) -> Optional[str]:
+    def _read_bepinex_log(self) -> str | None:
         """Read BepInEx plugin log for bridge debugging."""
         try:
             import os
+
             # Standard MTGA install path
             candidates = [
                 Path(os.environ.get("PROGRAMFILES", "C:\\Program Files"))
-                / "Wizards of the Coast" / "MTGA" / "BepInEx" / "LogOutput.log",
+                / "Wizards of the Coast"
+                / "MTGA"
+                / "BepInEx"
+                / "LogOutput.log",
             ]
             for p in candidates:
                 if p.exists():
@@ -4470,12 +4573,16 @@ class StandaloneCoach:
             if not self._mcp:
                 return ctx
             from arenamcp.server import game_state
+
             ctx["match_id"] = getattr(game_state, "match_id", None)
             ctx["local_seat_id"] = getattr(game_state, "local_seat_id", None)
-            ctx["seat_source"] = game_state.get_seat_source_name() if hasattr(game_state, "get_seat_source_name") else None
+            ctx["seat_source"] = (
+                game_state.get_seat_source_name() if hasattr(game_state, "get_seat_source_name") else None
+            )
             # Opponent played cards
             try:
                 from arenamcp.server import get_opponent_played_cards
+
                 opp = get_opponent_played_cards()
                 ctx["opponent_played_cards"] = opp if opp else []
             except Exception as e:
@@ -4503,15 +4610,15 @@ class StandaloneCoach:
 
         try:
             if self._coach:
-                context["system_prompt"] = getattr(self._coach, '_system_prompt', None)
-                context["deck_strategy"] = getattr(self._coach, '_deck_strategy', None)
+                context["system_prompt"] = getattr(self._coach, "_system_prompt", None)
+                context["deck_strategy"] = getattr(self._coach, "_deck_strategy", None)
 
                 # Use the game_context from the last advice_history entry instead of
                 # regenerating it, to avoid timing issues where game state has changed
-                if hasattr(self, '_advice_history') and self._advice_history:
+                if hasattr(self, "_advice_history") and self._advice_history:
                     context["formatted_game_state"] = self._advice_history[-1].get("game_context")
                 # Fallback: if no advice history, generate from current state
-                elif self._mcp and hasattr(self._coach, '_format_game_context'):
+                elif self._mcp and hasattr(self._coach, "_format_game_context"):
                     game_state = self._mcp.get_game_state()
                     context["formatted_game_state"] = self._coach._format_game_context(game_state)
         except Exception as e:
@@ -4523,6 +4630,7 @@ class StandaloneCoach:
         """Get card enrichment (oracle text lookup) failures for bug reports."""
         try:
             from arenamcp.server import get_enrichment_failures
+
             return get_enrichment_failures()
         except Exception as e:
             logger.debug(f"Could not get enrichment failures: {e}")
@@ -4532,7 +4640,7 @@ class StandaloneCoach:
         """Get recent log entries from standalone.log."""
         try:
             if LOG_FILE.exists():
-                with open(LOG_FILE, 'r', encoding='utf-8', errors='replace') as f:
+                with open(LOG_FILE, encoding="utf-8", errors="replace") as f:
                     # Read last N lines efficiently
                     lines = f.readlines()
                     return lines[-num_lines:]
@@ -4540,7 +4648,9 @@ class StandaloneCoach:
             return [f"Error reading logs: {e}"]
         return []
 
-    def _record_advice(self, advice: str, trigger: str, game_context: str = None, game_state: dict = None) -> None:
+    def _record_advice(
+        self, advice: str, trigger: str, game_context: str = None, game_state: dict = None
+    ) -> None:
         """Record advice for debug history with full game state.
 
         Args:
@@ -4549,7 +4659,7 @@ class StandaloneCoach:
             game_context: Pre-formatted context string (optional)
             game_state: Game state dict to use for context (optional, avoids re-polling)
         """
-        if not hasattr(self, '_advice_history'):
+        if not hasattr(self, "_advice_history"):
             self._advice_history = []
 
         # Use provided game_state, or fetch fresh if needed
@@ -4559,7 +4669,7 @@ class StandaloneCoach:
             try:
                 if game_state is None and self._mcp:
                     game_state = self._mcp.get_game_state()
-                if game_state and hasattr(self._coach, '_format_game_context'):
+                if game_state and hasattr(self._coach, "_format_game_context"):
                     game_context = self._coach._format_game_context(game_state)
             except Exception as e:
                 logger.debug(f"Could not format game context for advice record: {e}")
@@ -4575,8 +4685,7 @@ class StandaloneCoach:
                     "phase": turn.get("phase"),
                     "active_player": turn.get("active_player"),
                     "players": [
-                        {"seat_id": p.get("seat_id"), "life_total": p.get("life_total")}
-                        for p in players
+                        {"seat_id": p.get("seat_id"), "life_total": p.get("life_total")} for p in players
                     ],
                     "battlefield_count": len(game_state.get("battlefield", [])),
                     "hand_count": len(game_state.get("hand", [])),
@@ -4596,10 +4705,11 @@ class StandaloneCoach:
         # Keep only last 50 entries (enough for post-match analysis)
         if len(self._advice_history) > 50:
             self._advice_history = self._advice_history[-50:]
-        
+
         # Also record to match recording for post-match analysis
         try:
             from arenamcp.match_validator import get_current_recording
+
             current = get_current_recording()
             if current:
                 # Extract turn/phase from game state
@@ -4611,7 +4721,7 @@ class StandaloneCoach:
                     advice=advice,
                     game_context=game_context or "",
                     parsed_turn=parsed_turn,
-                    parsed_phase=parsed_phase
+                    parsed_phase=parsed_phase,
                 )
         except Exception as e:
             logger.debug(f"Advice recording failed (non-fatal): {e}")
@@ -4627,8 +4737,7 @@ class StandaloneCoach:
                 f.seek(max(0, size - tail_bytes))
                 text = f.read().decode("utf-8", errors="replace")
             errors = [
-                line.strip() for line in text.splitlines()
-                if "| ERROR " in line or "| WARNING " in line
+                line.strip() for line in text.splitlines() if "| ERROR " in line or "| WARNING " in line
             ]
             return errors[-max_lines:]
         except Exception:
@@ -4636,7 +4745,7 @@ class StandaloneCoach:
 
     def _record_error(self, error: str, context: str = None) -> None:
         """Record error for debug history."""
-        if not hasattr(self, '_recent_errors'):
+        if not hasattr(self, "_recent_errors"):
             self._recent_errors = []
 
         entry = {
@@ -4704,7 +4813,7 @@ class StandaloneCoach:
             logger.debug(f"Could not inspect game-end evidence: {e}")
         return False
 
-    def _extract_replay_context(self, replay_path: Optional[str]) -> Optional[str]:
+    def _extract_replay_context(self, replay_path: str | None) -> str | None:
         """Parse a replay file and extract decision-point context for analysis.
 
         Returns a compact text summary of key decision points from the replay:
@@ -4718,6 +4827,7 @@ class StandaloneCoach:
             return None
         try:
             from pathlib import Path
+
             from arenamcp.arena_replay import ArenaReplay
 
             rp = Path(replay_path)
@@ -4769,11 +4879,14 @@ class StandaloneCoach:
                             if "Cast" in str(at) and grp:
                                 try:
                                     from arenamcp import server
+
                                     info = server.get_card_info(grp)
                                     cast_names.append(info.get("name", f"#{grp}"))
                                 except Exception:
                                     cast_names.append(f"#{grp}")
-                    summary = f"castable: {', '.join(cast_names)}" if cast_names else f"{len(action_list)} actions"
+                    summary = (
+                        f"castable: {', '.join(cast_names)}" if cast_names else f"{len(action_list)} actions"
+                    )
                     lines.append(f"  T{turn} {phase}: GRE ActionsAvailable ({summary})")
                     decision_count += 1
 
@@ -4791,7 +4904,9 @@ class StandaloneCoach:
                     elif "PassResp" in resp_type or "PassPriorityResp" in resp_type:
                         pass  # Too noisy
                     elif resp_type and "Resp" in resp_type:
-                        lines.append(f"  T{turn} {phase}: PLAYER {resp_type.replace('ClientMessageType_', '')}")
+                        lines.append(
+                            f"  T{turn} {phase}: PLAYER {resp_type.replace('ClientMessageType_', '')}"
+                        )
                         action_count += 1
 
             lines.append(f"Total: {decision_count} decision points, {action_count} player actions")
@@ -4874,7 +4989,7 @@ class StandaloneCoach:
                         opponent_cards.append(name)
 
             # Get deck strategy
-            deck_strategy = getattr(self._coach, '_deck_strategy', "") or ""
+            deck_strategy = getattr(self._coach, "_deck_strategy", "") or ""
 
             # Reuse the existing coaching backend — the match is over so
             # there's no lock contention risk, and the warm connection
@@ -4892,8 +5007,10 @@ class StandaloneCoach:
 
             if not analysis:
                 logger.warning("Post-match analysis returned empty")
-                self.ui.log("[yellow]Post-match analysis failed (timeout or empty response). "
-                            "Try 'Analyze Match' button to retry.[/]")
+                self.ui.log(
+                    "[yellow]Post-match analysis failed (timeout or empty response). "
+                    "Try 'Analyze Match' button to retry.[/]"
+                )
                 self.ui.status("ANALYSIS", "")
                 # Don't clear saved data so manual retry can use it
                 return
@@ -4908,9 +5025,12 @@ class StandaloneCoach:
 
             # Display in UI
             result_label = (
-                "VICTORY" if match_result == "win"
-                else "DEFEAT" if match_result == "loss"
-                else "DRAW" if match_result == "draw"
+                "VICTORY"
+                if match_result == "win"
+                else "DEFEAT"
+                if match_result == "loss"
+                else "DRAW"
+                if match_result == "draw"
                 else "MATCH ENDED"
             )
             self.ui.log("")
@@ -4933,9 +5053,7 @@ class StandaloneCoach:
             # Bug A: deep-copy live game state at completion time so F7
             # bug reports don't mix games in a BO3.
             try:
-                self._post_match_snapshot = deepcopy(
-                    self._mcp.get_game_state()
-                )
+                self._post_match_snapshot = deepcopy(self._mcp.get_game_state())
             except Exception:
                 self._post_match_snapshot = None
             self._post_match_analysis_text = display_analysis
@@ -4972,7 +5090,10 @@ class StandaloneCoach:
         """
         from arenamcp import __version__
         from arenamcp.match_review import (
-            build_issue, read_log_slice, run_match_review, save_review,
+            build_issue,
+            read_log_slice,
+            run_match_review,
+            save_review,
             should_file_issue,
         )
 
@@ -5039,7 +5160,9 @@ class StandaloneCoach:
             return
         try:
             import requests
+
             from arenamcp.bugreport import GITHUB_REPO
+
             resp = requests.post(
                 f"https://api.github.com/repos/{GITHUB_REPO}/issues",
                 headers={
@@ -5058,13 +5181,15 @@ class StandaloneCoach:
         except Exception as e:
             logger.debug(f"match-review issue filing failed: {e}")
 
-    def _offer_missed_decision_issue(self, missed_decisions: Optional[list[dict]] = None) -> None:
+    def _offer_missed_decision_issue(self, missed_decisions: list[dict] | None = None) -> None:
         """Offer to file a GH issue if vision detected missed decisions this match.
 
         Accepts missed_decisions directly to avoid coupling to instance state.
         Falls back to getattr for callers that still use the old singleton pattern.
         """
-        missed = missed_decisions if missed_decisions is not None else getattr(self, "_saved_missed_decisions", [])
+        missed = (
+            missed_decisions if missed_decisions is not None else getattr(self, "_saved_missed_decisions", [])
+        )
         if not missed:
             return
 
@@ -5117,7 +5242,7 @@ class StandaloneCoach:
             lines.append(f"- **Stall duration:** {d.get('stall_duration_s', 'N/A')}s")
             lines.append(f"- **Avg tempo:** {d.get('avg_tempo_s', 'N/A')}s")
             lines.append(f"- **Num options:** {d.get('num_options', 'N/A')}")
-            lines.append(f"- **Validation context:**")
+            lines.append("- **Validation context:**")
             lines.append(f"  - Local seat: {local_seat} | Active player: {active} | Priority: {priority}")
             lines.append(f"  - Turn owner: **{turn_owner}** | We have priority: {priority == local_seat}")
             lines.append(f"  - Last cleared GRE decision: `{last_gre}`")
@@ -5156,12 +5281,22 @@ class StandaloneCoach:
             title = title[:67] + "..."
 
         result = subprocess.run(
-            ["gh", "issue", "create",
-             "--repo", "josharmour/mtgacoach",
-             "--title", title,
-             "--label", "bug,vision-watchdog",
-             "--body", body],
-            capture_output=True, text=True, timeout=30,
+            [
+                "gh",
+                "issue",
+                "create",
+                "--repo",
+                "josharmour/mtgacoach",
+                "--title",
+                title,
+                "--label",
+                "bug,vision-watchdog",
+                "--body",
+                body,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
 
         if result.returncode == 0:
@@ -5172,11 +5307,20 @@ class StandaloneCoach:
             # Label might not exist yet — retry without labels
             if "label" in result.stderr.lower():
                 result2 = subprocess.run(
-                    ["gh", "issue", "create",
-                     "--repo", "josharmour/mtgacoach",
-                     "--title", title,
-                     "--body", body],
-                    capture_output=True, text=True, timeout=30,
+                    [
+                        "gh",
+                        "issue",
+                        "create",
+                        "--repo",
+                        "josharmour/mtgacoach",
+                        "--title",
+                        title,
+                        "--body",
+                        body,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 if result2.returncode == 0:
                     issue_url = result2.stdout.strip()
@@ -5196,7 +5340,7 @@ class StandaloneCoach:
         self.ui.log(f"[yellow]Saved missed decisions locally: {path}[/]")
         logger.info(f"Saved {len(missed)} missed decisions to {path}")
 
-    def get_sideboard_recommendations(self) -> Optional[str]:
+    def get_sideboard_recommendations(self) -> str | None:
         """Generate Bo3 sideboarding recommendations between games."""
         if not self._coach:
             self.ui.log("[yellow]Coach engine not initialized.[/]")
@@ -5217,6 +5361,7 @@ class StandaloneCoach:
         if not opp_cards_seen:
             try:
                 from arenamcp.server import get_opponent_played_cards
+
                 opp_cards_seen = get_opponent_played_cards() or []
             except Exception as e:
                 logger.debug(f"Could not get opponent played cards for sideboarding: {e}")
@@ -5228,6 +5373,7 @@ class StandaloneCoach:
             # only). Returns grp_ids; _resolve_card_list enriches them.
             try:
                 from arenamcp.server import game_state as _server_game_state
+
                 opp_cards_seen = _server_game_state.get_last_game_opponent_played_cards() or []
             except Exception as e:
                 logger.debug(f"Could not read last-game opponent cards for sideboarding: {e}")
@@ -5240,11 +5386,13 @@ class StandaloneCoach:
                     try:
                         info = self._mcp.get_card_info(item)
                         if info:
-                            resolved.append((
-                                info.get("name", f"Card({item})"),
-                                info.get("type_line", ""),
-                                info.get("oracle_text", ""),
-                            ))
+                            resolved.append(
+                                (
+                                    info.get("name", f"Card({item})"),
+                                    info.get("type_line", ""),
+                                    info.get("oracle_text", ""),
+                                )
+                            )
                             continue
                     except Exception:
                         pass
@@ -5282,7 +5430,6 @@ class StandaloneCoach:
             return None
 
     def trigger_match_analysis(self) -> None:
-
         """Manually trigger post-match analysis (from Analyze Match button).
 
         Prefer the most recently completed match if one was staged already.
@@ -5326,6 +5473,7 @@ class StandaloneCoach:
 
         try:
             from arenamcp.server import game_state
+
             # Get current state
             players = list(game_state.players.keys())
             current = game_state.local_seat_id
@@ -5413,10 +5561,7 @@ class StandaloneCoach:
             # Compact form for every advice prompt: counts + per-card draw
             # odds, no oracle text. Keeps the prompt lean while letting the
             # LLM reason about draw probability and remaining outs.
-            parts = [
-                f"{count}x {name} ({count / total:.0%})"
-                for name, count in sorted_cards
-            ]
+            parts = [f"{count}x {name} ({count / total:.0%})" for name, count in sorted_cards]
             if shown < total:
                 parts.append(f"+{total - shown} more")
             return (
@@ -5488,10 +5633,8 @@ class StandaloneCoach:
         # Remove visible cards from deck list
         remaining = list(deck_cards)
         for grp_id in visible_grp_ids:
-            try:
+            with contextlib.suppress(ValueError):
                 remaining.remove(grp_id)
-            except ValueError:
-                pass
 
         if not remaining:
             return ""
@@ -5592,7 +5735,7 @@ class StandaloneCoach:
 
         # 5-second cooldown to prevent spam
         now = time.time()
-        last = getattr(self, '_last_win_plan_time', 0.0)
+        last = getattr(self, "_last_win_plan_time", 0.0)
         if now - last < 5.0:
             self.ui.status("WIN-PLAN", "Cooldown — wait a few seconds")
             return
@@ -5646,6 +5789,7 @@ class StandaloneCoach:
             # Lazy-init thinking model
             if self._thinking_model is None:
                 from arenamcp.coach import pick_thinking_model
+
                 self._thinking_model = pick_thinking_model()
                 if self._thinking_model is None:
                     logger.info("No thinking model available — win plan worker disabled")
@@ -5658,9 +5802,8 @@ class StandaloneCoach:
             logger.info(f"Win plan worker started (thinking model: {self._thinking_model})")
 
             from arenamcp.coach import ProxyBackend
-            thinking_backend = ProxyBackend(
-                model=self._thinking_model, enable_thinking=True
-            )
+
+            thinking_backend = ProxyBackend(model=self._thinking_model, enable_thinking=True)
 
             library_summary = self._compute_library_summary(game_state)
             turn_num = game_state.get("turn", {}).get("turn_number", 0)
@@ -5671,7 +5814,9 @@ class StandaloneCoach:
             for n in (2, 3):
                 f = executor.submit(
                     self._coach.get_win_plan,
-                    game_state, n, library_summary,
+                    game_state,
+                    n,
+                    library_summary,
                     backend=thinking_backend,
                 )
                 futures_ordered.append((n, f))
@@ -5689,7 +5834,9 @@ class StandaloneCoach:
 
                 # Parse viability from first line
                 first_line = plan.split("\n", 1)[0].strip()
-                is_viable = first_line.upper().startswith("VIABLE: YES") or first_line.upper().startswith("VIABLE:YES")
+                is_viable = first_line.upper().startswith("VIABLE: YES") or first_line.upper().startswith(
+                    "VIABLE:YES"
+                )
 
                 # Strip the VIABLE: line from the plan text
                 if first_line.upper().startswith("VIABLE:"):
@@ -5721,6 +5868,7 @@ class StandaloneCoach:
                 # Play ascending two-tone alert
                 try:
                     from arenamcp.voice import play_beep
+
                     play_beep(frequency=1047, duration=0.12, volume=0.4)  # C6
                     time.sleep(0.08)
                     play_beep(frequency=1319, duration=0.12, volume=0.4)  # E6
@@ -5732,7 +5880,7 @@ class StandaloneCoach:
 
             executor.shutdown(wait=False)
 
-            if hasattr(thinking_backend, 'close'):
+            if hasattr(thinking_backend, "close"):
                 thinking_backend.close()
 
         except Exception as e:
@@ -5758,7 +5906,7 @@ class StandaloneCoach:
         self._restart_requested = True
         self._running = False
 
-    def set_backend(self, provider: str, model: Optional[str] = None) -> None:
+    def set_backend(self, provider: str, model: str | None = None) -> None:
         """Explicitly set the backend provider.
 
         Fast path: when only the model changes (same provider), swap the model
@@ -5781,22 +5929,22 @@ class StandaloneCoach:
             if same_provider and old_backend is not None:
                 # Fast path: just swap the model on the existing backend.
                 # Close persistent session so next call starts with new model.
-                if hasattr(old_backend, 'close'):
+                if hasattr(old_backend, "close"):
                     old_backend.close()
                 old_backend.model = model
                 old_backend._turns = 0
                 # Reset persistent-mode failure flag so new model gets a fresh try
-                if hasattr(old_backend, '_persistent_failed'):
+                if hasattr(old_backend, "_persistent_failed"):
                     old_backend._persistent_failed = False
-                actual_model = model or 'default'
+                actual_model = model or "default"
             else:
                 # Full switch: close old backend, create new one
-                if old_backend and hasattr(old_backend, 'close'):
+                if old_backend and hasattr(old_backend, "close"):
                     old_backend.close()
                 progress_cb = self.ui.subtask if self.ui else None
                 llm_backend = create_backend(provider, model=model, progress_callback=progress_cb)
                 self._coach = CoachEngine(backend=llm_backend)
-                actual_model = getattr(llm_backend, 'model', 'default')
+                actual_model = getattr(llm_backend, "model", "default")
 
                 # Reconfigure voice input if needed
                 if self._voice_input:
@@ -5874,15 +6022,21 @@ class StandaloneCoach:
         # or raw short error text (e.g. "Credit balance is too low") that the CLI
         # returns as normal assistant text.  The len<200 guard prevents false
         # positives on real advice that incidentally contains words like "account".
-        if is_query_failure_retriable(advice) and (
-            advice.startswith("Error") or len(advice) < 200
-        ):
+        if is_query_failure_retriable(advice) and (advice.startswith("Error") or len(advice) < 200):
             self._report_backend_failure(advice)
 
             # Auth/billing errors are permanent — fall back immediately
             _AUTH_INDICATORS = (
-                "401", "403", "authenticate", "unauthorized", "expired",
-                "credit", "billing", "subscription", "api key", "not logged in",
+                "401",
+                "403",
+                "authenticate",
+                "unauthorized",
+                "expired",
+                "credit",
+                "billing",
+                "subscription",
+                "api key",
+                "not logged in",
             )
             advice_lower = advice.lower()
             is_auth_error = any(ind in advice_lower for ind in _AUTH_INDICATORS)
@@ -5892,11 +6046,10 @@ class StandaloneCoach:
                 return self.fallback_to_ollama(reason=advice[:200])
 
             # Transient errors: count and fallback after threshold
-            self._consecutive_errors = getattr(self, '_consecutive_errors', 0) + 1
-            max_errors = getattr(self, '_max_errors_before_fallback', 3)
+            self._consecutive_errors = getattr(self, "_consecutive_errors", 0) + 1
+            max_errors = getattr(self, "_max_errors_before_fallback", 3)
             logger.warning(
-                f"Backend failure detected ({self._consecutive_errors}/{max_errors}): "
-                f"{advice[:120]}"
+                f"Backend failure detected ({self._consecutive_errors}/{max_errors}): {advice[:120]}"
             )
 
             if self._consecutive_errors >= max_errors:
@@ -5919,7 +6072,7 @@ class StandaloneCoach:
         self.ui.log(f"\n[MODE] Switching to {display_name}...")
         self.set_backend(new_mode, None)
         # Invalidate cached model list
-        self._model_list_for: Optional[str] = None
+        self._model_list_for: str | None = None
         self._model_list: list = []
 
     def _on_model_cycle_hotkey(self) -> None:
@@ -5932,7 +6085,7 @@ class StandaloneCoach:
         mode = self.backend_name
 
         # Rebuild model list when mode changes
-        if getattr(self, '_model_list_for', None) != mode:
+        if getattr(self, "_model_list_for", None) != mode:
             self._model_list = get_models_for_mode(mode)
             self._model_list_for = mode
 
@@ -5961,7 +6114,6 @@ class StandaloneCoach:
         label = display_name if display_name != "Default" else "(default)"
         self.ui.log(f"\n[MODEL] {mode} -> {label}\n")
 
-
     def _on_style_toggle_hotkey(self) -> None:
         """F2 - Toggle advice style between Quick and Chatty."""
         # Normalize any legacy value ("concise"/"verbose") to the new names.
@@ -5984,7 +6136,9 @@ class StandaloneCoach:
           - "start_of_turn": advice once per turn (quieter).
         Both modes always fire critical triggers (decisions, low life, threats).
         """
-        self.advice_frequency = "every_priority" if self.advice_frequency == "start_of_turn" else "start_of_turn"
+        self.advice_frequency = (
+            "every_priority" if self.advice_frequency == "start_of_turn" else "start_of_turn"
+        )
         label = "EVERY DECISION" if self.advice_frequency == "every_priority" else "START OF TURN"
         self.ui.status("FREQ", label)
         self.ui.log(f"\n[FREQ] Changed to {label}\n")
@@ -6004,19 +6158,22 @@ class StandaloneCoach:
         """Reinitialize the coach backend with current settings."""
         try:
             from arenamcp.coach import CoachEngine, create_backend
+
             llm_backend = create_backend(self.backend_name, model=self.model_name)
             self._coach = CoachEngine(backend=llm_backend)
-            
+
             # Get actual model name for display if it was auto-selected
-            actual_model = getattr(llm_backend, 'model', self.model_name or 'default')
-            self.model_name = actual_model # Sync back
-            
+            actual_model = getattr(llm_backend, "model", self.model_name or "default")
+            self.model_name = actual_model  # Sync back
+
             # Configure voice input based on backend
             if self._voice_input:
                 enable_transcription = True
                 self._voice_input.transcription_enabled = enable_transcription
-                logger.info(f"Voice transcription enabled: {enable_transcription} (Backend: {self.backend_name})")
-            
+                logger.info(
+                    f"Voice transcription enabled: {enable_transcription} (Backend: {self.backend_name})"
+                )
+
             logger.info(f"Re-initialized {self.backend_name} backend, model: {actual_model}")
         except Exception as e:
             self.ui.log(f"\nbackend init failed: {e}\n")
@@ -6031,8 +6188,12 @@ class StandaloneCoach:
             # In pipe/launcher mode, only register critical global hotkeys
             # that must work even when MTGA has focus (autopilot steals it)
             try:
-                keyboard.on_press_key("f1", lambda _: self._autopilot and self._autopilot.on_cancel(), suppress=False)
-                keyboard.on_press_key("f4", lambda _: self._autopilot and self._autopilot.on_abort(), suppress=False)
+                keyboard.on_press_key(
+                    "f1", lambda _: self._autopilot and self._autopilot.on_cancel(), suppress=False
+                )
+                keyboard.on_press_key(
+                    "f4", lambda _: self._autopilot and self._autopilot.on_abort(), suppress=False
+                )
                 keyboard.on_press_key("f12", lambda _: self.toggle_autopilot(), suppress=False)
                 logger.info("Global autopilot hotkeys registered (F1/F4/F12)")
             except Exception as e:
@@ -6064,7 +6225,9 @@ class StandaloneCoach:
 
     def start(self) -> None:
         """Start the standalone coach."""
-        logger.info(f"start() called: backend_name={self.backend_name}, model={self.model_name}, draft={self.draft_mode}")
+        logger.info(
+            f"start() called: backend_name={self.backend_name}, model={self.model_name}, draft={self.draft_mode}"
+        )
         if self._running:
             logger.info("Already running, returning early")
             return
@@ -6091,8 +6254,8 @@ class StandaloneCoach:
             self._init_llm()
             self.ui.log("LLM backend ready.")
             # Get actual model name from backend
-            if self._coach and hasattr(self._coach, '_backend'):
-                actual_model = getattr(self._coach._backend, 'model', self.model_name)
+            if self._coach and hasattr(self._coach, "_backend"):
+                actual_model = getattr(self._coach._backend, "model", self.model_name)
 
             # Initialize VisionMapper (shared: watchdog + autopilot)
             self.ui.log("Initializing vision mapper...")
@@ -6104,41 +6267,31 @@ class StandaloneCoach:
             if self._autopilot_enabled:
                 self._init_autopilot()
                 if getattr(self, "_autopilot_restored_from_settings", False):
-                    logger.info(
-                        "Autopilot re-enabled automatically from last session"
-                    )
-                    try:
+                    logger.info("Autopilot re-enabled automatically from last session")
+                    with contextlib.suppress(Exception):
                         self.ui.log(
                             "[cyan]Autopilot re-enabled automatically "
                             "(saved from previous session). Toggle off if "
                             "you want to play manually.[/]"
                         )
-                    except Exception:
-                        pass
 
             # Start coaching and voice threads
             logger.info(f"Starting threads for backend: {self.backend_name}")
             logger.info("Starting PTT voice loop + coaching loop")
-            self._coaching_thread = threading.Thread(
-                target=self._coaching_loop, daemon=True, name="coaching"
-            )
+            self._coaching_thread = threading.Thread(target=self._coaching_loop, daemon=True, name="coaching")
             self._coaching_thread.start()
 
             # Only launch voice thread if PTT/VOX is wanted
             if self._voice_mode in ("ptt", "vox"):
-                self._voice_thread = threading.Thread(
-                    target=self._voice_loop, daemon=True, name="voice"
-                )
+                self._voice_thread = threading.Thread(target=self._voice_loop, daemon=True, name="voice")
                 self._voice_thread.start()
 
         # Register hotkeys in a background thread (the keyboard module's
         # low-level Windows hook install can take a few seconds).
-        threading.Thread(
-            target=self._register_hotkeys, daemon=True, name="hotkey-register"
-        ).start()
+        threading.Thread(target=self._register_hotkeys, daemon=True, name="hotkey-register").start()
 
         # Print status
-        _is_pipe = hasattr(self.ui, 'emit_game_state')
+        _is_pipe = hasattr(self.ui, "emit_game_state")
 
         self._emit_control_status_snapshot(actual_model)
 
@@ -6148,10 +6301,10 @@ class StandaloneCoach:
             self.ui.log("Waiting for MTGA...")
         else:
             # CLI mode: full banner with hotkeys
-            self.ui.log("\n" + "="*50)
+            self.ui.log("\n" + "=" * 50)
             if self.draft_mode:
                 self.ui.log("MTGA DRAFT HELPER")
-                self.ui.log("="*50)
+                self.ui.log("=" * 50)
                 self.ui.log(f"Set: {self.set_code or 'auto-detect'}")
                 self.ui.log("Using MCP server's draft evaluation")
             else:
@@ -6161,12 +6314,12 @@ class StandaloneCoach:
                     self.ui.log(f"MTGA AUTOPILOT ({mode}{afk})")
                 else:
                     self.ui.log("MTGA COACH")
-                self.ui.log("="*50)
+                self.ui.log("=" * 50)
                 self.ui.status("BACKEND", f"{self.backend_name} ({actual_model or 'default'})")
-                self.ui.status("VOICE", f"PTT (F4) + Kokoro")
-            self.ui.log("-"*50)
+                self.ui.status("VOICE", "PTT (F4) + Kokoro")
+            self.ui.log("-" * 50)
             self.ui.log("F5=mute F6=voice F7=bug F8=seat F9=restart F10=speed F12=model Num1=land")
-            self.ui.log("="*50)
+            self.ui.log("=" * 50)
             self.ui.log("\nWaiting for MTGA...")
             self.ui.log("F8=swap seat if wrong | F9=restart coach\n")
 
@@ -6226,6 +6379,7 @@ class StandaloneCoach:
             try:
                 logger.debug("Stopping MCP watcher...")
                 from arenamcp.server import stop_watching
+
                 stop_watching()
             except Exception as e:
                 logger.debug(f"Watcher stop error (non-fatal): {e}")
@@ -6270,7 +6424,7 @@ class StandaloneCoach:
             return
 
         self.ui.log("\n[bold yellow]Running API Speed Test (3 passes)...[/]")
-        
+
         # Define test cases: (Provider, Mode, Model Name)
         from arenamcp.coach import create_backend
 
@@ -6278,7 +6432,7 @@ class StandaloneCoach:
             ("Online (default)", "online", None),
             ("Local (default)", "local", None),
         ]
-        
+
         import time
 
         for name, mode, model_id in tests:
@@ -6290,14 +6444,14 @@ class StandaloneCoach:
                 backend = create_backend(mode, model=model_id)
 
                 # Warmup / 3 passes
-                for i in range(3):
+                for _i in range(3):
                     start_req = time.perf_counter()
                     response = backend.complete("You are a helpful assistant.", "Say 'ok' and nothing else.")
                     req_ms = (time.perf_counter() - start_req) * 1000
-                    
+
                     if response.startswith("Error"):
                         raise Exception(response)
-                        
+
                     latencies.append(req_ms)
                     # Small delay between requests
                     time.sleep(0.1)
@@ -6305,9 +6459,9 @@ class StandaloneCoach:
                 avg_ms = sum(latencies) / len(latencies)
                 min_ms = min(latencies)
                 max_ms = max(latencies)
-                
+
                 self.ui.log(f"[green]PASS {name}: Avg {avg_ms:.0f}ms (Range: {min_ms:.0f}-{max_ms:.0f}ms)[/]")
-                    
+
             except Exception as e:
                 self.ui.log(f"[red]FAIL {name}: {e}[/]")
 
@@ -6339,38 +6493,41 @@ Examples:
   python -m arenamcp.standalone --backend online
   python -m arenamcp.standalone --backend local
   python -m arenamcp.standalone --draft --set MH3
-        """
+        """,
     )
 
-    parser.add_argument("--backend", "-b",
-                        choices=["auto", "online", "local"],
-                        default=None,
-                        help="(legacy) Accepted for compatibility; the app is "
-                             "online-only and always uses api.mtgacoach.com")
+    parser.add_argument(
+        "--backend",
+        "-b",
+        choices=["auto", "online", "local"],
+        default=None,
+        help="(legacy) Accepted for compatibility; the app is online-only and always uses api.mtgacoach.com",
+    )
     parser.add_argument("--model", "-m", help="Model name override")
     parser.add_argument("--provider", help="(deprecated) Alias for --model")
-    parser.add_argument("--voice", "-v", choices=["ptt", "vox"], default=None,
-                        help="Voice input: ptt (F4) or vox (auto)")
-    parser.add_argument("--draft", action="store_true",
-                        help="Draft helper mode (no LLM needed)")
-    parser.add_argument("--set", "-s", dest="set_code",
-                        help="Set code for draft (e.g., MH3, BLB)")
-    parser.add_argument("--autopilot", action="store_true",
-                        help="Enable autopilot mode (AI plays via the GRE bridge)")
-    parser.add_argument("--afk", action="store_true",
-                        help="Start in AFK mode (auto-pass all priority without LLM)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Autopilot dry run: plan actions but log instead of clicking")
-    parser.add_argument("--show-log", action="store_true",
-                        help="Show log file and exit")
-    parser.add_argument("--language", "-l", default=None,
-                        help="Language code for voice (e.g., en, nl, es, fr, de, ja)")
-    parser.add_argument("--cli", action="store_true",
-                        help="Run in headless CLI mode (no GUI)")
-    parser.add_argument("--pipe", action="store_true",
-                        help="Pipe mode: JSON lines on stdout/stdin (for native GUI launcher)")
-    parser.add_argument("--diagnose", action="store_true",
-                        help="Run diagnostic checks and exit")
+    parser.add_argument(
+        "--voice", "-v", choices=["ptt", "vox"], default=None, help="Voice input: ptt (F4) or vox (auto)"
+    )
+    parser.add_argument("--draft", action="store_true", help="Draft helper mode (no LLM needed)")
+    parser.add_argument("--set", "-s", dest="set_code", help="Set code for draft (e.g., MH3, BLB)")
+    parser.add_argument(
+        "--autopilot", action="store_true", help="Enable autopilot mode (AI plays via the GRE bridge)"
+    )
+    parser.add_argument(
+        "--afk", action="store_true", help="Start in AFK mode (auto-pass all priority without LLM)"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Autopilot dry run: plan actions but log instead of clicking"
+    )
+    parser.add_argument("--show-log", action="store_true", help="Show log file and exit")
+    parser.add_argument(
+        "--language", "-l", default=None, help="Language code for voice (e.g., en, nl, es, fr, de, ja)"
+    )
+    parser.add_argument("--cli", action="store_true", help="Run in headless CLI mode (no GUI)")
+    parser.add_argument(
+        "--pipe", action="store_true", help="Pipe mode: JSON lines on stdout/stdin (for native GUI launcher)"
+    )
+    parser.add_argument("--diagnose", action="store_true", help="Run diagnostic checks and exit")
 
     args = parser.parse_args()
 
@@ -6386,11 +6543,13 @@ Examples:
     # --diagnose: run diagnostic checks and exit
     if args.diagnose:
         from arenamcp.diagnose import run_diagnostics
+
         sys.exit(run_diagnostics())
 
     # Pipe mode: headless JSON lines for native GUI frontend
     if args.pipe:
         from arenamcp.pipe_adapter import PipeAdapter
+
         pipe = PipeAdapter()
         coach = StandaloneCoach(
             backend=args.backend,
@@ -6402,12 +6561,13 @@ Examples:
             register_hotkeys=False,
             autopilot=args.autopilot,
             dry_run=args.dry_run,
-            afk=getattr(args, 'afk', False),
+            afk=getattr(args, "afk", False),
         )
         pipe.bind_coach(coach)
         # Start stdin reader AFTER coach.start() is called inside run_forever()
         # to avoid a race where stdin EOF kills the coach before it starts.
         import threading
+
         def _delayed_stdin():
             # Wait for coach to be running before reading stdin
             for _ in range(50):
@@ -6415,6 +6575,7 @@ Examples:
                     break
                 time.sleep(0.1)
             pipe.start_stdin_reader()
+
         threading.Thread(target=_delayed_stdin, daemon=True).start()
         try:
             coach.run_forever()
@@ -6430,10 +6591,8 @@ Examples:
         # thread (bridge poller, TTS glue) survived run_forever — the
         # frontend never saw an exit, so the Restart Coach button did
         # nothing. Force the exit.
-        try:
+        with contextlib.suppress(Exception):
             coach.stop()
-        except Exception:
-            pass
         logger.info(
             "Pipe-mode coach exiting (restart_requested=%s)",
             coach._restart_requested,
@@ -6446,7 +6605,7 @@ Examples:
         if LOG_FILE.exists():
             with open(LOG_FILE) as f:
                 for line in f.readlines()[-30:]:
-                    print(line, end='')
+                    print(line, end="")
         return
 
     logger.info(f"Starting: backend={args.backend}, draft={args.draft}")
@@ -6460,7 +6619,7 @@ Examples:
             set_code=args.set_code,
             autopilot=args.autopilot,
             dry_run=args.dry_run,
-            afk=getattr(args, 'afk', False),
+            afk=getattr(args, "afk", False),
         )
 
         try:
@@ -6476,9 +6635,9 @@ Examples:
 
         # Check if restart was requested (F9)
         if coach._restart_requested:
-            print("\n" + "="*50)
+            print("\n" + "=" * 50)
             print("RESTARTING...")
-            print("="*50 + "\n")
+            print("=" * 50 + "\n")
             logger.info("Restarting coach...")
             continue
         else:

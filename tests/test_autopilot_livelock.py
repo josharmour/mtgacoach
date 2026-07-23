@@ -13,7 +13,6 @@ import arenamcp.autopilot as autopilot_module
 from arenamcp.action_planner import ActionPlanner, ActionType
 from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
 
-
 # ---------------------------------------------------------------------------
 # Planner-side fixes
 # ---------------------------------------------------------------------------
@@ -35,9 +34,7 @@ def test_activate_ability_planner_action_is_legal():
     p = _planner()
     from arenamcp.action_planner import GameAction
 
-    action = GameAction(
-        action_type=ActionType.ACTIVATE_ABILITY, card_name="Hopeless Nightmare"
-    )
+    action = GameAction(action_type=ActionType.ACTIVATE_ABILITY, card_name="Hopeless Nightmare")
     legal = [
         "Cast Momentum Breaker",
         "Activate Ability: Hopeless Nightmare",
@@ -48,8 +45,8 @@ def test_activate_ability_planner_action_is_legal():
 
 def test_fallback_never_picks_unpayable_cast_when_ok_tagging_active():
     legal = [
-        "Cast Momentum Breaker",            # listed but NOT auto-payable
-        "Cast Ruthless Negotiation [OK]",   # payable
+        "Cast Momentum Breaker",  # listed but NOT auto-payable
+        "Cast Ruthless Negotiation [OK]",  # payable
         "Pass",
     ]
     picked = ActionPlanner._pick_preferred_legal_action(legal)
@@ -61,7 +58,6 @@ def test_fallback_never_picks_unpayable_cast_when_ok_tagging_active():
 
 
 def test_fallback_prefers_pass_over_unpayable_cast():
-    legal = ["Cast Momentum Breaker", "Cast Liliana of the Veil [OK]", "Pass"]
     # remove the only [OK] cast → with tagging active, bare cast loses to Pass
     legal_no_ok_cast = ["Cast Momentum Breaker", "Done (confirm) [OK]", "Pass"]
     picked = ActionPlanner._pick_preferred_legal_action(legal_no_ok_cast)
@@ -162,9 +158,7 @@ class _DummyBridge:
 
 
 def _engine(monkeypatch, bridge=None) -> AutopilotEngine:
-    monkeypatch.setattr(
-        autopilot_module, "get_bridge", lambda: bridge or _DummyBridge()
-    )
+    monkeypatch.setattr(autopilot_module, "get_bridge", lambda: bridge or _DummyBridge())
     return AutopilotEngine(
         planner=_DummyPlanner(),
         mapper=_DummyMapper(),
@@ -265,7 +259,7 @@ def test_escape_blocked_on_young_window(monkeypatch):
     bridge = _DummyBridge()
     eng = _engine(monkeypatch, bridge)
     eng._window_repeat_sig = ("sig",)
-    eng._window_repeat_count = 50          # trigger spam
+    eng._window_repeat_count = 50  # trigger spam
     eng._window_first_seen_at = time.monotonic()  # window just appeared
     gs = _state(5, _bridge_request_type="SelectTargets")
     assert eng._maybe_escape_stuck_window(gs) is False

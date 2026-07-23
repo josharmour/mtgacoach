@@ -20,7 +20,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ class ScreenCoord:
 
     x, y are in range 0.0-1.0, relative to the MTGA window.
     """
+
     x: float
     y: float
     description: str = ""
@@ -131,12 +132,12 @@ class ButtonCoordinates:
 
         if aspect > ref:
             # Wider than 16:9 (e.g. 21:9) — pillar-box
-            vp_width = ref / aspect           # fraction of window used
+            vp_width = ref / aspect  # fraction of window used
             bar = (1.0 - vp_width) / 2.0
             return (bar, 0.0, vp_width, 1.0)
         else:
             # Taller than 16:9 (e.g. 16:10, 4:3) — letter-box
-            vp_height = aspect / ref          # fraction of window used
+            vp_height = aspect / ref  # fraction of window used
             bar = (1.0 - vp_height) / 2.0
             return (0.0, bar, 1.0, vp_height)
 
@@ -160,8 +161,8 @@ class ButtonCoordinates:
     def get(
         cls,
         name: str,
-        aspect: Optional[float] = None,
-    ) -> Optional[ScreenCoord]:
+        aspect: float | None = None,
+    ) -> ScreenCoord | None:
         """Look up a button coordinate by name, adjusted for aspect ratio.
 
         Args:
@@ -191,9 +192,7 @@ class ButtonCoordinates:
         return ScreenCoord(win_x, win_y, desc)
 
     @classmethod
-    def _resolve_button(
-        cls, key: str
-    ) -> Optional[tuple[float, float, str]]:
+    def _resolve_button(cls, key: str) -> tuple[float, float, str] | None:
         """Resolve a button name to viewport-relative (x, y, description).
 
         The primary prompt button (Pass/Done/Submit/Resolve/etc.) all
@@ -203,8 +202,15 @@ class ButtonCoordinates:
         """
         # Primary prompt button aliases
         if key in (
-            "pass", "pass_turn", "resolve", "done",
-            "next", "attack", "block", "no_attacks", "no_blocks",
+            "pass",
+            "pass_turn",
+            "resolve",
+            "done",
+            "next",
+            "attack",
+            "block",
+            "no_attacks",
+            "no_blocks",
         ):
             return (cls._PRIMARY_X_16_9, cls._PRIMARY_Y_16_9, f"{key.replace('_', ' ').title()} button")
 
@@ -232,10 +238,10 @@ class ScreenMapper:
 
     def __init__(self):
         """Initialize the screen mapper."""
-        self._window_rect: Optional[tuple[int, int, int, int]] = None
-        self._hwnd: Optional[int] = None
+        self._window_rect: tuple[int, int, int, int] | None = None
+        self._hwnd: int | None = None
 
-    def get_mtga_window(self) -> Optional[tuple[int, int, int, int]]:
+    def get_mtga_window(self) -> tuple[int, int, int, int] | None:
         """Find the MTGA window and return its client-area rectangle.
 
         Uses ctypes user32 (FindWindowW + GetClientRect + ClientToScreen)
@@ -266,13 +272,13 @@ class ScreenMapper:
             return None
 
     @property
-    def window_rect(self) -> Optional[tuple[int, int, int, int]]:
+    def window_rect(self) -> tuple[int, int, int, int] | None:
         """Cached window rectangle, refreshed on demand."""
         if self._window_rect is None:
             self.get_mtga_window()
         return self._window_rect
 
-    def refresh_window(self) -> Optional[tuple[int, int, int, int]]:
+    def refresh_window(self) -> tuple[int, int, int, int] | None:
         """Force refresh window position."""
         self._window_rect = None
         return self.get_mtga_window()
@@ -286,7 +292,7 @@ class ScreenMapper:
                 return w / h
         return 16.0 / 9.0
 
-    def get_button_coord(self, name: str) -> Optional[ScreenCoord]:
+    def get_button_coord(self, name: str) -> ScreenCoord | None:
         """Get the screen coordinate for a known button.
 
         Coordinates are adjusted for the current window aspect ratio so
@@ -358,9 +364,7 @@ class ScreenMapper:
         normalized: list[tuple[float, float]] = []
         for wx, wy in positions:
             # Map world X to screen X
-            norm_x = SCREEN_HAND_LEFT + (wx - full_left_x) / x_range * (
-                SCREEN_HAND_RIGHT - SCREEN_HAND_LEFT
-            )
+            norm_x = SCREEN_HAND_LEFT + (wx - full_left_x) / x_range * (SCREEN_HAND_RIGHT - SCREEN_HAND_LEFT)
             # Map world Y to screen Y (inverted: higher world y -> lower screen y)
             norm_y = SCREEN_HAND_Y_CENTER - wy * SCREEN_Y_SCALE
 
@@ -401,7 +405,7 @@ class ScreenMapper:
 
         # 3. CMC — sum up mana cost components
         cmc = 0
-        for part in re.findall(r'\{([^}]+)\}', mana_cost):
+        for part in re.findall(r"\{([^}]+)\}", mana_cost):
             if part.isdigit():
                 cmc += int(part)
             elif part in color_order or part == "C":
@@ -419,7 +423,7 @@ class ScreenMapper:
         card_name: str,
         hand_cards: list[dict[str, Any]],
         game_state: dict[str, Any],
-    ) -> Optional[ScreenCoord]:
+    ) -> ScreenCoord | None:
         """Calculate the screen position of a card in hand.
 
         Uses arc-based positioning matching MTGA's CardLayout_Hand
@@ -453,9 +457,7 @@ class ScreenMapper:
 
         if card_index is None:
             hand_names = [c.get("name", "???") for c in sorted_hand]
-            logger.warning(
-                f"Card '{card_name}' not found in hand: {hand_names}"
-            )
+            logger.warning(f"Card '{card_name}' not found in hand: {hand_names}")
             return None
 
         positions = self._hand_arc_positions(len(sorted_hand))
@@ -479,12 +481,10 @@ class ScreenMapper:
         n = n.replace("\u2019", "'").replace("\u2018", "'")
         n = n.replace("\u201c", '"').replace("\u201d", '"')
         # Strip trailing "#N" duplicate markers (e.g., "Swamp #2" -> "swamp")
-        n = re.sub(r'\s*#\d+$', '', n)
+        n = re.sub(r"\s*#\d+$", "", n)
         return n
 
-    def _find_card_index(
-        self, card_name: str, hand_cards: list[dict[str, Any]]
-    ) -> Optional[int]:
+    def _find_card_index(self, card_name: str, hand_cards: list[dict[str, Any]]) -> int | None:
         """Find a card's index in hand using progressively fuzzier matching.
 
         Match order:
@@ -518,7 +518,12 @@ class ScreenMapper:
             best_score = 0
             best_idx = None
             for i, card in enumerate(hand_cards):
-                card_words = set(self._normalize_name(card.get("name", "")).split()) - {"the", "of", "a", "an"}
+                card_words = set(self._normalize_name(card.get("name", "")).split()) - {
+                    "the",
+                    "of",
+                    "a",
+                    "an",
+                }
                 overlap = len(target_words & card_words)
                 if overlap > best_score and overlap >= min(2, len(target_words)):
                     best_score = overlap
@@ -637,14 +642,14 @@ class ScreenMapper:
 
     _ROW_Y: dict[tuple[bool, str], float] = {
         # (is_yours, region) -> normalized y
-        (True,  "creature"):     0.58,
-        (True,  "planeswalker"): 0.66,
-        (True,  "artifact"):     0.72,
-        (True,  "land"):         0.78,
-        (False, "creature"):     0.38,
+        (True, "creature"): 0.58,
+        (True, "planeswalker"): 0.66,
+        (True, "artifact"): 0.72,
+        (True, "land"): 0.78,
+        (False, "creature"): 0.38,
         (False, "planeswalker"): 0.28,
-        (False, "artifact"):     0.22,
-        (False, "land"):         0.14,
+        (False, "artifact"): 0.22,
+        (False, "land"): 0.14,
     }
 
     @staticmethod
@@ -657,9 +662,7 @@ class ScreenMapper:
         """
         return sorted(cards, key=lambda c: c.get("instance_id", 0))
 
-    def _battlefield_row_positions(
-        self, num_in_row: int
-    ) -> list[float]:
+    def _battlefield_row_positions(self, num_in_row: int) -> list[float]:
         """Compute center-aligned X positions for permanents in one row.
 
         Derived from UniversalBattlefieldGroup.GenerateLayoutInternal()
@@ -710,11 +713,11 @@ class ScreenMapper:
     def get_permanent_coord(
         self,
         card_name: str,
-        instance_id: Optional[int],
+        instance_id: int | None,
         battlefield: list[dict[str, Any]],
         owner_seat: int,
         local_seat: int,
-    ) -> Optional[ScreenCoord]:
+    ) -> ScreenCoord | None:
         """Calculate the screen position of a permanent on the battlefield.
 
         Uses a four-region layout per player side matching MTGA's
@@ -767,8 +770,8 @@ class ScreenMapper:
 
         # Locate the target card in the rows (or among attached cards).
         target_card = None
-        card_region: Optional[str] = None
-        card_idx_in_row: Optional[int] = None
+        card_region: str | None = None
+        card_idx_in_row: int | None = None
 
         # Build a flat search list: all rows + attached cards.
         all_regions = list(rows.keys())
@@ -794,22 +797,16 @@ class ScreenMapper:
             return False
 
         # 1) Exact instance_id match.
-        if instance_id and not _search_rows(
-            lambda c: c.get("instance_id") == instance_id
-        ):
+        if instance_id and not _search_rows(lambda c: c.get("instance_id") == instance_id):
             pass  # fall through
 
         # 2) Exact name match (case-insensitive).
         if target_card is None:
-            _search_rows(
-                lambda c: c.get("name", "").lower() == card_name.lower()
-            )
+            _search_rows(lambda c: c.get("name", "").lower() == card_name.lower())
 
         # 3) Partial / substring name match.
         if target_card is None:
-            _search_rows(
-                lambda c: card_name.lower() in c.get("name", "").lower()
-            )
+            _search_rows(lambda c: card_name.lower() in c.get("name", "").lower())
 
         if target_card is None:
             logger.warning(f"Permanent '{card_name}' not found on battlefield")
@@ -831,8 +828,7 @@ class ScreenMapper:
                         f"(id={parent_id}), using parent position"
                     )
                     return self.get_permanent_coord(
-                        parent_name, parent_id, battlefield,
-                        owner_seat, local_seat
+                        parent_name, parent_id, battlefield, owner_seat, local_seat
                     )
             # Fallback: if parent not found, place at creature row center.
             y = self._ROW_Y.get((is_yours, "creature"), 0.58 if is_yours else 0.38)
@@ -856,32 +852,33 @@ class ScreenMapper:
 
     def get_card_coord_via_vision(
         self, card_name: str, screenshot_bytes: bytes, backend: Any
-    ) -> Optional[ScreenCoord]:
+    ) -> ScreenCoord | None:
         """Use vision LLM to locate a card on screen.
 
         Fallback for when positional heuristics fail.
         """
         logger.info(f"Using Vision to locate '{card_name}'...")
-        
-        system_prompt = """You are an MTG Arena UI locator. 
+
+        system_prompt = """You are an MTG Arena UI locator.
         Analyze the screenshot and find the EXACT center of the card or button requested.
         Output ONLY a JSON object with 'x' and 'y' as normalized coordinates (0.0 to 1.0).
         Example: {"x": 0.45, "y": 0.58}
         """
-        
+
         user_msg = f"Find the card named '{card_name}' on the battlefield or in hand."
-        
+
         try:
-            if not hasattr(backend, 'complete_with_image'):
+            if not hasattr(backend, "complete_with_image"):
                 logger.warning("Current backend does not support vision.")
                 return None
-                
+
             response = backend.complete_with_image(system_prompt, user_msg, screenshot_bytes)
-            
+
             # Extract JSON from response
             import json
             import re
-            match = re.search(r'\{.*\}', response)
+
+            match = re.search(r"\{.*\}", response)
             if match:
                 data = json.loads(match.group(0))
                 vx = data.get("x")
@@ -891,12 +888,12 @@ class ScreenMapper:
                     return ScreenCoord(vx, vy, f"Vision: {card_name}")
         except Exception as e:
             logger.error(f"Vision detection failed: {e}")
-            
+
         return None
 
     def get_option_coord(
         self, option_index: int, total_options: int, context: str = ""
-    ) -> Optional[ScreenCoord]:
+    ) -> ScreenCoord | None:
         """Calculate position for modal/select UI options.
 
         MTGA presents options in a centered vertical list or horizontal row.
@@ -925,9 +922,7 @@ class ScreenMapper:
 
         return ScreenCoord(0.50, y, f"Option {option_index + 1}/{total_options}")
 
-    def get_draft_card_coord(
-        self, card_index: int, pack_size: int
-    ) -> Optional[ScreenCoord]:
+    def get_draft_card_coord(self, card_index: int, pack_size: int) -> ScreenCoord | None:
         """Calculate position of a card in a draft pack.
 
         Draft packs are displayed in a grid, typically 3 rows of 5.

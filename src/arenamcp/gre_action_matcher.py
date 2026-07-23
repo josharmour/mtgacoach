@@ -11,8 +11,9 @@ Phase 1 of the RE-driven autopilot refactor.  This module provides:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 from arenamcp.action_planner import ActionType
 
@@ -69,11 +70,12 @@ ACTION_TYPE_MAP: dict[ActionType, str] = {
 # both producers (and the PlayMDFC/CastMdfc case-mismatch between them).
 # ---------------------------------------------------------------------------
 
+
 def _norm_atype(atype: str) -> str:
     """Strip the ``ActionType_`` prefix and lowercase for robust comparison."""
     if not atype:
         return ""
-    s = atype[len("ActionType_"):] if atype.startswith("ActionType_") else atype
+    s = atype[len("ActionType_") :] if atype.startswith("ActionType_") else atype
     return s.lower()
 
 
@@ -81,21 +83,31 @@ def _norm_atype(atype: str) -> str:
 # land play / spell cast respectively. Covers MDFC/Adventure/Room/Omen and the
 # split left/right variants emitted by either producer.
 _PLAY_ATYPES: frozenset[str] = frozenset({"play", "playmdfc"})
-_CAST_ATYPES: frozenset[str] = frozenset({
-    "cast", "castleft", "castright", "castadventure", "castmdfc",
-    "castprototype", "castleftroom", "castrightroom", "castomen",
-})
+_CAST_ATYPES: frozenset[str] = frozenset(
+    {
+        "cast",
+        "castleft",
+        "castright",
+        "castadventure",
+        "castmdfc",
+        "castprototype",
+        "castleftroom",
+        "castrightroom",
+        "castomen",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
 # GREActionRef dataclass
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class GREActionRef:
     """Compact, serializable reference to a selected GRE action."""
 
-    action_type: str = ""           # e.g. "ActionType_Cast"
+    action_type: str = ""  # e.g. "ActionType_Cast"
     grp_id: int = 0
     instance_id: int = 0
     ability_grp_id: int = 0
@@ -104,7 +116,7 @@ class GREActionRef:
     selection_type: int = 0
     selection: int = 0
     targets: list[dict] = field(default_factory=list)
-    raw: Optional[dict] = None
+    raw: dict | None = None
 
     # -- Serialisation helpers ------------------------------------------------
 
@@ -130,14 +142,16 @@ class GREActionRef:
         return d
 
     @classmethod
-    def from_raw(cls, raw_action: dict) -> "GREActionRef":
+    def from_raw(cls, raw_action: dict) -> GREActionRef:
         """Create a ``GREActionRef`` from a raw GRE action dict."""
         targets: list[dict] = []
         for t in raw_action.get("targets", []):
-            targets.append({
-                "targetInstanceId": t.get("targetInstanceId", 0),
-                "targetGrpId": t.get("targetGrpId", 0),
-            })
+            targets.append(
+                {
+                    "targetInstanceId": t.get("targetInstanceId", 0),
+                    "targetGrpId": t.get("targetGrpId", 0),
+                }
+            )
         return cls(
             action_type=raw_action.get("actionType", ""),
             grp_id=raw_action.get("grpId", 0),
@@ -156,11 +170,12 @@ class GREActionRef:
 # Matching helpers
 # ---------------------------------------------------------------------------
 
+
 def _resolve_card_name(
     grp_id: int,
     game_objects: dict[int, dict],
-    scryfall_lookup: Optional[Callable[[int], Optional[str]]],
-) -> Optional[str]:
+    scryfall_lookup: Callable[[int], str | None] | None,
+) -> str | None:
     """Resolve a ``grp_id`` to a card name.
 
     First checks ``game_objects`` (keyed by instance_id), then falls back to
@@ -186,7 +201,7 @@ def _resolve_card_name(
     return None
 
 
-def _name_matches(wanted: str, candidate: Optional[str]) -> bool:
+def _name_matches(wanted: str, candidate: str | None) -> bool:
     """Case-insensitive partial name match.
 
     ``wanted`` is the name from the ``GameAction`` (e.g. "Shock").
@@ -200,16 +215,14 @@ def _name_matches(wanted: str, candidate: Optional[str]) -> bool:
     if w == c:
         return True
     # Partial / substring match (handles split cards, etc.)
-    if w in c or c in w:
-        return True
-    return False
+    return bool(w in c or c in w)
 
 
 def _resolve_instance_name(
     instance_id: int,
     game_objects: dict[int, dict],
-    scryfall_lookup: Optional[Callable[[int], Optional[str]]],
-) -> Optional[str]:
+    scryfall_lookup: Callable[[int], str | None] | None,
+) -> str | None:
     """Get card name for a specific ``instance_id``."""
     obj = game_objects.get(instance_id)
     if obj:
@@ -226,12 +239,13 @@ def _resolve_instance_name(
 # Main matcher
 # ---------------------------------------------------------------------------
 
+
 def match_action_to_gre(
-    action: "GameAction",  # noqa: F821  — forward ref avoids circular import
+    action: GameAction,  # noqa: F821  — forward ref avoids circular import
     raw_actions: list[dict],
     game_objects: dict[int, dict],
-    scryfall_lookup: Optional[Callable[[int], Optional[str]]] = None,
-) -> Optional[GREActionRef]:
+    scryfall_lookup: Callable[[int], str | None] | None = None,
+) -> GREActionRef | None:
     """Match a high-level ``GameAction`` to the best raw GRE action.
 
     Args:
@@ -266,21 +280,13 @@ def match_action_to_gre(
         # MDFC land-face plays (#39): prefer the raw PlayMDFC action; the
         # menu entry carries no card name to match on.
         if getattr(action, "mdfc", False):
-            mdfcs = [
-                r for r in raw_actions
-                if _norm_atype(r.get("actionType", "")) == "playmdfc"
-            ]
+            mdfcs = [r for r in raw_actions if _norm_atype(r.get("actionType", "")) == "playmdfc"]
             if len(mdfcs) == 1:
                 ref = GREActionRef.from_raw(mdfcs[0])
-                logger.info(
-                    f"Matched PLAY_LAND (MDFC) -> grpId={mdfcs[0].get('grpId', 0)}"
-                )
+                logger.info(f"Matched PLAY_LAND (MDFC) -> grpId={mdfcs[0].get('grpId', 0)}")
                 return ref
             if mdfcs:
-                logger.warning(
-                    f"{len(mdfcs)} PlayMDFC actions and no name to pick by; "
-                    "not matching"
-                )
+                logger.warning(f"{len(mdfcs)} PlayMDFC actions and no name to pick by; not matching")
                 return None
         for raw in raw_actions:
             if _norm_atype(raw.get("actionType", "")) not in _PLAY_ATYPES:
@@ -295,7 +301,9 @@ def match_action_to_gre(
         plays = [r for r in raw_actions if _norm_atype(r.get("actionType", "")) in _PLAY_ATYPES]
         if len(plays) == 1:
             ref = GREActionRef.from_raw(plays[0])
-            logger.info(f"Matched PLAY_LAND '{action.card_name}' -> sole ActionType_Play (grpId={plays[0].get('grpId', 0)})")
+            logger.info(
+                f"Matched PLAY_LAND '{action.card_name}' -> sole ActionType_Play (grpId={plays[0].get('grpId', 0)})"
+            )
             return ref
         logger.warning(f"Could not match PLAY_LAND '{action.card_name}' among {len(plays)} Play actions")
         return None
@@ -315,7 +323,9 @@ def match_action_to_gre(
         casts = [r for r in raw_actions if _norm_atype(r.get("actionType", "")) in _CAST_ATYPES]
         if len(casts) == 1:
             ref = GREActionRef.from_raw(casts[0])
-            logger.info(f"Matched CAST_SPELL '{action.card_name}' -> sole ActionType_Cast (grpId={casts[0].get('grpId', 0)})")
+            logger.info(
+                f"Matched CAST_SPELL '{action.card_name}' -> sole ActionType_Cast (grpId={casts[0].get('grpId', 0)})"
+            )
             return ref
         logger.warning(f"Could not match CAST_SPELL '{action.card_name}' among {len(casts)} Cast actions")
         return None
@@ -330,7 +340,9 @@ def match_action_to_gre(
             source_name = _resolve_instance_name(source_id, game_objects, scryfall_lookup)
             if action.card_name and _name_matches(action.card_name, source_name):
                 ref = GREActionRef.from_raw(raw)
-                logger.info(f"Matched ACTIVATE_ABILITY '{action.card_name}' -> sourceId={source_id} '{source_name}'")
+                logger.info(
+                    f"Matched ACTIVATE_ABILITY '{action.card_name}' -> sourceId={source_id} '{source_name}'"
+                )
                 return ref
         # Fallback: sole activate
         activates = [r for r in raw_actions if _norm_atype(r.get("actionType", "")) == "activate"]
@@ -338,7 +350,9 @@ def match_action_to_gre(
             ref = GREActionRef.from_raw(activates[0])
             logger.info(f"Matched ACTIVATE_ABILITY '{action.card_name}' -> sole ActionType_Activate")
             return ref
-        logger.warning(f"Could not match ACTIVATE_ABILITY '{action.card_name}' among {len(activates)} Activate actions")
+        logger.warning(
+            f"Could not match ACTIVATE_ABILITY '{action.card_name}' among {len(activates)} Activate actions"
+        )
         return None
 
     # --- DECLARE ATTACKERS ---------------------------------------------

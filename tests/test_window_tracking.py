@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import types
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 
@@ -33,7 +33,7 @@ def _fresh_cache():
 
 
 class _Recorder:
-    def __init__(self, result: Optional[tuple] = None):
+    def __init__(self, result: tuple | None = None):
         self.calls: list[str] = []
         self.result = result
 
@@ -55,8 +55,7 @@ class _Recorder:
 def test_dispatch_routes_to_platform_backend(monkeypatch, platform, backend):
     monkeypatch.setattr(wt, "_platform", lambda: platform)
     recorders = {
-        name: _Recorder(result=(1, 2, 300, 400))
-        for name in ("_win32_rect", "_darwin_rect", "_linux_rect")
+        name: _Recorder(result=(1, 2, 300, 400)) for name in ("_win32_rect", "_darwin_rect", "_linux_rect")
     }
     for name, rec in recorders.items():
         monkeypatch.setattr(wt, name, rec)
@@ -148,55 +147,64 @@ def _install_quartz(monkeypatch, window_list: Any) -> None:
 
 
 def test_darwin_finds_mtga_window(monkeypatch):
-    _install_quartz(monkeypatch, [
-        {
-            "kCGWindowOwnerName": "Dock",
-            "kCGWindowLayer": 20,
-            "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 3456, "Height": 80},
-        },
-        {
-            "kCGWindowOwnerName": "MTGA",
-            "kCGWindowLayer": 0,
-            "kCGWindowBounds": {"X": 100.0, "Y": 50.0, "Width": 1920.0, "Height": 1080.0},
-        },
-    ])
+    _install_quartz(
+        monkeypatch,
+        [
+            {
+                "kCGWindowOwnerName": "Dock",
+                "kCGWindowLayer": 20,
+                "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 3456, "Height": 80},
+            },
+            {
+                "kCGWindowOwnerName": "MTGA",
+                "kCGWindowLayer": 0,
+                "kCGWindowBounds": {"X": 100.0, "Y": 50.0, "Width": 1920.0, "Height": 1080.0},
+            },
+        ],
+    )
     assert wt._darwin_rect("MTGA") == (100, 50, 1920, 1080)
 
 
 def test_darwin_matches_owner_name_containing_title(monkeypatch):
     # Steam's process name may be e.g. "MTGA.app" / "MTGA Helper" — the
     # filter is "owner name CONTAINS the title".
-    _install_quartz(monkeypatch, [
-        {
-            "kCGWindowOwnerName": "com.wizards.MTGA Helper",
-            "kCGWindowLayer": 0,
-            "kCGWindowBounds": {"X": 5, "Y": 25, "Width": 1280, "Height": 720},
-        },
-    ])
+    _install_quartz(
+        monkeypatch,
+        [
+            {
+                "kCGWindowOwnerName": "com.wizards.MTGA Helper",
+                "kCGWindowLayer": 0,
+                "kCGWindowBounds": {"X": 5, "Y": 25, "Width": 1280, "Height": 720},
+            },
+        ],
+    )
     assert wt._darwin_rect("MTGA") == (5, 25, 1280, 720)
 
 
 def test_darwin_skips_tiny_and_nonzero_layer_windows(monkeypatch):
-    _install_quartz(monkeypatch, [
-        # Menu-bar extra owned by MTGA: too small.
-        {
-            "kCGWindowOwnerName": "MTGA",
-            "kCGWindowLayer": 0,
-            "kCGWindowBounds": {"X": 3000, "Y": 0, "Width": 30, "Height": 24},
-        },
-        # Floating panel: non-zero layer.
-        {
-            "kCGWindowOwnerName": "MTGA",
-            "kCGWindowLayer": 3,
-            "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1920, "Height": 1080},
-        },
-        # The actual game window.
-        {
-            "kCGWindowOwnerName": "MTGA",
-            "kCGWindowLayer": 0,
-            "kCGWindowBounds": {"X": 10, "Y": 40, "Width": 1600, "Height": 900},
-        },
-    ])
+    _install_quartz(
+        monkeypatch,
+        [
+            # Menu-bar extra owned by MTGA: too small.
+            {
+                "kCGWindowOwnerName": "MTGA",
+                "kCGWindowLayer": 0,
+                "kCGWindowBounds": {"X": 3000, "Y": 0, "Width": 30, "Height": 24},
+            },
+            # Floating panel: non-zero layer.
+            {
+                "kCGWindowOwnerName": "MTGA",
+                "kCGWindowLayer": 3,
+                "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1920, "Height": 1080},
+            },
+            # The actual game window.
+            {
+                "kCGWindowOwnerName": "MTGA",
+                "kCGWindowLayer": 0,
+                "kCGWindowBounds": {"X": 10, "Y": 40, "Width": 1600, "Height": 900},
+            },
+        ],
+    )
     assert wt._darwin_rect("MTGA") == (10, 40, 1600, 900)
 
 
@@ -204,29 +212,35 @@ def test_darwin_exact_owner_beats_substring_match(monkeypatch):
     # Observed live on the dev Mac: "MTGA_Draft_Tool" (a third-party
     # companion app) sits in front of the real "MTGA" window in the
     # front-to-back Quartz list. The exact owner must win.
-    _install_quartz(monkeypatch, [
-        {
-            "kCGWindowOwnerName": "MTGA_Draft_Tool",
-            "kCGWindowLayer": 0,
-            "kCGWindowBounds": {"X": 48, "Y": 33, "Width": 600, "Height": 994},
-        },
-        {
-            "kCGWindowOwnerName": "MTGA",
-            "kCGWindowLayer": 0,
-            "kCGWindowBounds": {"X": 273, "Y": 33, "Width": 1280, "Height": 748},
-        },
-    ])
+    _install_quartz(
+        monkeypatch,
+        [
+            {
+                "kCGWindowOwnerName": "MTGA_Draft_Tool",
+                "kCGWindowLayer": 0,
+                "kCGWindowBounds": {"X": 48, "Y": 33, "Width": 600, "Height": 994},
+            },
+            {
+                "kCGWindowOwnerName": "MTGA",
+                "kCGWindowLayer": 0,
+                "kCGWindowBounds": {"X": 273, "Y": 33, "Width": 1280, "Height": 748},
+            },
+        ],
+    )
     assert wt._darwin_rect("MTGA") == (273, 33, 1280, 748)
 
 
 def test_darwin_no_match_returns_none(monkeypatch):
-    _install_quartz(monkeypatch, [
-        {
-            "kCGWindowOwnerName": "Finder",
-            "kCGWindowLayer": 0,
-            "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1200, "Height": 800},
-        },
-    ])
+    _install_quartz(
+        monkeypatch,
+        [
+            {
+                "kCGWindowOwnerName": "Finder",
+                "kCGWindowLayer": 0,
+                "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1200, "Height": 800},
+            },
+        ],
+    )
     assert wt._darwin_rect("MTGA") is None
 
 
@@ -238,15 +252,18 @@ def test_darwin_empty_or_none_window_list(monkeypatch):
 
 
 def test_darwin_malformed_entries_are_skipped(monkeypatch):
-    _install_quartz(monkeypatch, [
-        {"kCGWindowOwnerName": "MTGA"},  # no bounds at all → w/h 0 → skipped
-        {"kCGWindowOwnerName": "MTGA", "kCGWindowBounds": "garbage"},
-        {
-            "kCGWindowOwnerName": "MTGA",
-            "kCGWindowLayer": 0,
-            "kCGWindowBounds": {"X": 1, "Y": 2, "Width": 640, "Height": 480},
-        },
-    ])
+    _install_quartz(
+        monkeypatch,
+        [
+            {"kCGWindowOwnerName": "MTGA"},  # no bounds at all → w/h 0 → skipped
+            {"kCGWindowOwnerName": "MTGA", "kCGWindowBounds": "garbage"},
+            {
+                "kCGWindowOwnerName": "MTGA",
+                "kCGWindowLayer": 0,
+                "kCGWindowBounds": {"X": 1, "Y": 2, "Width": 640, "Height": 480},
+            },
+        ],
+    )
     assert wt._darwin_rect("MTGA") == (1, 2, 640, 480)
 
 
@@ -275,7 +292,10 @@ def test_linux_rect_delegates_to_runtime(monkeypatch):
         runtime,
         "get_linux_window_geometry",
         lambda title="MTGA": {
-            "left": 7, "top": 8, "width": 1024, "height": 768,
+            "left": 7,
+            "top": 8,
+            "width": 1024,
+            "height": 768,
             "is_minimized": False,
         },
     )
@@ -289,7 +309,10 @@ def test_linux_rect_minimized_or_missing_is_none(monkeypatch):
         runtime,
         "get_linux_window_geometry",
         lambda title="MTGA": {
-            "left": 7, "top": 8, "width": 1024, "height": 768,
+            "left": 7,
+            "top": 8,
+            "width": 1024,
+            "height": 768,
             "is_minimized": True,
         },
     )
@@ -324,9 +347,7 @@ def test_win32_rect_exact_title_match(monkeypatch):
 
 
 def test_win32_rect_minimized_returns_none(monkeypatch):
-    fake_gw = types.SimpleNamespace(
-        getWindowsWithTitle=lambda title: [_FakeWin("MTGA", minimized=True)]
-    )
+    fake_gw = types.SimpleNamespace(getWindowsWithTitle=lambda title: [_FakeWin("MTGA", minimized=True)])
     monkeypatch.setattr(wt, "gw", fake_gw)
     assert wt._win32_rect("MTGA") is None
 
@@ -353,9 +374,7 @@ try:
 except Exception:  # pragma: no cover - env specific
     _HAVE_PYSIDE6 = False
 
-needs_pyside6 = pytest.mark.skipif(
-    not _HAVE_PYSIDE6, reason="PySide6 not installed in this environment"
-)
+needs_pyside6 = pytest.mark.skipif(not _HAVE_PYSIDE6, reason="PySide6 not installed in this environment")
 
 
 @pytest.fixture()
@@ -383,6 +402,7 @@ def test_hud_window_shows_on_any_platform(qt_app):
 @needs_pyside6
 def test_overlays_show_on_any_platform(qt_app):
     from PySide6.QtCore import Qt
+
     from arenamcp.desktop.advice_panel import AdvicePanelWindow
     from arenamcp.desktop.card_overlay import CardOverlayWindow
     from arenamcp.desktop.match_overlay import MatchOverlayWindow
@@ -402,6 +422,7 @@ def test_overlays_show_on_any_platform(qt_app):
 @needs_pyside6
 def test_hud_click_through_uses_qt_attribute(qt_app):
     from PySide6.QtCore import Qt
+
     from arenamcp.desktop.hud import HudWindow
 
     hud = HudWindow()

@@ -14,17 +14,14 @@ from pathlib import Path
 
 import pytest
 
-import arenamcp.autopilot as autopilot_module
-from arenamcp.decisions import PendingDecision, DecisionOption, build_pending_decision
+from arenamcp.decisions import DecisionOption, PendingDecision, build_pending_decision
 from arenamcp.match_packets import (
-    MatchPacket,
-    start_match_packet,
     get_current_packet,
+    start_match_packet,
     stop_match_packet,
 )
-from arenamcp.request_tracker import RequestTracker, decision_fingerprint
-
-from test_typed_decision_path import _TypedBridge, _planner_with, _engine, _state, _TARGET_POLL
+from arenamcp.request_tracker import decision_fingerprint
+from test_typed_decision_path import _TARGET_POLL, _engine, _planner_with, _state, _TypedBridge
 
 
 @pytest.fixture
@@ -37,11 +34,11 @@ def temp_packets_dir():
 def test_match_packet_lifecycle(temp_packets_dir):
     # Ensure starting/stopping sets global singleton
     assert get_current_packet() is None
-    
+
     packet = start_match_packet("test_match_123")
     assert get_current_packet() is packet
     assert packet.match_id == "test_match_123"
-    
+
     # Add a decision
     d = PendingDecision(
         request_id=(1, 2),
@@ -52,30 +49,30 @@ def test_match_packet_lifecycle(temp_packets_dir):
         ),
     )
     packet.add_decision(d, ["mull:keep"])
-    
+
     assert len(packet.decisions) == 1
     assert packet.decisions[0]["chosen_options"] == ["mull:keep"]
     assert packet.decisions[0]["outcome"] == "pending"
-    
+
     # Update outcome
     fp = decision_fingerprint(d)
     packet.update_outcome(fp, "ADVANCED")
     assert packet.decisions[0]["outcome"] == "ADVANCED"
-    
+
     # Stop/save
     packet.result = "win"
     packet.deck_strategy = "mono_red"
     packet.opponent_name = "Sparky"
     packet.replay_path = "/tmp/mtgacoach_Replay1.rply"
-    
+
     stopped = stop_match_packet()
     assert stopped is packet
     assert get_current_packet() is None
-    
+
     saved_path = packet.save(packets_dir=temp_packets_dir)
     assert saved_path is not None
     assert saved_path.exists()
-    
+
     saved_data = json.loads(saved_path.read_text(encoding="utf-8"))
     assert saved_data["match_id"] == "test_match_123"
     assert saved_data["result"] == "win"
@@ -90,26 +87,26 @@ def test_match_packet_lifecycle(temp_packets_dir):
 def test_autopilot_integration_records_packets(monkeypatch):
     # Ensure packet is active
     packet = start_match_packet("test_integration_match")
-    
+
     bridge = _TypedBridge(_TARGET_POLL)
     planner = _planner_with('{"option_ids": ["tgt:2"], "reasoning": "opponent"}')
     eng = _engine(monkeypatch, bridge, planner)
-    
+
     # Execute decision
     handled = eng._try_typed_decision_path(_state(), "decision_required")
     assert handled is True
-    
+
     # Verify decision logged in packet
     assert len(packet.decisions) == 1
     assert packet.decisions[0]["chosen_options"] == ["tgt:2"]
     assert packet.decisions[0]["outcome"] == "pending"
-    
+
     # Simulate observing a different state (ADVANCED)
-    fp = decision_fingerprint(build_pending_decision(_TARGET_POLL))
+    decision_fingerprint(build_pending_decision(_TARGET_POLL))
     # RequestTracker note_submitted is called by autopilot
     # Now simulate observe with None (advancing)
     eng._request_tracker.observe(None)
-    
+
     assert packet.decisions[0]["outcome"] == "ADVANCED"
     stop_match_packet()
 

@@ -31,7 +31,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger("arenamcp.trajectory_recorder")
 
@@ -40,7 +40,7 @@ _REPO = Path(__file__).resolve().parents[2]
 DEFAULT_TRAJECTORY_PATH = _REPO / "tools/eval/data/real_match_trajectories.jsonl"
 
 
-def normalize_winner(result: Optional[str], seat: str = "local") -> Optional[str]:
+def normalize_winner(result: str | None, seat: str = "local") -> str | None:
     """Map a per-game result string to a self-play ``winner`` seat label.
 
     ``build_dataset.py`` only accepts ``winner`` values of ``"local"`` or
@@ -81,7 +81,7 @@ class TrajectoryRecorder:
 
     def __init__(
         self,
-        out_path: Optional[Path] = None,
+        out_path: Path | None = None,
         *,
         seat: str = "local",
         backend_label: str = "",
@@ -91,9 +91,9 @@ class TrajectoryRecorder:
         self.seat = seat
         self.backend_label = backend_label
         self.alt_backend_label = alt_backend_label
-        self._buffer: List[Dict[str, Any]] = []
+        self._buffer: list[dict[str, Any]] = []
         self._lock = threading.Lock()
-        self._current_match_id: Optional[str] = None
+        self._current_match_id: str | None = None
         # Cumulative counters (diagnostics only).
         self.total_recorded = 0
         self.total_flushed = 0
@@ -108,7 +108,7 @@ class TrajectoryRecorder:
         with self._lock:
             return len(self._buffer)
 
-    def current_match_records(self) -> List[Dict[str, Any]]:
+    def current_match_records(self) -> list[dict[str, Any]]:
         """Return a shallow copy of the current (unflushed) match's decisions.
 
         Used by the post-match evaluator to review the game BEFORE
@@ -123,14 +123,14 @@ class TrajectoryRecorder:
     def record_decision(
         self,
         *,
-        game_state: Optional[Dict[str, Any]],
+        game_state: dict[str, Any] | None,
         prompt_system: str,
         prompt_user: str,
         planned_action: Any,
         alt_action: Any = None,
-        request_type: Optional[str] = None,
-        latency_ms: Optional[float] = None,
-        submit_command: Optional[Dict[str, Any]] = None,
+        request_type: str | None = None,
+        latency_ms: float | None = None,
+        submit_command: dict[str, Any] | None = None,
     ) -> None:
         """Buffer one decision record. Never raises into the caller."""
         try:
@@ -138,7 +138,7 @@ class TrajectoryRecorder:
             turn = gs.get("turn", {}) or {}
             match_id = gs.get("match_id") or self._current_match_id or "unknown_match"
 
-            rec: Dict[str, Any] = {
+            rec: dict[str, Any] = {
                 "match_id": match_id,
                 "ts": time.time(),
                 "seat": self.seat,
@@ -162,7 +162,7 @@ class TrajectoryRecorder:
         except Exception as e:  # pragma: no cover - defensive
             logger.debug("record_decision failed (ignored): %s", e)
 
-    def flush_match(self, winner: Optional[str]) -> int:
+    def flush_match(self, winner: str | None) -> int:
         """Append all buffered decisions to ``out_path``, labelled with winner.
 
         ``winner`` should be the self-play seat label (``"local"``/``"opp"``);
@@ -189,7 +189,10 @@ class TrajectoryRecorder:
             self.total_flushed += len(batch)
             logger.info(
                 "Flushed %d decisions for match %s (winner=%s) -> %s",
-                len(batch), match_id, winner, self.out_path,
+                len(batch),
+                match_id,
+                winner,
+                self.out_path,
             )
             return len(batch)
         except Exception as e:  # pragma: no cover - defensive

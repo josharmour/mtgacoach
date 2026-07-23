@@ -52,7 +52,7 @@ def test_build_issue_url_truncates_long_body() -> None:
 def test_build_issue_url_limits_encoded_length_of_json_heavy_body() -> None:
     # JSON-heavy bodies inflate ~3x under URL-encoding; the cap must hold
     # on the final URL (GitHub bounces ~8K+ request lines).
-    body = ('{"key": "value", "nested": {"a": [1, 2, 3]}}\n' * 500)
+    body = '{"key": "value", "nested": {"a": [1, 2, 3]}}\n' * 500
     url = build_issue_url("Desktop bug report: something", body)
     assert len(url) <= 7600
     assert "browser+draft+truncated" in url

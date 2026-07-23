@@ -19,9 +19,7 @@ def _fresh(monkeypatch, tmp_path):
 def test_executed_actions_recorded_in_packet(monkeypatch, tmp_path):
     _fresh(monkeypatch, tmp_path)
     packet = mp.start_match_packet("m-1")
-    packet.add_executed_action(
-        "cast_spell", card_name="Talisman of Unity", turn=3, path="GRE bridge"
-    )
+    packet.add_executed_action("cast_spell", card_name="Talisman of Unity", turn=3, path="GRE bridge")
     packet.add_executed_action("pass_priority", turn=3)
     assert len(packet.decisions) == 2
     packet.result = "win"

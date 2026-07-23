@@ -47,4 +47,3 @@ def qapp(qapp_args):
     if app is None:
         app = QApplication(qapp_args)
     yield app
-

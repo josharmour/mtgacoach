@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from arenamcp.gre_bridge import enrich_snapshot_from_pending_response
 from arenamcp import combat_solver
+from arenamcp.gre_bridge import enrich_snapshot_from_pending_response
 
 
 def _blockers_poll() -> dict[str, Any]:
@@ -107,7 +107,7 @@ def test_bridge_blockers_flag_attackers_on_battlefield():
     enrich_snapshot_from_pending_response(snapshot, _blockers_poll(), bridge_connected=True)
 
     by_id = {c["instance_id"]: c for c in snapshot["battlefield"]}
-    assert by_id[50].get("is_attacking") is True   # the attacker is flagged
+    assert by_id[50].get("is_attacking") is True  # the attacker is flagged
     assert "is_attacking" not in by_id[10] or by_id[10]["is_attacking"] is not True  # our blocker isn't
 
 
@@ -189,5 +189,5 @@ def test_malformed_blocker_entries_are_skipped_not_fatal():
     ]
     enrich_snapshot_from_pending_response(snapshot, poll, bridge_connected=True)
     ctx = snapshot["decision_context"]
-    assert ctx["legal_blocker_ids"] == [10]      # bad id skipped, good kept
-    assert ctx["attacker_ids"] == [50]           # bad attacker id skipped
+    assert ctx["legal_blocker_ids"] == [10]  # bad id skipped, good kept
+    assert ctx["attacker_ids"] == [50]  # bad attacker id skipped

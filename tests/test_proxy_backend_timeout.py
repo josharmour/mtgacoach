@@ -58,9 +58,7 @@ def test_get_client_sets_finite_default_timeout():
         captured.update(kwargs)
         return MagicMock()
 
-    import arenamcp.backends.proxy as proxy_mod
-
-    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+    __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
 
     class _FakeOpenAI:
         def __init__(self, **kwargs):
@@ -69,6 +67,7 @@ def test_get_client_sets_finite_default_timeout():
     fake_module = type("FakeOpenAIModule", (), {"OpenAI": _FakeOpenAI})
 
     import sys
+
     sys.modules["openai"] = fake_module
     try:
         backend._get_client()
@@ -78,6 +77,5 @@ def test_get_client_sets_finite_default_timeout():
     assert "timeout" in captured, "OpenAI client must be created with a finite timeout"
     assert isinstance(captured["timeout"], (int, float))
     assert 0 < captured["timeout"] <= 600, (
-        f"client timeout={captured['timeout']!s} — must be a real ceiling, "
-        "not the SDK's ~10-minute default"
+        f"client timeout={captured['timeout']!s} — must be a real ceiling, not the SDK's ~10-minute default"
     )

@@ -23,7 +23,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from shutil import which
-from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +34,7 @@ _TAGS_URL = f"https://api.github.com/repos/{_GITHUB_REPO}/tags"
 _USER_AGENT = "mtgacoach-updater"
 
 
-def _version_tuple(version_str: str) -> Tuple[int, ...]:
+def _version_tuple(version_str: str) -> tuple[int, ...]:
     import re
 
     nums = re.findall(r"\d+", version_str or "")
@@ -70,7 +69,7 @@ def _http_get_json(url: str) -> object:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _latest_release() -> Optional[dict]:
+def _latest_release() -> dict | None:
     try:
         data = _http_get_json(_RELEASES_LATEST_URL)
         if isinstance(data, dict) and data.get("tag_name"):
@@ -101,7 +100,7 @@ def _fetch_latest_remote_version() -> str:
         return ""
 
 
-def check_for_update() -> Tuple[bool, str, str]:
+def check_for_update() -> tuple[bool, str, str]:
     """(update_available, local_version, remote_version).
 
     Returns (False, local, "") for editable installs, when the check is
@@ -126,7 +125,7 @@ def check_for_update() -> Tuple[bool, str, str]:
         return False, local_version, ""
 
 
-def _latest_wheel_url() -> Optional[str]:
+def _latest_wheel_url() -> str | None:
     rel = _latest_release()
     for asset in (rel or {}).get("assets", []) or []:
         if str(asset.get("name") or "").endswith(".whl"):
@@ -134,7 +133,7 @@ def _latest_wheel_url() -> Optional[str]:
     return None
 
 
-def _find_uv() -> Optional[str]:
+def _find_uv() -> str | None:
     found = which("uv")
     if found:
         return found
@@ -142,7 +141,7 @@ def _find_uv() -> Optional[str]:
     return str(cand) if cand.exists() else None
 
 
-def apply_update() -> Tuple[bool, str]:
+def apply_update() -> tuple[bool, str]:
     """Upgrade this install in place (does NOT restart the app).
 
     Picks the right command for how the app was installed: PyPI-style
@@ -170,10 +169,7 @@ def apply_update() -> Tuple[bool, str]:
             cmds.append([uv, "tool", "install", "--force", wheel])
     cmds.append([sys.executable, "-m", "pip", "install", "--upgrade", "arenamcp"])
     if wheel:
-        cmds.append(
-            [sys.executable, "-m", "pip", "install", "--upgrade",
-             "--force-reinstall", wheel]
-        )
+        cmds.append([sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", wheel])
 
     last = ""
     for cmd in cmds:

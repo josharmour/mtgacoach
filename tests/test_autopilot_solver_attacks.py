@@ -114,10 +114,8 @@ def test_optimal_attacks_material_fields_not_swapped():
     never gaining it."""
     from arenamcp.combat_solver import optimal_attacks
 
-    elf = {"name": "Llanowar Elves", "instance_id": 10, "power": 1,
-           "toughness": 1, "oracle_text": ""}
-    wall = {"name": "Colossal Wall", "instance_id": 20, "power": 4,
-            "toughness": 6, "oracle_text": ""}
+    elf = {"name": "Llanowar Elves", "instance_id": 10, "power": 1, "toughness": 1, "oracle_text": ""}
+    wall = {"name": "Colossal Wall", "instance_id": 20, "power": 4, "toughness": 6, "oracle_text": ""}
     plan = optimal_attacks([elf], [wall], 20, 20, [wall], [])
     assert plan is not None
     if plan.attacker_names:  # solver chose to attack anyway

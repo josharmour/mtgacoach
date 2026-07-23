@@ -8,9 +8,7 @@ Adapted from Voice Assistant's DeckBuilderV2 to use mtgacoach data sources.
 import logging
 from collections import Counter
 from dataclasses import dataclass
-from typing import Optional
-
-from typing import Any, Optional, Union
+from typing import Any, Union
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +16,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CardRating:
     """Card performance metrics."""
+
     name: str
     color: str
     rarity: str
@@ -32,6 +31,7 @@ class CardRating:
 @dataclass
 class WildcardInventory:
     """Player's available wildcards by rarity (from PlayerInventory)."""
+
     common: int = 0
     uncommon: int = 0
     rare: int = 0
@@ -54,6 +54,7 @@ class WildcardInventory:
 @dataclass
 class CraftCost:
     """Wildcard craft requirements for a deck."""
+
     common: int = 0
     uncommon: int = 0
     rare: int = 0
@@ -75,6 +76,7 @@ class CraftCost:
 @dataclass
 class DeckSuggestion:
     """Represents a suggested deck configuration."""
+
     archetype: str  # "Aggro", "Midrange", or "Control"
     main_colors: str
     color_pair_name: str
@@ -89,6 +91,7 @@ class DeckSuggestion:
 @dataclass
 class TieredDeckSuggestion:
     """Deck suggestion categorized by budget/crafting tier."""
+
     tier: str  # "0-Wildcard", "Budget Crafting", "Meta Top-Tier"
     archetype: str
     main_colors: str
@@ -104,7 +107,11 @@ class TieredDeckSuggestion:
 
     @property
     def name(self) -> str:
-        return f"{self.color_pair_name} {self.archetype}" if self.color_pair_name not in self.archetype else self.archetype
+        return (
+            f"{self.color_pair_name} {self.archetype}"
+            if self.color_pair_name not in self.archetype
+            else self.archetype
+        )
 
     def to_arena_import(self) -> str:
         """Format as standard MTGA import string (Deck + Sideboard)."""
@@ -263,16 +270,29 @@ class DeckBuilderV2:
     }
 
     COLOR_PAIR_NAMES = {
-        "W": "Mono White", "U": "Mono Blue", "B": "Mono Black",
-        "R": "Mono Red", "G": "Mono Green",
-        "WU": "Azorius", "WB": "Orzhov", "WR": "Boros", "WG": "Selesnya",
-        "UB": "Dimir", "UR": "Izzet", "UG": "Simic",
-        "BR": "Rakdos", "BG": "Golgari", "RG": "Gruul",
+        "W": "Mono White",
+        "U": "Mono Blue",
+        "B": "Mono Black",
+        "R": "Mono Red",
+        "G": "Mono Green",
+        "WU": "Azorius",
+        "WB": "Orzhov",
+        "WR": "Boros",
+        "WG": "Selesnya",
+        "UB": "Dimir",
+        "UR": "Izzet",
+        "UG": "Simic",
+        "BR": "Rakdos",
+        "BG": "Golgari",
+        "RG": "Gruul",
     }
 
     BASIC_LANDS = {
-        "Plains": "W", "Island": "U", "Swamp": "B",
-        "Mountain": "R", "Forest": "G",
+        "Plains": "W",
+        "Island": "U",
+        "Swamp": "B",
+        "Mountain": "R",
+        "Forest": "G",
     }
 
     def __init__(self, draft_stats=None, enrich_fn=None) -> None:
@@ -287,7 +307,7 @@ class DeckBuilderV2:
         self.enrich_fn = enrich_fn
         self._mtga_db: Any = None
 
-    def _get_card_info(self, grp_id: int, set_code: str) -> Optional[CardRating]:
+    def _get_card_info(self, grp_id: int, set_code: str) -> CardRating | None:
         """Get card rating info from draft stats + enrichment.
 
         Args:
@@ -424,12 +444,10 @@ class DeckBuilderV2:
         # Two-color combinations
         sorted_colors = [c for c, _ in color_scores.most_common(3)]
         for i, c1 in enumerate(sorted_colors):
-            for c2 in sorted_colors[i + 1:]:
+            for c2 in sorted_colors[i + 1 :]:
                 pairs.append("".join(sorted([c1, c2])))
 
-        pairs.sort(
-            key=lambda p: sum(color_scores.get(c, 0) for c in p), reverse=True
-        )
+        pairs.sort(key=lambda p: sum(color_scores.get(c, 0) for c in p), reverse=True)
         return pairs
 
     def _build_archetype_deck(
@@ -438,7 +456,7 @@ class DeckBuilderV2:
         card_ratings: dict[str, CardRating],
         colors: str,
         archetype_name: str,
-    ) -> Optional[DeckSuggestion]:
+    ) -> DeckSuggestion | None:
         """Build a deck for specific archetype and colors."""
         archetype = self.ARCHETYPES[archetype_name]
 
@@ -482,20 +500,24 @@ class DeckBuilderV2:
 
         # AI Monte Carlo Auto-Optimizer (Hill Climbing Permutations)
         import random
+
         best_maindeck = maindeck.copy()
         best_sideboard = sideboard.copy()
         best_lands = archetype["lands"]
 
         def eval_deck(md: dict[str, int]) -> float:
             tc = sum(md.values())
-            if tc == 0: return -100.0
+            if tc == 0:
+                return -100.0
             gihwr = sum(card_ratings[c].gih_win_rate * ct for c, ct in md.items()) / tc
             cc = sum(ct for c, ct in md.items() if card_ratings[c].is_creature)
             tcmc = sum(card_ratings[c].cmc * ct for c, ct in md.items())
             acmc = tcmc / tc
             p = 0.0
-            if cc < archetype["min_creatures"]: p += (archetype["min_creatures"] - cc) * 0.005
-            if acmc > archetype["max_avg_cmc"]: p += (acmc - archetype["max_avg_cmc"]) * 0.02
+            if cc < archetype["min_creatures"]:
+                p += (archetype["min_creatures"] - cc) * 0.005
+            if acmc > archetype["max_avg_cmc"]:
+                p += (acmc - archetype["max_avg_cmc"]) * 0.02
             return gihwr - p
 
         best_score = eval_deck(best_maindeck)
@@ -509,9 +531,11 @@ class DeckBuilderV2:
                     continue
 
                 md_list = []
-                for c, ct in best_maindeck.items(): md_list.extend([c] * ct)
+                for c, ct in best_maindeck.items():
+                    md_list.extend([c] * ct)
                 sb_list = []
-                for c, ct in best_sideboard.items(): sb_list.extend([c] * ct)
+                for c, ct in best_sideboard.items():
+                    sb_list.extend([c] * ct)
 
                 # Adjust for land count changes
                 curr_nl = len(md_list)
@@ -539,6 +563,7 @@ class DeckBuilderV2:
 
                 # Tally and Evaluate
                 from collections import Counter
+
                 new_md = dict(Counter(md_list))
                 new_sb = dict(Counter(sb_list))
                 score = eval_deck(new_md)
@@ -561,10 +586,7 @@ class DeckBuilderV2:
         lands = self._suggest_lands(colors, best_lands)
 
         # Calculate metrics
-        total_gihwr = sum(
-            card_ratings[card].gih_win_rate * count
-            for card, count in maindeck.items()
-        )
+        total_gihwr = sum(card_ratings[card].gih_win_rate * count for card, count in maindeck.items())
         avg_gihwr = total_gihwr / total_cards if total_cards > 0 else 0.0
 
         # Calculate archetype penalties
@@ -593,8 +615,11 @@ class DeckBuilderV2:
     def _suggest_lands(self, colors: str, total_lands: int) -> dict[str, int]:
         """Suggest basic land distribution."""
         land_map = {
-            "W": "Plains", "U": "Island", "B": "Swamp",
-            "R": "Mountain", "G": "Forest",
+            "W": "Plains",
+            "U": "Island",
+            "B": "Swamp",
+            "R": "Mountain",
+            "G": "Forest",
         }
 
         if len(colors) == 0:
@@ -615,7 +640,7 @@ class DeckBuilderV2:
         """Get human-readable color pair name."""
         return self.COLOR_PAIR_NAMES.get(colors, colors)
 
-    def _normalize_collection(self, player_cards: dict[Union[int, str], int]) -> dict[str, int]:
+    def _normalize_collection(self, player_cards: dict[int | str, int]) -> dict[str, int]:
         """Normalize player collection (GetPlayerCardsV3) to card_name -> count owned."""
         owned: Counter = Counter()
         if not player_cards:
@@ -651,6 +676,7 @@ class DeckBuilderV2:
         if self._mtga_db is None:
             try:
                 from arenamcp.mtgadb import MTGADatabase
+
                 self._mtga_db = MTGADatabase()
             except Exception as e:
                 logger.debug(f"MTGA database unavailable for rarity lookups: {e}")
@@ -658,9 +684,7 @@ class DeckBuilderV2:
         db = self._mtga_db
         return db if db and db.available else None
 
-    def _resolve_card_rarity(
-        self, card_name: str, custom_rarities: Optional[dict[str, str]] = None
-    ) -> str:
+    def _resolve_card_rarity(self, card_name: str, custom_rarities: dict[str, str] | None = None) -> str:
         """Resolve rarity for a card ('common', 'uncommon', 'rare', 'mythic')."""
         if custom_rarities and card_name in custom_rarities:
             return custom_rarities[card_name].lower()
@@ -680,7 +704,7 @@ class DeckBuilderV2:
         self,
         deck_cards: dict[str, int],
         owned_cards: dict[str, int],
-        custom_rarities: Optional[dict[str, str]] = None,
+        custom_rarities: dict[str, str] | None = None,
     ) -> CraftCost:
         """Calculate missing wildcards needed to build deck_cards from owned_cards."""
         craft = CraftCost()
@@ -708,12 +732,12 @@ class DeckBuilderV2:
 
     def suggest_tiered_decks(
         self,
-        player_cards: Optional[dict[Union[int, str], int]] = None,
-        wildcards: Optional[Union[WildcardInventory, dict[str, Any]]] = None,
+        player_cards: dict[int | str, int] | None = None,
+        wildcards: WildcardInventory | dict[str, Any] | None = None,
         format_name: str = "standard",
-        candidate_decks: Optional[list[dict[str, Any]]] = None,
-        draft_grp_ids: Optional[list[int]] = None,
-        set_code: Optional[str] = None,
+        candidate_decks: list[dict[str, Any]] | None = None,
+        draft_grp_ids: list[int] | None = None,
+        set_code: str | None = None,
         top_n_per_tier: int = 3,
     ) -> dict[str, list[TieredDeckSuggestion]]:
         """Suggest 3-tiered deck configurations for any event format.
@@ -748,20 +772,20 @@ class DeckBuilderV2:
         if draft_grp_ids:
             draft_suggestions = self.suggest_deck(draft_grp_ids, set_code or "", top_n=5)
             for ds in draft_suggestions:
-                candidates.append({
-                    "name": f"{ds.color_pair_name} {ds.archetype}",
-                    "colors": ds.main_colors,
-                    "archetype": ds.archetype,
-                    "maindeck": ds.maindeck,
-                    "sideboard": ds.sideboard,
-                    "lands": ds.lands,
-                    "score": ds.score,
-                    "avg_gihwr": ds.avg_gihwr,
-                })
+                candidates.append(
+                    {
+                        "name": f"{ds.color_pair_name} {ds.archetype}",
+                        "colors": ds.main_colors,
+                        "archetype": ds.archetype,
+                        "maindeck": ds.maindeck,
+                        "sideboard": ds.sideboard,
+                        "lands": ds.lands,
+                        "score": ds.score,
+                        "avg_gihwr": ds.avg_gihwr,
+                    }
+                )
 
-        meta_templates = FORMAT_META_TEMPLATES.get(
-            fmt_key, FORMAT_META_TEMPLATES.get("standard", [])
-        )
+        meta_templates = FORMAT_META_TEMPLATES.get(fmt_key, FORMAT_META_TEMPLATES.get("standard", []))
         for t in meta_templates:
             if not any(c.get("name") == t["name"] for c in candidates):
                 candidates.append(t)
@@ -779,10 +803,8 @@ class DeckBuilderV2:
             full_cards: Counter = Counter(main)
             full_cards.update(side)
 
-            craft_cost = self.calculate_craft_cost(
-                dict(full_cards), owned_cards, rarities
-            )
-            is_fully_owned = (craft_cost.total == 0)
+            craft_cost = self.calculate_craft_cost(dict(full_cards), owned_cards, rarities)
+            is_fully_owned = craft_cost.total == 0
             fits_inventory = craft_cost.fits_in(wc_inv)
 
             score = cand.get("score", 75.0)
@@ -822,4 +844,3 @@ class DeckBuilderV2:
             "Budget Crafting": budget[:top_n_per_tier],
             "Meta Top-Tier": meta_top[:top_n_per_tier],
         }
-

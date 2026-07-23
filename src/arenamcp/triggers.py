@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import sys
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import numpy as np
 
@@ -56,8 +56,8 @@ class PTTHandler:
     def __init__(
         self,
         hotkey: str = "f4",
-        on_start: Optional[Callable[[], None]] = None,
-        on_stop: Optional[Callable[[], None]] = None,
+        on_start: Callable[[], None] | None = None,
+        on_stop: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the PTT handler.
 
@@ -84,8 +84,7 @@ class PTTHandler:
 
         if keyboard is None:
             logger.warning(
-                "PTT hotkey '%s' not registered: keyboard module unavailable "
-                "on this platform",
+                "PTT hotkey '%s' not registered: keyboard module unavailable on this platform",
                 self.hotkey,
             )
             return
@@ -119,9 +118,8 @@ class PTTHandler:
         if event.event_type == keyboard.KEY_DOWN:
             if self.on_start is not None:
                 self.on_start()
-        elif event.event_type == keyboard.KEY_UP:
-            if self.on_stop is not None:
-                self.on_stop()
+        elif event.event_type == keyboard.KEY_UP and self.on_stop is not None:
+            self.on_stop()
 
 
 class VOXDetector:
@@ -144,8 +142,8 @@ class VOXDetector:
     def __init__(
         self,
         threshold: float = 0.02,
-        on_voice_start: Optional[Callable[[], None]] = None,
-        on_voice_stop: Optional[Callable[[], None]] = None,
+        on_voice_start: Callable[[], None] | None = None,
+        on_voice_stop: Callable[[], None] | None = None,
         silence_duration: float = 1.0,
     ) -> None:
         """Initialize the VOX detector.
@@ -162,7 +160,7 @@ class VOXDetector:
         self.silence_duration = silence_duration
 
         self._is_speaking = False
-        self._silence_start: Optional[float] = None
+        self._silence_start: float | None = None
 
     def _calculate_rms(self, audio: np.ndarray) -> float:
         """Calculate root mean square of audio samples.

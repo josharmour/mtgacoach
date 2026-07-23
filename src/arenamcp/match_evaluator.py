@@ -28,7 +28,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger("arenamcp.match_evaluator")
 
@@ -58,7 +58,7 @@ EVAL_SYSTEM_PROMPT = (
 )
 
 
-def _summarize_decisions(decisions: List[Dict[str, Any]]) -> str:
+def _summarize_decisions(decisions: list[dict[str, Any]]) -> str:
     """Render a compact turn-by-turn list of the bot's key plays.
 
     Caps to the most informative ``_MAX_DECISIONS`` records: when there are many,
@@ -73,7 +73,7 @@ def _summarize_decisions(decisions: List[Dict[str, Any]]) -> str:
     else:
         kept = recs
 
-    lines: List[str] = []
+    lines: list[str] = []
     for rec in kept:
         if "_gap" in rec:
             lines.append(f"... ({rec['_gap']} routine decisions omitted) ...")
@@ -90,7 +90,7 @@ def _summarize_decisions(decisions: List[Dict[str, Any]]) -> str:
     return "\n".join(lines) if lines else "(no decisions recorded)"
 
 
-def _extract_json(text: str) -> Optional[Dict[str, Any]]:
+def _extract_json(text: str) -> dict[str, Any] | None:
     """Tolerantly parse a JSON object out of an LLM response.
 
     Strips ```json fences and surrounding prose, then parses the first balanced
@@ -135,7 +135,7 @@ class MatchEvaluator:
     def __init__(
         self,
         client: Any,
-        out_path: Optional[Path] = None,
+        out_path: Path | None = None,
         *,
         model_label: str = "",
     ) -> None:
@@ -158,11 +158,11 @@ class MatchEvaluator:
     def evaluate(
         self,
         match_id: str,
-        decisions: List[Dict[str, Any]],
-        result: Optional[str],
-        winner: Optional[str],
-        deck_name: Optional[str] = None,
-    ) -> Optional[dict]:
+        decisions: list[dict[str, Any]],
+        result: str | None,
+        winner: str | None,
+        deck_name: str | None = None,
+    ) -> dict | None:
         """Critique one match and append a JSONL record. Never raises.
 
         Returns the written record dict, or ``None`` on any failure / no data.
@@ -196,7 +196,7 @@ class MatchEvaluator:
 
             parsed = _extract_json(raw or "")
 
-            record: Dict[str, Any] = {
+            record: dict[str, Any] = {
                 "match_id": match_id,
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "result": result,

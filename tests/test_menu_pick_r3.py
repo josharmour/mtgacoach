@@ -20,8 +20,7 @@ MENU = ["Cast The Spirit Oasis [OK]", "Play Land: Forest", "Pass"]
 def test_pick_resolves_to_menu_entry():
     p = _planner_with_menu(MENU)
     plan = p._parse_response(
-        '{"actions": [{"pick": 1, "reasoning": "best play"}],'
-        ' "overall_strategy": "develop"}',
+        '{"actions": [{"pick": 1, "reasoning": "best play"}], "overall_strategy": "develop"}',
         MENU,
     )
     assert len(plan.actions) == 1
@@ -42,9 +41,7 @@ def test_pick_land_and_pass():
 
 def test_out_of_range_pick_falls_back_to_structured_fields():
     p = _planner_with_menu(MENU)
-    plan = p._parse_response(
-        '{"actions": [{"pick": 99, "action_type": "pass_priority"}]}', MENU
-    )
+    plan = p._parse_response('{"actions": [{"pick": 99, "action_type": "pass_priority"}]}', MENU)
     assert len(plan.actions) == 1
     assert plan.actions[0].action_type == ActionType.PASS_PRIORITY
 
@@ -52,8 +49,7 @@ def test_out_of_range_pick_falls_back_to_structured_fields():
 def test_structured_actions_still_work_without_pick():
     p = _planner_with_menu(MENU)
     plan = p._parse_response(
-        '{"actions": [{"action_type": "cast_spell",'
-        ' "card_name": "The Spirit Oasis"}]}',
+        '{"actions": [{"action_type": "cast_spell", "card_name": "The Spirit Oasis"}]}',
         MENU,
     )
     assert len(plan.actions) == 1
@@ -83,7 +79,8 @@ def test_trivial_window_skips_llm_entirely():
     assert plan.actions and plan.actions[0].action_type == ActionType.PASS_PRIORITY
 
     plan = p.plan_actions(
-        state, "decision_required",
+        state,
+        "decision_required",
         ["Action: Activate_Mana", "Pass", "Action: FloatMana"],
     )
     assert be.calls == 0
@@ -130,15 +127,13 @@ def test_attack_pick_with_comma_name_stays_one_creature():
 def test_multi_attacker_list_with_decorations_still_splits():
     from arenamcp.action_planner import ActionPlanner
 
-    names = ActionPlanner._split_creature_list(
-        "Nessian Wanderer (2/2), Hei Bai, Forest Guardian (5/5)"
-    )
+    names = ActionPlanner._split_creature_list("Nessian Wanderer (2/2), Hei Bai, Forest Guardian (5/5)")
     assert names == ["Nessian Wanderer (2/2)", "Hei Bai, Forest Guardian (5/5)"]
 
 
 def test_playmdfc_pick_resolves_and_matches():
     # #39 (live 2026-07-06): 'Action: PlayMDFC' picks resolved to None.
-    from arenamcp.action_planner import ActionPlanner, ActionType as AT
+    from arenamcp.action_planner import ActionType as AT
     from arenamcp.gre_action_matcher import match_action_to_gre
 
     menu = ["Activate Ability: Utter Insignificance", "Pass", "Action: PlayMDFC"]
@@ -159,7 +154,8 @@ def test_playmdfc_pick_resolves_and_matches():
 
 def test_x_value_menu_entry_resolves_to_numeric_input():
     # P3-1: "X = 3" casting-time entries become numeric_input actions.
-    from arenamcp.action_planner import ActionPlanner, ActionType as AT
+    from arenamcp.action_planner import ActionPlanner
+    from arenamcp.action_planner import ActionType as AT
 
     p = ActionPlanner(_NoBackend())
     a = p._legal_action_to_action("X = 3")

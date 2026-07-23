@@ -27,9 +27,9 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
-from arenamcp.screen_mapper import ScreenCoord, FixedCoordinates, ScreenMapper
+from arenamcp.screen_mapper import FixedCoordinates, ScreenCoord, ScreenMapper
 
 logger = logging.getLogger(__name__)
 
@@ -38,15 +38,17 @@ logger = logging.getLogger(__name__)
 # Layout Cache
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class CachedElement:
     """A UI element with its cached screen position."""
+
     name: str
     zone: str  # "hand", "battlefield_yours", "battlefield_opp", "button", "option", "draft"
     coord: ScreenCoord
     confidence: float = 1.0  # 0.0-1.0, from VLM response
     timestamp: float = 0.0
-    instance_id: Optional[int] = None
+    instance_id: int | None = None
 
     @property
     def age_seconds(self) -> float:
@@ -56,13 +58,14 @@ class CachedElement:
 @dataclass
 class LayoutSnapshot:
     """Cached layout of all detected UI elements from a VLM scan."""
+
     elements: dict[str, CachedElement] = field(default_factory=dict)
     phase: str = ""
     turn: int = 0
     scan_time: float = 0.0
     screenshot_hash: str = ""
 
-    def get(self, name: str, zone: Optional[str] = None) -> Optional[CachedElement]:
+    def get(self, name: str, zone: str | None = None) -> CachedElement | None:
         """Look up a cached element by name, optionally filtered by zone."""
         name_lower = name.lower().strip()
 
@@ -72,13 +75,12 @@ class LayoutSnapshot:
             return self.elements[key]
 
         # Search by name across zones
-        for k, elem in self.elements.items():
-            if elem.name.lower() == name_lower:
-                if zone is None or elem.zone == zone:
-                    return elem
+        for _k, elem in self.elements.items():
+            if elem.name.lower() == name_lower and (zone is None or elem.zone == zone):
+                return elem
 
         # Partial match
-        for k, elem in self.elements.items():
+        for _k, elem in self.elements.items():
             if name_lower in elem.name.lower() or elem.name.lower() in name_lower:
                 if zone is None or elem.zone == zone:
                     return elem
@@ -176,9 +178,10 @@ If you cannot read any card names clearly:
 # Local VLM Client (Qwen2-VL / Llava / Ollama / OpenAI-compat)
 # ---------------------------------------------------------------------------
 
+
 class LocalVLM:
     """Fast local VLM client supporting Ollama and OpenAI-compatible endpoints (vLLM, LM Studio, etc.).
-    
+
     Supports models such as Qwen2-VL, Qwen2.5-VL, Llava, Moondream, and Llama 3.2 Vision.
     """
 
@@ -193,7 +196,7 @@ class LocalVLM:
         self.endpoint = endpoint.rstrip("/")
         self.timeout = timeout
         self.api_type = api_type.lower()
-        self._available: Optional[bool] = None
+        self._available: bool | None = None
         self._detected_api: str = "ollama"
 
     _VLM_NAME_RE = re.compile(
@@ -201,7 +204,7 @@ class LocalVLM:
         re.IGNORECASE,
     )
 
-    def _resolve_model_name(self, models: list) -> Optional[str]:
+    def _resolve_model_name(self, models: list) -> str | None:
         """Match self.model against a served model list, tolerating naming
         variants like 'qwen2.5-vl:3b' vs 'qwen2.5vl:3b'."""
         prefix = self.model.split(":")[0].split("/")[0]
@@ -216,7 +219,7 @@ class LocalVLM:
                 return m
         return None
 
-    def _pick_any_vlm(self, models: list) -> Optional[str]:
+    def _pick_any_vlm(self, models: list) -> str | None:
         """Pick any vision-capable model from a served model list."""
         for m in models:
             if self._VLM_NAME_RE.search(m):
@@ -298,7 +301,7 @@ class LocalVLM:
         self._available = False
         return False
 
-    def analyze(self, prompt: str, image_bytes: bytes) -> Optional[dict]:
+    def analyze(self, prompt: str, image_bytes: bytes) -> dict | None:
         """Send image + prompt to local VLM and parse JSON response."""
         if not self.available:
             return None
@@ -317,23 +320,25 @@ class LocalVLM:
                     else:
                         url = f"{url}/chat/completions"
 
-                payload = json.dumps({
-                    "model": self.model,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": f"data:image/png;base64,{b64_image}"},
-                                },
-                            ],
-                        }
-                    ],
-                    "temperature": 0.1,
-                    "max_tokens": 2048,
-                }).encode("utf-8")
+                payload = json.dumps(
+                    {
+                        "model": self.model,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": f"data:image/png;base64,{b64_image}"},
+                                    },
+                                ],
+                            }
+                        ],
+                        "temperature": 0.1,
+                        "max_tokens": 2048,
+                    }
+                ).encode("utf-8")
 
                 req = urllib.request.Request(
                     url,
@@ -361,16 +366,18 @@ class LocalVLM:
 
             else:
                 # Ollama protocol
-                payload = json.dumps({
-                    "model": self.model,
-                    "prompt": prompt,
-                    "images": [b64_image],
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.1,
-                        "num_predict": 2048,
-                    },
-                }).encode("utf-8")
+                payload = json.dumps(
+                    {
+                        "model": self.model,
+                        "prompt": prompt,
+                        "images": [b64_image],
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.1,
+                            "num_predict": 2048,
+                        },
+                    }
+                ).encode("utf-8")
 
                 req = urllib.request.Request(
                     f"{self.endpoint}/api/generate",
@@ -391,7 +398,7 @@ class LocalVLM:
             return None
 
     @staticmethod
-    def _parse_json(text: str) -> Optional[dict]:
+    def _parse_json(text: str) -> dict | None:
         """Extract JSON from VLM response text."""
         if not text:
             return None
@@ -402,7 +409,7 @@ class LocalVLM:
             pass
 
         # Try extracting from markdown code fence
-        match = re.search(r'```(?:json)?\s*([\s\S]*?)```', text)
+        match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
         if match:
             try:
                 return json.loads(match.group(1))
@@ -410,10 +417,10 @@ class LocalVLM:
                 pass
 
         # Try finding any JSON object
-        match = re.search(r'\{[\s\S]*\}', text)
+        match = re.search(r"\{[\s\S]*\}", text)
         if match:
             try:
-                cleaned = re.sub(r',\s*([}\]])', r'\1', match.group(0))
+                cleaned = re.sub(r",\s*([}\]])", r"\1", match.group(0))
                 return json.loads(cleaned)
             except json.JSONDecodeError:
                 pass
@@ -428,6 +435,7 @@ OllamaVLM = LocalVLM
 # ---------------------------------------------------------------------------
 # VisionMapper — The Main Class
 # ---------------------------------------------------------------------------
+
 
 class VisionMapper:
     """Vision-based coordinate mapper with caching.
@@ -452,16 +460,14 @@ class VisionMapper:
         cache_max_age: float = 30.0,
         enable_local_vlm: bool = True,
         enable_cloud_vlm: bool = True,
-        local_vlm_model: Optional[str] = None,
-        local_vlm_endpoint: Optional[str] = None,
+        local_vlm_model: str | None = None,
+        local_vlm_endpoint: str | None = None,
         api_type: str = "auto",
     ):
         model = local_vlm_model or ollama_model
         endpoint = local_vlm_endpoint or ollama_endpoint
         self._local_vlm = (
-            LocalVLM(model=model, endpoint=endpoint, api_type=api_type)
-            if enable_local_vlm
-            else None
+            LocalVLM(model=model, endpoint=endpoint, api_type=api_type) if enable_local_vlm else None
         )
         self._cloud_backend: Any = None  # Set via set_cloud_backend()
         self._enable_cloud = enable_cloud_vlm
@@ -578,7 +584,9 @@ class VisionMapper:
             The new LayoutSnapshot.
         """
         if not force and not self.needs_rescan(game_state):
-            logger.debug(f"Cache still valid ({self._cache.age_seconds:.1f}s old, {self.cache_size} elements)")
+            logger.debug(
+                f"Cache still valid ({self._cache.age_seconds:.1f}s old, {self.cache_size} elements)"
+            )
             return self._cache
 
         self._stats["total_scans"] += 1
@@ -618,7 +626,7 @@ class VisionMapper:
 
         return self._cache
 
-    def _cloud_scan(self, screenshot_bytes: bytes) -> Optional[dict]:
+    def _cloud_scan(self, screenshot_bytes: bytes) -> dict | None:
         """Use cloud VLM backend for layout scan."""
         try:
             if not hasattr(self._cloud_backend, "complete_with_image"):
@@ -634,9 +642,7 @@ class VisionMapper:
             logger.error(f"Cloud layout scan failed: {e}")
             return None
 
-    def _build_snapshot(
-        self, vlm_result: dict, game_state: dict[str, Any]
-    ) -> LayoutSnapshot:
+    def _build_snapshot(self, vlm_result: dict, game_state: dict[str, Any]) -> LayoutSnapshot:
         """Convert VLM response into a LayoutSnapshot."""
         snapshot = LayoutSnapshot(
             phase=vlm_result.get("phase_hint", "unknown"),
@@ -677,10 +683,10 @@ class VisionMapper:
     def get_element_coord(
         self,
         name: str,
-        zone: Optional[str] = None,
-        screenshot_bytes: Optional[bytes] = None,
-        game_state: Optional[dict] = None,
-    ) -> Optional[ScreenCoord]:
+        zone: str | None = None,
+        screenshot_bytes: bytes | None = None,
+        game_state: dict | None = None,
+    ) -> ScreenCoord | None:
         """Get the screen coordinate of a named element.
 
         Resolution order:
@@ -702,7 +708,9 @@ class VisionMapper:
         cached = self._cache.get(name, zone)
         if cached and cached.confidence >= 0.5:
             self._stats["cache_hits"] += 1
-            logger.debug(f"Cache hit: '{name}' -> ({cached.coord.x:.3f}, {cached.coord.y:.3f}) [{cached.age_seconds:.1f}s old]")
+            logger.debug(
+                f"Cache hit: '{name}' -> ({cached.coord.x:.3f}, {cached.coord.y:.3f}) [{cached.age_seconds:.1f}s old]"
+            )
             return cached.coord
 
         # Tier 2: Targeted local VLM query
@@ -730,10 +738,10 @@ class VisionMapper:
     def _targeted_vlm_query(
         self,
         name: str,
-        zone: Optional[str],
+        zone: str | None,
         screenshot_bytes: bytes,
         local: bool = True,
-    ) -> Optional[ScreenCoord]:
+    ) -> ScreenCoord | None:
         """Query VLM for a single element's position."""
         zone_hint = zone or "any"
         prompt = ELEMENT_FIND_PROMPT.format(element_name=name, zone_hint=zone_hint)
@@ -783,7 +791,7 @@ class VisionMapper:
     # Convenience Methods (matching ScreenMapper API)
     # ------------------------------------------------------------------
 
-    def get_button_coord(self, name: str) -> Optional[ScreenCoord]:
+    def get_button_coord(self, name: str) -> ScreenCoord | None:
         """Get button coordinate — cache first, static fallback."""
         return self.get_element_coord(name, zone="button")
 
@@ -792,8 +800,8 @@ class VisionMapper:
         card_name: str,
         hand_cards: list[dict[str, Any]],
         game_state: dict[str, Any],
-        screenshot_bytes: Optional[bytes] = None,
-    ) -> Optional[ScreenCoord]:
+        screenshot_bytes: bytes | None = None,
+    ) -> ScreenCoord | None:
         """Get hand card coordinate — cache first, VLM if available, static fallback."""
         # Try vision path
         coord = self.get_element_coord(card_name, zone="hand", screenshot_bytes=screenshot_bytes)
@@ -807,12 +815,12 @@ class VisionMapper:
     def get_permanent_coord(
         self,
         card_name: str,
-        instance_id: Optional[int],
+        instance_id: int | None,
         battlefield: list[dict[str, Any]],
         owner_seat: int,
         local_seat: int,
-        screenshot_bytes: Optional[bytes] = None,
-    ) -> Optional[ScreenCoord]:
+        screenshot_bytes: bytes | None = None,
+    ) -> ScreenCoord | None:
         """Get battlefield permanent coordinate — cache first, VLM, static fallback."""
         is_yours = owner_seat == local_seat
         zone = "battlefield_yours" if is_yours else "battlefield_opp"
@@ -832,8 +840,8 @@ class VisionMapper:
         option_index: int,
         total_options: int,
         context: str = "",
-        screenshot_bytes: Optional[bytes] = None,
-    ) -> Optional[ScreenCoord]:
+        screenshot_bytes: bytes | None = None,
+    ) -> ScreenCoord | None:
         """Get modal option coordinate."""
         # Try cache for specific option labels
         option_name = f"Option {option_index + 1}"
@@ -850,8 +858,8 @@ class VisionMapper:
         card_name: str,
         card_index: int,
         pack_size: int,
-        screenshot_bytes: Optional[bytes] = None,
-    ) -> Optional[ScreenCoord]:
+        screenshot_bytes: bytes | None = None,
+    ) -> ScreenCoord | None:
         """Get draft card coordinate."""
         coord = self.get_element_coord(card_name, zone="draft", screenshot_bytes=screenshot_bytes)
         if coord:
@@ -865,31 +873,27 @@ class VisionMapper:
     # Delegation for ScreenMapper-compatible interface
     # ------------------------------------------------------------------
 
-    def get_mtga_window(self) -> Optional[tuple[int, int, int, int]]:
+    def get_mtga_window(self) -> tuple[int, int, int, int] | None:
         return self._static_mapper.get_mtga_window()
 
-    def refresh_window(self) -> Optional[tuple[int, int, int, int]]:
+    def refresh_window(self) -> tuple[int, int, int, int] | None:
         return self._static_mapper.refresh_window()
 
     @property
-    def window_rect(self) -> Optional[tuple[int, int, int, int]]:
+    def window_rect(self) -> tuple[int, int, int, int] | None:
         return self._static_mapper.window_rect
 
     def get_card_coord_via_vision(
         self, card_name: str, screenshot_bytes: bytes, backend: Any
-    ) -> Optional[ScreenCoord]:
+    ) -> ScreenCoord | None:
         """Legacy compatibility — routes through the tiered system."""
-        return self.get_element_coord(
-            card_name, screenshot_bytes=screenshot_bytes
-        )
+        return self.get_element_coord(card_name, screenshot_bytes=screenshot_bytes)
 
     # ------------------------------------------------------------------
     # Decision Detection Watchdog
     # ------------------------------------------------------------------
 
-    def detect_pending_decision(
-        self, screenshot_bytes: bytes
-    ) -> Optional[dict[str, Any]]:
+    def detect_pending_decision(self, screenshot_bytes: bytes) -> dict[str, Any] | None:
         """Use VLM to check if the game is waiting for player input.
 
         This catches decision prompts that the log parser missed —

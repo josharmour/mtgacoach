@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import datetime
 import faulthandler
 import os
@@ -36,10 +37,8 @@ def _configure_logging() -> None:
     from .runtime import get_app_root, get_runtime_root
 
     _LOG_HANDLE = _log_path().open("a", encoding="utf-8", buffering=1)
-    try:
+    with contextlib.suppress(Exception):
         faulthandler.enable(_LOG_HANDLE, all_threads=True)
-    except Exception:
-        pass
 
     _write_log(
         "desktop start"
@@ -55,9 +54,7 @@ def _configure_logging() -> None:
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
 
     def handle_thread_exception(args: threading.ExceptHookArgs) -> None:
-        details = "".join(
-            traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
-        )
+        details = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
         thread_name = args.thread.name if args.thread is not None else "<unknown>"
         _write_log(f"unhandled thread exception in {thread_name}\n" + details.rstrip())
         threading.__excepthook__(args)
@@ -150,10 +147,8 @@ def _release_single_instance_lock() -> None:
         fcntl.flock(_INSTANCE_LOCK_FILE.fileno(), fcntl.LOCK_UN)
     except Exception:
         pass
-    try:
+    with contextlib.suppress(Exception):
         _INSTANCE_LOCK_FILE.close()
-    except Exception:
-        pass
     _INSTANCE_LOCK_FILE = None
 
 
@@ -161,9 +156,7 @@ def main() -> int:
     try:
         from PySide6.QtWidgets import QApplication, QMessageBox
     except ImportError as exc:  # pragma: no cover - runtime dependency
-        raise SystemExit(
-            "PySide6 is not installed. Install it with `pip install -e .[desktop]`."
-        ) from exc
+        raise SystemExit("PySide6 is not installed. Install it with `pip install -e .[desktop]`.") from exc
 
     _configure_logging()
 
@@ -186,7 +179,9 @@ def main() -> int:
     app.setDesktopFileName("mtgacoach")
 
     from PySide6.QtGui import QIcon
+
     from .runtime import get_app_root
+
     root = Path(get_app_root())
     for candidate in (
         root / "assets" / "icon.png",
@@ -265,9 +260,7 @@ def _run_first_run_setup(app) -> bool:
     # Drive a local event loop until the splash window is dismissed. The splash
     # closes itself on success (via the connected slot) and stays open with a
     # Retry/Close affordance on failure.
-    splash.setup_completed.connect(
-        lambda success, _message: splash.close() if success else None
-    )
+    splash.setup_completed.connect(lambda success, _message: splash.close() if success else None)
     # Block on the OS event wait between events instead of spin-looping, which
     # would otherwise peg a CPU core for the whole setup. The timeout keeps
     # isVisible() re-checked promptly (incl. the failure/Retry-Close path).

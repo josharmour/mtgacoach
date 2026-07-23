@@ -1,10 +1,10 @@
-
 import json
+import logging
 import os
 import re
-import logging
 
 logger = logging.getLogger(__name__)
+
 
 def _resolve_player_log_path() -> str:
     """MTGA_LOG_PATH env override first, then the watcher's cross-platform
@@ -17,30 +17,38 @@ def _resolve_player_log_path() -> str:
         return env_path
     try:
         from arenamcp.watcher import DEFAULT_LOG_PATH
+
         return DEFAULT_LOG_PATH
     except Exception:
         import sys
+
         if sys.platform == "darwin":
             return os.path.join(
                 os.path.expanduser("~"),
-                "Library", "Logs", "Wizards Of The Coast", "MTGA", "Player.log",
+                "Library",
+                "Logs",
+                "Wizards Of The Coast",
+                "MTGA",
+                "Player.log",
             )
         local_appdata = os.environ.get("LOCALAPPDATA", "")
         if local_appdata:
             return os.path.join(
                 os.path.dirname(local_appdata),
-                "LocalLow", "Wizards Of The Coast", "MTGA", "Player.log",
+                "LocalLow",
+                "Wizards Of The Coast",
+                "MTGA",
+                "Player.log",
             )
-        return os.path.expandvars(
-            r"%USERPROFILE%\AppData\LocalLow\Wizards Of The Coast\MTGA\Player.log"
-        )
+        return os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\Wizards Of The Coast\MTGA\Player.log")
 
 
 PLAYER_LOG_PATH = _resolve_player_log_path()
 
+
 def get_local_player_id():
     """Scans Player.log for the AuthenticateResponse to find the local user ID.
-    
+
     Order of precedence:
     1. MTGA_PLAYER_ID environment variable
     2. settings.json "player_id" value
@@ -55,6 +63,7 @@ def get_local_player_id():
     # 2. Settings.json (requires importing get_settings lazily to avoid circular imports if any)
     try:
         from arenamcp.settings import get_settings
+
         settings = get_settings()
         setting_id = settings.get("player_id")
         if setting_id:
@@ -73,23 +82,24 @@ def get_local_player_id():
         # Matches: "authenticateResponse": { "clientId": "X", ... }
         # Handles potential whitespace and newlines
         pattern = re.compile(r'"authenticateResponse"\s*:\s*\{[^}]*"clientId"\s*:\s*"([^"]+)"')
-        
-        with open(PLAYER_LOG_PATH, 'r', encoding='utf-8', errors='ignore') as f:
+
+        with open(PLAYER_LOG_PATH, encoding="utf-8", errors="ignore") as f:
             content = f.read()
             match = pattern.search(content)
             if match:
                 client_id = match.group(1)
                 logger.info(f"Found Local Player ID via Regex: {client_id}")
                 return client_id
-                
+
             # Fallback for alternative formatting
             # sometimes it appears as "clientId": "X", "screenName": "Y" inside authenticateResponse
             # Assuming uniqueness of clientId in that block
-            
+
     except Exception as e:
         logger.error(f"Error scanning for local player ID: {e}")
-        
+
     return None
+
 
 def get_seat_mapping():
     """Scans Player.log backwards for the last MatchGameRoomStateChangedEvent."""
@@ -97,18 +107,18 @@ def get_seat_mapping():
         return None
 
     try:
-        chunk_size = 100000 # 100KB chunks
-        with open(PLAYER_LOG_PATH, 'rb') as f:
+        chunk_size = 100000  # 100KB chunks
+        with open(PLAYER_LOG_PATH, "rb") as f:
             f.seek(0, 2)
             pos = f.tell()
-            
+
             # Read backwards in chunks
             # Limit search to last ~5MB to avoid infinite hangs on huge logs
             bytes_read = 0
-            max_bytes = 5 * 1024 * 1024 
-            
+            max_bytes = 5 * 1024 * 1024
+
             buffer = b""
-            
+
             while pos > 0 and bytes_read < max_bytes:
                 to_read = min(chunk_size, pos)
                 pos -= to_read
@@ -116,11 +126,11 @@ def get_seat_mapping():
                 chunk = f.read(to_read)
                 buffer = chunk + buffer
                 bytes_read += to_read
-                
+
                 # Check for event
-                # We do this by decoding and splitting lines. 
+                # We do this by decoding and splitting lines.
                 # Ideally we find the *last* occurrence in the file.
-                text = buffer.decode('utf-8', errors='ignore')
+                text = buffer.decode("utf-8", errors="ignore")
                 if "MatchGameRoomStateChangedEvent" in text:
                     # We found it. Now split lines and find the LAST one in this block
                     lines = text.splitlines()
@@ -128,14 +138,18 @@ def get_seat_mapping():
                         if "MatchGameRoomStateChangedEvent" in line:
                             # Parse it
                             try:
-                                start = line.find('{')
+                                start = line.find("{")
                                 if start != -1:
                                     data = json.loads(line[start:])
-                                    payload = data.get("matchGameRoomStateChangedEvent", {}).get("gameRoomInfo", {}).get("gameRoomConfig", {})
-                                    
-                                    # Payload might be a nested JSON string sometimes? 
+                                    payload = (
+                                        data.get("matchGameRoomStateChangedEvent", {})
+                                        .get("gameRoomInfo", {})
+                                        .get("gameRoomConfig", {})
+                                    )
+
+                                    # Payload might be a nested JSON string sometimes?
                                     # Usually it's direct object in the log wrapper.
-                                    
+
                                     players = payload.get("reservedPlayers", [])
                                     if players:
                                         mapping = {}
@@ -144,17 +158,18 @@ def get_seat_mapping():
                                             seat = p.get("systemSeatId")
                                             if uid and seat:
                                                 mapping[uid] = seat
-                                        
+
                                         logger.info(f"Found Seat Mapping: {mapping}")
                                         return mapping
                             except (json.JSONDecodeError, KeyError, TypeError) as exc:
                                 logger.debug("Failed to parse seat mapping line: %s", exc)
                                 continue
-            
+
     except Exception as e:
         logger.error(f"Error scanning for seat mapping: {e}")
-        
+
     return None
+
 
 def detect_local_seat():
     """Determines the local player's seat ID from the log."""
@@ -162,18 +177,19 @@ def detect_local_seat():
     if not local_id:
         logger.warning("Could not find local player ID")
         return None
-        
+
     seat_map = get_seat_mapping()
     if not seat_map:
         logger.warning("Could not find match seat mapping")
         return None
-        
+
     seat = seat_map.get(local_id)
     if seat:
         logger.info(f"Detected Local Seat: {seat}")
         return seat
-    
+
     return None
+
 
 if __name__ == "__main__":
     # Test run

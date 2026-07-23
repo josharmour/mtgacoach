@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from typing import Any
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -36,16 +36,14 @@ class HudWindow(QWidget):
     enhancement for system-level click-through.
     """
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._is_click_through = False
         self._should_show = False
 
         # Frameless, Always on Top, Tool window (doesn't show in taskbar)
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -171,9 +169,9 @@ class DraftHudWindow(HudWindow):
 
     _MAX_ADVICE = 3
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        self._drag_pos: Optional[QPoint] = None
-        self._user_offset: Optional[QPoint] = None
+    def __init__(self, parent: QWidget | None = None) -> None:
+        self._drag_pos: QPoint | None = None
+        self._user_offset: QPoint | None = None
         self._recent_advice: list[str] = []
         self._ap_on = False
         super().__init__(parent)
@@ -284,7 +282,7 @@ class DraftHudWindow(HudWindow):
         short = text[:200] + "..." if len(text) > 200 else text
         self._recent_advice.append(short)
         if len(self._recent_advice) > self._MAX_ADVICE:
-            self._recent_advice = self._recent_advice[-self._MAX_ADVICE:]
+            self._recent_advice = self._recent_advice[-self._MAX_ADVICE :]
         self._refresh_advice_label()
 
     def update_autopilot(self, enabled: bool) -> None:

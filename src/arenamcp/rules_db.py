@@ -8,7 +8,6 @@ official game rules.
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -96,9 +95,9 @@ _KEYWORD_SEARCH_TERMS = {
 class RulesDB:
     """SQLite FTS5 database for querying MTG Comprehensive Rules."""
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Path | None = None):
         self._db_path = db_path or DB_PATH
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
 
     def _ensure_db(self) -> sqlite3.Connection:
         """Ensure the database exists and return a connection."""
@@ -115,9 +114,7 @@ class RulesDB:
             self._build_db()
         else:
             # Verify table exists (may have been corrupted/empty)
-            cursor = self._conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='rules'"
-            )
+            cursor = self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='rules'")
             if cursor.fetchone() is None:
                 self._build_db()
 
@@ -157,7 +154,7 @@ class RulesDB:
     def query(
         self,
         search_terms: str,
-        category: Optional[str] = None,
+        category: str | None = None,
         limit: int = 5,
     ) -> list[dict]:
         """Query rules using FTS5 full-text search.
@@ -211,7 +208,7 @@ class RulesDB:
     def get_rules_for_situation(
         self,
         game_state: dict,
-        trigger: Optional[str] = None,
+        trigger: str | None = None,
         limit: int = 5,
     ) -> list[dict]:
         """Get rules relevant to the current game situation.
@@ -248,7 +245,7 @@ class RulesDB:
     def _extract_situation_keywords(
         self,
         game_state: dict,
-        trigger: Optional[str],
+        trigger: str | None,
     ) -> list[str]:
         """Extract search queries from game state and trigger.
 

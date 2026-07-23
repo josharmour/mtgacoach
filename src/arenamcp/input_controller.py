@@ -16,7 +16,6 @@ import sys
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +30,7 @@ if _IS_WINDOWS:
     kernel32 = ctypes.windll.kernel32
     # Make the process DPI aware so coordinates match physical pixels
     try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1) # PROCESS_SYSTEM_DPI_AWARE
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
     except Exception:
         user32.SetProcessDPIAware()
 else:
@@ -43,7 +42,7 @@ else:
 _MTGA_TITLES = ["MTGA", "Magic: The Gathering Arena"]
 
 
-def find_mtga_hwnd() -> Optional[int]:
+def find_mtga_hwnd() -> int | None:
     """Find the MTGA window handle using FindWindowW."""
     if not _IS_WINDOWS:
         return None
@@ -55,7 +54,7 @@ def find_mtga_hwnd() -> Optional[int]:
     return _enum_find_mtga()
 
 
-def _enum_find_mtga() -> Optional[int]:
+def _enum_find_mtga() -> int | None:
     """Enumerate all top-level windows to find MTGA (fallback)."""
     if not _IS_WINDOWS:
         return None
@@ -83,7 +82,7 @@ def _enum_find_mtga() -> Optional[int]:
     return result[0]
 
 
-def get_client_rect(hwnd: int) -> Optional[tuple[int, int, int, int]]:
+def get_client_rect(hwnd: int) -> tuple[int, int, int, int] | None:
     """Get the client area of a window as (left, top, width, height).
 
     Uses GetClientRect + ClientToScreen to get absolute screen coordinates
@@ -223,9 +222,11 @@ if _IS_WINDOWS:
 # Click result
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ClickResult:
     """Result of an input action."""
+
     success: bool
     x: int = 0
     y: int = 0
@@ -241,6 +242,7 @@ class ClickResult:
 # ---------------------------------------------------------------------------
 # Backend ABC
 # ---------------------------------------------------------------------------
+
 
 class InputBackend(ABC):
     """Abstract base for input simulation backends."""
@@ -271,6 +273,7 @@ class InputBackend(ABC):
 # ---------------------------------------------------------------------------
 # Backend 1: SendInput (ctypes, zero dependencies)
 # ---------------------------------------------------------------------------
+
 
 class SendInputBackend(InputBackend):
     """Uses ctypes SendInput with MOUSEEVENTF_ABSOLUTE and scan codes.
@@ -337,9 +340,7 @@ class SendInputBackend(InputBackend):
 
     def move_to(self, x: int, y: int, duration: float) -> bool:
         nx, ny = self._abs_coords(x, y)
-        return self._send_mouse(
-            nx, ny, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE
-        )
+        return self._send_mouse(nx, ny, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE)
 
     def click(self, x: int, y: int) -> bool:
         nx, ny = self._abs_coords(x, y)
@@ -392,6 +393,7 @@ class SendInputBackend(InputBackend):
 # Backend 2: pydirectinput-rgx (DirectInput scan codes)
 # ---------------------------------------------------------------------------
 
+
 class DirectInputBackend(InputBackend):
     """Wraps pydirectinput-rgx for DirectInput scan code input.
 
@@ -404,13 +406,12 @@ class DirectInputBackend(InputBackend):
     def __init__(self):
         try:
             import pydirectinput
+
             pydirectinput.PAUSE = 0.02
             self._pdi = pydirectinput
             logger.info("DirectInputBackend initialized")
         except ImportError:
-            raise RuntimeError(
-                "pydirectinput not installed: pip install pydirectinput-rgx"
-            )
+            raise RuntimeError("pydirectinput not installed: pip install pydirectinput-rgx")
 
     def move_to(self, x: int, y: int, duration: float) -> bool:
         try:
@@ -460,6 +461,7 @@ class DirectInputBackend(InputBackend):
 # Backend 3: pyautogui (legacy fallback)
 # ---------------------------------------------------------------------------
 
+
 class PyAutoGuiBackend(InputBackend):
     """Wraps pyautogui as final fallback.
 
@@ -471,6 +473,7 @@ class PyAutoGuiBackend(InputBackend):
     def __init__(self):
         try:
             import pyautogui
+
             pyautogui.FAILSAFE = True
             pyautogui.PAUSE = 0.05
             self._pyautogui = pyautogui
@@ -513,9 +516,7 @@ class PyAutoGuiBackend(InputBackend):
     def drag(self, x1: int, y1: int, x2: int, y2: int, duration: float) -> bool:
         try:
             self._pyautogui.moveTo(x1, y1, duration=0.05)
-            self._pyautogui.drag(
-                x2 - x1, y2 - y1, duration=duration
-            )
+            self._pyautogui.drag(x2 - x1, y2 - y1, duration=duration)
             return True
         except Exception as e:
             logger.error(f"PyAutoGui drag failed: {e}")
@@ -525,6 +526,7 @@ class PyAutoGuiBackend(InputBackend):
 # ---------------------------------------------------------------------------
 # InputController — safety layer around the active backend
 # ---------------------------------------------------------------------------
+
 
 def _create_backend() -> InputBackend:
     """Try backends in order: SendInput -> DirectInput -> PyAutoGui."""
@@ -573,10 +575,10 @@ class InputController:
         self._move_duration = move_duration
         self._dry_run = dry_run
         self._last_click_time = 0.0
-        self._mtga_hwnd: Optional[int] = None
+        self._mtga_hwnd: int | None = None
 
         # Create backend via fallback chain
-        self._backend: Optional[InputBackend] = _create_backend()
+        self._backend: InputBackend | None = _create_backend()
 
         if self._backend:
             logger.info(
@@ -596,12 +598,11 @@ class InputController:
         """Name of the active input backend."""
         return self._backend.name if self._backend else "none"
 
-    def _get_mtga_hwnd(self) -> Optional[int]:
+    def _get_mtga_hwnd(self) -> int | None:
         """Get (cached) MTGA window handle."""
         # Re-validate cached handle
-        if self._mtga_hwnd and _IS_WINDOWS:
-            if not user32.IsWindow(self._mtga_hwnd):
-                self._mtga_hwnd = None
+        if self._mtga_hwnd and _IS_WINDOWS and not user32.IsWindow(self._mtga_hwnd):
+            self._mtga_hwnd = None
         if not self._mtga_hwnd:
             self._mtga_hwnd = find_mtga_hwnd()
         return self._mtga_hwnd
@@ -626,9 +627,7 @@ class InputController:
         if remaining > 0:
             time.sleep(remaining)
 
-    def _is_in_bounds(
-        self, x: int, y: int, window_rect: tuple[int, int, int, int]
-    ) -> bool:
+    def _is_in_bounds(self, x: int, y: int, window_rect: tuple[int, int, int, int]) -> bool:
         """Check if coordinates are within the MTGA window bounds."""
         left, top, width, height = window_rect
         return left <= x <= left + width and top <= y <= top + height
@@ -638,7 +637,7 @@ class InputController:
         x: int,
         y: int,
         description: str = "",
-        window_rect: Optional[tuple[int, int, int, int]] = None,
+        window_rect: tuple[int, int, int, int] | None = None,
     ) -> ClickResult:
         """Click at absolute screen coordinates."""
         if not self._backend:
@@ -673,7 +672,7 @@ class InputController:
         x: int,
         y: int,
         card_name: str,
-        window_rect: Optional[tuple[int, int, int, int]] = None,
+        window_rect: tuple[int, int, int, int] | None = None,
     ) -> ClickResult:
         """Click a card in hand with hover-to-expand behavior."""
         if not self._backend:
@@ -709,7 +708,7 @@ class InputController:
         to_x: int,
         to_y: int,
         card_name: str,
-        window_rect: Optional[tuple[int, int, int, int]] = None,
+        window_rect: tuple[int, int, int, int] | None = None,
     ) -> ClickResult:
         """Drag a card from hand to the battlefield.
 
@@ -721,16 +720,16 @@ class InputController:
 
         if window_rect:
             if not self._is_in_bounds(from_x, from_y, window_rect):
-                return ClickResult(False, from_x, from_y, card_name, f"({from_x}, {from_y}) outside MTGA window")
+                return ClickResult(
+                    False, from_x, from_y, card_name, f"({from_x}, {from_y}) outside MTGA window"
+                )
             if not self._is_in_bounds(to_x, to_y, window_rect):
                 return ClickResult(False, to_x, to_y, card_name, f"({to_x}, {to_y}) outside MTGA window")
 
         self._enforce_delay()
 
         if self._dry_run:
-            logger.info(
-                f"[DRY RUN] Drag hand card ({from_x},{from_y})->({to_x},{to_y}): {card_name}"
-            )
+            logger.info(f"[DRY RUN] Drag hand card ({from_x},{from_y})->({to_x},{to_y}): {card_name}")
             self._last_click_time = time.time()
             return ClickResult(True, from_x, from_y, f"[DRY] Drag hand: {card_name}")
 
@@ -741,14 +740,15 @@ class InputController:
 
             # Drag from hand to battlefield
             ok = self._backend.drag(
-                from_x, from_y, to_x, to_y,
+                from_x,
+                from_y,
+                to_x,
+                to_y,
                 duration=self._move_duration * 3,  # Slower drag for reliability
             )
             self._last_click_time = time.time()
             if ok:
-                logger.info(
-                    f"Dragged hand card ({from_x},{from_y})->({to_x},{to_y}): {card_name}"
-                )
+                logger.info(f"Dragged hand card ({from_x},{from_y})->({to_x},{to_y}): {card_name}")
                 return ClickResult(True, from_x, from_y, f"Drag hand: {card_name}")
             return ClickResult(False, from_x, from_y, card_name, "backend drag returned False")
         except Exception as e:
@@ -760,7 +760,7 @@ class InputController:
         x: int,
         y: int,
         description: str = "",
-        window_rect: Optional[tuple[int, int, int, int]] = None,
+        window_rect: tuple[int, int, int, int] | None = None,
     ) -> ClickResult:
         """Double-click at absolute screen coordinates."""
         if not self._backend:
@@ -795,7 +795,7 @@ class InputController:
         to_x: int,
         to_y: int,
         description: str = "",
-        window_rect: Optional[tuple[int, int, int, int]] = None,
+        window_rect: tuple[int, int, int, int] | None = None,
     ) -> ClickResult:
         """Drag from one point to another."""
         if not self._backend:
@@ -810,22 +810,21 @@ class InputController:
         self._enforce_delay()
 
         if self._dry_run:
-            logger.info(
-                f"[DRY RUN] Drag ({from_x},{from_y})->({to_x},{to_y}): {description}"
-            )
+            logger.info(f"[DRY RUN] Drag ({from_x},{from_y})->({to_x},{to_y}): {description}")
             self._last_click_time = time.time()
             return ClickResult(True, from_x, from_y, f"[DRY] {description}")
 
         try:
             ok = self._backend.drag(
-                from_x, from_y, to_x, to_y,
+                from_x,
+                from_y,
+                to_x,
+                to_y,
                 duration=self._move_duration * 2,
             )
             self._last_click_time = time.time()
             if ok:
-                logger.info(
-                    f"Dragged ({from_x},{from_y})->({to_x},{to_y}): {description}"
-                )
+                logger.info(f"Dragged ({from_x},{from_y})->({to_x},{to_y}): {description}")
                 return ClickResult(True, from_x, from_y, description)
             return ClickResult(False, from_x, from_y, description, "backend drag returned False")
         except Exception as e:

@@ -15,7 +15,7 @@ from __future__ import annotations
 import copy
 import logging
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +24,10 @@ logger = logging.getLogger(__name__)
 # Protobuf enum mirrors (ActionType, AutoPassPriority, ClientMessageType)
 # ---------------------------------------------------------------------------
 
+
 class GREActionType(Enum):
     """ActionType enum from GRE protobuf."""
+
     NONE = "ActionType_None"
     CAST = "ActionType_Cast"
     ACTIVATE = "ActionType_Activate"
@@ -54,48 +56,57 @@ class GREActionType(Enum):
 
 class AutoPassPriority(Enum):
     """AutoPassPriority enum from GRE protobuf."""
+
     NONE = "AutoPassPriority_None"
     NO = "AutoPassPriority_No"
     YES = "AutoPassPriority_Yes"
 
 
 # All ActionType_Cast* variants
-_CAST_ACTION_TYPES = frozenset({
-    "ActionType_Cast",
-    "ActionType_CastLeft",
-    "ActionType_CastRight",
-    "ActionType_CastAdventure",
-    "ActionType_CastMDFC",
-    "ActionType_CastPrototype",
-    "ActionType_CastLeftRoom",
-    "ActionType_CastRightRoom",
-    "ActionType_CastOmen",
-})
+_CAST_ACTION_TYPES = frozenset(
+    {
+        "ActionType_Cast",
+        "ActionType_CastLeft",
+        "ActionType_CastRight",
+        "ActionType_CastAdventure",
+        "ActionType_CastMDFC",
+        "ActionType_CastPrototype",
+        "ActionType_CastLeftRoom",
+        "ActionType_CastRightRoom",
+        "ActionType_CastOmen",
+    }
+)
 
 # Action types that represent playing (not casting) a card
-_PLAY_ACTION_TYPES = frozenset({
-    "ActionType_Play",
-    "ActionType_PlayMDFC",
-})
+_PLAY_ACTION_TYPES = frozenset(
+    {
+        "ActionType_Play",
+        "ActionType_PlayMDFC",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
 # Validation errors
 # ---------------------------------------------------------------------------
 
+
 class SerializationError(Exception):
     """Raised when a GRE action cannot be serialized."""
+
     pass
 
 
 class ValidationError(SerializationError):
     """Raised when an action ref fails validation against legal actions."""
+
     pass
 
 
 # ---------------------------------------------------------------------------
 # Action serialization helpers
 # ---------------------------------------------------------------------------
+
 
 def _serialize_action(raw_action: dict[str, Any]) -> dict[str, Any]:
     """Serialize a raw GRE action dict into the PerformActionResp.Action format.
@@ -215,6 +226,7 @@ def _serialize_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # PerformActionResp builder
 # ---------------------------------------------------------------------------
 
+
 def serialize_perform_action_resp(
     raw_action: dict[str, Any],
     *,
@@ -290,6 +302,7 @@ def serialize_perform_action_resp_multi(
 # ClientToGREMessage builder
 # ---------------------------------------------------------------------------
 
+
 def serialize_client_message(
     raw_action: dict[str, Any],
     *,
@@ -318,9 +331,7 @@ def serialize_client_message(
     Returns:
         A JSON-serializable dict representing ClientToGREMessage.
     """
-    perform_resp = serialize_perform_action_resp(
-        raw_action, auto_pass=auto_pass
-    )
+    perform_resp = serialize_perform_action_resp(raw_action, auto_pass=auto_pass)
 
     msg: dict[str, Any] = {
         "type": "ClientMessageType_PerformActionResp",
@@ -336,8 +347,9 @@ def serialize_client_message(
 # GREActionRef integration
 # ---------------------------------------------------------------------------
 
+
 def serialize_from_action_ref(
-    action_ref: "GREActionRef",  # noqa: F821
+    action_ref: GREActionRef,  # noqa: F821
     *,
     system_seat_id: int = 0,
     game_state_id: int = 0,
@@ -378,7 +390,7 @@ def serialize_from_action_ref(
         return serialize_perform_action_resp(raw, auto_pass=auto_pass)
 
 
-def _action_ref_to_raw(action_ref: "GREActionRef") -> dict[str, Any]:  # noqa: F821
+def _action_ref_to_raw(action_ref: GREActionRef) -> dict[str, Any]:  # noqa: F821
     """Reconstruct a raw action dict from GREActionRef fields.
 
     This is a fallback for when the original raw dict was not preserved.
@@ -403,19 +415,22 @@ def _action_ref_to_raw(action_ref: "GREActionRef") -> dict[str, Any]:  # noqa: F
     if action_ref.targets:
         # GREActionRef.targets is a list of {targetInstanceId, targetGrpId} dicts
         # Wrap each into a TargetSelection.targets[].Target structure
-        raw["targets"] = [{
-            "targets": [
-                {"targetInstanceId": t.get("targetInstanceId", 0)}
-                for t in action_ref.targets
-                if t.get("targetInstanceId", 0)
-            ],
-        }]
+        raw["targets"] = [
+            {
+                "targets": [
+                    {"targetInstanceId": t.get("targetInstanceId", 0)}
+                    for t in action_ref.targets
+                    if t.get("targetInstanceId", 0)
+                ],
+            }
+        ]
     return raw
 
 
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
+
 
 def validate_action_against_legal(
     raw_action: dict[str, Any],
@@ -438,17 +453,13 @@ def validate_action_against_legal(
 
     action_key = _action_identity_key(raw_action)
 
-    for legal in legal_actions_raw:
-        if _action_identity_key(legal) == action_key:
-            return True
-
-    return False
+    return any(_action_identity_key(legal) == action_key for legal in legal_actions_raw)
 
 
 def find_matching_legal_action(
     raw_action: dict[str, Any],
     legal_actions_raw: list[dict[str, Any]],
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Find the matching legal action for a given raw action.
 
     Returns the full legal action dict (with all GRE-provided fields like
@@ -498,6 +509,7 @@ def _action_identity_key(action: dict[str, Any]) -> tuple:
 # ---------------------------------------------------------------------------
 # Validated serialization (combines validation + serialization)
 # ---------------------------------------------------------------------------
+
 
 def serialize_validated(
     raw_action: dict[str, Any],
@@ -556,6 +568,7 @@ def serialize_validated(
 # Convenience: common action type builders
 # ---------------------------------------------------------------------------
 
+
 def build_pass_action() -> dict[str, Any]:
     """Build a minimal raw action dict for passing priority."""
     return {"actionType": "ActionType_Pass"}
@@ -566,7 +579,7 @@ def build_cast_action(
     instance_id: int,
     *,
     ability_grp_id: int = 0,
-    auto_tap_solution: Optional[dict] = None,
+    auto_tap_solution: dict | None = None,
 ) -> dict[str, Any]:
     """Build a raw action dict for casting a spell.
 
@@ -651,10 +664,10 @@ def build_targeted_action(
         action["abilityGrpId"] = ability_grp_id
 
     if target_instance_ids:
-        action["targets"] = [{
-            "targets": [
-                {"targetInstanceId": tid} for tid in target_instance_ids
-            ],
-        }]
+        action["targets"] = [
+            {
+                "targets": [{"targetInstanceId": tid} for tid in target_instance_ids],
+            }
+        ]
 
     return action

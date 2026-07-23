@@ -32,9 +32,7 @@ def _engine(monkeypatch) -> AutopilotEngine:
 def _state(stack_names, local_seat=1):
     return {
         "local_seat_id": local_seat,
-        "stack": [
-            {"name": n, "controller_seat_id": local_seat} for n in stack_names
-        ],
+        "stack": [{"name": n, "controller_seat_id": local_seat} for n in stack_names],
     }
 
 
@@ -66,7 +64,5 @@ def test_opponent_stack_objects_ignored(monkeypatch):
 def test_stale_bot_submission_does_not_explain(monkeypatch):
     eng = _engine(monkeypatch)
     eng._detect_manual_play(_state([]))
-    eng._recent_bot_submissions.append(
-        (time.monotonic() - 60.0, "the spirit oasis")
-    )
+    eng._recent_bot_submissions.append((time.monotonic() - 60.0, "the spirit oasis"))
     assert eng._detect_manual_play(_state(["The Spirit Oasis"])) is True

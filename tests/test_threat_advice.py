@@ -132,17 +132,59 @@ def test_format_game_context_filters_non_ok_command_zone_casts():
             {"seat_id": 2, "is_local": True, "life_total": 25, "lands_played": 1},
             {"seat_id": 1, "is_local": False, "life_total": 25, "lands_played": 0},
         ],
-        "turn": {"turn_number": 6, "phase": "Phase_Main1", "step": "Step_PreCombatMain", "active_player": 2, "priority_player": 2},
+        "turn": {
+            "turn_number": 6,
+            "phase": "Phase_Main1",
+            "step": "Step_PreCombatMain",
+            "active_player": 2,
+            "priority_player": 2,
+        },
         "battlefield": [
-            {"name": "Fortified Village", "type_line": "Land", "owner_seat_id": 2, "controller_seat_id": 2, "is_tapped": False, "oracle_text": "{T}: Add {G} or {W}.", "turn_entered_battlefield": 2},
-            {"name": "Mystic Monastery", "type_line": "Land", "owner_seat_id": 2, "controller_seat_id": 2, "is_tapped": False, "oracle_text": "{T}: Add {U}, {R}, or {W}.", "turn_entered_battlefield": 4},
-            {"name": "Swamp", "type_line": "Basic Land — Swamp", "owner_seat_id": 2, "controller_seat_id": 2, "is_tapped": False, "oracle_text": "{T}: Add {B}.", "turn_entered_battlefield": 6},
+            {
+                "name": "Fortified Village",
+                "type_line": "Land",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "oracle_text": "{T}: Add {G} or {W}.",
+                "turn_entered_battlefield": 2,
+            },
+            {
+                "name": "Mystic Monastery",
+                "type_line": "Land",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "oracle_text": "{T}: Add {U}, {R}, or {W}.",
+                "turn_entered_battlefield": 4,
+            },
+            {
+                "name": "Swamp",
+                "type_line": "Basic Land — Swamp",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "oracle_text": "{T}: Add {B}.",
+                "turn_entered_battlefield": 6,
+            },
         ],
         "hand": [
-            {"name": "Farseek", "grp_id": 96274, "mana_cost": "{1}{G}", "type_line": "Sorcery", "oracle_text": "Search your library for a Plains, Island, Swamp, or Mountain card, put it onto the battlefield tapped, then shuffle."},
+            {
+                "name": "Farseek",
+                "grp_id": 96274,
+                "mana_cost": "{1}{G}",
+                "type_line": "Sorcery",
+                "oracle_text": "Search your library for a Plains, Island, Swamp, or Mountain card, put it onto the battlefield tapped, then shuffle.",
+            },
         ],
         "command": [
-            {"name": "Hei Bai, Forest Guardian", "grp_id": 98284, "mana_cost": "{3}{G}", "type_line": "Legendary Creature", "oracle_text": "When Hei Bai enters, reveal cards from the top of your library until you reveal a Shrine card."},
+            {
+                "name": "Hei Bai, Forest Guardian",
+                "grp_id": 98284,
+                "mana_cost": "{3}{G}",
+                "type_line": "Legendary Creature",
+                "oracle_text": "When Hei Bai enters, reveal cards from the top of your library until you reveal a Shrine card.",
+            },
         ],
         "graveyard": [],
         "stack": [],
@@ -153,8 +195,25 @@ def test_format_game_context_filters_non_ok_command_zone_casts():
             "Pass",
         ],
         "legal_actions_raw": [
-            {"actionType": "ActionType_Cast", "grpId": 98284, "instanceId": 245, "manaCost": [{"color": ["ManaColor_Generic"], "count": 3}, {"color": ["ManaColor_Green"], "count": 1}]},
-            {"actionType": "ActionType_Cast", "grpId": 96274, "instanceId": 546, "autoTapSolution": {"autoTapActions": []}, "manaCost": [{"color": ["ManaColor_Generic"], "count": 1}, {"color": ["ManaColor_Green"], "count": 1}]},
+            {
+                "actionType": "ActionType_Cast",
+                "grpId": 98284,
+                "instanceId": 245,
+                "manaCost": [
+                    {"color": ["ManaColor_Generic"], "count": 3},
+                    {"color": ["ManaColor_Green"], "count": 1},
+                ],
+            },
+            {
+                "actionType": "ActionType_Cast",
+                "grpId": 96274,
+                "instanceId": 546,
+                "autoTapSolution": {"autoTapActions": []},
+                "manaCost": [
+                    {"color": ["ManaColor_Generic"], "count": 1},
+                    {"color": ["ManaColor_Green"], "count": 1},
+                ],
+            },
             {"actionType": "ActionType_Pass"},
         ],
     }
@@ -177,15 +236,53 @@ def test_buff_aura_with_only_enemy_creature_is_marked_no_targets():
             {"seat_id": 2, "is_local": True, "life_total": 25, "lands_played": 0},
             {"seat_id": 1, "is_local": False, "life_total": 23, "lands_played": 1},
         ],
-        "turn": {"turn_number": 5, "phase": "Phase_Main1", "step": "Step_PreCombatMain", "active_player": 2, "priority_player": 2},
+        "turn": {
+            "turn_number": 5,
+            "phase": "Phase_Main1",
+            "step": "Step_PreCombatMain",
+            "active_player": 2,
+            "priority_player": 2,
+        },
         "battlefield": [
-            {"name": "Plains", "type_line": "Basic Land — Plains", "owner_seat_id": 2, "controller_seat_id": 2, "is_tapped": False, "oracle_text": "{T}: Add {W}.", "turn_entered_battlefield": 2},
-            {"name": "Plains", "type_line": "Basic Land — Plains", "owner_seat_id": 2, "controller_seat_id": 2, "is_tapped": False, "oracle_text": "{T}: Add {W}.", "turn_entered_battlefield": 4},
+            {
+                "name": "Plains",
+                "type_line": "Basic Land — Plains",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "oracle_text": "{T}: Add {W}.",
+                "turn_entered_battlefield": 2,
+            },
+            {
+                "name": "Plains",
+                "type_line": "Basic Land — Plains",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "oracle_text": "{T}: Add {W}.",
+                "turn_entered_battlefield": 4,
+            },
             # Opponent's creature — the only enchantable target on the board.
-            {"name": "Fanatic of Rhonas", "type_line": "Creature — Snake", "owner_seat_id": 1, "controller_seat_id": 1, "is_tapped": False, "power": 2, "toughness": 2, "card_types": ["CardType_Creature"], "turn_entered_battlefield": 3},
+            {
+                "name": "Fanatic of Rhonas",
+                "type_line": "Creature — Snake",
+                "owner_seat_id": 1,
+                "controller_seat_id": 1,
+                "is_tapped": False,
+                "power": 2,
+                "toughness": 2,
+                "card_types": ["CardType_Creature"],
+                "turn_entered_battlefield": 3,
+            },
         ],
         "hand": [
-            {"name": "Radiant Grace", "grp_id": 78812, "mana_cost": "{W}", "type_line": "Enchantment — Aura", "oracle_text": "Enchant creature\nEnchanted creature gets +1/+0 and has vigilance."},
+            {
+                "name": "Radiant Grace",
+                "grp_id": 78812,
+                "mana_cost": "{W}",
+                "type_line": "Enchantment — Aura",
+                "oracle_text": "Enchant creature\nEnchanted creature gets +1/+0 and has vigilance.",
+            },
         ],
         "graveyard": [],
         "stack": [],
@@ -194,7 +291,12 @@ def test_buff_aura_with_only_enemy_creature_is_marked_no_targets():
             "Pass",
         ],
         "legal_actions_raw": [
-            {"actionType": "ActionType_Cast", "grpId": 78812, "instanceId": 340, "manaCost": [{"color": ["ManaColor_White"], "count": 1}]},
+            {
+                "actionType": "ActionType_Cast",
+                "grpId": 78812,
+                "instanceId": 340,
+                "manaCost": [{"color": ["ManaColor_White"], "count": 1}],
+            },
             {"actionType": "ActionType_Pass"},
         ],
     }
@@ -214,14 +316,52 @@ def test_debuff_aura_with_enemy_creature_is_castable():
             {"seat_id": 2, "is_local": True, "life_total": 25, "lands_played": 0},
             {"seat_id": 1, "is_local": False, "life_total": 23, "lands_played": 1},
         ],
-        "turn": {"turn_number": 5, "phase": "Phase_Main1", "step": "Step_PreCombatMain", "active_player": 2, "priority_player": 2},
+        "turn": {
+            "turn_number": 5,
+            "phase": "Phase_Main1",
+            "step": "Step_PreCombatMain",
+            "active_player": 2,
+            "priority_player": 2,
+        },
         "battlefield": [
-            {"name": "Plains", "type_line": "Basic Land — Plains", "owner_seat_id": 2, "controller_seat_id": 2, "is_tapped": False, "oracle_text": "{T}: Add {W}.", "turn_entered_battlefield": 2},
-            {"name": "Plains", "type_line": "Basic Land — Plains", "owner_seat_id": 2, "controller_seat_id": 2, "is_tapped": False, "oracle_text": "{T}: Add {W}.", "turn_entered_battlefield": 4},
-            {"name": "Fanatic of Rhonas", "type_line": "Creature — Snake", "owner_seat_id": 1, "controller_seat_id": 1, "is_tapped": False, "power": 2, "toughness": 2, "card_types": ["CardType_Creature"], "turn_entered_battlefield": 3},
+            {
+                "name": "Plains",
+                "type_line": "Basic Land — Plains",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "oracle_text": "{T}: Add {W}.",
+                "turn_entered_battlefield": 2,
+            },
+            {
+                "name": "Plains",
+                "type_line": "Basic Land — Plains",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "oracle_text": "{T}: Add {W}.",
+                "turn_entered_battlefield": 4,
+            },
+            {
+                "name": "Fanatic of Rhonas",
+                "type_line": "Creature — Snake",
+                "owner_seat_id": 1,
+                "controller_seat_id": 1,
+                "is_tapped": False,
+                "power": 2,
+                "toughness": 2,
+                "card_types": ["CardType_Creature"],
+                "turn_entered_battlefield": 3,
+            },
         ],
         "hand": [
-            {"name": "Reprobation", "grp_id": 71364, "mana_cost": "{1}{W}", "type_line": "Enchantment — Aura", "oracle_text": "Enchant creature\nEnchanted creature loses all abilities and is a Coward creature with base power and toughness 0/1."},
+            {
+                "name": "Reprobation",
+                "grp_id": 71364,
+                "mana_cost": "{1}{W}",
+                "type_line": "Enchantment — Aura",
+                "oracle_text": "Enchant creature\nEnchanted creature loses all abilities and is a Coward creature with base power and toughness 0/1.",
+            },
         ],
         "graveyard": [],
         "stack": [],
@@ -230,7 +370,15 @@ def test_debuff_aura_with_enemy_creature_is_castable():
             "Pass",
         ],
         "legal_actions_raw": [
-            {"actionType": "ActionType_Cast", "grpId": 71364, "instanceId": 440, "manaCost": [{"color": ["ManaColor_Generic"], "count": 1}, {"color": ["ManaColor_White"], "count": 1}]},
+            {
+                "actionType": "ActionType_Cast",
+                "grpId": 71364,
+                "instanceId": 440,
+                "manaCost": [
+                    {"color": ["ManaColor_Generic"], "count": 1},
+                    {"color": ["ManaColor_White"], "count": 1},
+                ],
+            },
             {"actionType": "ActionType_Pass"},
         ],
     }
@@ -246,7 +394,7 @@ def test_system_prompts_warn_against_pointless_protective_abilities():
     activate a 'Pay 4 life: indestructible' ability with no blockers and no
     removal on the stack — pure life loss. Both system prompts must carry an
     explicit rule against paying life for protection without a concrete threat."""
-    from arenamcp.coach import DEFAULT_SYSTEM_PROMPT, CONCISE_SYSTEM_PROMPT
+    from arenamcp.coach import CONCISE_SYSTEM_PROMPT, DEFAULT_SYSTEM_PROMPT
 
     for prompt in (DEFAULT_SYSTEM_PROMPT, CONCISE_SYSTEM_PROMPT):
         low = prompt.lower()

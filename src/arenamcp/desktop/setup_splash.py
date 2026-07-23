@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Optional
 
 from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QIcon
@@ -67,10 +66,10 @@ class SetupSplashWindow(QMainWindow):
 
     setup_completed = Signal(bool, str)
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
-        self._process: Optional[QProcess] = None
+        self._process: QProcess | None = None
         self._stdout_buffer = ""
         self._stderr_buffer = ""
         self._start_time: float = 0.0
@@ -251,8 +250,7 @@ class SetupSplashWindow(QMainWindow):
         except Exception as exc:
             self._append_details(f"[!!] Unable to start setup: {exc}")
             self._fail(
-                "Could not locate a Python executable. Install Python from "
-                "python.org, then reopen mtgacoach."
+                "Could not locate a Python executable. Install Python from python.org, then reopen mtgacoach."
             )
             return
 
@@ -298,10 +296,7 @@ class SetupSplashWindow(QMainWindow):
         if elapsed * 1000 >= _SETUP_TIMEOUT_MS:
             self._append_details("[!!] Setup timed out.")
             self._terminate_process()
-            self._fail(
-                "Setup timed out. Open the Repair tab to retry environment "
-                "provisioning manually."
-            )
+            self._fail("Setup timed out. Open the Repair tab to retry environment provisioning manually.")
 
     @staticmethod
     def _heuristic_progress(elapsed: float) -> tuple[str, int]:
@@ -384,10 +379,7 @@ class SetupSplashWindow(QMainWindow):
             if process is not None:
                 process.deleteLater()
             self._append_details("[!!] Failed to start the setup process.")
-            self._fail(
-                "Could not start setup. Verify your Python installation, then "
-                "retry."
-            )
+            self._fail("Could not start setup. Verify your Python installation, then retry.")
 
     # ------------------------------------------------------------------
     # Terminal states
@@ -417,8 +409,7 @@ class SetupSplashWindow(QMainWindow):
         self.retry_button.setVisible(self._attempts < _MAX_RETRIES)
         if self._attempts >= _MAX_RETRIES:
             self._append_details(
-                "[!!] Multiple setup attempts failed. Use the Repair tab for "
-                "manual provisioning."
+                "[!!] Multiple setup attempts failed. Use the Repair tab for manual provisioning."
             )
         self.cancel_button.setText("Close")
         self.cancel_button.setEnabled(True)

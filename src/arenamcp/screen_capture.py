@@ -12,12 +12,16 @@ including DirectX content. It's the reliable path for Unity games.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import ctypes.wintypes
 import io
 import logging
 import sys
-from typing import Optional
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +39,11 @@ PW_RENDERFULLCONTENT = 0x00000002
 
 def _import_pil():
     from PIL import Image, ImageGrab
+
     return Image, ImageGrab
 
 
-def capture_window_via_printwindow(hwnd: int) -> Optional["Image.Image"]:
+def capture_window_via_printwindow(hwnd: int) -> Image.Image | None:
     """Return a PIL.Image of the window contents using PrintWindow.
 
     Works for DirectX / Unity windows where GDI BitBlt returns black.
@@ -118,23 +123,18 @@ def capture_window_via_printwindow(hwnd: int) -> Optional["Image.Image"]:
         return None
     finally:
         if hbitmap:
-            try:
+            with contextlib.suppress(Exception):
                 gdi32.DeleteObject(hbitmap)
-            except Exception:
-                pass
         if hdc_mem:
-            try:
+            with contextlib.suppress(Exception):
                 gdi32.DeleteDC(hdc_mem)
-            except Exception:
-                pass
-        try:
+        with contextlib.suppress(Exception):
             user32.ReleaseDC(hwnd, hdc_window)
-        except Exception:
-            pass
 
 
 def _make_bmp_info(width: int, height: int):
     """BITMAPINFO with a BITMAPINFOHEADER set to 32bpp top-down."""
+
     class BITMAPINFOHEADER(ctypes.Structure):
         _fields_ = [
             ("biSize", ctypes.c_uint32),
@@ -188,9 +188,9 @@ def is_mostly_black(img, threshold: float = 0.98) -> bool:
 
 
 def capture_mtga_png(
-    hwnd: Optional[int],
-    bbox: Optional[tuple[int, int, int, int]] = None,
-) -> Optional[bytes]:
+    hwnd: int | None,
+    bbox: tuple[int, int, int, int] | None = None,
+) -> bytes | None:
     """Capture MTGA as PNG bytes, surviving DirectX back-buffers.
 
     Strategy:
@@ -221,7 +221,14 @@ def capture_mtga_png(
     if img is None and bbox is not None:
         try:
             left, top, right, bottom = bbox
-            if left is not None and top is not None and right is not None and bottom is not None and left < right and top < bottom:
+            if (
+                left is not None
+                and top is not None
+                and right is not None
+                and bottom is not None
+                and left < right
+                and top < bottom
+            ):
                 try:
                     img = ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
                 except TypeError:

@@ -20,9 +20,7 @@ def main() -> int:
         import subprocess
 
         print("Updating mtgacoach…")
-        rc = subprocess.call(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "arenamcp"]
-        )
+        rc = subprocess.call([sys.executable, "-m", "pip", "install", "--upgrade", "arenamcp"])
         if rc != 0:
             print("Update failed — see pip output above.")
             return rc

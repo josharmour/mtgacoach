@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from arenamcp.coach import CoachEngine
 
-
 f = CoachEngine._plan_framing_instruction
 PLAN = "GAME PLAN: win=Overwhelm with tokens | path=Develop board"
 

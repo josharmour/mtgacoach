@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
@@ -17,22 +18,22 @@ class TtsManager(QObject):
     status_line = Signal(str)
     error_line = Signal(str)
 
-    def __init__(self, parent: Optional[QObject] = None) -> None:
+    def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._process: Optional[QProcess] = None
+        self._process: QProcess | None = None
         self._stdout_buffer = ""
         self._stderr_buffer = ""
         self._ready = False
         self._busy = False
         self._closing = False
         self._generation = 0
-        self._pending_request: Optional[dict[str, Any]] = None
-        self._current_audio_path: Optional[Path] = None
+        self._pending_request: dict[str, Any] | None = None
+        self._current_audio_path: Path | None = None
         # When the Kokoro worker can't serve (init failure, dead process),
         # macOS falls back to the built-in `say` voice instead of silence —
         # the coach's speech must never silently disappear.
         self._worker_failed = False
-        self._say_process: Optional[subprocess.Popen] = None
+        self._say_process: subprocess.Popen | None = None
         self._last_text: str = ""
         self._last_speed: float = 1.0
 
@@ -132,9 +133,7 @@ class TtsManager(QObject):
         self._stop_say()
         try:
             wpm = max(90, min(450, int(175 * (speed or 1.0))))
-            self._say_process = subprocess.Popen(
-                ["say", "-r", str(wpm)], stdin=subprocess.PIPE
-            )
+            self._say_process = subprocess.Popen(["say", "-r", str(wpm)], stdin=subprocess.PIPE)
             assert self._say_process.stdin is not None
             self._say_process.stdin.write(text.encode("utf-8"))
             self._say_process.stdin.close()
@@ -145,10 +144,8 @@ class TtsManager(QObject):
         proc = self._say_process
         self._say_process = None
         if proc is not None and proc.poll() is None:
-            try:
+            with contextlib.suppress(Exception):
                 proc.terminate()
-            except Exception:
-                pass
 
     def shutdown(self) -> None:
         self._closing = True

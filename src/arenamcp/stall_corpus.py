@@ -10,11 +10,12 @@ corpus offline; curated fixtures are promoted into
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from arenamcp.decisions import PendingDecision, decision_to_dict
 
@@ -27,20 +28,18 @@ MAX_FIXTURES = 200
 
 def record_stall(
     decision: PendingDecision,
-    option_ids: Optional[list[str]],
+    option_ids: list[str] | None,
     outcome: str,
-    context: Optional[dict[str, Any]] = None,
+    context: dict[str, Any] | None = None,
     *,
-    corpus_dir: Optional[Path] = None,
-) -> Optional[Path]:
+    corpus_dir: Path | None = None,
+) -> Path | None:
     """Append one stall fixture. Never raises; returns the path or None."""
     try:
         target_dir = corpus_dir or CORPUS_DIR
         target_dir.mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S")
-        safe_type = "".join(
-            c for c in decision.request_type if c.isalnum()
-        ) or "Unknown"
+        safe_type = "".join(c for c in decision.request_type if c.isalnum()) or "Unknown"
         path = target_dir / f"stall_{ts}_{safe_type}_{int(time.time() * 1000) % 100000}.json"
         fixture = {
             "pending_decision": decision_to_dict(decision),
@@ -61,10 +60,8 @@ def _rotate(target_dir: Path) -> None:
     fixtures = sorted(target_dir.glob("stall_*.json"))
     excess = len(fixtures) - MAX_FIXTURES
     for old in fixtures[:excess]:
-        try:
+        with contextlib.suppress(OSError):
             old.unlink()
-        except OSError:
-            pass
 
 
 def load_fixture(path: Path) -> dict[str, Any]:

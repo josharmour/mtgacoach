@@ -106,9 +106,7 @@ def test_strips_snow_basic_when_no_land_in_hand():
     coach = _make_coach()
     state = _state_no_lands_in_hand(
         extra_zones={
-            "battlefield": [
-                {"name": "Snow-Covered Forest", "type_line": "Basic Snow Land — Forest"}
-            ]
+            "battlefield": [{"name": "Snow-Covered Forest", "type_line": "Basic Snow Land — Forest"}]
         }
     )
 
@@ -189,7 +187,7 @@ def test_normalize_game_state_cards():
                 "type_line": "Creature — Human Citizen",
                 "card_types": ["Creature"],
                 "subtypes": ["Human", "Citizen"],
-            }
+            },
         ],
         "zones": {
             "battlefield": [
@@ -200,12 +198,11 @@ def test_normalize_game_state_cards():
                     "card_types": ["Land"],
                 }
             ]
-        }
+        },
     }
-    
+
     coach._normalize_game_state_cards(state)
-    
+
     assert state["hand"][0]["type_line"] == "Land — Forest"
     assert state["hand"][1]["type_line"] == "Creature — Human Citizen"
     assert state["zones"]["battlefield"][0]["type_line"] == "Land"
-

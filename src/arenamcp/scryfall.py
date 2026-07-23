@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from json import JSONDecodeError
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
@@ -45,7 +45,7 @@ class ScryfallCard:
     arena_id: int
     scryfall_uri: str
     rarity: str = ""  # "common", "uncommon", "rare", "mythic"
-    power: str = ""   # Creature power (string because of "*" values)
+    power: str = ""  # Creature power (string because of "*" values)
     toughness: str = ""
 
 
@@ -56,24 +56,23 @@ class ScryfallCache:
     for efficient lookups. Falls back to API for cards not in bulk data.
     """
 
-    def __init__(self, cache_dir: Optional[Path] = None):
+    def __init__(self, cache_dir: Path | None = None):
         """Initialize the cache.
 
         Args:
             cache_dir: Directory for cache files. Defaults to ~/.arenamcp/cache/scryfall/
         """
         self._cache_dir = cache_dir or CACHE_DIR
-        self._file_cache = FileCache(
-            self._cache_dir, ttl_seconds=CACHE_MAX_AGE_HOURS * 3600
-        )
+        self._file_cache = FileCache(self._cache_dir, ttl_seconds=CACHE_MAX_AGE_HOURS * 3600)
 
         self._arena_index: dict[int, dict[str, Any]] = {}
         self._bulk_data_ready = False
         self._last_api_call: float = 0.0
         self._not_found_cache: set[int] = set()  # Negative cache for 404s
-        self._name_cache: dict[str, Optional[dict[str, Any]]] = {}  # Session cache for name lookups
+        self._name_cache: dict[str, dict[str, Any] | None] = {}  # Session cache for name lookups
 
         import threading
+
         self._thread = threading.Thread(target=self._run_background_load, daemon=True)
         self._thread.start()
 
@@ -139,7 +138,7 @@ class ScryfallCache:
         bulk_path = self._get_bulk_data_path()
         logger.debug(f"Loading bulk data from {bulk_path}...")
 
-        with open(bulk_path, "r", encoding="utf-8") as f:
+        with open(bulk_path, encoding="utf-8") as f:
             cards = json.load(f)
 
         temp_index = {}
@@ -181,9 +180,7 @@ class ScryfallCache:
         try:
             if bulk_path.exists():
                 try:
-                    bad_path = bulk_path.with_name(
-                        f"default_cards.corrupt.{int(time.time())}.json"
-                    )
+                    bad_path = bulk_path.with_name(f"default_cards.corrupt.{int(time.time())}.json")
                     os.replace(bulk_path, bad_path)
                     logger.warning(f"Moved corrupted cache aside to: {bad_path}")
                 except OSError as move_err:
@@ -242,7 +239,7 @@ class ScryfallCache:
             time.sleep(sleep_time)
         self._last_api_call = time.time()
 
-    def _fetch_from_api(self, arena_id: int) -> Optional[dict[str, Any]]:
+    def _fetch_from_api(self, arena_id: int) -> dict[str, Any] | None:
         """Fetch card from Scryfall API by arena_id."""
         self._rate_limit_api()
 
@@ -260,7 +257,7 @@ class ScryfallCache:
             logger.warning(f"API request failed for arena_id {arena_id}: {e}")
             return None
 
-    def get_card_by_arena_id(self, arena_id: int) -> Optional[ScryfallCard]:
+    def get_card_by_arena_id(self, arena_id: int) -> ScryfallCard | None:
         """Get card data by MTGA arena_id.
 
         First checks the in-memory index built from bulk data.
@@ -282,7 +279,9 @@ class ScryfallCache:
 
         # Skip API fallback if bulk data is not loaded yet to prevent blocking startup
         if not self._bulk_data_ready:
-            logger.debug(f"Skipping Scryfall API fallback for arena_id {arena_id} because bulk data is not ready yet")
+            logger.debug(
+                f"Skipping Scryfall API fallback for arena_id {arena_id} because bulk data is not ready yet"
+            )
             return None
 
         # Fall back to API
@@ -297,7 +296,7 @@ class ScryfallCache:
         logger.debug(f"Added arena_id {arena_id} to not-found cache")
         return None
 
-    def get_card_by_name(self, name: str) -> Optional[ScryfallCard]:
+    def get_card_by_name(self, name: str) -> ScryfallCard | None:
         """Get card data by name using Scryfall API fuzzy search.
 
         Useful for new sets where arena_id mappings aren't in bulk data yet.
@@ -326,7 +325,7 @@ class ScryfallCache:
         self._rate_limit_api()
 
         # Use fuzzy search which handles minor variations
-        url = f"https://api.scryfall.com/cards/named"
+        url = "https://api.scryfall.com/cards/named"
         params = {"fuzzy": name}
         logger.debug(f"Fetching card by name from API: {name}")
 
@@ -338,7 +337,7 @@ class ScryfallCache:
                 return None
             response.raise_for_status()
             card_data = response.json()
-            
+
             # Cache the result
             self._name_cache[name] = card_data
             return self._card_dict_to_scryfall_card(card_data)

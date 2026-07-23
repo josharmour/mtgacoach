@@ -18,7 +18,6 @@ import struct
 import sys
 from pathlib import Path
 
-
 # ── Formatting helpers ───────────────────────────────────────────────
 
 _W = 70  # output width
@@ -52,6 +51,7 @@ def _fix(text: str) -> None:
 
 # ── Individual checks ────────────────────────────────────────────────
 
+
 def check_python() -> bool:
     """Check Python version (3.10+) and architecture."""
     ver = sys.version_info
@@ -67,10 +67,15 @@ def check_python() -> bool:
 def check_venv() -> bool:
     """Check if running inside a virtual environment."""
     in_venv = sys.prefix != sys.base_prefix
-    _check("Virtual environment", PASS if in_venv else WARN,
-           sys.prefix if in_venv else "Running with system Python")
+    _check(
+        "Virtual environment",
+        PASS if in_venv else WARN,
+        sys.prefix if in_venv else "Running with system Python",
+    )
     if not in_venv:
-        _fix("Recommended: run the Repair tab (or `mtgacoach-repair` in a terminal) or create a venv manually")
+        _fix(
+            "Recommended: run the Repair tab (or `mtgacoach-repair` in a terminal) or create a venv manually"
+        )
     return True  # not fatal
 
 
@@ -111,10 +116,7 @@ def check_settings_json() -> bool:
 def _fallback_player_log_path() -> Path:
     """Platform-appropriate default Player.log path (no runtime detection)."""
     if sys.platform == "darwin":
-        return (
-            Path.home() / "Library" / "Logs" / "Wizards Of The Coast"
-            / "MTGA" / "Player.log"
-        )
+        return Path.home() / "Library" / "Logs" / "Wizards Of The Coast" / "MTGA" / "Player.log"
     local_low = os.environ.get("LOCALAPPDATA", "")
     if local_low:
         return Path(local_low).parent / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
@@ -129,6 +131,7 @@ def check_mtga_log() -> bool:
     else:
         try:
             from arenamcp.desktop.runtime import detect_runtime_state
+
             state = detect_runtime_state()
             log_path = Path(state.player_log)
         except Exception:
@@ -177,6 +180,7 @@ def check_voice_deps() -> list[str]:
     # sounddevice
     try:
         import sounddevice as sd
+
         devices = sd.query_devices()
         output_devs = [d for d in devices if d.get("max_output_channels", 0) > 0]
         input_devs = [d for d in devices if d.get("max_input_channels", 0) > 0]
@@ -195,6 +199,7 @@ def check_voice_deps() -> list[str]:
     # kokoro-onnx TTS
     try:
         import kokoro_onnx  # type: ignore
+
         _check("kokoro-onnx TTS", PASS)
     except ImportError:
         _check("kokoro-onnx TTS", SKIP, "Not installed (TTS disabled)")
@@ -214,6 +219,7 @@ def check_voice_deps() -> list[str]:
     # faster-whisper STT
     try:
         import faster_whisper
+
         _check("faster-whisper STT", PASS)
     except ImportError:
         _check("faster-whisper STT", SKIP, "Not installed (voice input disabled)")
@@ -244,7 +250,11 @@ def check_backends() -> dict[str, bool]:
                 _check(f"{name}", PASS, msg if msg != "OK" else "")
             else:
                 # Not-configured backends are expected, not failures
-                if "not configured" in msg.lower() or "not found" in msg.lower() or "not installed" in msg.lower():
+                if (
+                    "not configured" in msg.lower()
+                    or "not found" in msg.lower()
+                    or "not installed" in msg.lower()
+                ):
                     _check(f"{name}", SKIP, msg)
                 else:
                     _check(f"{name}", WARN, msg)
@@ -264,6 +274,7 @@ def check_ollama_models() -> bool:
     """Check Ollama has models available."""
     try:
         import urllib.request
+
         req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read())
@@ -271,8 +282,7 @@ def check_ollama_models() -> bool:
             if models:
                 names = [m.get("name", "?") for m in models[:5]]
                 extra = f" +{len(models) - 5} more" if len(models) > 5 else ""
-                _check(f"Ollama models ({len(models)})", PASS,
-                       ", ".join(names) + extra)
+                _check(f"Ollama models ({len(models)})", PASS, ", ".join(names) + extra)
                 return True
             else:
                 _check("Ollama models", WARN, "Server running but no models pulled")
@@ -296,6 +306,7 @@ def check_log_health() -> bool:
     # Resolve default path
     try:
         from arenamcp.desktop.runtime import detect_runtime_state
+
         state = detect_runtime_state()
         default_path = Path(state.player_log)
     except Exception:
@@ -306,11 +317,7 @@ def check_log_health() -> bool:
         custom_path = Path(custom)
         try:
             if custom_path.resolve() != default_path.resolve():
-                _check(
-                    "Custom log path",
-                    WARN,
-                    f"MTGA_LOG_PATH={custom} differs from default"
-                )
+                _check("Custom log path", WARN, f"MTGA_LOG_PATH={custom} differs from default")
                 _fix(
                     "If MTGA uses -logfile, set MTGA_LOG_PATH to match.\n"
                     "If MTGA uses -nolog, mtgacoach cannot track games.\n"
@@ -331,8 +338,8 @@ def check_log_health() -> bool:
                 _check(
                     "Log file health",
                     WARN,
-                    f"Log is tiny ({size_mb:.2f} MB) and stale ({age_seconds/60:.0f} min) "
-                    "— MTGA may be using -nolog"
+                    f"Log is tiny ({size_mb:.2f} MB) and stale ({age_seconds / 60:.0f} min) "
+                    "— MTGA may be using -nolog",
                 )
                 _fix(
                     "Launch MTGA without -nolog flag.\n"
@@ -343,15 +350,11 @@ def check_log_health() -> bool:
                 _check(
                     "Log file health",
                     INFO,
-                    f"Last modified {age_seconds/60:.0f} min ago "
-                    f"({size_mb:.1f} MB) — MTGA may not be running"
+                    f"Last modified {age_seconds / 60:.0f} min ago "
+                    f"({size_mb:.1f} MB) — MTGA may not be running",
                 )
             else:
-                _check(
-                    "Log file health",
-                    PASS,
-                    f"Active ({size_mb:.1f} MB, modified {age_seconds:.0f}s ago)"
-                )
+                _check("Log file health", PASS, f"Active ({size_mb:.1f} MB, modified {age_seconds:.0f}s ago)")
         except OSError as e:
             _check("Log file health", WARN, str(e))
     else:
@@ -401,6 +404,7 @@ def check_network() -> bool:
     """Quick network connectivity check."""
     try:
         import urllib.request
+
         req = urllib.request.Request(
             "https://api.scryfall.com/sets",
             headers={
@@ -423,14 +427,15 @@ def check_disk_space() -> bool:
         home = Path.home()
         if os.name == "nt":
             import ctypes
+
             free_bytes = ctypes.c_ulonglong(0)
             ctypes.windll.kernel32.GetDiskFreeSpaceExW(
                 str(home.drive + "\\"), None, None, ctypes.pointer(free_bytes)
             )
-            free_gb = free_bytes.value / (1024 ** 3)
+            free_gb = free_bytes.value / (1024**3)
         else:
             st = os.statvfs(str(home))
-            free_gb = (st.f_bavail * st.f_frsize) / (1024 ** 3)
+            free_gb = (st.f_bavail * st.f_frsize) / (1024**3)
 
         if free_gb < 1:
             _check(f"Disk space ({free_gb:.1f} GB free)", FAIL)
@@ -449,10 +454,11 @@ def check_disk_space() -> bool:
 
 # ── Main runner ──────────────────────────────────────────────────────
 
+
 def run_diagnostics() -> int:
     """Run all diagnostic checks. Returns 0 if healthy, 1 if issues found."""
     print(f"{'═' * _W}")
-    print(f"  mtgacoach Diagnostics")
+    print("  mtgacoach Diagnostics")
     print(f"  {platform.system()} {platform.release()} | Python {sys.version.split()[0]}")
     print(f"{'═' * _W}")
 

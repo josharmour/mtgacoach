@@ -7,12 +7,12 @@ Falls back gracefully if PyObjC (AppKit) is unavailable or if event monitoring f
 
 import logging
 import sys
-from typing import Callable, Dict, Optional
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
 # macOS Virtual Key Codes for Function Keys (Carbon/AppKit)
-MACOS_KEY_CODES: Dict[str, int] = {
+MACOS_KEY_CODES: dict[str, int] = {
     "F1": 122,
     "F2": 120,
     "F3": 99,
@@ -27,7 +27,7 @@ MACOS_KEY_CODES: Dict[str, int] = {
     "F12": 111,
 }
 
-HOTKEY_PURPOSES: Dict[str, str] = {
+HOTKEY_PURPOSES: dict[str, str] = {
     "F3": "VLM Analyze",
     "F6": "PTT (Push-To-Talk)",
     "F12": "AP Toggle (Autopilot)",
@@ -41,6 +41,7 @@ NSEventMaskKeyDown = None
 if sys.platform == "darwin":
     try:
         from AppKit import NSEvent
+
         try:
             from AppKit import NSEventMaskKeyDown
         except ImportError:
@@ -56,14 +57,14 @@ if sys.platform == "darwin":
 
 class DarwinHotkeyListener:
     """macOS Global Hotkey Listener using PyObjC NSEvent.addGlobalMonitorForEventsMatchingMask.
-    
+
     Implements native background global hotkey interception for F3, F6, F12, etc.
     Gracefully falls back when PyObjC is not installed or when accessibility permissions are missing.
     """
 
     def __init__(self) -> None:
-        self._callbacks: Dict[int, Callable[[], None]] = {}
-        self._key_names: Dict[int, str] = {}
+        self._callbacks: dict[int, Callable[[], None]] = {}
+        self._key_names: dict[int, str] = {}
         self._global_monitor = None
         self._local_monitor = None
         self._active = False
@@ -132,6 +133,7 @@ class DarwinHotkeyListener:
             return self._active
 
         try:
+
             def _global_handler(event) -> None:
                 try:
                     keycode = event.keyCode()
@@ -151,6 +153,7 @@ class DarwinHotkeyListener:
 
             # Also register local monitor for when application is focused
             if hasattr(NSEvent, "addLocalMonitorForEventsMatchingMask_handler_"):
+
                 def _local_handler(event):
                     try:
                         keycode = event.keyCode()

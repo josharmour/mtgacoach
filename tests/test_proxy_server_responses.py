@@ -4,7 +4,10 @@ import copy
 import importlib.util
 import json
 import sys
+from pathlib import Path
+
 import pytest
+
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
@@ -93,24 +96,26 @@ def _usage() -> dict:
 
 
 def test_responses_create_and_previous_response_id_round_trip(tmp_path: Path, monkeypatch) -> None:
-    provider = _FakeProvider([
-        {
-            "id": "chatcmpl_1",
-            "object": "chat.completion",
-            "created": 1000,
-            "model": "gpt-5.4-2026-03-05",
-            "choices": [{"message": {"role": "assistant", "content": "alpha"}}],
-            "usage": _usage(),
-        },
-        {
-            "id": "chatcmpl_2",
-            "object": "chat.completion",
-            "created": 1001,
-            "model": "gpt-5.4-2026-03-05",
-            "choices": [{"message": {"role": "assistant", "content": "beta"}}],
-            "usage": _usage(),
-        },
-    ])
+    provider = _FakeProvider(
+        [
+            {
+                "id": "chatcmpl_1",
+                "object": "chat.completion",
+                "created": 1000,
+                "model": "gpt-5.4-2026-03-05",
+                "choices": [{"message": {"role": "assistant", "content": "alpha"}}],
+                "usage": _usage(),
+            },
+            {
+                "id": "chatcmpl_2",
+                "object": "chat.completion",
+                "created": 1001,
+                "model": "gpt-5.4-2026-03-05",
+                "choices": [{"message": {"role": "assistant", "content": "beta"}}],
+                "usage": _usage(),
+            },
+        ]
+    )
     proxy_app, proxy_db = _load_proxy_app(tmp_path, monkeypatch, provider)
     existing = proxy_db.create_subscriber(email="coder@example.com", name="Coder", days=30)
     auth = {"Authorization": f"Bearer {existing['license_key']}"}
@@ -146,33 +151,41 @@ def test_responses_create_and_previous_response_id_round_trip(tmp_path: Path, mo
 
 
 def test_responses_builtin_local_shell_tool_translation(tmp_path: Path, monkeypatch) -> None:
-    provider = _FakeProvider([
-        {
-            "id": "chatcmpl_tool",
-            "object": "chat.completion",
-            "created": 2000,
-            "model": "gpt-5.4-2026-03-05",
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "id": "call_local_1",
-                        "type": "function",
-                        "function": {
-                            "name": "__mtgacoach_local_shell",
-                            "arguments": json.dumps({
-                                "type": "exec",
-                                "command": ["git", "status"],
-                                "env": {},
-                            }),
+    provider = _FakeProvider(
+        [
+            {
+                "id": "chatcmpl_tool",
+                "object": "chat.completion",
+                "created": 2000,
+                "model": "gpt-5.4-2026-03-05",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_local_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "__mtgacoach_local_shell",
+                                        "arguments": json.dumps(
+                                            {
+                                                "type": "exec",
+                                                "command": ["git", "status"],
+                                                "env": {},
+                                            }
+                                        ),
+                                    },
+                                }
+                            ],
                         },
-                    }],
-                },
-            }],
-            "usage": _usage(),
-        },
-    ])
+                    }
+                ],
+                "usage": _usage(),
+            },
+        ]
+    )
     proxy_app, proxy_db = _load_proxy_app(tmp_path, monkeypatch, provider)
     existing = proxy_db.create_subscriber(email="tooler@example.com", name="Tooler", days=30)
     auth = {"Authorization": f"Bearer {existing['license_key']}"}
@@ -197,16 +210,18 @@ def test_responses_builtin_local_shell_tool_translation(tmp_path: Path, monkeypa
 
 
 def test_responses_stream_returns_synthetic_sse_events(tmp_path: Path, monkeypatch) -> None:
-    provider = _FakeProvider([
-        {
-            "id": "chatcmpl_stream",
-            "object": "chat.completion",
-            "created": 3000,
-            "model": "gpt-5.4-2026-03-05",
-            "choices": [{"message": {"role": "assistant", "content": "streamed text"}}],
-            "usage": _usage(),
-        },
-    ])
+    provider = _FakeProvider(
+        [
+            {
+                "id": "chatcmpl_stream",
+                "object": "chat.completion",
+                "created": 3000,
+                "model": "gpt-5.4-2026-03-05",
+                "choices": [{"message": {"role": "assistant", "content": "streamed text"}}],
+                "usage": _usage(),
+            },
+        ]
+    )
     proxy_app, proxy_db = _load_proxy_app(tmp_path, monkeypatch, provider)
     existing = proxy_db.create_subscriber(email="stream@example.com", name="Stream", days=30)
     auth = {"Authorization": f"Bearer {existing['license_key']}"}

@@ -7,7 +7,7 @@ Caches responses for 1 hour.
 import logging
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 from bs4 import BeautifulSoup
@@ -37,7 +37,7 @@ class MTGGoldfishClient:
             "Accept-Language": "en-US,en;q=0.9",
         }
 
-    def _read_cache(self, key: str) -> Optional[dict[str, Any]]:
+    def _read_cache(self, key: str) -> dict[str, Any] | None:
         """Read data from cache if available and valid."""
         return self._cache.read(key)
 
@@ -45,9 +45,7 @@ class MTGGoldfishClient:
         """Write data to cache."""
         self._cache.write(key, data)
 
-    def get_metagame(
-        self, format_name: str, force_refresh: bool = False
-    ) -> list[dict[str, Any]]:
+    def get_metagame(self, format_name: str, force_refresh: bool = False) -> list[dict[str, Any]]:
         """Get metagame breakdown for a specific format.
 
         Args:
@@ -96,7 +94,7 @@ class MTGGoldfishClient:
             logger.error(f"Error scraping MTGGoldfish: {e}")
             return []
 
-    def _parse_tile(self, tile) -> Optional[dict[str, Any]]:
+    def _parse_tile(self, tile) -> dict[str, Any] | None:
         """Parse a single archetype tile."""
         try:
             title_tag = tile.select_one(".deck-price-paper a")
@@ -129,9 +127,7 @@ class MTGGoldfishClient:
         except Exception:
             return None
 
-    def get_deck_list(
-        self, url: str, force_refresh: bool = False
-    ) -> dict[str, Any]:
+    def get_deck_list(self, url: str, force_refresh: bool = False) -> dict[str, Any]:
         """Scrape a specific deck page to get the full card list.
 
         Args:

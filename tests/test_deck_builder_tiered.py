@@ -1,10 +1,8 @@
 """Tests for 3-tiered deck builder, wildcard inventories, and craft cost calculations."""
 
-import pytest
 from arenamcp.deck_builder import (
     CraftCost,
     DeckBuilderV2,
-    TieredDeckSuggestion,
     WildcardInventory,
 )
 
@@ -27,7 +25,11 @@ def test_wildcard_inventory_from_dict():
 
     # Empty or None
     inv3 = WildcardInventory.from_dict(None)
-    assert inv3.total == 0 if hasattr(inv3, "total") else (inv3.common + inv3.uncommon + inv3.rare + inv3.mythic) == 0
+    assert (
+        inv3.total == 0
+        if hasattr(inv3, "total")
+        else (inv3.common + inv3.uncommon + inv3.rare + inv3.mythic) == 0
+    )
 
 
 def test_craft_cost_calculation():

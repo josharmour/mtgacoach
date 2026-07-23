@@ -281,9 +281,7 @@ def test_turn_plan_block_injected_into_subsequent_prompts():
     call); the block is injected into the next window's prompt.
     """
     merged = json.loads(_turn_plan_response())
-    merged["actions"] = [
-        {"action_type": "play_land", "card_name": "Forest"}
-    ]
+    merged["actions"] = [{"action_type": "play_land", "card_name": "Forest"}]
     merged["overall_strategy"] = "do the thing"
     backend = _ScriptedBackend(
         [

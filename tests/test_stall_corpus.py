@@ -11,10 +11,10 @@ import json
 from pathlib import Path
 
 import pytest
+from tools.eval.replay_stalls import replay_fixture
 
 from arenamcp.decisions import decision_from_dict, decision_to_dict
 from arenamcp.stall_corpus import load_fixture, record_stall
-from tools.eval.replay_stalls import replay_fixture
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "stalls"
 FIXTURES = sorted(FIXTURE_DIR.glob("*.json"))
@@ -28,24 +28,16 @@ def test_curated_fixture_replays_clean(path):
 
 
 def test_momentum_breaker_fixture_never_picks_unpayable():
-    data = json.loads(
-        (FIXTURE_DIR / "momentum_breaker_unpayable.json").read_text(encoding="utf-8")
-    )
+    data = json.loads((FIXTURE_DIR / "momentum_breaker_unpayable.json").read_text(encoding="utf-8"))
     result = replay_fixture(data)
     # The deterministic pick must be the payable cast — never idx:0.
     assert result["picked"] == ["idx:1"]
 
 
 def test_record_stall_roundtrip(tmp_path):
-    data = json.loads(
-        (FIXTURE_DIR / "nurturing_presence_select_targets.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    data = json.loads((FIXTURE_DIR / "nurturing_presence_select_targets.json").read_text(encoding="utf-8"))
     decision = decision_from_dict(data["pending_decision"])
-    path = record_stall(
-        decision, ["tgt:233"], "exhausted", {"turn": 5}, corpus_dir=tmp_path
-    )
+    path = record_stall(decision, ["tgt:233"], "exhausted", {"turn": 5}, corpus_dir=tmp_path)
     assert path is not None and path.exists()
     fixture = load_fixture(path)
     assert fixture["outcome"] == "exhausted"

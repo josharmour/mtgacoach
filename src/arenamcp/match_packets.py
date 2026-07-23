@@ -7,13 +7,13 @@ DPO pair generation.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from arenamcp.decisions import PendingDecision, decision_to_dict
 
@@ -29,11 +29,11 @@ class MatchPacket:
     def __init__(self, match_id: str):
         self.match_id = match_id
         self.start_time = datetime.now().isoformat()
-        self.end_time: Optional[str] = None
+        self.end_time: str | None = None
         self.result: str = "unknown"
-        self.deck_strategy: Optional[str] = None
-        self.opponent_name: Optional[str] = None
-        self.replay_path: Optional[str] = None
+        self.deck_strategy: str | None = None
+        self.opponent_name: str | None = None
+        self.replay_path: str | None = None
         self.decisions: list[dict[str, Any]] = []
 
     def add_decision(self, decision: PendingDecision, chosen_options: list[str]) -> None:
@@ -41,20 +41,22 @@ class MatchPacket:
         from arenamcp.request_tracker import decision_fingerprint
 
         fp = decision_fingerprint(decision)
-        self.decisions.append({
-            "pending_decision": decision_to_dict(decision),
-            "chosen_options": list(chosen_options),
-            "outcome": "pending",
-            "fingerprint": fp,
-            "timestamp": time.time(),
-        })
+        self.decisions.append(
+            {
+                "pending_decision": decision_to_dict(decision),
+                "chosen_options": list(chosen_options),
+                "outcome": "pending",
+                "fingerprint": fp,
+                "timestamp": time.time(),
+            }
+        )
 
     def add_executed_action(
         self,
         action_type: str,
         card_name: str = "",
         detail: str = "",
-        turn: Optional[int] = None,
+        turn: int | None = None,
         path: str = "",
     ) -> None:
         """Log a plan-executed autopilot action (cast/land/attack/pass...).
@@ -64,17 +66,19 @@ class MatchPacket:
         despite 8 successful bridge submissions, gutting the packet's value
         as training/telemetry data (P0-9).
         """
-        self.decisions.append({
-            "executed_action": {
-                "action_type": action_type,
-                "card_name": card_name,
-                "detail": detail,
-                "turn": turn,
-                "path": path,
-            },
-            "outcome": "executed",
-            "timestamp": time.time(),
-        })
+        self.decisions.append(
+            {
+                "executed_action": {
+                    "action_type": action_type,
+                    "card_name": card_name,
+                    "detail": detail,
+                    "turn": turn,
+                    "path": path,
+                },
+                "outcome": "executed",
+                "timestamp": time.time(),
+            }
+        )
 
     def update_outcome(self, fp: tuple, outcome: str) -> None:
         """Settle a pending decision with its final execution outcome."""
@@ -84,7 +88,7 @@ class MatchPacket:
                 logger.debug(f"MatchPacket: updated decision {fp[0]} to {outcome}")
                 break
 
-    def save(self, packets_dir: Optional[Path] = None) -> Optional[Path]:
+    def save(self, packets_dir: Path | None = None) -> Path | None:
         """Save the packet to disk as a JSON fixture."""
         try:
             target_dir = packets_dir or PACKETS_DIR
@@ -129,16 +133,14 @@ def _rotate(target_dir: Path) -> None:
         packets = sorted(target_dir.glob("packet_*.json"))
         excess = len(packets) - MAX_PACKETS
         for old in packets[:excess]:
-            try:
+            with contextlib.suppress(OSError):
                 old.unlink()
-            except OSError:
-                pass
     except Exception:
         pass
 
 
 # Global singleton instance managed by standalone loop
-_current_packet: Optional[MatchPacket] = None
+_current_packet: MatchPacket | None = None
 
 # Match ids whose packet already hit disk this session. The server's late
 # "Completed match event for unseen match" re-surfaces a finished match id
@@ -152,7 +154,7 @@ def mark_match_finalized(match_id: str) -> None:
     _finalized_match_ids.add(match_id)
 
 
-def start_match_packet(match_id: str) -> Optional[MatchPacket]:
+def start_match_packet(match_id: str) -> MatchPacket | None:
     """Initialize a fresh match packet.
 
     Returns None (no recording) when this match id was already finalized —
@@ -164,9 +166,7 @@ def start_match_packet(match_id: str) -> Optional[MatchPacket]:
     """
     global _current_packet
     if match_id in _finalized_match_ids:
-        logger.info(
-            f"Not restarting match packet for already-finalized match {match_id}"
-        )
+        logger.info(f"Not restarting match packet for already-finalized match {match_id}")
         return None
     prev = _current_packet
     if prev is not None and prev.match_id != match_id and prev.decisions:
@@ -181,12 +181,12 @@ def start_match_packet(match_id: str) -> Optional[MatchPacket]:
     return _current_packet
 
 
-def get_current_packet() -> Optional[MatchPacket]:
+def get_current_packet() -> MatchPacket | None:
     """Retrieve the current active match packet."""
     return _current_packet
 
 
-def stop_match_packet() -> Optional[MatchPacket]:
+def stop_match_packet() -> MatchPacket | None:
     """Terminate and clear the active match packet."""
     global _current_packet
     packet = _current_packet

@@ -10,7 +10,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ _ACTIONS_AVAILABLE_BRIDGE_REQUESTS = {
 
 class ActionType(Enum):
     """Types of actions the autopilot can execute in MTGA."""
+
     PLAY_LAND = "play_land"
     CAST_SPELL = "cast_spell"
     DECLARE_ATTACKERS = "declare_attackers"
@@ -62,6 +63,7 @@ class ActionType(Enum):
 @dataclass
 class GameAction:
     """A single structured action to execute in MTGA."""
+
     action_type: ActionType
     card_name: str = ""
     target_names: list[str] = field(default_factory=list)
@@ -75,7 +77,7 @@ class GameAction:
     play_or_draw: str = ""  # "play" or "draw"
     reasoning: str = ""
     confidence: float = 1.0
-    gre_action_ref: Optional[Any] = None  # GREActionRef from gre_action_matcher
+    gre_action_ref: Any | None = None  # GREActionRef from gre_action_matcher
     # Land play via the MDFC back face ("Action: PlayMDFC" menu entries) —
     # the matcher must resolve it to the raw PlayMDFC action, not a plain
     # Play (#39, live 2026-07-06).
@@ -100,6 +102,7 @@ class GameAction:
 @dataclass
 class ActionPlan:
     """A complete plan of actions to execute."""
+
     actions: list[GameAction] = field(default_factory=list)
     overall_strategy: str = ""
     voice_advice: str = ""
@@ -121,7 +124,8 @@ class TurnPlanStep:
     intentionally NOT modeled here — those are mid-spell mechanical
     decisions, not plays. The status field is updated as steps execute.
     """
-    action_type: str        # "play_land", "cast_spell", "activate_ability", "declare_attackers", etc.
+
+    action_type: str  # "play_land", "cast_spell", "activate_ability", "declare_attackers", etc.
     card_name: str = ""
     target_names: list[str] = field(default_factory=list)
     rationale: str = ""
@@ -139,6 +143,7 @@ class TurnPlan:
     for execution. The plan is parallel context, not a replacement for
     the per-window planner.
     """
+
     turn_number: int
     steps: list[TurnPlanStep] = field(default_factory=list)
     current_idx: int = 0
@@ -152,7 +157,7 @@ class TurnPlan:
                 self.steps[self.current_idx].status = "current"
 
     def remaining(self) -> list[TurnPlanStep]:
-        return self.steps[self.current_idx:]
+        return self.steps[self.current_idx :]
 
     def mark_current_done(self) -> None:
         if 0 <= self.current_idx < len(self.steps):
@@ -190,7 +195,8 @@ short "reasoning"); a structured action needs ONLY action_type + its own
 fields. Never emit empty placeholder fields."""
 
 
-AUTOPILOT_SYSTEM_PROMPT = """You are an MTG Arena autopilot. Given the game state and trigger, output a JSON action plan to execute.
+AUTOPILOT_SYSTEM_PROMPT = (
+    """You are an MTG Arena autopilot. Given the game state and trigger, output a JSON action plan to execute.
 
 RULES:
 - PREFERRED OUTPUT: the "Legal:" menu is NUMBERED. For a simple play (cast,
@@ -241,7 +247,9 @@ PER-DECISION FIELDS:
   This is a mode pick, NOT numeric_input and NOT a new cast.
 
 SCHEMA:
-""" + ACTION_SCHEMA
+"""
+    + ACTION_SCHEMA
+)
 
 
 # P0-8 (2026-07-05): plan_turn used to reuse AUTOPILOT_SYSTEM_PROMPT, whose
@@ -307,7 +315,7 @@ class ActionPlanner:
         # nudged to stay committed to the same strategy instead of re-reasoning
         # from scratch. Cleared on turn change.
         self._turn_memo_turn: int = -1
-        self._turn_memo: Optional[ActionPlan] = None
+        self._turn_memo: ActionPlan | None = None
         # Executed actions this turn (by string repr); used to tell the LLM
         # "you already did X" in subsequent priority windows.
         self._turn_executed: list[str] = []
@@ -315,13 +323,13 @@ class ActionPlanner:
         # produced this turn, captured and held for the rest of the turn so
         # subsequent priority windows reason as "continue the plan" instead
         # of re-deriving strategy from scratch (the flip-flop pattern).
-        self._turn_intent: Optional[str] = None
+        self._turn_intent: str | None = None
         # Active multi-step turn plan: the ordered list of user-visible plays
         # we intend to make this turn. Built once on the first non-trivial
         # own-turn LLM call (an additional `plan_turn` LLM call), then
         # advanced as actions execute and replaced wholesale on divergence.
         # Cleared on turn change.
-        self._active_turn_plan: Optional[TurnPlan] = None
+        self._active_turn_plan: TurnPlan | None = None
         # Turn number we last attempted plan_turn on. Used to suppress
         # repeated plan_turn calls within the same turn after a failure
         # — without this, every priority window in a turn where plan_turn
@@ -333,7 +341,7 @@ class ActionPlanner:
         # no plan has been formed yet.
         self._game_plan: str = ""
 
-    def set_game_plan(self, plan_text: Optional[str]) -> None:
+    def set_game_plan(self, plan_text: str | None) -> None:
         """Set the persistent strategic GAME PLAN block injected into prompts.
 
         Owned by a :class:`arenamcp.game_plan.GamePlanManager`; the autopilot
@@ -349,9 +357,9 @@ class ActionPlanner:
         self,
         game_state: dict[str, Any],
         trigger: str,
-        legal_actions: Optional[list[str]] = None,
-        decision_context: Optional[dict[str, Any]] = None,
-        legal_actions_raw: Optional[list[dict]] = None,
+        legal_actions: list[str] | None = None,
+        decision_context: dict[str, Any] | None = None,
+        legal_actions_raw: list[dict] | None = None,
     ) -> ActionPlan:
         """Plan actions for the current game state.
 
@@ -366,9 +374,7 @@ class ActionPlanner:
             ActionPlan with structured actions to execute.
         """
         start = time.perf_counter()
-        effective_legal_actions = self._filter_legal_actions_for_planning(
-            game_state, legal_actions or []
-        )
+        effective_legal_actions = self._filter_legal_actions_for_planning(game_state, legal_actions or [])
 
         # Clear turn memo on turn change, and record what was executed in the
         # previous window so the next prompt sees it.
@@ -376,8 +382,7 @@ class ActionPlanner:
         if current_turn != self._turn_memo_turn:
             if self._turn_memo:
                 logger.debug(
-                    f"Turn changed ({self._turn_memo_turn} -> {current_turn}), "
-                    "clearing planner memo"
+                    f"Turn changed ({self._turn_memo_turn} -> {current_turn}), clearing planner memo"
                 )
             self._turn_memo = None
             self._turn_memo_turn = current_turn
@@ -411,9 +416,7 @@ class ActionPlanner:
         # played this turn, short-circuit the LLM. Fixes the "drops land
         # after combat" pattern where the LLM picks declare_attackers /
         # cast_spell from a window that also offered Play Land.
-        forced_land = self._should_force_land_drop(
-            game_state, effective_legal_actions, decision_context
-        )
+        forced_land = self._should_force_land_drop(game_state, effective_legal_actions, decision_context)
         if forced_land:
             preflight_plan = self._build_preflight_plan(
                 forced_land,
@@ -422,9 +425,7 @@ class ActionPlanner:
                 tag="land-drop-first",
             )
             if preflight_plan.actions:
-                raw = self._resolve_raw_actions_for_matching(
-                    game_state, legal_actions_raw
-                )
+                raw = self._resolve_raw_actions_for_matching(game_state, legal_actions_raw)
                 if raw:
                     self._attach_gre_refs(preflight_plan, raw, game_state)
                 diag["preflight"] = "land_drop_first"
@@ -434,9 +435,7 @@ class ActionPlanner:
                 self._record_diagnostic(diag)
                 self._turn_memo = preflight_plan
                 self._turn_memo_turn = current_turn
-                logger.info(
-                    f"Planner preflight: {preflight_plan.overall_strategy}"
-                )
+                logger.info(f"Planner preflight: {preflight_plan.overall_strategy}")
                 return preflight_plan
 
         # P2-6: a menu with no real choice needs no LLM. 7+ full calls on
@@ -445,8 +444,7 @@ class ActionPlanner:
         # response was discarded or auto-picked anyway.
         _trivial = {"pass", "action: activate_mana", "action: floatmana"}
         has_real_choice = any(
-            a.strip().lower() not in _trivial
-            and not a.strip().lower().startswith("wait (")
+            a.strip().lower() not in _trivial and not a.strip().lower().startswith("wait (")
             for a in effective_legal_actions
         )
         if effective_legal_actions and not has_real_choice:
@@ -459,8 +457,7 @@ class ActionPlanner:
                 diag["planned_actions"] = len(plan.actions)
                 self._record_diagnostic(diag)
                 logger.info(
-                    "Planner short-circuit: trivial window "
-                    f"({effective_legal_actions}) — no LLM call"
+                    f"Planner short-circuit: trivial window ({effective_legal_actions}) — no LLM call"
                 )
                 return plan
 
@@ -487,7 +484,7 @@ class ActionPlanner:
         if want_turn_plan:
             user_message += (
                 "\n\nADDITIONALLY: this is the first decision of your turn. "
-                "Include a top-level \"turn_plan\" key in the SAME JSON "
+                'Include a top-level "turn_plan" key in the SAME JSON '
                 "response with the full ordered list of user-visible plays "
                 "for this turn (3-7 items; skip mana abilities and "
                 "sub-decisions): "
@@ -524,9 +521,7 @@ class ActionPlanner:
                 )
             except TypeError:
                 try:
-                    return self._backend.complete(
-                        system_prompt, user_message, 4096, temperature=0.0
-                    )
+                    return self._backend.complete(system_prompt, user_message, 4096, temperature=0.0)
                 except TypeError:
                     return self._backend.complete(system_prompt, user_message)
 
@@ -622,7 +617,11 @@ class ActionPlanner:
         # Cache the plan as the turn memo so subsequent priority windows see
         # it and stay consistent. Skip caching for mulligan and pass-only
         # plans (no commitment to preserve).
-        if plan.actions and plan.actions[0].action_type.value not in ("pass_priority", "mulligan_keep", "mulligan_mull"):
+        if plan.actions and plan.actions[0].action_type.value not in (
+            "pass_priority",
+            "mulligan_keep",
+            "mulligan_mull",
+        ):
             self._turn_memo = plan
             self._turn_memo_turn = current_turn
 
@@ -680,27 +679,27 @@ class ActionPlanner:
     # Action types that count as "user-visible plays" worth showing in
     # the turn plan. Mana abilities, casting-time sub-decisions, search
     # prompts, and similar mid-spell mechanics are intentionally excluded.
-    _TURN_PLAN_USER_VISIBLE_ACTIONS = frozenset({
-        "play_land",
-        "cast_spell",
-        "activate_ability",
-        "declare_attackers",
-        "declare_blockers",
-    })
+    _TURN_PLAN_USER_VISIBLE_ACTIONS = frozenset(
+        {
+            "play_land",
+            "cast_spell",
+            "activate_ability",
+            "declare_attackers",
+            "declare_blockers",
+        }
+    )
 
     def _is_own_actions_available_window(
         self,
         game_state: dict[str, Any],
-        decision_context: Optional[dict[str, Any]],
+        decision_context: dict[str, Any] | None,
     ) -> bool:
         """Are we in a normal own-turn ActionsAvailable priority window?"""
         bridge_request = (game_state.get("_bridge_request_type") or "").strip()
         bridge_class = (game_state.get("_bridge_request_class") or "").strip()
         # Allow empty (test states) or ActionsAvailable-family.
         ok_requests = self._ACTIONS_AVAILABLE_PREFLIGHT_REQUESTS
-        if (
-            bridge_request and bridge_request not in ok_requests
-        ) or (
+        if (bridge_request and bridge_request not in ok_requests) or (
             bridge_class and bridge_class not in ok_requests
         ):
             return False
@@ -722,8 +721,8 @@ class ActionPlanner:
         self,
         game_state: dict[str, Any],
         effective_legal_actions: list[str],
-        decision_context: Optional[dict[str, Any]] = None,
-    ) -> Optional[TurnPlan]:
+        decision_context: dict[str, Any] | None = None,
+    ) -> TurnPlan | None:
         """One-shot LLM call that lays out the user-visible plays for the turn.
 
         Stores the result on `self._active_turn_plan`. Returns the plan or
@@ -738,6 +737,7 @@ class ActionPlanner:
         # rather than a single action.
         try:
             from arenamcp.coach import CoachEngine
+
             formatter = CoachEngine.__new__(CoachEngine)
             context = formatter._format_game_context(game_state, for_planner=True)
         except Exception as e:
@@ -754,7 +754,7 @@ class ActionPlanner:
             '{"action_type": "play_land", "card_name": "Forest", "rationale": "fix mana"},'
             '{"action_type": "cast_spell", "card_name": "Optimistic Scavenger", '
             '"target_names": [], "rationale": "early pressure"}'
-            ']}}'
+            "]}}"
         )
         game_plan_block = f"{self._game_plan}\n\n" if self._game_plan else ""
         user_message = (
@@ -805,8 +805,7 @@ class ActionPlanner:
         logger.info(
             f"Turn plan locked (turn {current_turn}): "
             + ", ".join(
-                (f"{s.action_type}:{s.card_name}" if s.card_name else s.action_type)
-                for s in plan.steps
+                (f"{s.action_type}:{s.card_name}" if s.card_name else s.action_type) for s in plan.steps
             )
         )
         return plan
@@ -815,7 +814,7 @@ class ActionPlanner:
         self,
         response: str,
         current_turn: int,
-    ) -> Optional[TurnPlan]:
+    ) -> TurnPlan | None:
         """Defensively parse the JSON {"turn_plan": {"steps": [...]}} shape."""
         if not response:
             return None
@@ -844,9 +843,7 @@ class ActionPlanner:
         # P0-8 belt-and-braces: a model that obeyed the actions envelope
         # anyway still described the turn — map actions→steps
         # (reasoning→rationale) instead of discarding the whole response.
-        if (not isinstance(steps_data, list) or not steps_data) and isinstance(
-            data.get("actions"), list
-        ):
+        if (not isinstance(steps_data, list) or not steps_data) and isinstance(data.get("actions"), list):
             steps_data = [
                 {**a, "rationale": a.get("rationale") or a.get("reasoning", "")}
                 for a in data["actions"]
@@ -919,20 +916,16 @@ class ActionPlanner:
             # For attack/block, we don't compare card names (aggregate).
             if executed_type in ("declare_attackers", "declare_blockers"):
                 return True
-            executed_name = self._strip_decoration(
-                executed_action.card_name or ""
-            ).lower()
+            executed_name = self._strip_decoration(executed_action.card_name or "").lower()
             expected_name = self._strip_decoration(step.card_name or "").lower()
-            return not (
-                expected_name and executed_name and expected_name != executed_name
-            )
+            return not (expected_name and executed_name and expected_name != executed_name)
 
         # Current step first, then look-ahead: a later step executing early
         # (e.g. the land-drop preflight already performed step 1) marks the
         # stepped-over ones "skipped" instead of reading as divergence.
-        for offset, step in enumerate(plan.steps[plan.current_idx:]):
+        for offset, step in enumerate(plan.steps[plan.current_idx :]):
             if _matches(step):
-                for skipped in plan.steps[plan.current_idx:plan.current_idx + offset]:
+                for skipped in plan.steps[plan.current_idx : plan.current_idx + offset]:
                     skipped.status = "skipped"
                 plan.current_idx += offset
                 plan.mark_current_done()
@@ -963,10 +956,7 @@ class ActionPlanner:
         plan = self._active_turn_plan
         if plan is None:
             return False
-        return any(
-            step.action_type == "declare_attackers" and step.status != "done"
-            for step in plan.steps
-        )
+        return any(step.action_type == "declare_attackers" and step.status != "done" for step in plan.steps)
 
     def invalidate_turn_plan(self, reason: str = "") -> None:
         """Drop the active turn plan and stash the reason for the UI to show."""
@@ -1021,7 +1011,7 @@ class ActionPlanner:
             return f"{action}: {name}"
         return action
 
-    def get_turn_plan_payload(self) -> Optional[dict[str, Any]]:
+    def get_turn_plan_payload(self) -> dict[str, Any] | None:
         """Serialize the active turn plan into a dict for the pipe event.
 
         Returns None when there's no active plan.
@@ -1048,7 +1038,7 @@ class ActionPlanner:
     @staticmethod
     def _resolve_raw_actions_for_matching(
         game_state: dict[str, Any],
-        legal_actions_raw: Optional[list[dict[str, Any]]] = None,
+        legal_actions_raw: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         """Choose the freshest raw GRE actions for ref attachment."""
         if legal_actions_raw is not None:
@@ -1091,9 +1081,10 @@ class ActionPlanner:
                         game_objects[iid] = obj
 
         # Build a scryfall lookup helper
-        def scryfall_lookup(grp_id: int) -> Optional[str]:
+        def scryfall_lookup(grp_id: int) -> str | None:
             try:
                 from arenamcp import server
+
                 info = server.get_card_info(grp_id)
                 return info.get("name")
             except Exception as e:
@@ -1148,11 +1139,7 @@ class ActionPlanner:
 
                         rules_engine_cls = RulesEngine
                         local_seat = next(
-                            (
-                                p.get("seat_id")
-                                for p in game_state.get("players", [])
-                                if p.get("is_local")
-                            ),
+                            (p.get("seat_id") for p in game_state.get("players", []) if p.get("is_local")),
                             None,
                         )
                         if local_seat is not None:
@@ -1244,8 +1231,7 @@ class ActionPlanner:
                     # MTGA's autotap solver (it handles hybrid / phyrexian /
                     # cost reductions / affinity the local check doesn't).
                     logger.debug(
-                        "Cast %s: [OK]/autotap present but local check "
-                        "unaffordable — trusting bridge.",
+                        "Cast %s: [OK]/autotap present but local check unaffordable — trusting bridge.",
                         card_name,
                     )
 
@@ -1253,9 +1239,7 @@ class ActionPlanner:
                 # Casting them just forces the user to either blow up their own
                 # permanent or cancel — neither is worth the mana. See "Seam Rip
                 # with only my own enchantment in play" self-destruct case.
-                if card_hand_entry and self._removal_lacks_opponent_target(
-                    card_hand_entry, game_state
-                ):
+                if card_hand_entry and self._removal_lacks_opponent_target(card_hand_entry, game_state):
                     logger.info(
                         "Filtering self-harming removal: %s (no legal opponent target)",
                         card_name,
@@ -1266,18 +1250,20 @@ class ActionPlanner:
 
         return filtered or legal_actions
 
-    _ACTIONS_AVAILABLE_PREFLIGHT_REQUESTS: frozenset[str] = frozenset({
-        "",
-        "ActionsAvailable",
-        "ActionsAvailableRequest",
-    })
+    _ACTIONS_AVAILABLE_PREFLIGHT_REQUESTS: frozenset[str] = frozenset(
+        {
+            "",
+            "ActionsAvailable",
+            "ActionsAvailableRequest",
+        }
+    )
 
     def _should_force_land_drop(
         self,
         game_state: dict[str, Any],
         legal_actions: list[str],
-        decision_context: Optional[dict[str, Any]],
-    ) -> Optional[str]:
+        decision_context: dict[str, Any] | None,
+    ) -> str | None:
         """Return a Play Land legal-action string if we should force it now.
 
         Conditions:
@@ -1316,11 +1302,7 @@ class ActionPlanner:
             return None
 
         local_player = next(
-            (
-                p
-                for p in game_state.get("players", [])
-                if p.get("seat_id") == local_seat
-            ),
+            (p for p in game_state.get("players", []) if p.get("seat_id") == local_seat),
             None,
         )
         # If lands_played is missing, assume 1 (don't force a drop on
@@ -1405,7 +1387,8 @@ class ActionPlanner:
 
         battlefield = game_state.get("battlefield", []) or []
         opp_permanents = [
-            c for c in battlefield
+            c
+            for c in battlefield
             # gamestate emits controller_seat_id (never controller_id);
             # controller beats owner so stolen permanents classify right.
             if (c.get("controller_seat_id") or c.get("owner_seat_id")) != local_seat
@@ -1424,9 +1407,7 @@ class ActionPlanner:
         if "target artifact" in oracle and "enchantment" not in oracle:
             if not _opp_of_type(lambda c: "artifact" in str(c.get("type_line") or "").lower()):
                 return True
-        if ("target creature" in oracle
-                and "or enchantment" not in oracle
-                and "or planeswalker" not in oracle):
+        if "target creature" in oracle and "or enchantment" not in oracle and "or planeswalker" not in oracle:
             if not _opp_of_type(lambda c: "creature" in str(c.get("type_line") or "").lower()):
                 return True
         if "target nonland permanent" in oracle or "target permanent" in oracle:
@@ -1441,8 +1422,8 @@ class ActionPlanner:
         self,
         game_state: dict[str, Any],
         trigger: str,
-        legal_actions: Optional[list[str]] = None,
-        decision_context: Optional[dict[str, Any]] = None,
+        legal_actions: list[str] | None = None,
+        decision_context: dict[str, Any] | None = None,
     ) -> str:
         """Build the user message with formatted game context.
 
@@ -1453,6 +1434,7 @@ class ActionPlanner:
         # long-resident permanents — see _format_game_context(for_planner).
         try:
             from arenamcp.coach import CoachEngine
+
             formatter = CoachEngine.__new__(CoachEngine)
             context = formatter._format_game_context(game_state, for_planner=True)
         except Exception as e:
@@ -1474,28 +1456,22 @@ class ActionPlanner:
             # on 2026-07-05: "tap Talisman/Forest for mana") — keep them out
             # of the menu entirely.
             menu = [
-                a for a in legal_actions
-                if a.strip().lower() not in (
-                    "action: activate_mana", "action: floatmana"
-                )
+                a
+                for a in legal_actions
+                if a.strip().lower() not in ("action: activate_mana", "action: floatmana")
             ]
             self._last_menu = menu
             if menu:
-                menu_lines = "\n".join(
-                    f"  {i + 1}. {a}" for i, a in enumerate(menu)
-                )
+                menu_lines = "\n".join(f"  {i + 1}. {a}" for i, a in enumerate(menu))
                 eff_str = f"(pick by number)\n{menu_lines}"
             else:
                 eff_str = 'NONE — say "pass priority"'
-            context, n = re.subn(
-                r"(?m)^Legal: .*$", f"Legal: {eff_str}", context, count=1
-            )
+            context, n = re.subn(r"(?m)^Legal: .*$", f"Legal: {eff_str}", context, count=1)
             if n == 0:
                 context = f"Legal: {eff_str}\n{context}"
             if excluded:
-                context += (
-                    "\nEXCLUDED (autopilot cannot execute these — do NOT "
-                    "propose them): " + ", ".join(excluded[:6])
+                context += "\nEXCLUDED (autopilot cannot execute these — do NOT propose them): " + ", ".join(
+                    excluded[:6]
                 )
 
         # Build trigger description
@@ -1555,10 +1531,7 @@ class ActionPlanner:
         # checklist so the LLM can see what's done, what's next, and
         # what's still pending — and follow the plan unless something
         # material changed.
-        if (
-            self._active_turn_plan is not None
-            and self._active_turn_plan.turn_number == current_turn
-        ):
+        if self._active_turn_plan is not None and self._active_turn_plan.turn_number == current_turn:
             parts.append(self._format_turn_plan_for_prompt(self._active_turn_plan))
 
         # Turn-consistency context: if we already planned something this turn,
@@ -1571,11 +1544,9 @@ class ActionPlanner:
                 f"- Earlier this turn you planned: {self._turn_memo.overall_strategy}",
             ]
             if self._turn_memo.voice_advice:
-                consistency_lines.append(f"- You told the player: \"{self._turn_memo.voice_advice}\"")
+                consistency_lines.append(f'- You told the player: "{self._turn_memo.voice_advice}"')
             if self._turn_executed:
-                consistency_lines.append(
-                    f"- Already executed this turn: {', '.join(self._turn_executed)}"
-                )
+                consistency_lines.append(f"- Already executed this turn: {', '.join(self._turn_executed)}")
             consistency_lines.append(
                 "- STAY COMMITTED to the strategy above unless the board has "
                 "materially changed (opponent response, unexpected trigger, "
@@ -1635,7 +1606,7 @@ class ActionPlanner:
                     name = f"*{name}"
                 counters = c.get("counters", {})
                 if counters:
-                    cparts = [f"{v}{k.replace('CounterType_','')[:4]}" for k, v in counters.items()]
+                    cparts = [f"{v}{k.replace('CounterType_', '')[:4]}" for k, v in counters.items()]
                     name += f" [{','.join(cparts)}]"
                 bf_names.append(name)
             parts.append(f"Battlefield: {', '.join(bf_names)}")
@@ -1647,17 +1618,17 @@ class ActionPlanner:
             for evt in recent[-5:]:
                 etype = evt.get("type", "")
                 if etype == "damage_dealt":
-                    event_strs.append(f"{evt.get('source','?')} dealt {evt.get('amount',0)} damage")
+                    event_strs.append(f"{evt.get('source', '?')} dealt {evt.get('amount', 0)} damage")
                 elif etype == "zone_transfer":
-                    event_strs.append(f"{evt.get('card','?')} moved zones")
+                    event_strs.append(f"{evt.get('card', '?')} moved zones")
                 elif etype == "counter_added":
-                    event_strs.append(f"+{evt.get('amount',1)} counter on {evt.get('card','?')}")
+                    event_strs.append(f"+{evt.get('amount', 1)} counter on {evt.get('card', '?')}")
                 elif etype == "token_created":
-                    event_strs.append(f"Token created: {evt.get('card','?')}")
+                    event_strs.append(f"Token created: {evt.get('card', '?')}")
                 elif etype == "card_revealed":
-                    event_strs.append(f"Revealed: {evt.get('card','?')}")
+                    event_strs.append(f"Revealed: {evt.get('card', '?')}")
                 elif etype == "controller_changed":
-                    event_strs.append(f"{evt.get('card','?')} changed controller")
+                    event_strs.append(f"{evt.get('card', '?')} changed controller")
             if event_strs:
                 parts.append(f"Recent: {'; '.join(event_strs)}")
 
@@ -1667,8 +1638,8 @@ class ActionPlanner:
         self,
         response: str,
         legal_actions: list[str],
-        decision_context: Optional[dict[str, Any]] = None,
-        bridge_request: Optional[str] = None,
+        decision_context: dict[str, Any] | None = None,
+        bridge_request: str | None = None,
     ) -> ActionPlan:
         """Parse LLM response into an ActionPlan.
 
@@ -1707,9 +1678,7 @@ class ActionPlanner:
                         )
                         plan.actions = [action]
                         plan.overall_strategy = f"[pick-salvage] {self._last_menu[idx]}"
-                        plan.voice_advice = self._humanize_legal_action(
-                            self._last_menu[idx]
-                        )
+                        plan.voice_advice = self._humanize_legal_action(self._last_menu[idx])
                         return plan
             logger.error(f"Failed to parse action plan JSON: {e}")
             logger.debug(f"Raw response: {response[:500]}")
@@ -1735,9 +1704,7 @@ class ActionPlanner:
                     action = self._legal_action_to_action(self._last_menu[idx])
                     if action is not None:
                         action.reasoning = str(action_data.get("reasoning", "") or "")
-                        logger.debug(
-                            f"Menu pick {pick} → {self._last_menu[idx]!r}"
-                        )
+                        logger.debug(f"Menu pick {pick} → {self._last_menu[idx]!r}")
                 if action is None:
                     logger.warning(
                         f"Planner pick {pick!r} out of menu range "
@@ -1745,14 +1712,11 @@ class ActionPlanner:
                     )
             if action is None:
                 action = self._parse_action(action_data)
-            if action and self._is_action_legal(
-                action, legal_actions, decision_context, bridge_request
-            ):
+            if action and self._is_action_legal(action, legal_actions, decision_context, bridge_request):
                 plan.actions.append(action)
             elif action:
                 logger.warning(
-                    "Dropping illegal planner action: %s (%s) bridge_request=%r "
-                    "decision=%r not in %s",
+                    "Dropping illegal planner action: %s (%s) bridge_request=%r decision=%r not in %s",
                     action.action_type.value,
                     action.card_name,
                     bridge_request,
@@ -1829,15 +1793,11 @@ class ActionPlanner:
             return []
         if ")" in s:
             parts = re.split(r"\)\s*,\s*", s)
-            return [
-                (p if p.rstrip().endswith(")") else p + ")").strip()
-                for p in parts
-                if p.strip()
-            ]
+            return [(p if p.rstrip().endswith(")") else p + ")").strip() for p in parts if p.strip()]
         return [s]
 
     @staticmethod
-    def _extract_first_json(text: str) -> Optional[str]:
+    def _extract_first_json(text: str) -> str | None:
         """Pull the first JSON object out of a possibly prose-wrapped reply.
 
         Models routinely prefix a sentence before the JSON despite "reply
@@ -1870,7 +1830,7 @@ class ActionPlanner:
         source_name: str,
         oracle_text: str,
         game_state: dict[str, Any],
-    ) -> Optional[bool]:
+    ) -> bool | None:
         """One-shot pay/decline call for an out-of-band optional cost.
 
         Returns True (pay), False (decline), or None when the LLM path is
@@ -1887,14 +1847,16 @@ class ActionPlanner:
                 pt = f" ({obj.get('power')}/{obj.get('toughness')})"
             ctrl = obj.get("controller_seat_id") or obj.get("owner_seat_id")
             (own if ctrl == local_seat else theirs).append(f"{name}{pt}")
-        user_message = "\n".join([
-            f"Optional cost from: {source_name or 'unknown source'}",
-            f"Effect text: {oracle_text or 'unknown'}",
-            f"Your battlefield: {', '.join(own) or '(empty)'}",
-            f"Opponent battlefield: {', '.join(theirs) or '(empty)'}",
-            "",
-            "Should you pay this optional cost?",
-        ])
+        user_message = "\n".join(
+            [
+                f"Optional cost from: {source_name or 'unknown source'}",
+                f"Effect text: {oracle_text or 'unknown'}",
+                f"Your battlefield: {', '.join(own) or '(empty)'}",
+                f"Opponent battlefield: {', '.join(theirs) or '(empty)'}",
+                "",
+                "Should you pay this optional cost?",
+            ]
+        )
         try:
             try:
                 response = self._backend.complete(
@@ -1906,17 +1868,13 @@ class ActionPlanner:
                     raise_on_error=True,
                 )
             except TypeError:
-                response = self._backend.complete(
-                    self._PAY_DECLINE_SYSTEM_PROMPT, user_message
-                )
+                response = self._backend.complete(self._PAY_DECLINE_SYSTEM_PROMPT, user_message)
         except Exception as e:
             logger.info(f"plan_pay_or_decline LLM call failed: {e}")
             return None
         json_str = self._extract_first_json(response)
         if not json_str:
-            logger.info(
-                f"plan_pay_or_decline unparseable: {(response or '')[:120]!r}"
-            )
+            logger.info(f"plan_pay_or_decline unparseable: {(response or '')[:120]!r}")
             return None
         try:
             data = json.loads(json_str)
@@ -1925,10 +1883,7 @@ class ActionPlanner:
             return None
         pay = data.get("pay")
         if isinstance(pay, bool):
-            logger.info(
-                f"plan_pay_or_decline: pay={pay} "
-                f"({str(data.get('reasoning', ''))[:100]})"
-            )
+            logger.info(f"plan_pay_or_decline: pay={pay} ({str(data.get('reasoning', ''))[:100]})")
             return pay
         return None
 
@@ -1958,9 +1913,7 @@ class ActionPlanner:
             valid = decision.option_ids()
             chosen = [c for c in chosen if c in valid]
             if chosen and decision.request_type == "SelectTargets":
-                chosen = self._gate_harmful_llm_target_picks(
-                    decision, game_state, chosen
-                )
+                chosen = self._gate_harmful_llm_target_picks(decision, game_state, chosen)
                 if chosen == [DECLINE_DECISION]:
                     return chosen
             if chosen:
@@ -1980,10 +1933,7 @@ class ActionPlanner:
                 # the blind deterministic pick submit it either.
                 return picked
             if picked:
-                logger.info(
-                    "plan_decision_options: controller-aware target fallback "
-                    f"picked {picked}"
-                )
+                logger.info(f"plan_decision_options: controller-aware target fallback picked {picked}")
                 return picked
         return self.deterministic_option_pick(decision)
 
@@ -2003,9 +1953,7 @@ class ActionPlanner:
         "loses flying",
     )
 
-    def _decision_source_is_harmful(
-        self, decision: Any, game_state: dict[str, Any]
-    ) -> Optional[bool]:
+    def _decision_source_is_harmful(self, decision: Any, game_state: dict[str, Any]) -> bool | None:
         """Classify the targeting decision's source spell as harmful.
 
         Source resolution: decision source_label matched on the stack, else
@@ -2029,7 +1977,7 @@ class ActionPlanner:
 
     def _battlefield_controllers(
         self, game_state: dict[str, Any]
-    ) -> tuple[Optional[int], dict[int, Optional[int]]]:
+    ) -> tuple[int | None, dict[int, int | None]]:
         """(local_seat, {instance_id: controller_seat}) for target labeling."""
         local_seat = game_state.get("local_seat_id")
         if local_seat is None:
@@ -2037,16 +1985,14 @@ class ActionPlanner:
                 if p.get("is_local"):
                     local_seat = p.get("seat_id")
                     break
-        controllers: dict[int, Optional[int]] = {}
+        controllers: dict[int, int | None] = {}
         for c in game_state.get("battlefield", []) or []:
             try:
                 iid = int(c.get("instance_id") or 0)
             except (TypeError, ValueError):
                 continue
             if iid:
-                controllers[iid] = (
-                    c.get("controller_seat_id") or c.get("owner_seat_id")
-                )
+                controllers[iid] = c.get("controller_seat_id") or c.get("owner_seat_id")
         return local_seat, controllers
 
     def _gate_harmful_llm_target_picks(
@@ -2084,16 +2030,11 @@ class ActionPlanner:
             return chosen
         override = self._targeting_fallback_pick(decision, game_state)
         if override:
-            logger.warning(
-                f"Overriding harmful LLM target pick {chosen} (own permanent) "
-                f"with {override}"
-            )
+            logger.warning(f"Overriding harmful LLM target pick {chosen} (own permanent) with {override}")
             return override
         return chosen
 
-    def _targeting_fallback_pick(
-        self, decision: Any, game_state: dict[str, Any]
-    ) -> list[str]:
+    def _targeting_fallback_pick(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         """Controller-aware fallback for SelectTargets when the LLM failed.
 
         The blind ``opts[:n]`` pick targeted the user's OWN Shuri with
@@ -2141,15 +2082,16 @@ class ActionPlanner:
                 return 0
 
         own = [
-            iid for iid in candidates
+            iid
+            for iid in candidates
             if local_seat is not None
-            and (battlefield.get(iid, {}).get("controller_seat_id")
-                 or battlefield.get(iid, {}).get("owner_seat_id")) == local_seat
+            and (
+                battlefield.get(iid, {}).get("controller_seat_id")
+                or battlefield.get(iid, {}).get("owner_seat_id")
+            )
+            == local_seat
         ]
-        theirs = [
-            iid for iid in candidates
-            if iid in battlefield and iid not in own
-        ]
+        theirs = [iid for iid in candidates if iid in battlefield and iid not in own]
 
         if harmful:
             # Opponent's biggest threat. When the spell can only hit our
@@ -2178,8 +2120,7 @@ class ActionPlanner:
         lines = [
             f"PENDING DECISION: {decision.request_type}"
             + (f" (source: {decision.source_label})" if decision.source_label else ""),
-            f"Choose at least {decision.min_select} and at most "
-            f"{decision.max_select} option(s).",
+            f"Choose at least {decision.min_select} and at most {decision.max_select} option(s).",
             "OPTIONS:",
         ]
         # #38: without controller labels the model cannot tell its own
@@ -2219,9 +2160,7 @@ class ActionPlanner:
                 raise_on_error=True,
             )
         except TypeError:
-            response = self._backend.complete(
-                self._DECISION_SYSTEM_PROMPT, user_message
-            )
+            response = self._backend.complete(self._DECISION_SYSTEM_PROMPT, user_message)
 
         # P1-1: models prose-prefix the JSON despite "reply ONLY with JSON"
         # (0/5 typed-decision parses on 2026-07-05, one reply in Chinese) —
@@ -2230,9 +2169,7 @@ class ActionPlanner:
         # diagnosable from the log.
         json_str = self._extract_first_json(response)
         if not json_str:
-            logger.info(
-                f"typed-decision: no JSON object in response: {(response or '')[:160]!r}"
-            )
+            logger.info(f"typed-decision: no JSON object in response: {(response or '')[:160]!r}")
             raise ValueError("typed-decision response contained no JSON object")
         try:
             data = json.loads(json_str)
@@ -2295,7 +2232,7 @@ class ActionPlanner:
         return s
 
     @staticmethod
-    def _match_legal_action_in_text(response: str, legal_actions: list[str]) -> Optional[str]:
+    def _match_legal_action_in_text(response: str, legal_actions: list[str]) -> str | None:
         text = (response or "").lower()
         if not text:
             return None
@@ -2306,7 +2243,7 @@ class ActionPlanner:
         return None
 
     @staticmethod
-    def _pick_preferred_legal_action(legal_actions: list[str]) -> Optional[str]:
+    def _pick_preferred_legal_action(legal_actions: list[str]) -> str | None:
         """Pick a deterministic fallback action when model output is invalid."""
         if not legal_actions:
             return None
@@ -2373,7 +2310,7 @@ class ActionPlanner:
             name = re.sub(r"\s*\[[^\]]*\]\s*$", "", name).strip()
         return name
 
-    def _legal_action_to_action(self, legal_action: str) -> Optional[GameAction]:
+    def _legal_action_to_action(self, legal_action: str) -> GameAction | None:
         """Convert a rules-engine legal action string into a GameAction."""
         act = self._normalize_action_text(legal_action)
         lower = act.lower()
@@ -2395,7 +2332,9 @@ class ActionPlanner:
                 card_name=self._strip_decoration(act.split(":", 1)[1]),
             )
         if lower.startswith("activate "):
-            return GameAction(action_type=ActionType.ACTIVATE_ABILITY, card_name=self._strip_decoration(act[9:]))
+            return GameAction(
+                action_type=ActionType.ACTIVATE_ABILITY, card_name=self._strip_decoration(act[9:])
+            )
         if lower.startswith("declare attackers:"):
             names = [self._strip_decoration(n) for n in self._split_creature_list(act.split(":", 1)[1])]
             names = [n for n in names if n]
@@ -2459,81 +2398,115 @@ class ActionPlanner:
     # prior ActionsAvailable window) because MTGA doesn't re-send an
     # ActionsAvailable while the decision is pending. The bridge request
     # type or decision_context.type is the authoritative signal.
-    _DECISION_ACTION_TYPES = frozenset({
-        ActionType.SELECT_N,
-        ActionType.SELECT_TARGET,
-        ActionType.SEARCH_LIBRARY,
-        ActionType.DISTRIBUTE,
-        ActionType.NUMERIC_INPUT,
-        ActionType.MODAL_CHOICE,
-        ActionType.CHOOSE_STARTING_PLAYER,
-        ActionType.ASSIGN_DAMAGE,
-        ActionType.ORDER_COMBAT_DAMAGE,
-        ActionType.ORDER_BLOCKERS,
-        ActionType.ORDER_TRIGGERS,
-        ActionType.PAY_COSTS,
-        ActionType.SELECT_REPLACEMENT,
-        ActionType.SELECT_COUNTERS,
-        ActionType.CASTING_OPTIONS,
-        ActionType.MULLIGAN_KEEP,
-        ActionType.MULLIGAN_MULL,
-    })
+    _DECISION_ACTION_TYPES = frozenset(
+        {
+            ActionType.SELECT_N,
+            ActionType.SELECT_TARGET,
+            ActionType.SEARCH_LIBRARY,
+            ActionType.DISTRIBUTE,
+            ActionType.NUMERIC_INPUT,
+            ActionType.MODAL_CHOICE,
+            ActionType.CHOOSE_STARTING_PLAYER,
+            ActionType.ASSIGN_DAMAGE,
+            ActionType.ORDER_COMBAT_DAMAGE,
+            ActionType.ORDER_BLOCKERS,
+            ActionType.ORDER_TRIGGERS,
+            ActionType.PAY_COSTS,
+            ActionType.SELECT_REPLACEMENT,
+            ActionType.SELECT_COUNTERS,
+            ActionType.CASTING_OPTIONS,
+            ActionType.MULLIGAN_KEEP,
+            ActionType.MULLIGAN_MULL,
+        }
+    )
 
     # Bridge request type → action type(s) that should be trusted for it
     _BRIDGE_REQUEST_ACCEPTS: dict[str, set[ActionType]] = {
-        "SelectN":                 {ActionType.SELECT_N, ActionType.SELECT_TARGET, ActionType.SELECT_REPLACEMENT, ActionType.SELECT_COUNTERS},
-        "SelectTargets":           {ActionType.SELECT_TARGET, ActionType.SELECT_N},
-        "SelectReplacement":       {ActionType.SELECT_REPLACEMENT, ActionType.SELECT_N, ActionType.CLICK_BUTTON},
-        "SelectReplacementRequest": {ActionType.SELECT_REPLACEMENT, ActionType.SELECT_N, ActionType.CLICK_BUTTON},
-        "Search":                  {ActionType.SEARCH_LIBRARY, ActionType.SELECT_N},
-        "SearchRequest":           {ActionType.SEARCH_LIBRARY, ActionType.SELECT_N},
-        "SearchFromGroups":        {ActionType.SEARCH_LIBRARY, ActionType.SELECT_N},
+        "SelectN": {
+            ActionType.SELECT_N,
+            ActionType.SELECT_TARGET,
+            ActionType.SELECT_REPLACEMENT,
+            ActionType.SELECT_COUNTERS,
+        },
+        "SelectTargets": {ActionType.SELECT_TARGET, ActionType.SELECT_N},
+        "SelectReplacement": {ActionType.SELECT_REPLACEMENT, ActionType.SELECT_N, ActionType.CLICK_BUTTON},
+        "SelectReplacementRequest": {
+            ActionType.SELECT_REPLACEMENT,
+            ActionType.SELECT_N,
+            ActionType.CLICK_BUTTON,
+        },
+        "Search": {ActionType.SEARCH_LIBRARY, ActionType.SELECT_N},
+        "SearchRequest": {ActionType.SEARCH_LIBRARY, ActionType.SELECT_N},
+        "SearchFromGroups": {ActionType.SEARCH_LIBRARY, ActionType.SELECT_N},
         "SearchFromGroupsRequest": {ActionType.SEARCH_LIBRARY, ActionType.SELECT_N},
-        "Distribution":            {ActionType.DISTRIBUTE},
-        "DistributionReq":         {ActionType.DISTRIBUTE},
-        "DistributionRequest":     {ActionType.DISTRIBUTE},
-        "NumericInput":            {ActionType.NUMERIC_INPUT},
-        "NumericInputReq":         {ActionType.NUMERIC_INPUT},
-        "PayCosts":                {ActionType.PAY_COSTS},
-        "PayCostsReq":             {ActionType.PAY_COSTS},
-        "ChooseStartingPlayer":    {ActionType.CHOOSE_STARTING_PLAYER},
-        "Mulligan":                {ActionType.MULLIGAN_KEEP, ActionType.MULLIGAN_MULL},
-        "CastingTimeOption":       {ActionType.CASTING_OPTIONS, ActionType.MODAL_CHOICE, ActionType.NUMERIC_INPUT},
-        "CastingTimeOptions":      {ActionType.CASTING_OPTIONS, ActionType.MODAL_CHOICE},
-        "Group":                   {ActionType.ORDER_TRIGGERS, ActionType.ORDER_BLOCKERS, ActionType.SELECT_N, ActionType.SELECT_TARGET},
-        "GroupReq":                {ActionType.ORDER_TRIGGERS, ActionType.ORDER_BLOCKERS, ActionType.SELECT_N, ActionType.SELECT_TARGET},
-        "GroupRequest":            {ActionType.ORDER_TRIGGERS, ActionType.ORDER_BLOCKERS, ActionType.SELECT_N, ActionType.SELECT_TARGET},
-        "Order":                   {ActionType.ORDER_TRIGGERS, ActionType.ORDER_BLOCKERS, ActionType.ORDER_COMBAT_DAMAGE},
-        "OrderRequest":            {ActionType.ORDER_TRIGGERS, ActionType.ORDER_BLOCKERS, ActionType.ORDER_COMBAT_DAMAGE},
-        "SelectFromGroups":        {ActionType.ORDER_TRIGGERS, ActionType.ORDER_BLOCKERS, ActionType.SELECT_N},
-        "SelectFromGroupsRequest": {ActionType.ORDER_TRIGGERS, ActionType.ORDER_BLOCKERS, ActionType.SELECT_N},
-        "SelectNGroup":            {ActionType.SELECT_N, ActionType.SELECT_TARGET},
-        "SelectNGroupRequest":     {ActionType.SELECT_N, ActionType.SELECT_TARGET},
-        "AssignDamage":            {ActionType.ASSIGN_DAMAGE, ActionType.DISTRIBUTE},
-        "AssignDamageRequest":     {ActionType.ASSIGN_DAMAGE, ActionType.DISTRIBUTE},
-        "SelectCounters":          {ActionType.SELECT_COUNTERS, ActionType.SELECT_N},
-        "SelectCountersRequest":   {ActionType.SELECT_COUNTERS, ActionType.SELECT_N},
-        "Gather":                  {ActionType.DISTRIBUTE, ActionType.SELECT_N},
-        "GatherRequest":           {ActionType.DISTRIBUTE, ActionType.SELECT_N},
-        "AutoTapActions":          {ActionType.PAY_COSTS, ActionType.MODAL_CHOICE},
-        "AutoTapActionsRequest":   {ActionType.PAY_COSTS, ActionType.MODAL_CHOICE},
-        "DeclareAttackers":        {ActionType.DECLARE_ATTACKERS},
-        "DeclareBlockers":         {ActionType.DECLARE_BLOCKERS},
-        "OptionalAction":          {ActionType.CLICK_BUTTON},
-        "OptionalActionMessage":   {ActionType.CLICK_BUTTON},
+        "Distribution": {ActionType.DISTRIBUTE},
+        "DistributionReq": {ActionType.DISTRIBUTE},
+        "DistributionRequest": {ActionType.DISTRIBUTE},
+        "NumericInput": {ActionType.NUMERIC_INPUT},
+        "NumericInputReq": {ActionType.NUMERIC_INPUT},
+        "PayCosts": {ActionType.PAY_COSTS},
+        "PayCostsReq": {ActionType.PAY_COSTS},
+        "ChooseStartingPlayer": {ActionType.CHOOSE_STARTING_PLAYER},
+        "Mulligan": {ActionType.MULLIGAN_KEEP, ActionType.MULLIGAN_MULL},
+        "CastingTimeOption": {ActionType.CASTING_OPTIONS, ActionType.MODAL_CHOICE, ActionType.NUMERIC_INPUT},
+        "CastingTimeOptions": {ActionType.CASTING_OPTIONS, ActionType.MODAL_CHOICE},
+        "Group": {
+            ActionType.ORDER_TRIGGERS,
+            ActionType.ORDER_BLOCKERS,
+            ActionType.SELECT_N,
+            ActionType.SELECT_TARGET,
+        },
+        "GroupReq": {
+            ActionType.ORDER_TRIGGERS,
+            ActionType.ORDER_BLOCKERS,
+            ActionType.SELECT_N,
+            ActionType.SELECT_TARGET,
+        },
+        "GroupRequest": {
+            ActionType.ORDER_TRIGGERS,
+            ActionType.ORDER_BLOCKERS,
+            ActionType.SELECT_N,
+            ActionType.SELECT_TARGET,
+        },
+        "Order": {ActionType.ORDER_TRIGGERS, ActionType.ORDER_BLOCKERS, ActionType.ORDER_COMBAT_DAMAGE},
+        "OrderRequest": {
+            ActionType.ORDER_TRIGGERS,
+            ActionType.ORDER_BLOCKERS,
+            ActionType.ORDER_COMBAT_DAMAGE,
+        },
+        "SelectFromGroups": {ActionType.ORDER_TRIGGERS, ActionType.ORDER_BLOCKERS, ActionType.SELECT_N},
+        "SelectFromGroupsRequest": {
+            ActionType.ORDER_TRIGGERS,
+            ActionType.ORDER_BLOCKERS,
+            ActionType.SELECT_N,
+        },
+        "SelectNGroup": {ActionType.SELECT_N, ActionType.SELECT_TARGET},
+        "SelectNGroupRequest": {ActionType.SELECT_N, ActionType.SELECT_TARGET},
+        "AssignDamage": {ActionType.ASSIGN_DAMAGE, ActionType.DISTRIBUTE},
+        "AssignDamageRequest": {ActionType.ASSIGN_DAMAGE, ActionType.DISTRIBUTE},
+        "SelectCounters": {ActionType.SELECT_COUNTERS, ActionType.SELECT_N},
+        "SelectCountersRequest": {ActionType.SELECT_COUNTERS, ActionType.SELECT_N},
+        "Gather": {ActionType.DISTRIBUTE, ActionType.SELECT_N},
+        "GatherRequest": {ActionType.DISTRIBUTE, ActionType.SELECT_N},
+        "AutoTapActions": {ActionType.PAY_COSTS, ActionType.MODAL_CHOICE},
+        "AutoTapActionsRequest": {ActionType.PAY_COSTS, ActionType.MODAL_CHOICE},
+        "DeclareAttackers": {ActionType.DECLARE_ATTACKERS},
+        "DeclareBlockers": {ActionType.DECLARE_BLOCKERS},
+        "OptionalAction": {ActionType.CLICK_BUTTON},
+        "OptionalActionMessage": {ActionType.CLICK_BUTTON},
         "OptionalActionMessageRequest": {ActionType.CLICK_BUTTON},
-        "Intermission":            {ActionType.CLICK_BUTTON},
-        "IntermissionRequest":     {ActionType.CLICK_BUTTON},
-        "StringInput":             {ActionType.MODAL_CHOICE, ActionType.SELECT_N},
-        "StringInputRequest":      {ActionType.MODAL_CHOICE, ActionType.SELECT_N},
+        "Intermission": {ActionType.CLICK_BUTTON},
+        "IntermissionRequest": {ActionType.CLICK_BUTTON},
+        "StringInput": {ActionType.MODAL_CHOICE, ActionType.SELECT_N},
+        "StringInputRequest": {ActionType.MODAL_CHOICE, ActionType.SELECT_N},
     }
 
     def _is_action_legal(
         self,
         action: GameAction,
         legal_actions: list[str],
-        decision_context: Optional[dict[str, Any]] = None,
-        bridge_request: Optional[str] = None,
+        decision_context: dict[str, Any] | None = None,
+        bridge_request: str | None = None,
     ) -> bool:
         """Require planner output to map to a current legal action.
 
@@ -2556,8 +2529,8 @@ class ActionPlanner:
     def _is_legal_decision_passthrough(
         self,
         action: GameAction,
-        decision_context: Optional[dict[str, Any]],
-        bridge_request: Optional[str],
+        decision_context: dict[str, Any] | None,
+        bridge_request: str | None,
     ) -> bool:
         """Trust planner output for decision-family actions when the bridge or
         decision context confirms a matching decision is open.
@@ -2597,19 +2570,22 @@ class ActionPlanner:
         # illegal and the targeting window stalled (live 2026-06-09,
         # Nurturing Presence).
         if ctx_type == "target_selection" and action.action_type in (
-            ActionType.SELECT_TARGET, ActionType.SELECT_N,
+            ActionType.SELECT_TARGET,
+            ActionType.SELECT_N,
         ):
             return True
-        if ctx_type == "selection_generic" and action.action_type in (
-            ActionType.SELECT_N, ActionType.SELECT_TARGET,
-            ActionType.SELECT_REPLACEMENT, ActionType.SEARCH_LIBRARY,
-        ):
-            return True
-        return False
+        return bool(
+            ctx_type == "selection_generic"
+            and action.action_type
+            in (
+                ActionType.SELECT_N,
+                ActionType.SELECT_TARGET,
+                ActionType.SELECT_REPLACEMENT,
+                ActionType.SEARCH_LIBRARY,
+            )
+        )
 
-    def _is_legal_combat_declaration(
-        self, action: GameAction, legal_actions: list[str]
-    ) -> bool:
+    def _is_legal_combat_declaration(self, action: GameAction, legal_actions: list[str]) -> bool:
         """Validate a DECLARE_ATTACKERS / DECLARE_BLOCKERS plan.
 
         Combat declarations come in as one "Attack with: X" / "Block with: X"
@@ -2617,22 +2593,14 @@ class ActionPlanner:
         GameAction. We compare the planner's set against the union of legal
         creature names rather than exact-matching on any single entry.
         """
-        legal_names, in_combat_context = self._collect_combat_legal_names(
-            action.action_type, legal_actions
-        )
+        legal_names, in_combat_context = self._collect_combat_legal_names(action.action_type, legal_actions)
         if not in_combat_context:
             return False
 
         if action.action_type == ActionType.DECLARE_ATTACKERS:
-            plan_names = {
-                n.strip().lower() for n in action.attacker_names if n and n.strip()
-            }
+            plan_names = {n.strip().lower() for n in action.attacker_names if n and n.strip()}
         else:
-            plan_names = {
-                k.strip().lower()
-                for k in action.blocker_assignments.keys()
-                if k and k.strip()
-            }
+            plan_names = {k.strip().lower() for k in action.blocker_assignments if k and k.strip()}
         return plan_names.issubset(legal_names)
 
     def _collect_combat_legal_names(
@@ -2690,9 +2658,7 @@ class ActionPlanner:
 
         return legal_names, in_combat_context
 
-    def _is_legal_default(
-        self, action: GameAction, legal_actions: list[str]
-    ) -> bool:
+    def _is_legal_default(self, action: GameAction, legal_actions: list[str]) -> bool:
         """Match a non-combat planner action against legal_actions.
 
         Iterates legal_actions and tries to round-trip each one through
@@ -2719,10 +2685,7 @@ class ActionPlanner:
 
             if action.action_type == ActionType.SELECT_TARGET:
                 if legal.target_names and action.target_names:
-                    if (
-                        legal.target_names[0].strip().lower()
-                        == action.target_names[0].strip().lower()
-                    ):
+                    if legal.target_names[0].strip().lower() == action.target_names[0].strip().lower():
                         return True
                 continue
 
@@ -2735,7 +2698,7 @@ class ActionPlanner:
 
         return False
 
-    def _parse_action(self, data: dict[str, Any]) -> Optional[GameAction]:
+    def _parse_action(self, data: dict[str, Any]) -> GameAction | None:
         """Parse a single action dict into a GameAction."""
         try:
             action_type_str = data.get("action_type", "")

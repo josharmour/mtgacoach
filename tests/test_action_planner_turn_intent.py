@@ -8,7 +8,7 @@ change.
 
 from typing import Any
 
-from arenamcp.action_planner import ActionPlanner, ActionType
+from arenamcp.action_planner import ActionPlanner
 
 
 class _ScriptedBackend:
@@ -52,10 +52,7 @@ def _cast_response(card: str, strategy: str) -> str:
 
 
 def _pass_response(strategy: str) -> str:
-    return (
-        '{"actions":[{"action_type":"pass_priority"}],'
-        '"overall_strategy":"' + strategy + '"}'
-    )
+    return '{"actions":[{"action_type":"pass_priority"}],"overall_strategy":"' + strategy + '"}'
 
 
 # R2 (2026-07-06): the turn plan rides along on the FIRST own-turn action
@@ -64,9 +61,11 @@ def _pass_response(strategy: str) -> str:
 
 
 def test_turn_intent_locked_on_first_non_trivial_plan():
-    backend = _ScriptedBackend([
-        _cast_response("Bolt", "Cast Bolt to deal 3 to opp"),
-    ])
+    backend = _ScriptedBackend(
+        [
+            _cast_response("Bolt", "Cast Bolt to deal 3 to opp"),
+        ]
+    )
     p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
     legal = ["Cast Bolt [OK]", "Pass"]
     p.plan_actions(_state(), "decision_required", legal, {"type": "actions_available"})
@@ -74,9 +73,11 @@ def test_turn_intent_locked_on_first_non_trivial_plan():
 
 
 def test_turn_intent_not_locked_on_pass_only_plan():
-    backend = _ScriptedBackend([
-        _pass_response("Hold up Counterspell"),
-    ])
+    backend = _ScriptedBackend(
+        [
+            _pass_response("Hold up Counterspell"),
+        ]
+    )
     p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
     legal = ["Cast Counterspell [OK]", "Pass"]
     p.plan_actions(_state(), "decision_required", legal, {"type": "actions_available"})
@@ -116,10 +117,12 @@ def test_turn_intent_not_locked_by_preflight_landdrop():
 def test_turn_intent_persists_across_same_turn_calls():
     # Turn 4: one merged call per window; the second window of the same
     # turn does not re-request a turn plan (attempt guard).
-    backend = _ScriptedBackend([
-        _cast_response("Bolt", "Burn out their threat then deploy creatures"),
-        _cast_response("Goblin", "Continue burn-and-creature plan"),
-    ])
+    backend = _ScriptedBackend(
+        [
+            _cast_response("Bolt", "Burn out their threat then deploy creatures"),
+            _cast_response("Goblin", "Continue burn-and-creature plan"),
+        ]
+    )
     p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
     legal = ["Cast Bolt [OK]", "Cast Goblin [OK]", "Pass"]
     state = _state()
@@ -144,10 +147,12 @@ def test_turn_intent_persists_across_same_turn_calls():
 
 
 def test_turn_intent_clears_on_turn_change():
-    backend = _ScriptedBackend([
-        _cast_response("Bolt", "Turn 4 plan"),
-        _cast_response("Goblin", "Turn 5 plan"),
-    ])
+    backend = _ScriptedBackend(
+        [
+            _cast_response("Bolt", "Turn 4 plan"),
+            _cast_response("Goblin", "Turn 5 plan"),
+        ]
+    )
     p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
     legal = ["Cast Bolt [OK]", "Cast Goblin [OK]", "Pass"]
 
@@ -160,6 +165,7 @@ def test_turn_intent_clears_on_turn_change():
 
 def test_system_prompt_includes_ok_trust_rule():
     from arenamcp.action_planner import AUTOPILOT_SYSTEM_PROMPT
+
     assert "TRUST [OK]" in AUTOPILOT_SYSTEM_PROMPT
     assert "hybrid" in AUTOPILOT_SYSTEM_PROMPT.lower()
 
@@ -167,12 +173,15 @@ def test_system_prompt_includes_ok_trust_rule():
 def test_turn_executed_only_records_verified_actions():
     # P1-7: guardrail-rejected proposals must not appear as "already
     # executed"; only note_executed (verified callback) records.
-    from arenamcp.action_planner import ActionType as AT, GameAction
+    from arenamcp.action_planner import ActionType as AT
+    from arenamcp.action_planner import GameAction
 
-    backend = _ScriptedBackend([
-        _cast_response("Bolt", "Burn plan"),
-        _cast_response("Goblin", "Continue plan"),
-    ])
+    backend = _ScriptedBackend(
+        [
+            _cast_response("Bolt", "Burn plan"),
+            _cast_response("Goblin", "Continue plan"),
+        ]
+    )
     p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
     legal = ["Cast Bolt [OK]", "Cast Goblin [OK]", "Pass"]
     state = _state()

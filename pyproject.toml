@@ -120,6 +120,21 @@ ignore = [
     "SIM108", # ternary suggestions — noisy on this codebase
     "B008",   # function call in default arg — intentional patterns here
     "C901",   # complexity gate advisory-only until god objects are split
+    # --- Ratchet list (2026-07-22): legacy violations grandfathered so CI is
+    # green from day one. Fix module-by-module and REMOVE from this list. ---
+    "SIM102", # 33x collapsible-if — manual refactors
+    "E402",   # 31x module-import-not-at-top — intentional lazy/deferred imports
+              # (PortAudio hang workaround, sys.path setup, availability probes)
+    "E741",   # 8x ambiguous-variable-name
+    "B904",   # 6x raise-without-from-inside-except
+    "SIM103", # 4x needless-bool
+    "SIM112", # 4x uncapitalized-environment-variables (user-facing names)
+    "SIM105", # 3x suppressible-exception
+    "SIM115", # 2x open-file-with-context-handler
+    "B007",   # 1x unused-loop-control-variable
+    "F841",   # 1x unused-variable
+    "UP031",  # 1x printf-string-formatting
+    "UP045",  # 1x non-pep604-annotation-optional (quoted forward ref edge case)
 ]
 
 [tool.ruff.lint.isort]
@@ -127,6 +142,11 @@ known-first-party = ["arenamcp"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011", "SIM117"]
+# Conditional re-export pattern: names are imported in try/except ImportError
+# blocks and re-exported via dynamic __all__ extension. diagnose.py imports
+# purely as availability probes.
+"src/arenamcp/__init__.py" = ["F401"]
+"src/arenamcp/diagnose.py" = ["F401"]
 
 [tool.mypy]
 python_version = "3.10"

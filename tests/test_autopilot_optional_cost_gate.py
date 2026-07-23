@@ -60,8 +60,7 @@ def _go_shintai_state(can_cancel=True):
                 "instance_id": 900,
                 "name": "Go-Shintai of Hidden Cruelty",
                 "oracle_text": (
-                    "you may pay {1}. when you do, destroy target creature "
-                    "with toughness x or less"
+                    "you may pay {1}. when you do, destroy target creature with toughness x or less"
                 ),
             }
         ],

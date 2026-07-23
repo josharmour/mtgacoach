@@ -4,16 +4,16 @@ This module provides real-time monitoring of the MTGA Player.log file,
 delivering new content via callback as it's written.
 """
 
-import os
-import logging
 import glob
+import logging
+import os
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
+from watchdog.events import FileCreatedEvent, FileModifiedEvent, FileSystemEventHandler
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileModifiedEvent, FileCreatedEvent
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ def _is_active_gameplay_line(line: str) -> bool:
     )
 
 
-def _latest_match_id_from_tail(content_bytes: bytes) -> Optional[str]:
+def _latest_match_id_from_tail(content_bytes: bytes) -> str | None:
     """Return the most recent match ID mentioned in a tail chunk."""
     if not content_bytes:
         return None
@@ -173,21 +173,30 @@ def _windows_path_to_wsl(path: str) -> Path:
 def _default_log_path() -> str:
     """Best-effort default MTGA Player.log path for Windows/WSL/Linux/macOS."""
     import sys
+
     if sys.platform == "darwin":
         # Native Mac client (Steam/Epic IL2CPP build) — verified location.
-        mac_log = (
-            Path.home() / "Library" / "Logs" / "Wizards Of The Coast"
-            / "MTGA" / "Player.log"
-        )
+        mac_log = Path.home() / "Library" / "Logs" / "Wizards Of The Coast" / "MTGA" / "Player.log"
         if mac_log.exists():
             return str(mac_log)
         # Windows build inside a CrossOver bottle writes to the bottle's
         # LocalLow instead (bridge-capable setup, see PLATFORM_PARITY.md B1).
         bottle_logs = glob.glob(
             str(
-                Path.home() / "Library" / "Application Support" / "CrossOver"
-                / "Bottles" / "*" / "drive_c" / "users" / "*" / "AppData"
-                / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+                Path.home()
+                / "Library"
+                / "Application Support"
+                / "CrossOver"
+                / "Bottles"
+                / "*"
+                / "drive_c"
+                / "users"
+                / "*"
+                / "AppData"
+                / "LocalLow"
+                / "Wizards Of The Coast"
+                / "MTGA"
+                / "Player.log"
             )
         )
         if bottle_logs:
@@ -198,9 +207,12 @@ def _default_log_path() -> str:
 
     if sys.platform.startswith("linux") and not _is_wsl():
         linux_candidates = [
-            Path.home() / ".steam/steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log",
-            Path.home() / ".local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log",
-            Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log",
+            Path.home()
+            / ".steam/steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log",
+            Path.home()
+            / ".local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log",
+            Path.home()
+            / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log",
         ]
         for candidate in linux_candidates:
             if candidate.exists():
@@ -219,9 +231,7 @@ def _default_log_path() -> str:
         )
 
     if _is_wsl():
-        wsl_candidates = glob.glob(
-            "/mnt/c/Users/*/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log"
-        )
+        wsl_candidates = glob.glob("/mnt/c/Users/*/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log")
         if wsl_candidates:
             return wsl_candidates[0]
 
@@ -240,9 +250,7 @@ def _default_log_path() -> str:
     # On Windows (or WSL without env vars) this resolves to the standard MTGA
     # log location under the current user's profile.
     home = Path.home()
-    return str(
-        home / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
-    )
+    return str(home / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log")
 
 
 def _normalize_log_path(path: str) -> Path:
@@ -255,6 +263,7 @@ def _normalize_log_path(path: str) -> Path:
         return _windows_path_to_wsl(expanded)
 
     return Path(expanded).resolve()
+
 
 # Default MTGA log path on Windows
 # Use LOCALAPPDATA approach which is more reliable than APPDATA/../LocalLow
@@ -314,14 +323,16 @@ class MTGALogHandler(FileSystemEventHandler):
     def _read_new_content(self) -> None:
         """Read new content from the log file and invoke callback."""
         try:
-            with open(self.log_path, 'r', encoding='utf-8', errors='replace') as f:
+            with open(self.log_path, encoding="utf-8", errors="replace") as f:
                 # Check if file was truncated (position beyond file size)
                 f.seek(0, 2)  # Seek to end
                 file_size = f.tell()
 
                 if file_size < self.file_position:
                     # File was truncated, reset to beginning
-                    logger.info(f"File truncated (size {file_size} < position {self.file_position}), resetting")
+                    logger.info(
+                        f"File truncated (size {file_size} < position {self.file_position}), resetting"
+                    )
                     self.file_position = 0
 
                 # Seek to our tracked position and read new content
@@ -350,7 +361,7 @@ class MTGALogHandler(FileSystemEventHandler):
             start_position: Byte position to start reading from.
         """
         try:
-            with open(self.log_path, 'r', encoding='utf-8', errors='replace') as f:
+            with open(self.log_path, encoding="utf-8", errors="replace") as f:
                 f.seek(start_position)
                 content = f.read()
                 self.file_position = f.tell()
@@ -371,10 +382,10 @@ class MTGALogWatcher:
     def __init__(
         self,
         callback: Callable[[str], None],
-        log_path: Optional[str] = None,
+        log_path: str | None = None,
         backfill: bool = True,
-        resume_offset: Optional[int] = None,
-        resume_match_id: Optional[str] = None,
+        resume_offset: int | None = None,
+        resume_match_id: str | None = None,
     ) -> None:
         """Initialize the log watcher.
 
@@ -401,9 +412,9 @@ class MTGALogWatcher:
         self._backfill_enabled = backfill
         self._resume_offset = resume_offset
         self._resume_match_id = resume_match_id
-        self._observer: Optional[Observer] = None
-        self._handler: Optional[MTGALogHandler] = None
-        self._last_relevant_match_id: Optional[str] = None
+        self._observer: Observer | None = None
+        self._handler: MTGALogHandler | None = None
+        self._last_relevant_match_id: str | None = None
 
         # No-growth detection: track when we last saw the file grow
         self._last_known_size: int = 0
@@ -434,7 +445,7 @@ class MTGALogWatcher:
             if read_size == 0:
                 return 0, "empty_log"
 
-            with open(self.log_path, 'rb') as f:
+            with open(self.log_path, "rb") as f:
                 f.seek(start_offset)
                 content_bytes = f.read(read_size)
 
@@ -458,7 +469,7 @@ class MTGALogWatcher:
             return 0, "scan_error"
 
     @property
-    def last_relevant_match_id(self) -> Optional[str]:
+    def last_relevant_match_id(self) -> str | None:
         """Most recent match ID observed during the last tail scan."""
         return self._last_relevant_match_id
 
@@ -479,10 +490,7 @@ class MTGALogWatcher:
             age = time.time() - stat.st_mtime
             is_fresh = stat.st_size < 100 * 1024 and age < 60
             if is_fresh:
-                logger.info(
-                    f"Fresh log detected: size={stat.st_size}, "
-                    f"age={age:.1f}s — skipping backfill"
-                )
+                logger.info(f"Fresh log detected: size={stat.st_size}, age={age:.1f}s — skipping backfill")
             return is_fresh
         except OSError:
             return False
@@ -545,8 +553,7 @@ class MTGALogWatcher:
                     self._handler.read_from_position(self._resume_offset)
             else:
                 logger.warning(
-                    f"Resume offset {self._resume_offset} > file size {file_size}, "
-                    "falling back to backfill"
+                    f"Resume offset {self._resume_offset} > file size {file_size}, falling back to backfill"
                 )
                 if self._backfill_enabled:
                     start_pos = relevant_start
@@ -590,7 +597,7 @@ class MTGALogWatcher:
             return self._handler.file_position
         return 0
 
-    def check_log_health(self) -> Optional[str]:
+    def check_log_health(self) -> str | None:
         """Check if the log file is growing as expected.
 
         Call periodically (e.g. every poll cycle) to detect no-growth conditions

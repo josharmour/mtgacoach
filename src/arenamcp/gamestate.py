@@ -9,17 +9,24 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from arenamcp.match_validator import MatchRecording
 
 logger = logging.getLogger(__name__)
 
 _MANA_COLOR_MAP = {
-    "ManaColor_White": "W", "ManaColor_Blue": "U",
-    "ManaColor_Black": "B", "ManaColor_Red": "R",
-    "ManaColor_Green": "G", "ManaColor_Colorless": "C",
+    "ManaColor_White": "W",
+    "ManaColor_Blue": "U",
+    "ManaColor_Black": "B",
+    "ManaColor_Red": "R",
+    "ManaColor_Green": "G",
+    "ManaColor_Colorless": "C",
     "ManaColor_Any": "Any",
 }
 
@@ -76,7 +83,7 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def _coerce_optional_int(value: Any) -> Optional[int]:
+def _coerce_optional_int(value: Any) -> int | None:
     """Best-effort optional integer coercion for GRE scalar-or-list fields."""
     value = _collapse_gre_value(value)
     if isinstance(value, list):
@@ -223,10 +230,10 @@ def _collect_text_fragments(value: Any, *, max_items: int = 12) -> list[str]:
     return results
 
 
-def _detect_ui_message_kind(value: Any) -> Optional[str]:
+def _detect_ui_message_kind(value: Any) -> str | None:
     """Best-effort classification of a raw UI GRE message."""
     blob = json.dumps(value, sort_keys=True, default=str).lower()
-    if "onhover" in blob or "\"hover\"" in blob:
+    if "onhover" in blob or '"hover"' in blob:
         return "hover"
     if "tooltip" in blob:
         return "tooltip"
@@ -241,6 +248,7 @@ def _detect_ui_message_kind(value: Any) -> Optional[str]:
 
 class ZoneType(Enum):
     """Zone types in MTGA."""
+
     BATTLEFIELD = "ZoneType_Battlefield"
     HAND = "ZoneType_Hand"
     GRAVEYARD = "ZoneType_Graveyard"
@@ -256,6 +264,7 @@ class ZoneType(Enum):
 
 class GameObjectKind(Enum):
     """Game object types from GRE protobuf (GameObjectType enum)."""
+
     NONE = "GameObjectType_None"
     CARD = "GameObjectType_Card"
     TOKEN = "GameObjectType_Token"
@@ -280,19 +289,20 @@ class GameObjectKind(Enum):
 @dataclass
 class GameObject:
     """A game object (card, token, ability, etc.) in the game."""
+
     instance_id: int
     grp_id: int
     zone_id: int
     owner_seat_id: int
-    controller_seat_id: Optional[int] = None
-    visibility: Optional[str] = None
+    controller_seat_id: int | None = None
+    visibility: str | None = None
     card_types: list[str] = field(default_factory=list)
     subtypes: list[str] = field(default_factory=list)
-    power: Optional[int] = None
-    toughness: Optional[int] = None
+    power: int | None = None
+    toughness: int | None = None
     is_tapped: bool = False
     # For abilities: instance_id of the source permanent
-    parent_instance_id: Optional[int] = None
+    parent_instance_id: int | None = None
     # For summoning sickness tracking
     turn_entered_battlefield: int = -1
     # True only if this object entered the battlefield via the "play land"
@@ -309,12 +319,12 @@ class GameObject:
     counters: dict[str, int] = field(default_factory=dict)
     # ── Phase 1 turbo-charge fields (from GRE annotations) ──
     # Modified stats (actual values after continuous effects)
-    modified_power: Optional[int] = None
-    modified_toughness: Optional[int] = None
-    modified_cost: Optional[str] = None
-    modified_colors: Optional[list[str]] = None
-    modified_types: Optional[list[str]] = None
-    modified_name: Optional[str] = None
+    modified_power: int | None = None
+    modified_toughness: int | None = None
+    modified_cost: str | None = None
+    modified_colors: list[str] | None = None
+    modified_types: list[str] | None = None
+    modified_name: str | None = None
     # Granted/lost abilities
     granted_abilities: list[str] = field(default_factory=list)
     removed_abilities: list[str] = field(default_factory=list)
@@ -325,9 +335,9 @@ class GameObject:
     # Phasing
     is_phased_out: bool = False
     # Class/Saga level
-    class_level: Optional[int] = None
+    class_level: int | None = None
     # Copy source
-    copied_from_grp_id: Optional[int] = None
+    copied_from_grp_id: int | None = None
     # Targeting info: list of instance_ids this object is targeting
     targeting: list[int] = field(default_factory=list)
     # Color production (mana abilities)
@@ -397,15 +407,17 @@ class GameObject:
 @dataclass
 class Zone:
     """A game zone (battlefield, hand, etc.)."""
+
     zone_id: int
     zone_type: ZoneType
-    owner_seat_id: Optional[int] = None
+    owner_seat_id: int | None = None
     object_instance_ids: list[int] = field(default_factory=list)
+
     def to_dict(self) -> dict:
         """Convert to simple dict for snapshot."""
         return {
             "zone_id": self.zone_id,
-            "zone_type": self.zone_type.name, # Enum to string
+            "zone_type": self.zone_type.name,  # Enum to string
             "owner_seat_id": self.owner_seat_id,
             "object_instance_ids": self.object_instance_ids,
         }
@@ -414,12 +426,14 @@ class Zone:
 @dataclass
 class Player:
     """A player in the game."""
+
     seat_id: int
     life_total: int = 20
     lands_played: int = 0
     mana_pool: dict[str, int] = field(default_factory=dict)
-    team_id: Optional[int] = None
+    team_id: int | None = None
     status: str = ""
+
     def to_dict(self) -> dict:
         return {
             "seat_id": self.seat_id,
@@ -434,11 +448,13 @@ class Player:
 @dataclass
 class TurnInfo:
     """Current turn information."""
+
     turn_number: int = 0
     active_player: int = 0
     priority_player: int = 0
     phase: str = ""
     step: str = ""
+
     def to_dict(self) -> dict:
         return {
             "turn_number": self.turn_number,
@@ -589,7 +605,7 @@ class GameState:
 
         # Persists across reset() so the coaching loop can read it after
         # match ends.  Cleared only by consume_game_end().
-        self.last_game_result: Optional[str] = None  # "win", "loss", "draw", or None
+        self.last_game_result: str | None = None  # "win", "loss", "draw", or None
 
         # ── Cross-thread game-end signaling ──
         # The parser thread calls prepare_for_game_end() which atomically
@@ -597,18 +613,18 @@ class GameState:
         # game_ended_event.  The coaching loop calls consume_game_end()
         # to retrieve and clear it.
         self.game_ended_event: threading.Event = threading.Event()
-        self._game_end_data: Optional[dict[str, Any]] = None
+        self._game_end_data: dict[str, Any] | None = None
 
         # Backward-compatible alias -- standalone.py and server.py read
         # _pre_reset_snapshot directly in a few places.
-        self._pre_reset_snapshot: Optional[dict] = None
+        self._pre_reset_snapshot: dict | None = None
 
         # Last-game stash for Bo3 sideboarding: the IntermissionReq handler
         # calls reset() between games, wiping played_cards/players BEFORE the
         # sideboard screen. prepare_for_game_end() refreshes this stash right
         # before that reset; bounded to the last completed game only.
         self._last_game_played_cards: dict[int, list[int]] = {}
-        self._last_game_opponent_seat: Optional[int] = None
+        self._last_game_opponent_seat: int | None = None
 
         # Published immutable snapshot for lock-safe readers
         self._state_lock = threading.RLock()
@@ -671,9 +687,11 @@ class GameState:
 
         # 4. Signal the coaching loop (Event.set is thread-safe on its own)
         self.game_ended_event.set()
-        logger.info(f"Game-end prepared: result={self.last_game_result}, snapshot={'yes' if final_snapshot else 'no'}")
+        logger.info(
+            f"Game-end prepared: result={self.last_game_result}, snapshot={'yes' if final_snapshot else 'no'}"
+        )
 
-    def consume_game_end(self) -> tuple[Optional[str], Optional[dict]]:
+    def consume_game_end(self) -> tuple[str | None, dict | None]:
         """Consume the game-end signal and return (result, snapshot).
 
         Called by the coaching loop after detecting ``game_ended_event``.
@@ -721,10 +739,7 @@ class GameState:
                 "players": [player.to_dict() for player in self.players.values()],
                 "zones": [zone.to_dict() for zone in self.zones.values()],
                 "game_objects": [obj.to_dict() for obj in self.game_objects.values()],
-                "played_cards": {
-                    str(seat_id): list(cards)
-                    for seat_id, cards in self.played_cards.items()
-                },
+                "played_cards": {str(seat_id): list(cards) for seat_id, cards in self.played_cards.items()},
                 "seen_instances": sorted(int(instance_id) for instance_id in self._seen_instances),
                 "pending_combat_steps": copy.deepcopy(self._pending_combat_steps),
                 "last_combat_step_time": float(self._last_combat_step_time or 0.0),
@@ -741,10 +756,7 @@ class GameState:
                 "recent_events": copy.deepcopy(self.recent_events),
                 "raw_gre_events": copy.deepcopy(self.raw_gre_events),
                 "raw_gre_sequence": int(self._raw_gre_sequence),
-                "damage_taken": {
-                    str(seat_id): int(amount)
-                    for seat_id, amount in self.damage_taken.items()
-                },
+                "damage_taken": {str(seat_id): int(amount) for seat_id, amount in self.damage_taken.items()},
                 "revealed_cards": {
                     str(seat_id): sorted(int(grp_id) for grp_id in grp_ids)
                     for seat_id, grp_ids in self.revealed_cards.items()
@@ -755,12 +767,10 @@ class GameState:
                     for seat_id, desigs in self.designations.items()
                 },
                 "dungeon_status": {
-                    str(seat_id): copy.deepcopy(status)
-                    for seat_id, status in self.dungeon_status.items()
+                    str(seat_id): copy.deepcopy(status) for seat_id, status in self.dungeon_status.items()
                 },
                 "timer_state": {
-                    str(player_id): copy.deepcopy(timer)
-                    for player_id, timer in self.timer_state.items()
+                    str(player_id): copy.deepcopy(timer) for player_id, timer in self.timer_state.items()
                 },
                 "engine_busy_flags": copy.deepcopy(self.engine_busy_flags),
                 "engine_busy_until": float(self.engine_busy_until or 0.0),
@@ -835,7 +845,8 @@ class GameState:
                         owner_seat_id=_coerce_int(obj_data.get("owner_seat_id", 0), 0),
                         controller_seat_id=_coerce_optional_int(obj_data.get("controller_seat_id")),
                         visibility=(
-                            None if obj_data.get("visibility") in (None, "")
+                            None
+                            if obj_data.get("visibility") in (None, "")
                             else str(obj_data.get("visibility"))
                         ),
                         card_types=[str(item) for item in obj_data.get("card_types", []) if item is not None],
@@ -844,7 +855,9 @@ class GameState:
                         toughness=_coerce_optional_int(obj_data.get("toughness")),
                         is_tapped=bool(obj_data.get("is_tapped", False)),
                         parent_instance_id=_coerce_optional_int(obj_data.get("parent_instance_id")),
-                        turn_entered_battlefield=_coerce_int(obj_data.get("turn_entered_battlefield", -1), -1),
+                        turn_entered_battlefield=_coerce_int(
+                            obj_data.get("turn_entered_battlefield", -1), -1
+                        ),
                         entered_via_play_land=bool(obj_data.get("entered_via_play_land", False)),
                         is_attacking=bool(obj_data.get("is_attacking", False)),
                         is_blocking=bool(obj_data.get("is_blocking", False)),
@@ -860,25 +873,43 @@ class GameState:
                         modified_power=_coerce_optional_int(obj_data.get("modified_power")),
                         modified_toughness=_coerce_optional_int(obj_data.get("modified_toughness")),
                         modified_cost=(
-                            None if obj_data.get("modified_cost") in (None, "")
+                            None
+                            if obj_data.get("modified_cost") in (None, "")
                             else str(obj_data.get("modified_cost"))
                         ),
-                        modified_colors=[str(item) for item in obj_data.get("modified_colors", []) if item is not None] or None,
-                        modified_types=[str(item) for item in obj_data.get("modified_types", []) if item is not None] or None,
+                        modified_colors=[
+                            str(item) for item in obj_data.get("modified_colors", []) if item is not None
+                        ]
+                        or None,
+                        modified_types=[
+                            str(item) for item in obj_data.get("modified_types", []) if item is not None
+                        ]
+                        or None,
                         modified_name=(
-                            None if obj_data.get("modified_name") in (None, "")
+                            None
+                            if obj_data.get("modified_name") in (None, "")
                             else str(obj_data.get("modified_name"))
                         ),
-                        granted_abilities=[str(item) for item in obj_data.get("granted_abilities", []) if item is not None],
-                        removed_abilities=[str(item) for item in obj_data.get("removed_abilities", []) if item is not None],
+                        granted_abilities=[
+                            str(item) for item in obj_data.get("granted_abilities", []) if item is not None
+                        ],
+                        removed_abilities=[
+                            str(item) for item in obj_data.get("removed_abilities", []) if item is not None
+                        ],
                         damaged_this_turn=bool(obj_data.get("damaged_this_turn", False)),
                         crewed_this_turn=bool(obj_data.get("crewed_this_turn", False)),
                         saddled_this_turn=bool(obj_data.get("saddled_this_turn", False)),
                         is_phased_out=bool(obj_data.get("is_phased_out", False)),
                         class_level=_coerce_optional_int(obj_data.get("class_level")),
                         copied_from_grp_id=_coerce_optional_int(obj_data.get("copied_from_grp_id")),
-                        targeting=[_coerce_int(item, 0) for item in obj_data.get("targeting", []) if _coerce_int(item, 0)],
-                        color_production=[str(item) for item in obj_data.get("color_production", []) if item is not None],
+                        targeting=[
+                            _coerce_int(item, 0)
+                            for item in obj_data.get("targeting", [])
+                            if _coerce_int(item, 0)
+                        ],
+                        color_production=[
+                            str(item) for item in obj_data.get("color_production", []) if item is not None
+                        ],
                     )
                     self.game_objects[instance_id] = game_object
 
@@ -903,7 +934,9 @@ class GameState:
                 played_cards = checkpoint.get("played_cards") or {}
                 if isinstance(played_cards, dict):
                     self.played_cards = {
-                        _coerce_int(seat_id, 0): [_coerce_int(card, 0) for card in cards if _coerce_int(card, 0)]
+                        _coerce_int(seat_id, 0): [
+                            _coerce_int(card, 0) for card in cards if _coerce_int(card, 0)
+                        ]
                         for seat_id, cards in played_cards.items()
                         if _coerce_int(seat_id, 0)
                     }
@@ -928,7 +961,9 @@ class GameState:
                 self.decision_context = copy.deepcopy(checkpoint.get("decision_context"))
                 self.decision_timestamp = float(checkpoint.get("decision_timestamp", 0.0) or 0.0)
                 self.last_cleared_decision = checkpoint.get("last_cleared_decision")
-                self.legal_actions = [str(item) for item in checkpoint.get("legal_actions", []) if item is not None]
+                self.legal_actions = [
+                    str(item) for item in checkpoint.get("legal_actions", []) if item is not None
+                ]
                 self.legal_actions_raw = copy.deepcopy(checkpoint.get("legal_actions_raw") or [])
                 self.recent_events = copy.deepcopy(checkpoint.get("recent_events") or [])
                 self.raw_gre_events = copy.deepcopy(checkpoint.get("raw_gre_events") or [])
@@ -949,20 +984,22 @@ class GameState:
                 if isinstance(revealed_cards, dict):
                     self.revealed_cards = {
                         _coerce_int(seat_id, 0): {
-                            _coerce_int(grp_id, 0)
-                            for grp_id in grp_ids
-                            if _coerce_int(grp_id, 0)
+                            _coerce_int(grp_id, 0) for grp_id in grp_ids if _coerce_int(grp_id, 0)
                         }
                         for seat_id, grp_ids in revealed_cards.items()
                         if _coerce_int(seat_id, 0)
                     }
 
-                self.deck_cards = [_coerce_int(card, 0) for card in checkpoint.get("deck_cards", []) if _coerce_int(card, 0)]
+                self.deck_cards = [
+                    _coerce_int(card, 0) for card in checkpoint.get("deck_cards", []) if _coerce_int(card, 0)
+                ]
 
                 designations = checkpoint.get("designations") or {}
                 if isinstance(designations, dict):
                     self.designations = {
-                        _coerce_int(seat_id, 0): {str(designation) for designation in desigs if designation not in (None, "")}
+                        _coerce_int(seat_id, 0): {
+                            str(designation) for designation in desigs if designation not in (None, "")
+                        }
                         for seat_id, desigs in designations.items()
                         if _coerce_int(seat_id, 0)
                     }
@@ -1013,7 +1050,7 @@ class GameState:
         return self._seat_source == 3
 
     @property
-    def opponent_seat_id(self) -> Optional[int]:
+    def opponent_seat_id(self) -> int | None:
         """Get the opponent's seat ID (the seat that isn't local player)."""
         if self.local_seat_id is None:
             return None
@@ -1023,7 +1060,7 @@ class GameState:
                 return seat_id
         return None
 
-    def _get_local_team_id_locked(self) -> Optional[int]:
+    def _get_local_team_id_locked(self) -> int | None:
         """Return the local player's team ID, if known."""
         if self.local_seat_id is None:
             return None
@@ -1032,12 +1069,12 @@ class GameState:
             return None
         return player.team_id
 
-    def get_local_team_id(self) -> Optional[int]:
+    def get_local_team_id(self) -> int | None:
         """Thread-safe accessor for the local player's team ID."""
         with self._state_lock:
             return self._get_local_team_id_locked()
 
-    def _record_match_result_locked(self, result: Optional[str], source: str) -> Optional[str]:
+    def _record_match_result_locked(self, result: str | None, source: str) -> str | None:
         """Persist a concrete game result under the state lock."""
         if not result:
             return None
@@ -1054,7 +1091,7 @@ class GameState:
             self.last_game_result = result
         return result
 
-    def _infer_result_from_life_totals_locked(self) -> Optional[str]:
+    def _infer_result_from_life_totals_locked(self) -> str | None:
         """Infer win/loss from lethal life totals when seat identities are known."""
         if self.local_seat_id is None:
             return None
@@ -1075,7 +1112,7 @@ class GameState:
                 return "win"
         return None
 
-    def _infer_result_from_player_status_locked(self) -> Optional[str]:
+    def _infer_result_from_player_status_locked(self) -> str | None:
         """Infer win/loss from terminal player statuses."""
         if self.local_seat_id is None:
             return None
@@ -1101,7 +1138,7 @@ class GameState:
                 return "win"
         return None
 
-    def _resolve_scope_result_locked(self, result_data: dict) -> Optional[str]:
+    def _resolve_scope_result_locked(self, result_data: dict) -> str | None:
         """Resolve MTGA result payloads into win/loss/draw for the local player."""
         result_str = str(result_data.get("result", "") or "")
         winning_team_id = result_data.get("winningTeamId")
@@ -1127,7 +1164,7 @@ class GameState:
             return "win"
         return None
 
-    def set_result_from_payload(self, result_data: Optional[dict], source: str) -> Optional[str]:
+    def set_result_from_payload(self, result_data: dict | None, source: str) -> str | None:
         """Resolve and persist an MTGA result payload."""
         if not result_data:
             return None
@@ -1139,7 +1176,7 @@ class GameState:
         self,
         ann_type: str,
         affected_ids: list[int],
-    ) -> Optional[str]:
+    ) -> str | None:
         """Resolve win/loss annotations relative to the local seat/team."""
         local_seat_id = self.local_seat_id
         local_team_id = self._get_local_team_id_locked()
@@ -1196,11 +1233,7 @@ class GameState:
             inferred = self._infer_result_from_player_status_locked()
             self._record_match_result_locked(inferred, "gameInfo.player_status")
 
-    def get_objects_in_zone(
-        self,
-        zone_type: ZoneType,
-        owner: Optional[int] = None
-    ) -> list[GameObject]:
+    def get_objects_in_zone(self, zone_type: ZoneType, owner: int | None = None) -> list[GameObject]:
         """Get all game objects in zones of a specific type.
 
         Args:
@@ -1236,10 +1269,7 @@ class GameState:
         Returns:
             List of GameObjects owned by the player.
         """
-        return [
-            obj for obj in self.game_objects.values()
-            if obj.owner_seat_id == seat_id
-        ]
+        return [obj for obj in self.game_objects.values() if obj.owner_seat_id == seat_id]
 
     # Grace period (seconds) before clearing the stack on phase transitions.
     # If the stack was modified very recently, the entries might be real
@@ -1274,13 +1304,12 @@ class GameState:
                 count = len(zone.object_instance_ids)
                 zone.object_instance_ids = []
                 logger.info(
-                    f"Cleared {count} stale stack entries "
-                    f"({'forced' if force else 'phase transition'})"
+                    f"Cleared {count} stale stack entries ({'forced' if force else 'phase transition'})"
                 )
 
     def _cleanup_stale_objects(self) -> None:
         """Remove game objects that are no longer in any zone.
-        
+
         This prevents memory accumulation during long games where many
         tokens are created and destroyed.
         """
@@ -1288,12 +1317,12 @@ class GameState:
         live_ids: set[int] = set()
         for zone in self.zones.values():
             live_ids.update(zone.object_instance_ids)
-        
+
         # Find and remove stale objects
         stale_ids = [oid for oid in self.game_objects if oid not in live_ids]
         for oid in stale_ids:
             del self.game_objects[oid]
-        
+
         if stale_ids:
             logger.debug(f"Cleaned up {len(stale_ids)} stale game objects")
 
@@ -1411,12 +1440,14 @@ class GameState:
             "expires_at": expires_at,
         }
         self.engine_busy_until = max(self.engine_busy_until, expires_at)
-        self._add_event({
-            "type": "engine_busy",
-            "busy_type": busy_type,
-            "affected_ids": affected_ids,
-            "details": detail_map,
-        })
+        self._add_event(
+            {
+                "type": "engine_busy",
+                "busy_type": busy_type,
+                "affected_ids": affected_ids,
+                "details": detail_map,
+            }
+        )
 
     def _build_raw_snapshot_locked(self) -> dict:
         """Build a complete serializable snapshot from mutable state.
@@ -1429,7 +1460,7 @@ class GameState:
         players_list = []
         for p in self.players.values():
             p_dict = p.to_dict()
-            p_dict["is_local"] = (p.seat_id == self.local_seat_id)
+            p_dict["is_local"] = p.seat_id == self.local_seat_id
             players_list.append(p_dict)
 
         revealed = {}
@@ -1445,12 +1476,16 @@ class GameState:
             "zones": {
                 "battlefield": [obj.to_dict() for obj in self.battlefield],
                 "my_hand": [obj.to_dict() for obj in self.hand] if self.local_seat_id else [],
-                "opponent_hand_count": len(self.get_objects_in_zone(ZoneType.HAND, opponent_seat)) if opponent_seat else 0,
+                "opponent_hand_count": len(self.get_objects_in_zone(ZoneType.HAND, opponent_seat))
+                if opponent_seat
+                else 0,
                 "stack": [obj.to_dict() for obj in self.stack],
                 "graveyard": [obj.to_dict() for obj in self.graveyard],
                 "exile": [obj.to_dict() for obj in self.get_objects_in_zone(ZoneType.EXILE)],
                 "command": [obj.to_dict() for obj in self.command],
-                "library_count": len(self.get_objects_in_zone(ZoneType.LIBRARY, self.local_seat_id)) if self.local_seat_id else "?",
+                "library_count": len(self.get_objects_in_zone(ZoneType.LIBRARY, self.local_seat_id))
+                if self.local_seat_id
+                else "?",
             },
             "pending_decision": self.pending_decision,
             "decision_seat_id": self.decision_seat_id,
@@ -1460,14 +1495,16 @@ class GameState:
             "legal_actions_raw": copy.deepcopy(self.legal_actions_raw),
             "pending_combat_steps": self._pending_combat_steps.copy(),
             "recent_events": self.recent_events[-10:],
-            "raw_gre_events": copy.deepcopy(self.raw_gre_events[-self._max_snapshot_raw_gre_events:]),
+            "raw_gre_events": copy.deepcopy(self.raw_gre_events[-self._max_snapshot_raw_gre_events :]),
             "raw_gre_event_count": len(self.raw_gre_events),
             "damage_taken": dict(self.damage_taken),
             "revealed_cards": revealed,
             "last_game_result": self.last_game_result,
             "deck_cards": list(self.deck_cards),
             # ── Phase 1 turbo-charge fields ──
-            "designations": {seat: list(desigs) for seat, desigs in self.designations.items()} if self.designations else {},
+            "designations": {seat: list(desigs) for seat, desigs in self.designations.items()}
+            if self.designations
+            else {},
             "dungeon_status": dict(self.dungeon_status) if self.dungeon_status else {},
             "timer_state": dict(self.timer_state) if self.timer_state else {},
             "game_engine_busy": self.engine_busy_until > time.time(),
@@ -1510,6 +1547,7 @@ class GameState:
             if grp_id:
                 try:
                     from arenamcp import server
+
                     card_info = server.enrich_with_oracle_text(grp_id)
                     enriched["name"] = card_info.get("name", f"Unknown ({grp_id})")
                     enriched["type_line"] = card_info.get("type_line", "")
@@ -1528,9 +1566,8 @@ class GameState:
                                 "name": source_name,
                                 "oracle_text": source_info.get("oracle_text", ""),
                             }
-                            if (
-                                enriched.get("type_line") == "Ability"
-                                and enriched.get("name", "").startswith("Ability (ID:")
+                            if enriched.get("type_line") == "Ability" and enriched.get("name", "").startswith(
+                                "Ability (ID:"
                             ):
                                 enriched["name"] = f"{source_name} ability"
                 except Exception as e:
@@ -1566,13 +1603,17 @@ class GameState:
     def _clear_action_window(self, reason: str) -> None:
         """Clear stale local action/priority state for a new game window."""
         ctx_type = (self.decision_context or {}).get("type", "")
-        if ctx_type in {
-            "actions_available",
-            "declare_attackers",
-            "declare_blockers",
-            "assign_damage",
-            "order_combat_damage",
-        } and self.pending_decision:
+        if (
+            ctx_type
+            in {
+                "actions_available",
+                "declare_attackers",
+                "declare_blockers",
+                "assign_damage",
+                "order_combat_damage",
+            }
+            and self.pending_decision
+        ):
             logger.info("Clearing stale decision '%s' (%s)", self.pending_decision, reason)
             self.last_cleared_decision = self.pending_decision
             self.pending_decision = None
@@ -1589,13 +1630,17 @@ class GameState:
             )
             self.legal_actions = []
             self.legal_actions_raw = []
-    
+
     def get_seat_source_name(self) -> str:
         """Get human-readable name of the seat ID source."""
-        if self._seat_source == 0: return "None"
-        if self._seat_source == 1: return "Inferred"
-        if self._seat_source == 2: return "System"
-        if self._seat_source == 3: return "User"
+        if self._seat_source == 0:
+            return "None"
+        if self._seat_source == 1:
+            return "Inferred"
+        if self._seat_source == 2:
+            return "System"
+        if self._seat_source == 3:
+            return "User"
         return "Unknown"
 
     def set_local_seat_id(self, seat_id: int, source: int = 2) -> None:
@@ -1617,7 +1662,9 @@ class GameState:
                 source_name = self.get_seat_source_name()
                 logger.info(f"Set local_seat_id to {seat_id} (Source: {source_name})")
             else:
-                logger.info(f"Ignored seat update to {seat_id} (Source {source} < Current {self._seat_source})")
+                logger.info(
+                    f"Ignored seat update to {seat_id} (Source {source} < Current {self._seat_source})"
+                )
             self._published_snapshot = self._build_raw_snapshot_locked()
 
     def reset_local_player(self, force: bool = False) -> None:
@@ -1634,7 +1681,9 @@ class GameState:
                 self._seat_source = 0
                 logger.info("Reset local_seat_id (cleared)")
             else:
-                logger.info(f"Preserving local_seat_id={self.local_seat_id} (Source: {self.get_seat_source_name()})")
+                logger.info(
+                    f"Preserving local_seat_id={self.local_seat_id} (Source: {self.get_seat_source_name()})"
+                )
             self._published_snapshot = self._build_raw_snapshot_locked()
 
     def ensure_local_seat_id(self) -> None:
@@ -1794,19 +1843,24 @@ class GameState:
             counters = {}
 
         # 2. Overwrite with present data
-        if "grpId" in obj_data: grp_id = obj_data["grpId"]
-        if "zoneId" in obj_data: zone_id = obj_data["zoneId"]
-        if "ownerSeatId" in obj_data: owner_seat_id = obj_data["ownerSeatId"]
-        if "controllerSeatId" in obj_data: controller_seat_id = obj_data["controllerSeatId"]
-        if "visibility" in obj_data: visibility = obj_data["visibility"]
-        
+        if "grpId" in obj_data:
+            grp_id = obj_data["grpId"]
+        if "zoneId" in obj_data:
+            zone_id = obj_data["zoneId"]
+        if "ownerSeatId" in obj_data:
+            owner_seat_id = obj_data["ownerSeatId"]
+        if "controllerSeatId" in obj_data:
+            controller_seat_id = obj_data["controllerSeatId"]
+        if "visibility" in obj_data:
+            visibility = obj_data["visibility"]
+
         if "power" in obj_data:
-             p = obj_data["power"]
-             power = p.get("value") if isinstance(p, dict) else p
-        
+            p = obj_data["power"]
+            power = p.get("value") if isinstance(p, dict) else p
+
         if "toughness" in obj_data:
-             t = obj_data["toughness"]
-             toughness = t.get("value") if isinstance(t, dict) else t
+            t = obj_data["toughness"]
+            toughness = t.get("value") if isinstance(t, dict) else t
 
         if "isTapped" in obj_data:
             is_tapped = obj_data["isTapped"]
@@ -1818,10 +1872,13 @@ class GameState:
                     self._untap_prevention.add(instance_id)
                 else:
                     self._untap_prevention.discard(instance_id)
-        if "parentId" in obj_data: parent_instance_id = obj_data["parentId"]
+        if "parentId" in obj_data:
+            parent_instance_id = obj_data["parentId"]
 
-        if "isAttacking" in obj_data: is_attacking = bool(obj_data["isAttacking"])
-        if "isBlocking" in obj_data: is_blocking = bool(obj_data["isBlocking"])
+        if "isAttacking" in obj_data:
+            is_attacking = bool(obj_data["isAttacking"])
+        if "isBlocking" in obj_data:
+            is_blocking = bool(obj_data["isBlocking"])
 
         # Player.log (protobuf JSON) never carries an "isAttacking" boolean —
         # combat status arrives as the attackState/blockState enums on the
@@ -1880,7 +1937,6 @@ class GameState:
             object_kind=object_kind,
             counters=counters,
         )
-
 
         self.game_objects[instance_id] = game_object
         logger.debug(f"Updated game object {instance_id} (grpId={grp_id})")
@@ -2034,7 +2090,9 @@ class GameState:
                     # local_seat_id and a later System(2)/User(3) signal can still
                     # override. The guard above already restricts this to the
                     # seat-unset, non-user-set case, matching the sibling inference path.
-                    logger.info(f"Inferring local player as seat {owner_seat_id} from hand zone with visible grp_ids")
+                    logger.info(
+                        f"Inferring local player as seat {owner_seat_id} from hand zone with visible grp_ids"
+                    )
                     self.set_local_seat_id(owner_seat_id, source=1)
 
     def _update_player(self, player_data: dict) -> None:
@@ -2079,13 +2137,17 @@ class GameState:
             current_turn = self.turn_info.turn_number
             inferred_lands = 0
             for obj in self.battlefield:
-                if (obj.owner_seat_id == seat_id and
-                    obj.controller_seat_id == seat_id and
-                    self._is_land_object(obj) and
-                    obj.turn_entered_battlefield == current_turn and
-                    obj.entered_via_play_land):
+                if (
+                    obj.owner_seat_id == seat_id
+                    and obj.controller_seat_id == seat_id
+                    and self._is_land_object(obj)
+                    and obj.turn_entered_battlefield == current_turn
+                    and obj.entered_via_play_land
+                ):
                     inferred_lands += 1
-                    logger.debug(f"Inferred land: grp_id={obj.grp_id} entered turn {current_turn} for seat {seat_id}")
+                    logger.debug(
+                        f"Inferred land: grp_id={obj.grp_id} entered turn {current_turn} for seat {seat_id}"
+                    )
 
             if inferred_lands > 0:
                 lands_played = inferred_lands
@@ -2169,11 +2231,13 @@ class GameState:
 
             inferred_lands = 0
             for obj in self.battlefield:
-                if (obj.owner_seat_id == seat_id and
-                    obj.controller_seat_id == seat_id and
-                    self._is_land_object(obj) and
-                    obj.turn_entered_battlefield == current_turn and
-                    obj.entered_via_play_land):
+                if (
+                    obj.owner_seat_id == seat_id
+                    and obj.controller_seat_id == seat_id
+                    and self._is_land_object(obj)
+                    and obj.turn_entered_battlefield == current_turn
+                    and obj.entered_via_play_land
+                ):
                     inferred_lands += 1
 
             if inferred_lands > 0:
@@ -2196,8 +2260,8 @@ class GameState:
         self,
         msg: dict[str, Any],
         *,
-        seat_hint: Optional[int] = None,
-        message_index: Optional[int] = None,
+        seat_hint: int | None = None,
+        message_index: int | None = None,
     ) -> None:
         """Retain a bounded, sanitized raw GRE message history for debugging/prompts."""
         msg_type = str(msg.get("type", ""))
@@ -2258,6 +2322,7 @@ class GameState:
             return cached
         try:
             from arenamcp import server
+
             info = server.get_card_info(grp_id)
             name = info.get("name", f"Card#{grp_id}")
             if name and not name.startswith("Card#") and not name.startswith("Unknown"):
@@ -2294,6 +2359,7 @@ class GameState:
         count = 0
         try:
             from arenamcp.card_db import get_card_database
+
             card_db = get_card_database()
             card_db.prewarm_cards(missing_ids)
 
@@ -2312,6 +2378,7 @@ class GameState:
                 # loop to resolve opportunistically (resolve_pending_dynamic_cards).
                 try:
                     from arenamcp import dynamic_cards
+
                     for gid in unresolved:
                         dynamic_cards.note_unresolved(gid)
                 except Exception as e:
@@ -2365,14 +2432,20 @@ class GameState:
                     if not source_id and affected_ids:
                         source_id = affected_ids[0]
                     source_obj = self.game_objects.get(source_id)
-                    source_name = self._resolve_card_name(source_obj.grp_id) if source_obj else (f"#{source_id}" if source_id else "unknown")
-                    self._add_event({
-                        "type": "damage_dealt",
-                        "source": source_name,
-                        "source_id": source_id,
-                        "amount": damage_amount,
-                        "target_id": target_id,
-                    })
+                    source_name = (
+                        self._resolve_card_name(source_obj.grp_id)
+                        if source_obj
+                        else (f"#{source_id}" if source_id else "unknown")
+                    )
+                    self._add_event(
+                        {
+                            "type": "damage_dealt",
+                            "source": source_name,
+                            "source_id": source_id,
+                            "amount": damage_amount,
+                            "target_id": target_id,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_ZoneTransfer":
                     # Card moved zones (died, bounced, exiled, etc.)
@@ -2384,14 +2457,16 @@ class GameState:
                         if obj:
                             if category == "PlayLand":
                                 obj.entered_via_play_land = True
-                            self._add_event({
-                                "type": "zone_transfer",
-                                "card": self._resolve_card_name(obj.grp_id),
-                                "instance_id": obj_id,
-                                "from_zone": zone_src,
-                                "to_zone": zone_dest,
-                                "category": category,
-                            })
+                            self._add_event(
+                                {
+                                    "type": "zone_transfer",
+                                    "card": self._resolve_card_name(obj.grp_id),
+                                    "instance_id": obj_id,
+                                    "from_zone": zone_src,
+                                    "to_zone": zone_dest,
+                                    "category": category,
+                                }
+                            )
 
                 elif ann_type in ("AnnotationType_CounterAdded", "AnnotationType_CounterRemoved"):
                     counter_type = detail_map.get("counterType", "unknown")
@@ -2411,29 +2486,35 @@ class GameState:
                                 obj.counters[counter_type] = max(0, current - counter_count)
                                 if obj.counters[counter_type] == 0:
                                     del obj.counters[counter_type]
-                            self._add_event({
-                                "type": "counter_added" if is_added else "counter_removed",
-                                "card": self._resolve_card_name(obj.grp_id),
-                                "instance_id": obj_id,
-                                "counter_type": counter_type,
-                                "amount": counter_count,
-                            })
+                            self._add_event(
+                                {
+                                    "type": "counter_added" if is_added else "counter_removed",
+                                    "card": self._resolve_card_name(obj.grp_id),
+                                    "instance_id": obj_id,
+                                    "counter_type": counter_type,
+                                    "amount": counter_count,
+                                }
+                            )
 
                 elif ann_type == "AnnotationType_ControllerChanged":
                     for obj_id in affected_ids:
                         obj = self.game_objects.get(obj_id)
                         new_controller = _coerce_int(detail_map.get("controllerId", 0), 0)
                         if obj:
-                            self._add_event({
-                                "type": "controller_changed",
-                                "card": self._resolve_card_name(obj.grp_id),
-                                "instance_id": obj_id,
-                                "new_controller": new_controller,
-                            })
+                            self._add_event(
+                                {
+                                    "type": "controller_changed",
+                                    "card": self._resolve_card_name(obj.grp_id),
+                                    "instance_id": obj_id,
+                                    "new_controller": new_controller,
+                                }
+                            )
 
-                elif ann_type in ("AnnotationType_CardRevealed",
-                                  "AnnotationType_InstanceRevealedToOpponent",
-                                  "AnnotationType_RevealedCardCreated"):
+                elif ann_type in (
+                    "AnnotationType_CardRevealed",
+                    "AnnotationType_InstanceRevealedToOpponent",
+                    "AnnotationType_RevealedCardCreated",
+                ):
                     for obj_id in affected_ids:
                         obj = self.game_objects.get(obj_id)
                         if obj and obj.grp_id:
@@ -2441,43 +2522,51 @@ class GameState:
                             if owner not in self.revealed_cards:
                                 self.revealed_cards[owner] = set()
                             self.revealed_cards[owner].add(obj.grp_id)
-                            self._add_event({
-                                "type": "card_revealed",
-                                "card": self._resolve_card_name(obj.grp_id),
-                                "instance_id": obj_id,
-                                "owner_seat": owner,
-                            })
+                            self._add_event(
+                                {
+                                    "type": "card_revealed",
+                                    "card": self._resolve_card_name(obj.grp_id),
+                                    "instance_id": obj_id,
+                                    "owner_seat": owner,
+                                }
+                            )
 
                 elif ann_type == "AnnotationType_ResolutionStart":
                     for obj_id in affected_ids:
                         obj = self.game_objects.get(obj_id)
                         if obj:
-                            self._add_event({
-                                "type": "resolution_start",
-                                "card": self._resolve_card_name(obj.grp_id),
-                                "instance_id": obj_id,
-                            })
+                            self._add_event(
+                                {
+                                    "type": "resolution_start",
+                                    "card": self._resolve_card_name(obj.grp_id),
+                                    "instance_id": obj_id,
+                                }
+                            )
 
                 elif ann_type == "AnnotationType_ResolutionComplete":
                     for obj_id in affected_ids:
                         obj = self.game_objects.get(obj_id)
                         if obj:
-                            self._add_event({
-                                "type": "resolution_complete",
-                                "card": self._resolve_card_name(obj.grp_id),
-                                "instance_id": obj_id,
-                            })
+                            self._add_event(
+                                {
+                                    "type": "resolution_complete",
+                                    "card": self._resolve_card_name(obj.grp_id),
+                                    "instance_id": obj_id,
+                                }
+                            )
 
                 elif ann_type in ("AnnotationType_TokenCreated", "AnnotationType_TokenDeleted"):
                     is_created = "Created" in ann_type
                     for obj_id in affected_ids:
                         obj = self.game_objects.get(obj_id)
                         if obj:
-                            self._add_event({
-                                "type": "token_created" if is_created else "token_deleted",
-                                "card": self._resolve_card_name(obj.grp_id),
-                                "instance_id": obj_id,
-                            })
+                            self._add_event(
+                                {
+                                    "type": "token_created" if is_created else "token_deleted",
+                                    "card": self._resolve_card_name(obj.grp_id),
+                                    "instance_id": obj_id,
+                                }
+                            )
 
                 elif ann_type == "AnnotationType_TriggeringObject":
                     # Links a triggered ability to its source
@@ -2488,20 +2577,24 @@ class GameState:
                     trigger_id = _coerce_int(detail_map.get("triggerId", 0), 0)
                     source_obj = self.game_objects.get(source_id)
                     if source_obj:
-                        self._add_event({
-                            "type": "trigger",
-                            "source": self._resolve_card_name(source_obj.grp_id),
-                            "source_id": source_id,
-                            "trigger_id": trigger_id,
-                        })
+                        self._add_event(
+                            {
+                                "type": "trigger",
+                                "source": self._resolve_card_name(source_obj.grp_id),
+                                "source_id": source_id,
+                                "trigger_id": trigger_id,
+                            }
+                        )
 
                 elif ann_type == "AnnotationType_ManaPaid":
                     # Mana payment details
-                    self._add_event({
-                        "type": "mana_paid",
-                        "details": detail_map,
-                        "affected_ids": affected_ids,
-                    })
+                    self._add_event(
+                        {
+                            "type": "mana_paid",
+                            "details": detail_map,
+                            "affected_ids": affected_ids,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_UserActionTaken":
                     # Player took an action — also record in action history buffer
@@ -2529,50 +2622,61 @@ class GameState:
                         self.action_history = self.action_history[-50:]
 
                 elif ann_type == "AnnotationType_Scry":
-                    self._add_event({
-                        "type": "scry",
-                        "affected_ids": affected_ids,
-                        "details": detail_map,
-                    })
+                    self._add_event(
+                        {
+                            "type": "scry",
+                            "affected_ids": affected_ids,
+                            "details": detail_map,
+                        }
+                    )
 
                 elif ann_type in ("AnnotationType_LossOfGame", "AnnotationType_WinTheGame"):
                     result = self._resolve_end_annotation_locked(ann_type, affected_ids)
-                    self._add_event({
-                        "type": "game_end",
-                        "result": result or "unknown",
-                        "affected_ids": affected_ids,
-                    })
+                    self._add_event(
+                        {
+                            "type": "game_end",
+                            "result": result or "unknown",
+                            "affected_ids": affected_ids,
+                        }
+                    )
                     # Persist result so it survives reset() for post-match analysis
                     self._record_match_result_locked(result, ann_type)
 
                 elif ann_type == "AnnotationType_ModifiedLife":
-                    self._add_event({
-                        "type": "life_changed",
-                        "details": detail_map,
-                        "affected_ids": affected_ids,
-                    })
+                    self._add_event(
+                        {
+                            "type": "life_changed",
+                            "details": detail_map,
+                            "affected_ids": affected_ids,
+                        }
+                    )
 
                 elif ann_type in ("AnnotationType_CoinFlip", "AnnotationType_ChoiceResult"):
-                    self._add_event({
-                        "type": "random_result",
-                        "sub_type": ann_type.replace("AnnotationType_", ""),
-                        "details": detail_map,
-                    })
+                    self._add_event(
+                        {
+                            "type": "random_result",
+                            "sub_type": ann_type.replace("AnnotationType_", ""),
+                            "details": detail_map,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_FaceDown":
                     for obj_id in affected_ids:
-                        self._add_event({
-                            "type": "face_down",
-                            "instance_id": obj_id,
-                        })
+                        self._add_event(
+                            {
+                                "type": "face_down",
+                                "instance_id": obj_id,
+                            }
+                        )
 
-                elif ann_type in ("AnnotationType_CreateAttachment",
-                                  "AnnotationType_AttachmentCreated"):
-                    self._add_event({
-                        "type": "attachment",
-                        "affected_ids": affected_ids,
-                        "details": detail_map,
-                    })
+                elif ann_type in ("AnnotationType_CreateAttachment", "AnnotationType_AttachmentCreated"):
+                    self._add_event(
+                        {
+                            "type": "attachment",
+                            "affected_ids": affected_ids,
+                            "details": detail_map,
+                        }
+                    )
 
                 # ── Phase 1 turbo-charge: new annotation handlers ──
 
@@ -2591,21 +2695,27 @@ class GameState:
                         else:
                             # Target might be a player seat
                             target_names.append(f"Player#{tid}" if tid in self.players else f"#{tid}")
-                    self._add_event({
-                        "type": "target_spec",
-                        "source": self._resolve_card_name(source_obj.grp_id) if source_obj else f"#{source_id}",
-                        "source_id": source_id,
-                        "targets": target_names,
-                        "target_ids": list(target_ids),
-                    })
+                    self._add_event(
+                        {
+                            "type": "target_spec",
+                            "source": self._resolve_card_name(source_obj.grp_id)
+                            if source_obj
+                            else f"#{source_id}",
+                            "source_id": source_id,
+                            "targets": target_names,
+                            "target_ids": list(target_ids),
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_PredictedDirectDamage":
                     # GRE's own combat damage prediction
-                    self._add_event({
-                        "type": "predicted_damage",
-                        "affected_ids": affected_ids,
-                        "details": detail_map,
-                    })
+                    self._add_event(
+                        {
+                            "type": "predicted_damage",
+                            "affected_ids": affected_ids,
+                            "details": detail_map,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_ModifiedPower":
                     # Actual power after continuous effects
@@ -2646,11 +2756,13 @@ class GameState:
 
                 elif ann_type == "AnnotationType_LayeredEffect":
                     # Active continuous effect (anthem, debuff, etc.)
-                    self._add_event({
-                        "type": "layered_effect",
-                        "affected_ids": affected_ids,
-                        "details": detail_map,
-                    })
+                    self._add_event(
+                        {
+                            "type": "layered_effect",
+                            "affected_ids": affected_ids,
+                            "details": detail_map,
+                        }
+                    )
 
                 elif ann_type in ("AnnotationType_AddAbility", "AnnotationType_DynamicAbility"):
                     ability = detail_map.get("abilityGrpId", detail_map.get("ability", ""))
@@ -2660,11 +2772,13 @@ class GameState:
                             ability_str = str(ability)
                             if ability_str not in obj.granted_abilities:
                                 obj.granted_abilities.append(ability_str)
-                    self._add_event({
-                        "type": "ability_added",
-                        "affected_ids": affected_ids,
-                        "ability": str(ability),
-                    })
+                    self._add_event(
+                        {
+                            "type": "ability_added",
+                            "affected_ids": affected_ids,
+                            "ability": str(ability),
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_RemoveAbility":
                     ability = detail_map.get("abilityGrpId", detail_map.get("ability", ""))
@@ -2674,11 +2788,13 @@ class GameState:
                             ability_str = str(ability)
                             if ability_str not in obj.removed_abilities:
                                 obj.removed_abilities.append(ability_str)
-                    self._add_event({
-                        "type": "ability_removed",
-                        "affected_ids": affected_ids,
-                        "ability": str(ability),
-                    })
+                    self._add_event(
+                        {
+                            "type": "ability_removed",
+                            "affected_ids": affected_ids,
+                            "ability": str(ability),
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_DamagedThisTurn":
                     for obj_id in affected_ids:
@@ -2703,20 +2819,24 @@ class GameState:
                         obj = self.game_objects.get(obj_id)
                         if obj:
                             obj.is_phased_out = True
-                    self._add_event({
-                        "type": "phased_out",
-                        "affected_ids": affected_ids,
-                    })
+                    self._add_event(
+                        {
+                            "type": "phased_out",
+                            "affected_ids": affected_ids,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_PhasedIn":
                     for obj_id in affected_ids:
                         obj = self.game_objects.get(obj_id)
                         if obj:
                             obj.is_phased_out = False
-                    self._add_event({
-                        "type": "phased_in",
-                        "affected_ids": affected_ids,
-                    })
+                    self._add_event(
+                        {
+                            "type": "phased_in",
+                            "affected_ids": affected_ids,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_ClassLevel":
                     level = detail_map.get("level", detail_map.get("value", 1))
@@ -2725,11 +2845,13 @@ class GameState:
                         obj = self.game_objects.get(obj_id)
                         if obj and level_int is not None:
                             obj.class_level = level_int
-                    self._add_event({
-                        "type": "class_level",
-                        "affected_ids": affected_ids,
-                        "level": level_int if level_int is not None else level,
-                    })
+                    self._add_event(
+                        {
+                            "type": "class_level",
+                            "affected_ids": affected_ids,
+                            "level": level_int if level_int is not None else level,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_DungeonStatus":
                     dungeon = detail_map.get("dungeon", "")
@@ -2739,40 +2861,50 @@ class GameState:
                         owner = obj.owner_seat_id if obj else (affected_ids[0] if affected_ids else 0)
                         if owner:
                             self.dungeon_status[owner] = {"dungeon": dungeon, "room": room}
-                    self._add_event({
-                        "type": "dungeon_status",
-                        "dungeon": dungeon,
-                        "room": room,
-                        "affected_ids": affected_ids,
-                    })
+                    self._add_event(
+                        {
+                            "type": "dungeon_status",
+                            "dungeon": dungeon,
+                            "room": room,
+                            "affected_ids": affected_ids,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_SuspendLike":
                     # Cards in exile with time counters (suspend, foretell, etc.)
-                    self._add_event({
-                        "type": "suspend_like",
-                        "affected_ids": affected_ids,
-                        "details": detail_map,
-                    })
+                    self._add_event(
+                        {
+                            "type": "suspend_like",
+                            "affected_ids": affected_ids,
+                            "details": detail_map,
+                        }
+                    )
 
                 elif ann_type in ("AnnotationType_LinkedDamage", "AnnotationType_DamageSource"):
                     # Damage attribution — which source dealt what
                     source_id = _coerce_int(detail_map.get("sourceId", 0), 0)
                     source_obj = self.game_objects.get(source_id)
-                    self._add_event({
-                        "type": "damage_attribution",
-                        "sub_type": ann_type.replace("AnnotationType_", ""),
-                        "source": self._resolve_card_name(source_obj.grp_id) if source_obj else f"#{source_id}",
-                        "source_id": source_id,
-                        "affected_ids": affected_ids,
-                        "details": detail_map,
-                    })
+                    self._add_event(
+                        {
+                            "type": "damage_attribution",
+                            "sub_type": ann_type.replace("AnnotationType_", ""),
+                            "source": self._resolve_card_name(source_obj.grp_id)
+                            if source_obj
+                            else f"#{source_id}",
+                            "source_id": source_id,
+                            "affected_ids": affected_ids,
+                            "details": detail_map,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_SupplementalText":
-                    self._add_event({
-                        "type": "supplemental_text",
-                        "affected_ids": affected_ids,
-                        "details": detail_map,
-                    })
+                    self._add_event(
+                        {
+                            "type": "supplemental_text",
+                            "affected_ids": affected_ids,
+                            "details": detail_map,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_ColorProduction":
                     colors = _coerce_str_list(detail_map.get("colors", detail_map.get("value", [])))
@@ -2789,11 +2921,13 @@ class GameState:
                         obj = self.game_objects.get(obj_id)
                         if obj and source_grp is not None:
                             obj.copied_from_grp_id = source_grp
-                    self._add_event({
-                        "type": "copied_object",
-                        "affected_ids": affected_ids,
-                        "source_grp_id": source_grp,
-                    })
+                    self._add_event(
+                        {
+                            "type": "copied_object",
+                            "affected_ids": affected_ids,
+                            "source_grp_id": source_grp,
+                        }
+                    )
 
                 elif ann_type in ("AnnotationType_Designation", "AnnotationType_GainDesignation"):
                     designation = detail_map.get("designation", detail_map.get("value", ""))
@@ -2807,11 +2941,13 @@ class GameState:
                             if seat not in self.designations:
                                 self.designations[seat] = set()
                             self.designations[seat].add(str(designation))
-                    self._add_event({
-                        "type": "designation_gained",
-                        "designation": designation,
-                        "affected_ids": affected_ids,
-                    })
+                    self._add_event(
+                        {
+                            "type": "designation_gained",
+                            "designation": designation,
+                            "affected_ids": affected_ids,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_LoseDesignation":
                     designation = detail_map.get("designation", detail_map.get("value", ""))
@@ -2822,45 +2958,57 @@ class GameState:
                             seat = obj.controller_seat_id if obj else None
                         if seat and seat in self.designations:
                             self.designations[seat].discard(str(designation))
-                    self._add_event({
-                        "type": "designation_lost",
-                        "designation": designation,
-                        "affected_ids": affected_ids,
-                    })
+                    self._add_event(
+                        {
+                            "type": "designation_lost",
+                            "designation": designation,
+                            "affected_ids": affected_ids,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_BoonInfo":
-                    self._add_event({
-                        "type": "boon",
-                        "affected_ids": affected_ids,
-                        "details": detail_map,
-                    })
+                    self._add_event(
+                        {
+                            "type": "boon",
+                            "affected_ids": affected_ids,
+                            "details": detail_map,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_Vote":
-                    self._add_event({
-                        "type": "vote",
-                        "affected_ids": affected_ids,
-                        "details": detail_map,
-                    })
+                    self._add_event(
+                        {
+                            "type": "vote",
+                            "affected_ids": affected_ids,
+                            "details": detail_map,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_Shuffle":
-                    self._add_event({
-                        "type": "shuffle",
-                        "affected_ids": affected_ids,
-                    })
+                    self._add_event(
+                        {
+                            "type": "shuffle",
+                            "affected_ids": affected_ids,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_DieRoll":
-                    self._add_event({
-                        "type": "die_roll",
-                        "affected_ids": affected_ids,
-                        "details": detail_map,
-                    })
+                    self._add_event(
+                        {
+                            "type": "die_roll",
+                            "affected_ids": affected_ids,
+                            "details": detail_map,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_ObjectIdChanged":
-                    self._add_event({
-                        "type": "object_id_changed",
-                        "affected_ids": affected_ids,
-                        "details": detail_map,
-                    })
+                    self._add_event(
+                        {
+                            "type": "object_id_changed",
+                            "affected_ids": affected_ids,
+                            "details": detail_map,
+                        }
+                    )
 
                 elif ann_type == "AnnotationType_NewTurnStarted":
                     # Reset turn-specific flags on all game objects
@@ -2908,8 +3056,12 @@ class GameState:
                     pass
 
                 else:
-                    logger.debug("Unhandled annotation type: %s (affected: %s, details: %s)",
-                                 ann_type, affected_ids, detail_map)
+                    logger.debug(
+                        "Unhandled annotation type: %s (affected: %s, details: %s)",
+                        ann_type,
+                        affected_ids,
+                        detail_map,
+                    )
 
     def _update_turn_info(self, turn_data: dict) -> None:
         """Update turn info from message data.
@@ -2927,16 +3079,18 @@ class GameState:
 
         # Detect new game: turn number resets to 1 or decreases significantly
         if prev_turn > 3 and new_turn <= 1:
-            logger.info(f"New game detected (turn {prev_turn} -> {new_turn}) - Performing Search & Destroy on old state.")
-            
+            logger.info(
+                f"New game detected (turn {prev_turn} -> {new_turn}) - Performing Search & Destroy on old state."
+            )
+
             # FULL RESET of all zones, objects, players
             self.reset()
-            
+
             # reset() makes turn_number 0, which is fine as we overwrite it below
 
         # Check if active player is explicitly in the update
         explicit_active = "activePlayer" in turn_data
-        
+
         if new_turn != prev_turn:
             # Turn changed
             if explicit_active:
@@ -2951,31 +3105,40 @@ class GameState:
                 # which guaranteed wrong "whose turn" advice until a follow-up
                 # diff arrived — often too late, causing the coach to think it
                 # was always the opponent's turn.
-                other_seat = self.opponent_seat_id if prev_active == self.local_seat_id else self.local_seat_id
+                other_seat = (
+                    self.opponent_seat_id if prev_active == self.local_seat_id else self.local_seat_id
+                )
                 if other_seat is not None and prev_active != 0:
                     new_active = other_seat
-                    logger.info(f"Turn change ({prev_turn}->{new_turn}) without activePlayer. Inferred active_player={new_active} (alternating from {prev_active}).")
+                    logger.info(
+                        f"Turn change ({prev_turn}->{new_turn}) without activePlayer. Inferred active_player={new_active} (alternating from {prev_active})."
+                    )
                 elif prev_active != 0:
                     # Can't determine other seat but have a valid previous value — keep it
                     new_active = prev_active
-                    logger.warning(f"Turn change ({prev_turn}->{new_turn}) without activePlayer. Keeping previous active_player={prev_active} (opponent seat unknown).")
+                    logger.warning(
+                        f"Turn change ({prev_turn}->{new_turn}) without activePlayer. Keeping previous active_player={prev_active} (opponent seat unknown)."
+                    )
                 else:
                     # Previous was already 0 (unknown) — nothing to alternate from.
                     # Guess local player (turn 1 is usually the play-first player,
                     # but any value > 0 is better than 0).
                     new_active = self.local_seat_id or 0
-                    logger.warning(f"Turn change ({prev_turn}->{new_turn}) without activePlayer. Previous was 0, guessing local_seat={new_active}.")
+                    logger.warning(
+                        f"Turn change ({prev_turn}->{new_turn}) without activePlayer. Previous was 0, guessing local_seat={new_active}."
+                    )
         else:
             # Turn didn't change, use update or keep existing
             new_active = turn_data.get("activePlayer", prev_active)
 
         # Clear stale pending combat steps when turn or active player changes
         # Must check BEFORE updating turn_info
-        if new_turn != prev_turn or new_active != prev_active:
-            if self._pending_combat_steps:
-                logger.debug(f"Clearing {len(self._pending_combat_steps)} stale pending combat steps (turn/active changed)")
-                self._pending_combat_steps.clear()
-        
+        if (new_turn != prev_turn or new_active != prev_active) and self._pending_combat_steps:
+            logger.debug(
+                f"Clearing {len(self._pending_combat_steps)} stale pending combat steps (turn/active changed)"
+            )
+            self._pending_combat_steps.clear()
+
         # UNTAP STEP: When turn changes, untap all permanents controlled by the new active player.
         # Skip permanents in _untap_prevention — those that MTGA explicitly kept tapped last turn
         # (e.g. creatures with "can't become untapped" from Blossombind-style effects).
@@ -3008,7 +3171,7 @@ class GameState:
                 if skipped_count > 0:
                     msg += f" (skipped {skipped_count} with untap prevention)"
                 logger.info(msg)
-        
+
         # Reset lands_played to 0 for all players when the turn changes.
         # GRE diff messages often omit landsPlayedThisTurn, so _update_player
         # falls back to existing.lands_played — carrying over the stale value
@@ -3034,12 +3197,11 @@ class GameState:
                 new_phase = turn_data["phase"]
             else:
                 new_phase = "Phase_Beginning"
-                logger.debug(f"Turn change ({prev_turn}->{new_turn}) without phase. Resetting to Phase_Beginning.")
-            
-            if "step" in turn_data:
-                new_step = turn_data["step"]
-            else:
-                new_step = "Step_Untap"
+                logger.debug(
+                    f"Turn change ({prev_turn}->{new_turn}) without phase. Resetting to Phase_Beginning."
+                )
+
+            new_step = turn_data.get("step", "Step_Untap")
         else:
             # Same turn, preserve existing if missing
             new_phase = turn_data.get("phase", prev_phase)
@@ -3076,21 +3238,21 @@ class GameState:
         if "Combat" in new_phase and new_step != prev_step:
             if "DeclareAttack" in new_step or "DeclareBlock" in new_step:
                 # Store step with active player info for trigger generation
-                self._pending_combat_steps.append({
-                    "step": new_step,
-                    "active_player": self.turn_info.active_player,
-                    "turn": new_turn
-                })
+                self._pending_combat_steps.append(
+                    {"step": new_step, "active_player": self.turn_info.active_player, "turn": new_turn}
+                )
                 self._last_combat_step_time = time.time()
                 logger.info(f"Queued combat step: {new_step} (active_player={self.turn_info.active_player})")
 
-        turn_window_changed = any((
-            new_turn != prev_turn,
-            new_active != prev_active,
-            new_priority != prev_priority,
-            new_phase != prev_phase,
-            new_step != prev_step,
-        ))
+        turn_window_changed = any(
+            (
+                new_turn != prev_turn,
+                new_active != prev_active,
+                new_priority != prev_priority,
+                new_phase != prev_phase,
+                new_step != prev_step,
+            )
+        )
         if turn_window_changed:
             self._clear_action_window(
                 reason=(
@@ -3101,7 +3263,9 @@ class GameState:
 
         self.turn_info.phase = new_phase
         self.turn_info.step = new_step
-        logger.debug(f"Updated turn info: turn {self.turn_info.turn_number}, phase {self.turn_info.phase}, step {self.turn_info.step}")
+        logger.debug(
+            f"Updated turn info: turn {self.turn_info.turn_number}, phase {self.turn_info.phase}, step {self.turn_info.step}"
+        )
 
 
 def _auto_clear_stale_decision(game_state: GameState) -> bool:
@@ -3112,23 +3276,21 @@ def _auto_clear_stale_decision(game_state: GameState) -> bool:
     MIN_DECISION_HOLD_S = 5
     _decision_type = (game_state.decision_context or {}).get("type", "")
     _skip_auto_clear = _decision_type in ("actions_available", "pay_costs")
-    if not (game_state.pending_decision
-            and game_state.pending_decision != "Mulligan"
-            and game_state.decision_context
-            and not _skip_auto_clear):
+    if not (
+        game_state.pending_decision
+        and game_state.pending_decision != "Mulligan"
+        and game_state.decision_context
+        and not _skip_auto_clear
+    ):
         return False
 
     import time as _time
-    decision_age = (
-        _time.time() - game_state.decision_timestamp
-        if game_state.decision_timestamp else 999
-    )
+
+    decision_age = _time.time() - game_state.decision_timestamp if game_state.decision_timestamp else 999
     source_id = game_state.decision_context.get("source_id")
     should_clear = False
     if source_id is not None:
-        still_on_stack = any(
-            obj.instance_id == source_id for obj in game_state.stack
-        )
+        still_on_stack = any(obj.instance_id == source_id for obj in game_state.stack)
         if not still_on_stack:
             if decision_age >= MIN_DECISION_HOLD_S:
                 should_clear = True
@@ -3142,10 +3304,7 @@ def _auto_clear_stale_decision(game_state: GameState) -> bool:
                     f"but holding ({decision_age:.1f}s < {MIN_DECISION_HOLD_S}s)"
                 )
     elif game_state.decision_timestamp:
-        is_busy = (
-            "Combat" in game_state.turn_info.phase
-            or len(game_state.stack) > 0
-        )
+        is_busy = "Combat" in game_state.turn_info.phase or len(game_state.stack) > 0
         no_source_timeout = 25 if is_busy else 15
         if decision_age > no_source_timeout:
             should_clear = True
@@ -3163,10 +3322,10 @@ def _auto_clear_stale_decision(game_state: GameState) -> bool:
     return False
 
 
-def _set_simple_decision(game_state: GameState, label: str, dec_type: str,
-                         raw: Optional[dict] = None) -> None:
+def _set_simple_decision(game_state: GameState, label: str, dec_type: str, raw: dict | None = None) -> None:
     """Set a simple pending decision with optional raw data."""
     import time as _time
+
     logger.info(f"Captured Decision: {label}")
     game_state.pending_decision = label
     game_state.decision_seat_id = game_state.local_seat_id
@@ -3236,15 +3395,16 @@ def _resolve_request_source_context(game_state: GameState, source_id: int) -> di
     return resolved
 
 
-def _handle_decision_message(game_state: GameState, msg_type: str,
-                             msg: dict) -> bool:
+def _handle_decision_message(game_state: GameState, msg_type: str, msg: dict) -> bool:
     """Handle a GRE decision message. Returns True if snapshot_dirty should be set."""
     import time as _time
 
     if msg_type in ("GREMessageType_MulliganReq", "GREMessageType_SubmitDeckReq"):
         logger.info(f"Captured Decision: Mulligan Check ({msg_type})")
         if game_state.turn_info.turn_number > 1:
-            logger.info(f"Mulligan Request detected at Turn {game_state.turn_info.turn_number} -> Resetting Ghost State.")
+            logger.info(
+                f"Mulligan Request detected at Turn {game_state.turn_info.turn_number} -> Resetting Ghost State."
+            )
             game_state.reset()
         # ── Phase 1: Extract sideboard from SubmitDeckReq (BO3 between games) ──
         if msg_type == "GREMessageType_SubmitDeckReq":
@@ -3261,7 +3421,9 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
         return False
 
     elif msg_type == "GREMessageType_IntermissionReq":
-        logger.info(f"IntermissionReq received (turn {game_state.turn_info.turn_number}) - game over/transition")
+        logger.info(
+            f"IntermissionReq received (turn {game_state.turn_info.turn_number}) - game over/transition"
+        )
         intermission_result = msg.get("intermissionReq", {}).get("result")
         if intermission_result:
             game_state.set_result_from_payload(intermission_result, "IntermissionReq")
@@ -3296,9 +3458,7 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
         req = msg.get("selectTargetsReq", {})
         source_id = _coerce_int(req.get("sourceId", 0), 0)
         source_ctx = _resolve_request_source_context(game_state, source_id)
-        source_card = source_ctx.get("source_card") or (
-            f"Ability #{source_id}" if source_id else "spell"
-        )
+        source_card = source_ctx.get("source_card") or (f"Ability #{source_id}" if source_id else "spell")
         # The GRE re-sends SelectTargetsReq on every re-present (a rejected
         # submit loop produced 850+ identical messages/min live 2026-06-09).
         # Log repeats at DEBUG so a runaway elsewhere can't flood the log.
@@ -3339,7 +3499,11 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
         logger.info(f"Captured Decision: Choose Mode ({len(options)} options)")
         game_state.pending_decision = "Choose Mode"
         game_state.decision_timestamp = _time.time()
-        game_state.decision_context = {"type": "modal_choice", "num_options": len(options), "options": options}
+        game_state.decision_context = {
+            "type": "modal_choice",
+            "num_options": len(options),
+            "options": options,
+        }
         return False
 
     elif msg_type == "GREMessageType_ActionsAvailableReq":
@@ -3368,9 +3532,13 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
         legal_attackers = _ensure_list(req.get("attackers", req.get("qualifiedAttackers", [])))
         attacker_names, attacker_ids = [], []
         for atk in legal_attackers:
-            obj_id = atk if isinstance(atk, int) else _coerce_int(
-                atk.get("instanceId", atk.get("attackerInstanceId", 0)),
-                0,
+            obj_id = (
+                atk
+                if isinstance(atk, int)
+                else _coerce_int(
+                    atk.get("instanceId", atk.get("attackerInstanceId", 0)),
+                    0,
+                )
             )
             obj = game_state.game_objects.get(obj_id)
             if obj:
@@ -3380,8 +3548,10 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
         game_state.pending_decision = "Declare Attackers"
         game_state.decision_timestamp = _time.time()
         game_state.decision_context = {
-            "type": "declare_attackers", "legal_attackers": attacker_names,
-            "legal_attacker_ids": attacker_ids, "raw_attackers": legal_attackers,
+            "type": "declare_attackers",
+            "legal_attackers": attacker_names,
+            "legal_attacker_ids": attacker_ids,
+            "raw_attackers": legal_attackers,
         }
         return False
 
@@ -3391,9 +3561,13 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
         blocker_names, blocker_ids = [], []
         attacker_id_set: set[int] = set()
         for blk in legal_blockers:
-            obj_id = blk if isinstance(blk, int) else _coerce_int(
-                blk.get("instanceId", blk.get("blockerInstanceId", 0)),
-                0,
+            obj_id = (
+                blk
+                if isinstance(blk, int)
+                else _coerce_int(
+                    blk.get("instanceId", blk.get("blockerInstanceId", 0)),
+                    0,
+                )
             )
             obj = game_state.game_objects.get(obj_id)
             if obj:
@@ -3421,21 +3595,24 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
                 # attacker even if the attackState annotation was missed.
                 atk_obj.is_attacking = True
         logger.info(
-            f"Captured Decision: Declare Blockers ({len(blocker_names)} legal, "
-            f"{len(attacker_ids)} attackers)"
+            f"Captured Decision: Declare Blockers ({len(blocker_names)} legal, {len(attacker_ids)} attackers)"
         )
         game_state.pending_decision = "Declare Blockers"
         game_state.decision_timestamp = _time.time()
         game_state.decision_context = {
-            "type": "declare_blockers", "legal_blockers": blocker_names,
-            "legal_blocker_ids": blocker_ids, "raw_blockers": legal_blockers,
-            "attacker_ids": attacker_ids, "attackers": attacker_names,
+            "type": "declare_blockers",
+            "legal_blockers": blocker_names,
+            "legal_blocker_ids": blocker_ids,
+            "raw_blockers": legal_blockers,
+            "attacker_ids": attacker_ids,
+            "attackers": attacker_names,
         }
         return False
 
     elif msg_type == "GREMessageType_AssignDamageReq":
-        _set_simple_decision(game_state, "Assign Damage", "assign_damage",
-                             dict(msg.get("assignDamageReq", {})))
+        _set_simple_decision(
+            game_state, "Assign Damage", "assign_damage", dict(msg.get("assignDamageReq", {}))
+        )
         return False
 
     elif msg_type == "GREMessageType_OrderCombatDamageReq":
@@ -3464,8 +3641,11 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
         game_state.pending_decision = "Distribute"
         game_state.decision_timestamp = _time.time()
         game_state.decision_context = {
-            "type": "distribution", "source_card": source_name,
-            "source_id": source_id, "total": total, "raw": dict(req),
+            "type": "distribution",
+            "source_card": source_name,
+            "source_id": source_id,
+            "total": total,
+            "raw": dict(req),
         }
         return False
 
@@ -3474,12 +3654,17 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
         source_id = req.get("sourceId", 0)
         source_obj = game_state.game_objects.get(source_id)
         source_name = game_state._resolve_card_name(source_obj.grp_id) if source_obj else "Unknown"
-        logger.info(f"Captured Decision: Numeric Input for {source_name} ({req.get('min', 0)}-{req.get('max', 0)})")
+        logger.info(
+            f"Captured Decision: Numeric Input for {source_name} ({req.get('min', 0)}-{req.get('max', 0)})"
+        )
         game_state.pending_decision = "Choose Number"
         game_state.decision_timestamp = _time.time()
         game_state.decision_context = {
-            "type": "numeric_input", "source_card": source_name,
-            "source_id": source_id, "min": req.get("min", 0), "max": req.get("max", 0),
+            "type": "numeric_input",
+            "source_card": source_name,
+            "source_id": source_id,
+            "min": req.get("min", 0),
+            "max": req.get("max", 0),
         }
         return False
 
@@ -3488,33 +3673,42 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
         return False
 
     elif msg_type == "GREMessageType_SelectReplacementReq":
-        _set_simple_decision(game_state, "Select Replacement", "select_replacement",
-                             dict(msg.get("selectReplacementReq", {})))
+        _set_simple_decision(
+            game_state, "Select Replacement", "select_replacement", dict(msg.get("selectReplacementReq", {}))
+        )
         return False
 
     elif msg_type == "GREMessageType_SelectNGroupReq":
-        _set_simple_decision(game_state, "Select from Group", "select_n_group",
-                             dict(msg.get("selectNGroupReq", {})))
+        _set_simple_decision(
+            game_state, "Select from Group", "select_n_group", dict(msg.get("selectNGroupReq", {}))
+        )
         return False
 
     elif msg_type == "GREMessageType_SelectFromGroupsReq":
-        _set_simple_decision(game_state, "Select from Groups", "select_from_groups",
-                             dict(msg.get("selectFromGroupsReq", {})))
+        _set_simple_decision(
+            game_state, "Select from Groups", "select_from_groups", dict(msg.get("selectFromGroupsReq", {}))
+        )
         return False
 
     elif msg_type == "GREMessageType_SearchFromGroupsReq":
-        _set_simple_decision(game_state, "Search from Groups", "search_from_groups",
-                             dict(msg.get("searchFromGroupsReq", {})))
+        _set_simple_decision(
+            game_state, "Search from Groups", "search_from_groups", dict(msg.get("searchFromGroupsReq", {}))
+        )
         return False
 
     elif msg_type == "GREMessageType_CastingTimeOptionsReq":
-        _set_simple_decision(game_state, "Choose Casting Option", "casting_time_options",
-                             dict(msg.get("castingTimeOptionsReq", {})))
+        _set_simple_decision(
+            game_state,
+            "Choose Casting Option",
+            "casting_time_options",
+            dict(msg.get("castingTimeOptionsReq", {})),
+        )
         return False
 
     elif msg_type == "GREMessageType_SelectCountersReq":
-        _set_simple_decision(game_state, "Select Counters", "select_counters",
-                             dict(msg.get("selectCountersReq", {})))
+        _set_simple_decision(
+            game_state, "Select Counters", "select_counters", dict(msg.get("selectCountersReq", {}))
+        )
         return False
 
     elif msg_type == "GREMessageType_RevealHandReq":
@@ -3523,13 +3717,11 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
         return False
 
     elif msg_type == "GREMessageType_OrderReq":
-        _set_simple_decision(game_state, "Order Triggers", "order_triggers",
-                             dict(msg.get("orderReq", {})))
+        _set_simple_decision(game_state, "Order Triggers", "order_triggers", dict(msg.get("orderReq", {})))
         return False
 
     elif msg_type == "GREMessageType_GatherReq":
-        _set_simple_decision(game_state, "Gather", "gather",
-                             dict(msg.get("gatherReq", {})))
+        _set_simple_decision(game_state, "Gather", "gather", dict(msg.get("gatherReq", {})))
         return False
 
     elif msg_type == "GREMessageType_OptionalActionMessage":
@@ -3545,7 +3737,8 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
         game_state.pending_decision = "Optional Action"
         game_state.decision_timestamp = _time.time()
         game_state.decision_context = {
-            "type": "optional_action", "prompt": prompt_text,
+            "type": "optional_action",
+            "prompt": prompt_text,
             "raw": {k: v for k, v in msg.items() if k != "type"},
         }
         return False
@@ -3556,6 +3749,7 @@ def _handle_decision_message(game_state: GameState, msg_type: str,
 def _handle_select_n_req(game_state: GameState, msg: dict) -> bool:
     """Handle SelectNReq messages (scry, discard, choose creature, etc.)."""
     import time as _time
+
     req = msg.get("selectNReq", {})
     context_data = req.get("context", {})
     num_to_select = _coerce_int(req.get("count", 1), 1)
@@ -3565,21 +3759,30 @@ def _handle_select_n_req(game_state: GameState, msg: dict) -> bool:
 
     context_str = str(context_data).lower()
     prior_prompt = ""
-    if (game_state.pending_decision
-            and game_state.decision_context
-            and game_state.decision_context.get("type") == "prompt"):
+    if (
+        game_state.pending_decision
+        and game_state.decision_context
+        and game_state.decision_context.get("type") == "prompt"
+    ):
         prior_prompt = game_state.decision_context.get("text", "").lower()
         context_str = f"{context_str} {prior_prompt}"
 
     # Determine selection type
     _type_map = [
-        ("discard", "discard", "Discard"), ("sacrifice", "sacrifice", "Sacrifice"),
-        ("exile", "exile", "Exile"), ("destroy", "destroy", "Destroy"),
-        ("return", "return", "Return"), ("scry", "scry", "Scry"),
-        ("surveil", "surveil", "Surveil"), ("mill", "mill", "Mill"),
-        ("explore", "explore", "Explore"), ("creature", "choose_creature", "Choose Creature"),
-        ("land", "choose_land", "Choose Land"), ("enchantment", "choose_enchantment", "Choose Enchantment"),
-        ("artifact", "choose_artifact", "Choose Artifact"), ("permanent", "choose_permanent", "Choose Permanent"),
+        ("discard", "discard", "Discard"),
+        ("sacrifice", "sacrifice", "Sacrifice"),
+        ("exile", "exile", "Exile"),
+        ("destroy", "destroy", "Destroy"),
+        ("return", "return", "Return"),
+        ("scry", "scry", "Scry"),
+        ("surveil", "surveil", "Surveil"),
+        ("mill", "mill", "Mill"),
+        ("explore", "explore", "Explore"),
+        ("creature", "choose_creature", "Choose Creature"),
+        ("land", "choose_land", "Choose Land"),
+        ("enchantment", "choose_enchantment", "Choose Enchantment"),
+        ("artifact", "choose_artifact", "Choose Artifact"),
+        ("permanent", "choose_permanent", "Choose Permanent"),
         ("choose", "choose", "Choose"),
     ]
     selection_type = "select_n"
@@ -3606,6 +3809,7 @@ def _handle_select_n_req(game_state: GameState, msg: dict) -> bool:
         if grp_id:
             try:
                 from arenamcp import server
+
                 info = server.get_card_info(grp_id)
                 name = info.get("name") if info else None
                 if name and not name.startswith("Card#"):
@@ -3616,13 +3820,18 @@ def _handle_select_n_req(game_state: GameState, msg: dict) -> bool:
             except Exception:
                 option_cards.append(f"Card#{grp_id}")
 
-    logger.info(f"Captured Decision: {decision_text} ({num_to_select} items, type={selection_type}, options={option_cards or option_ids[:5]})")
+    logger.info(
+        f"Captured Decision: {decision_text} ({num_to_select} items, type={selection_type}, options={option_cards or option_ids[:5]})"
+    )
     game_state.pending_decision = decision_text
     game_state.decision_timestamp = _time.time()
     game_state.decision_context = {
-        "type": selection_type, "count": num_to_select,
-        "min": min_select, "max": max_select,
-        "context_raw": context_data, "prior_prompt": prior_prompt or None,
+        "type": selection_type,
+        "count": num_to_select,
+        "min": min_select,
+        "max": max_select,
+        "context_raw": context_data,
+        "prior_prompt": prior_prompt or None,
         "option_cards": option_cards or None,
         # Preserve raw option IDs and the request's IdType so the
         # autopilot's GRE bridge path knows whether to submit instance
@@ -3666,6 +3875,7 @@ def _build_rules_engine_snapshot(game_state: GameState) -> dict:
 def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
     """Handle ActionsAvailableReq messages. Returns True if snapshot_dirty."""
     import time as _time
+
     req = msg.get("actionsAvailableReq", {})
     raw_actions = _ensure_dict_list(req.get("actions", []))
 
@@ -3700,9 +3910,12 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
         mana_cost = _ensure_dict_list(action.get("manaCost", []))
         if mana_cost:
             _MANA_ABBREV = {
-                "ManaColor_White": "W", "ManaColor_Blue": "U",
-                "ManaColor_Black": "B", "ManaColor_Red": "R",
-                "ManaColor_Green": "G", "ManaColor_Colorless": "C",
+                "ManaColor_White": "W",
+                "ManaColor_Blue": "U",
+                "ManaColor_Black": "B",
+                "ManaColor_Red": "R",
+                "ManaColor_Green": "G",
+                "ManaColor_Colorless": "C",
                 "ManaColor_Any": "X",
             }
             cost_parts = []
@@ -3731,9 +3944,11 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
             if action.get("grpId"):
                 try:
                     from arenamcp import server
+
                     info = server.get_card_info(action["grpId"])
                     name = info.get("name", "Land")
-                except Exception: pass
+                except Exception:
+                    pass
             legal_list.append(f"Play Land: {name}")
         elif atype == "ActionType_Cast":
             name = "Spell"
@@ -3741,9 +3956,11 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
             if action.get("grpId"):
                 try:
                     from arenamcp import server
+
                     info = server.get_card_info(action["grpId"])
                     name = info.get("name", "Spell")
-                except Exception: pass
+                except Exception:
+                    pass
             # Include castability from AutoTap, manaPaymentOptions, or RulesEngine affordability
             castable = (
                 action.get("autoTapSolution") is not None
@@ -3753,6 +3970,7 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
             if not castable and info.get("mana_cost"):
                 try:
                     from arenamcp.rules_engine import RulesEngine
+
                     if rules_mana_pool is None:
                         rules_mana_pool = RulesEngine._get_mana_pool(
                             _build_rules_engine_snapshot(game_state),
@@ -3769,9 +3987,11 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
             if action.get("grpId"):
                 try:
                     from arenamcp import server
+
                     info = server.get_card_info(action["grpId"])
                     name = info.get("name", "")
-                except Exception: pass
+                except Exception:
+                    pass
             payable = (
                 action.get("autoTapSolution") is not None
                 or action.get("manaPaymentOptions") is not None
@@ -3817,6 +4037,7 @@ def _handle_actions_available(game_state: GameState, msg: dict) -> bool:
 def _handle_pay_costs(game_state: GameState, msg: dict) -> bool:
     """Handle PayCostsReq messages."""
     import time as _time
+
     req = msg.get("payCostsReq", {})
     mana_cost = _ensure_dict_list(req.get("manaCost", []))
     source_id = 0
@@ -3829,10 +4050,14 @@ def _handle_pay_costs(game_state: GameState, msg: dict) -> bool:
     source_name = game_state._resolve_card_name(source_obj.grp_id) if source_obj else "Unknown"
 
     _MANA_ABBREV = {
-        "ManaColor_White": "W", "ManaColor_Blue": "U",
-        "ManaColor_Black": "B", "ManaColor_Red": "R",
-        "ManaColor_Green": "G", "ManaColor_Colorless": "C",
-        "ManaColor_Any": "Any", "ManaColor_Generic": "Generic",
+        "ManaColor_White": "W",
+        "ManaColor_Blue": "U",
+        "ManaColor_Black": "B",
+        "ManaColor_Red": "R",
+        "ManaColor_Green": "G",
+        "ManaColor_Colorless": "C",
+        "ManaColor_Any": "Any",
+        "ManaColor_Generic": "Generic",
     }
     mana_requirements = {
         "generic": 0,
@@ -3872,8 +4097,7 @@ def _handle_pay_costs(game_state: GameState, msg: dict) -> bool:
         tap_actions = _ensure_dict_list(first_solution.get("autoTapActions", []))
         autotap_info = {
             "lands_to_tap": [
-                {"instanceId": ta.get("instanceId"), "mana": ta.get("manaProduced", "")}
-                for ta in tap_actions
+                {"instanceId": ta.get("instanceId"), "mana": ta.get("manaProduced", "")} for ta in tap_actions
             ],
             "num_lands": len(tap_actions),
         }
@@ -3889,14 +4113,18 @@ def _handle_pay_costs(game_state: GameState, msg: dict) -> bool:
         game_state.legal_actions = []
         game_state.legal_actions_raw = []
 
-    logger.info(f"Captured Decision: Pay Costs (source: {source_name}, mana: {mana_str}, autotap={has_autotap})")
+    logger.info(
+        f"Captured Decision: Pay Costs (source: {source_name}, mana: {mana_str}, autotap={has_autotap})"
+    )
     game_state.pending_decision = "Pay Costs"
     game_state.decision_seat_id = game_state.local_seat_id
     game_state.decision_timestamp = _time.time()
     game_state.decision_context = {
-        "type": "pay_costs", "source_card": source_name,
+        "type": "pay_costs",
+        "source_card": source_name,
         "source_id": source_id if source_id else None,
-        "mana_cost": mana_str, "has_autotap": has_autotap,
+        "mana_cost": mana_str,
+        "has_autotap": has_autotap,
         "mana_requirements": {k: v for k, v in mana_requirements.items() if v},
         "autotap_solution": autotap_info,
     }
@@ -3904,32 +4132,56 @@ def _handle_pay_costs(game_state: GameState, msg: dict) -> bool:
 
 
 # Known decision Req types handled by _handle_decision_message
-_KNOWN_REQ_TYPES = frozenset([
-    "GREMessageType_MulliganReq", "GREMessageType_SubmitDeckReq",
-    "GREMessageType_IntermissionReq", "GREMessageType_PromptReq",
-    "GREMessageType_SelectTargetsReq", "GREMessageType_SelectNReq",
-    "GREMessageType_GroupReq", "GREMessageType_GroupOptionReq",
-    "GREMessageType_ActionsAvailableReq",
-    "GREMessageType_DeclareAttackersReq", "GREMessageType_DeclareBlockersReq",
-    "GREMessageType_AssignDamageReq", "GREMessageType_OrderCombatDamageReq",
-    "GREMessageType_PayCostsReq", "GREMessageType_SearchReq",
-    "GREMessageType_DistributionReq", "GREMessageType_NumericInputReq",
-    "GREMessageType_ChooseStartingPlayerReq", "GREMessageType_SelectReplacementReq",
-    "GREMessageType_SelectNGroupReq", "GREMessageType_SelectFromGroupsReq",
-    "GREMessageType_SearchFromGroupsReq", "GREMessageType_CastingTimeOptionsReq",
-    "GREMessageType_SelectCountersReq", "GREMessageType_RevealHandReq",
-    "GREMessageType_OrderReq", "GREMessageType_GatherReq",
-    "GREMessageType_ConnectResp", "GREMessageType_OptionalActionMessage",
-])
+_KNOWN_REQ_TYPES = frozenset(
+    [
+        "GREMessageType_MulliganReq",
+        "GREMessageType_SubmitDeckReq",
+        "GREMessageType_IntermissionReq",
+        "GREMessageType_PromptReq",
+        "GREMessageType_SelectTargetsReq",
+        "GREMessageType_SelectNReq",
+        "GREMessageType_GroupReq",
+        "GREMessageType_GroupOptionReq",
+        "GREMessageType_ActionsAvailableReq",
+        "GREMessageType_DeclareAttackersReq",
+        "GREMessageType_DeclareBlockersReq",
+        "GREMessageType_AssignDamageReq",
+        "GREMessageType_OrderCombatDamageReq",
+        "GREMessageType_PayCostsReq",
+        "GREMessageType_SearchReq",
+        "GREMessageType_DistributionReq",
+        "GREMessageType_NumericInputReq",
+        "GREMessageType_ChooseStartingPlayerReq",
+        "GREMessageType_SelectReplacementReq",
+        "GREMessageType_SelectNGroupReq",
+        "GREMessageType_SelectFromGroupsReq",
+        "GREMessageType_SearchFromGroupsReq",
+        "GREMessageType_CastingTimeOptionsReq",
+        "GREMessageType_SelectCountersReq",
+        "GREMessageType_RevealHandReq",
+        "GREMessageType_OrderReq",
+        "GREMessageType_GatherReq",
+        "GREMessageType_ConnectResp",
+        "GREMessageType_OptionalActionMessage",
+    ]
+)
 
-_DECISION_RESPONSE_TYPES = frozenset([
-    "GREMessageType_SelectTargetsResp", "GREMessageType_SubmitTargetsResp",
-    "GREMessageType_SelectNResp", "GREMessageType_GroupOptionResp",
-    "GREMessageType_GroupResp", "GREMessageType_OptionalActionResp",
-    "GREMessageType_SubmitDeckResp", "GREMessageType_PromptResp",
-    "GREMessageType_SubmitAttackersResp", "GREMessageType_SubmitBlockersResp",
-    "GREMessageType_AssignDamageConfirmation", "GREMessageType_OrderDamageConfirmation",
-])
+_DECISION_RESPONSE_TYPES = frozenset(
+    [
+        "GREMessageType_SelectTargetsResp",
+        "GREMessageType_SubmitTargetsResp",
+        "GREMessageType_SelectNResp",
+        "GREMessageType_GroupOptionResp",
+        "GREMessageType_GroupResp",
+        "GREMessageType_OptionalActionResp",
+        "GREMessageType_SubmitDeckResp",
+        "GREMessageType_PromptResp",
+        "GREMessageType_SubmitAttackersResp",
+        "GREMessageType_SubmitBlockersResp",
+        "GREMessageType_AssignDamageConfirmation",
+        "GREMessageType_OrderDamageConfirmation",
+    ]
+)
 
 
 def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
@@ -3949,14 +4201,14 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
         handler = create_game_state_handler(game_state)
         parser.register_handler('GreToClientEvent', handler)
     """
+
     def handler(payload: dict) -> None:
         # GreToClientEvent contains greToClientMessages array
         gre_event = payload.get("greToClientEvent", {})
         if not isinstance(gre_event, dict):
             gre_event = {}
         messages = _ensure_list(
-            gre_event.get("greToClientMessages")
-            or payload.get("greToClientMessages", [])
+            gre_event.get("greToClientMessages") or payload.get("greToClientMessages", [])
         )
         snapshot_dirty = False
 
@@ -3976,12 +4228,8 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                     system_seat_ids = _ensure_int_list(msg.get("systemSeatIds", []))
                     if len(system_seat_ids) == 1:
                         seat_hint = system_seat_ids[0]
-                if (
-                    isinstance(seat_hint, int)
-                    and (
-                        game_state.local_seat_id != seat_hint
-                        or getattr(game_state, "_seat_source", 0) < 2
-                    )
+                if isinstance(seat_hint, int) and (
+                    game_state.local_seat_id != seat_hint or getattr(game_state, "_seat_source", 0) < 2
                 ):
                     game_state.set_local_seat_id(seat_hint, source=2)
 
@@ -4034,7 +4282,9 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                         for timer in timers:
                             player_id = _coerce_int(timer.get("playerId", timer.get("seatId", 0)), 0)
                             timer_type = timer.get("type", timer.get("timerType", ""))
-                            remaining = _coerce_int(timer.get("timeRemainingMs", timer.get("durationMs", 0)), 0)
+                            remaining = _coerce_int(
+                                timer.get("timeRemainingMs", timer.get("durationMs", 0)), 0
+                            )
                             behavior = timer.get("behavior", "")
                             if player_id:
                                 timer_data[player_id] = {
@@ -4058,6 +4308,7 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                 # Fallback for unknown Req types
                 elif msg_type.endswith("Req") and msg_type not in _KNOWN_REQ_TYPES:
                     import time as _time
+
                     logger.warning(f"Unknown GRE Req type: {msg_type} - treating as pending decision")
                     game_state.pending_decision = f"Unknown Decision ({msg_type})"
                     game_state.decision_timestamp = _time.time()
@@ -4069,10 +4320,15 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
 
                 elif "Resp" in msg_type:
                     if game_state.pending_decision and msg_type in _DECISION_RESPONSE_TYPES:
-                        if game_state.pending_decision == "Mulligan" and msg_type != "GREMessageType_SubmitDeckResp":
+                        if (
+                            game_state.pending_decision == "Mulligan"
+                            and msg_type != "GREMessageType_SubmitDeckResp"
+                        ):
                             pass
                         else:
-                            logger.debug(f"Clearing decision '{game_state.pending_decision}' due to {msg_type}")
+                            logger.debug(
+                                f"Clearing decision '{game_state.pending_decision}' due to {msg_type}"
+                            )
                             game_state.last_cleared_decision = game_state.pending_decision
                             game_state.pending_decision = None
                             game_state.decision_seat_id = None
@@ -4091,6 +4347,7 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
         # Record frame if recording is active
         try:
             from arenamcp.match_validator import record_frame
+
             snapshot = game_state.get_snapshot()
             record_frame(payload, snapshot)
         except ImportError:
@@ -4103,33 +4360,33 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
 
 def create_recording_handler(
     game_state: GameState,
-    recording: "MatchRecording"  # Forward reference to avoid circular import
+    recording: "MatchRecording",  # Forward reference to avoid circular import
 ) -> Callable[[dict], None]:
     """Create a handler that updates GameState AND records frames for validation.
-    
+
     This wraps the base handler to also capture raw messages alongside
     our parsed snapshots for post-match comparison.
-    
+
     Args:
         game_state: The GameState instance to update.
         recording: The MatchRecording to add frames to.
-        
+
     Returns:
         A handler function suitable for LogParser.register_handler().
     """
     base_handler = create_game_state_handler(game_state)
-    
+
     def recording_handler(payload: dict) -> None:
         # First, apply the update via base handler
         base_handler(payload)
-        
+
         # Then, record the frame with current snapshot
         try:
             snapshot = game_state.get_snapshot()
             recording.add_frame(payload, snapshot)
         except Exception as e:
             logger.warning(f"Failed to record frame: {e}")
-    
+
     return recording_handler
 
 
@@ -4142,7 +4399,7 @@ MATCH_STATE_MAX_AGE = 1800  # 30 minutes
 def save_match_state(
     game_state: GameState,
     log_offset: int = 0,
-    log_path: Optional[str] = None,
+    log_path: str | None = None,
 ) -> None:
     """Save current match state for recovery after restart.
 
@@ -4193,7 +4450,7 @@ def save_match_state(
 
 def validate_log_identity(
     saved_state: dict[str, Any],
-    current_log_path: Optional[str] = None,
+    current_log_path: str | None = None,
 ) -> str:
     """Validate whether saved resume state matches the current log session.
 
@@ -4234,9 +4491,7 @@ def validate_log_identity(
 
         # Path mismatch (different log file entirely)
         if str(current_path) != saved_path:
-            logger.info(
-                f"Log path changed: saved={saved_path}, current={current_path}"
-            )
+            logger.info(f"Log path changed: saved={saved_path}, current={current_path}")
             return "resume_invalid_path"
 
         # File is smaller than saved size → file was recreated (MTGA restart)
@@ -4277,7 +4532,7 @@ def validate_log_identity(
         return "resume_invalid_path"
 
 
-def load_match_state() -> Optional[dict[str, Any]]:
+def load_match_state() -> dict[str, Any] | None:
     """Load saved match state if valid (< 30 min old, status active).
 
     Returns:
@@ -4289,7 +4544,7 @@ def load_match_state() -> Optional[dict[str, Any]]:
         return None
 
     try:
-        with open(MATCH_STATE_PATH, "r", encoding="utf-8") as f:
+        with open(MATCH_STATE_PATH, encoding="utf-8") as f:
             state = json.load(f)
 
         # Validate age
@@ -4320,7 +4575,7 @@ def mark_match_ended() -> None:
         return
 
     try:
-        with open(MATCH_STATE_PATH, "r", encoding="utf-8") as f:
+        with open(MATCH_STATE_PATH, encoding="utf-8") as f:
             state = json.load(f)
 
         state["status"] = "ended"

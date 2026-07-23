@@ -1,8 +1,9 @@
-"""Unit tests for speak_advice filtering logic in standalone.py.
-"""
+"""Unit tests for speak_advice filtering logic in standalone.py."""
 
 from __future__ import annotations
+
 from unittest.mock import MagicMock
+
 from arenamcp.standalone import StandaloneCoach
 
 

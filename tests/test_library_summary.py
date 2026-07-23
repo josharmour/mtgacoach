@@ -38,9 +38,7 @@ class _Stub:
     _inject_library_summary_if_needed = StandaloneCoach._inject_library_summary_if_needed
 
     def __init__(self):
-        self._mcp = SimpleNamespace(
-            get_card_info=lambda grp: CARD_INFO.get(grp, {"name": f"Unknown({grp})"})
-        )
+        self._mcp = SimpleNamespace(get_card_info=lambda grp: CARD_INFO.get(grp, {"name": f"Unknown({grp})"}))
 
 
 def _hand_card(grp_id, seat=1):

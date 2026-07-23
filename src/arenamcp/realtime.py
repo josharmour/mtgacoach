@@ -13,13 +13,14 @@ Usage:
 """
 
 import base64
+import contextlib
 import json
 import logging
 import os
 import queue
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 import numpy as np
 import sounddevice as sd
@@ -55,11 +56,9 @@ def stop_audio() -> None:
     except Exception as e:
         logger.error(f"Failed to stop audio: {e}")
 
+
 # Default Azure endpoint and deployment from environment
-DEFAULT_REALTIME_ENDPOINT = os.environ.get(
-    "AZURE_REALTIME_ENDPOINT",
-    ""
-)
+DEFAULT_REALTIME_ENDPOINT = os.environ.get("AZURE_REALTIME_ENDPOINT", "")
 DEFAULT_REALTIME_DEPLOYMENT = os.environ.get("AZURE_REALTIME_DEPLOYMENT", "gpt-realtime")
 DEFAULT_REALTIME_API_VERSION = os.environ.get("AZURE_REALTIME_API_VERSION", "2024-10-01-preview")
 
@@ -71,7 +70,7 @@ class RealtimeConfig:
     endpoint: str = DEFAULT_REALTIME_ENDPOINT
     deployment: str = DEFAULT_REALTIME_DEPLOYMENT
     api_version: str = DEFAULT_REALTIME_API_VERSION
-    api_key: Optional[str] = None
+    api_key: str | None = None
 
     # Audio settings
     sample_rate: int = 24000  # GPT-realtime uses 24kHz
@@ -105,7 +104,7 @@ class GPTRealtimeClient:
     Handles bidirectional audio streaming for real-time voice conversations.
     """
 
-    def __init__(self, config: Optional[RealtimeConfig] = None):
+    def __init__(self, config: RealtimeConfig | None = None):
         """Initialize the realtime client.
 
         Args:
@@ -115,10 +114,10 @@ class GPTRealtimeClient:
 
         self._ws = None
         self._connected = False
-        self._session_id: Optional[str] = None
+        self._session_id: str | None = None
 
         # Threading
-        self._recv_thread: Optional[threading.Thread] = None
+        self._recv_thread: threading.Thread | None = None
         self._running = False
         self._lock = threading.Lock()
 
@@ -127,15 +126,15 @@ class GPTRealtimeClient:
         self._audio_queue: queue.Queue[bytes] = queue.Queue()
         self._transcript_buffer: str = ""
         self._audio_buffer: list[bytes] = []
-        
+
         # State tracking
         self._response_in_progress = False
 
         # Callbacks
-        self._on_transcript: Optional[Callable[[str], None]] = None
-        self._on_audio: Optional[Callable[[bytes], None]] = None
-        self._on_response_done: Optional[Callable[[str, bytes], None]] = None
-        self._on_error: Optional[Callable[[str], None]] = None
+        self._on_transcript: Callable[[str], None] | None = None
+        self._on_audio: Callable[[bytes], None] | None = None
+        self._on_response_done: Callable[[str, bytes], None] | None = None
+        self._on_error: Callable[[str], None] | None = None
 
         # Resampling for audio format conversion
         self._resampler = None
@@ -155,11 +154,7 @@ class GPTRealtimeClient:
         if "?" in base:
             base = base.split("?")[0]
 
-        url = (
-            f"{base}"
-            f"?api-version={self.config.api_version}"
-            f"&deployment={self.config.deployment}"
-        )
+        url = f"{base}?api-version={self.config.api_version}&deployment={self.config.deployment}"
         return url
 
     def connect(self) -> bool:
@@ -186,20 +181,14 @@ class GPTRealtimeClient:
 
         try:
             self._ws = websocket.WebSocket()
-            self._ws.connect(
-                url,
-                header=[f"api-key: {self.config.api_key}"],
-                timeout=10
-            )
+            self._ws.connect(url, header=[f"api-key: {self.config.api_key}"], timeout=10)
             self._connected = True
             self._running = True
             self._response_in_progress = False
 
             # Start receive thread
             self._recv_thread = threading.Thread(
-                target=self._receive_loop,
-                daemon=True,
-                name="GPTRealtimeRecv"
+                target=self._receive_loop, daemon=True, name="GPTRealtimeRecv"
             )
             self._recv_thread.start()
 
@@ -221,10 +210,8 @@ class GPTRealtimeClient:
         self._response_in_progress = False
 
         if self._ws:
-            try:
+            with contextlib.suppress(Exception):
                 self._ws.close()
-            except Exception:
-                pass
             self._ws = None
 
         if self._recv_thread and self._recv_thread.is_alive():
@@ -242,19 +229,16 @@ class GPTRealtimeClient:
                 "voice": self.config.voice,
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
-                "input_audio_transcription": {
-                    "model": "whisper-1",
-                    "language": "en"
-                },
+                "input_audio_transcription": {"model": "whisper-1", "language": "en"},
                 "turn_detection": {
                     "type": self.config.turn_detection_type,
                     "threshold": self.config.vad_threshold,
                     "prefix_padding_ms": self.config.vad_prefix_padding_ms,
-                    "silence_duration_ms": self.config.vad_silence_duration_ms
+                    "silence_duration_ms": self.config.vad_silence_duration_ms,
                 },
                 "temperature": self.config.temperature,
-                "max_response_output_tokens": self.config.max_response_tokens
-            }
+                "max_response_output_tokens": self.config.max_response_tokens,
+            },
         }
         self._send(session_config)
         logger.info(f"Session config sent: voice={self.config.voice}, vad={self.config.turn_detection_type}")
@@ -340,11 +324,9 @@ class GPTRealtimeClient:
             full_transcript = self._transcript_buffer
 
             # Put in queue for sync access
-            self._response_queue.put({
-                "transcript": full_transcript,
-                "audio": full_audio,
-                "response": response
-            })
+            self._response_queue.put(
+                {"transcript": full_transcript, "audio": full_audio, "response": response}
+            )
 
             # Call done callback
             if self._on_response_done:
@@ -376,7 +358,7 @@ class GPTRealtimeClient:
             if "no active response found" in error_msg:
                 logger.debug(f"Ignored cancellation error: {error_msg}")
                 return
-            
+
             # Handle collision error specifically
             if "already has an active response" in error_msg:
                 logger.warning(f"Response collision: {error_msg}")
@@ -387,7 +369,7 @@ class GPTRealtimeClient:
             logger.error(f"GPT-Realtime error: {error_msg}")
             # If a fatal error occurs, reset state
             self._response_in_progress = False
-            
+
             if self._on_error:
                 self._on_error(error_msg)
 
@@ -410,6 +392,7 @@ class GPTRealtimeClient:
         if sample_rate != 24000:
             try:
                 import scipy.signal
+
                 # Calculate resampling ratio
                 ratio = 24000 / sample_rate
                 new_length = int(len(audio_data) * ratio)
@@ -429,16 +412,13 @@ class GPTRealtimeClient:
         audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
         # Send audio buffer append
-        if not hasattr(self, '_audio_send_count'):
+        if not hasattr(self, "_audio_send_count"):
             self._audio_send_count = 0
         self._audio_send_count += 1
         if self._audio_send_count % 50 == 1:  # Log every 50th packet (~5 seconds)
             logger.info(f"Sending audio packet #{self._audio_send_count}, {len(audio_bytes)} bytes")
 
-        self._send({
-            "type": "input_audio_buffer.append",
-            "audio": audio_b64
-        })
+        self._send({"type": "input_audio_buffer.append", "audio": audio_b64})
 
     def commit_audio(self) -> None:
         """Commit the audio buffer (when using manual turn detection)."""
@@ -448,18 +428,18 @@ class GPTRealtimeClient:
 
     def create_response(self, modalities: list[str] = None) -> None:
         """Request the model to generate a response.
-        
+
         Args:
             modalities: Optional list of modalities to force for this response (e.g. ["text", "audio"])
         """
         if not self._connected:
             return
-        
+
         # If we are interrupting, we rely on send_text to have cancelled already
         payload = {"type": "response.create"}
         if modalities:
             payload["response"] = {"modalities": modalities}
-            
+
         self._send(payload)
 
     def cancel_response(self) -> None:
@@ -491,29 +471,28 @@ class GPTRealtimeClient:
         if not self._connected:
             logger.warning("send_text called but not connected")
             return
-        
+
         # Prevent "conversation already has active response"
         if self._response_in_progress:
             logger.warning(f"Interrupting active response to send new text: {text[:30]}...")
             self.cancel_response()
             # Small delay to allow server to process cancel? Usually not needed if pipelining.
             # But let's be safe.
-            # time.sleep(0.05) 
+            # time.sleep(0.05)
 
         logger.info(f"Sending text prompt ({len(text)} chars): {text[:100]}...")
 
         # Create conversation item
-        self._send({
-            "type": "conversation.item.create",
-            "item": {
-                "type": "message",
-                "role": "user",
-                "content": [{
-                    "type": "input_text",
-                    "text": text
-                }]
+        self._send(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                },
             }
-        })
+        )
 
         if generate_response:
             logger.info("Requesting response from GPT-Realtime (forcing text+audio)")
@@ -529,14 +508,9 @@ class GPTRealtimeClient:
             return
 
         self.config.instructions = instructions
-        self._send({
-            "type": "session.update",
-            "session": {
-                "instructions": instructions
-            }
-        })
+        self._send({"type": "session.update", "session": {"instructions": instructions}})
 
-    def get_response(self, timeout: float = 30.0) -> Optional[dict]:
+    def get_response(self, timeout: float = 30.0) -> dict | None:
         """Wait for and return the next complete response.
 
         Args:
@@ -552,10 +526,10 @@ class GPTRealtimeClient:
 
     def set_callbacks(
         self,
-        on_transcript: Optional[Callable[[str], None]] = None,
-        on_audio: Optional[Callable[[bytes], None]] = None,
-        on_response_done: Optional[Callable[[str, bytes], None]] = None,
-        on_error: Optional[Callable[[str], None]] = None
+        on_transcript: Callable[[str], None] | None = None,
+        on_audio: Callable[[bytes], None] | None = None,
+        on_response_done: Callable[[str, bytes], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
     ) -> None:
         """Set callback functions for streaming events.
 
@@ -582,8 +556,8 @@ class GPTRealtimeBackend:
         self,
         model: str = "gpt-realtime",
         voice: str = "alloy",
-        endpoint: Optional[str] = None,
-        api_key: Optional[str] = None
+        endpoint: str | None = None,
+        api_key: str | None = None,
     ):
         """Initialize GPT-Realtime backend.
 
@@ -604,8 +578,8 @@ class GPTRealtimeBackend:
         if endpoint:
             self.config.endpoint = endpoint
 
-        self._client: Optional[GPTRealtimeClient] = None
-        self._last_audio_response: Optional[bytes] = None
+        self._client: GPTRealtimeClient | None = None
+        self._last_audio_response: bytes | None = None
 
     def _ensure_connected(self) -> bool:
         """Ensure client is connected."""
@@ -657,11 +631,7 @@ class GPTRealtimeBackend:
             return "Error: Response timeout"
 
     def complete_with_audio(
-        self,
-        system_prompt: str,
-        context: str,
-        audio_data: np.ndarray,
-        sample_rate: int = 16000
+        self, system_prompt: str, context: str, audio_data: np.ndarray, sample_rate: int = 16000
     ) -> str:
         """Get completion from audio input.
 
@@ -712,7 +682,7 @@ class GPTRealtimeBackend:
             logger.warning("GPT-Realtime response timeout")
             return "Error: Response timeout"
 
-    def get_last_audio_response(self) -> Optional[bytes]:
+    def get_last_audio_response(self) -> bytes | None:
         """Get the audio from the last response (PCM16 at 24kHz).
 
         Returns:

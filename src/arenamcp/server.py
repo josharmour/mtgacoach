@@ -10,31 +10,34 @@ import logging
 import threading
 import time
 from collections import deque
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from arenamcp.coach import CoachEngine, GameStateTrigger, create_backend
-
-from arenamcp.gamestate import (
-    GameState, create_game_state_handler,
-    save_match_state, load_match_state,
-    validate_log_identity, mark_match_ended,
-)
-from arenamcp.parser import LogParser
-from arenamcp.scryfall import ScryfallCache
-from arenamcp.draftstats import DraftStatsCache
-from arenamcp.draftstate import DraftState, create_draft_handler, extract_set_code
 from arenamcp import draft_guidance
-from arenamcp.draft_eval import evaluate_pack, format_pick_recommendation
-from arenamcp.sealed_eval import analyze_sealed_pool, format_sealed_recommendation, format_sealed_detailed
-from arenamcp.mtgadb import MTGADatabase
 from arenamcp.card_db import (
     FallbackCardDatabase,
-    get_card_database,
     ScryfallAdapter,
+    get_card_database,
 )
+from arenamcp.coach import CoachEngine, GameStateTrigger, create_backend
+from arenamcp.draft_eval import evaluate_pack, format_pick_recommendation
+from arenamcp.draftstate import DraftState, create_draft_handler, extract_set_code
+from arenamcp.draftstats import DraftStatsCache
+from arenamcp.gamestate import (
+    GameState,
+    create_game_state_handler,
+    load_match_state,
+    mark_match_ended,
+    save_match_state,
+    validate_log_identity,
+)
+from arenamcp.mtgadb import MTGADatabase
+from arenamcp.parser import LogParser
+from arenamcp.scryfall import ScryfallCache
+from arenamcp.sealed_eval import analyze_sealed_pool, format_sealed_detailed, format_sealed_recommendation
 from arenamcp.watcher import MTGALogWatcher
+
 # Defer voice/audio imports — sounddevice initializes PortAudio on import
 # which can hang if an audio device/driver is misbehaving.
 VoiceInput = None  # type: ignore[assignment,misc]
@@ -49,15 +52,16 @@ mcp = FastMCP("mtga")
 game_state: GameState = GameState()
 draft_state: DraftState = DraftState()
 parser: LogParser = LogParser()
-watcher: Optional[MTGALogWatcher] = None
+watcher: MTGALogWatcher | None = None
 
 
 # Lazy-loaded caches (avoid blocking startup with bulk downloads)
-_draft_stats: Optional[DraftStatsCache] = None
+_draft_stats: DraftStatsCache | None = None
 
-# Lazy-loaded voice components
-_voice_input: Optional[VoiceInput] = None
-_voice_output: Optional[VoiceOutput] = None
+# Lazy-loaded voice components (VoiceInput/VoiceOutput are None placeholders at
+# module scope — no annotations here: `X | None` would evaluate `None | None`)
+_voice_input = None
+_voice_output = None
 
 # Lazy-loaded new modules
 _edhrec = None
@@ -69,14 +73,14 @@ _synergy_graph = None
 _pending_advice: deque[dict[str, Any]] = deque(maxlen=10)
 
 # Background coaching state
-_coaching_thread: Optional[threading.Thread] = None
+_coaching_thread: threading.Thread | None = None
 _coaching_enabled: bool = False
-_coaching_backend: Optional[str] = None
-_coaching_model: Optional[str] = None
+_coaching_backend: str | None = None
+_coaching_model: str | None = None
 _coaching_auto_speak: bool = False
 
 # Background draft helper state
-_draft_helper_thread: Optional[threading.Thread] = None
+_draft_helper_thread: threading.Thread | None = None
 _draft_helper_enabled: bool = False
 _draft_helper_last_pack: int = 0
 _draft_helper_last_pick: int = 0
@@ -217,8 +221,8 @@ def _get_voice_output() -> VoiceOutput:
 # Match state tracking
 _last_saved_turn: int = -1
 _last_saved_offset: int = -1
-_last_saved_match_id: Optional[str] = None
-_last_saved_pending_decision: Optional[str] = None
+_last_saved_match_id: str | None = None
+_last_saved_pending_decision: str | None = None
 _last_saved_at: float = 0.0
 _MATCH_STATE_SAVE_INTERVAL_S = 3.0
 
@@ -228,6 +232,7 @@ def _get_edhrec():
     global _edhrec
     if _edhrec is None:
         from arenamcp.edhrec import EDHRECClient
+
         logger.info("Initializing EDHREC client...")
         _edhrec = EDHRECClient()
     return _edhrec
@@ -238,6 +243,7 @@ def _get_mtggoldfish():
     global _mtggoldfish
     if _mtggoldfish is None:
         from arenamcp.mtggoldfish import MTGGoldfishClient
+
         logger.info("Initializing MTGGoldfish client...")
         _mtggoldfish = MTGGoldfishClient()
     return _mtggoldfish
@@ -248,6 +254,7 @@ def _get_deck_builder():
     global _deck_builder
     if _deck_builder is None:
         from arenamcp.deck_builder import DeckBuilderV2
+
         logger.info("Initializing DeckBuilderV2...")
         _deck_builder = DeckBuilderV2(
             draft_stats=_get_draft_stats(),
@@ -261,6 +268,7 @@ def _get_synergy_graph():
     global _synergy_graph
     if _synergy_graph is None:
         from arenamcp.synergy import get_synergy_graph
+
         _synergy_graph = get_synergy_graph()
     return _synergy_graph
 
@@ -281,13 +289,13 @@ def _save_match_state_if_needed() -> None:
     now = time.time()
 
     should_save = False
-    if match_id != _last_saved_match_id:
-        should_save = True
-    elif current_turn != _last_saved_turn:
-        should_save = True
-    elif current_pending_decision != _last_saved_pending_decision:
-        should_save = True
-    elif offset != _last_saved_offset and now - _last_saved_at >= _MATCH_STATE_SAVE_INTERVAL_S:
+    if (
+        match_id != _last_saved_match_id
+        or current_turn != _last_saved_turn
+        or current_pending_decision != _last_saved_pending_decision
+        or offset != _last_saved_offset
+        and now - _last_saved_at >= _MATCH_STATE_SAVE_INTERVAL_S
+    ):
         should_save = True
 
     if not should_save:
@@ -302,9 +310,7 @@ def _save_match_state_if_needed() -> None:
 
 
 def _background_coaching_loop(
-    coach: CoachEngine,
-    trigger_detector: GameStateTrigger,
-    auto_speak: bool
+    coach: CoachEngine, trigger_detector: GameStateTrigger, auto_speak: bool
 ) -> None:
     """Background loop that monitors game state and generates proactive advice.
 
@@ -328,9 +334,9 @@ def _background_coaching_loop(
             if prev_state:
                 triggers = trigger_detector.check_triggers(prev_state, curr_state)
             elif curr_state.get("pending_decision"):
-                 # Force trigger on first run if we are stuck in a decision
-                 logger.info("Detected pending decision on startup - forcing trigger")
-                 triggers = ["decision_required"]
+                # Force trigger on first run if we are stuck in a decision
+                logger.info("Detected pending decision on startup - forcing trigger")
+                triggers = ["decision_required"]
 
             if triggers:
                 for trigger in triggers:
@@ -360,9 +366,7 @@ def _background_coaching_loop(
 
 
 def start_background_coaching(
-    backend: str = "auto",
-    model: Optional[str] = None,
-    auto_speak: bool = False
+    backend: str = "auto", model: str | None = None, auto_speak: bool = False
 ) -> None:
     """Start background game monitoring with proactive coaching.
 
@@ -395,7 +399,7 @@ def start_background_coaching(
         target=_background_coaching_loop,
         args=(coach, trigger_detector, auto_speak),
         daemon=True,
-        name="coaching-loop"
+        name="coaching-loop",
     )
     _coaching_thread.start()
     logger.info(f"Started background coaching with {backend} mode (model={model}), auto_speak={auto_speak}")
@@ -442,11 +446,14 @@ def _draft_helper_loop() -> None:
     while _draft_helper_enabled:
         try:
             # Check if pack changed
-            if (draft_state.is_active and
-                draft_state.cards_in_pack and
-                (draft_state.pack_number != _draft_helper_last_pack or
-                 draft_state.pick_number != _draft_helper_last_pick)):
-
+            if (
+                draft_state.is_active
+                and draft_state.cards_in_pack
+                and (
+                    draft_state.pack_number != _draft_helper_last_pack
+                    or draft_state.pick_number != _draft_helper_last_pick
+                )
+            ):
                 _draft_helper_last_pack = draft_state.pack_number
                 _draft_helper_last_pick = draft_state.pick_number
 
@@ -483,7 +490,7 @@ def _draft_helper_loop() -> None:
     logger.info("Draft helper loop stopped")
 
 
-def start_draft_helper(set_code: Optional[str] = None) -> None:
+def start_draft_helper(set_code: str | None = None) -> None:
     """Start background draft helper that auto-speaks pick recommendations.
 
     Args:
@@ -511,11 +518,7 @@ def start_draft_helper(set_code: Optional[str] = None) -> None:
     _draft_helper_enabled = True
 
     # Start daemon thread
-    _draft_helper_thread = threading.Thread(
-        target=_draft_helper_loop,
-        daemon=True,
-        name="draft-helper"
-    )
+    _draft_helper_thread = threading.Thread(target=_draft_helper_loop, daemon=True, name="draft-helper")
     _draft_helper_thread.start()
     logger.info("Started draft helper")
 
@@ -572,9 +575,10 @@ def _handle_match_created(payload: dict) -> None:
             participants.append(player)
 
     from arenamcp.log_utils import get_local_player_id
+
     local_user_id = get_local_player_id()
 
-    def _get_participant_field(field: str) -> Optional[Any]:
+    def _get_participant_field(field: str) -> Any | None:
         if not local_user_id:
             return None
         for participant in participants:
@@ -595,6 +599,7 @@ def _handle_match_created(payload: dict) -> None:
 
     if seat_id is None and not local_user_id:
         from arenamcp.log_utils import detect_local_seat
+
         seat_id = detect_local_seat()
 
     if team_id is None and seat_id is not None:
@@ -611,38 +616,36 @@ def _handle_match_created(payload: dict) -> None:
 
     # ── Match ID tracking ──
     match_id = (
-        event_payload.get("matchId") or
-        room_info.get("gameRoomConfig", {}).get("matchId") or
-        game_room_config.get("matchId") or
-        payload.get("matchId")
+        event_payload.get("matchId")
+        or room_info.get("gameRoomConfig", {}).get("matchId")
+        or game_room_config.get("matchId")
+        or payload.get("matchId")
     )
 
-    if match_id:
-        if game_state.match_id != match_id:
-            if state_type == "MatchGameRoomStateType_MatchCompleted":
-                if game_state.match_id:
-                    mark_match_ended()
-                logger.info(
-                    "Completed match event for unseen match %s. Recording metadata without reset.",
-                    match_id,
-                )
-            else:
-                if game_state.match_id:
-                    mark_match_ended()
-                logger.info(f"New match detected (ID: {match_id}). Resetting game state.")
-                game_state.reset()
-                _deactivate_draft_state(f"new live match {match_id}")
-            game_state.match_id = match_id
+    if match_id and game_state.match_id != match_id:
+        if state_type == "MatchGameRoomStateType_MatchCompleted":
+            if game_state.match_id:
+                mark_match_ended()
+            logger.info(
+                "Completed match event for unseen match %s. Recording metadata without reset.",
+                match_id,
+            )
+        else:
+            if game_state.match_id:
+                mark_match_ended()
+            logger.info(f"New match detected (ID: {match_id}). Resetting game state.")
+            game_state.reset()
+            _deactivate_draft_state(f"new live match {match_id}")
+        game_state.match_id = match_id
 
-            # Since we reset state, notify draft helper effectively if needed
-            # (though draft state is separate)
+        # Since we reset state, notify draft helper effectively if needed
+        # (though draft state is separate)
 
     # ── Match result detection (from finalMatchResult) ──
     # MTGA sends this in MatchGameRoomStateChangedEvent when the match ends.
-    results = (
-        room_info.get("finalMatchResult", {}).get("resultList", [])
-        or event_payload.get("finalMatchResult", {}).get("resultList", [])
-    )
+    results = room_info.get("finalMatchResult", {}).get("resultList", []) or event_payload.get(
+        "finalMatchResult", {}
+    ).get("resultList", [])
     if results and not game_state.last_game_result:
         # IntermissionReq may have already wiped seat/team state via reset().
         our_seat = seat_id or game_state.local_seat_id
@@ -667,7 +670,7 @@ def _handle_match_created(payload: dict) -> None:
             if scope not in ("MatchScope_Game", "MatchScope_Match", ""):
                 continue
 
-            resolved: Optional[str] = None
+            resolved: str | None = None
             winning_team_id = result_row.get("winningTeamId")
             row_seat_id = result_row.get("seatId")
             result_str = str(result_row.get("result", "") or "")
@@ -694,10 +697,7 @@ def _handle_match_created(payload: dict) -> None:
                 if not game_state.game_ended_event.is_set():
                     game_state.game_ended_event.set()
                     logger.info("Game-end event set from finalMatchResult")
-                if (
-                    state_type == "MatchGameRoomStateType_MatchCompleted"
-                    or scope == "MatchScope_Match"
-                ):
+                if state_type == "MatchGameRoomStateType_MatchCompleted" or scope == "MatchScope_Match":
                     mark_match_ended()
                 break
         else:
@@ -742,11 +742,13 @@ def start_watching() -> None:
         # Validate log identity before trusting the saved offset
         # Use the watcher's resolved log path for comparison
         import os
+
         from arenamcp.watcher import (
-            _normalize_log_path,
             DEFAULT_LOG_PATH,
             _latest_match_id_from_tail,
+            _normalize_log_path,
         )
+
         raw_log_path = os.environ.get("MTGA_LOG_PATH", DEFAULT_LOG_PATH)
         current_log_path = str(_normalize_log_path(raw_log_path))
 
@@ -757,10 +759,11 @@ def start_watching() -> None:
         # current Player.log already has a different match_id near the end,
         # the saved offset points into an older game we should not replay.
         saved_match_id = saved_state.get("match_id")
-        live_tail_match_id: Optional[str] = None
+        live_tail_match_id: str | None = None
         if saved_match_id:
             try:
                 from pathlib import Path
+
                 log_p = Path(current_log_path)
                 if log_p.exists():
                     file_size = log_p.stat().st_size
@@ -772,11 +775,7 @@ def start_watching() -> None:
             except OSError as e:
                 logger.debug(f"Tail match scan failed (non-fatal): {e}")
 
-        if (
-            saved_match_id
-            and live_tail_match_id
-            and live_tail_match_id != saved_match_id
-        ):
+        if saved_match_id and live_tail_match_id and live_tail_match_id != saved_match_id:
             logger.info(
                 f"Discarding saved resume state: live tail match {live_tail_match_id} "
                 f"differs from saved match {saved_match_id} "
@@ -909,11 +908,14 @@ def enrich_with_oracle_text(grp_id: int) -> dict[str, Any]:
 
     # All lookups failed -- record for diagnostics
     from datetime import datetime
-    _enrichment_failures.append({
-        "timestamp": datetime.now().isoformat(),
-        "grp_id": grp_id,
-        "source": "all_lookups_failed",
-    })
+
+    _enrichment_failures.append(
+        {
+            "timestamp": datetime.now().isoformat(),
+            "grp_id": grp_id,
+            "source": "all_lookups_failed",
+        }
+    )
     if len(_enrichment_failures) > 100:
         _enrichment_failures[:] = _enrichment_failures[-50:]
     return {
@@ -979,7 +981,7 @@ def _serialize_game_object(obj) -> dict[str, Any]:
     return result
 
 
-def _coerce_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+def _coerce_int(value: Any, default: int | None = None) -> int | None:
     """Best-effort integer coercion for mixed GRE / JSON payloads."""
     try:
         if value is None:
@@ -1042,12 +1044,24 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
     if obj.get("parent_instance_id") is not None:
         result["parent_instance_id"] = obj.get("parent_instance_id")
     # ── Phase 1 turbo-charge fields (only include when set) ──
-    for key in ("modified_power", "modified_toughness", "modified_cost",
-                "modified_colors", "modified_types", "modified_name",
-                "granted_abilities", "removed_abilities",
-                "damaged_this_turn", "crewed_this_turn", "saddled_this_turn",
-                "is_phased_out", "class_level", "copied_from_grp_id",
-                "targeting", "color_production"):
+    for key in (
+        "modified_power",
+        "modified_toughness",
+        "modified_cost",
+        "modified_colors",
+        "modified_types",
+        "modified_name",
+        "granted_abilities",
+        "removed_abilities",
+        "damaged_this_turn",
+        "crewed_this_turn",
+        "saddled_this_turn",
+        "is_phased_out",
+        "class_level",
+        "copied_from_grp_id",
+        "targeting",
+        "color_production",
+    ):
         val = obj.get(key)
         if val:  # Only include truthy values
             result[key] = copy.deepcopy(val)
@@ -1104,7 +1118,9 @@ def _serialize_bridge_card(
         "is_blocking": bool(card.get("is_blocking", fallback.get("is_blocking", False))),
         "card_types": _copy_list(card.get("card_types") or fallback.get("card_types")),
         "subtypes": subtypes,
-        "object_kind": _normalize_object_kind(card.get("object_type"), fallback.get("object_kind", "UNKNOWN")),
+        "object_kind": _normalize_object_kind(
+            card.get("object_type"), fallback.get("object_kind", "UNKNOWN")
+        ),
         "counters": dict(card.get("counters") or fallback.get("counters") or {}),
     }
 
@@ -1118,12 +1134,23 @@ def _serialize_bridge_card(
     if targeting:
         result["targeting"] = [value for value in targeting if value is not None]
 
-    for key in ("modified_power", "modified_toughness", "modified_cost",
-                "modified_colors", "modified_types", "modified_name",
-                "granted_abilities", "removed_abilities",
-                "damaged_this_turn", "crewed_this_turn", "saddled_this_turn",
-                "is_phased_out", "class_level", "copied_from_grp_id",
-                "color_production"):
+    for key in (
+        "modified_power",
+        "modified_toughness",
+        "modified_cost",
+        "modified_colors",
+        "modified_types",
+        "modified_name",
+        "granted_abilities",
+        "removed_abilities",
+        "damaged_this_turn",
+        "crewed_this_turn",
+        "saddled_this_turn",
+        "is_phased_out",
+        "class_level",
+        "copied_from_grp_id",
+        "color_production",
+    ):
         fallback_value = fallback.get(key)
         if fallback_value:
             result[key] = copy.deepcopy(fallback_value)
@@ -1170,11 +1197,13 @@ def _normalize_bridge_turn(bridge_turn: dict[str, Any], fallback_turn: dict[str,
     """Map the bridge turn payload into the public server turn schema."""
     turn = {
         "turn_number": _coerce_int(bridge_turn.get("turn_number"), fallback_turn.get("turn_number", 0)) or 0,
-        "active_player": _coerce_int(bridge_turn.get("active_player"), fallback_turn.get("active_player", 0)) or 0,
+        "active_player": _coerce_int(bridge_turn.get("active_player"), fallback_turn.get("active_player", 0))
+        or 0,
         "priority_player": _coerce_int(
             bridge_turn.get("deciding_player", bridge_turn.get("priority_player")),
             fallback_turn.get("priority_player", 0),
-        ) or 0,
+        )
+        or 0,
         "phase": bridge_turn.get("phase") or fallback_turn.get("phase", ""),
         "step": bridge_turn.get("step") or fallback_turn.get("step", ""),
         "pending_combat_steps": list(fallback_turn.get("pending_combat_steps", [])),
@@ -1232,9 +1261,9 @@ def _normalize_bridge_players(
 def _derive_seat_ids(
     bridge_state: dict[str, Any],
     players: list[dict[str, Any]],
-    fallback_local_seat_id: Optional[int],
-    fallback_opponent_seat_id: Optional[int],
-) -> tuple[Optional[int], Optional[int]]:
+    fallback_local_seat_id: int | None,
+    fallback_opponent_seat_id: int | None,
+) -> tuple[int | None, int | None]:
     """Derive local/opponent seat ids from bridge state with snapshot fallback."""
     local_seat_id = _coerce_int(bridge_state.get("local_seat_id"), fallback_local_seat_id)
     opponent_seat_id = _coerce_int(bridge_state.get("opponent_seat_id"), fallback_opponent_seat_id)
@@ -1296,8 +1325,8 @@ def _build_public_zones(
     command: list[dict[str, Any]],
     opponent_hand_count: Any,
     library_count: Any,
-    local_graveyard: Optional[list[dict[str, Any]]] = None,
-    opponent_graveyard: Optional[list[dict[str, Any]]] = None,
+    local_graveyard: list[dict[str, Any]] | None = None,
+    opponent_graveyard: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the nested zones payload used by older consumers."""
     zones = {
@@ -1322,8 +1351,8 @@ def _get_bridge_overlay(
     fallback_turn: dict[str, Any],
     fallback_players: list[dict[str, Any]],
     fallback_zones: dict[str, Any],
-    fallback_local_seat_id: Optional[int],
-    fallback_opponent_seat_id: Optional[int],
+    fallback_local_seat_id: int | None,
+    fallback_opponent_seat_id: int | None,
 ) -> dict[str, Any]:
     """Return bridge-authoritative visible state that can safely overlay the snapshot."""
     try:
@@ -1345,8 +1374,7 @@ def _get_bridge_overlay(
     overlay["bridge_connected"] = True
 
     bridge_players = [
-        player for player in _copy_list(bridge_state.get("players"))
-        if isinstance(player, dict)
+        player for player in _copy_list(bridge_state.get("players")) if isinstance(player, dict)
     ]
     normalized_players = _normalize_bridge_players(bridge_players, fallback_players) if bridge_players else []
     local_seat_id, opponent_seat_id = _derive_seat_ids(
@@ -1369,10 +1397,7 @@ def _get_bridge_overlay(
             if isinstance(card, dict)
         ]
 
-    battlefield = [
-        card for card in _bridge_zone_cards("battlefield")
-        if card.get("object_kind") != "ABILITY"
-    ]
+    battlefield = [card for card in _bridge_zone_cards("battlefield") if card.get("object_kind") != "ABILITY"]
     hand = _bridge_zone_cards("local_hand")
     local_graveyard = _bridge_zone_cards("local_graveyard")
     opponent_graveyard = _bridge_zone_cards("opponent_graveyard")
@@ -1441,6 +1466,7 @@ def _get_bridge_overlay(
 
 # MCP Tools
 
+
 @mcp.tool()
 def get_game_state() -> dict[str, Any]:
     """Get the complete current game state snapshot.
@@ -1485,9 +1511,7 @@ def get_game_state() -> dict[str, Any]:
     }
 
     battlefield = [
-        _serialize_snapshot_obj(o)
-        for o in zones.get("battlefield", [])
-        if o.get("object_kind") != "ABILITY"
+        _serialize_snapshot_obj(o) for o in zones.get("battlefield", []) if o.get("object_kind") != "ABILITY"
     ]
     hand = [_serialize_snapshot_obj(o) for o in zones.get("my_hand", [])]
     graveyard = [_serialize_snapshot_obj(o) for o in zones.get("graveyard", [])]
@@ -1583,6 +1607,7 @@ def get_game_state() -> dict[str, Any]:
 
     return response
 
+
 def clear_pending_combat_steps() -> None:
     """Clear pending combat steps after they've been processed.
 
@@ -1617,6 +1642,7 @@ def get_card_info(arena_id: int) -> dict[str, Any]:
         # name — only the running client can, via resolve_grp_ids on the
         # bridge. The overlay is filled asynchronously by the poll loop.
         from arenamcp import dynamic_cards
+
         name = dynamic_cards.get_name(arena_id)
         if name:
             return {
@@ -1752,6 +1778,7 @@ def get_draft_pack() -> dict[str, Any]:
 
     try:
         from arenamcp.gre_bridge import get_bridge
+
         bridge = get_bridge()
         bridge_draft = bridge.get_draft_state() if (bridge and getattr(bridge, "connected", False)) else None
     except Exception as e:
@@ -1777,7 +1804,7 @@ def get_draft_pack() -> dict[str, Any]:
     if not is_active or not pack_cards:
         return {
             "is_active": False,
-            "message": "No active draft pack detected. Make sure you're in a draft and a pack is open."
+            "message": "No active draft pack detected. Make sure you're in a draft and a pack is open.",
         }
 
     # Derive set_code from event_name if not yet set (race: CardsInPack
@@ -1799,7 +1826,7 @@ def get_draft_pack() -> dict[str, Any]:
         if set_code:
             pair_stats = draft_stats_cache.get_color_pair_stats(set_code)
             fmt_context = draft_guidance.format_context_from_pair_stats(pair_stats)
-        
+
         pool_cards_data = []
         for grp_id in picked_cards:
             card_info = enrich_with_oracle_text(grp_id)
@@ -1807,7 +1834,7 @@ def get_draft_pack() -> dict[str, Any]:
             if set_code and card_info.get("name") and "Unknown" not in card_info["name"]:
                 stats = draft_stats_cache.get_draft_rating(card_info["name"], set_code)
             pool_cards_data.append(draft_guidance.normalize_card(card_info, stats=stats))
-            
+
         pack_cards_data = []
         for grp_id in pack_cards:
             card_info = enrich_with_oracle_text(grp_id)
@@ -1821,7 +1848,7 @@ def get_draft_pack() -> dict[str, Any]:
             pool=pool_cards_data,
             pick_number=pick_number,
             pack_number=pack_number,
-            fmt=fmt_context
+            fmt=fmt_context,
         )
         for ev in evaluations:
             eval_map[ev.grp_id] = ev
@@ -1855,9 +1882,7 @@ def get_draft_pack() -> dict[str, Any]:
                     card_info["iwd"] = stats.iwd
         elif set_code and "Unknown" not in card_info["name"]:
             # Fallback: get 17lands stats directly if composite eval missed this card
-            stats = draft_stats_cache.get_draft_rating(
-                card_info["name"], set_code
-            )
+            stats = draft_stats_cache.get_draft_rating(card_info["name"], set_code)
             if stats:
                 card_info["gih_wr"] = stats.gih_wr
                 card_info["alsa"] = stats.alsa
@@ -1919,6 +1944,7 @@ def evaluate_draft_pack_for_standalone() -> dict[str, Any]:
     # Ensure synergy graph is built (auto-builds on first draft if missing)
     try:
         from arenamcp.synergy import ensure_synergy_graph
+
         ensure_synergy_graph(_scryfall)
     except Exception as e:
         logger.debug(f"Synergy graph init: {e}")
@@ -1964,18 +1990,18 @@ def get_draft_guidance() -> dict[str, Any]:
     """Get draft guidance using the pure guidance engine."""
     if not draft_state.is_active or draft_state.is_sealed:
         return {"is_active": False}
-    
+
     if not draft_state.cards_in_pack:
         return {"is_active": True, "evaluations": []}
 
     draft_stats_cache = _get_draft_stats()
     set_code = draft_state.set_code
-    
+
     fmt_context = None
     if set_code:
         pair_stats = draft_stats_cache.get_color_pair_stats(set_code)
         fmt_context = draft_guidance.format_context_from_pair_stats(pair_stats)
-    
+
     pool_cards_data = []
     for grp_id in draft_state.picked_cards:
         card_info = enrich_with_oracle_text(grp_id)
@@ -1997,9 +2023,9 @@ def get_draft_guidance() -> dict[str, Any]:
         pool=pool_cards_data,
         pick_number=draft_state.pick_number,
         pack_number=draft_state.pack_number,
-        fmt=fmt_context
+        fmt=fmt_context,
     )
-    
+
     return {
         "is_active": True,
         "pack_number": draft_state.pack_number,
@@ -2015,7 +2041,7 @@ def get_draft_guidance() -> dict[str, Any]:
                 "wheel_probability": e.wheel_probability,
             }
             for e in evaluations
-        ]
+        ],
     }
 
 
@@ -2069,9 +2095,7 @@ def get_sealed_pool() -> dict[str, Any]:
 
         # Get 17lands stats
         if draft_state.set_code and card_info.get("name"):
-            stats = draft_stats_cache.get_draft_rating(
-                card_info["name"], draft_state.set_code
-            )
+            stats = draft_stats_cache.get_draft_rating(card_info["name"], draft_state.set_code)
             if stats:
                 card_info["gih_wr"] = stats.gih_wr
                 card_info["alsa"] = stats.alsa
@@ -2088,9 +2112,7 @@ def get_sealed_pool() -> dict[str, Any]:
 
     # Build response
     rec = analysis.recommended_build
-    color_names = {
-        "W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green"
-    }
+    color_names = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green"}
     rec_colors = "/".join(color_names.get(c, c) for c in rec.colors) if rec.colors else "Unknown"
 
     return {
@@ -2103,7 +2125,10 @@ def get_sealed_pool() -> dict[str, Any]:
             "playable_count": rec.playable_count,
             "creature_count": rec.creature_count,
             "top_cards": [{"name": c.get("name"), "gih_wr": c.get("gih_wr")} for c in rec.best_cards],
-            "splash_candidates": [{"name": c.get("name"), "colors": c.get("colors"), "gih_wr": c.get("gih_wr")} for c in analysis.splash_candidates],
+            "splash_candidates": [
+                {"name": c.get("name"), "colors": c.get("colors"), "gih_wr": c.get("gih_wr")}
+                for c in analysis.splash_candidates
+            ],
             "alternatives": [
                 {
                     "colors": "/".join(color_names.get(c, c) for c in ca.colors),
@@ -2149,9 +2174,7 @@ def analyze_draft_pool() -> dict[str, Any]:
 
         # Get 17lands stats
         if draft_state.set_code and card_info.get("name"):
-            stats = draft_stats_cache.get_draft_rating(
-                card_info["name"], draft_state.set_code
-            )
+            stats = draft_stats_cache.get_draft_rating(card_info["name"], draft_state.set_code)
             if stats:
                 card_info["gih_wr"] = stats.gih_wr
                 card_info["alsa"] = stats.alsa
@@ -2186,14 +2209,14 @@ def reset_game_state() -> dict[str, Any]:
     game_state.reset_local_player()
     return {
         "reset": True,
-        "message": "Game state reset. Local player will be re-inferred from next hand zone update."
+        "message": "Game state reset. Local player will be re-inferred from next hand zone update.",
     }
 
 
 @mcp.tool()
 def listen_for_voice(
     mode: Literal["ptt", "vox"] = "ptt",
-    timeout: Optional[float] = None,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     """Listen for voice input and return transcription.
 
@@ -2271,11 +2294,13 @@ def queue_advice(advice: str, trigger: str) -> None:
         advice: The coaching advice text.
         trigger: Description of what triggered this advice.
     """
-    _pending_advice.append({
-        "advice": advice,
-        "trigger": trigger,
-        "timestamp": time.time(),
-    })
+    _pending_advice.append(
+        {
+            "advice": advice,
+            "trigger": trigger,
+            "timestamp": time.time(),
+        }
+    )
     logger.debug(f"Queued advice: {trigger}")
 
 
@@ -2325,9 +2350,7 @@ def clear_pending_advice() -> dict[str, Any]:
 
 @mcp.tool()
 def start_coaching(
-    backend: str = "auto",
-    model: Optional[str] = None,
-    auto_speak: bool = False
+    backend: str = "auto", model: str | None = None, auto_speak: bool = False
 ) -> dict[str, Any]:
     """Start background game monitoring with proactive coaching.
 
@@ -2401,7 +2424,7 @@ def get_coaching_status() -> dict[str, Any]:
 
 
 @mcp.tool()
-def start_draft_helper_tool(set_code: Optional[str] = None) -> dict[str, Any]:
+def start_draft_helper_tool(set_code: str | None = None) -> dict[str, Any]:
     """Start background draft helper that auto-speaks pick recommendations.
 
     Monitors draft state in real-time and automatically speaks the top pick
@@ -2426,7 +2449,7 @@ def start_draft_helper_tool(set_code: Optional[str] = None) -> dict[str, Any]:
         return {
             "started": True,
             "set_code": set_code.upper() if set_code else None,
-            "message": f"Draft helper started for {set_code.upper() if set_code else 'unknown set'}. Will auto-speak top pick for each pack."
+            "message": f"Draft helper started for {set_code.upper() if set_code else 'unknown set'}. Will auto-speak top pick for each pack.",
         }
     except RuntimeError as e:
         return {"error": str(e)}

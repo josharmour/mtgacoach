@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import sys
 import threading
 from pathlib import Path
@@ -61,14 +62,12 @@ class AudioPlayback:
                 # have one of paplay/aplay/play/pw-play.
                 with cls._lock:
                     cls._stop_unlocked()
-                    return cls._play_via_cli_unlocked(
-                        full_path, ("paplay", "aplay", "play", "pw-play")
-                    )
+                    return cls._play_via_cli_unlocked(full_path, ("paplay", "aplay", "play", "pw-play"))
 
             with cls._lock:
                 cls._stop_unlocked()
                 try:
-                    data, fs = sf.read(str(full_path), dtype='float32')
+                    data, fs = sf.read(str(full_path), dtype="float32")
                     sd.play(data, fs)
                     return True
                 except Exception:
@@ -104,20 +103,14 @@ class AudioPlayback:
     @classmethod
     def _stop_unlocked(cls) -> None:
         if winsound is not None:
-            try:
+            with contextlib.suppress(RuntimeError):
                 winsound.PlaySound(None, winsound.SND_PURGE)
-            except RuntimeError:
-                pass
         else:
             if sd is not None:
-                try:
+                with contextlib.suppress(Exception):
                     sd.stop()
-                except Exception:
-                    pass
             proc = cls._cli_process
             cls._cli_process = None
             if proc is not None and proc.poll() is None:
-                try:
+                with contextlib.suppress(Exception):
                     proc.terminate()
-                except Exception:
-                    pass

@@ -15,10 +15,7 @@ Linux, and macOS. Covers:
 import sys
 from pathlib import Path
 
-import pytest
-
 from arenamcp import platform_integration as pi
-
 
 # ── helpers ──────────────────────────────────────────────────────────
 
@@ -47,22 +44,18 @@ def _make_steam_install(home: Path) -> Path:
 
 
 def _make_bottle(home: Path, bottle_name: str = "MTGA", user: str = "crossover") -> Path:
-    bottle = (
-        home / "Library/Application Support/CrossOver/Bottles" / bottle_name
-    )
+    bottle = home / "Library/Application Support/CrossOver/Bottles" / bottle_name
     game_dir = bottle / "drive_c/Program Files/Wizards of the Coast/MTGA"
     game_dir.mkdir(parents=True)
     (game_dir / "MTGA.exe").write_bytes(b"MZ")
-    log_dir = (
-        bottle / "drive_c/users" / user
-        / "AppData/LocalLow/Wizards Of The Coast/MTGA"
-    )
+    log_dir = bottle / "drive_c/users" / user / "AppData/LocalLow/Wizards Of The Coast/MTGA"
     log_dir.mkdir(parents=True)
     (log_dir / "Player.log").write_text("[UnityCrossThreadLogger]\n")
     return bottle
 
 
 # ── _find_mtga_darwin: native Steam ──────────────────────────────────
+
 
 def test_darwin_steam_detected(monkeypatch, tmp_path):
     home = _fake_home(monkeypatch, tmp_path)
@@ -106,6 +99,7 @@ def test_darwin_nothing_installed(monkeypatch, tmp_path):
 
 # ── _find_mtga_darwin: Epic ──────────────────────────────────────────
 
+
 def test_darwin_epic_detected(monkeypatch, tmp_path):
     home = _fake_home(monkeypatch, tmp_path)
     log = _make_native_log(home)
@@ -124,6 +118,7 @@ def test_darwin_epic_detected(monkeypatch, tmp_path):
 
 # ── _find_mtga_darwin: CrossOver bottle ──────────────────────────────
 
+
 def test_darwin_crossover_bottle_detected(monkeypatch, tmp_path):
     home = _fake_home(monkeypatch, tmp_path)
     bottle = _make_bottle(home, user="crossover")
@@ -132,12 +127,9 @@ def test_darwin_crossover_bottle_detected(monkeypatch, tmp_path):
 
     assert install is not None
     assert install.platform == "darwin-crossover"
-    assert install.install_dir == (
-        bottle / "drive_c/Program Files/Wizards of the Coast/MTGA"
-    )
+    assert install.install_dir == (bottle / "drive_c/Program Files/Wizards of the Coast/MTGA")
     assert install.player_log == (
-        bottle / "drive_c/users/crossover"
-        / "AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log"
+        bottle / "drive_c/users/crossover" / "AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log"
     )
 
 
@@ -158,9 +150,7 @@ def test_darwin_crossover_odd_user_dir_globbed(monkeypatch, tmp_path):
 def test_darwin_crossover_bottle_without_mtga(monkeypatch, tmp_path):
     """Bottles exist but none contain MTGA.exe → no install."""
     home = _fake_home(monkeypatch, tmp_path)
-    (home / "Library/Application Support/CrossOver/Bottles/Empty/drive_c").mkdir(
-        parents=True
-    )
+    (home / "Library/Application Support/CrossOver/Bottles/Empty/drive_c").mkdir(parents=True)
     assert pi._find_mtga_darwin() is None
 
 
@@ -178,6 +168,7 @@ def test_darwin_native_steam_preferred_over_bottle(monkeypatch, tmp_path):
 
 # ── find_mtga() dispatch ─────────────────────────────────────────────
 
+
 def test_find_mtga_dispatches_to_darwin(monkeypatch, tmp_path):
     home = _fake_home(monkeypatch, tmp_path)
     _make_steam_install(home)
@@ -185,6 +176,7 @@ def test_find_mtga_dispatches_to_darwin(monkeypatch, tmp_path):
     monkeypatch.setattr(pi, "current_platform", lambda: "darwin")
     # Deterministic settings: no mtga_install_dir override saved.
     import arenamcp.settings as settings_mod
+
     monkeypatch.setattr(settings_mod, "get_settings", lambda: {})
 
     install = pi.find_mtga()
@@ -193,9 +185,7 @@ def test_find_mtga_dispatches_to_darwin(monkeypatch, tmp_path):
     assert install.platform == "darwin-steam"
 
 
-def test_darwin_platform_never_matches_linux_or_windows_gates(
-    monkeypatch, tmp_path
-):
+def test_darwin_platform_never_matches_linux_or_windows_gates(monkeypatch, tmp_path):
     """repair_engine gates on .startswith('linux') / == 'windows'; every
     darwin flavor must stay clear of both."""
     home = _fake_home(monkeypatch, tmp_path)
@@ -210,6 +200,7 @@ def test_darwin_platform_never_matches_linux_or_windows_gates(
 
 
 # ── watcher._default_log_path darwin branch ──────────────────────────
+
 
 def test_default_log_path_darwin_native(monkeypatch, tmp_path):
     from arenamcp import watcher
@@ -230,10 +221,7 @@ def test_default_log_path_darwin_bottle_fallback(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "platform", "darwin")
 
     result = Path(watcher._default_log_path())
-    expected = (
-        bottle / "drive_c/users/crossover"
-        / "AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log"
-    )
+    expected = bottle / "drive_c/users/crossover" / "AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log"
     assert result == expected
 
 
@@ -249,11 +237,13 @@ def test_default_log_path_darwin_nothing_exists(monkeypatch, tmp_path):
 
 # ── mtgadb darwin card-database discovery ────────────────────────────
 
+
 def _patch_mtgadb_paths(monkeypatch, paths):
     from arenamcp import mtgadb
 
     monkeypatch.setattr(mtgadb, "MTGA_PATHS", paths)
     import arenamcp.settings as settings_mod
+
     monkeypatch.setattr(settings_mod, "get_settings", lambda: {})
     return mtgadb
 
@@ -287,8 +277,6 @@ def test_mtgadb_crossover_paths_globbed(monkeypatch, tmp_path):
     from arenamcp import mtgadb
 
     home = _fake_home(monkeypatch, tmp_path)
-    bottle_game_dir = _make_bottle(home) / (
-        "drive_c/Program Files/Wizards of the Coast/MTGA"
-    )
+    bottle_game_dir = _make_bottle(home) / ("drive_c/Program Files/Wizards of the Coast/MTGA")
     paths = mtgadb._darwin_crossover_paths()
     assert bottle_game_dir in paths

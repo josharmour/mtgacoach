@@ -140,7 +140,9 @@ def build_issue_payload(
 
     if errors:
         for entry in errors[-5:]:
-            lines.append(f"- `{entry.get('timestamp', '?')}` {entry.get('context', '')}: {entry.get('error', '')}")
+            lines.append(
+                f"- `{entry.get('timestamp', '?')}` {entry.get('context', '')}: {entry.get('error', '')}"
+            )
     else:
         lines.append("- No recent recorded errors.")
 

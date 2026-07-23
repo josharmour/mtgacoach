@@ -1,9 +1,9 @@
-
 import logging
 import re
-from typing import List, Dict, Any
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
 
 class RulesEngine:
     """
@@ -12,13 +12,13 @@ class RulesEngine:
     """
 
     @staticmethod
-    def _count_available_mana(game_state: Dict[str, Any], local_seat: int) -> int:
+    def _count_available_mana(game_state: dict[str, Any], local_seat: int) -> int:
         """Count total available mana from untapped lands and mana creatures."""
         pool = RulesEngine._get_mana_pool(game_state, local_seat)
         return pool["total"]
 
     @staticmethod
-    def _get_mana_pool(game_state: Dict[str, Any], local_seat: int) -> Dict[str, Any]:
+    def _get_mana_pool(game_state: dict[str, Any], local_seat: int) -> dict[str, Any]:
         """Get available mana pool with color breakdown from untapped sources.
 
         Besides the per-color counts, ``pool["_sources"]`` holds one frozenset
@@ -27,8 +27,8 @@ class RulesEngine:
         a single source that can only produce one mana.
         """
         battlefield = game_state.get("battlefield", [])
-        pool: Dict[str, Any] = {"W": 0, "U": 0, "B": 0, "R": 0, "G": 0, "C": 0, "Any": 0, "total": 0}
-        sources: List[frozenset] = []
+        pool: dict[str, Any] = {"W": 0, "U": 0, "B": 0, "R": 0, "G": 0, "C": 0, "Any": 0, "total": 0}
+        sources: list[frozenset] = []
         turn_num = game_state.get("turn", {}).get("turn_number", 0)
         creature_mana_source_count = 0
         your_cards = [c for c in battlefield if c.get("owner_seat_id") == local_seat]
@@ -40,7 +40,7 @@ class RulesEngine:
             name = card.get("name", "")
             is_land = "land" in type_line
             is_creature = "creature" in type_line
-            has_mana_ability = bool(re.search(r'\{T\}.*[Aa]dd\s+(\{|one |two |three )', oracle))
+            has_mana_ability = bool(re.search(r"\{T\}.*[Aa]dd\s+(\{|one |two |three )", oracle))
             # Detect lands with basic subtypes but no explicit "add" (e.g. Multiversal Passage)
             if is_land and not has_mana_ability:
                 for basic in ("plains", "island", "swamp", "mountain", "forest"):
@@ -82,7 +82,9 @@ class RulesEngine:
         if creature_mana_source_count > 0:
             for card in your_cards:
                 oracle_lower = card.get("oracle_text", "").lower()
-                bonus_match = re.search(r"whenever you tap a creature for mana,?\s*add an additional \{(\w)\}", oracle_lower)
+                bonus_match = re.search(
+                    r"whenever you tap a creature for mana,?\s*add an additional \{(\w)\}", oracle_lower
+                )
                 if bonus_match:
                     bonus_color = bonus_match.group(1).upper()
                     pool["total"] += creature_mana_source_count
@@ -94,7 +96,7 @@ class RulesEngine:
         return pool
 
     @staticmethod
-    def _can_afford(mana_cost: str, mana_pool: Dict[str, Any]) -> bool:
+    def _can_afford(mana_cost: str, mana_pool: dict[str, Any]) -> bool:
         """Check if a spell can be cast with the available mana pool (total + colors).
 
         An empty/unknown cost is treated as NOT affordable (a DB gap must not
@@ -111,7 +113,7 @@ class RulesEngine:
         if mana_pool["total"] < cmc:
             return False
         pips = {c: 0 for c in "WUBRGC"}
-        hybrid_pips: List[List[str]] = []
+        hybrid_pips: list[list[str]] = []
         for symbol in re.findall(r"\{([^}]+)\}", mana_cost):
             parts = [p.strip().upper() for p in symbol.split("/")]
             if len(parts) == 1:
@@ -143,7 +145,7 @@ class RulesEngine:
             return False
         # Colored pips: direct color first, any-color sources as a shared budget
         any_budget = mana_pool.get("Any", 0)
-        surplus: Dict[str, int] = {}
+        surplus: dict[str, int] = {}
         for color in "WUBRG":
             short = pips[color] - mana_pool.get(color, 0)
             if short > 0:
@@ -170,9 +172,9 @@ class RulesEngine:
 
     @staticmethod
     def _match_pips_to_sources(
-        pips: Dict[str, int],
-        hybrid_pips: List[List[str]],
-        sources: List[frozenset],
+        pips: dict[str, int],
+        hybrid_pips: list[list[str]],
+        sources: list[frozenset],
     ) -> bool:
         """Exact bipartite matching between colored pips and mana sources.
 
@@ -182,7 +184,7 @@ class RulesEngine:
         each source pays at most one pip. DFS augmenting paths — trivial at
         MTGA cost/board scale.
         """
-        pip_sets: List[frozenset] = []
+        pip_sets: list[frozenset] = []
         for color, count in pips.items():
             pip_sets.extend([frozenset({color})] * count)
         for halves in hybrid_pips:
@@ -190,7 +192,7 @@ class RulesEngine:
         if not pip_sets:
             return True
 
-        match_of_source: List[int] = [-1] * len(sources)
+        match_of_source: list[int] = [-1] * len(sources)
 
         def try_assign(pip_idx: int, visited: set) -> bool:
             for s_idx, src in enumerate(sources):
@@ -210,19 +212,20 @@ class RulesEngine:
         if not mana_cost:
             return 0
         cmc = 0
-        generic = re.findall(r'\{(\d+)\}', mana_cost)
+        generic = re.findall(r"\{(\d+)\}", mana_cost)
         cmc += sum(int(g) for g in generic)
         for color in "WUBRGC":
             cmc += len(re.findall(rf"\{{{color}\}}", mana_cost))
         # Hybrid mana symbols like {U/R} count as 1 each
-        hybrid = re.findall(r'\{[^}]+/[^}]+\}', mana_cost)
+        hybrid = re.findall(r"\{[^}]+/[^}]+\}", mana_cost)
         cmc += len(hybrid)
         return cmc
 
     @staticmethod
-    def _disambiguate_names(names: List[str]) -> List[str]:
+    def _disambiguate_names(names: list[str]) -> list[str]:
         """Add #1, #2 suffixes to duplicate names in a list."""
         from collections import Counter
+
         counts = Counter(names)
         seen = {}
         result = []
@@ -235,7 +238,7 @@ class RulesEngine:
         return result
 
     @staticmethod
-    def _infer_target_requirements(oracle_text: str) -> Dict[str, Any]:
+    def _infer_target_requirements(oracle_text: str) -> dict[str, Any]:
         """Infer rough target constraints from oracle text."""
         text = (oracle_text or "").lower()
         req = {
@@ -283,7 +286,11 @@ class RulesEngine:
         if "target spell" in text:
             req["target_spell"] = True
             req["zones"].add("stack")
-        if "target ability" in text or "target activated ability" in text or "target triggered ability" in text:
+        if (
+            "target ability" in text
+            or "target activated ability" in text
+            or "target triggered ability" in text
+        ):
             req["target_ability"] = True
             req["zones"].add("stack")
 
@@ -350,17 +357,21 @@ class RulesEngine:
 
     @staticmethod
     def _match_battlefield_targets(
-        battlefield: List[Dict[str, Any]],
+        battlefield: list[dict[str, Any]],
         local_seat: int,
         opponent_seat: int | None,
-        req: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
+        req: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         matches = []
         for card in battlefield:
             controller = card.get("controller_seat_id") or card.get("owner_seat_id")
             if req["must_control"] == "you" and controller != local_seat:
                 continue
-            if req["must_control"] == "opponent" and opponent_seat is not None and controller != opponent_seat:
+            if (
+                req["must_control"] == "opponent"
+                and opponent_seat is not None
+                and controller != opponent_seat
+            ):
                 continue
 
             type_line = (card.get("type_line") or "").lower()
@@ -400,17 +411,21 @@ class RulesEngine:
 
     @staticmethod
     def _match_stack_targets(
-        stack: List[Dict[str, Any]],
+        stack: list[dict[str, Any]],
         local_seat: int,
         opponent_seat: int | None,
-        req: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
+        req: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         matches = []
         for obj in stack:
             controller = obj.get("controller_seat_id") or obj.get("owner_seat_id")
             if req["must_control"] == "you" and controller != local_seat:
                 continue
-            if req["must_control"] == "opponent" and opponent_seat is not None and controller != opponent_seat:
+            if (
+                req["must_control"] == "opponent"
+                and opponent_seat is not None
+                and controller != opponent_seat
+            ):
                 continue
 
             name = (obj.get("name") or "").lower()
@@ -433,17 +448,21 @@ class RulesEngine:
 
     @staticmethod
     def _match_graveyard_targets(
-        graveyard: List[Dict[str, Any]],
+        graveyard: list[dict[str, Any]],
         local_seat: int,
         opponent_seat: int | None,
-        req: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
+        req: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         matches = []
         for card in graveyard:
             controller = card.get("controller_seat_id") or card.get("owner_seat_id")
             if req["must_control"] == "you" and controller != local_seat:
                 continue
-            if req["must_control"] == "opponent" and opponent_seat is not None and controller != opponent_seat:
+            if (
+                req["must_control"] == "opponent"
+                and opponent_seat is not None
+                and controller != opponent_seat
+            ):
                 continue
 
             type_line = (card.get("type_line") or "").lower()
@@ -457,7 +476,7 @@ class RulesEngine:
         return matches
 
     @staticmethod
-    def _score_target(card: Dict[str, Any], prefer_opponent: bool) -> int:
+    def _score_target(card: dict[str, Any], prefer_opponent: bool) -> int:
         type_line = (card.get("type_line") or "").lower()
         power = card.get("power") or 0
         toughness = card.get("toughness") or 0
@@ -476,7 +495,7 @@ class RulesEngine:
         return score
 
     @staticmethod
-    def _extract_explicit_target_instance_ids(decision_context: Dict[str, Any]) -> List[int]:
+    def _extract_explicit_target_instance_ids(decision_context: dict[str, Any]) -> list[int]:
         """Extract legal target instance ids from bridge-enriched decision context."""
         ids: list[int] = []
 
@@ -526,9 +545,9 @@ class RulesEngine:
 
     @staticmethod
     def _lookup_target_cards_by_instance_ids(
-        game_state: Dict[str, Any],
-        instance_ids: List[int],
-    ) -> List[Dict[str, Any]]:
+        game_state: dict[str, Any],
+        instance_ids: list[int],
+    ) -> list[dict[str, Any]]:
         """Resolve legal target instance ids to visible objects across zones."""
         if not instance_ids:
             return []
@@ -539,7 +558,7 @@ class RulesEngine:
             game_state.get("graveyard", []),
             game_state.get("exile", []),
         ]
-        by_id: Dict[int, Dict[str, Any]] = {}
+        by_id: dict[int, dict[str, Any]] = {}
         for zone in zones:
             if not isinstance(zone, list):
                 continue
@@ -550,7 +569,7 @@ class RulesEngine:
                 if isinstance(instance_id, int):
                     by_id[instance_id] = item
 
-        resolved: List[Dict[str, Any]] = []
+        resolved: list[dict[str, Any]] = []
         for instance_id in instance_ids:
             card = by_id.get(instance_id)
             if card is not None:
@@ -558,7 +577,7 @@ class RulesEngine:
         return resolved
 
     @staticmethod
-    def _get_target_selection_actions(game_state: Dict[str, Any]) -> List[str]:
+    def _get_target_selection_actions(game_state: dict[str, Any]) -> list[str]:
         decision_context = game_state.get("decision_context") or {}
         if decision_context.get("type") != "target_selection":
             return []
@@ -601,25 +620,19 @@ class RulesEngine:
             battlefield = game_state.get("battlefield", [])
             if not matches:
                 matches.extend(
-                    RulesEngine._match_battlefield_targets(
-                        battlefield, local_seat, opponent_seat, req
-                    )
+                    RulesEngine._match_battlefield_targets(battlefield, local_seat, opponent_seat, req)
                 )
 
         if "stack" in req["zones"]:
             stack = game_state.get("stack", [])
             if not matches:
-                matches.extend(
-                    RulesEngine._match_stack_targets(stack, local_seat, opponent_seat, req)
-                )
+                matches.extend(RulesEngine._match_stack_targets(stack, local_seat, opponent_seat, req))
 
         if "graveyard" in req["zones"]:
             graveyard = game_state.get("graveyard", [])
             if not matches:
                 matches.extend(
-                    RulesEngine._match_graveyard_targets(
-                        graveyard, local_seat, opponent_seat, req
-                    )
+                    RulesEngine._match_graveyard_targets(graveyard, local_seat, opponent_seat, req)
                 )
 
         if matches:
@@ -644,9 +657,7 @@ class RulesEngine:
         return actions
 
     @staticmethod
-    def _filter_legal_attackers(
-        game_state: Dict[str, Any], legal_attackers: List[str]
-    ) -> List[str]:
+    def _filter_legal_attackers(game_state: dict[str, Any], legal_attackers: list[str]) -> list[str]:
         """Filter declared attackers against visible battlefield legality."""
         if not legal_attackers:
             return []
@@ -658,7 +669,7 @@ class RulesEngine:
 
         local_seat = local_player.get("seat_id")
         turn_num = game_state.get("turn", {}).get("turn_number", 0)
-        valid_name_counts: Dict[str, int] = {}
+        valid_name_counts: dict[str, int] = {}
         saw_local_creature = False
 
         for card in game_state.get("battlefield", []):
@@ -685,7 +696,7 @@ class RulesEngine:
         if not saw_local_creature:
             return legal_attackers
 
-        filtered: List[str] = []
+        filtered: list[str] = []
         for name in legal_attackers:
             if valid_name_counts.get(name, 0) > 0:
                 filtered.append(name)
@@ -693,7 +704,7 @@ class RulesEngine:
         return filtered
 
     @staticmethod
-    def _get_decision_actions(game_state: Dict[str, Any]) -> List[str]:
+    def _get_decision_actions(game_state: dict[str, Any]) -> list[str]:
         """Compute legal actions for pending GRE decision types."""
         decision_context = game_state.get("decision_context") or {}
         dec_type = decision_context.get("type", "")
@@ -719,7 +730,7 @@ class RulesEngine:
                         local_seat = p.get("seat_id")
                         break
                 turn_num = game_state.get("turn", {}).get("turn_number", 0)
-                candidates_by_name: Dict[str, List[Dict[str, Any]]] = {}
+                candidates_by_name: dict[str, list[dict[str, Any]]] = {}
                 for card in game_state.get("battlefield", []):
                     controller = card.get("controller_seat_id")
                     owner = card.get("owner_seat_id")
@@ -740,8 +751,8 @@ class RulesEngine:
                         candidates_by_name.setdefault(name, []).append(card)
 
                 disambiguated = RulesEngine._disambiguate_names(legal)
-                consumed: Dict[str, int] = {}
-                for display_name, bare_name in zip(disambiguated, legal):
+                consumed: dict[str, int] = {}
+                for display_name, bare_name in zip(disambiguated, legal, strict=False):
                     queue = candidates_by_name.get(bare_name, [])
                     idx = consumed.get(bare_name, 0)
                     suffix = ""
@@ -833,7 +844,7 @@ class RulesEngine:
         return []
 
     @staticmethod
-    def get_legal_actions(game_state: Dict[str, Any]) -> List[str]:
+    def get_legal_actions(game_state: dict[str, Any]) -> list[str]:
         target_actions = RulesEngine._get_target_selection_actions(game_state)
         if target_actions:
             return target_actions
@@ -858,16 +869,16 @@ class RulesEngine:
             return ["Wait (Game State Syncing)"]
 
         local_seat = local_player.get("seat_id")
-        is_active_player = (turn.get("active_player") == local_seat)
-        has_priority = (turn.get("priority_player") == local_seat)
+        is_active_player = turn.get("active_player") == local_seat
+        has_priority = turn.get("priority_player") == local_seat
 
         if not has_priority:
-             # Exception: We can declare blockers if it's the DeclareBlock step and we are defender
-             step = turn.get("step", "")
-             is_blocking_step = (step == "Step_DeclareBlock") and (not is_active_player)
+            # Exception: We can declare blockers if it's the DeclareBlock step and we are defender
+            step = turn.get("step", "")
+            is_blocking_step = (step == "Step_DeclareBlock") and (not is_active_player)
 
-             if not is_blocking_step:
-                 return ["Wait (Opponent has priority)"]
+            if not is_blocking_step:
+                return ["Wait (Opponent has priority)"]
 
         # Calculate available mana (with color breakdown)
         mana_pool = RulesEngine._get_mana_pool(game_state, local_seat)
@@ -877,9 +888,9 @@ class RulesEngine:
         stack = game_state.get("stack", [])
         is_stack_empty = len(stack) == 0
         is_main_phase = "Main" in phase
-        
+
         if is_active_player and is_main_phase and is_stack_empty:
-             if local_player.get("lands_played", 0) < 1:
+            if local_player.get("lands_played", 0) < 1:
                 # Check hand for lands
                 hand = game_state.get("hand", [])
                 for card in hand:
@@ -906,9 +917,7 @@ class RulesEngine:
             is_instant_speed = "Instant" in type_line or "Flash" in card.get("oracle_text", "")
 
             can_cast_timing = False
-            if is_instant_speed:
-                can_cast_timing = True
-            elif is_active_player and is_main_phase and is_stack_empty:
+            if is_instant_speed or is_active_player and is_main_phase and is_stack_empty:
                 can_cast_timing = True
 
             # Mana check: ensure player can afford the spell (total + colors)
@@ -922,20 +931,28 @@ class RulesEngine:
                     oracle = card.get("oracle_text", "").lower()
                     if "enchant creature" in oracle:
                         my_creatures = [
-                            c for c in battlefield
-                            if c.get("owner_seat_id") == local_seat
-                            and "Creature" in c.get("type_line", "")
+                            c
+                            for c in battlefield
+                            if c.get("owner_seat_id") == local_seat and "Creature" in c.get("type_line", "")
                         ]
                         opp_creatures = [
-                            c for c in battlefield
-                            if c.get("owner_seat_id") != local_seat
-                            and "Creature" in c.get("type_line", "")
+                            c
+                            for c in battlefield
+                            if c.get("owner_seat_id") != local_seat and "Creature" in c.get("type_line", "")
                         ]
                         # Heuristic: detrimental if it weakens or restricts the target
                         is_detrimental = any(
                             kw in oracle
-                            for kw in ("-1/", "-2/", "-3/", "-4/", "can't attack", "can't block",
-                                        "doesn't untap", "sacrifice enchanted")
+                            for kw in (
+                                "-1/",
+                                "-2/",
+                                "-3/",
+                                "-4/",
+                                "can't attack",
+                                "can't block",
+                                "doesn't untap",
+                                "sacrifice enchanted",
+                            )
                         )
                         if is_detrimental:
                             if not opp_creatures:
@@ -951,9 +968,9 @@ class RulesEngine:
                 oracle = card.get("oracle_text", "").lower()
                 if "target" in oracle and "opponent controls" in oracle:
                     opp_nonlands = [
-                        c for c in battlefield
-                        if c.get("owner_seat_id") != local_seat
-                        and "Land" not in c.get("type_line", "")
+                        c
+                        for c in battlefield
+                        if c.get("owner_seat_id") != local_seat and "Land" not in c.get("type_line", "")
                     ]
                     if not opp_nonlands:
                         continue  # No valid opponent targets
@@ -962,42 +979,48 @@ class RulesEngine:
 
         # 3. ATTACKING
         # Legal if: Combat Phase (specifically Declare Attackers step?), Active Player, Creatures Untapped + !Sick
-        # In Arena, we usually get priority *before* attackers are declared (Beginning of Combat) 
+        # In Arena, we usually get priority *before* attackers are declared (Beginning of Combat)
         # or *during* declare attackers (if we hold priority, but usually it's a game step).
         # Actually, asking "Who should attack" happens at 'Phase_Combat_Beginning' or 'Phase_Main1' (planning).
-        
-        my_creatures = [c for c in battlefield if c.get("owner_seat_id") == local_seat and "Creature" in c.get("type_line", "")]
+
+        my_creatures = [
+            c
+            for c in battlefield
+            if c.get("owner_seat_id") == local_seat and "Creature" in c.get("type_line", "")
+        ]
 
         if is_active_player and ("Main" in phase or "Combat" in phase):
-             potential_attackers = []
-             turn_num = turn.get("turn_number", 0)
-             
-             # Safe turn parse
-             try:
-                 current_turn_int = int(str(turn_num).replace("?", "0"))
-             except:
-                 current_turn_int = 0
+            potential_attackers = []
+            turn_num = turn.get("turn_number", 0)
 
-             for c in my_creatures:
-                 # Check Sickness
-                 entered = c.get("turn_entered_battlefield", -1)
-                 has_haste = "haste" in c.get("oracle_text", "").lower()
-                 is_tapped = c.get("is_tapped", False)
+            # Safe turn parse
+            try:
+                current_turn_int = int(str(turn_num).replace("?", "0"))
+            except Exception:
+                current_turn_int = 0
 
-                 is_sick = (entered == current_turn_int) and not has_haste
+            for c in my_creatures:
+                # Check Sickness
+                entered = c.get("turn_entered_battlefield", -1)
+                has_haste = "haste" in c.get("oracle_text", "").lower()
+                is_tapped = c.get("is_tapped", False)
 
-                 if not is_sick and not is_tapped:
-                     potential_attackers.append(c.get("name"))
+                is_sick = (entered == current_turn_int) and not has_haste
 
-             if potential_attackers:
-                 actions.append(f"Declare Attackers: {', '.join(RulesEngine._disambiguate_names(potential_attackers))}")
-        
+                if not is_sick and not is_tapped:
+                    potential_attackers.append(c.get("name"))
+
+            if potential_attackers:
+                actions.append(
+                    f"Declare Attackers: {', '.join(RulesEngine._disambiguate_names(potential_attackers))}"
+                )
+
         # 4. BLOCKING
         # Legal if: Combat Phase, Defending Player
         if not is_active_player and "Combat" in phase:
-             untapped_blockers = [c.get("name") for c in my_creatures if not c.get("is_tapped")]
-             if untapped_blockers:
-                 actions.append(f"Block with: {', '.join(RulesEngine._disambiguate_names(untapped_blockers))}")
+            untapped_blockers = [c.get("name") for c in my_creatures if not c.get("is_tapped")]
+            if untapped_blockers:
+                actions.append(f"Block with: {', '.join(RulesEngine._disambiguate_names(untapped_blockers))}")
 
         # 5. ABILITIES
         # Activated abilities on battlefield
@@ -1007,7 +1030,7 @@ class RulesEngine:
         except Exception:
             current_turn_int = 0
         ability_names = []
-        for c in my_creatures: # And lands/artifacts
+        for c in my_creatures:  # And lands/artifacts
             oracle = c.get("oracle_text", "")
             if ": " not in oracle:  # Crude check for activated ability
                 continue
@@ -1017,7 +1040,7 @@ class RulesEngine:
             entered = c.get("turn_entered_battlefield", -1)
             has_haste = "haste" in oracle.lower()
             is_sick = (entered == current_turn_int) and not has_haste
-            uses_tap = bool(re.search(r'\{T\}', oracle))
+            uses_tap = bool(re.search(r"\{T\}", oracle))
             if is_sick and uses_tap:
                 continue
             ability_names.append(c.get("name"))
@@ -1025,4 +1048,3 @@ class RulesEngine:
             actions.append(f"Activate {aname}")
 
         return actions
-

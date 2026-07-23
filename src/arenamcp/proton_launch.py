@@ -17,14 +17,12 @@ called at real runtime, never during tests.
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
 
 DEFAULT_APP_ID = "2141910"
 
@@ -51,7 +49,7 @@ class MtgaInstall:
         )
 
 
-def _steam_root_candidates() -> List[Path]:
+def _steam_root_candidates() -> list[Path]:
     """Steam root directories to probe, in search-priority order."""
     home = Path.home()
     return [
@@ -65,10 +63,10 @@ def _steam_root_candidates() -> List[Path]:
     ]
 
 
-def _parse_library_paths(steam_root: Path) -> List[Path]:
+def _parse_library_paths(steam_root: Path) -> list[Path]:
     """Parse extra Steam library paths from steamapps/libraryfolders.vdf."""
     vdf = steam_root / "steamapps" / "libraryfolders.vdf"
-    paths: List[Path] = []
+    paths: list[Path] = []
     try:
         text = vdf.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -82,9 +80,9 @@ def _parse_library_paths(steam_root: Path) -> List[Path]:
     return paths
 
 
-def _candidate_steam_dirs() -> List[Path]:
+def _candidate_steam_dirs() -> list[Path]:
     """All Steam library roots to scan (known roots + parsed library folders)."""
-    seen: List[Path] = []
+    seen: list[Path] = []
 
     def _add(p: Path) -> None:
         if p not in seen:
@@ -99,7 +97,7 @@ def _candidate_steam_dirs() -> List[Path]:
     return seen
 
 
-def find_mtga_install(app_id: str = DEFAULT_APP_ID) -> Optional[MtgaInstall]:
+def find_mtga_install(app_id: str = DEFAULT_APP_ID) -> MtgaInstall | None:
     """Locate the MTGA install + Proton prefix.
 
     Searches the Flatpak Steam path first, then native Steam roots, plus any
@@ -114,9 +112,7 @@ def find_mtga_install(app_id: str = DEFAULT_APP_ID) -> Optional[MtgaInstall]:
 
         prefix_dir = steamapps / "compatdata" / app_id / "pfx"
         player_log = (
-            prefix_dir
-            / "drive_c/users/steamuser/AppData/LocalLow"
-            / "Wizards Of The Coast/MTGA/Player.log"
+            prefix_dir / "drive_c/users/steamuser/AppData/LocalLow" / "Wizards Of The Coast/MTGA/Player.log"
         )
         bepinex_log = game_dir / "BepInEx" / "LogOutput.log"
 
@@ -182,7 +178,7 @@ def is_flatpak_steam() -> bool:
         return False
 
 
-def steam_launch_command(app_id: str = DEFAULT_APP_ID) -> List[str]:
+def steam_launch_command(app_id: str = DEFAULT_APP_ID) -> list[str]:
     """Build the Steam launch command for MTGA.
 
     Uses the Flatpak form when Flatpak Steam is present, otherwise the native
@@ -233,7 +229,7 @@ def wait_for_mtga_process(timeout: float = 90.0) -> bool:
 def wait_for_plugin_connected(
     install: MtgaInstall,
     timeout: float = 180.0,
-    since_pos: Optional[int] = None,
+    since_pos: int | None = None,
 ) -> bool:
     """Wait for the BepInEx bridge plugin to connect (best-effort).
 
@@ -247,7 +243,7 @@ def wait_for_plugin_connected(
     deadline = time.monotonic() + timeout
     while True:
         try:
-            with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+            with open(log_path, encoding="utf-8", errors="replace") as fh:
                 fh.seek(start_pos)
                 for line in fh:
                     if _PLUGIN_CONNECTED_MARKER in line:

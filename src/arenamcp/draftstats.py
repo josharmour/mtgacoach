@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
@@ -24,7 +24,7 @@ SEVENTEEN_LANDS_COLOR_URL = "https://www.17lands.com/color_ratings/data"
 COLOR_LETTERS = ("W", "U", "B", "R", "G")
 
 
-def _parse_color_key(color_name: str) -> Optional[str]:
+def _parse_color_key(color_name: str) -> str | None:
     """Extract parenthesized color letters from a 17lands color_name string."""
     if "(" not in color_name or ")" not in color_name:
         return None
@@ -41,9 +41,9 @@ class DraftStats:
 
     name: str
     set_code: str
-    gih_wr: Optional[float]  # Games in Hand Win Rate (0.0-1.0)
-    alsa: Optional[float]  # Average Last Seen At
-    iwd: Optional[float]  # Improvement When Drawn
+    gih_wr: float | None  # Games in Hand Win Rate (0.0-1.0)
+    alsa: float | None  # Average Last Seen At
+    iwd: float | None  # Improvement When Drawn
     games_in_hand: int  # Sample size for GIH WR
 
 
@@ -64,16 +64,14 @@ class DraftStatsCache:
     GIH WR, ALSA, and IWD metrics for draft card evaluation.
     """
 
-    def __init__(self, cache_dir: Optional[Path] = None):
+    def __init__(self, cache_dir: Path | None = None):
         """Initialize the cache.
 
         Args:
             cache_dir: Directory for cache files. Defaults to ~/.arenamcp/cache/17lands/
         """
         self._cache_dir = cache_dir or CACHE_DIR
-        self._file_cache = FileCache(
-            self._cache_dir, ttl_seconds=CACHE_MAX_AGE_HOURS * 3600
-        )
+        self._file_cache = FileCache(self._cache_dir, ttl_seconds=CACHE_MAX_AGE_HOURS * 3600)
 
         # In-memory cache: {set_code: {card_name_lower: DraftStats}}
         self._stats_cache: dict[str, dict[str, DraftStats]] = {}
@@ -116,9 +114,7 @@ class DraftStatsCache:
 
         return data
 
-    def _parse_json(
-        self, cards_data: list[dict[str, Any]], set_code: str
-    ) -> dict[str, DraftStats]:
+    def _parse_json(self, cards_data: list[dict[str, Any]], set_code: str) -> dict[str, DraftStats]:
         """Parse 17lands JSON into DraftStats dict keyed by lowercase card name.
 
         17lands JSON fields:
@@ -167,7 +163,7 @@ class DraftStatsCache:
         cache_path = self._get_cache_path(set_code)
         if cache_path.exists() and not self._is_cache_stale(set_code):
             logger.info(f"Loading cached 17lands data from {cache_path}")
-            with open(cache_path, "r", encoding="utf-8") as f:
+            with open(cache_path, encoding="utf-8") as f:
                 cards_data = json.load(f)
         else:
             # Download fresh data
@@ -185,9 +181,7 @@ class DraftStatsCache:
         """
         self._load_set(set_code)
 
-    def get_draft_rating(
-        self, card_name: str, set_code: str
-    ) -> Optional[DraftStats]:
+    def get_draft_rating(self, card_name: str, set_code: str) -> DraftStats | None:
         """Get draft statistics for a card.
 
         Args:
@@ -254,7 +248,7 @@ class DraftStatsCache:
         cache_path = self._get_color_cache_path(set_code)
         if cache_path.exists() and self._file_cache.is_cache_valid(cache_path):
             try:
-                with open(cache_path, "r", encoding="utf-8") as f:
+                with open(cache_path, encoding="utf-8") as f:
                     raw = json.load(f)
             except Exception as e:
                 logger.warning(f"Failed to read cached color data for {set_code}: {e}")

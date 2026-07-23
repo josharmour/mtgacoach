@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from arenamcp.action_planner import ActionPlanner
 
-
 h = ActionPlanner._humanize_legal_action
 
 

@@ -20,8 +20,11 @@ def _http_response(payload: dict):
 
 def _http_error(code: int):
     return urllib.error.HTTPError(
-        url="https://mtgacoach.com/api/trial", code=code,
-        msg="err", hdrs=None, fp=io.BytesIO(b"{}"),
+        url="https://mtgacoach.com/api/trial",
+        code=code,
+        msg="err",
+        hdrs=None,
+        fp=io.BytesIO(b"{}"),
     )
 
 
@@ -40,8 +43,7 @@ def test_request_trial_key_created(monkeypatch):
         captured["url"] = req.full_url
         captured["body"] = json.loads(req.data)
         return _http_response(
-            {"key": "sk-trial-123", "expires_at": "2026-07-23T00:00:00Z",
-             "status": "created"}
+            {"key": "sk-trial-123", "expires_at": "2026-07-23T00:00:00Z", "status": "created"}
         )
 
     monkeypatch.setattr(subscription.urllib.request, "urlopen", fake_urlopen)
@@ -55,7 +57,8 @@ def test_request_trial_key_created(monkeypatch):
 
 def test_request_trial_key_expired(monkeypatch):
     monkeypatch.setattr(
-        subscription.urllib.request, "urlopen",
+        subscription.urllib.request,
+        "urlopen",
         mock.Mock(side_effect=_http_error(403)),
     )
     result = subscription.request_trial_key()
@@ -65,7 +68,8 @@ def test_request_trial_key_expired(monkeypatch):
 
 def test_request_trial_key_endpoint_missing_is_offline(monkeypatch):
     monkeypatch.setattr(
-        subscription.urllib.request, "urlopen",
+        subscription.urllib.request,
+        "urlopen",
         mock.Mock(side_effect=_http_error(404)),
     )
     assert subscription.request_trial_key()["status"] == "offline"
@@ -73,7 +77,8 @@ def test_request_trial_key_endpoint_missing_is_offline(monkeypatch):
 
 def test_request_trial_key_network_down(monkeypatch):
     monkeypatch.setattr(
-        subscription.urllib.request, "urlopen",
+        subscription.urllib.request,
+        "urlopen",
         mock.Mock(side_effect=OSError("no route")),
     )
     assert subscription.request_trial_key()["status"] == "offline"
@@ -97,7 +102,8 @@ def test_ensure_license_key_persists_trial(monkeypatch):
     settings = _FakeSettings()
     monkeypatch.setattr("arenamcp.settings.get_settings", lambda: settings)
     monkeypatch.setattr(
-        subscription, "request_trial_key",
+        subscription,
+        "request_trial_key",
         lambda: {"status": "created", "key": "sk-t", "expires_at": "2026-07-23", "message": ""},
     )
     result = subscription.ensure_license_key()
@@ -110,7 +116,8 @@ def test_ensure_license_key_noop_with_existing_key(monkeypatch):
     settings = _FakeSettings({"license_key": "sk-real"})
     monkeypatch.setattr("arenamcp.settings.get_settings", lambda: settings)
     monkeypatch.setattr(
-        subscription, "request_trial_key",
+        subscription,
+        "request_trial_key",
         mock.Mock(side_effect=AssertionError("must not be called")),
     )
     assert subscription.ensure_license_key()["status"] == "existing_key"
@@ -149,13 +156,10 @@ def test_check_license_trial_key_validates_against_gateway(monkeypatch):
     def fake_ensure():
         settings.set("license_key", "sk-trial")
         settings.set("trial_expires_at", "2026-07-23T00:00:00Z")
-        return {"status": "created", "key": "sk-trial",
-                "expires_at": "2026-07-23T00:00:00Z", "message": ""}
+        return {"status": "created", "key": "sk-trial", "expires_at": "2026-07-23T00:00:00Z", "message": ""}
 
     monkeypatch.setattr("arenamcp.subscription.ensure_license_key", fake_ensure)
-    monkeypatch.setattr(
-        "urllib.request.urlopen", lambda req, timeout=0: _models_response()
-    )
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=0: _models_response())
     result = RepairEngine()._check_license()
     assert result.status == "ok"
     assert "free trial until 2026-07-23" in result.detail

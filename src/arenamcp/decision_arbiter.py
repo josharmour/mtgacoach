@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +33,12 @@ class ArbitratedDecision:
 
     source: str  # "bridge" | "log"
     request_type: str  # bridge request type/class, or log decision label
-    pending_decision: Optional[str]
+    pending_decision: str | None
     decision_type: str  # decision_context "type" field ("" when absent)
 
 
 def _bridge_connected(game_state: dict[str, Any]) -> bool:
-    return bool(
-        game_state.get("_bridge_connected") or game_state.get("bridge_connected")
-    )
+    return bool(game_state.get("_bridge_connected") or game_state.get("bridge_connected"))
 
 
 def _bridge_has_pending(game_state: dict[str, Any]) -> bool:
@@ -57,8 +55,8 @@ def _bridge_has_pending(game_state: dict[str, Any]) -> bool:
 def arbitrate(
     game_state: dict[str, Any],
     *,
-    bridge_connected: Optional[bool] = None,
-) -> Optional[ArbitratedDecision]:
+    bridge_connected: bool | None = None,
+) -> ArbitratedDecision | None:
     """Return the canonical pending decision, or None if nothing needs us.
 
     Args:
@@ -68,11 +66,7 @@ def arbitrate(
             know better than the snapshot (e.g. they hold the live bridge
             object). When None, the snapshot fields decide.
     """
-    connected = (
-        bridge_connected
-        if bridge_connected is not None
-        else _bridge_connected(game_state)
-    )
+    connected = bridge_connected if bridge_connected is not None else _bridge_connected(game_state)
     ctx = game_state.get("decision_context") or {}
     decision_type = str(ctx.get("type") or "")
 

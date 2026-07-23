@@ -4,13 +4,17 @@ This module provides the CoachEngine for getting strategic advice from LLMs,
 with support for online (mtgacoach.com) and local (Ollama/LM Studio) modes.
 """
 
+import contextlib
 import json
 import logging
 import os
 import re
 import time
 from collections import Counter
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from arenamcp.rules_db import RulesDB
 
 from arenamcp.backends import LLMBackend, ProxyBackend
 
@@ -77,10 +81,7 @@ def _format_legal_actions_raw_for_prompt(
     if not actions:
         return "[]"
 
-    compact_actions = [
-        _compact_legal_action_for_prompt(action)
-        for action in actions[:max_actions]
-    ]
+    compact_actions = [_compact_legal_action_for_prompt(action) for action in actions[:max_actions]]
     suffix = " …" if len(actions) > max_actions else ""
     return json.dumps(compact_actions, separators=(",", ":")) + suffix
 
@@ -178,7 +179,9 @@ def _format_raw_gre_events_for_prompt(
                 compact[key] = value
         payload = event.get("payload")
         if payload not in (None, "", [], {}):
-            compact["payload"] = _compact_prompt_value(payload, max_depth=3, max_list_items=8, max_dict_items=12)
+            compact["payload"] = _compact_prompt_value(
+                payload, max_depth=3, max_list_items=8, max_dict_items=12
+            )
         if compact:
             compact_events.append(compact)
 
@@ -299,10 +302,10 @@ def _is_local_backend(be: Any) -> bool:
     """
     if not isinstance(be, ProxyBackend):
         return False
-    url = (getattr(be, '_base_url', '') or '').lower()
+    url = (getattr(be, "_base_url", "") or "").lower()
     if any(host in url for host in ("localhost", "127.0.0.1", "0.0.0.0")):
         return True
-    key = (getattr(be, '_api_key', '') or '').lower()
+    key = (getattr(be, "_api_key", "") or "").lower()
     return key in ("vllm", "ollama", "lm-studio")
 
 
@@ -317,7 +320,7 @@ def get_available_modes() -> list[tuple[str, str]]:
     ]
 
 
-def get_models_for_mode(mode: str) -> list[tuple[str, Optional[str]]]:
+def get_models_for_mode(mode: str) -> list[tuple[str, str | None]]:
     """Return models available for the given mode.
 
     Returns list of ``(display_name, model_id_or_None)`` tuples.
@@ -332,8 +335,9 @@ def get_models_for_mode(mode: str) -> list[tuple[str, Optional[str]]]:
 
     if mode == "online":
         try:
-            from arenamcp.settings import get_settings
             from arenamcp.backends.proxy import ONLINE_BASE_URL
+            from arenamcp.settings import get_settings
+
             license_key = get_settings().get("license_key", "")
             headers = {"User-Agent": "mtgacoach-client/1.0"}
             if license_key:
@@ -341,7 +345,7 @@ def get_models_for_mode(mode: str) -> list[tuple[str, Optional[str]]]:
             req = _urlreq.Request(f"{ONLINE_BASE_URL}/models", headers=headers)
             with _urlreq.urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read())
-            models: list[tuple[str, Optional[str]]] = []
+            models: list[tuple[str, str | None]] = []
             for m in data.get("data", []):
                 mid = m["id"]
                 models.append((mid, mid))
@@ -354,6 +358,7 @@ def get_models_for_mode(mode: str) -> list[tuple[str, Optional[str]]]:
     if mode == "local":
         try:
             from arenamcp.settings import get_settings
+
             local_url = get_settings().get("local_url") or "http://localhost:8000/v1"
         except Exception:
             local_url = "http://localhost:8000/v1"
@@ -392,7 +397,7 @@ THINKING_MODEL_PREFERENCE = [
 ]
 
 
-def pick_thinking_model() -> Optional[str]:
+def pick_thinking_model() -> str | None:
     """Auto-select the best available thinking model.
 
     In online mode, queries the mtgacoach.com /v1/models endpoint.
@@ -401,8 +406,9 @@ def pick_thinking_model() -> Optional[str]:
     import urllib.request
 
     try:
-        from arenamcp.settings import get_settings
         from arenamcp.backends.proxy import ONLINE_BASE_URL
+        from arenamcp.settings import get_settings
+
         s = get_settings()
         license_key = s.get("license_key", "")
         if not license_key or s.get("mode") != "online":
@@ -433,8 +439,8 @@ def pick_thinking_model() -> Optional[str]:
 
 def create_backend(
     mode: str,
-    model: Optional[str] = None,
-    progress_callback: Optional[Any] = None,
+    model: str | None = None,
+    progress_callback: Any | None = None,
 ) -> LLMBackend:
     """Factory function to create LLM backends by mode.
 
@@ -453,6 +459,7 @@ def create_backend(
 
     if mode == "auto":
         from arenamcp.backend_detect import auto_select_mode
+
         auto_mode, auto_model = auto_select_mode()
         logger.info(f"Auto-selected mode: {auto_mode} (model={auto_model})")
         return create_backend(
@@ -463,11 +470,13 @@ def create_backend(
 
     if mode == "online":
         from arenamcp.settings import get_settings
+
         license_key = get_settings().get("license_key", "")
         return ProxyBackend.create_online(model=model, license_key=license_key)
 
     if mode == "local":
         from arenamcp.settings import get_settings
+
         s = get_settings()
         local_url = s.get("local_url") or "http://localhost:8000/v1"
         local_api_key = s.get("local_api_key") or "vllm"
@@ -477,6 +486,7 @@ def create_backend(
         if not local_model:
             try:
                 import urllib.request as _urlreq
+
                 req = _urlreq.Request(f"{local_url}/models")
                 with _urlreq.urlopen(req, timeout=3) as resp:
                     data = json.loads(resp.read())
@@ -492,19 +502,19 @@ def create_backend(
             api_key=local_api_key,
         )
 
-    raise ValueError(
-        f"Unknown mode: {mode}. Use 'auto', 'online', or 'local'."
-    )
+    raise ValueError(f"Unknown mode: {mode}. Use 'auto', 'online', or 'local'.")
 
 
 def create_local_fallback(
-    model: Optional[str] = None,
-    progress_callback: Optional[Any] = None,
+    model: str | None = None,
+    progress_callback: Any | None = None,
 ) -> "ProxyBackend":
     """Create a local backend as a fallback when online mode fails."""
     from arenamcp.backend_detect import DEFAULT_LOCAL_MODEL
+
     try:
         from arenamcp.settings import get_settings
+
         s = get_settings()
         local_url = s.get("local_url") or "http://localhost:8000/v1"
         local_api_key = s.get("local_api_key") or "vllm"
@@ -899,14 +909,13 @@ class WordUsageTracker:
         self._window = window_seconds
         self._usage: list[tuple[float, str]] = []  # (timestamp, word)
 
-    def record(self, text: str, exclude_words: Optional[set[str]] = None) -> None:
+    def record(self, text: str, exclude_words: set[str] | None = None) -> None:
         """Record words from a response.
 
         Args:
             text: The response text to analyze
             exclude_words: Set of words to ignore (e.g., card names)
         """
-        import time
         import re
 
         now = time.time()
@@ -925,13 +934,12 @@ class WordUsageTracker:
         cutoff = now - self._window
         self._usage = [(t, w) for t, w in self._usage if t > cutoff]
 
-    def get_blacklisted(self, exclude_words: Optional[set[str]] = None) -> list[str]:
+    def get_blacklisted(self, exclude_words: set[str] | None = None) -> list[str]:
         """Get words that have been overused in the current window.
 
         Args:
             exclude_words: Set of words to never blacklist (e.g., card names)
         """
-        import time
         from collections import Counter
 
         exclude = exclude_words or set()
@@ -943,19 +951,13 @@ class WordUsageTracker:
         counts = Counter(recent_words)
 
         # Return words over threshold, excluding protected words
-        return [
-            word
-            for word, count in counts.items()
-            if count >= self._threshold and word not in exclude
-        ]
+        return [word for word, count in counts.items() if count >= self._threshold and word not in exclude]
 
 
 class CoachEngine:
     """Engine for getting MTG coaching advice from an LLM backend."""
 
-    def __init__(
-        self, backend: Optional[LLMBackend] = None, system_prompt: Optional[str] = None
-    ):
+    def __init__(self, backend: LLMBackend | None = None, system_prompt: str | None = None):
         """Initialize the coach engine.
 
         Args:
@@ -963,13 +965,11 @@ class CoachEngine:
             system_prompt: Custom system prompt (default: MTG coach persona)
         """
         self._backend = backend if backend is not None else ProxyBackend()
-        self._system_prompt = (
-            system_prompt if system_prompt is not None else DEFAULT_SYSTEM_PROMPT
-        )
+        self._system_prompt = system_prompt if system_prompt is not None else DEFAULT_SYSTEM_PROMPT
         self._word_tracker = WordUsageTracker()
-        self._deck_strategy: Optional[str] = None
+        self._deck_strategy: str | None = None
         self._deck_strategy_pending = False
-        self._rules_db: Optional["RulesDB"] = None
+        self._rules_db: RulesDB | None = None
         # Persistent, adaptive strategic plan. Lazily constructed (game_plan.py
         # imports CoachEngine, so a module-level import here would cycle).
         self._game_plan_mgr = None
@@ -1000,6 +1000,7 @@ class CoachEngine:
 
         if isinstance(be, ProxyBackend):
             from arenamcp.backends.proxy import ONLINE_BASE_URL
+
             base_url = getattr(be, "_base_url", "")
             if base_url and ONLINE_BASE_URL in base_url:
                 info["backend_name"] = "online"
@@ -1021,7 +1022,7 @@ class CoachEngine:
         zone_value = game_state.get(zone_name)
         return zone_value if isinstance(zone_value, list) else []
 
-    def _get_local_seat_id(self, game_state: dict[str, Any]) -> Optional[int]:
+    def _get_local_seat_id(self, game_state: dict[str, Any]) -> int | None:
         for player in game_state.get("players", []):
             if player.get("is_local"):
                 return player.get("seat_id")
@@ -1122,9 +1123,13 @@ class CoachEngine:
             elif "planeswalker" in threat_type:
                 if "target planeswalker" in oracle or "any target" in oracle or "target permanent" in oracle:
                     reason = "can answer the planeswalker directly"
-            elif "artifact" in threat_type or "enchantment" in threat_type:
-                if "target artifact" in oracle or "target enchantment" in oracle or "target nonland permanent" in oracle or "target permanent" in oracle:
-                    reason = "can remove that permanent type"
+            elif ("artifact" in threat_type or "enchantment" in threat_type) and (
+                "target artifact" in oracle
+                or "target enchantment" in oracle
+                or "target nonland permanent" in oracle
+                or "target permanent" in oracle
+            ):
+                reason = "can remove that permanent type"
 
             if not reason and ("target permanent" in oracle or "target nonland permanent" in oracle):
                 reason = f"can answer {threat_name}"
@@ -1153,11 +1158,13 @@ class CoachEngine:
             power = card.get("power")
             toughness = card.get("toughness")
             if power not in (None, ""):
-                try:
+                with contextlib.suppress(TypeError, ValueError):
                     total_power += int(power)
-                except (TypeError, ValueError):
-                    pass
-            attackers.append(f"{name} ({power}/{toughness})" if power not in (None, "") and toughness not in (None, "") else name)
+            attackers.append(
+                f"{name} ({power}/{toughness})"
+                if power not in (None, "") and toughness not in (None, "")
+                else name
+            )
 
         if not attackers:
             return "No untapped creatures available to pressure it right now."
@@ -1226,9 +1233,7 @@ class CoachEngine:
         self._deck_strategy = None
         self._deck_strategy_pending = False
 
-    def analyze_deck(
-        self, deck_cards: list[tuple[str, str, str]], backend=None
-    ) -> Optional[str]:
+    def analyze_deck(self, deck_cards: list[tuple[str, str, str]], backend=None) -> str | None:
         """Analyze a deck list and store the strategy summary.
 
         Args:
@@ -1239,7 +1244,6 @@ class CoachEngine:
         Returns:
             Strategy string, or None on failure
         """
-        import time
 
         start = time.perf_counter()
         self._deck_strategy_pending = True
@@ -1295,14 +1299,13 @@ class CoachEngine:
                 return None
             # Check for backend auth/billing errors (e.g. "Credit balance is too low")
             from arenamcp.backend_detect import is_query_failure_retriable
+
             if (
                 strategy.startswith("Error")
                 or "didn't catch that" in strategy
                 or is_query_failure_retriable(strategy)
             ):
-                logger.warning(
-                    f"Deck analysis returned error-like response: {strategy[:80]}"
-                )
+                logger.warning(f"Deck analysis returned error-like response: {strategy[:80]}")
                 return None
 
             self._deck_strategy = strategy
@@ -1314,9 +1317,7 @@ class CoachEngine:
             except Exception as e:
                 logger.debug(f"Game-plan seed failed (non-fatal): {e}")
             elapsed = (time.perf_counter() - start) * 1000
-            logger.info(
-                f"Deck analysis complete: {elapsed:.0f}ms, {len(strategy)} chars"
-            )
+            logger.info(f"Deck analysis complete: {elapsed:.0f}ms, {len(strategy)} chars")
             return strategy
         except Exception as e:
             logger.error(f"Deck analysis failed: {e}")
@@ -1324,9 +1325,7 @@ class CoachEngine:
         finally:
             self._deck_strategy_pending = False
 
-    def get_deck_strategy_brief(
-        self, deck_cards: list[tuple[str, str, str]], backend=None
-    ) -> Optional[str]:
+    def get_deck_strategy_brief(self, deck_cards: list[tuple[str, str, str]], backend=None) -> str | None:
         """Generate a brief 3-5 sentence spoken strategy for a deck.
 
         Uses a conversational prompt suited for TTS output after a draft
@@ -1339,7 +1338,6 @@ class CoachEngine:
         Returns:
             Brief strategy string, or None on failure
         """
-        import time
 
         start = time.perf_counter()
         be = backend or self._backend
@@ -1419,6 +1417,7 @@ class CoachEngine:
     def _get_cmc(mana_cost: str) -> int:
         """Calculate converted mana cost from a mana cost string like '{1}{W}{W}'."""
         import re
+
         if not mana_cost:
             return 0
         cmc = 0
@@ -1434,7 +1433,7 @@ class CoachEngine:
     # Helpers extracted from _format_game_context
     # ------------------------------------------------------------------
 
-    def _compute_combat_trade(self, atk: dict, blk: dict) -> Optional[tuple[str, bool, bool]]:
+    def _compute_combat_trade(self, atk: dict, blk: dict) -> tuple[str, bool, bool] | None:
         """Compute the combat trade result between an attacker and a blocker.
 
         Returns (result_string, atk_dies, blk_dies), or None if the blocker
@@ -1466,9 +1465,8 @@ class CoachEngine:
         if atk_has_fs and not blk_has_fs:
             if atk_pow >= blk_tgh or atk_has_dth:
                 atk_dies = False
-        elif blk_has_fs and not atk_has_fs:
-            if blk_pow >= atk_tgh or blk_has_dth:
-                blk_dies = False
+        elif blk_has_fs and not atk_has_fs and (blk_pow >= atk_tgh or blk_has_dth):
+            blk_dies = False
 
         if atk_dies and blk_dies:
             return "TRADE (both die)", True, True
@@ -1484,8 +1482,7 @@ class CoachEngine:
         else:
             return "both live", False, False
 
-    def _compute_optimal_blocking_damage(self, attackers: list[dict],
-                                         blockers: list[dict]) -> int:
+    def _compute_optimal_blocking_damage(self, attackers: list[dict], blockers: list[dict]) -> int:
         """Compute minimum damage through after optimal blocking assignment."""
         available_blk = list(blockers)
         damage_through = 0
@@ -1514,8 +1511,7 @@ class CoachEngine:
                 damage_through += atk_pow
         return damage_through
 
-    def _format_legal_moves(self, game_state: dict[str, Any],
-                            local_seat: int) -> tuple[list[str], str]:
+    def _format_legal_moves(self, game_state: dict[str, Any], local_seat: int) -> tuple[list[str], str]:
         """Determine the legal moves and return (valid_moves, valid_moves_str)."""
         pending = game_state.get("pending_decision")
         if pending == "Mulligan":
@@ -1527,6 +1523,7 @@ class CoachEngine:
         else:
             try:
                 from arenamcp.rules_engine import RulesEngine
+
                 valid_moves = RulesEngine.get_legal_actions(game_state)
 
                 # Override generic casting_time_options legal actions with
@@ -1560,10 +1557,13 @@ class CoachEngine:
             if kind == "modal" and grp_id:
                 try:
                     from arenamcp import server
+
                     info = server.get_card_info(grp_id)
                     oracle = info.get("oracle_text", "")
                     # Modal option oracle texts are typically short single-line effects
-                    label = oracle.split("\n")[0].strip() if oracle else info.get("name", f"Mode {opt_idx + 1}")
+                    label = (
+                        oracle.split("\n")[0].strip() if oracle else info.get("name", f"Mode {opt_idx + 1}")
+                    )
                 except Exception:
                     label = f"Mode {opt_idx + 1}"
                 modal_actions.append((opt_idx, f"Mode {opt_idx}: {label}"))
@@ -1572,9 +1572,7 @@ class CoachEngine:
                 # values as per-entry SubmitX actions.
                 val = ba.get("numericValue")
                 if val is not None:
-                    modal_actions.append(
-                        (500 + int(val), f"X = {val}")
-                    )
+                    modal_actions.append((500 + int(val), f"X = {val}"))
             elif kind == "done":
                 modal_actions.append((999, "Done (confirm cast)"))
 
@@ -1584,23 +1582,24 @@ class CoachEngine:
         modal_actions.sort(key=lambda x: x[0])
         return [label for _, label in modal_actions]
 
-    def _format_post_land_planning(self, game_state: dict[str, Any],
-                                   local_seat: int, valid_moves: list[str],
-                                   is_my_turn: bool, phase: str) -> list[str]:
+    def _format_post_land_planning(
+        self,
+        game_state: dict[str, Any],
+        local_seat: int,
+        valid_moves: list[str],
+        is_my_turn: bool,
+        phase: str,
+    ) -> list[str]:
         """Compute post-land-drop planning lines."""
         import re as _re_plan
+
         from arenamcp.rules_engine import RulesEngine
 
         lines: list[str] = []
-        local_player = next(
-            (p for p in game_state.get("players", []) if p.get("is_local")), None
-        )
+        local_player = next((p for p in game_state.get("players", []) if p.get("is_local")), None)
         lands_played_count = local_player.get("lands_played", 0) if local_player else 0
         _stack = game_state.get("stack", [])
-        has_land_drop = (
-            is_my_turn and "Main" in phase and len(_stack) == 0
-            and lands_played_count == 0
-        )
+        has_land_drop = is_my_turn and "Main" in phase and len(_stack) == 0 and lands_played_count == 0
         if not (has_land_drop and valid_moves):
             return lines
 
@@ -1619,8 +1618,7 @@ class CoachEngine:
             return lines
 
         has_spelunking = any(
-            c.get("owner_seat_id") == local_seat and "spelunking" in (c.get("name") or "").lower()
-            for c in bf
+            c.get("owner_seat_id") == local_seat and "spelunking" in (c.get("name") or "").lower() for c in bf
         )
 
         post_land_parts = []
@@ -1633,18 +1631,26 @@ class CoachEngine:
 
             post_mana = cur_mana if enters_tapped else cur_mana + 1
             land_colors: set[str] = set()
-            for color, basic in [("W", "Plains"), ("U", "Island"), ("B", "Swamp"),
-                                 ("R", "Mountain"), ("G", "Forest")]:
+            for color, basic in [
+                ("W", "Plains"),
+                ("U", "Island"),
+                ("B", "Swamp"),
+                ("R", "Mountain"),
+                ("G", "Forest"),
+            ]:
                 if basic in land_name or f"{{{color}}}" in land_oracle:
                     land_colors.add(color)
             if "any color" in oracle_low:
                 land_colors = {"W", "U", "B", "R", "G"}
 
             # Pre-compute whether we have any creatures for targeting checks
-            my_creatures = [c for c in bf
-                            if c.get("owner_seat_id") == local_seat
-                            and c.get("power") is not None
-                            and "land" not in c.get("type_line", "").lower()]
+            my_creatures = [
+                c
+                for c in bf
+                if c.get("owner_seat_id") == local_seat
+                and c.get("power") is not None
+                and "land" not in c.get("type_line", "").lower()
+            ]
 
             new_casts = []
             for c in hand_cards:
@@ -1659,8 +1665,13 @@ class CoachEngine:
                         if bf_card.get("owner_seat_id") == local_seat and not bf_card.get("is_tapped"):
                             bf_oracle = bf_card.get("oracle_text", "")
                             bf_name = bf_card.get("name", "")
-                            for clr, bsc in [("W", "Plains"), ("U", "Island"), ("B", "Swamp"),
-                                             ("R", "Mountain"), ("G", "Forest")]:
+                            for clr, bsc in [
+                                ("W", "Plains"),
+                                ("U", "Island"),
+                                ("B", "Swamp"),
+                                ("R", "Mountain"),
+                                ("G", "Forest"),
+                            ]:
                                 if bsc in bf_name or f"{{{clr}}}" in bf_oracle:
                                     existing_colors.add(clr)
                     available_colors = land_colors | existing_colors
@@ -1705,6 +1716,7 @@ class CoachEngine:
             if grp_id:
                 try:
                     from arenamcp import server
+
                     info = server.get_card_info(grp_id)
                     name = info.get("name", f"Option {opt_idx}")
                     oracle = info.get("oracle_text", "")
@@ -1749,30 +1761,48 @@ class CoachEngine:
             bridge_req = game_state.get("_bridge_request_type")
             if dec_type == "unknown_req" and bridge_req:
                 from arenamcp.gre_bridge import _BRIDGE_REQUEST_TO_DECISION_TYPE
+
                 mapped = _BRIDGE_REQUEST_TO_DECISION_TYPE.get(bridge_req)
                 if mapped:
                     dec_type = mapped
             _simple = {
                 "mulligan_bottom": lambda ctx: [
                     f"!!! DECISION: MULLIGAN - PUT {max(1, 7 - len(game_state.get('hand', [])) + 1)} CARD(S) ON BOTTOM !!!",
-                    "Keep: lands + on-curve plays | Bottom: expensive/off-color/redundant"],
-                "assign_damage": lambda ctx: ["!!! DECISION: ASSIGN COMBAT DAMAGE !!!",
-                    "Order: kill most important blocker/attacker first"],
-                "order_combat_damage": lambda ctx: ["!!! DECISION: ORDER COMBAT DAMAGE !!!",
-                    "Order: prioritize killing the biggest threat"],
-                "search": lambda ctx: ["!!! DECISION: SEARCH LIBRARY !!!",
-                    "Choose: what you need most \u2014 land, removal, threat, or answer"],
-                "choose_starting_player": lambda ctx: ["!!! DECISION: PLAY OR DRAW !!!",
-                    "Aggro decks: PLAY (tempo). Control/limited: DRAW (card advantage)"],
-                "explore": lambda ctx: ["!!! DECISION: EXPLORE !!!",
-                    "Keep land on top if needed, otherwise bottom for a better draw"],
-                "select_replacement": lambda ctx: ["!!! DECISION: ORDER REPLACEMENT EFFECTS !!!",
-                    "Choose: apply the replacement that gives most advantage first"],
+                    "Keep: lands + on-curve plays | Bottom: expensive/off-color/redundant",
+                ],
+                "assign_damage": lambda ctx: [
+                    "!!! DECISION: ASSIGN COMBAT DAMAGE !!!",
+                    "Order: kill most important blocker/attacker first",
+                ],
+                "order_combat_damage": lambda ctx: [
+                    "!!! DECISION: ORDER COMBAT DAMAGE !!!",
+                    "Order: prioritize killing the biggest threat",
+                ],
+                "search": lambda ctx: [
+                    "!!! DECISION: SEARCH LIBRARY !!!",
+                    "Choose: what you need most \u2014 land, removal, threat, or answer",
+                ],
+                "choose_starting_player": lambda ctx: [
+                    "!!! DECISION: PLAY OR DRAW !!!",
+                    "Aggro decks: PLAY (tempo). Control/limited: DRAW (card advantage)",
+                ],
+                "explore": lambda ctx: [
+                    "!!! DECISION: EXPLORE !!!",
+                    "Keep land on top if needed, otherwise bottom for a better draw",
+                ],
+                "select_replacement": lambda ctx: [
+                    "!!! DECISION: ORDER REPLACEMENT EFFECTS !!!",
+                    "Choose: apply the replacement that gives most advantage first",
+                ],
                 "casting_time_options": None,  # Handled below with modal option resolution
-                "select_counters": lambda ctx: ["!!! DECISION: SELECT COUNTERS !!!",
-                    "Choose: remove least valuable counters, keep most impactful"],
-                "order_triggers": lambda ctx: ["!!! DECISION: ORDER TRIGGERED ABILITIES !!!",
-                    "Order: resolve most impactful trigger last (it resolves first)"],
+                "select_counters": lambda ctx: [
+                    "!!! DECISION: SELECT COUNTERS !!!",
+                    "Choose: remove least valuable counters, keep most impactful",
+                ],
+                "order_triggers": lambda ctx: [
+                    "!!! DECISION: ORDER TRIGGERED ABILITIES !!!",
+                    "Order: resolve most impactful trigger last (it resolves first)",
+                ],
                 "select_n_group": lambda ctx: ["!!! DECISION: SELECT FROM GROUP !!!"],
                 "select_from_groups": lambda ctx: ["!!! DECISION: SELECT FROM GROUPS !!!"],
                 "search_from_groups": lambda ctx: ["!!! DECISION: SEARCH FROM GROUPS !!!"],
@@ -1803,7 +1833,9 @@ class CoachEngine:
                     "permanent."
                 )
             elif dec_type == "modal_choice":
-                lines.append(f"!!! DECISION: CHOOSE MODE ({decision_context.get('num_options', '?')} options) !!!")
+                lines.append(
+                    f"!!! DECISION: CHOOSE MODE ({decision_context.get('num_options', '?')} options) !!!"
+                )
                 lines.append("Evaluate: which mode solves current problem best")
             elif dec_type == "declare_attackers":
                 legal = self._filter_legal_attacker_names(
@@ -1814,12 +1846,11 @@ class CoachEngine:
                     lines.append(f"Can attack: {', '.join(legal[:8])}")
                 try:
                     local_seat = next(
-                        (p.get("seat_id") for p in game_state.get("players", [])
-                         if p.get("is_local")), None,
+                        (p.get("seat_id") for p in game_state.get("players", []) if p.get("is_local")),
+                        None,
                     )
                     opp_cards = [
-                        c for c in game_state.get("battlefield", [])
-                        if c.get("owner_seat_id") != local_seat
+                        c for c in game_state.get("battlefield", []) if c.get("owner_seat_id") != local_seat
                     ]
                     lines.extend(self._attack_tax_lines(opp_cards, game_state))
                 except Exception:
@@ -1844,15 +1875,21 @@ class CoachEngine:
                 cost_str = f" ({mana_cost})" if mana_cost else ""
                 lines.append(f"!!! DECISION: PAY COSTS for {source}{cost_str} !!!")
                 if decision_context.get("has_autotap", False):
-                    lines.append("Auto-tap available \u2014 confirm or tap manually for better mana efficiency")
+                    lines.append(
+                        "Auto-tap available \u2014 confirm or tap manually for better mana efficiency"
+                    )
                 else:
                     lines.append("Choose: tap lands that leave best mana open for responses")
             elif dec_type == "distribution":
-                lines.append(f"!!! DECISION: DISTRIBUTE {decision_context.get('total', '?')} from {decision_context.get('source_card', 'effect')} !!!")
+                lines.append(
+                    f"!!! DECISION: DISTRIBUTE {decision_context.get('total', '?')} from {decision_context.get('source_card', 'effect')} !!!"
+                )
                 lines.append("Distribute: maximize kills, finish off wounded targets first")
             elif dec_type == "numeric_input":
                 source = decision_context.get("source_card", "effect")
-                lines.append(f"!!! DECISION: CHOOSE NUMBER for {source} ({decision_context.get('min', 0)}-{decision_context.get('max', '?')}) !!!")
+                lines.append(
+                    f"!!! DECISION: CHOOSE NUMBER for {source} ({decision_context.get('min', 0)}-{decision_context.get('max', '?')}) !!!"
+                )
                 lines.append("Choose: balance value vs. cost (life, mana, etc.)")
             elif dec_type == "mill":
                 lines.append(f"!!! DECISION: MILL {decision_context.get('count', 1)} !!!")
@@ -1862,13 +1899,21 @@ class CoachEngine:
                 lines.append(f"!!! DECISION: {dec_type.upper()} {count} !!!")
                 if opts:
                     lines.append(f"Options: {', '.join(opts[:8])}")
-                _advice = {"sacrifice": "Choose: sacrifice least valuable permanent for the board state",
-                           "exile": "Choose: exile least impactful card",
-                           "destroy": "Choose: destroy biggest threat on the board",
-                           "return": "Choose: return least important permanent"}
+                _advice = {
+                    "sacrifice": "Choose: sacrifice least valuable permanent for the board state",
+                    "exile": "Choose: exile least impactful card",
+                    "destroy": "Choose: destroy biggest threat on the board",
+                    "return": "Choose: return least important permanent",
+                }
                 lines.append(_advice[dec_type])
-            elif dec_type in ("choose_creature", "choose_land", "choose_enchantment",
-                              "choose_artifact", "choose_permanent", "choose"):
+            elif dec_type in (
+                "choose_creature",
+                "choose_land",
+                "choose_enchantment",
+                "choose_artifact",
+                "choose_permanent",
+                "choose",
+            ):
                 count = decision_context.get("count", 1)
                 label = dec_type.replace("choose_", "").upper() or "ITEM"
                 opts = decision_context.get("option_cards")
@@ -1877,7 +1922,9 @@ class CoachEngine:
                     lines.append(f"Options: {', '.join(opts[:8])}")
                 lines.append("Choose: pick the option that best advances your game plan")
             elif dec_type == "actions_available":
-                lines.append(f"!!! YOUR PRIORITY \u2014 {decision_context.get('num_actions', '?')} legal actions available !!!")
+                lines.append(
+                    f"!!! YOUR PRIORITY \u2014 {decision_context.get('num_actions', '?')} legal actions available !!!"
+                )
             else:
                 lines.append(f"!!! DECISION: {pending_decision} !!!")
         else:
@@ -1890,6 +1937,7 @@ class CoachEngine:
     def _format_mulligan_hand(self, game_state: dict[str, Any]) -> list[str]:
         """Format mulligan hand summary lines."""
         import re as _re
+
         lines: list[str] = []
         my_hand = game_state.get("hand", [])
         if not my_hand:
@@ -1909,16 +1957,23 @@ class CoachEngine:
                 cmcs.append(0)
         avg_cmc = sum(cmcs) / len(cmcs) if cmcs else 0
         land_names = [c.get("name", "?") for c in lands]
-        nonland_names = [f"{c.get('name', '?')} ({c.get('mana_cost', '')})" for c in my_hand if c not in lands]
-        lines.append(f"MULLIGAN HAND: {len(lands)} lands, {len(creatures)} creatures, {len(spells)} spells, avg CMC {avg_cmc:.1f}")
+        nonland_names = [
+            f"{c.get('name', '?')} ({c.get('mana_cost', '')})" for c in my_hand if c not in lands
+        ]
+        lines.append(
+            f"MULLIGAN HAND: {len(lands)} lands, {len(creatures)} creatures, {len(spells)} spells, avg CMC {avg_cmc:.1f}"
+        )
         lines.append(f"  Lands: {', '.join(land_names) if land_names else 'NONE'}")
         lines.append(f"  Nonland: {', '.join(nonland_names) if nonland_names else 'NONE'}")
         lines.append("Decide: KEEP or MULLIGAN based on curve, colors, and land count")
         return lines
 
-    def _format_mana_info(self, your_cards: list[dict], turn_num: int) -> tuple[list[str], int, dict[str, int]]:
+    def _format_mana_info(
+        self, your_cards: list[dict], turn_num: int
+    ) -> tuple[list[str], int, dict[str, int]]:
         """Compute mana pool info. Returns (lines, total_mana, mana_pool)."""
         import re
+
         lines: list[str] = []
         mana_pool = {"W": 0, "U": 0, "B": 0, "R": 0, "G": 0, "C": 0, "Any": 0}
         mana_sources: list[str] = []
@@ -1931,8 +1986,10 @@ class CoachEngine:
             is_creature = "creature" in type_line
             is_land = "land" in type_line
             has_haste = "haste" in self._remove_reminder_text(oracle).lower()
-            is_summoning_sick = (is_creature and card.get("turn_entered_battlefield") == turn_num and not has_haste)
-            has_mana_ability = ("add {" in oracle.lower() or "add one mana" in oracle.lower())
+            is_summoning_sick = (
+                is_creature and card.get("turn_entered_battlefield") == turn_num and not has_haste
+            )
+            has_mana_ability = "add {" in oracle.lower() or "add one mana" in oracle.lower()
             if is_land and not has_mana_ability:
                 for basic in ("plains", "island", "swamp", "mountain", "forest"):
                     if basic in type_line:
@@ -1946,19 +2003,26 @@ class CoachEngine:
                         creature_mana_source_count += 1
                     source_colors: list[str] = []
                     if "Plains" in name or "plains" in type_line or "{W}" in oracle:
-                        mana_pool["W"] += 1; source_colors.append("W")
+                        mana_pool["W"] += 1
+                        source_colors.append("W")
                     if "Island" in name or "island" in type_line or "{U}" in oracle:
-                        mana_pool["U"] += 1; source_colors.append("U")
+                        mana_pool["U"] += 1
+                        source_colors.append("U")
                     if "Swamp" in name or "swamp" in type_line or "{B}" in oracle:
-                        mana_pool["B"] += 1; source_colors.append("B")
+                        mana_pool["B"] += 1
+                        source_colors.append("B")
                     if "Mountain" in name or "mountain" in type_line or "{R}" in oracle:
-                        mana_pool["R"] += 1; source_colors.append("R")
+                        mana_pool["R"] += 1
+                        source_colors.append("R")
                     if "Forest" in name or "forest" in type_line or "{G}" in oracle:
-                        mana_pool["G"] += 1; source_colors.append("G")
+                        mana_pool["G"] += 1
+                        source_colors.append("G")
                     if "{C}" in oracle:
-                        mana_pool["C"] += 1; source_colors.append("C")
+                        mana_pool["C"] += 1
+                        source_colors.append("C")
                     if "any color" in oracle.lower():
-                        mana_pool["Any"] += 1; source_colors.append("Any")
+                        mana_pool["Any"] += 1
+                        source_colors.append("Any")
                     if len(source_colors) > 1:
                         mana_sources.append("/".join(source_colors))
                     elif len(source_colors) == 1:
@@ -1968,7 +2032,9 @@ class CoachEngine:
         for card in your_cards:
             oracle_lower = card.get("oracle_text", "").lower()
             name = card.get("name", "")
-            bonus_match = re.search(r"whenever you tap a creature for mana,?\s*add an additional \{(\w)\}", oracle_lower)
+            bonus_match = re.search(
+                r"whenever you tap a creature for mana,?\s*add an additional \{(\w)\}", oracle_lower
+            )
             if bonus_match and creature_mana_source_count > 0:
                 bonus_color = bonus_match.group(1).upper()
                 bonus_total = creature_mana_source_count
@@ -1977,12 +2043,21 @@ class CoachEngine:
                     mana_pool[bonus_color] += bonus_total
                 for _ in range(bonus_total):
                     mana_sources.append(f"+{bonus_color}")
-                logger.info(f"Mana bonus from {name}: +{bonus_total} {{{bonus_color}}} ({creature_mana_source_count} creature sources)")
-            if "untap" in oracle_lower and ("mana value" in oracle_lower or "converted mana cost" in oracle_lower):
-                untap_match = re.search(r"(?:mana value|converted mana cost)\s*(\d+)\s*or greater.*untap|cast.*(?:mana value|converted mana cost)\s*(\d+).*untap|untap.*(?:mana value|converted mana cost)\s*(\d+)", oracle_lower)
+                logger.info(
+                    f"Mana bonus from {name}: +{bonus_total} {{{bonus_color}}} ({creature_mana_source_count} creature sources)"
+                )
+            if "untap" in oracle_lower and (
+                "mana value" in oracle_lower or "converted mana cost" in oracle_lower
+            ):
+                untap_match = re.search(
+                    r"(?:mana value|converted mana cost)\s*(\d+)\s*or greater.*untap|cast.*(?:mana value|converted mana cost)\s*(\d+).*untap|untap.*(?:mana value|converted mana cost)\s*(\d+)",
+                    oracle_lower,
+                )
                 if untap_match:
                     threshold = untap_match.group(1) or untap_match.group(2) or untap_match.group(3)
-                    mana_bonus_notes.append(f"{name} untaps on MV{threshold}+ cast \u2192 tap again for extra mana")
+                    mana_bonus_notes.append(
+                        f"{name} untaps on MV{threshold}+ cast \u2192 tap again for extra mana"
+                    )
 
         logger.info(f"Mana: {mana_pool} (Total: {total_mana})")
         if mana_sources:
@@ -1994,10 +2069,18 @@ class CoachEngine:
             lines.append(f"\u26a0\ufe0f {note}")
         return lines, total_mana, mana_pool
 
-    def _format_board_card(self, card: dict, local_seat: int, turn_num: int,
-                           attachments: dict[int, list[dict]],
-                           name_counts: Counter, name_seen: dict[str, int],
-                           is_local: bool, *, for_planner: bool = False) -> list[str]:
+    def _format_board_card(
+        self,
+        card: dict,
+        local_seat: int,
+        turn_num: int,
+        attachments: dict[int, list[dict]],
+        name_counts: Counter,
+        name_seen: dict[str, int],
+        is_local: bool,
+        *,
+        for_planner: bool = False,
+    ) -> list[str]:
         """Format a single battlefield card into display lines.
 
         Args:
@@ -2019,30 +2102,48 @@ class CoachEngine:
         else:
             display_name = name
 
-        pt = (f" {card.get('power') or 0}/{card.get('toughness') or 0}"
-              if is_creature or card.get("power") is not None else "")
+        pt = (
+            f" {card.get('power') or 0}/{card.get('toughness') or 0}"
+            if is_creature or card.get("power") is not None
+            else ""
+        )
 
         flags: list[str] = []
         if not is_creature and not is_land:
-            if "equipment" in type_line: flags.append("EQUIPMENT")
-            elif "artifact" in type_line: flags.append("ARTIFACT")
-            if "enchantment" in type_line: flags.append("ENCHANT")
-            if "planeswalker" in type_line: flags.append("PW")
-        if card.get("is_tapped"): flags.append("T")
+            if "equipment" in type_line:
+                flags.append("EQUIPMENT")
+            elif "artifact" in type_line:
+                flags.append("ARTIFACT")
+            if "enchantment" in type_line:
+                flags.append("ENCHANT")
+            if "planeswalker" in type_line:
+                flags.append("PW")
+        if card.get("is_tapped"):
+            flags.append("T")
 
         oracle_text = self._remove_reminder_text(card.get("oracle_text", "")).lower()
-        if "flying" in oracle_text: flags.append("FLY")
-        if "reach" in oracle_text: flags.append("RCH")
-        if is_local and "haste" in oracle_text: flags.append("HST")
-        if "vigilance" in oracle_text: flags.append("VIG")
-        if "trample" in oracle_text: flags.append("TRM")
-        if "first strike" in oracle_text: flags.append("FS")
-        if "deathtouch" in oracle_text: flags.append("DTH")
+        if "flying" in oracle_text:
+            flags.append("FLY")
+        if "reach" in oracle_text:
+            flags.append("RCH")
+        if is_local and "haste" in oracle_text:
+            flags.append("HST")
+        if "vigilance" in oracle_text:
+            flags.append("VIG")
+        if "trample" in oracle_text:
+            flags.append("TRM")
+        if "first strike" in oracle_text:
+            flags.append("FS")
+        if "deathtouch" in oracle_text:
+            flags.append("DTH")
         if is_creature and card.get("turn_entered_battlefield") == turn_num and "haste" not in oracle_text:
             flags.append("SS")
-        if self._is_impending(card): flags.append("IMPENDING")
-        if card.get("is_attacking"): flags.append("ATK")
-        if card.get("is_blocking"): flags.append("BLK")
+        if self._is_impending(card):
+            flags.append("IMPENDING")
+        if card.get("is_attacking"):
+            flags.append("ATK")
+        if card.get("is_blocking"):
+            flags.append("BLK")
 
         inst_id = card.get("instance_id")
         attached = attachments.get(inst_id, [])
@@ -2065,10 +2166,26 @@ class CoachEngine:
         if raw_oracle and not is_land:
             stripped = self._remove_reminder_text(raw_oracle).strip()
             keyword_only = all(
-                w in {"flying", "reach", "haste", "vigilance", "trample", "first", "strike",
-                      "double", "deathtouch", "lifelink", "menace", "ward", "hexproof",
-                      "indestructible", "defender"}
-                for w in stripped.lower().replace(",", " ").replace("\n", " ").split() if w
+                w
+                in {
+                    "flying",
+                    "reach",
+                    "haste",
+                    "vigilance",
+                    "trample",
+                    "first",
+                    "strike",
+                    "double",
+                    "deathtouch",
+                    "lifelink",
+                    "menace",
+                    "ward",
+                    "hexproof",
+                    "indestructible",
+                    "defender",
+                }
+                for w in stripped.lower().replace(",", " ").replace("\n", " ").split()
+                if w
             )
             # Planner skips full oracle text on long-resident permanents — the
             # flags already summarize relevant abilities. Recent ETBs keep
@@ -2114,9 +2231,7 @@ class CoachEngine:
                     continue
         return taxes
 
-    def _attack_tax_lines(
-        self, opp_cards: list[dict], game_state: Optional[dict[str, Any]]
-    ) -> list[str]:
+    def _attack_tax_lines(self, opp_cards: list[dict], game_state: dict[str, Any] | None) -> list[str]:
         """Warning lines when attacking costs extra mana per creature.
 
         Field report 2026-07-16: opponent had Ghostly Prison and the coach
@@ -2141,27 +2256,42 @@ class CoachEngine:
                 )
             except Exception:
                 lines.append(
-                    "   Reserve mana for the tax before casting spells if you "
-                    "plan to attack this turn."
+                    "   Reserve mana for the tax before casting spells if you plan to attack this turn."
                 )
         return lines
 
-    def _format_attack_combat(self, your_cards: list[dict], opp_cards: list[dict],
-                              local_player: Optional[dict], opponent_player: Optional[dict],
-                              turn_num: int, valid_attackers: list[dict],
-                              game_state: Optional[dict[str, Any]] = None) -> list[str]:
+    def _format_attack_combat(
+        self,
+        your_cards: list[dict],
+        opp_cards: list[dict],
+        local_player: dict | None,
+        opponent_player: dict | None,
+        turn_num: int,
+        valid_attackers: list[dict],
+        game_state: dict[str, Any] | None = None,
+    ) -> list[str]:
         """Format the attack-side combat analysis (your turn attacking)."""
         lines: list[str] = []
         lines.extend(self._attack_tax_lines(opp_cards, game_state))
-        your_creatures = [c for c in your_cards if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)]
-        opp_creatures = [c for c in opp_cards if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)]
+        your_creatures = [
+            c
+            for c in your_cards
+            if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)
+        ]
+        opp_creatures = [
+            c for c in opp_cards if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)
+        ]
         opp_blockers = [c for c in opp_creatures if not c.get("is_tapped")]
         opp_block_count = len(opp_blockers)
         opp_life = opponent_player.get("life_total", 20) if opponent_player else 20
         your_attack_power = sum(c.get("power") or 0 for c in valid_attackers)
 
         if valid_attackers:
-            lethal = "LETHAL" if (opp_block_count == 0 and your_attack_power >= opp_life) else f"{opp_block_count}blk"
+            lethal = (
+                "LETHAL"
+                if (opp_block_count == 0 and your_attack_power >= opp_life)
+                else f"{opp_block_count}blk"
+            )
             attacker_names = [c.get("name", "?") for c in valid_attackers]
             atk_name_counts = Counter(attacker_names)
             atk_name_seen: dict[str, int] = {}
@@ -2172,7 +2302,9 @@ class CoachEngine:
                     deduped_names.append(f"{n} #{atk_name_seen[n]}")
                 else:
                     deduped_names.append(n)
-            lines.append(f"Atk: {len(valid_attackers)}cr/{your_attack_power}pwr vs {lethal} \u2014 can attack: {', '.join(deduped_names)}")
+            lines.append(
+                f"Atk: {len(valid_attackers)}cr/{your_attack_power}pwr vs {lethal} \u2014 can attack: {', '.join(deduped_names)}"
+            )
             if valid_attackers and opp_blockers:
                 for atk in valid_attackers:
                     for blk in opp_blockers:
@@ -2180,8 +2312,12 @@ class CoachEngine:
                         if trade is None:
                             continue
                         result, atk_dies, blk_dies = trade
-                        atk_name = atk.get("name", "?"); atk_pow = atk.get("power") or 0; atk_tgh = atk.get("toughness") or 0
-                        blk_name = blk.get("name", "?"); blk_pow = blk.get("power") or 0; blk_tgh = blk.get("toughness") or 0
+                        atk_name = atk.get("name", "?")
+                        atk_pow = atk.get("power") or 0
+                        atk_tgh = atk.get("toughness") or 0
+                        blk_name = blk.get("name", "?")
+                        blk_pow = blk.get("power") or 0
+                        blk_tgh = blk.get("toughness") or 0
                         if atk_dies and blk_dies:
                             display_result = result
                         elif atk_dies:
@@ -2190,7 +2326,9 @@ class CoachEngine:
                             display_result = f"GOOD \u2014 {result}"
                         else:
                             display_result = result
-                        lines.append(f"  If {blk_name} {blk_pow}/{blk_tgh} blocks {atk_name} {atk_pow}/{atk_tgh}: {display_result}")
+                        lines.append(
+                            f"  If {blk_name} {blk_pow}/{blk_tgh} blocks {atk_name} {atk_pow}/{atk_tgh}: {display_result}"
+                        )
         else:
             lines.append("Atk: None (T/SS)")
 
@@ -2205,16 +2343,26 @@ class CoachEngine:
             life_margin = your_life - opp_attack_power
             if life_after_allout <= 0:
                 if life_after_noatk > 0:
-                    lines.append(f"\u26a0\ufe0f Crackback: opp {opp_attack_power}pwr \u2014 ALL-OUT lethal ({allout_dmg} through vs {your_life} life), but holding all {len(your_creatures)} blockers \u2192 only {noatk_dmg} through \u2192 SAFE at {life_after_noatk} life. Attack selectively!")
+                    lines.append(
+                        f"\u26a0\ufe0f Crackback: opp {opp_attack_power}pwr \u2014 ALL-OUT lethal ({allout_dmg} through vs {your_life} life), but holding all {len(your_creatures)} blockers \u2192 only {noatk_dmg} through \u2192 SAFE at {life_after_noatk} life. Attack selectively!"
+                    )
                 else:
-                    lines.append(f"\u26a0\ufe0f Crackback: opp {opp_attack_power}pwr \u2192 LETHAL even with all {len(your_creatures)} blockers ({noatk_dmg} through vs {your_life} life)! Must race or remove threats!")
+                    lines.append(
+                        f"\u26a0\ufe0f Crackback: opp {opp_attack_power}pwr \u2192 LETHAL even with all {len(your_creatures)} blockers ({noatk_dmg} through vs {your_life} life)! Must race or remove threats!"
+                    )
             elif life_margin <= 0:
                 if allout_dmg < opp_attack_power and len(non_attackers) > 0:
-                    lines.append(f"Crackback: opp {opp_attack_power}pwr, but your {len(non_attackers)} blocker(s) absorb {opp_attack_power - allout_dmg} \u2192 only {allout_dmg} through vs {your_life} life \u2014 {'safe' if life_after_allout > 3 else 'tight'}")
+                    lines.append(
+                        f"Crackback: opp {opp_attack_power}pwr, but your {len(non_attackers)} blocker(s) absorb {opp_attack_power - allout_dmg} \u2192 only {allout_dmg} through vs {your_life} life \u2014 {'safe' if life_after_allout > 3 else 'tight'}"
+                    )
                 else:
-                    lines.append(f"Crackback: {opp_attack_power}pwr vs your {your_life} life \u2014 LETHAL if no blockers held!")
+                    lines.append(
+                        f"Crackback: {opp_attack_power}pwr vs your {your_life} life \u2014 LETHAL if no blockers held!"
+                    )
             elif life_margin <= 3:
-                lines.append(f"Crackback: {opp_attack_power}pwr vs your {your_life} life \u2014 DANGER (only {life_margin} margin!)")
+                lines.append(
+                    f"Crackback: {opp_attack_power}pwr vs your {your_life} life \u2014 DANGER (only {life_margin} margin!)"
+                )
             else:
                 lines.append(f"Crackback: {opp_attack_power}pwr vs your {your_life} life \u2014 safe")
 
@@ -2223,10 +2371,10 @@ class CoachEngine:
         # crackback. Surface its pick so the LLM can follow it.
         try:
             from arenamcp.combat_solver import optimal_attacks
+
             opp_next_turn_attackers = [c for c in opp_creatures]
             your_remaining_blockers = [
-                c for c in your_creatures
-                if c not in valid_attackers and not c.get("is_tapped")
+                c for c in your_creatures if c not in valid_attackers and not c.get("is_tapped")
             ]
             solver_plan = optimal_attacks(
                 valid_attackers,
@@ -2243,10 +2391,16 @@ class CoachEngine:
 
         return lines
 
-    def _format_block_combat(self, your_cards: list[dict], opp_cards: list[dict],
-                             local_player: Optional[dict], turn_num: int,
-                             phase: str, _inferred_atk_ids: set[int],
-                             decision_context: Optional[dict[str, Any]] = None) -> list[str]:
+    def _format_block_combat(
+        self,
+        your_cards: list[dict],
+        opp_cards: list[dict],
+        local_player: dict | None,
+        turn_num: int,
+        phase: str,
+        _inferred_atk_ids: set[int],
+        decision_context: dict[str, Any] | None = None,
+    ) -> list[str]:
         """Format the block-side combat analysis (opponent's turn)."""
         lines: list[str] = []
         ctx = decision_context or {}
@@ -2258,14 +2412,26 @@ class CoachEngine:
             # decision context (log path parity, issue #420).
             ctx_atk_ids = self._attacker_ids_from_decision_context(ctx)
             if ctx_atk_ids:
-                attacking = [
-                    c for c in opp_cards
-                    if int(c.get("instance_id") or 0) in ctx_atk_ids
-                ]
-        flying_atk = [c for c in attacking if "flying" in self._remove_reminder_text(c.get("oracle_text", "")).lower()]
+                attacking = [c for c in opp_cards if int(c.get("instance_id") or 0) in ctx_atk_ids]
+        flying_atk = [
+            c for c in attacking if "flying" in self._remove_reminder_text(c.get("oracle_text", "")).lower()
+        ]
         ground_atk = [c for c in attacking if c not in flying_atk]
-        your_creatures = [c for c in your_cards if "creature" in c.get("type_line", "").lower() and not c.get("is_tapped") and not self._is_impending(c)]
-        flyer_blockers = [c for c in your_creatures if any(kw in self._remove_reminder_text(c.get("oracle_text", "")).lower() for kw in ["flying", "reach"])]
+        your_creatures = [
+            c
+            for c in your_cards
+            if "creature" in c.get("type_line", "").lower()
+            and not c.get("is_tapped")
+            and not self._is_impending(c)
+        ]
+        flyer_blockers = [
+            c
+            for c in your_creatures
+            if any(
+                kw in self._remove_reminder_text(c.get("oracle_text", "")).lower()
+                for kw in ["flying", "reach"]
+            )
+        ]
 
         if not attacking:
             return lines
@@ -2281,8 +2447,9 @@ class CoachEngine:
         _atk_counts = Counter(atk_names_raw)
         _atk_seen: dict[str, int] = {}
         atk_labels = []
-        for c, n in zip(attacking, atk_names_raw):
-            p = c.get("power") or 0; t = c.get("toughness") or 0
+        for c, n in zip(attacking, atk_names_raw, strict=False):
+            p = c.get("power") or 0
+            t = c.get("toughness") or 0
             if _atk_counts[n] > 1:
                 _atk_seen[n] = _atk_seen.get(n, 0) + 1
                 atk_labels.append(f"{n} #{_atk_seen[n]} {p}/{t}")
@@ -2292,20 +2459,32 @@ class CoachEngine:
         lines.append(f"Attackers: {', '.join(atk_labels)}")
         life_after_no_blocks = your_life - total_incoming
         if life_after_no_blocks <= 0:
-            lines.append(f"\u26a0\ufe0f No blocks \u2192 {total_incoming} dmg \u2192 DEAD (from {your_life} life)! Must block!")
+            lines.append(
+                f"\u26a0\ufe0f No blocks \u2192 {total_incoming} dmg \u2192 DEAD (from {your_life} life)! Must block!"
+            )
         else:
-            lines.append(f"No blocks \u2192 take {total_incoming} dmg \u2192 {life_after_no_blocks} life remaining")
+            lines.append(
+                f"No blocks \u2192 take {total_incoming} dmg \u2192 {life_after_no_blocks} life remaining"
+            )
         if flying_atk and not flyer_blockers:
             lines.append(f"\u26a0\ufe0f {fly_dmg} UNBLOCKABLE!")
-        dth_atk = [c for c in attacking if "deathtouch" in self._remove_reminder_text(c.get("oracle_text", "")).lower()]
+        dth_atk = [
+            c
+            for c in attacking
+            if "deathtouch" in self._remove_reminder_text(c.get("oracle_text", "")).lower()
+        ]
         if dth_atk:
-            lines.append(f"\u26a0\ufe0f DEATHTOUCH: {', '.join(c.get('name', '?') for c in dth_atk)} \u2014 any blocker DIES regardless of toughness!")
+            lines.append(
+                f"\u26a0\ufe0f DEATHTOUCH: {', '.join(c.get('name', '?') for c in dth_atk)} \u2014 any blocker DIES regardless of toughness!"
+            )
 
         damage_through = self._compute_optimal_blocking_damage(attacking, your_creatures)
         life_after_blocks = your_life - damage_through
         if damage_through < total_incoming:
             if life_after_blocks <= 0:
-                lines.append(f"\u26a0\ufe0f Best blocks \u2192 take {damage_through} dmg \u2192 DEAD (from {your_life} life)! Not enough blockers!")
+                lines.append(
+                    f"\u26a0\ufe0f Best blocks \u2192 take {damage_through} dmg \u2192 DEAD (from {your_life} life)! Not enough blockers!"
+                )
             else:
                 lines.append(f"Best blocks \u2192 take {damage_through} dmg \u2192 {life_after_blocks} life")
         else:
@@ -2318,15 +2497,31 @@ class CoachEngine:
                     if trade is None:
                         continue
                     result, _atk_dies, _blk_dies = trade
-                    atk_name = atk.get("name", "?"); atk_pow = atk.get("power") or 0; atk_tgh = atk.get("toughness") or 0
-                    blk_name = blk.get("name", "?"); blk_pow = blk.get("power") or 0; blk_tgh = blk.get("toughness") or 0
-                    lines.append(f"  If {blk_name} {blk_pow}/{blk_tgh} blocks {atk_name} {atk_pow}/{atk_tgh}: {result}")
+                    atk_name = atk.get("name", "?")
+                    atk_pow = atk.get("power") or 0
+                    atk_tgh = atk.get("toughness") or 0
+                    blk_name = blk.get("name", "?")
+                    blk_pow = blk.get("power") or 0
+                    blk_tgh = blk.get("toughness") or 0
+                    lines.append(
+                        f"  If {blk_name} {blk_pow}/{blk_tgh} blocks {atk_name} {atk_pow}/{atk_tgh}: {result}"
+                    )
 
-        opp_non_attacking = [c for c in opp_cards if "creature" in c.get("type_line", "").lower() and c not in attacking and not self._is_impending(c)]
-        opp_next_turn_power = sum(c.get("power") or 0 for c in attacking) + sum(c.get("power") or 0 for c in opp_non_attacking)
+        opp_non_attacking = [
+            c
+            for c in opp_cards
+            if "creature" in c.get("type_line", "").lower()
+            and c not in attacking
+            and not self._is_impending(c)
+        ]
+        opp_next_turn_power = sum(c.get("power") or 0 for c in attacking) + sum(
+            c.get("power") or 0 for c in opp_non_attacking
+        )
         if opp_next_turn_power > 0 and life_after_blocks > 0:
             if opp_next_turn_power >= life_after_blocks:
-                lines.append(f"\u26a0\ufe0f Next turn: opp can attack for up to {opp_next_turn_power}pwr \u2014 LETHAL if you're at {life_after_blocks} life after this combat! Preserve blockers!")
+                lines.append(
+                    f"\u26a0\ufe0f Next turn: opp can attack for up to {opp_next_turn_power}pwr \u2014 LETHAL if you're at {life_after_blocks} life after this combat! Preserve blockers!"
+                )
 
         # Deterministic block solver — grounds the LLM in the actual
         # material/life outcome of every legal block assignment rather
@@ -2337,6 +2532,7 @@ class CoachEngine:
                 blocker_allowed_attackers_map,
                 optimal_blocks,
             )
+
             usable_blockers = [c for c in your_creatures if not c.get("is_tapped")]
             # Restrict to the GRE's legal blockers when the decision context
             # names them (creatures that can't block are excluded upstream).
@@ -2349,16 +2545,15 @@ class CoachEngine:
                         continue
             if legal_blocker_ids:
                 gre_blockers = [
-                    c for c in usable_blockers
-                    if int(c.get("instance_id") or 0) in legal_blocker_ids
+                    c for c in usable_blockers if int(c.get("instance_id") or 0) in legal_blocker_ids
                 ]
                 if gre_blockers:
                     usable_blockers = gre_blockers
-            allowed_map = blocker_allowed_attackers_map(
-                ctx.get("raw_blockers") or []
-            )
+            allowed_map = blocker_allowed_attackers_map(ctx.get("raw_blockers") or [])
             solver_plan = optimal_blocks(
-                attacking, usable_blockers, your_life,
+                attacking,
+                usable_blockers,
+                your_life,
                 blocker_allowed_attackers=allowed_map or None,
             )
             if solver_plan is not None:
@@ -2368,63 +2563,138 @@ class CoachEngine:
 
         return lines
 
-    def _check_castability(self, type_line: str, cost: str, cmc: int,
-                           reqs: dict[str, int], total_mana: int,
-                           mana_pool: dict[str, int], can_play_land: bool) -> str:
+    def _check_castability(
+        self,
+        type_line: str,
+        cost: str,
+        cmc: int,
+        reqs: dict[str, int],
+        total_mana: int,
+        mana_pool: dict[str, int],
+        can_play_land: bool,
+    ) -> str:
         """Determine castability status string for a hand card."""
         if "land" in type_line:
             return "LAND" if can_play_land else "HOLD"
         elif total_mana >= cmc:
-            color_ok = all(mana_pool.get(c, 0) + mana_pool.get("Any", 0) >= reqs[c] for c in "WUBRGC" if reqs[c] > 0)
+            color_ok = all(
+                mana_pool.get(c, 0) + mana_pool.get("Any", 0) >= reqs[c] for c in "WUBRGC" if reqs[c] > 0
+            )
             if color_ok:
                 return "OK"
-            missing_pips = "".join(f"{{{c}}}" * max(0, reqs[c] - mana_pool.get(c, 0) - mana_pool.get("Any", 0)) for c in "WUBRGC" if reqs[c] > 0)
+            missing_pips = "".join(
+                f"{{{c}}}" * max(0, reqs[c] - mana_pool.get(c, 0) - mana_pool.get("Any", 0))
+                for c in "WUBRGC"
+                if reqs[c] > 0
+            )
             return f"NEED:{missing_pips}" if missing_pips else f"NEED:{max(1, cmc - total_mana)}"
         else:
-            missing_pips = "".join(f"{{{c}}}" * max(0, reqs[c] - mana_pool.get(c, 0) - mana_pool.get("Any", 0)) for c in "WUBRGC" if reqs[c] > 0)
+            missing_pips = "".join(
+                f"{{{c}}}" * max(0, reqs[c] - mana_pool.get(c, 0) - mana_pool.get("Any", 0))
+                for c in "WUBRGC"
+                if reqs[c] > 0
+            )
             generic_short = cmc - total_mana
             return f"NEED:{generic_short}+{missing_pips}" if missing_pips else f"NEED:{generic_short}"
 
-    def _analyze_removal(self, oracle_lower: str, opp_creatures: list[dict],
-                         opp_nonland: list[dict], all_creatures: list[dict],
-                         battlefield: list[dict], card_name: str,
-                         no_target_card_names: set[str]) -> str:
+    def _analyze_removal(
+        self,
+        oracle_lower: str,
+        opp_creatures: list[dict],
+        opp_nonland: list[dict],
+        all_creatures: list[dict],
+        battlefield: list[dict],
+        card_name: str,
+        no_target_card_names: set[str],
+    ) -> str:
         """Analyze removal capabilities of a card. Mutates no_target_card_names."""
         import re
+
         removal_info = ""
         damage_match = re.search(r"deals?\s+(\d+)\s+damage", oracle_lower)
         minus_match = re.search(r"gets?\s+(-\d+)/(-\d+)", oracle_lower)
         is_destroy_creature = "destroy target creature" in oracle_lower
         is_exile_creature = "exile target creature" in oracle_lower
         # "destroy target creature or enchantment" / "or planeswalker" — broader than just creature
-        is_destroy_creature_or = is_destroy_creature and ("or enchantment" in oracle_lower or "or planeswalker" in oracle_lower)
-        is_exile_creature_or = is_exile_creature and ("or enchantment" in oracle_lower or "or planeswalker" in oracle_lower)
-        is_destroy_permanent = "destroy target permanent" in oracle_lower or "destroy target nonland permanent" in oracle_lower
-        is_destroy_art_ench = "destroy target artifact" in oracle_lower or "destroy target enchantment" in oracle_lower or "naturalize" in oracle_lower
-        is_exile_permanent = "exile target permanent" in oracle_lower or "exile target nonland permanent" in oracle_lower or "exile target artifact" in oracle_lower or "exile target enchantment" in oracle_lower
-        is_bounce_creature = "return target creature" in oracle_lower or ("put target creature" in oracle_lower and "top" in oracle_lower)
-        is_bounce_permanent = "return target nonland permanent" in oracle_lower or "return target permanent" in oracle_lower
+        is_destroy_creature_or = is_destroy_creature and (
+            "or enchantment" in oracle_lower or "or planeswalker" in oracle_lower
+        )
+        is_exile_creature_or = is_exile_creature and (
+            "or enchantment" in oracle_lower or "or planeswalker" in oracle_lower
+        )
+        is_destroy_permanent = (
+            "destroy target permanent" in oracle_lower or "destroy target nonland permanent" in oracle_lower
+        )
+        is_destroy_art_ench = (
+            "destroy target artifact" in oracle_lower
+            or "destroy target enchantment" in oracle_lower
+            or "naturalize" in oracle_lower
+        )
+        is_exile_permanent = (
+            "exile target permanent" in oracle_lower
+            or "exile target nonland permanent" in oracle_lower
+            or "exile target artifact" in oracle_lower
+            or "exile target enchantment" in oracle_lower
+        )
+        is_bounce_creature = "return target creature" in oracle_lower or (
+            "put target creature" in oracle_lower and "top" in oracle_lower
+        )
+        is_bounce_permanent = (
+            "return target nonland permanent" in oracle_lower or "return target permanent" in oracle_lower
+        )
 
-        if not (damage_match or minus_match or is_destroy_creature or is_exile_creature or is_destroy_permanent or is_destroy_art_ench or is_exile_permanent or is_bounce_creature or is_bounce_permanent):
+        if not (
+            damage_match
+            or minus_match
+            or is_destroy_creature
+            or is_exile_creature
+            or is_destroy_permanent
+            or is_destroy_art_ench
+            or is_exile_permanent
+            or is_bounce_creature
+            or is_bounce_permanent
+        ):
             return removal_info
 
-        if is_bounce_creature or is_bounce_permanent: removal_info = " [RM:bounce]"
-        elif is_destroy_permanent or is_exile_permanent: removal_info = " [RM:perm]"
-        elif is_destroy_creature_or or is_exile_creature_or: removal_info = " [RM:creat/ench]"
-        elif is_destroy_art_ench: removal_info = " [RM:art/ench]"
-        elif is_destroy_creature or is_exile_creature: removal_info = " [RM:creat]"
-        elif damage_match: removal_info = f" [RM:<={int(damage_match.group(1))}T]"
-        elif minus_match: removal_info = f" [RM:<={abs(int(minus_match.group(2)))}T]"
+        if is_bounce_creature or is_bounce_permanent:
+            removal_info = " [RM:bounce]"
+        elif is_destroy_permanent or is_exile_permanent:
+            removal_info = " [RM:perm]"
+        elif is_destroy_creature_or or is_exile_creature_or:
+            removal_info = " [RM:creat/ench]"
+        elif is_destroy_art_ench:
+            removal_info = " [RM:art/ench]"
+        elif is_destroy_creature or is_exile_creature:
+            removal_info = " [RM:creat]"
+        elif damage_match:
+            removal_info = f" [RM:<={int(damage_match.group(1))}T]"
+        elif minus_match:
+            removal_info = f" [RM:<={abs(int(minus_match.group(2)))}T]"
 
-        if is_bounce_creature: target_pool = all_creatures
-        elif is_bounce_permanent: target_pool = [c for c in battlefield if "land" not in c.get("type_line", "").lower()]
+        if is_bounce_creature:
+            target_pool = all_creatures
+        elif is_bounce_permanent:
+            target_pool = [c for c in battlefield if "land" not in c.get("type_line", "").lower()]
         elif is_destroy_creature_or or is_exile_creature_or:
             # "destroy target creature or enchantment" — check opponent creatures + enchantments
-            target_pool = opp_creatures + [c for c in opp_nonland if "enchantment" in c.get("type_line", "").lower() or "planeswalker" in c.get("type_line", "").lower()]
-        elif is_destroy_creature or is_exile_creature: target_pool = opp_creatures
-        elif "nonland" in oracle_lower or is_destroy_permanent or is_exile_permanent: target_pool = opp_nonland
-        elif is_destroy_art_ench: target_pool = [c for c in opp_nonland if any(t in c.get("type_line", "").lower() for t in ["artifact", "enchantment"])]
-        else: target_pool = opp_creatures
+            target_pool = opp_creatures + [
+                c
+                for c in opp_nonland
+                if "enchantment" in c.get("type_line", "").lower()
+                or "planeswalker" in c.get("type_line", "").lower()
+            ]
+        elif is_destroy_creature or is_exile_creature:
+            target_pool = opp_creatures
+        elif "nonland" in oracle_lower or is_destroy_permanent or is_exile_permanent:
+            target_pool = opp_nonland
+        elif is_destroy_art_ench:
+            target_pool = [
+                c
+                for c in opp_nonland
+                if any(t in c.get("type_line", "").lower() for t in ["artifact", "enchantment"])
+            ]
+        else:
+            target_pool = opp_creatures
 
         mv_match = re.search(r"mana value (\d+) or less", oracle_lower)
         if mv_match and target_pool:
@@ -2436,13 +2706,22 @@ class CoachEngine:
             no_target_card_names.add(card_name)
         return removal_info
 
-    def _format_hand_cards(self, game_state: dict[str, Any], local_seat: int,
-                           total_mana: int, mana_pool: dict[str, int],
-                           opp_cards: list[dict], battlefield: list[dict],
-                           is_my_turn: bool, phase: str, turn_num: int,
-                           valid_moves: list[str]) -> tuple[list[str], set[str], set[str]]:
+    def _format_hand_cards(
+        self,
+        game_state: dict[str, Any],
+        local_seat: int,
+        total_mana: int,
+        mana_pool: dict[str, int],
+        opp_cards: list[dict],
+        battlefield: list[dict],
+        is_my_turn: bool,
+        phase: str,
+        turn_num: int,
+        valid_moves: list[str],
+    ) -> tuple[list[str], set[str], set[str]]:
         """Format the hand section. Returns (lines, no_target_card_names, uncastable_card_names)."""
         import re
+
         lines: list[str] = []
         no_target_card_names: set[str] = set()
         uncastable_card_names: set[str] = set()
@@ -2450,9 +2729,15 @@ class CoachEngine:
         lines.append("")
         lines.append("HAND:")
 
-        opp_creatures = [c for c in opp_cards if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)]
+        opp_creatures = [
+            c for c in opp_cards if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)
+        ]
         opp_nonland = [c for c in opp_cards if "land" not in c.get("type_line", "").lower()]
-        all_creatures = [c for c in battlefield if c.get("power") is not None and "land" not in c.get("type_line", "").lower()]
+        all_creatures = [
+            c
+            for c in battlefield
+            if c.get("power") is not None and "land" not in c.get("type_line", "").lower()
+        ]
 
         if not hand:
             lines.append("  (empty)")
@@ -2486,7 +2771,9 @@ class CoachEngine:
                 hybrid = re.findall(r"\{[^}]+/[^}]+\}", cost)
                 cmc += len(hybrid)
 
-            castable = self._check_castability(type_line, cost, cmc, reqs, total_mana, mana_pool, can_play_land)
+            castable = self._check_castability(
+                type_line, cost, cmc, reqs, total_mana, mana_pool, can_play_land
+            )
 
             # Track cards the player can't afford so they're filtered from Legal
             if castable.startswith("NEED"):
@@ -2500,7 +2787,15 @@ class CoachEngine:
                 if castable == "OK" and x_value == 0:
                     castable = "OK,X=0"
 
-            removal_info = self._analyze_removal(oracle_lower, opp_creatures, opp_nonland, all_creatures, battlefield, name, no_target_card_names)
+            removal_info = self._analyze_removal(
+                oracle_lower,
+                opp_creatures,
+                opp_nonland,
+                all_creatures,
+                battlefield,
+                name,
+                no_target_card_names,
+            )
 
             # Detect spells that require creatures we don't have
             # Sagas are exempt: Chapter I typically creates tokens or has
@@ -2508,10 +2803,13 @@ class CoachEngine:
             # later chapters need "target creature you control".
             is_saga = "saga" in type_line
             if "land" not in type_line and "creature" not in type_line and not is_saga:
-                my_creatures = [c for c in battlefield
-                                if c.get("owner_seat_id") == local_seat
-                                and c.get("power") is not None
-                                and "land" not in c.get("type_line", "").lower()]
+                my_creatures = [
+                    c
+                    for c in battlefield
+                    if c.get("owner_seat_id") == local_seat
+                    and c.get("power") is not None
+                    and "land" not in c.get("type_line", "").lower()
+                ]
                 needs_my_creature = (
                     "target creature you control" in oracle_lower
                     or "creature you control fights" in oracle_lower
@@ -2528,39 +2826,57 @@ class CoachEngine:
             # don't recommend an Aura that can only hit the wrong side.
             is_aura = "aura" in type_line and "enchantment" in type_line
             if is_aura and "enchant creature" in oracle_lower and "[NO TARGETS]" not in removal_info:
+
                 def _is_creature(c: dict) -> bool:
                     tl = c.get("type_line", "").lower()
-                    return (("creature" in tl or "CardType_Creature" in c.get("card_types", []))
-                            and "land" not in tl)
-                my_creatures = [c for c in battlefield
-                                if c.get("controller_seat_id") == local_seat and _is_creature(c)]
-                enemy_creatures = [c for c in battlefield
-                                   if c.get("controller_seat_id") not in (None, local_seat) and _is_creature(c)]
+                    return (
+                        "creature" in tl or "CardType_Creature" in c.get("card_types", [])
+                    ) and "land" not in tl
+
+                my_creatures = [
+                    c for c in battlefield if c.get("controller_seat_id") == local_seat and _is_creature(c)
+                ]
+                enemy_creatures = [
+                    c
+                    for c in battlefield
+                    if c.get("controller_seat_id") not in (None, local_seat) and _is_creature(c)
+                ]
                 debuff_markers = (
-                    "loses all abilities", "can't attack", "can't block",
-                    "doesn't untap", "base power and toughness", "is a coward",
-                    "can't be blocked by", "as long as enchanted",
+                    "loses all abilities",
+                    "can't attack",
+                    "can't block",
+                    "doesn't untap",
+                    "base power and toughness",
+                    "is a coward",
+                    "can't be blocked by",
+                    "as long as enchanted",
                 )
-                is_debuff_aura = (
-                    bool(re.search(r"gets? -\d+/-?\d+", oracle_lower))
-                    or any(m in oracle_lower for m in debuff_markers)
+                is_debuff_aura = bool(re.search(r"gets? -\d+/-?\d+", oracle_lower)) or any(
+                    m in oracle_lower for m in debuff_markers
                 )
                 relevant = enemy_creatures if is_debuff_aura else my_creatures
                 if not relevant:
                     removal_info += " [NO TARGETS]"
                     no_target_card_names.add(name)
 
-            is_basic_land = "land" in type_line and ("basic" in type_line or name in ["Plains", "Island", "Swamp", "Mountain", "Forest"])
+            is_basic_land = "land" in type_line and (
+                "basic" in type_line or name in ["Plains", "Island", "Swamp", "Mountain", "Forest"]
+            )
             oracle_stripped = self._remove_reminder_text(oracle_text) if oracle_text else ""
             show_oracle = bool(oracle_text) and not is_basic_land
 
             type_tag = ""
             if "creature" not in type_line and "land" not in type_line:
-                if "enchantment" in type_line and "aura" in type_line: type_tag = " (AURA)"
-                elif "enchantment" in type_line: type_tag = " (ENCHANT)"
-                elif "equipment" in type_line: type_tag = " (EQUIP)"
-                elif "artifact" in type_line: type_tag = " (ART)"
-                elif "planeswalker" in type_line: type_tag = " (PW)"
+                if "enchantment" in type_line and "aura" in type_line:
+                    type_tag = " (AURA)"
+                elif "enchantment" in type_line:
+                    type_tag = " (ENCHANT)"
+                elif "equipment" in type_line:
+                    type_tag = " (EQUIP)"
+                elif "artifact" in type_line:
+                    type_tag = " (ART)"
+                elif "planeswalker" in type_line:
+                    type_tag = " (PW)"
 
             if hand_name_counts[name] > 1:
                 hand_name_seen[name] = hand_name_seen.get(name, 0) + 1
@@ -2573,7 +2889,9 @@ class CoachEngine:
                 lines.append(f"    {oracle_stripped}")
         return lines, no_target_card_names, uncastable_card_names
 
-    def _format_zones_and_events(self, game_state: dict[str, Any], local_seat: int, opp_seat: Optional[int]) -> list[str]:
+    def _format_zones_and_events(
+        self, game_state: dict[str, Any], local_seat: int, opp_seat: int | None
+    ) -> list[str]:
         """Format recent events, revealed cards, stack, graveyard, command zone, and library."""
         lines: list[str] = []
         recent_events = game_state.get("recent_events", [])
@@ -2581,13 +2899,22 @@ class CoachEngine:
             event_strs = []
             for evt in recent_events[-15:]:
                 etype = evt.get("type", "")
-                if etype == "damage_dealt": event_strs.append(f"{evt.get('source','?')} dealt {evt.get('amount',0)} to {evt.get('target','?')}")
-                elif etype == "zone_transfer": event_strs.append(f"{evt.get('card','?')} moved zones")
-                elif etype == "counter_added": event_strs.append(f"+{evt.get('amount',1)} counter on {evt.get('card','?')}")
-                elif etype == "counter_removed": event_strs.append(f"-{evt.get('amount',1)} counter from {evt.get('card','?')}")
-                elif etype == "token_created": event_strs.append(f"Token: {evt.get('card','?')}")
-                elif etype == "card_revealed": event_strs.append(f"Revealed: {evt.get('card','?')}")
-                elif etype == "controller_changed": event_strs.append(f"{evt.get('card','?')} changed controller")
+                if etype == "damage_dealt":
+                    event_strs.append(
+                        f"{evt.get('source', '?')} dealt {evt.get('amount', 0)} to {evt.get('target', '?')}"
+                    )
+                elif etype == "zone_transfer":
+                    event_strs.append(f"{evt.get('card', '?')} moved zones")
+                elif etype == "counter_added":
+                    event_strs.append(f"+{evt.get('amount', 1)} counter on {evt.get('card', '?')}")
+                elif etype == "counter_removed":
+                    event_strs.append(f"-{evt.get('amount', 1)} counter from {evt.get('card', '?')}")
+                elif etype == "token_created":
+                    event_strs.append(f"Token: {evt.get('card', '?')}")
+                elif etype == "card_revealed":
+                    event_strs.append(f"Revealed: {evt.get('card', '?')}")
+                elif etype == "controller_changed":
+                    event_strs.append(f"{evt.get('card', '?')} changed controller")
             if event_strs:
                 lines.append(f"Recent: {'; '.join(event_strs)}")
 
@@ -2599,7 +2926,10 @@ class CoachEngine:
 
         stack = game_state.get("stack", [])
         if stack:
-            stack_items = [f"{'Y' if c.get('owner_seat_id') == local_seat else 'O'}:{c.get('name', 'Unknown')}" for c in stack]
+            stack_items = [
+                f"{'Y' if c.get('owner_seat_id') == local_seat else 'O'}:{c.get('name', 'Unknown')}"
+                for c in stack
+            ]
             lines.append(f"Stack: {' > '.join(stack_items)}")
 
         graveyard = game_state.get("graveyard", [])
@@ -2608,8 +2938,12 @@ class CoachEngine:
             opp_gy = [c for c in graveyard if c.get("owner_seat_id") != local_seat]
             if your_gy or opp_gy:
                 gy_parts = []
-                if your_gy: gy_parts.append(f"Y={len(your_gy)} ({', '.join(c.get('name', '?') for c in your_gy[:8])})")
-                if opp_gy: gy_parts.append(f"O={len(opp_gy)} ({', '.join(c.get('name', '?') for c in opp_gy[:8])})")
+                if your_gy:
+                    gy_parts.append(
+                        f"Y={len(your_gy)} ({', '.join(c.get('name', '?') for c in your_gy[:8])})"
+                    )
+                if opp_gy:
+                    gy_parts.append(f"O={len(opp_gy)} ({', '.join(c.get('name', '?') for c in opp_gy[:8])})")
                 lines.append(f"GY: {' '.join(gy_parts)}")
 
         command = game_state.get("command", [])
@@ -2621,12 +2955,14 @@ class CoachEngine:
                 cost_str = f" {c.get('mana_cost', '')}" if c.get("mana_cost") else ""
                 cmd_parts.append(f"  YOUR CMD: {c.get('name', 'Unknown')}{cost_str}")
                 oracle = (c.get("oracle_text", "") or "").replace("\n", " ").strip()
-                if oracle: cmd_parts.append(f"    {oracle}")
+                if oracle:
+                    cmd_parts.append(f"    {oracle}")
             for c in opp_cmds:
                 cost_str = f" {c.get('mana_cost', '')}" if c.get("mana_cost") else ""
                 cmd_parts.append(f"  OPP CMD: {c.get('name', 'Unknown')}{cost_str}")
                 oracle = (c.get("oracle_text", "") or "").replace("\n", " ").strip()
-                if oracle: cmd_parts.append(f"    {oracle}")
+                if oracle:
+                    cmd_parts.append(f"    {oracle}")
             lines.append("COMMAND ZONE:")
             lines.extend(cmd_parts)
 
@@ -2636,9 +2972,7 @@ class CoachEngine:
             lines.append(library_summary)
         return lines
 
-    def _resolve_raw_legal_actions(
-        self, game_state: dict[str, Any]
-    ) -> list[dict[str, Any]]:
+    def _resolve_raw_legal_actions(self, game_state: dict[str, Any]) -> list[dict[str, Any]]:
         """Pick the freshest raw-action list available.
 
         Bridge actions are the most authoritative source (they reflect live
@@ -2680,23 +3014,19 @@ class CoachEngine:
         non_ok_cast_names = {
             m[5:].split("[", 1)[0].strip()
             for m in valid_moves
-            if isinstance(m, str)
-            and m.lower().startswith("cast ")
-            and "[ok]" not in m.lower()
+            if isinstance(m, str) and m.lower().startswith("cast ") and "[ok]" not in m.lower()
         }
         cards_to_filter |= non_ok_cast_names
         if not valid_moves:
             return
 
         filtered_moves = [
-            m for m in valid_moves
+            m
+            for m in valid_moves
             if not (
                 isinstance(m, str)
                 and m.lower().startswith("cast ")
-                and (
-                    "[ok]" not in m.lower()
-                    or any(f"Cast {nt}" in m for nt in cards_to_filter)
-                )
+                and ("[ok]" not in m.lower() or any(f"Cast {nt}" in m for nt in cards_to_filter))
             )
         ]
         if filtered_moves == valid_moves:
@@ -2721,13 +3051,11 @@ class CoachEngine:
                     if gid:
                         filter_grp_ids.add(gid)
         filtered_raw = [
-            a for a in raw_legal_actions
+            a
+            for a in raw_legal_actions
             if not (
                 a.get("actionType") == "ActionType_Cast"
-                and (
-                    a.get("grpId") in filter_grp_ids
-                    or not a.get("autoTapSolution")
-                )
+                and (a.get("grpId") in filter_grp_ids or not a.get("autoTapSolution"))
             )
         ]
         for i, line in enumerate(lines):
@@ -2736,8 +3064,11 @@ class CoachEngine:
                 break
 
     def _format_game_context(
-        self, game_state: dict[str, Any], question: str = "",
-        *, for_planner: bool = False,
+        self,
+        game_state: dict[str, Any],
+        question: str = "",
+        *,
+        for_planner: bool = False,
     ) -> str:
         """Format the game state into a COMPACT context for the LLM.
 
@@ -2776,7 +3107,9 @@ class CoachEngine:
         if match_num is not None:
             short_id = match_id[:8] if match_id else "?"
             match_tag = f" [Match #{match_num} id={short_id}]"
-        lines.append(f"=== NEW GAME ==={match_tag}" if turn_num <= 1 and match_tag else f"=== GAME ==={match_tag}")
+        lines.append(
+            f"=== NEW GAME ==={match_tag}" if turn_num <= 1 and match_tag else f"=== GAME ==={match_tag}"
+        )
         lines.append(f"Legal: {valid_moves_str}")
         raw_legal_actions = self._resolve_raw_legal_actions(game_state)
         lines.extend(_build_bridge_context_lines(game_state, raw_legal_actions, for_planner=for_planner))
@@ -2798,7 +3131,7 @@ class CoachEngine:
         is_your_turn = active_seat == local_seat
         stack = game_state.get("stack", [])
         stack_empty = len(stack) == 0
-        can_cast_sorcery = (is_your_turn and is_main_phase and stack_empty and has_priority)
+        can_cast_sorcery = is_your_turn and is_main_phase and stack_empty and has_priority
         is_blocking = "DeclareBlock" in step and not is_your_turn
 
         # Decision context
@@ -2836,8 +3169,16 @@ class CoachEngine:
 
         # Battlefield
         battlefield = game_state.get("battlefield", [])
-        your_cards = [c for c in battlefield if c.get("owner_seat_id") == local_seat and c.get("type_line", "").lower() != "ability"]
-        opp_cards = [c for c in battlefield if c.get("owner_seat_id") != local_seat and c.get("type_line", "").lower() != "ability"]
+        your_cards = [
+            c
+            for c in battlefield
+            if c.get("owner_seat_id") == local_seat and c.get("type_line", "").lower() != "ability"
+        ]
+        opp_cards = [
+            c
+            for c in battlefield
+            if c.get("owner_seat_id") != local_seat and c.get("type_line", "").lower() != "ability"
+        ]
 
         # Mana info
         mana_lines, total_mana, mana_pool = self._format_mana_info(your_cards, turn_num)
@@ -2876,21 +3217,27 @@ class CoachEngine:
                 your_name_counts = Counter(c.get("name", "Unknown") for c in your_cards)
                 your_name_seen: dict[str, int] = {}
                 for card in your_cards:
-                    lines.extend(self._format_board_card(
-                        card, local_seat, turn_num, _attachments,
-                        your_name_counts, your_name_seen, is_local=True,
-                        for_planner=for_planner,
-                    ))
+                    lines.extend(
+                        self._format_board_card(
+                            card,
+                            local_seat,
+                            turn_num,
+                            _attachments,
+                            your_name_counts,
+                            your_name_seen,
+                            is_local=True,
+                            for_planner=for_planner,
+                        )
+                    )
             else:
                 lines.append("  (empty)")
 
             # Pre-compute inferred attackers for DeclareBlock display
             _inferred_atk_ids: set[int] = set()
             _dec_ctx = game_state.get("decision_context") or {}
-            _in_block_decision = (
-                ("Combat" in phase and not is_your_turn and "DeclareBlock" in step)
-                or str(_dec_ctx.get("type") or "") == "declare_blockers"
-            )
+            _in_block_decision = ("Combat" in phase and not is_your_turn and "DeclareBlock" in step) or str(
+                _dec_ctx.get("type") or ""
+            ) == "declare_blockers"
             if _in_block_decision:
                 has_explicit_atk = any(c.get("is_attacking") for c in opp_cards)
                 if not has_explicit_atk:
@@ -2903,7 +3250,7 @@ class CoachEngine:
                     for c in opp_cards:
                         c_type = c.get("type_line", "").lower()
                         c_oracle = self._remove_reminder_text(c.get("oracle_text", "")).lower()
-                        is_ss = (c.get("turn_entered_battlefield") == turn_num and "haste" not in c_oracle)
+                        is_ss = c.get("turn_entered_battlefield") == turn_num and "haste" not in c_oracle
                         if c.get("is_tapped") and "creature" in c_type and not is_ss:
                             _inferred_atk_ids.add(c.get("instance_id"))
 
@@ -2916,32 +3263,60 @@ class CoachEngine:
                     if card.get("instance_id") in _inferred_atk_ids and not card.get("is_attacking"):
                         card = dict(card)
                         card["is_attacking"] = True
-                    lines.extend(self._format_board_card(
-                        card, local_seat, turn_num, _attachments,
-                        opp_name_counts, opp_name_seen, is_local=False,
-                        for_planner=for_planner,
-                    ))
+                    lines.extend(
+                        self._format_board_card(
+                            card,
+                            local_seat,
+                            turn_num,
+                            _attachments,
+                            opp_name_counts,
+                            opp_name_seen,
+                            is_local=False,
+                            for_planner=for_planner,
+                        )
+                    )
             else:
                 lines.append("  (empty)")
 
             # Combat analysis
             if ("Combat" in phase or "Main" in phase) and is_your_turn:
-                your_creatures = [c for c in your_cards if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)]
-                valid_attackers = [
-                    c for c in your_creatures
-                    if not c.get("is_tapped")
-                    and not (c.get("turn_entered_battlefield") == turn_num
-                             and "haste" not in self._remove_reminder_text(c.get("oracle_text", "")).lower())
+                your_creatures = [
+                    c
+                    for c in your_cards
+                    if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)
                 ]
-                lines.extend(self._format_attack_combat(
-                    your_cards, opp_cards, local_player, opponent_player,
-                    turn_num, valid_attackers, game_state=game_state
-                ))
+                valid_attackers = [
+                    c
+                    for c in your_creatures
+                    if not c.get("is_tapped")
+                    and not (
+                        c.get("turn_entered_battlefield") == turn_num
+                        and "haste" not in self._remove_reminder_text(c.get("oracle_text", "")).lower()
+                    )
+                ]
+                lines.extend(
+                    self._format_attack_combat(
+                        your_cards,
+                        opp_cards,
+                        local_player,
+                        opponent_player,
+                        turn_num,
+                        valid_attackers,
+                        game_state=game_state,
+                    )
+                )
             elif "Combat" in phase and not is_your_turn:
-                lines.extend(self._format_block_combat(
-                    your_cards, opp_cards, local_player, turn_num, phase, _inferred_atk_ids,
-                    decision_context=game_state.get("decision_context"),
-                ))
+                lines.extend(
+                    self._format_block_combat(
+                        your_cards,
+                        opp_cards,
+                        local_player,
+                        turn_num,
+                        phase,
+                        _inferred_atk_ids,
+                        decision_context=game_state.get("decision_context"),
+                    )
+                )
         else:
             lines.append("")
             lines.append("BOARD: Empty")
@@ -2951,8 +3326,16 @@ class CoachEngine:
 
         # Hand cards
         hand_lines, no_target_card_names, uncastable_card_names = self._format_hand_cards(
-            game_state, local_seat, total_mana, mana_pool,
-            opp_cards, battlefield, is_my_turn, phase, turn_num, valid_moves
+            game_state,
+            local_seat,
+            total_mana,
+            mana_pool,
+            opp_cards,
+            battlefield,
+            is_my_turn,
+            phase,
+            turn_num,
+            valid_moves,
         )
         lines.extend(hand_lines)
 
@@ -3010,7 +3393,7 @@ class CoachEngine:
 
     @staticmethod
     def _attacker_ids_from_decision_context(
-        decision_context: Optional[dict[str, Any]],
+        decision_context: dict[str, Any] | None,
     ) -> set[int]:
         """Attacker instance ids named by a declare_blockers decision context.
 
@@ -3039,9 +3422,7 @@ class CoachEngine:
                     continue
         return ids
 
-    def _collect_block_decision_attackers(
-        self, game_state: dict[str, Any]
-    ) -> list[dict]:
+    def _collect_block_decision_attackers(self, game_state: dict[str, Any]) -> list[dict]:
         """Resolve the attacking creatures for the current block decision.
 
         Prefers battlefield ``is_attacking`` flags (attackState from the log,
@@ -3059,29 +3440,27 @@ class CoachEngine:
         attacking = [c for c in opp_cards if c.get("is_attacking")]
         if attacking:
             return attacking
-        ctx_ids = self._attacker_ids_from_decision_context(
-            game_state.get("decision_context")
-        )
+        ctx_ids = self._attacker_ids_from_decision_context(game_state.get("decision_context"))
         if ctx_ids:
-            return [
-                c for c in opp_cards
-                if int(c.get("instance_id") or 0) in ctx_ids
-            ]
+            return [c for c in opp_cards if int(c.get("instance_id") or 0) in ctx_ids]
         return []
 
     _COMBAT_KEYWORDS = (
-        "flying", "deathtouch", "trample", "first strike", "double strike",
-        "menace", "lifelink", "vigilance", "indestructible",
+        "flying",
+        "deathtouch",
+        "trample",
+        "first strike",
+        "double strike",
+        "menace",
+        "lifelink",
+        "vigilance",
+        "indestructible",
     )
 
     def _combat_keyword_flags(self, card: dict) -> str:
         """Compact ``[FLYING,DEATHTOUCH]``-style suffix for combat listings."""
         oracle = self._remove_reminder_text(card.get("oracle_text", "")).lower()
-        found = [
-            kw.upper().replace(" ", "-")
-            for kw in self._COMBAT_KEYWORDS
-            if kw in oracle
-        ]
+        found = [kw.upper().replace(" ", "-") for kw in self._COMBAT_KEYWORDS if kw in oracle]
         return f" [{','.join(found)}]" if found else ""
 
     def _attacker_label_map(self, attackers: list[dict]) -> dict[int, str]:
@@ -3090,16 +3469,14 @@ class CoachEngine:
         counts = Counter(names)
         seen: dict[str, int] = {}
         out: dict[int, str] = {}
-        for c, n in zip(attackers, names):
+        for c, n in zip(attackers, names, strict=False):
             p = c.get("power") or 0
             t = c.get("toughness") or 0
             label = n
             if counts[n] > 1:
                 seen[n] = seen.get(n, 0) + 1
                 label = f"{n} #{seen[n]}"
-            out[int(c.get("instance_id") or 0)] = (
-                f"{label} {p}/{t}{self._combat_keyword_flags(c)}"
-            )
+            out[int(c.get("instance_id") or 0)] = f"{label} {p}/{t}{self._combat_keyword_flags(c)}"
         return out
 
     def _format_block_decision_details(
@@ -3119,10 +3496,7 @@ class CoachEngine:
             return lines
         label_by_id = self._attacker_label_map(attackers)
         lines.append(
-            "Attackers: "
-            + ", ".join(
-                label_by_id[int(a.get("instance_id") or 0)] for a in attackers
-            )
+            "Attackers: " + ", ".join(label_by_id[int(a.get("instance_id") or 0)] for a in attackers)
         )
 
         # Per-blocker candidate restrictions from the raw GRE blockers payload.
@@ -3131,13 +3505,14 @@ class CoachEngine:
         blocker_names = decision_context.get("legal_blockers") or []
         name_by_blocker_id: dict[int, str] = {}
         if len(blocker_ids) == len(blocker_names):
-            for bid, bname in zip(blocker_ids, blocker_names):
+            for bid, bname in zip(blocker_ids, blocker_names, strict=False):
                 try:
                     name_by_blocker_id[int(bid)] = bname
                 except (TypeError, ValueError):
                     continue
         try:
             from arenamcp.combat_solver import blocker_allowed_attackers_map
+
             allowed_map = blocker_allowed_attackers_map(raw_blockers)
         except Exception:
             allowed_map = {}
@@ -3146,9 +3521,7 @@ class CoachEngine:
             if not allowed or allowed >= all_attacker_ids:
                 continue  # unrestricted — no extra line needed
             bname = name_by_blocker_id.get(bid, f"Creature {bid}")
-            atk_labels = [
-                label_by_id[a] for a in sorted(allowed) if a in label_by_id
-            ]
+            atk_labels = [label_by_id[a] for a in sorted(allowed) if a in label_by_id]
             if atk_labels:
                 lines.append(f"  {bname} can ONLY block: {', '.join(atk_labels)}")
         return lines
@@ -3176,19 +3549,22 @@ class CoachEngine:
     # raw_gre_events (megabytes per turn), legal_actions_raw (the bridge action
     # list which is already surfaced via decision_context), and underscore-
     # prefixed fields used for internal bookkeeping. See _format_game_context_raw_json.
-    _RAW_JSON_TRIM_FIELDS = frozenset({
-        "raw_gre_events",
-        "legal_actions_raw",
-        "_match_number",
-        "_pending_request_raw",
-        "annotations",
-    })
+    _RAW_JSON_TRIM_FIELDS = frozenset(
+        {
+            "raw_gre_events",
+            "legal_actions_raw",
+            "_match_number",
+            "_pending_request_raw",
+            "annotations",
+        }
+    )
 
     def _normalize_game_state_cards(self, game_state: dict[str, Any]) -> None:
         """In-place normalize all card dictionaries in the game state to ensure
         they have a type_line, synthesizing one if type_line is empty but
         card_types or subtypes are present.
         """
+
         def normalize_card(card: dict[str, Any]) -> None:
             if not isinstance(card, dict):
                 return
@@ -3200,7 +3576,7 @@ class CoachEngine:
                     card_types = [card_types]
                 if isinstance(subtypes, str):
                     subtypes = [subtypes]
-                
+
                 type_parts = []
                 if card_types:
                     type_parts.append(" ".join(card_types))
@@ -3210,22 +3586,25 @@ class CoachEngine:
                 card["type_line"] = " ".join(type_parts).strip()
 
         # Normalize cards in list-based zones at the top level
-        for key, value in game_state.items():
+        for _key, value in game_state.items():
             if isinstance(value, list):
                 for item in value:
                     if isinstance(item, dict) and "instance_id" in item:
                         normalize_card(item)
             elif isinstance(value, dict):
                 # Also normalize cards in nested dictionary lists (like game_state["zones"])
-                for sub_key, sub_val in value.items():
+                for _sub_key, sub_val in value.items():
                     if isinstance(sub_val, list):
                         for item in sub_val:
                             if isinstance(item, dict) and "instance_id" in item:
                                 normalize_card(item)
 
     def _build_context(
-        self, game_state: dict[str, Any], question: str = "",
-        *, for_planner: bool = False,
+        self,
+        game_state: dict[str, Any],
+        question: str = "",
+        *,
+        for_planner: bool = False,
     ) -> str:
         self._normalize_game_state_cards(game_state)
         """Pick the active prompt variant for the user-message context.
@@ -3248,8 +3627,11 @@ class CoachEngine:
         return self._format_game_context(game_state, **kwargs)
 
     def _format_game_context_raw_json(
-        self, game_state: dict[str, Any], question: str = "",
-        *, for_planner: bool = False,
+        self,
+        game_state: dict[str, Any],
+        question: str = "",
+        *,
+        for_planner: bool = False,
     ) -> str:
         """Ablation variant: emit the game_state dict as JSON, no compression.
 
@@ -3270,9 +3652,7 @@ class CoachEngine:
         return f"Game state (JSON):\n{body}{suffix}"
 
     @staticmethod
-    def _plan_framing_instruction(
-        plan_block: str, *, our_turn: bool, plan_changed: bool
-    ) -> str:
+    def _plan_framing_instruction(plan_block: str, *, our_turn: bool, plan_changed: bool) -> str:
         """Return the GAME PLAN prompt suffix, gated by when to recite it aloud.
 
         The plan stays in the prompt as context either way (so advice is
@@ -3286,13 +3666,11 @@ class CoachEngine:
         recite = (not our_turn) or plan_changed
         if recite:
             return (
-                "\n\n" + plan_block
-                + "\n\nLead with the concrete recommended move FIRST, then briefly "
+                "\n\n" + plan_block + "\n\nLead with the concrete recommended move FIRST, then briefly "
                 "name the plan and how this move advances it."
             )
         return (
-            "\n\n" + plan_block
-            + "\n\nUse this game plan as SILENT background only. Do NOT name, recite, "
+            "\n\n" + plan_block + "\n\nUse this game plan as SILENT background only. Do NOT name, recite, "
             "or summarize the plan or win condition in your answer. Give ONLY the "
             "concrete next play and its immediate tactical reason."
         )
@@ -3300,10 +3678,10 @@ class CoachEngine:
     def get_advice(
         self,
         game_state: dict[str, Any],
-        question: Optional[str] = None,
-        trigger: Optional[str] = None,
-        style: Optional[str] = None,
-        threat: Optional[dict[str, Any]] = None,
+        question: str | None = None,
+        trigger: str | None = None,
+        style: str | None = None,
+        threat: dict[str, Any] | None = None,
     ) -> str:
         """Get coaching advice for the current game state.
 
@@ -3316,7 +3694,6 @@ class CoachEngine:
         Returns:
             Advice string from the LLM
         """
-        import time
 
         total_start = time.perf_counter()
 
@@ -3338,7 +3715,9 @@ class CoachEngine:
 
         if blacklisted:
             avoid_list = ", ".join(blacklisted)
-            system_prompt += f"\n\nIMPORTANT: Avoid using these overused words: {avoid_list}. Use different phrasing."
+            system_prompt += (
+                f"\n\nIMPORTANT: Avoid using these overused words: {avoid_list}. Use different phrasing."
+            )
             logger.debug(f"Blacklisted words: {blacklisted}")
 
         # PHASE 2: Inject decision-specific guidance when a decision is pending
@@ -3365,7 +3744,9 @@ class CoachEngine:
 
         if question:
             if is_verbose:
-                user_message = f"{context}\n\nThe player asks: {question}\nProvide a thorough answer with reasoning."
+                user_message = (
+                    f"{context}\n\nThe player asks: {question}\nProvide a thorough answer with reasoning."
+                )
             else:
                 user_message = f"{context}\n\nThe player asks: {question}"
         elif trigger:
@@ -3382,7 +3763,7 @@ class CoachEngine:
                     "spell_resolved": "A spell just resolved. What is the best next play? Explain why.",
                     "priority_gained": "You have priority. Should you respond or pass? Explain your reasoning.",
                     "combat_attackers": "Combat: Declare attackers. Which creatures should attack and why? Default: attack with ALL eligible creatures unless you have a specific reason to hold one back (e.g., need a blocker to survive crackback). Explain the combat math.",
-                    "combat_blockers": "Combat: Opponent is attacking. How should you block and why? Name the attacker each blocker blocks (\"Block [attacker] with [blocker]\") and explain the trade-offs.",
+                    "combat_blockers": 'Combat: Opponent is attacking. How should you block and why? Name the attacker each blocker blocks ("Block [attacker] with [blocker]") and explain the trade-offs.',
                     "low_life": "Your life is dangerously low! What's the survival plan? Explain the reasoning.",
                     "opponent_low_life": "Opponent's life is low — can you finish them? Explain the line.",
                     "stack_spell": "Something was just cast. Should you respond or let it resolve? Explain why.",
@@ -3406,7 +3787,7 @@ class CoachEngine:
                     "spell_resolved": "A spell just resolved. What is the ONE next play?",
                     "priority_gained": "You have priority. Respond or pass?",
                     "combat_attackers": "Combat: Declare attackers. Which creatures should attack? Default: attack with ALL eligible creatures unless you have a specific reason to hold one back (e.g., need a blocker to survive crackback).",
-                    "combat_blockers": "Combat: Opponent is attacking. How should you block? Name the attacker each blocker blocks (\"Block [attacker] with [blocker]\").",
+                    "combat_blockers": 'Combat: Opponent is attacking. How should you block? Name the attacker each blocker blocks ("Block [attacker] with [blocker]").',
                     "low_life": "Your life is dangerously low! What's the survival plan?",
                     "opponent_low_life": "Opponent's life is low — can you finish them?",
                     "stack_spell": "Something was just cast. Respond or let it resolve?",
@@ -3450,65 +3831,55 @@ class CoachEngine:
 
         # ── QUICK prompt ──────────────────────────────────────────────────
         # Single sentence, imperative, speakable in under 5 seconds.
-        _quick_prompt = (
-            DEFAULT_SYSTEM_PROMPT
-            .replace(
-                "Keep responses concise (2-3 sentences max) since they'll be spoken aloud.\n"
-                "Focus ONLY on the final strategic recommendation.\n"
-                "Do NOT show your thinking process, \"reasoning\", or \"corrections\".\n"
-                "Do NOT use internal monologue tags like [plan] or [thought].\n"
-                "Do NOT second-guess yourself in the text (e.g., \"Wait, I need to check...\").\n"
-                "Be authoritative and decisive. Start your response immediately with the command.",
-
-                "QUICK MODE: respond in ONE short imperative sentence, under 15 words. "
-                "Just the action — no reasoning, no alternatives, no hedging. "
-                "Examples: \"Play Forest.\" \"Cast Lightning Bolt on the dragon.\" "
-                "\"Attack with all creatures.\" \"Pass priority.\" "
-                "If the play truly requires context, use 2 short sentences max — "
-                "but prefer one. Never exceed 20 words total.",
-            )
-            .replace(
-                "Output directly as the coach. No preamble, no meta-commentary.",
-                "Output directly as the coach. No preamble. No meta-commentary. One sentence.",
-            )
+        _quick_prompt = DEFAULT_SYSTEM_PROMPT.replace(
+            "Keep responses concise (2-3 sentences max) since they'll be spoken aloud.\n"
+            "Focus ONLY on the final strategic recommendation.\n"
+            'Do NOT show your thinking process, "reasoning", or "corrections".\n'
+            "Do NOT use internal monologue tags like [plan] or [thought].\n"
+            'Do NOT second-guess yourself in the text (e.g., "Wait, I need to check...").\n'
+            "Be authoritative and decisive. Start your response immediately with the command.",
+            "QUICK MODE: respond in ONE short imperative sentence, under 15 words. "
+            "Just the action — no reasoning, no alternatives, no hedging. "
+            'Examples: "Play Forest." "Cast Lightning Bolt on the dragon." '
+            '"Attack with all creatures." "Pass priority." '
+            "If the play truly requires context, use 2 short sentences max — "
+            "but prefer one. Never exceed 20 words total.",
+        ).replace(
+            "Output directly as the coach. No preamble, no meta-commentary.",
+            "Output directly as the coach. No preamble. No meta-commentary. One sentence.",
         )
 
         # ── CHATTY prompt ─────────────────────────────────────────────────
         # Multiple sentences, explain the WHY, mention alternatives/tradeoffs,
         # feel conversational. Still capped so TTS doesn't run forever.
-        _chatty_prompt = (
-            DEFAULT_SYSTEM_PROMPT
-            .replace(
-                "Keep responses concise (2-3 sentences max) since they'll be spoken aloud.\n"
-                "Focus ONLY on the final strategic recommendation.\n"
-                "Do NOT show your thinking process, \"reasoning\", or \"corrections\".\n"
-                "Do NOT use internal monologue tags like [plan] or [thought].\n"
-                "Do NOT second-guess yourself in the text (e.g., \"Wait, I need to check...\").\n"
-                "Be authoritative and decisive. Start your response immediately with the command.",
-
-                "CHATTY MODE: give a conversational, natural-sounding recommendation "
-                "of 3 to 5 sentences. Lead with the recommended play, then explain "
-                "WHY it's right: the game state reasoning, combat math, or the "
-                "tradeoff vs the most obvious alternative. Mention any relevant "
-                "threat you're playing around. Speak like a friend watching over "
-                "your shoulder — warm but focused. Cap it at ~80 words so speech "
-                "stays under ~25 seconds. Still no internal monologue tags or "
-                "self-correction — just deliver the reasoning cleanly.",
-            )
-            .replace(
-                "Output directly as the coach. No preamble, no meta-commentary.",
-                "Output directly as the coach. No preamble or meta-commentary — "
-                "just lead with the play and explain the thinking.",
-            )
+        _chatty_prompt = DEFAULT_SYSTEM_PROMPT.replace(
+            "Keep responses concise (2-3 sentences max) since they'll be spoken aloud.\n"
+            "Focus ONLY on the final strategic recommendation.\n"
+            'Do NOT show your thinking process, "reasoning", or "corrections".\n'
+            "Do NOT use internal monologue tags like [plan] or [thought].\n"
+            'Do NOT second-guess yourself in the text (e.g., "Wait, I need to check...").\n'
+            "Be authoritative and decisive. Start your response immediately with the command.",
+            "CHATTY MODE: give a conversational, natural-sounding recommendation "
+            "of 3 to 5 sentences. Lead with the recommended play, then explain "
+            "WHY it's right: the game state reasoning, combat math, or the "
+            "tradeoff vs the most obvious alternative. Mention any relevant "
+            "threat you're playing around. Speak like a friend watching over "
+            "your shoulder — warm but focused. Cap it at ~80 words so speech "
+            "stays under ~25 seconds. Still no internal monologue tags or "
+            "self-correction — just deliver the reasoning cleanly.",
+        ).replace(
+            "Output directly as the coach. No preamble, no meta-commentary.",
+            "Output directly as the coach. No preamble or meta-commentary — "
+            "just lead with the play and explain the thinking.",
         )
 
         prompts = {
-            "quick":   _quick_prompt,
-            "chatty":  _chatty_prompt,
+            "quick": _quick_prompt,
+            "chatty": _chatty_prompt,
             # Legacy aliases still work
             "concise": _quick_prompt,
             "verbose": _chatty_prompt,
-            "normal":  DEFAULT_SYSTEM_PROMPT,
+            "normal": DEFAULT_SYSTEM_PROMPT,
             "explain": DEFAULT_SYSTEM_PROMPT.replace(
                 "Keep responses concise (2-3 sentences max)",
                 "Explain your reasoning clearly but briefly.",
@@ -3567,7 +3938,9 @@ class CoachEngine:
         # Re-inject blacklisted words and decision guidance into effective prompt
         if blacklisted:
             avoid_list = ", ".join(blacklisted)
-            effective_system_prompt += f"\n\nIMPORTANT: Avoid using these overused words: {avoid_list}. Use different phrasing."
+            effective_system_prompt += (
+                f"\n\nIMPORTANT: Avoid using these overused words: {avoid_list}. Use different phrasing."
+            )
 
         if decision_context:
             dec_type = decision_context.get("type", "unknown")
@@ -3588,9 +3961,7 @@ class CoachEngine:
                     "\n\nRELEVANT MTG RULES (official — these override any conflicting assumptions):\n"
                     + "\n".join(rules_lines)
                 )
-                logger.debug(
-                    f"Injected {len(rules)} rules: {[r['number'] for r in rules]}"
-                )
+                logger.debug(f"Injected {len(rules)} rules: {[r['number'] for r in rules]}")
         except Exception as e:
             logger.warning(f"Rules RAG error (non-fatal): {e}")
 
@@ -3600,7 +3971,7 @@ class CoachEngine:
         # If the external timeout fires first, the backend thread still holds
         # the lock, causing cascading lock-busy failures on subsequent calls
         # which triggers unnecessary restarts.
-        backend_timeout = getattr(self._backend, 'timeout_s', 12.0)
+        backend_timeout = getattr(self._backend, "timeout_s", 12.0)
         is_local = _is_local_backend(self._backend)
         if is_local:
             api_timeout = max(backend_timeout + 5, 45)  # Local models need more time
@@ -3611,9 +3982,7 @@ class CoachEngine:
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         complete_kwargs = (
-            {"request_timeout_s": api_timeout}
-            if isinstance(self._backend, ProxyBackend)
-            else {}
+            {"request_timeout_s": api_timeout} if isinstance(self._backend, ProxyBackend) else {}
         )
         future = executor.submit(
             self._backend.complete,
@@ -3694,7 +4063,6 @@ class CoachEngine:
         Returns:
             Strategic plan string from the LLM
         """
-        import time
         import concurrent.futures
 
         total_start = time.perf_counter()
@@ -3742,15 +4110,11 @@ class CoachEngine:
                 request_timeout_s=api_timeout,
             )
         else:
-            future = executor.submit(
-                be.complete, system_prompt, user_message
-            )
+            future = executor.submit(be.complete, system_prompt, user_message)
         try:
             response = future.result(timeout=api_timeout)
         except concurrent.futures.TimeoutError:
-            logger.warning(
-                f"Win plan API call timed out after {api_timeout}s"
-            )
+            logger.warning(f"Win plan API call timed out after {api_timeout}s")
             response = ""
         executor.shutdown(wait=False)
         api_time = (time.perf_counter() - api_start) * 1000
@@ -3769,11 +4133,11 @@ class CoachEngine:
         match_result: str,
         match_duration_turns: int,
         deck_strategy: str = "",
-        final_life_totals: Optional[dict] = None,
-        opponent_played_cards: Optional[list[str]] = None,
-        backend: Optional[Any] = None,
-        missed_decisions: Optional[list[dict]] = None,
-        replay_context: Optional[str] = None,
+        final_life_totals: dict | None = None,
+        opponent_played_cards: list[str] | None = None,
+        backend: Any | None = None,
+        missed_decisions: list[dict] | None = None,
+        replay_context: str | None = None,
     ) -> str:
         """Generate a post-match strategic analysis from the advice log.
 
@@ -3791,7 +4155,6 @@ class CoachEngine:
         Returns:
             Analysis string from the LLM, or "" on failure.
         """
-        import time
         import concurrent.futures
 
         be = backend or self._backend
@@ -3799,16 +4162,21 @@ class CoachEngine:
         # Build chronological match narrative
         lines = []
         result_label = (
-            "VICTORY" if match_result == "win"
-            else "DEFEAT" if match_result == "loss"
-            else "DRAW" if match_result == "draw"
+            "VICTORY"
+            if match_result == "win"
+            else "DEFEAT"
+            if match_result == "loss"
+            else "DRAW"
+            if match_result == "draw"
             else "UNKNOWN"
         )
         if result_label == "UNKNOWN":
-            lines.append("MATCH RESULT: UNKNOWN — the result could not be determined automatically. "
-                         "The player may have conceded, disconnected, or the opponent won by an "
-                         "undetected mechanism. Do NOT assume the player won. If life totals suggest "
-                         "the player was ahead, they likely conceded.")
+            lines.append(
+                "MATCH RESULT: UNKNOWN — the result could not be determined automatically. "
+                "The player may have conceded, disconnected, or the opponent won by an "
+                "undetected mechanism. Do NOT assume the player won. If life totals suggest "
+                "the player was ahead, they likely conceded."
+            )
         else:
             lines.append(f"MATCH RESULT: {result_label}")
         lines.append(f"MATCH LENGTH: {match_duration_turns} turns")
@@ -3848,7 +4216,7 @@ class CoachEngine:
             # 90+ card library list bloats the prompt for no analytic value.
             ctx_snippet = ctx
             if "\nLIBRARY SEARCH TARGETS" in ctx_snippet:
-                ctx_snippet = ctx_snippet[:ctx_snippet.index("\nLIBRARY SEARCH TARGETS")]
+                ctx_snippet = ctx_snippet[: ctx_snippet.index("\nLIBRARY SEARCH TARGETS")]
             # Cap each entry's context to avoid huge prompts in long games
             if len(ctx_snippet) > 2000:
                 ctx_snippet = ctx_snippet[:2000] + "\n[...truncated]"
@@ -3866,12 +4234,12 @@ class CoachEngine:
                 lines.append(
                     f"  {i}. Turn {md.get('turn', '?')}, {md.get('phase', '?')}: "
                     f"{md.get('decision_type', 'unknown')} — "
-                    f"\"{md.get('prompt_text', '')}\" "
+                    f'"{md.get("prompt_text", "")}" '
                     f"(stall={md.get('stall_duration_s', '?')}s, conf={md.get('confidence', '?')})"
                 )
 
         if replay_context:
-            lines.append(f"\nREPLAY DATA (authoritative GRE decision history):")
+            lines.append("\nREPLAY DATA (authoritative GRE decision history):")
             lines.append(replay_context)
 
         user_message = "\n".join(lines)
@@ -3895,16 +4263,13 @@ class CoachEngine:
 
         # Try with max_tokens first, fall back to 2-arg call.
         import inspect
+
         sig = inspect.signature(be.complete)
         accepts_kwargs = len(sig.parameters) > 2 or any(
             p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
         )
         if accepts_kwargs:
-            submit_kwargs = (
-                {"request_timeout_s": api_timeout}
-                if isinstance(be, ProxyBackend)
-                else {}
-            )
+            submit_kwargs = {"request_timeout_s": api_timeout} if isinstance(be, ProxyBackend) else {}
             future = executor.submit(
                 be.complete,
                 POST_MATCH_ANALYSIS_PROMPT,
@@ -3913,9 +4278,7 @@ class CoachEngine:
                 **submit_kwargs,
             )
         else:
-            future = executor.submit(
-                be.complete, POST_MATCH_ANALYSIS_PROMPT, user_message
-            )
+            future = executor.submit(be.complete, POST_MATCH_ANALYSIS_PROMPT, user_message)
         try:
             response = future.result(timeout=api_timeout)
         except concurrent.futures.TimeoutError:
@@ -3936,9 +4299,9 @@ class CoachEngine:
         maindeck_cards: list[Any],
         sideboard_cards: list[Any],
         opponent_cards_seen: list[Any],
-        game_history: Optional[list[dict[str, Any]]] = None,
-        backend: Optional[Any] = None,
-    ) -> Optional[str]:
+        game_history: list[dict[str, Any]] | None = None,
+        backend: Any | None = None,
+    ) -> str | None:
         """Generate Best-of-Three (Bo3) sideboarding recommendations.
 
         Args:
@@ -3951,7 +4314,6 @@ class CoachEngine:
         Returns:
             Recommended swaps and strategic reasoning, or None on failure.
         """
-        import time
 
         be = backend or self._backend
         if not be:
@@ -3963,6 +4325,7 @@ class CoachEngine:
             if not cards:
                 return "(None revealed or listed)"
             from collections import Counter
+
             counts = Counter()
             details: dict[str, tuple[str, str]] = {}
 
@@ -4020,16 +4383,19 @@ class CoachEngine:
                 history_parts.append(f"Game {i}: {res} ({turns} turns)")
             prompt_lines.append(f"Match History: {', '.join(history_parts)}")
 
-        prompt_lines.extend([
-            f"\nPLAYER MAINDECK:\n{maindeck_text}",
-            f"\nPLAYER SIDEBOARD:\n{sideboard_text}",
-            f"\nOPPONENT CARDS SEEN:\n{opp_text}",
-        ])
+        prompt_lines.extend(
+            [
+                f"\nPLAYER MAINDECK:\n{maindeck_text}",
+                f"\nPLAYER SIDEBOARD:\n{sideboard_text}",
+                f"\nOPPONENT CARDS SEEN:\n{opp_text}",
+            ]
+        )
 
         user_message = "\n".join(prompt_lines)
 
         try:
             import inspect
+
             sig = inspect.signature(be.complete)
             accepts_kwargs = len(sig.parameters) > 2 or any(
                 p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
@@ -4050,8 +4416,9 @@ class CoachEngine:
             logger.error(f"Sideboard recommendation error: {e}")
             return None
 
-    def generate_win_probability(self, game_state: dict[str, Any],
-                                  opponent_played_cards: list[dict] = None) -> str:
+    def generate_win_probability(
+        self, game_state: dict[str, Any], opponent_played_cards: list[dict] = None
+    ) -> str:
         """Estimate win probability based on current board state.
 
         Returns a short analysis with a win percentage and recommendation.
@@ -4090,16 +4457,11 @@ class CoachEngine:
         user_message = f"{context}{opp_cards_str}\n\nEstimate win probability."
 
         import concurrent.futures
+
         api_timeout = 30
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        submit_kwargs = (
-            {"request_timeout_s": api_timeout}
-            if isinstance(be, ProxyBackend)
-            else {}
-        )
-        future = executor.submit(
-            be.complete, system_prompt, user_message, 1000, **submit_kwargs
-        )
+        submit_kwargs = {"request_timeout_s": api_timeout} if isinstance(be, ProxyBackend) else {}
+        future = executor.submit(be.complete, system_prompt, user_message, 1000, **submit_kwargs)
         try:
             response = future.result(timeout=api_timeout)
         except concurrent.futures.TimeoutError:
@@ -4161,7 +4523,7 @@ class CoachEngine:
 
         words = advice.split()
         if len(words) > word_cap + 5:  # small slack before truncating
-            sentences = re.split(r'(?<=[.!?])\s+', advice)
+            sentences = re.split(r"(?<=[.!?])\s+", advice)
             truncated = []
             count = 0
             for sent in sentences[:sent_cap]:
@@ -4174,7 +4536,7 @@ class CoachEngine:
             if advice and advice[-1] not in ".!?":
                 advice += "."
 
-        def _combat_attack_summary() -> Optional[tuple[int, int, int]]:
+        def _combat_attack_summary() -> tuple[int, int, int] | None:
             """Return (attack_power, opp_life, opp_blockers) if computable."""
             turn = game_state.get("turn", {})
             turn_num = turn.get("turn_number", 0)
@@ -4185,9 +4547,7 @@ class CoachEngine:
             if not local_player:
                 return None
             local_seat = local_player.get("seat_id")
-            opponent_player = next(
-                (p for p in players if p.get("seat_id") != local_seat), None
-            )
+            opponent_player = next((p for p in players if p.get("seat_id") != local_seat), None)
             if not opponent_player:
                 return None
 
@@ -4206,18 +4566,13 @@ class CoachEngine:
             ]
 
             def _has_haste(card: dict[str, Any]) -> bool:
-                return (
-                    "haste"
-                    in self._remove_reminder_text(card.get("oracle_text", "")).lower()
-                )
+                return "haste" in self._remove_reminder_text(card.get("oracle_text", "")).lower()
 
             valid_attackers = [
                 c
                 for c in your_creatures
                 if not c.get("is_tapped")
-                and not (
-                    c.get("turn_entered_battlefield") == turn_num and not _has_haste(c)
-                )
+                and not (c.get("turn_entered_battlefield") == turn_num and not _has_haste(c))
             ]
             attack_power = sum(c.get("power") or 0 for c in valid_attackers)
 
@@ -4235,7 +4590,7 @@ class CoachEngine:
 
         # Get cards in hand
         hand_cards = game_state.get("hand", [])
-        hand_names = {c.get("name", "").lower() for c in hand_cards}
+        {c.get("name", "").lower() for c in hand_cards}
 
         # Get all card names in game state for fuzzy matching
         all_cards = []
@@ -4281,9 +4636,7 @@ class CoachEngine:
                 # Sort longest first so multi-word names match before substrings
                 land_alternatives = sorted(removable_land_names, key=len, reverse=True)
                 land_pattern = re.compile(
-                    r"Play\s+(?:"
-                    + "|".join(re.escape(n) for n in land_alternatives)
-                    + r")[.,]?\s*",
+                    r"Play\s+(?:" + "|".join(re.escape(n) for n in land_alternatives) + r")[.,]?\s*",
                     flags=re.IGNORECASE,
                 )
                 advice = land_pattern.sub("", advice)
@@ -4316,9 +4669,7 @@ class CoachEngine:
                             # Only replace if first letter matches (to avoid false positives)
                             if original_words[i][0].lower() == word[0].lower():
                                 original_words[i] = (
-                                    word.capitalize()
-                                    if original_words[i][0].isupper()
-                                    else word
+                                    word.capitalize() if original_words[i][0].isupper() else word
                                 )
                                 advice = " ".join(original_words)
 
@@ -4330,10 +4681,7 @@ class CoachEngine:
         # Count untapped lands we control
         untapped_lands = 0
         for card in battlefield:
-            if (
-                card.get("controller_seat_id") == local_seat
-                or card.get("owner_seat_id") == local_seat
-            ):
+            if card.get("controller_seat_id") == local_seat or card.get("owner_seat_id") == local_seat:
                 type_line = card.get("type_line", "").lower()
                 if "land" in type_line and not card.get("is_tapped"):
                     untapped_lands += 1
@@ -4362,9 +4710,7 @@ class CoachEngine:
             for sym in symbols:
                 if sym.isdigit():
                     cmc += int(sym)
-                elif sym in ["W", "U", "B", "R", "G", "C"]:
-                    cmc += 1
-                elif "/" in sym:  # Hybrid like {R/G}
+                elif sym in ["W", "U", "B", "R", "G", "C"] or "/" in sym:
                     cmc += 1
 
             # If this card costs more than we can have, remove Cast suggestions for it
@@ -4396,21 +4742,15 @@ class CoachEngine:
                 else:
                     # Card mentioned mid-sentence — replace name with "[uncastable]" hint
                     # so the sentence stays grammatical
-                    mid_pattern = re.compile(
-                        rf"(?:cast\s+)?{re.escape(card_name)}", re.IGNORECASE
-                    )
+                    mid_pattern = re.compile(rf"(?:cast\s+)?{re.escape(card_name)}", re.IGNORECASE)
                     if mid_pattern.search(advice):
-                        advice = mid_pattern.sub(
-                            f"{card_name} (not enough mana)", advice, count=1
-                        )
+                        advice = mid_pattern.sub(f"{card_name} (not enough mana)", advice, count=1)
                         logger.debug(
                             f"Annotated uncastable mid-sentence: {card_name} (needs {cmc}, have {potential_mana})"
                         )
 
         # 4. Remove incorrect lethal/win claims when math doesn't support it
-        if re.search(
-            r"(?i)\blethal\b|\bfor the win\b|\bthat'?s the win\b|\bwin!\b", advice
-        ):
+        if re.search(r"(?i)\blethal\b|\bfor the win\b|\bthat'?s the win\b|\bwin!\b", advice):
             summary = _combat_attack_summary()
             if summary:
                 attack_power, opp_life, opp_blockers = summary
@@ -4495,11 +4835,7 @@ class CoachEngine:
                     score += 80
 
                 # Combat step priorities
-                if (
-                    "declare attackers" in act
-                    and "combat" in phase
-                    and "declareattack" in step
-                ):
+                if "declare attackers" in act and "combat" in phase and "declareattack" in step:
                     score += 90
                 if "declare attackers" in act and "declare attackers" in pending_decision:
                     score += 120
@@ -4521,8 +4857,7 @@ class CoachEngine:
                 if act.startswith("activate "):
                     score += 40
                 if act.startswith("activate ") and (
-                    ("combat" in phase and "declareblock" in step)
-                    or ("declare blockers" in pending_decision)
+                    ("combat" in phase and "declareblock" in step) or ("declare blockers" in pending_decision)
                 ):
                     # During blocker declaration, avoid replacing with activations.
                     score -= 100
@@ -4563,7 +4898,7 @@ class CoachEngine:
 
                 return action
 
-            def _get_legal_pass_action(actions: list[str]) -> Optional[str]:
+            def _get_legal_pass_action(actions: list[str]) -> str | None:
                 """Return the concrete legal Pass action when available."""
                 for action in actions:
                     if action.strip().lower() == "pass":
@@ -4590,13 +4925,9 @@ class CoachEngine:
             legal_lower = [a.lower() for a in legal_actions]
             # Strip [OK], [NEED:x], [NO TARGETS] etc. markers before matching so
             # "Cast Northern Air Temple" matches "Cast Northern Air Temple [NEED:B]"
-            legal_lower_stripped = [
-                re.sub(r'\s*\[[^\]]+\]', '', a).strip()
-                for a in legal_lower
-            ]
-            matches = (
-                any(l in advice_lower for l in legal_lower)
-                or any(l in advice_lower for l in legal_lower_stripped)
+            legal_lower_stripped = [re.sub(r"\s*\[[^\]]+\]", "", a).strip() for a in legal_lower]
+            matches = any(l in advice_lower for l in legal_lower) or any(
+                l in advice_lower for l in legal_lower_stripped
             )
             legal_pass_action = _get_legal_pass_action(legal_actions)
 
@@ -4608,21 +4939,43 @@ class CoachEngine:
             # "Don't attack", "don't block", "pass priority", "no attacks" are
             # always valid strategic choices — the player can decline to act.
             PASSTHROUGH_PHRASES = [
-                "don't attack", "don\u2019t attack", "do not attack", "no attack",
-                "don't block", "don\u2019t block", "do not block", "no block",
-                "pass priority", "take the damage",
-                "let it resolve", "let them resolve", "let that resolve",
-                "wait", "no response", "don't respond", "don\u2019t respond",
-                "nothing to do", "pass", "resolve",
+                "don't attack",
+                "don\u2019t attack",
+                "do not attack",
+                "no attack",
+                "don't block",
+                "don\u2019t block",
+                "do not block",
+                "no block",
+                "pass priority",
+                "take the damage",
+                "let it resolve",
+                "let them resolve",
+                "let that resolve",
+                "wait",
+                "no response",
+                "don't respond",
+                "don\u2019t respond",
+                "nothing to do",
+                "pass",
+                "resolve",
             ]
             has_ok_actions = any(
                 "[ok]" in act.lower() for act in legal_actions if not act.lower().startswith("pass")
             )
             false_no_mana_claim = any(
-                claim in advice_lower for claim in [
-                    "lack the mana", "lacks the mana", "don't have the mana", "dont have the mana",
-                    "not enough mana", "no castable spells", "cannot cast any", "can't cast any",
-                    "no legal spells", "no playable spells"
+                claim in advice_lower
+                for claim in [
+                    "lack the mana",
+                    "lacks the mana",
+                    "don't have the mana",
+                    "dont have the mana",
+                    "not enough mana",
+                    "no castable spells",
+                    "cannot cast any",
+                    "can't cast any",
+                    "no legal spells",
+                    "no playable spells",
                 ]
             )
 
@@ -4634,100 +4987,175 @@ class CoachEngine:
             if not matches:
                 for act in legal_actions:
                     act_lower = act.lower()
-                    act_clean = re.sub(r'\s*\[[^\]]+\]', '', act_lower).strip()
-                    
+                    act_clean = re.sub(r"\s*\[[^\]]+\]", "", act_lower).strip()
+
                     # 1. Cast actions (e.g., "cast michelangelo, weirdness to 11")
                     if act_clean.startswith("cast "):
                         card_name = act_clean[5:].strip()
-                        short_name = re.split(r'[,—/]', card_name)[0].strip()
+                        short_name = re.split(r"[,—/]", card_name)[0].strip()
                         if short_name and short_name in advice_lower:
                             matches = True
                             break
-                    
+
                     # 2. Play land actions (e.g., "play land: forest")
                     elif act_clean.startswith("play land:"):
                         card_name = act_clean[10:].strip()
-                        short_name = re.split(r'[,—/]', card_name)[0].strip()
-                        if short_name and (short_name in advice_lower or "play land" in advice_lower or "play a land" in advice_lower):
+                        short_name = re.split(r"[,—/]", card_name)[0].strip()
+                        if short_name and (
+                            short_name in advice_lower
+                            or "play land" in advice_lower
+                            or "play a land" in advice_lower
+                        ):
                             matches = True
                             break
-                    
+
                     # 3. Activate actions (e.g., "activate bristly bill, spine sower")
                     elif act_clean.startswith("activate "):
                         card_name = act_clean[9:].strip()
-                        short_name = re.split(r'[,—/]', card_name)[0].strip()
+                        short_name = re.split(r"[,—/]", card_name)[0].strip()
                         if short_name and short_name in advice_lower:
                             matches = True
                             break
-                    
+
                     # 4. Declare attackers (e.g., "declare attackers: bristly bill, spine sower...")
                     elif act_clean.startswith("declare attackers:"):
                         names_str = act_clean.split(":", 1)[1]
-                        names = [n.strip() for n in re.split(r'[,#\d]', names_str) if n.strip()]
+                        names = [n.strip() for n in re.split(r"[,#\d]", names_str) if n.strip()]
                         name_matched = any(name in advice_lower for name in names if len(name) > 2)
-                        
-                        is_negative = any(neg in advice_lower for neg in [
-                            "don't", "dont", "do not", "no attack", "not attack", "hold back",
-                            "never attack", "avoid attacking", "decline to attack"
-                        ])
-                        generic_attack = any(phrase in advice_lower for phrase in [
-                            "attack with all", "attack with everything", "all attack",
-                            "swing with all", "swing with everything", "attack all",
-                            "swing all", "attack with everyone", "swing with everyone",
-                            "all in", "all-in", "attack with all creatures",
-                            "swing with all creatures", "all creatures attack",
-                            "attack with your creatures", "swing with your creatures",
-                            "attack with all of your", "swing with all of your",
-                            "attack with all available", "swing with all available",
-                            "attack with your team", "swing with your team",
-                            "attack with the team", "swing with the team",
-                            "attack!", "attack.", "swing!", "swing."
-                        ]) or advice_lower.strip() in ("attack", "swing")
-                        
+
+                        is_negative = any(
+                            neg in advice_lower
+                            for neg in [
+                                "don't",
+                                "dont",
+                                "do not",
+                                "no attack",
+                                "not attack",
+                                "hold back",
+                                "never attack",
+                                "avoid attacking",
+                                "decline to attack",
+                            ]
+                        )
+                        generic_attack = any(
+                            phrase in advice_lower
+                            for phrase in [
+                                "attack with all",
+                                "attack with everything",
+                                "all attack",
+                                "swing with all",
+                                "swing with everything",
+                                "attack all",
+                                "swing all",
+                                "attack with everyone",
+                                "swing with everyone",
+                                "all in",
+                                "all-in",
+                                "attack with all creatures",
+                                "swing with all creatures",
+                                "all creatures attack",
+                                "attack with your creatures",
+                                "swing with your creatures",
+                                "attack with all of your",
+                                "swing with all of your",
+                                "attack with all available",
+                                "swing with all available",
+                                "attack with your team",
+                                "swing with your team",
+                                "attack with the team",
+                                "swing with the team",
+                                "attack!",
+                                "attack.",
+                                "swing!",
+                                "swing.",
+                            ]
+                        ) or advice_lower.strip() in ("attack", "swing")
+
                         if (name_matched or generic_attack) and not is_negative:
                             matches = True
                             break
-                    
+
                     # 5. Block actions (e.g., "block with: ...")
                     elif act_clean.startswith("block with:"):
-                        is_negative = any(neg in advice_lower for neg in [
-                            "don't", "dont", "do not", "no block", "not block", "never block",
-                            "avoid blocking", "decline to block", "no blocks"
-                        ])
-                        generic_block = any(phrase in advice_lower for phrase in [
-                            "block with all", "block with everything", "all block",
-                            "block all", "block with everyone", "block with all creatures",
-                            "block with your creatures", "block with all available",
-                            "block with your team", "block with the team",
-                            "block!", "block."
-                        ]) or advice_lower.strip() in ("block", "blocking")
-                        
+                        is_negative = any(
+                            neg in advice_lower
+                            for neg in [
+                                "don't",
+                                "dont",
+                                "do not",
+                                "no block",
+                                "not block",
+                                "never block",
+                                "avoid blocking",
+                                "decline to block",
+                                "no blocks",
+                            ]
+                        )
+                        generic_block = any(
+                            phrase in advice_lower
+                            for phrase in [
+                                "block with all",
+                                "block with everything",
+                                "all block",
+                                "block all",
+                                "block with everyone",
+                                "block with all creatures",
+                                "block with your creatures",
+                                "block with all available",
+                                "block with your team",
+                                "block with the team",
+                                "block!",
+                                "block.",
+                            ]
+                        ) or advice_lower.strip() in ("block", "blocking")
+
                         if generic_block and not is_negative:
                             matches = True
                             break
 
                     # 6. Done (confirm attackers) - matches if LLM recommends attacking
                     elif act_clean == "done (confirm attackers)":
-                        is_negative = any(neg in advice_lower for neg in [
-                            "don't", "dont", "do not", "no attack", "not attack", "hold back",
-                            "never attack", "avoid attacking", "decline to attack"
-                        ])
-                        has_attack_intent = any(phrase in advice_lower for phrase in [
-                            "attack", "swing", "lethal", "all in", "all-in", "combat"
-                        ])
+                        is_negative = any(
+                            neg in advice_lower
+                            for neg in [
+                                "don't",
+                                "dont",
+                                "do not",
+                                "no attack",
+                                "not attack",
+                                "hold back",
+                                "never attack",
+                                "avoid attacking",
+                                "decline to attack",
+                            ]
+                        )
+                        has_attack_intent = any(
+                            phrase in advice_lower
+                            for phrase in ["attack", "swing", "lethal", "all in", "all-in", "combat"]
+                        )
                         if has_attack_intent and not is_negative:
                             matches = True
                             break
 
                     # 7. Done (confirm blockers) - matches if LLM recommends blocking
                     elif act_clean == "done (confirm blockers)":
-                        is_negative = any(neg in advice_lower for neg in [
-                            "don't", "dont", "do not", "no block", "not block", "never block",
-                            "avoid blocking", "decline to block", "no blocks"
-                        ])
-                        has_block_intent = any(phrase in advice_lower for phrase in [
-                            "block", "chump", "trade"
-                        ])
+                        is_negative = any(
+                            neg in advice_lower
+                            for neg in [
+                                "don't",
+                                "dont",
+                                "do not",
+                                "no block",
+                                "not block",
+                                "never block",
+                                "avoid blocking",
+                                "decline to block",
+                                "no blocks",
+                            ]
+                        )
+                        has_block_intent = any(
+                            phrase in advice_lower for phrase in ["block", "chump", "trade"]
+                        )
                         if has_block_intent and not is_negative:
                             matches = True
                             break
@@ -4746,10 +5174,7 @@ class CoachEngine:
                         "Everything."
                     )
                 else:
-                    advice = (
-                        "No coaching available: cannot reach the AI service "
-                        "right now."
-                    )
+                    advice = "No coaching available: cannot reach the AI service right now."
                 logger.error(f"LLM failure surfaced to user (not masked): {advice}")
             elif not matches:
                 # Force to best legal action to avoid illegal recommendations
@@ -4766,18 +5191,22 @@ class CoachEngine:
                 _bf = game_state.get("battlefield", [])
                 _lp = next((p for p in game_state.get("players", []) if p.get("is_local")), None)
                 _ls = _lp.get("seat_id") if _lp else None
-                _my_creatures = [c for c in _bf
-                                 if c.get("owner_seat_id") == _ls
-                                 and c.get("power") is not None
-                                 and "land" not in c.get("type_line", "").lower()]
+                _my_creatures = [
+                    c
+                    for c in _bf
+                    if c.get("owner_seat_id") == _ls
+                    and c.get("power") is not None
+                    and "land" not in c.get("type_line", "").lower()
+                ]
                 if not _my_creatures:
                     for _hc in _hand:
                         _oracle = (_hc.get("oracle_text") or "").lower()
                         _tl = (_hc.get("type_line") or "").lower()
-                        if ("land" not in _tl and "creature" not in _tl
-                                and "saga" not in _tl):
-                            if ("target creature you control" in _oracle
-                                    or "creature you control fights" in _oracle):
+                        if "land" not in _tl and "creature" not in _tl and "saga" not in _tl:
+                            if (
+                                "target creature you control" in _oracle
+                                or "creature you control fights" in _oracle
+                            ):
                                 _hname = _hc.get("name")
                                 if _hname:
                                     _no_target_names.add(_hname)
@@ -4785,7 +5214,8 @@ class CoachEngine:
                 # Build candidate pool excluding [NO TARGETS] cards
                 if _no_target_names:
                     _candidates = [
-                        a for a in legal_actions
+                        a
+                        for a in legal_actions
                         if not any(f"Cast {nt}".lower() in a.lower() for nt in _no_target_names)
                     ]
                 else:
@@ -4793,14 +5223,11 @@ class CoachEngine:
                 if not _candidates:
                     _candidates = legal_actions  # fallback to unfiltered
 
-                in_declare_blockers = (
-                    ("combat" in phase and "declareblock" in step)
-                    or ("declare blockers" in pending_decision)
+                in_declare_blockers = ("combat" in phase and "declareblock" in step) or (
+                    "declare blockers" in pending_decision
                 )
                 if in_declare_blockers:
-                    blocker_actions = [
-                        a for a in _candidates if a.lower().startswith("block with:")
-                    ]
+                    blocker_actions = [a for a in _candidates if a.lower().startswith("block with:")]
                     if blocker_actions:
                         best = max(blocker_actions, key=_score_action)
                     else:
@@ -4852,12 +5279,14 @@ class CoachEngine:
         # Sequence validator: If advice says "Play [land] then cast [spell]" or "Play [land] and cast [spell]"
         # but [spell] is illegal and not in post-land THEN options, strip the illegal spell clause.
         if " then cast " in advice.lower() or " and cast " in advice.lower():
-            match_seq = re.search(r"(?i)^(Play\s+[\w\s'—]+?)(?:\s+(?:then|and)\s+cast\s+([\w\s'—]+))$", advice.strip())
+            match_seq = re.search(
+                r"(?i)^(Play\s+[\w\s'—]+?)(?:\s+(?:then|and)\s+cast\s+([\w\s'—]+))$", advice.strip()
+            )
             if match_seq:
                 land_part = match_seq.group(1).strip()
                 spell_part = match_seq.group(2).strip()
-                spell_short = re.split(r'[,—/]', spell_part)[0].strip().lower()
-                
+                spell_short = re.split(r"[,—/]", spell_part)[0].strip().lower()
+
                 spell_is_legal = any(
                     spell_short in act.lower() for act in legal_actions if act.lower().startswith("cast ")
                 )
@@ -4869,7 +5298,9 @@ class CoachEngine:
                 spell_in_then = any(spell_short in tl.lower() for tl in then_lines)
 
                 if not spell_is_legal and not spell_in_then:
-                    logger.info(f"Stripped illegal post-land spell '{spell_part}' from advice '{advice}' -> '{land_part}'")
+                    logger.info(
+                        f"Stripped illegal post-land spell '{spell_part}' from advice '{advice}' -> '{land_part}'"
+                    )
                     advice = land_part
 
         # 6. Block advice must name the attacker. "Block with Veteran Survivor"
@@ -4881,13 +5312,15 @@ class CoachEngine:
         return advice
 
     _NEGATIVE_BLOCK_PHRASES = (
-        "don't block", "don’t block", "do not block", "no block",
-        "take the damage", "take the hit",
+        "don't block",
+        "don’t block",
+        "do not block",
+        "no block",
+        "take the damage",
+        "take the hit",
     )
 
-    def _collect_block_decision_blockers(
-        self, game_state: dict[str, Any]
-    ) -> list[dict]:
+    def _collect_block_decision_blockers(self, game_state: dict[str, Any]) -> list[dict]:
         """Resolve the legal blockers for the current block decision.
 
         Prefers the GRE-authoritative ``legal_blocker_ids`` from the
@@ -4903,10 +5336,7 @@ class CoachEngine:
                 except (TypeError, ValueError):
                     continue
         if ids:
-            cards = [
-                c for c in battlefield
-                if int(c.get("instance_id") or 0) in ids
-            ]
+            cards = [c for c in battlefield if int(c.get("instance_id") or 0) in ids]
             if cards:
                 return cards
         local_seat = None
@@ -4915,7 +5345,8 @@ class CoachEngine:
                 local_seat = p.get("seat_id")
                 break
         return [
-            c for c in battlefield
+            c
+            for c in battlefield
             if c.get("owner_seat_id") == local_seat
             and "creature" in (c.get("type_line") or "").lower()
             and not c.get("is_tapped")
@@ -4929,7 +5360,7 @@ class CoachEngine:
         counts = Counter(names)
         seen: dict[str, int] = {}
         out: dict[int, str] = {}
-        for c, n in zip(cards, names):
+        for c, n in zip(cards, names, strict=False):
             label = n
             if counts[n] > 1:
                 seen[n] = seen.get(n, 0) + 1
@@ -4976,9 +5407,9 @@ class CoachEngine:
         # pick). Fall back to the full blocker pool if that yields nothing.
         advice_lower = advice.lower()
         mentioned = [
-            b for b in blockers
-            if (b.get("name") or "").lower()
-            and (b.get("name") or "").lower() in advice_lower
+            b
+            for b in blockers
+            if (b.get("name") or "").lower() and (b.get("name") or "").lower() in advice_lower
         ]
         candidate_pools: list[list[dict]] = []
         if mentioned:
@@ -4989,7 +5420,9 @@ class CoachEngine:
         for pool in candidate_pools:
             try:
                 plan = optimal_blocks(
-                    attackers, pool, your_life,
+                    attackers,
+                    pool,
+                    your_life,
                     blocker_allowed_attackers=allowed_map or None,
                 )
             except Exception as e:
@@ -5006,17 +5439,14 @@ class CoachEngine:
                 by_attacker.setdefault(int(aid), []).append(int(bid))
             for aid in sorted(by_attacker):
                 a_label = atk_names.get(aid)
-                b_labels = [
-                    blk_names.get(bid, f"creature {bid}")
-                    for bid in sorted(by_attacker[aid])
-                ]
+                b_labels = [blk_names.get(bid, f"creature {bid}") for bid in sorted(by_attacker[aid])]
                 if a_label:
                     clauses.append(f"block {a_label} with {' and '.join(b_labels)}")
         else:
             # Solver says no blocks, but the advice recommends blocking —
             # keep the line actionable: aim the mentioned (or first) blocker
             # at the biggest attacker it can legally block.
-            for b in (mentioned or blockers[:1]):
+            for b in mentioned or blockers[:1]:
                 bid = int(b.get("instance_id") or 0)
                 allowed = allowed_map.get(bid) if allowed_map else None
                 candidates = []
@@ -5033,16 +5463,12 @@ class CoachEngine:
                 aid = int(biggest.get("instance_id") or 0)
                 a_label = atk_names.get(aid)
                 if a_label:
-                    clauses.append(
-                        f"block {a_label} with {blk_names.get(bid, b.get('name', '?'))}"
-                    )
+                    clauses.append(f"block {a_label} with {blk_names.get(bid, b.get('name', '?'))}")
         if not clauses:
             return ""
         return "Assignment: " + "; ".join(clauses) + "."
 
-    def _ensure_block_advice_names_attacker(
-        self, advice: str, game_state: dict[str, Any]
-    ) -> str:
+    def _ensure_block_advice_names_attacker(self, advice: str, game_state: dict[str, Any]) -> str:
         """Repair DeclareBlockers advice that names a blocker but no attacker.
 
         "Block with Veteran Survivor" is useless when multiple creatures are
@@ -5056,10 +5482,7 @@ class CoachEngine:
             return advice
         pending = str(game_state.get("pending_decision") or "").lower()
         ctx = game_state.get("decision_context") or {}
-        if (
-            pending != "declare blockers"
-            and str(ctx.get("type") or "") != "declare_blockers"
-        ):
+        if pending != "declare blockers" and str(ctx.get("type") or "") != "declare_blockers":
             return advice
 
         import re
@@ -5087,17 +5510,11 @@ class CoachEngine:
 
         # Only repair advice that is actually recommending a block.
         blockers = self._collect_block_decision_blockers(game_state)
-        blocker_named = any(
-            (b.get("name") or "").lower() in advice_lower
-            for b in blockers
-            if b.get("name")
-        )
+        blocker_named = any((b.get("name") or "").lower() in advice_lower for b in blockers if b.get("name"))
         if "block" not in advice_lower and not blocker_named:
             return advice
 
-        assignment = self._solver_block_assignment_sentence(
-            game_state, attackers, blockers, advice
-        )
+        assignment = self._solver_block_assignment_sentence(game_state, attackers, blockers, advice)
         if not assignment:
             return advice
         base = advice.rstrip()
@@ -5116,21 +5533,15 @@ class CoachEngine:
         if abs(len(a) - len(b)) > 3:
             return False
         # Count matching characters
-        matches = sum(1 for c1, c2 in zip(a.lower(), b.lower()) if c1 == c2)
+        matches = sum(1 for c1, c2 in zip(a.lower(), b.lower(), strict=False) if c1 == c2)
         similarity = matches / max(len(a), len(b))
         return similarity >= threshold
 
-    def complete_with_image(
-        self, system_prompt: str, user_message: str, image_data: bytes
-    ) -> str:
+    def complete_with_image(self, system_prompt: str, user_message: str, image_data: bytes) -> str:
         """Call complete_with_image on backend if supported."""
         if hasattr(self._backend, "complete_with_image"):
-            return self._backend.complete_with_image(
-                system_prompt, user_message, image_data
-            )
-        logger.error(
-            f"Backend {type(self._backend).__name__} does not support complete_with_image"
-        )
+            return self._backend.complete_with_image(system_prompt, user_message, image_data)
+        logger.error(f"Backend {type(self._backend).__name__} does not support complete_with_image")
         return "Image analysis not supported by current backend."
 
 
@@ -5186,16 +5597,16 @@ class GameStateTrigger:
         self._seen_threats: set[int] = set()
         # Track whether we've already fired the losing_badly trigger this game
         self._losing_badly_fired = False
-        self._last_threat: Optional[dict] = None
+        self._last_threat: dict | None = None
 
-    def _get_local_player(self, state: dict[str, Any]) -> Optional[dict]:
+    def _get_local_player(self, state: dict[str, Any]) -> dict | None:
         """Get the local player dict from game state."""
         for p in state.get("players", []):
             if p.get("is_local"):
                 return p
         return None
 
-    def _get_opponent_player(self, state: dict[str, Any]) -> Optional[dict]:
+    def _get_opponent_player(self, state: dict[str, Any]) -> dict | None:
         """Get the opponent player dict from game state."""
         for p in state.get("players", []):
             if not p.get("is_local"):
@@ -5256,9 +5667,7 @@ class GameStateTrigger:
 
         return False
 
-    def check_triggers(
-        self, prev_state: dict[str, Any], curr_state: dict[str, Any]
-    ) -> list[str]:
+    def check_triggers(self, prev_state: dict[str, Any], curr_state: dict[str, Any]) -> list[str]:
         """Compare two game states and return triggered condition names.
 
         Args:
@@ -5293,9 +5702,7 @@ class GameStateTrigger:
             # Just connected to an active game
             is_your_turn = curr_active == local_seat
             if is_your_turn:
-                logger.info(
-                    f"First connection mid-game, triggering new_turn (turn {curr_turn_num})"
-                )
+                logger.info(f"First connection mid-game, triggering new_turn (turn {curr_turn_num})")
                 triggers.append("new_turn")
             # Also check for pending decision on first connection
             pending = curr_state.get("pending_decision")
@@ -5351,42 +5758,28 @@ class GameStateTrigger:
             prev_land_count = sum(
                 1
                 for obj in prev_battlefield
-                if obj.get("owner_seat_id") == local_seat
-                and "land" in obj.get("type_line", "").lower()
+                if obj.get("owner_seat_id") == local_seat and "land" in obj.get("type_line", "").lower()
             )
             curr_land_count = sum(
                 1
                 for obj in curr_battlefield
-                if obj.get("owner_seat_id") == local_seat
-                and "land" in obj.get("type_line", "").lower()
+                if obj.get("owner_seat_id") == local_seat and "land" in obj.get("type_line", "").lower()
             )
 
             if curr_land_count > prev_land_count:
-                logger.info(
-                    f"Land played trigger: {prev_land_count} -> {curr_land_count}"
-                )
+                logger.info(f"Land played trigger: {prev_land_count} -> {curr_land_count}")
                 triggers.append("land_played")
 
         # Spell resolved detection - your spell left the stack on your turn
         if is_your_turn and len(curr_stack) < len(prev_stack):
-            prev_your_spells = [
-                s for s in prev_stack if s.get("owner_seat_id") == local_seat
-            ]
-            curr_your_spells = [
-                s for s in curr_stack if s.get("owner_seat_id") == local_seat
-            ]
+            prev_your_spells = [s for s in prev_stack if s.get("owner_seat_id") == local_seat]
+            curr_your_spells = [s for s in curr_stack if s.get("owner_seat_id") == local_seat]
             if len(curr_your_spells) < len(prev_your_spells):
                 logger.info("Spell resolved trigger: your spell left the stack")
                 triggers.append("spell_resolved")
 
-            if (
-                len(curr_stack) == 0
-                and "spell_resolved" not in triggers
-                and "Main" in curr_phase
-            ):
-                logger.info(
-                    "Stack cleared trigger: opponent spell/ability resolved on your main phase"
-                )
+            if len(curr_stack) == 0 and "spell_resolved" not in triggers and "Main" in curr_phase:
+                logger.info("Stack cleared trigger: opponent spell/ability resolved on your main phase")
                 triggers.append("spell_resolved")
 
         # Check explicit pending decisions (like Mulligan) or legal action changes
@@ -5402,26 +5795,30 @@ class GameStateTrigger:
             # Don't re-trigger decision_required when the legal actions changed
             # because we just played a land or resolved a spell — those have
             # their own triggers and we already gave advice for the turn.
-            if "decision_required" not in triggers and "land_played" not in triggers and "spell_resolved" not in triggers:
+            if (
+                "decision_required" not in triggers
+                and "land_played" not in triggers
+                and "spell_resolved" not in triggers
+            ):
                 logger.info(f"Triggering decision due to legal_actions update: {legal_actions}")
                 triggers.append("decision_required")
         elif pending_decision in ("Mulligan", "Mulligan Bottom"):
-                # Mulligan re-fire cases:
-                # 1. Hand wasn't populated yet (SubmitDeckReq before GameState)
-                # 2. Player chose to mulligan → new hand dealt (same decision
-                #    label "Mulligan" but different hand contents/count)
-                prev_hand = prev_state.get("hand", [])
-                curr_hand = curr_state.get("hand", [])
-                prev_hand_ids = {c.get("instance_id") for c in prev_hand}
-                curr_hand_ids = {c.get("instance_id") for c in curr_hand}
-                hand_changed = curr_hand_ids != prev_hand_ids
-                if curr_hand and (not prev_hand or hand_changed):
-                    logger.info(
-                        f"Re-triggering Mulligan decision "
-                        f"(hand {'appeared' if not prev_hand else 'changed'}: "
-                        f"{len(curr_hand)} cards)"
-                    )
-                    triggers.append("decision_required")
+            # Mulligan re-fire cases:
+            # 1. Hand wasn't populated yet (SubmitDeckReq before GameState)
+            # 2. Player chose to mulligan → new hand dealt (same decision
+            #    label "Mulligan" but different hand contents/count)
+            prev_hand = prev_state.get("hand", [])
+            curr_hand = curr_state.get("hand", [])
+            prev_hand_ids = {c.get("instance_id") for c in prev_hand}
+            curr_hand_ids = {c.get("instance_id") for c in curr_hand}
+            hand_changed = curr_hand_ids != prev_hand_ids
+            if curr_hand and (not prev_hand or hand_changed):
+                logger.info(
+                    f"Re-triggering Mulligan decision "
+                    f"(hand {'appeared' if not prev_hand else 'changed'}: "
+                    f"{len(curr_hand)} cards)"
+                )
+                triggers.append("decision_required")
 
         # Combat phase detection - use pending steps to catch fast combat phases
         pending_steps = curr_turn.get("pending_combat_steps", [])
@@ -5430,13 +5827,8 @@ class GameStateTrigger:
         # has moved PAST combat (Main2/Ending) the trigger's advice is
         # unsatisfiable before the LLM call is even made (2 guaranteed-wasted
         # calls, 4.7s + 1.9s, on 2026-07-05).
-        if pending_steps and any(
-            marker in curr_phase for marker in ("Main2", "Second", "Ending", "End")
-        ):
-            logger.debug(
-                f"Dropping {len(pending_steps)} queued combat step(s) — "
-                f"phase already {curr_phase}"
-            )
+        if pending_steps and any(marker in curr_phase for marker in ("Main2", "Second", "Ending", "End")):
+            logger.debug(f"Dropping {len(pending_steps)} queued combat step(s) — phase already {curr_phase}")
             pending_steps = []
 
         for step_info in pending_steps:
@@ -5466,18 +5858,10 @@ class GameStateTrigger:
             prev_step = prev_turn.get("step", "")
             # Only trigger on STEP CHANGE to avoid spamming every polling cycle
             if curr_step != prev_step:
-                if (
-                    "DeclareAttack" in curr_step
-                    and is_your_turn
-                    and "combat_attackers" not in triggers
-                ):
+                if "DeclareAttack" in curr_step and is_your_turn and "combat_attackers" not in triggers:
                     logger.info(f"Combat attackers trigger: step={curr_step}")
                     triggers.append("combat_attackers")
-                elif (
-                    "DeclareBlock" in curr_step
-                    and not is_your_turn
-                    and "combat_blockers" not in triggers
-                ):
+                elif "DeclareBlock" in curr_step and not is_your_turn and "combat_blockers" not in triggers:
                     logger.info(f"Combat blockers trigger: step={curr_step}")
                     triggers.append("combat_blockers")
 
@@ -5494,10 +5878,7 @@ class GameStateTrigger:
         if curr_opp:
             curr_opp_life = curr_opp.get("life_total", 20)
             prev_opp_life = prev_opp.get("life_total", 20) if prev_opp else 20
-            if (
-                curr_opp_life < self.life_threshold
-                and prev_opp_life >= self.life_threshold
-            ):
+            if curr_opp_life < self.life_threshold and prev_opp_life >= self.life_threshold:
                 triggers.append("opponent_low_life")
 
         # Stack spell detection - differentiate between your spells and opponent's
@@ -5528,10 +5909,7 @@ class GameStateTrigger:
                 card_name = card.get("name", "")
 
                 # Check if this is a threat card we haven't warned about
-                if (
-                    card_name in self.THREAT_CARDS
-                    and instance_id not in self._seen_threats
-                ):
+                if card_name in self.THREAT_CARDS and instance_id not in self._seen_threats:
                     self._seen_threats.add(instance_id)
                     # Store threat info for the standalone coach to retrieve
                     self._last_threat = {
@@ -5547,9 +5925,7 @@ class GameStateTrigger:
                             "counters": card.get("counters"),
                         },
                     }
-                    logger.info(
-                        f"Threat detected: {card_name} - {self.THREAT_CARDS[card_name]}"
-                    )
+                    logger.info(f"Threat detected: {card_name} - {self.THREAT_CARDS[card_name]}")
                     triggers.append("threat_detected")
 
                 # Generic planeswalker detection fallback
@@ -5597,7 +5973,8 @@ class GameStateTrigger:
         if (
             not self._losing_badly_fired
             and not match_in_intermission
-            and curr_local and curr_opp
+            and curr_local
+            and curr_opp
             and curr_turn_num >= 4  # too early to judge before turn 4
             and "new_turn" in triggers
         ):
@@ -5605,13 +5982,15 @@ class GameStateTrigger:
             opp_life = curr_opp.get("life_total", 20)
             curr_bf = curr_state.get("battlefield", [])
             your_creatures = [
-                c for c in curr_bf
+                c
+                for c in curr_bf
                 if (c.get("controller_seat_id") or c.get("owner_seat_id")) == local_seat
                 and c.get("power") is not None
                 and "land" not in c.get("type_line", "").lower()
             ]
             opp_creatures = [
-                c for c in curr_bf
+                c
+                for c in curr_bf
                 if (c.get("controller_seat_id") or c.get("owner_seat_id")) != local_seat
                 and c.get("power") is not None
                 and "land" not in c.get("type_line", "").lower()

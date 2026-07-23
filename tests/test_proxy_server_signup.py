@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 

@@ -6,8 +6,9 @@ related to drafts (Premier, Traditional, Quick Draft, and Sealed).
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ class DraftState:
         sealed_analyzed: Whether sealed pool has been analyzed this session
         picks_per_pack: Number of cards picked per pack (1 for normal, 2 for PickTwo)
     """
+
     event_name: str = ""
     draft_type: str = DRAFT_TYPE_UNKNOWN
     set_code: str = ""
@@ -160,8 +162,16 @@ def create_draft_handler(draft_state: DraftState) -> Callable[[str, dict], None]
 
         # DRAFT-RELEVANCE CHECK: Only process payloads containing draft keywords.
         # This prevents wasted work on match/game events.
-        _DRAFT_KEYWORDS = ("CardsInPack", "PackCards", "SelfPack", "DraftPack",
-                           "DraftStatus", "CardPool", "EventName", "GrpId")
+        _DRAFT_KEYWORDS = (
+            "CardsInPack",
+            "PackCards",
+            "SelfPack",
+            "DraftPack",
+            "DraftStatus",
+            "CardPool",
+            "EventName",
+            "GrpId",
+        )
         if not any(kw in payload_str for kw in _DRAFT_KEYWORDS):
             return
 
@@ -328,10 +338,7 @@ def _handle_draft_notify(draft_state: DraftState, payload: dict) -> None:
         if self_pick is not None:
             draft_state.pick_number = int(self_pick)
 
-        logger.info(
-            f"Pack update P{draft_state.pack_number}P{draft_state.pick_number}: "
-            f"{len(cards)} cards"
-        )
+        logger.info(f"Pack update P{draft_state.pack_number}P{draft_state.pick_number}: {len(cards)} cards")
     elif isinstance(pack_cards_str, list):
         # Sometimes it's already a list
         draft_state.cards_in_pack = [int(c) for c in pack_cards_str if c]
@@ -372,10 +379,7 @@ def _handle_draft_pick(draft_state: DraftState, payload: dict) -> None:
             draft_state.picks_per_pack = 2
             if draft_state.draft_type not in _PICK_TWO_TYPES:
                 draft_state.draft_type = DRAFT_TYPE_PICK_TWO
-            logger.info(
-                f"Detected PickTwo from multi-card pick payload "
-                f"(picks_per_pack upgraded to 2)"
-            )
+            logger.info("Detected PickTwo from multi-card pick payload (picks_per_pack upgraded to 2)")
         for gid in grp_ids:
             gid = int(gid)
             if gid not in draft_state.picked_cards:
@@ -397,9 +401,9 @@ def _handle_draft_pick(draft_state: DraftState, payload: dict) -> None:
 
     # Single pick: try different field names used by different draft types
     grp_id = (
-        _find_nested_value(payload, "GrpId") or
-        _find_nested_value(payload, "cardId") or
-        _find_nested_value(payload, "CardId")
+        _find_nested_value(payload, "GrpId")
+        or _find_nested_value(payload, "cardId")
+        or _find_nested_value(payload, "CardId")
     )
 
     if grp_id:

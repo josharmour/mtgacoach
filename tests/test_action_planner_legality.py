@@ -157,9 +157,7 @@ def test_legal_action_to_action_strips_zero_power_warning_tag():
 
 
 def test_legal_action_to_action_strips_pt_from_multiple_attackers():
-    action = _planner()._legal_action_to_action(
-        "Attack with: Veteran Survivor (4/3), Page, Loose Leaf (2/1)"
-    )
+    action = _planner()._legal_action_to_action("Attack with: Veteran Survivor (4/3), Page, Loose Leaf (2/1)")
     assert action is not None
     # Comma split happens before strip. "Page, Loose Leaf" trips the naive
     # split (the card name itself contains a comma) — but at minimum we must

@@ -9,13 +9,12 @@ useful next step. The hint surfaces which of those it is.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 # We bypass module-level PIL imports (autopilot.py imports PIL.ImageGrab at
 # top, which isn't installed in CI). Pull the helper off the class via a
 # trick: import autopilot.AutopilotEngine and call the unbound method.
 import importlib
 import sys
+from unittest.mock import MagicMock
 
 
 def _engine_with_format_hint():

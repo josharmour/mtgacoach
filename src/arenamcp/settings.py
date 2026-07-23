@@ -18,10 +18,11 @@ Modules should use ``get_settings().get(key)`` and let the Settings class
 merge with DEFAULTS automatically.
 """
 
+import contextlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -65,8 +66,14 @@ DEFAULTS = {
 
 # Keys from the old multi-provider settings that should be migrated/removed
 _OLD_KEYS = {
-    "backend", "ollama_url", "lmstudio_url", "proxy_url", "proxy_api_key",
-    "api_url", "api_key", "known_backends",
+    "backend",
+    "ollama_url",
+    "lmstudio_url",
+    "proxy_url",
+    "proxy_api_key",
+    "api_url",
+    "api_key",
+    "known_backends",
 }
 
 
@@ -136,17 +143,16 @@ class Settings:
             return
 
         try:
-            with open(SETTINGS_FILE, "r") as f:
+            with open(SETTINGS_FILE) as f:
                 loaded = json.load(f)
                 # Merge with defaults (new settings get defaults)
                 for key, value in loaded.items():
                     self._data[key] = value
 
             # Run migration if old keys are present
-            if any(k in self._data for k in _OLD_KEYS):
-                if _migrate_settings(self._data):
-                    self.save()
-                    logger.info("Migrated settings to two-mode architecture")
+            if any(k in self._data for k in _OLD_KEYS) and _migrate_settings(self._data):
+                self.save()
+                logger.info("Migrated settings to two-mode architecture")
 
             logger.debug(f"Loaded settings from {SETTINGS_FILE}")
         except Exception as e:
@@ -158,10 +164,8 @@ class Settings:
                 f"{SETTINGS_FILE.name}.bad and starting from defaults. "
                 "Your license key may need re-entering."
             )
-            try:
+            with contextlib.suppress(OSError):
                 SETTINGS_FILE.replace(SETTINGS_FILE.with_suffix(".json.bad"))
-            except OSError:
-                pass
 
     def _ensure_install_id(self) -> bool:
         """Ensure a generated install ID exists for this installation."""
@@ -237,7 +241,7 @@ class Settings:
 
 
 # Global settings instance
-_settings: Optional[Settings] = None
+_settings: Settings | None = None
 
 
 def get_settings() -> Settings:

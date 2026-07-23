@@ -1,14 +1,15 @@
 """Repair engine: function-verifying checks, not file-existence theater."""
 
-import arenamcp.repair_engine as re_mod
-from arenamcp.repair_engine import RepairEngine, RepairReport, CheckResult
+from arenamcp.repair_engine import CheckResult, RepairEngine, RepairReport
 
 
 def test_report_summary_and_health():
-    rep = RepairReport(results=[
-        CheckResult("a", "A", "ok", "fine"),
-        CheckResult("b", "B", "fixed", "repaired"),
-    ])
+    rep = RepairReport(
+        results=[
+            CheckResult("a", "A", "ok", "fine"),
+            CheckResult("b", "B", "fixed", "repaired"),
+        ]
+    )
     assert rep.healthy is True
     assert "repaired" in rep.summary()
 
@@ -74,6 +75,7 @@ def test_plugin_check_detects_stale_dll(monkeypatch, tmp_path):
     (plugins / "MtgaCoachBridge.dll").write_bytes(b"OLD 2.4 BYTES")
 
     import arenamcp.desktop.runtime as rt
+
     monkeypatch.setattr(rt, "find_plugin_dll", lambda: packaged)
     monkeypatch.setattr(rt, "is_mtga_running", lambda: False)
 
@@ -98,8 +100,8 @@ def test_plugin_check_detects_stale_dll(monkeypatch, tmp_path):
 
 
 def test_plugin_check_defers_while_mtga_running(monkeypatch, tmp_path):
-    from arenamcp.platform_integration import MtgaInstall
     import arenamcp.desktop.runtime as rt
+    from arenamcp.platform_integration import MtgaInstall
 
     packaged = tmp_path / "packaged.dll"
     packaged.write_bytes(b"NEW")
@@ -107,9 +109,7 @@ def test_plugin_check_defers_while_mtga_running(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "is_mtga_running", lambda: True)
 
     eng = RepairEngine()
-    eng._install = MtgaInstall(
-        install_dir=tmp_path / "MTGA", player_log=None, platform="windows"
-    )
+    eng._install = MtgaInstall(install_dir=tmp_path / "MTGA", player_log=None, platform="windows")
     r = eng._check_plugin()
     assert r.status == "action_needed"
     assert "Close MTGA" in r.action_hint

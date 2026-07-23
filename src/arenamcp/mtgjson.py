@@ -10,7 +10,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
@@ -25,13 +25,14 @@ CACHE_MAX_AGE_HOURS = 24  # Re-download if older than this
 @dataclass
 class MTGJSONCard:
     """Card data from MTGJSON."""
+
     name: str
     oracle_text: str
     type_line: str
     mana_cost: str
     cmc: float
     colors: list[str]
-    arena_id: Optional[int] = None
+    arena_id: int | None = None
 
 
 class MTGJSONDatabase:
@@ -42,7 +43,7 @@ class MTGJSONDatabase:
     lookups for cards without arena_id mappings.
     """
 
-    def __init__(self, cache_dir: Optional[Path] = None):
+    def __init__(self, cache_dir: Path | None = None):
         """Initialize the database.
 
         Args:
@@ -89,10 +90,10 @@ class MTGJSONDatabase:
 
             # Download to temp file first
             temp_file = self._cache_file.with_suffix(".json.gz.tmp")
-            total_size = int(response.headers.get('content-length', 0))
+            total_size = int(response.headers.get("content-length", 0))
             downloaded = 0
 
-            with open(temp_file, 'wb') as f:
+            with open(temp_file, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
                     downloaded += len(chunk)
@@ -104,11 +105,11 @@ class MTGJSONDatabase:
             logger.info("MTGJSON download complete, decompressing...")
 
             # Decompress
-            with gzip.open(temp_file, 'rt', encoding='utf-8') as gz:
+            with gzip.open(temp_file, "rt", encoding="utf-8") as gz:
                 data = json.load(gz)
 
             # Save decompressed
-            with open(self._cache_file, 'w', encoding='utf-8') as f:
+            with open(self._cache_file, "w", encoding="utf-8") as f:
                 json.dump(data, f)
 
             # Cleanup temp file
@@ -203,7 +204,7 @@ class MTGJSONDatabase:
                     "colors": card.colors,
                 }
 
-            with open(self._index_file, 'w', encoding='utf-8') as f:
+            with open(self._index_file, "w", encoding="utf-8") as f:
                 json.dump(arena_data, f)
 
             # Save name index
@@ -218,7 +219,7 @@ class MTGJSONDatabase:
                     "colors": card.colors,
                 }
 
-            with open(self._name_index_file, 'w', encoding='utf-8') as f:
+            with open(self._name_index_file, "w", encoding="utf-8") as f:
                 json.dump(name_data, f)
 
             logger.info(f"Saved indexes: {len(arena_data)} arena_ids, {len(name_data)} names")
@@ -238,14 +239,16 @@ class MTGJSONDatabase:
         # Check if indexes are newer than cache file
         if self._cache_file.exists():
             cache_mtime = self._cache_file.stat().st_mtime
-            if (self._index_file.stat().st_mtime < cache_mtime or
-                self._name_index_file.stat().st_mtime < cache_mtime):
+            if (
+                self._index_file.stat().st_mtime < cache_mtime
+                or self._name_index_file.stat().st_mtime < cache_mtime
+            ):
                 logger.info("Indexes older than cache, rebuilding")
                 return False
 
         try:
             # Load arena_id index
-            with open(self._index_file, 'r', encoding='utf-8') as f:
+            with open(self._index_file, encoding="utf-8") as f:
                 arena_data = json.load(f)
 
             self._arena_index = {}
@@ -262,7 +265,7 @@ class MTGJSONDatabase:
                 )
 
             # Load name index
-            with open(self._name_index_file, 'r', encoding='utf-8') as f:
+            with open(self._name_index_file, encoding="utf-8") as f:
                 name_data = json.load(f)
 
             self._name_index = {}
@@ -303,18 +306,17 @@ class MTGJSONDatabase:
             return True
 
         # Check if we need to download
-        if force_download or self._needs_update():
-            if not self._download_data():
-                # Try using stale cache if download failed
-                if not self._cache_file.exists():
-                    self._available = False
-                    return False
-                logger.warning("Using stale cache after download failure")
+        if (force_download or self._needs_update()) and not self._download_data():
+            # Try using stale cache if download failed
+            if not self._cache_file.exists():
+                self._available = False
+                return False
+            logger.warning("Using stale cache after download failure")
 
         # Load and build indexes
         try:
             logger.info("Loading MTGJSON data...")
-            with open(self._cache_file, 'r', encoding='utf-8') as f:
+            with open(self._cache_file, encoding="utf-8") as f:
                 data = json.load(f)
 
             self._arena_index, self._name_index = self._build_indexes(data)
@@ -334,7 +336,7 @@ class MTGJSONDatabase:
             self._available = False
             return False
 
-    def get_card(self, arena_id: int) -> Optional[MTGJSONCard]:
+    def get_card(self, arena_id: int) -> MTGJSONCard | None:
         """Look up a card by MTGA arena_id.
 
         Args:
@@ -348,7 +350,7 @@ class MTGJSONDatabase:
 
         return self._arena_index.get(arena_id)
 
-    def get_card_by_name(self, name: str) -> Optional[MTGJSONCard]:
+    def get_card_by_name(self, name: str) -> MTGJSONCard | None:
         """Look up a card by name (case-insensitive).
 
         Args:
@@ -369,7 +371,7 @@ class MTGJSONDatabase:
 
 
 # Global singleton instance
-_mtgjson_db: Optional[MTGJSONDatabase] = None
+_mtgjson_db: MTGJSONDatabase | None = None
 
 
 def get_mtgjson() -> MTGJSONDatabase:
@@ -382,6 +384,7 @@ def get_mtgjson() -> MTGJSONDatabase:
         _mtgjson_db = MTGJSONDatabase()
         # Load asynchronously in a background thread to prevent blocking startup / UI loop.
         import threading
+
         thread = threading.Thread(target=_mtgjson_db.load, daemon=True)
         thread.start()
     return _mtgjson_db

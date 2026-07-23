@@ -14,12 +14,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import re
-import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +28,7 @@ HISTORY_FILE = HISTORY_DIR / "history.json"
 @dataclass
 class MatchRecord:
     """A single match record extracted from a replay or game end event."""
+
     match_id: str = ""
     timestamp: str = ""  # ISO format
     result: str = ""  # "win", "loss", "draw"
@@ -51,10 +49,10 @@ class MatchRecord:
 
     def to_review_prompt(
         self,
-        advice_history: Optional[list[dict[str, Any]]] = None,
-        opponent_cards: Optional[list[str]] = None,
-        missed_decisions: Optional[list[dict[str, Any]]] = None,
-        replay_summary: Optional[str] = None,
+        advice_history: list[dict[str, Any]] | None = None,
+        opponent_cards: list[str] | None = None,
+        missed_decisions: list[dict[str, Any]] | None = None,
+        replay_summary: str | None = None,
     ) -> str:
         """Generate a post-match breakdown review prompt (/analyze) for this match."""
         return generate_match_review_prompt(
@@ -66,11 +64,10 @@ class MatchRecord:
         )
 
 
-
 class MatchHistory:
     """Persistent match history database backed by a JSON file."""
 
-    def __init__(self, history_path: Optional[Path] = None):
+    def __init__(self, history_path: Path | None = None):
         self._path = history_path or HISTORY_FILE
         self._records: list[MatchRecord] = []
         self._load()
@@ -143,6 +140,7 @@ class MatchHistory:
     def get_session_stats(self, hours: float = 4.0) -> dict[str, Any]:
         """Get stats for the current session (last N hours)."""
         from datetime import datetime, timedelta, timezone
+
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         session = []
         for r in self._records:
@@ -169,13 +167,13 @@ class MatchHistory:
         return len(self._records)
 
 
-def parse_replay_cosmetics(replay_path: str) -> Optional[dict[str, Any]]:
+def parse_replay_cosmetics(replay_path: str) -> dict[str, Any] | None:
     """Parse the cosmetic header from a .rply file.
 
     Returns player names, ranks, and cosmetic selections.
     """
     try:
-        with open(replay_path, "r", encoding="utf-8") as f:
+        with open(replay_path, encoding="utf-8") as f:
             line1 = f.readline().strip()
             if not line1.startswith("#Version"):
                 logger.debug(f"Not a valid replay file: {replay_path}")
@@ -188,13 +186,13 @@ def parse_replay_cosmetics(replay_path: str) -> Optional[dict[str, Any]]:
     return None
 
 
-def parse_replay_result(replay_path: str) -> Optional[str]:
+def parse_replay_result(replay_path: str) -> str | None:
     """Scan a replay file for game result (win/loss).
 
     Looks for LossOfGame/WinTheGame annotations in GRE messages.
     """
     try:
-        with open(replay_path, "r", encoding="utf-8") as f:
+        with open(replay_path, encoding="utf-8") as f:
             # Skip header
             f.readline()
             f.readline()
@@ -266,7 +264,7 @@ def record_from_game_end(
 
 
 # Module-level singleton
-_history: Optional[MatchHistory] = None
+_history: MatchHistory | None = None
 
 
 def get_history() -> MatchHistory:
@@ -279,10 +277,10 @@ def get_history() -> MatchHistory:
 
 def generate_match_review_prompt(
     record: MatchRecord,
-    advice_history: Optional[list[dict[str, Any]]] = None,
-    opponent_cards: Optional[list[str]] = None,
-    missed_decisions: Optional[list[dict[str, Any]]] = None,
-    replay_summary: Optional[str] = None,
+    advice_history: list[dict[str, Any]] | None = None,
+    opponent_cards: list[str] | None = None,
+    missed_decisions: list[dict[str, Any]] | None = None,
+    replay_summary: str | None = None,
 ) -> str:
     """Generate a post-match review prompt for /analyze match breakdowns.
 
@@ -314,11 +312,15 @@ def generate_match_review_prompt(
     if record.turns:
         lines.append(f"Match Duration: {record.turns} turns")
     if record.local_life_final or record.opponent_life_final:
-        lines.append(f"Final Life Totals: Player={record.local_life_final}, Opponent={record.opponent_life_final}")
+        lines.append(
+            f"Final Life Totals: Player={record.local_life_final}, Opponent={record.opponent_life_final}"
+        )
 
     if opponent_cards or record.opponent_colors_seen:
         opp_list = opponent_cards or []
-        lines.append(f"\nOPPONENT CARDS SEEN:\n{', '.join(opp_list[:30]) if opp_list else 'Colors: ' + ', '.join(record.opponent_colors_seen)}")
+        lines.append(
+            f"\nOPPONENT CARDS SEEN:\n{', '.join(opp_list[:30]) if opp_list else 'Colors: ' + ', '.join(record.opponent_colors_seen)}"
+        )
 
     if advice_history:
         lines.append("\nCHRONOLOGICAL ADVICE LOG:")
@@ -341,13 +343,15 @@ def generate_match_review_prompt(
     if replay_summary:
         lines.append(f"\nREPLAY SUMMARY:\n{replay_summary}")
 
-    lines.extend([
-        "\nANALYSIS INSTRUCTIONS:",
-        "Provide a comprehensive post-match breakdown covering:",
-        "1. MATCH SUMMARY & TURNING POINTS: Key moments that decided the game.",
-        "2. PLAY EVALUATION & MISTAKES: Specific plays/advice that were optimal vs suboptimal.",
-        "3. MATCHUP & SIDEBOARD LESSONS: Tactical takeaways for future games against this archetype.",
-        "At the end, include a 2-sentence summary line starting with 'SPOKEN:' for audio playback."
-    ])
+    lines.extend(
+        [
+            "\nANALYSIS INSTRUCTIONS:",
+            "Provide a comprehensive post-match breakdown covering:",
+            "1. MATCH SUMMARY & TURNING POINTS: Key moments that decided the game.",
+            "2. PLAY EVALUATION & MISTAKES: Specific plays/advice that were optimal vs suboptimal.",
+            "3. MATCHUP & SIDEBOARD LESSONS: Tactical takeaways for future games against this archetype.",
+            "At the end, include a 2-sentence summary line starting with 'SPOKEN:' for audio playback.",
+        ]
+    )
 
     return "\n".join(lines)

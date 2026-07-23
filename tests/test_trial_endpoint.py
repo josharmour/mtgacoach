@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
@@ -96,9 +97,7 @@ def env(tmp_path, monkeypatch):
 
 
 def _post_trial(client, machine_id=MACHINE_ID, app_version="2.0.1"):
-    return client.post(
-        "/api/trial", json={"machine_id": machine_id, "app_version": app_version}
-    )
+    return client.post("/api/trial", json={"machine_id": machine_id, "app_version": app_version})
 
 
 def test_first_issue_creates_trial_key(env):
@@ -139,12 +138,18 @@ def test_repeat_call_returns_same_key_as_existing(env):
 
 def test_expired_trial_returns_403(env):
     _, proxy_db, _, fake, client = env
-    past = (datetime.now(timezone.utc) - timedelta(days=1)).replace(
-        microsecond=0
-    ).isoformat().replace("+00:00", "Z")
-    created = (datetime.now(timezone.utc) - timedelta(days=8)).replace(
-        microsecond=0
-    ).isoformat().replace("+00:00", "Z")
+    past = (
+        (datetime.now(timezone.utc) - timedelta(days=1))
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    created = (
+        (datetime.now(timezone.utc) - timedelta(days=8))
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
     proxy_db.create_trial(MACHINE_ID, "sk-fake-old", created, past)
 
     r = _post_trial(client)

@@ -10,7 +10,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +40,7 @@ class FileCache:
         The key is sanitised so that only alphanumeric characters, hyphens,
         and underscores are kept; everything else becomes an underscore.
         """
-        safe_key = "".join(
-            c if c.isalnum() or c in ("-", "_") else "_" for c in key
-        )
+        safe_key = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in key)
         return self.cache_dir / f"{safe_key}.json"
 
     def is_cache_valid(self, cache_path: Path) -> bool:
@@ -52,7 +50,7 @@ class FileCache:
         age = time.time() - cache_path.stat().st_mtime
         return age < self.ttl_seconds
 
-    def read(self, key: str) -> Optional[dict[str, Any]]:
+    def read(self, key: str) -> dict[str, Any] | None:
         """Read data from cache if available and still valid.
 
         Returns:
@@ -61,7 +59,7 @@ class FileCache:
         cache_path = self.get_cache_path(key)
         if self.is_cache_valid(cache_path):
             try:
-                with open(cache_path, "r", encoding="utf-8") as f:
+                with open(cache_path, encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
                 logger.warning(f"Failed to read cache for {key}: {e}")

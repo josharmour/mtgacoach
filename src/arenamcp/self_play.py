@@ -26,7 +26,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 # Ensure in-repo src and repo root are importable
 REPO = Path(__file__).resolve().parents[2]
@@ -36,19 +36,22 @@ if str(SRC) not in sys.path:
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+import contextlib
+
+from tools.eval.run import BackendSpec
+
+from arenamcp.action_planner import (
+    AUTOPILOT_SYSTEM_PROMPT,
+    ActionPlanner,
+    ActionType,
+    GameAction,
+)
+from arenamcp.gre_action_matcher import match_action_to_gre
 from arenamcp.gre_bridge import (
     BotBattlePipeServer,
     GREBridge,
     enrich_snapshot_from_pending_response,
 )
-from arenamcp.action_planner import (
-    ActionPlanner,
-    ActionType,
-    GameAction,
-    AUTOPILOT_SYSTEM_PROMPT,
-)
-from arenamcp.gre_action_matcher import match_action_to_gre
-from tools.eval.run import BackendSpec
 
 logger = logging.getLogger("arenamcp.self_play")
 
@@ -60,7 +63,7 @@ DEFAULT_BACKEND = "openai-compatible|http://localhost:8003/v1|gemma-4-12b-it"
 GRE_BRIDGE_PORT = 44222
 
 
-def _backend_base_url(spec: str) -> Optional[str]:
+def _backend_base_url(spec: str) -> str | None:
     """Extract the OpenAI-compatible base_url from a backend spec, if any.
 
     Only ``openai-compatible|<base_url>|<model>`` specs expose a base URL we can
@@ -73,13 +76,13 @@ def _backend_base_url(spec: str) -> Optional[str]:
     return None
 
 
-def vllm_preflight(base_urls: list[str], timeout: float = 3.0) -> Dict[str, tuple[bool, Any]]:
+def vllm_preflight(base_urls: list[str], timeout: float = 3.0) -> dict[str, tuple[bool, Any]]:
     """GET ``<base_url>/models`` for each distinct base URL.
 
     Returns a mapping ``{base_url: (ok, detail)}`` where ``detail`` is the list
     of available model ids on success or an error string on failure.
     """
-    results: Dict[str, tuple[bool, Any]] = {}
+    results: dict[str, tuple[bool, Any]] = {}
     for url in base_urls:
         models_url = url.rstrip("/") + "/models"
         try:
@@ -88,11 +91,7 @@ def vllm_preflight(base_urls: list[str], timeout: float = 3.0) -> Dict[str, tupl
                 body = resp.read().decode("utf-8", "replace")
             try:
                 data = json.loads(body)
-                ids = [
-                    m.get("id")
-                    for m in data.get("data", [])
-                    if isinstance(m, dict)
-                ]
+                ids = [m.get("id") for m in data.get("data", []) if isinstance(m, dict)]
             except Exception:
                 ids = []
             results[url] = (True, ids)
@@ -110,6 +109,7 @@ def _import_proton_launch():
     """
     try:
         from arenamcp import proton_launch  # type: ignore
+
         return proton_launch
     except Exception as e:  # pragma: no cover - depends on platform build
         logger.debug(f"arenamcp.proton_launch unavailable: {e}")
@@ -126,12 +126,13 @@ def mtga_is_running() -> bool:
             pass
     try:
         from arenamcp.desktop.runtime import is_mtga_running
+
         return bool(is_mtga_running())
     except Exception:
         return False
 
 
-def find_mtga_install() -> tuple[Optional[str], str]:
+def find_mtga_install() -> tuple[str | None, str]:
     """Locate the MTGA install directory. Returns ``(path_or_None, source)``."""
     pl = _import_proton_launch()
     if pl is not None and hasattr(pl, "find_mtga_install"):
@@ -145,6 +146,7 @@ def find_mtga_install() -> tuple[Optional[str], str]:
             pass
     try:
         from arenamcp.desktop.runtime import find_mtga_install_dir
+
         return find_mtga_install_dir()
     except Exception:
         return (None, "not_found")
@@ -160,10 +162,8 @@ def _port_bindable(port: int = GRE_BRIDGE_PORT) -> bool:
     except OSError:
         return False
     finally:
-        try:
+        with contextlib.suppress(Exception):
             s.close()
-        except Exception:
-            pass
 
 
 def ensure_mtga_running() -> None:
@@ -191,9 +191,7 @@ def ensure_mtga_running() -> None:
         return
 
     # Fallback: desktop runtime launcher.
-    logger.warning(
-        "arenamcp.proton_launch unavailable; using desktop.runtime launcher fallback."
-    )
+    logger.warning("arenamcp.proton_launch unavailable; using desktop.runtime launcher fallback.")
     try:
         from arenamcp.desktop.runtime import find_mtga_install_dir
         from arenamcp.desktop.runtime import launch_mtga as rt_launch
@@ -265,7 +263,7 @@ def run_dry_run(local_spec: str, opp_spec: str) -> int:
     return 1
 
 
-def find_instance_id_by_name(name: str, battlefield: list[dict]) -> Optional[int]:
+def find_instance_id_by_name(name: str, battlefield: list[dict]) -> int | None:
     name_l = name.lower()
     for card in battlefield:
         cname = (card.get("name") or "").lower()
@@ -289,7 +287,7 @@ def map_game_action_to_pipe_command(
 
     # 2. Mulligan
     if atype in (ActionType.MULLIGAN_KEEP, ActionType.MULLIGAN_MULL):
-        keep = (atype == ActionType.MULLIGAN_KEEP)
+        keep = atype == ActionType.MULLIGAN_KEEP
         return {"action": "submit_mulligan", "keep": keep}
 
     # 3. Declare Attackers
@@ -305,13 +303,15 @@ def map_game_action_to_pipe_command(
         for name in action.attacker_names:
             iid = find_instance_id_by_name(name, battlefield)
             if iid is not None:
-                attacker_entries.append({
-                    "attackerInstanceId": iid,
-                    "damageRecipient": {
-                        "type": "DamageRecType_Player",
-                        "playerSystemSeatId": opp_seat,
-                    },
-                })
+                attacker_entries.append(
+                    {
+                        "attackerInstanceId": iid,
+                        "damageRecipient": {
+                            "type": "DamageRecType_Player",
+                            "playerSystemSeatId": opp_seat,
+                        },
+                    }
+                )
         return {"action": "submit_attackers", "attackers": attacker_entries}
 
     # 4. Declare Blockers
@@ -357,10 +357,12 @@ def map_game_action_to_pipe_command(
                 attacker_id = int(legal_attackers[0])
 
             if attacker_id is not None:
-                assignments.append({
-                    "blockerInstanceId": blocker_id,
-                    "attackerInstanceIds": [attacker_id],
-                })
+                assignments.append(
+                    {
+                        "blockerInstanceId": blocker_id,
+                        "attackerInstanceIds": [attacker_id],
+                    }
+                )
         return {"action": "submit_blockers", "blockers": assignments}
 
     # 5. Select Target
@@ -390,9 +392,10 @@ def map_game_action_to_pipe_command(
                 game_objects[iid] = card
 
     from arenamcp.card_db import get_card_database
+
     card_db = get_card_database()
 
-    def scryfall_lookup(grp_id: int) -> Optional[str]:
+    def scryfall_lookup(grp_id: int) -> str | None:
         info = card_db.get_card_by_arena_id(grp_id)
         return getattr(info, "name", None) if info else None
 
@@ -496,12 +499,12 @@ class SelfPlayOrchestrator:
         legal_actions_raw = payload.get("actions") or payload.get("options") or payload.get("targets") or []
 
         # Build prompt messages (for logging)
-        user_message = planner._build_action_prompt(
-            game_state, trigger, legal_actions, context
-        )
+        user_message = planner._build_action_prompt(game_state, trigger, legal_actions, context)
 
         # Plan action using active planner
-        logger.info(f"Self-play decision: seat={seat} ({backend_label}) trigger={trigger} legal={len(legal_actions)}")
+        logger.info(
+            f"Self-play decision: seat={seat} ({backend_label}) trigger={trigger} legal={len(legal_actions)}"
+        )
         plan = planner.plan_actions(
             game_state,
             trigger,
@@ -562,7 +565,9 @@ class SelfPlayOrchestrator:
         with self._log_lock:
             if not self.decisions_log:
                 return
-            logger.info(f"Flushing {len(self.decisions_log)} decisions for match {self.current_match_id} (winner={self.current_match_winner})")
+            logger.info(
+                f"Flushing {len(self.decisions_log)} decisions for match {self.current_match_id} (winner={self.current_match_winner})"
+            )
             with open(self.trajectories_path, "a", encoding="utf-8") as f:
                 for dec in self.decisions_log:
                     dec["winner"] = self.current_match_winner
@@ -585,7 +590,9 @@ def main():
     )
     p.add_argument("--matches", type=int, default=1, help="Number of matches to play")
     p.add_argument("--sets", default="EOE", help="Sets to generate random decks from")
-    p.add_argument("--out-trajectories", type=Path, default=REPO / "tools/eval/data/self_play_trajectories.jsonl")
+    p.add_argument(
+        "--out-trajectories", type=Path, default=REPO / "tools/eval/data/self_play_trajectories.jsonl"
+    )
     p.add_argument("--license-key", default=os.environ.get("MTGACOACH_LICENSE_KEY", ""))
     p.add_argument(
         "--auto",
@@ -677,7 +684,7 @@ def main():
             "sets": args.sets,
             "matches": 1,
         }
-        
+
         resp = None
         for attempt in range(60):
             resp = bridge._send_safe(cmd, timeout=15.0)

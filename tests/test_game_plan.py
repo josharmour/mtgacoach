@@ -17,6 +17,7 @@ class FakeBackend:
         if self._responses:
             return self._responses.pop(0)
         return self._last
+
     # keep a stable tail response
     @property
     def _last(self):
@@ -37,7 +38,9 @@ def _plan_json(path="race for lethal ~T6", win="aggro beatdown"):
 def _state(turn=1, my_life=20, opp_life=20, my_creatures=0, opp_creatures=0, my_power=0):
     bf = []
     for _ in range(my_creatures):
-        bf.append({"type_line": "Creature", "controller_seat_id": 1, "power": my_power // max(my_creatures, 1)})
+        bf.append(
+            {"type_line": "Creature", "controller_seat_id": 1, "power": my_power // max(my_creatures, 1)}
+        )
     for _ in range(opp_creatures):
         bf.append({"type_line": "Creature", "controller_seat_id": 2, "power": 1})
     return {

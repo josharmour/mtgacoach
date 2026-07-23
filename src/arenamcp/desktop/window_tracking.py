@@ -24,7 +24,7 @@ import os
 import sys
 import threading
 import time
-from typing import Any, Optional
+from typing import Any
 
 Rect = tuple[int, int, int, int]
 
@@ -51,7 +51,7 @@ def _platform() -> str:
 # -- win32 --------------------------------------------------------------------
 
 
-def _win32_rect(title: str) -> Optional[Rect]:
+def _win32_rect(title: str) -> Rect | None:
     """Historical pygetwindow lookup, behavior-identical to the old overlays:
     exact-title match, minimized window → None."""
     if gw is None:
@@ -71,7 +71,7 @@ def _win32_rect(title: str) -> Optional[Rect]:
 # -- linux --------------------------------------------------------------------
 
 
-def _linux_rect(title: str) -> Optional[Rect]:
+def _linux_rect(title: str) -> Rect | None:
     try:
         from arenamcp.desktop.runtime import get_linux_window_geometry
     except Exception:  # pragma: no cover - runtime always present in-app
@@ -113,7 +113,7 @@ def _load_quartz() -> Any:
     return _quartz_module
 
 
-def _darwin_rect(title: str) -> Optional[Rect]:
+def _darwin_rect(title: str) -> Rect | None:
     quartz = _load_quartz()
     if quartz is None:
         return None
@@ -129,7 +129,7 @@ def _darwin_rect(title: str) -> Optional[Rect]:
     # apps like "MTGA_Draft_Tool" also contain "MTGA" in their owner name and
     # can sit in front of the game in the (front-to-back) window list.
     own_pid = os.getpid()
-    substring_match: Optional[Rect] = None
+    substring_match: Rect | None = None
     for info in window_list or []:
         try:
             # Never match our own windows: this process is "MTGA Coach", so a
@@ -166,7 +166,7 @@ def _darwin_rect(title: str) -> Optional[Rect]:
 # -- dispatch + cache -----------------------------------------------------------
 
 
-def _locate_uncached(title: str) -> Optional[Rect]:
+def _locate_uncached(title: str) -> Rect | None:
     plat = _platform()
     if plat == "win32":
         return _win32_rect(title)
@@ -176,10 +176,10 @@ def _locate_uncached(title: str) -> Optional[Rect]:
 
 
 _cache_lock = threading.Lock()
-_cache_value: dict[str, tuple[float, Optional[Rect]]] = {}
+_cache_value: dict[str, tuple[float, Rect | None]] = {}
 
 
-def get_mtga_window_rect(title: str = "MTGA") -> Optional[Rect]:
+def get_mtga_window_rect(title: str = "MTGA") -> Rect | None:
     """Return MTGA's window rect ``(x, y, width, height)`` or ``None``.
 
     ``None`` means "no usable window right now": MTGA not running,

@@ -7,7 +7,6 @@ will integrate with PTT (Push-to-Talk) and VOX (Voice Activation) modes.
 
 import threading
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 import sounddevice as sd
@@ -27,7 +26,7 @@ class AudioConfig:
     sample_rate: int = 16000
     channels: int = 1
     dtype: str = "float32"
-    device: Optional[int | str] = None
+    device: int | str | None = None
 
 
 class AudioRecorder:
@@ -44,14 +43,14 @@ class AudioRecorder:
         # audio is numpy array of shape (samples,) at 16kHz float32
     """
 
-    def __init__(self, config: Optional[AudioConfig] = None) -> None:
+    def __init__(self, config: AudioConfig | None = None) -> None:
         """Initialize the audio recorder.
 
         Args:
             config: Audio configuration. If None, uses default AudioConfig.
         """
         self.config = config or AudioConfig()
-        self._stream: Optional[sd.InputStream] = None
+        self._stream: sd.InputStream | None = None
         self._buffer: list[np.ndarray] = []
         self._recording: bool = False
         self._lock = threading.Lock()

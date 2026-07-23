@@ -7,15 +7,21 @@ the best color combinations and cards to build around.
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 # Color combinations for 2-color decks
 TWO_COLOR_PAIRS = [
-    ("W", "U"), ("W", "B"), ("W", "R"), ("W", "G"),
-    ("U", "B"), ("U", "R"), ("U", "G"),
-    ("B", "R"), ("B", "G"),
+    ("W", "U"),
+    ("W", "B"),
+    ("W", "R"),
+    ("W", "G"),
+    ("U", "B"),
+    ("U", "R"),
+    ("U", "G"),
+    ("B", "R"),
+    ("B", "G"),
     ("R", "G"),
 ]
 
@@ -31,6 +37,7 @@ COLOR_NAMES = {
 @dataclass
 class ColorAnalysis:
     """Analysis of a color or color pair in a sealed pool."""
+
     colors: tuple[str, ...]
     card_count: int
     creature_count: int
@@ -42,6 +49,7 @@ class ColorAnalysis:
 @dataclass
 class SealedAnalysis:
     """Complete analysis of a sealed pool."""
+
     set_code: str
     total_cards: int
     color_analyses: list[ColorAnalysis]
@@ -52,9 +60,7 @@ class SealedAnalysis:
 
 
 def analyze_sealed_pool(
-    pool_cards: list[dict[str, Any]],
-    set_code: str,
-    draft_stats: Optional[Any] = None
+    pool_cards: list[dict[str, Any]], set_code: str, draft_stats: Any | None = None
 ) -> SealedAnalysis:
     """Analyze a sealed pool and recommend a build.
 
@@ -117,10 +123,7 @@ def analyze_sealed_pool(
         win_rates = [c.get("gih_wr", 0) or 0 for c in pair_cards]
         avg_wr = sum(win_rates) / len(win_rates) if win_rates else 0
 
-        creature_count = sum(
-            1 for c in pair_cards
-            if "creature" in c.get("type_line", "").lower()
-        )
+        creature_count = sum(1 for c in pair_cards if "creature" in c.get("type_line", "").lower())
 
         playable_count = sum(1 for wr in win_rates if wr > 0.50)
 
@@ -167,6 +170,7 @@ def analyze_sealed_pool(
     generated_shells = []
     try:
         from arenamcp.deck_builder import DeckBuilderV2
+
         grp_ids = []
         pool_dict = {}
         for c in pool_cards:
@@ -237,7 +241,7 @@ def format_sealed_recommendation(analysis: SealedAnalysis) -> str:
         splash = analysis.splash_candidates[0]
         splash_name = splash.get("name", "?")
         splash_wr = splash.get("gih_wr", 0) or 0
-        lines.append(f"Consider splashing {splash_name} at {splash_wr*100:.0f}% win rate.")
+        lines.append(f"Consider splashing {splash_name} at {splash_wr * 100:.0f}% win rate.")
 
     # Alternative
     if len(analysis.color_analyses) > 1:

@@ -20,7 +20,6 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +27,12 @@ MTGA_STEAM_APPID = "2141910"
 
 # Wine prefix path fragment holding MTGA's C: drive under Proton.
 _PROTON_PFX = Path("steamapps") / "compatdata" / MTGA_STEAM_APPID / "pfx"
-_PLAYER_LOG_WIN_SUFFIX = (
-    Path("AppData") / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
-)
+_PLAYER_LOG_WIN_SUFFIX = Path("AppData") / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
 
 # macOS: the native (IL2CPP) client writes its Player.log here — verified on
 # real hardware 2026-07-16 (dir name is "Wizards Of The Coast", capital O/T;
 # APFS is case-insensitive by default but don't rely on that).
-_PLAYER_LOG_DARWIN_SUFFIX = (
-    Path("Library") / "Logs" / "Wizards Of The Coast" / "MTGA" / "Player.log"
-)
+_PLAYER_LOG_DARWIN_SUFFIX = Path("Library") / "Logs" / "Wizards Of The Coast" / "MTGA" / "Player.log"
 
 
 @dataclass
@@ -56,10 +51,10 @@ class MtgaInstall:
     unaffected by the darwin values by construction.
     """
 
-    install_dir: Path            # game files (MTGA.exe / MTGA.app, MTGA_Data, BepInEx)
-    player_log: Optional[Path]   # Player.log (None when undetectable)
-    platform: str                # see class docstring
-    steam_root: Optional[Path] = None  # Linux/macOS Steam: the Steam root that owns it
+    install_dir: Path  # game files (MTGA.exe / MTGA.app, MTGA_Data, BepInEx)
+    player_log: Path | None  # Player.log (None when undetectable)
+    platform: str  # see class docstring
+    steam_root: Path | None = None  # Linux/macOS Steam: the Steam root that owns it
 
 
 def current_platform() -> str:
@@ -73,6 +68,7 @@ def current_platform() -> str:
 # ---------------------------------------------------------------------------
 # Linux: Steam discovery
 # ---------------------------------------------------------------------------
+
 
 def _steam_roots() -> list[Path]:
     """Candidate Steam roots: native and Flatpak."""
@@ -111,7 +107,7 @@ def _steam_libraries(root: Path) -> list[Path]:
     return libs
 
 
-def _find_mtga_linux() -> Optional[MtgaInstall]:
+def _find_mtga_linux() -> MtgaInstall | None:
     for root in _steam_roots():
         for lib in _steam_libraries(root):
             manifest = lib / f"appmanifest_{MTGA_STEAM_APPID}.acf"
@@ -121,9 +117,7 @@ def _find_mtga_linux() -> Optional[MtgaInstall]:
                     continue
                 # Manifest names the installdir explicitly.
                 try:
-                    m = re.search(
-                        r'"installdir"\s+"([^"]+)"', manifest.read_text(errors="replace")
-                    )
+                    m = re.search(r'"installdir"\s+"([^"]+)"', manifest.read_text(errors="replace"))
                     if m:
                         game_dir = lib / "common" / m.group(1)
                 except OSError:
@@ -132,9 +126,7 @@ def _find_mtga_linux() -> Optional[MtgaInstall]:
                     continue
             # Proton prefix lives in the SAME library as the game.
             pfx = lib / "compatdata" / MTGA_STEAM_APPID / "pfx"
-            player_log = (
-                pfx / "drive_c" / "users" / "steamuser" / _PLAYER_LOG_WIN_SUFFIX
-            )
+            player_log = pfx / "drive_c" / "users" / "steamuser" / _PLAYER_LOG_WIN_SUFFIX
             flatpak = ".var/app/com.valvesoftware.Steam" in str(root)
             return MtgaInstall(
                 install_dir=game_dir,
@@ -145,7 +137,7 @@ def _find_mtga_linux() -> Optional[MtgaInstall]:
     return None
 
 
-def proton_launch_options_ok(install: MtgaInstall) -> Optional[bool]:
+def proton_launch_options_ok(install: MtgaInstall) -> bool | None:
     """Linux: do MTGA's Steam launch options let BepInEx inject?
 
     BepInEx's winhttp.dll doorstop silently does not load under Proton
@@ -158,7 +150,7 @@ def proton_launch_options_ok(install: MtgaInstall) -> Optional[bool]:
     userdata = install.steam_root / "userdata"
     if not userdata.is_dir():
         return None
-    verdict: Optional[bool] = None
+    verdict: bool | None = None
     for cfg in userdata.glob("*/config/localconfig.vdf"):
         try:
             text = cfg.read_text(errors="replace")
@@ -171,7 +163,7 @@ def proton_launch_options_ok(install: MtgaInstall) -> Optional[bool]:
         # windows actually contain a LaunchOptions entry.
         saw_launch_options = False
         for m in re.finditer(re.escape(f'"{MTGA_STEAM_APPID}"'), text):
-            window = text[m.end():m.end() + 4000]
+            window = text[m.end() : m.end() + 4000]
             lo = re.search(r'"LaunchOptions"\s+"((?:\\.|[^"\\])*)"', window)
             if not lo:
                 continue
@@ -187,7 +179,8 @@ def proton_launch_options_ok(install: MtgaInstall) -> Optional[bool]:
 # Windows
 # ---------------------------------------------------------------------------
 
-def _find_mtga_windows() -> Optional[MtgaInstall]:
+
+def _find_mtga_windows() -> MtgaInstall | None:
     # Registry + well-known paths live in desktop.runtime (winreg-guarded);
     # reuse rather than duplicate.
     from arenamcp.desktop import runtime as _runtime
@@ -195,9 +188,7 @@ def _find_mtga_windows() -> Optional[MtgaInstall]:
     mtga_dir, _source = _runtime.find_mtga_install_dir()
     if not mtga_dir:
         return None
-    player_log = (
-        Path.home() / _PLAYER_LOG_WIN_SUFFIX
-    )
+    player_log = Path.home() / _PLAYER_LOG_WIN_SUFFIX
     return MtgaInstall(
         install_dir=Path(mtga_dir),
         player_log=player_log if player_log.parent.is_dir() else None,
@@ -217,13 +208,13 @@ _DARWIN_EPIC_CANDIDATES = [
 ]
 
 
-def _darwin_native_log(home: Path) -> Optional[Path]:
+def _darwin_native_log(home: Path) -> Path | None:
     """Native-client Player.log path, or None when MTGA never ran."""
     log = home / _PLAYER_LOG_DARWIN_SUFFIX
     return log if log.parent.is_dir() else None
 
 
-def _find_mtga_darwin_crossover(home: Path) -> Optional[MtgaInstall]:
+def _find_mtga_darwin_crossover(home: Path) -> MtgaInstall | None:
     """Windows MTGA build inside a CrossOver bottle (bridge-capable)."""
     bottles_root = home / "Library" / "Application Support" / "CrossOver" / "Bottles"
     if not bottles_root.is_dir():
@@ -244,7 +235,7 @@ def _find_mtga_darwin_crossover(home: Path) -> Optional[MtgaInstall]:
                 continue
             # The bottle's Windows user dir is usually "crossover" but the
             # naming isn't guaranteed — glob instead of assuming.
-            player_log: Optional[Path] = None
+            player_log: Path | None = None
             users_dir = bottle / "drive_c" / "users"
             for user_dir in sorted(users_dir.glob("*")):
                 if user_dir.name.lower() == "public" or not user_dir.is_dir():
@@ -261,7 +252,7 @@ def _find_mtga_darwin_crossover(home: Path) -> Optional[MtgaInstall]:
     return None
 
 
-def _find_mtga_darwin() -> Optional[MtgaInstall]:
+def _find_mtga_darwin() -> MtgaInstall | None:
     """Locate MTGA on macOS.
 
     Priority: native Steam bundle, then Epic, then a CrossOver bottle
@@ -300,7 +291,8 @@ def _find_mtga_darwin() -> Optional[MtgaInstall]:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def find_mtga() -> Optional[MtgaInstall]:
+
+def find_mtga() -> MtgaInstall | None:
     """Locate MTGA on this machine, honoring a saved settings override."""
     # Explicit user setting wins on every platform.
     try:
@@ -314,9 +306,12 @@ def find_mtga() -> Optional[MtgaInstall]:
                 platform=current_platform(),
             )
             detected = (
-                _find_mtga_linux() if current_platform() == "linux"
-                else _find_mtga_windows() if current_platform() == "windows"
-                else _find_mtga_darwin() if current_platform() == "darwin"
+                _find_mtga_linux()
+                if current_platform() == "linux"
+                else _find_mtga_windows()
+                if current_platform() == "windows"
+                else _find_mtga_darwin()
+                if current_platform() == "darwin"
                 else None
             )
             if detected and detected.install_dir == install.install_dir:

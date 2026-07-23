@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import html
 import sys
-from typing import Any, Optional
+from typing import Any
 
 from PySide6.QtCore import QEvent, QProcess, QProcessEnvironment, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QPalette
@@ -30,12 +31,12 @@ from arenamcp.settings import get_settings
 from arenamcp.tts import VoiceOutput
 
 from .audio import AudioPlayback
-from .coach_process import CoachProcess
-from .theme import THEME_DARK, THEME_HIGH_CONTRAST, THEME_LIGHT, THEME_SYSTEM
-from .tts_manager import TtsManager
 from .card_overlay import CardOverlayWindow
+from .coach_process import CoachProcess
 from .hud import DraftHudWindow
 from .match_overlay import MatchOverlayWindow
+from .theme import THEME_DARK, THEME_HIGH_CONTRAST, THEME_LIGHT, THEME_SYSTEM
+from .tts_manager import TtsManager
 
 
 class PTTWaveformWidget(QFrame):
@@ -44,7 +45,7 @@ class PTTWaveformWidget(QFrame):
     backend's speech events — it does not start or stop capture itself.
     """
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFrameShape(QFrame.StyledPanel)
         self.setToolTip(
@@ -101,13 +102,13 @@ class CoachTab(QWidget):
         ("bridge", "Bridge"),
     ]
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._process: Optional[CoachProcess] = None
+        self._process: CoachProcess | None = None
         # Headless self-play (bot-vs-bot) subprocess. Lives only while a
         # self-play session is running; it needs the bridge on port 44222,
         # so the live coach must be stopped first.
-        self._selfplay_process: Optional[QProcess] = None
+        self._selfplay_process: QProcess | None = None
         self._selfplay_out_buf = ""
         self._selfplay_err_buf = ""
         self._tts = TtsManager(self)
@@ -122,6 +123,7 @@ class CoachTab(QWidget):
         # Developer machines only (MTGACOACH_DEV env / local settings flag,
         # never shipped): unlocks model cycling in online mode.
         from arenamcp.settings import is_developer_mode
+
         self._developer_mode = is_developer_mode()
         self._build_ui()
         self._draft_hud = DraftHudWindow()
@@ -154,16 +156,16 @@ class CoachTab(QWidget):
         # geometry); XWayland + xwininfo works, pure Wayland may not.
         if sys.platform.startswith("linux"):
             import os as _os
-            if (
-                _os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
-                or _os.environ.get("WAYLAND_DISPLAY")
+
+            if _os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland" or _os.environ.get(
+                "WAYLAND_DISPLAY"
             ):
                 self.append_log(
                     "Wayland session detected: in-game overlays use Qt-native "
                     "positioning and may not track the MTGA window under pure "
                     "Wayland (XWayland works). Advice is always available here "
                     "in the Coach log and via TTS voice output.",
-                    role="header"
+                    role="header",
                 )
 
     def attach_process(self, process: CoachProcess) -> None:
@@ -202,10 +204,8 @@ class CoachTab(QWidget):
         process = self._selfplay_process
         if process is not None:
             self._selfplay_process = None
-            try:
+            with contextlib.suppress(RuntimeError, TypeError):
                 process.finished.disconnect(self._on_self_play_finished)
-            except (RuntimeError, TypeError):
-                pass
             try:
                 if process.state() != QProcess.NotRunning:
                     process.terminate()
@@ -301,9 +301,7 @@ class CoachTab(QWidget):
     def _render_log_line(self, role: str, text: str) -> None:
         color = self._LOG_COLORS.get(role, self._LOG_COLORS["default"])
         escaped = html.escape(text).replace("\n", "<br>")
-        self.log_view.append(
-            f"<span style='color:{color}; font-family:Consolas;'>{escaped}</span>"
-        )
+        self.log_view.append(f"<span style='color:{color}; font-family:Consolas;'>{escaped}</span>")
         scroll_bar = self.log_view.verticalScrollBar()
         scroll_bar.setValue(scroll_bar.maximum())
 
@@ -427,6 +425,7 @@ class CoachTab(QWidget):
         # it needs. When Status is collapsed, this reclaims the empty
         # whitespace for the Game State / Coach Log panels below.
         from PySide6.QtWidgets import QSizePolicy
+
         top_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         top_layout = QVBoxLayout(top_panel)
         top_layout.setContentsMargins(0, 0, 0, 0)
@@ -485,9 +484,7 @@ class CoachTab(QWidget):
             b = QPushButton(label)
             b.setToolTip(tooltip)
             if command is not None:
-                b.clicked.connect(
-                    lambda _checked=False, cmd=command: self._send_command(cmd)
-                )
+                b.clicked.connect(lambda _checked=False, cmd=command: self._send_command(cmd))
                 self._buttons[command] = b
             elif on_click is not None:
                 b.clicked.connect(on_click)
@@ -523,7 +520,9 @@ class CoachTab(QWidget):
         button_row.addWidget(ap_btn)
 
         # 5. Suggest Deck Button
-        suggest_deck_btn = _btn("Suggest Deck", "Request deck recommendations & suggestions", on_click=self._suggest_deck)
+        suggest_deck_btn = _btn(
+            "Suggest Deck", "Request deck recommendations & suggestions", on_click=self._suggest_deck
+        )
         button_row.addWidget(suggest_deck_btn)
 
         # 6. Brain Stream Inspector Toggle Button
@@ -549,16 +548,12 @@ class CoachTab(QWidget):
         # lifecycle and status handlers make against toolbar buttons.
         self._self_play_btn = QAction("Self-Play", self)
         self._self_play_btn.setToolTip("Headless bot-vs-bot session")
-        self._self_play_btn.triggered.connect(
-            lambda _checked=False: self._toggle_self_play()
-        )
+        self._self_play_btn.triggered.connect(lambda _checked=False: self._toggle_self_play())
         self._overflow_menu.addAction(self._self_play_btn)
 
         voice_act = QAction("Voice", self)
         voice_act.setToolTip("Cycle the TTS voice")
-        voice_act.triggered.connect(
-            lambda _checked=False: self._send_command("cycle_voice")
-        )
+        voice_act.triggered.connect(lambda _checked=False: self._send_command("cycle_voice"))
         self._overflow_menu.addAction(voice_act)
         # Registered under its command so status updates retitle it
         # ("Voice: Sky (US Female)") just like a toolbar button.
@@ -566,20 +561,14 @@ class CoachTab(QWidget):
 
         speed_act = QAction("Speed", self)
         speed_act.setToolTip("Cycle the speaking speed")
-        speed_act.triggered.connect(
-            lambda _checked=False: self._send_command("cycle_speed")
-        )
+        speed_act.triggered.connect(lambda _checked=False: self._send_command("cycle_speed"))
         self._overflow_menu.addAction(speed_act)
         self._buttons["cycle_speed"] = speed_act
 
         if sys.platform == "win32":
             screen_act = self._overflow_menu.addAction("Analyze Screen")
-            screen_act.setToolTip(
-                "Analyze a screenshot of the game with the vision model"
-            )
-            screen_act.triggered.connect(
-                lambda _checked=False: self._send_command("analyze_screen")
-            )
+            screen_act.setToolTip("Analyze a screenshot of the game with the vision model")
+            screen_act.triggered.connect(lambda _checked=False: self._send_command("analyze_screen"))
 
         analyze_act = self._overflow_menu.addAction("Analyze Match")
         analyze_act.triggered.connect(lambda: self._send_command("analyze_match"))
@@ -597,22 +586,14 @@ class CoachTab(QWidget):
 
         calib_act = self._overflow_menu.addAction("Calibrate Cards")
         calib_act.setCheckable(True)
-        calib_act.setToolTip(
-            "Draw border around MTGA cards reported by bridge plugin to verify alignment"
-        )
-        calib_act.toggled.connect(
-            lambda checked: self._match_overlay.set_calibration(checked)
-        )
+        calib_act.setToolTip("Draw border around MTGA cards reported by bridge plugin to verify alignment")
+        calib_act.toggled.connect(lambda checked: self._match_overlay.set_calibration(checked))
 
         self._overlay_toggle_btn = QAction("In-Game Overlay", self)
         self._overlay_toggle_btn.setCheckable(True)
         self._overlay_toggle_btn.setChecked(True)
-        self._overlay_toggle_btn.setToolTip(
-            "Show/hide the in-game overlay (pill + advice panel)"
-        )
-        self._overlay_toggle_btn.toggled.connect(
-            lambda checked: self._match_overlay.set_enabled(checked)
-        )
+        self._overlay_toggle_btn.setToolTip("Show/hide the in-game overlay (pill + advice panel)")
+        self._overlay_toggle_btn.toggled.connect(lambda checked: self._match_overlay.set_enabled(checked))
         self._overflow_menu.addAction(self._overlay_toggle_btn)
 
         reset_panel_act = self._overflow_menu.addAction("Reset Advice Panel")
@@ -692,6 +673,7 @@ class CoachTab(QWidget):
     def toggle_brain_stream(self) -> None:
         if getattr(self, "_brain_stream_window", None) is None:
             from .brain_stream_window import BrainStreamWindow
+
             self._brain_stream_window = BrainStreamWindow(self)
             self._brain_stream_window.window_closed.connect(self._on_brain_stream_closed)
         if self._brain_stream_window.isVisible():
@@ -765,6 +747,7 @@ class CoachTab(QWidget):
             return bridge
         try:
             from arenamcp.gre_bridge import get_bridge
+
             bridge = get_bridge()
             self._overlay_bridge = bridge
             return bridge
@@ -774,10 +757,10 @@ class CoachTab(QWidget):
 
     def _submit_debug_report(self) -> None:
         """Debug Report flow:
-          0. Capture screenshots of both the coach window and MTGA window.
-          1. Save the local JSON report (referencing those screenshots).
-          2. Copy the JSON path to the clipboard.
-          3. Offer to upload to GitHub with an optional description.
+        0. Capture screenshots of both the coach window and MTGA window.
+        1. Save the local JSON report (referencing those screenshots).
+        2. Copy the JSON path to the clipboard.
+        3. Offer to upload to GitHub with an optional description.
         """
         if self._process is None:
             self.append_log("Coach process is not running.", role="error")
@@ -785,6 +768,7 @@ class CoachTab(QWidget):
         self.append_log("Saving local debug report...", role="status")
 
         from datetime import datetime
+
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         try:
             self._last_debug_screenshot_paths = self._capture_debug_screenshots(ts)
@@ -799,11 +783,13 @@ class CoachTab(QWidget):
 
         self._pending_bug_report_save = True
         # Send screenshot paths so the child can embed them in the JSON report
-        self._process.send_payload({
-            "cmd": "debug_report",
-            "screenshots": self._last_debug_screenshot_paths,
-            "timestamp_hint": ts,
-        })
+        self._process.send_payload(
+            {
+                "cmd": "debug_report",
+                "screenshots": self._last_debug_screenshot_paths,
+                "timestamp_hint": ts,
+            }
+        )
 
     def _capture_debug_screenshots(self, timestamp: str) -> dict[str, str]:
         """Grab the coach window + MTGA window as PNGs into the bug_reports
@@ -811,8 +797,10 @@ class CoachTab(QWidget):
         succeeded. Missing entries mean the capture failed for that target.
         """
         from pathlib import Path
+
         try:
             from arenamcp.logging_config import LOG_DIR
+
             bug_dir = Path(LOG_DIR) / "bug_reports"
         except Exception:
             bug_dir = Path.home() / ".arenamcp" / "logs" / "bug_reports"
@@ -837,7 +825,9 @@ class CoachTab(QWidget):
         #    (supported on Windows, macOS, and X11 Linux).
         try:
             from PIL import ImageGrab
+
             from arenamcp.desktop.window_tracking import get_mtga_window_rect
+
             rect = get_mtga_window_rect()
             if rect is not None:
                 left, top, width, height = rect
@@ -875,6 +865,7 @@ class CoachTab(QWidget):
         # Step 2: copy path to clipboard
         try:
             from PySide6.QtWidgets import QApplication
+
             QApplication.clipboard().setText(path)
             self.append_log(f"Debug report saved and copied to clipboard: {path}", role="status")
         except Exception as exc:
@@ -884,8 +875,7 @@ class CoachTab(QWidget):
         note, ok = QInputDialog.getText(
             self,
             "Upload Debug Report",
-            f"Report saved to:\n{path}\n\n"
-            "To upload to GitHub, enter a description (or cancel to skip):",
+            f"Report saved to:\n{path}\n\nTo upload to GitHub, enter a description (or cancel to skip):",
         )
         if not ok:
             self.append_log("Debug report kept locally (upload skipped).", role="dim")
@@ -945,10 +935,7 @@ class CoachTab(QWidget):
             is_autopilot = seat_info.strip().upper() == "AUTOPILOT"
             t = text.strip()
             t_upper = t.upper()
-            is_strategic = (
-                t_upper.startswith("PLAN:")
-                or "MANUAL REQUIRED" in t_upper[:80]
-            )
+            is_strategic = t_upper.startswith("PLAN:") or "MANUAL REQUIRED" in t_upper[:80]
             if is_autopilot and not is_strategic:
                 # Autopilot's per-decision reasoning. Keep it visible (the user
                 # wants to see what the bot is thinking) but on a distinct,
@@ -964,10 +951,8 @@ class CoachTab(QWidget):
             self.append_log(f"COACH ({seat_info})", role=role_header)
             self.append_log(text, role=role_body)
             if not is_autopilot:
-                try:
+                with contextlib.suppress(Exception):
                     self._draft_hud.add_advice(text)
-                except Exception:
-                    pass
             # Also show on the in-match overlay so the user can keep eyes
             # on MTGA. Skip operational autopilot noise (already demoted
             # to debug above); show only strategic content and real coach
@@ -976,19 +961,15 @@ class CoachTab(QWidget):
                 overlay_text = text
                 if overlay_text.startswith("PLAN:"):
                     overlay_text = overlay_text[5:].strip()
-                try:
+                with contextlib.suppress(Exception):
                     self._match_overlay.set_advice(overlay_text, seat_info)
-                except Exception:
-                    pass
         elif event_type == "status":
             key = str(payload.get("key", ""))
             value = str(payload.get("value", ""))
             self._update_status(key, value)
             if key == "AUTOPILOT":
-                try:
+                with contextlib.suppress(Exception):
                     self._draft_hud.update_autopilot("ON" in value)
-                except Exception:
-                    pass
         elif event_type == "error":
             self.append_log(f"ERROR: {payload.get('message', '')}", role="error")
         elif event_type == "subtask":
@@ -1005,15 +986,8 @@ class CoachTab(QWidget):
                     turn = data.get("turn") or {}
                     # Multiple possible signals: explicit match flag, turn
                     # number, or the presence of any player/battlefield data.
-                    has_turn = bool(
-                        turn.get("turn_number")
-                        or turn.get("number")
-                        or data.get("turn_number")
-                    )
-                    has_players = bool(
-                        data.get("players") or data.get("battlefield")
-                        or data.get("hand")
-                    )
+                    has_turn = bool(turn.get("turn_number") or turn.get("number") or data.get("turn_number"))
+                    has_players = bool(data.get("players") or data.get("battlefield") or data.get("hand"))
                     in_match = (
                         bool(data.get("match_in_progress"))
                         or bool(data.get("match_id"))
@@ -1137,10 +1111,8 @@ class CoachTab(QWidget):
             # Drop our own handlers, then drop the main window's auto-restart
             # hook so stopping the coach doesn't immediately relaunch it.
             self.detach_process()
-            try:
+            with contextlib.suppress(RuntimeError, TypeError):
                 process.exited.disconnect()
-            except (RuntimeError, TypeError):
-                pass
             process.stop_async()
         except Exception as exc:
             self.append_log(f"Could not stop coach for self-play: {exc}", role="error")
@@ -1190,10 +1162,8 @@ class CoachTab(QWidget):
         if not process.waitForStarted(5000):
             message = process.errorString() or "failed to start"
             self.append_log(f"Self-play failed to start: {message}", role="error")
-            try:
+            with contextlib.suppress(Exception):
                 process.deleteLater()
-            except Exception:
-                pass
             self._selfplay_process = None
             self._reset_self_play_button()
             return
@@ -1266,10 +1236,8 @@ class CoachTab(QWidget):
         process = self._selfplay_process
         self._selfplay_process = None
         if process is not None:
-            try:
+            with contextlib.suppress(Exception):
                 process.deleteLater()
-            except Exception:
-                pass
 
         self.append_log(f"Self-play exited ({exit_code}).", role="header")
         self._reset_self_play_button()
@@ -1376,7 +1344,7 @@ class CoachTab(QWidget):
             return "?"
         for prefix in ("Changed to:", "TTS Voice:"):
             if clean.startswith(prefix):
-                clean = clean[len(prefix):].strip()
+                clean = clean[len(prefix) :].strip()
         clean = clean.replace("(saved)", "").strip()
         return clean or "?"
 
@@ -1509,13 +1477,20 @@ class CoachTab(QWidget):
         self._set_status_label("coach", coach_text)
 
     def _is_online_backend(self) -> bool:
-        backend = (self._status_values.get("BACKEND") or self._status_values.get("PROVIDER") or "").lower().strip()
+        backend = (
+            (self._status_values.get("BACKEND") or self._status_values.get("PROVIDER") or "").lower().strip()
+        )
         # Exact match on "online" or "online (...)". Anything containing
         # "local" (including fallback strings like "local (temp) — online
         # failed") is considered local.
         if "local" in backend:
             return False
-        return backend == "online" or backend.startswith("online ") or backend.startswith("online(") or "online" == self._compact_backend_label(backend).lower()
+        return (
+            backend == "online"
+            or backend.startswith("online ")
+            or backend.startswith("online(")
+            or self._compact_backend_label(backend).lower() == "online"
+        )
 
     def _apply_model_button_visibility(self) -> None:
         button = self._buttons.get("cycle_model")
@@ -1629,7 +1604,7 @@ class CoachTab(QWidget):
     def _build_waiting_game_state_html(self) -> str:
         tokens = self._theme_tokens()
         return (
-            f"<div style='font-family:Consolas,\"Courier New\",monospace;"
+            f'<div style=\'font-family:Consolas,"Courier New",monospace;'
             f"color:{tokens['text']}; background:{tokens['bg']}; padding:10px;'>"
             f"<div style='font-size:16px; font-weight:700; margin-bottom:6px;'>Waiting for MTGA...</div>"
             f"<div style='color:{tokens['muted']};'>The board view will appear here once a match is detected.</div>"
@@ -1647,8 +1622,12 @@ class CoachTab(QWidget):
 
         players = data.get("players", [])
         local_seat = _int_value(data.get("local_seat_id"))
-        local_player = next((p for p in players if isinstance(p, dict) and _bool_value(p.get("is_local"))), None)
-        opponent_player = next((p for p in players if isinstance(p, dict) and not _bool_value(p.get("is_local"))), None)
+        local_player = next(
+            (p for p in players if isinstance(p, dict) and _bool_value(p.get("is_local"))), None
+        )
+        opponent_player = next(
+            (p for p in players if isinstance(p, dict) and not _bool_value(p.get("is_local"))), None
+        )
         opponent_seat = _int_value(opponent_player.get("seat_id")) if isinstance(opponent_player, dict) else 0
 
         turn = data.get("turn", {})
@@ -1665,14 +1644,22 @@ class CoachTab(QWidget):
 
         opponent_board = self._render_battlefield_section(
             "Opponent Board",
-            [card for card in battlefield if isinstance(card, dict) and self._card_controller_seat(card) == opponent_seat],
+            [
+                card
+                for card in battlefield
+                if isinstance(card, dict) and self._card_controller_seat(card) == opponent_seat
+            ],
             tokens,
             seat_color=tokens["opponent"],
         )
         stack_html = self._render_stack_section(zones.get("stack"), tokens)
         player_board = self._render_battlefield_section(
             "Your Board",
-            [card for card in battlefield if isinstance(card, dict) and self._card_controller_seat(card) == local_seat],
+            [
+                card
+                for card in battlefield
+                if isinstance(card, dict) and self._card_controller_seat(card) == local_seat
+            ],
             tokens,
             seat_color=tokens["player"],
         )
@@ -1719,7 +1706,7 @@ class CoachTab(QWidget):
         )
 
         return (
-            f"<div style='font-family:Consolas,\"Courier New\",monospace; color:{tokens['text']};"
+            f'<div style=\'font-family:Consolas,"Courier New",monospace; color:{tokens["text"]};'
             f" background:{tokens['bg']}; padding:8px 10px;'>"
             f"{header}{pending}"
             f"{opp_zone}"
@@ -1765,7 +1752,13 @@ class CoachTab(QWidget):
         if active_label:
             bits.append(active_label)
         line = "  ·  ".join(bits)
-        accent = tokens["player"] if active_label == "YOURS" else tokens["opponent"] if active_label == "OPP" else tokens["header"]
+        accent = (
+            tokens["player"]
+            if active_label == "YOURS"
+            else tokens["opponent"]
+            if active_label == "OPP"
+            else tokens["header"]
+        )
         return (
             f"<div style='margin:0 0 6px 0; padding:4px 8px; border-left:3px solid {accent};"
             f" background:{tokens['panel2']}; color:{tokens['header']}; font-size:12px; font-weight:700;'>"
@@ -1822,9 +1815,23 @@ class CoachTab(QWidget):
                     continue
                 if text.startswith("Select target: "):
                     options.append(text.removeprefix("Select target: ").strip())
-                elif decision_type in {"scry", "surveil", "select_n", "choose", "choose_creature", "choose_land", "choose_enchantment", "choose_artifact", "choose_permanent"}:
-                    if text not in {"Pass", "Done"} and not text.startswith("Action: "):
-                        options.append(text)
+                elif (
+                    decision_type
+                    in {
+                        "scry",
+                        "surveil",
+                        "select_n",
+                        "choose",
+                        "choose_creature",
+                        "choose_land",
+                        "choose_enchantment",
+                        "choose_artifact",
+                        "choose_permanent",
+                    }
+                    and text not in {"Pass", "Done"}
+                    and not text.startswith("Action: ")
+                ):
+                    options.append(text)
 
         if not options:
             option_cards = decision_context.get("option_cards")
@@ -1858,7 +1865,7 @@ class CoachTab(QWidget):
     def _render_resource_row(
         self,
         seat_label: str,
-        player: Optional[dict[str, Any]],
+        player: dict[str, Any] | None,
         game_state: dict[str, Any],
         zones: dict[str, Any],
         seat_id: int,
@@ -1868,7 +1875,7 @@ class CoachTab(QWidget):
         include_hand_cards: bool = False,
     ) -> str:
         """Compact single-line resource row with a unicode life bar:
-            OPP   ♥ 20/40 ██████████░░░░░░░░░░   📚 33   🪦 2   ⬜ 0   ✋ 3
+        OPP   ♥ 20/40 ██████████░░░░░░░░░░   📚 33   🪦 2   ⬜ 0   ✋ 3
         """
         accent = tokens["opponent"] if seat_label == "Opponent" else tokens["player"]
         life_value = _int_value(player.get("life_total")) if isinstance(player, dict) else 0
@@ -1903,8 +1910,18 @@ class CoachTab(QWidget):
         pills = [
             pill("♥", life, accent, "Life total", raw_value=True),
             pill("📚", lib, tokens["spell"], "Library count"),
-            pill("🪦", grave_count, tokens["other"], f"Graveyard: {self._zone_summary(grave_cards, 8) if grave_cards else 'empty'}"),
-            pill("⬜", exile_count, tokens["other"], f"Exile: {self._zone_summary(exile_cards, 8) if exile_cards else 'empty'}"),
+            pill(
+                "🪦",
+                grave_count,
+                tokens["other"],
+                f"Graveyard: {self._zone_summary(grave_cards, 8) if grave_cards else 'empty'}",
+            ),
+            pill(
+                "⬜",
+                exile_count,
+                tokens["other"],
+                f"Exile: {self._zone_summary(exile_cards, 8) if exile_cards else 'empty'}",
+            ),
         ]
         if include_hand_count:
             hand_count = _int_value(zones.get("opponent_hand_count"))
@@ -1912,7 +1929,9 @@ class CoachTab(QWidget):
 
         hand_html = ""
         if include_hand_cards:
-            hand_cards = self._cards_for_zone_and_seat(zones.get("my_hand") or zones.get("hand"), seat_id, allow_unknown_owner=True)
+            hand_cards = self._cards_for_zone_and_seat(
+                zones.get("my_hand") or zones.get("hand"), seat_id, allow_unknown_owner=True
+            )
             if hand_cards:
                 pills.append(pill("✋", str(len(hand_cards)), tokens["spell"], "Your hand size"))
                 hand_html = (
@@ -1924,9 +1943,7 @@ class CoachTab(QWidget):
 
         row = sep.join(pills)
         seat_tag = "YOU" if seat_label == "You" else "OPP"
-        tag_style = (
-            f"color:{accent}; font-size:10px; font-weight:700; letter-spacing:0.06em;"
-        )
+        tag_style = f"color:{accent}; font-size:10px; font-weight:700; letter-spacing:0.06em;"
         # Three non-breaking spaces after the tag so it doesn't touch the first pill
         return (
             f"<div style='margin:0 0 4px 0; font-size:11px;'>"
@@ -1992,13 +2009,14 @@ class CoachTab(QWidget):
             f"</div>"
         )
 
-    def _render_card_lane(self, label: str, cards: list[dict[str, Any]], type_key: str, tokens: dict[str, str]) -> str:
+    def _render_card_lane(
+        self, label: str, cards: list[dict[str, Any]], type_key: str, tokens: dict[str, str]
+    ) -> str:
         if not cards:
             return ""
         accent = tokens.get(type_key, tokens["other"])
         summaries = "&nbsp;&nbsp;·&nbsp;&nbsp;".join(
-            html.escape(self._compact_card_summary(card))
-            for card in cards
+            html.escape(self._compact_card_summary(card)) for card in cards
         )
         # Inline label + summaries on a single row per lane.
         # Three nbsp after label so Qt's QTextEdit (which ignores margin)
@@ -2063,7 +2081,9 @@ class CoachTab(QWidget):
             )
 
         rows = []
-        for idx, item in enumerate(reversed([card for card in stack_zone if isinstance(card, dict)]), start=1):
+        for idx, item in enumerate(
+            reversed([card for card in stack_zone if isinstance(card, dict)]), start=1
+        ):
             name = _str_value(item.get("name"), "?")
             detail = _str_value(item.get("type_line"))
             owner = "You" if _bool_value(item.get("is_local")) else ""
@@ -2329,7 +2349,15 @@ class CoachTab(QWidget):
             border = tokens["border"]
 
         detail = html.escape(mana_cost) if mana_cost else ""
-        type_label = "LAND" if status == "land" else "CAST" if status == "castable" else "NO MANA" if status == "uncastable" else ""
+        type_label = (
+            "LAND"
+            if status == "land"
+            else "CAST"
+            if status == "castable"
+            else "NO MANA"
+            if status == "uncastable"
+            else ""
+        )
         detail_cell = (
             f"<td style='padding:4px 8px; color:{foreground}; opacity:0.9; white-space:nowrap;'>{detail}</td>"
             if detail

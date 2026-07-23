@@ -19,10 +19,10 @@ material_lost) with life dominant when it's low.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from itertools import product
-from typing import Any, Iterable, Optional
-
+from typing import Any
 
 # --- Helpers -----------------------------------------------------------
 
@@ -54,9 +54,8 @@ def _can_block(attacker: dict, blocker: dict) -> bool:
     are not modeled — callers should filter those externally via the
     GRE-provided `attackerInstanceIds` list.
     """
-    if _has(attacker, "flying"):
-        if not (_has(blocker, "flying") or _has(blocker, "reach")):
-            return False
+    if _has(attacker, "flying") and not (_has(blocker, "flying") or _has(blocker, "reach")):
+        return False
     # Menace: attacker can't be blocked except by two or more creatures.
     # We model this as a per-attacker constraint enforced later (>=2 blockers).
     return True
@@ -123,17 +122,12 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
     # --- Regular damage step ---
     # Blockers that died in FS can't deal damage back.
     alive_after_fs = [b for b in assigned if b not in out.blockers_died]
-    blocker_has_fs = any(
-        _has(b, "first strike") or _has(b, "double strike") for b in alive_after_fs
-    )
+    blocker_has_fs = any(_has(b, "first strike") or _has(b, "double strike") for b in alive_after_fs)
 
     # If blockers with first strike would kill a non-FS attacker before
     # it strikes, attacker dies and never deals its regular damage.
     if blocker_has_fs and not atk_fs:
-        fs_blockers = [
-            b for b in alive_after_fs
-            if _has(b, "first strike") or _has(b, "double strike")
-        ]
+        fs_blockers = [b for b in alive_after_fs if _has(b, "first strike") or _has(b, "double strike")]
         fs_power = sum(_pt(b)[0] for b in fs_blockers)
         fs_dth = any(_has(b, "deathtouch") for b in fs_blockers)
         if ((fs_dth and fs_power > 0) or fs_power >= atk_t) and not atk_indestructible:
@@ -164,7 +158,7 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
     # FS step are excluded.
     if attacker_alive and not atk_indestructible and not out.attacker_died:
         # Exclude FS-step kills but INCLUDE regular-step kills (simultaneous).
-        non_fs_dead = [b for b in out.blockers_died if b in alive_after_fs]
+        [b for b in out.blockers_died if b in alive_after_fs]
         striking_back = alive_after_fs  # all blockers alive after FS
         ret_power = sum(_pt(b)[0] for b in striking_back)
         ret_dth = any(_has(b, "deathtouch") for b in striking_back)
@@ -188,9 +182,7 @@ class BlockPlan:
     score: float = 0.0
 
 
-def _can_block_this_attacker(
-    attacker: dict, blocker: dict, allowed_ids: Optional[set[int]]
-) -> bool:
+def _can_block_this_attacker(attacker: dict, blocker: dict, allowed_ids: set[int] | None) -> bool:
     if allowed_ids is not None and int(attacker.get("instance_id") or 0) not in allowed_ids:
         return False
     return _can_block(attacker, blocker)
@@ -201,8 +193,8 @@ def optimal_blocks(
     blockers: list[dict],
     your_life: int = 20,
     *,
-    blocker_allowed_attackers: Optional[dict[int, set[int]]] = None,
-) -> Optional[BlockPlan]:
+    blocker_allowed_attackers: dict[int, set[int]] | None = None,
+) -> BlockPlan | None:
     """Enumerate legal block assignments and pick the best.
 
     `blocker_allowed_attackers` maps a blocker's instance_id to the set
@@ -223,27 +215,29 @@ def optimal_blocks(
     n_options = (n_attackers + 1) ** n_blockers
     if n_options > 50_000:
         return _greedy_block_plan(
-            attackers, blockers, your_life,
+            attackers,
+            blockers,
+            your_life,
             blocker_allowed_attackers=blocker_allowed_attackers,
         )
 
     # Pre-compute per-blocker option list: indices into `attackers` plus
     # "None" for no-block.
-    blocker_options: list[list[Optional[int]]] = []
+    blocker_options: list[list[int | None]] = []
     for blk in blockers:
         blk_iid = int(blk.get("instance_id") or 0)
         allowed = None
         if blocker_allowed_attackers is not None:
             allowed = blocker_allowed_attackers.get(blk_iid)
-        opts: list[Optional[int]] = [None]  # do not block
+        opts: list[int | None] = [None]  # do not block
         for i, atk in enumerate(attackers):
             if _can_block_this_attacker(atk, blk, allowed):
                 opts.append(i)
         blocker_options.append(opts)
 
-    incoming_damage = sum(_pt(a)[0] for a in attackers)
+    sum(_pt(a)[0] for a in attackers)
 
-    best: Optional[BlockPlan] = None
+    best: BlockPlan | None = None
     for choice in product(*blocker_options):
         # choice[b] is either None or an attacker index
         assigned_to_atk: dict[int, list[dict]] = {}
@@ -284,8 +278,7 @@ def optimal_blocks(
 
         plan = BlockPlan(
             assignments={
-                int(blockers[b_idx].get("instance_id") or 0):
-                int(attackers[atk_idx].get("instance_id") or 0)
+                int(blockers[b_idx].get("instance_id") or 0): int(attackers[atk_idx].get("instance_id") or 0)
                 for b_idx, atk_idx in enumerate(choice)
                 if atk_idx is not None
             },
@@ -356,12 +349,10 @@ def _greedy_block_plan(
     blockers: list[dict],
     your_life: int,
     *,
-    blocker_allowed_attackers: Optional[dict[int, set[int]]],
+    blocker_allowed_attackers: dict[int, set[int]] | None,
 ) -> BlockPlan:
     """Fallback for large combat — greedy chump-block biggest attackers first."""
-    sorted_atk = sorted(
-        enumerate(attackers), key=lambda ia: -_pt(ia[1])[0]
-    )
+    sorted_atk = sorted(enumerate(attackers), key=lambda ia: -_pt(ia[1])[0])
     remaining_blockers = list(blockers)
     assignments: dict[int, int] = {}
     total_damage = 0
@@ -370,16 +361,14 @@ def _greedy_block_plan(
     killed_attackers: list[dict] = []
     lost_blockers: list[dict] = []
 
-    for atk_idx, atk in sorted_atk:
+    for _atk_idx, atk in sorted_atk:
         atk_iid = int(atk.get("instance_id") or 0)
         # Pick a blocker that can block this attacker with minimum material.
         candidates = []
         for blk in remaining_blockers:
             blk_iid = int(blk.get("instance_id") or 0)
             allowed = (
-                blocker_allowed_attackers.get(blk_iid)
-                if blocker_allowed_attackers is not None
-                else None
+                blocker_allowed_attackers.get(blk_iid) if blocker_allowed_attackers is not None else None
             )
             if _can_block_this_attacker(atk, blk, allowed):
                 candidates.append(blk)
@@ -439,7 +428,7 @@ def optimal_attacks(
     your_life: int,
     opponent_attackers_next_turn: list[dict],
     your_remaining_blockers: list[dict],
-) -> Optional[AttackPlan]:
+) -> AttackPlan | None:
     """Pick the attacker subset that maximizes damage while surviving crackback.
 
     Worst-case model: assume the opponent blocks to minimize damage
@@ -464,7 +453,7 @@ def optimal_attacks(
         # Include empty set explicitly (no attack).
         subsets.append(())
 
-    best: Optional[AttackPlan] = None
+    best: AttackPlan | None = None
 
     for subset in subsets:
         attacking = [candidate_attackers[i] for i in subset]
@@ -488,15 +477,13 @@ def optimal_attacks(
         # Crackback — the creatures we didn't attack with, plus whatever
         # opponent will attack with next turn (we take this list in
         # verbatim since we can't easily predict it).
-        held_back = [
-            candidate_attackers[i] for i in range(n) if i not in set(subset)
-        ]
+        held_back = [candidate_attackers[i] for i in range(n) if i not in set(subset)]
         our_defenders = held_back + your_remaining_blockers
-        crack_block = optimal_blocks(
-            opponent_attackers_next_turn, our_defenders, your_life
-        )
-        crackback = crack_block.damage_through if crack_block else sum(
-            _pt(a)[0] for a in opponent_attackers_next_turn
+        crack_block = optimal_blocks(opponent_attackers_next_turn, our_defenders, your_life)
+        crackback = (
+            crack_block.damage_through
+            if crack_block
+            else sum(_pt(a)[0] for a in opponent_attackers_next_turn)
         )
 
         plan = AttackPlan(
@@ -540,9 +527,7 @@ def _score_attack_plan(plan: AttackPlan, your_life: int, opponent_life: int) -> 
 
     # Weight damage dealt by how close it gets us to lethal.
     opp_pressure = plan.damage_through * (5.0 / max(1, opponent_life - plan.damage_through))
-    our_pressure = -plan.worst_case_crackback * (
-        5.0 / max(1, your_life - plan.worst_case_crackback)
-    )
+    our_pressure = -plan.worst_case_crackback * (5.0 / max(1, your_life - plan.worst_case_crackback))
     material = plan.blockers_killed_material - plan.attackers_lost_material
     return opp_pressure + our_pressure + material
 
@@ -561,9 +546,7 @@ def collect_attackers(game_state: dict[str, Any]) -> list[dict]:
     return [c for c in battlefield if c.get("is_attacking")]
 
 
-def collect_attackers_from_raw_blockers(
-    game_state: dict[str, Any], raw_blockers: list[dict]
-) -> list[dict]:
+def collect_attackers_from_raw_blockers(game_state: dict[str, Any], raw_blockers: list[dict]) -> list[dict]:
     """Derive attacker objects from the GRE declareBlockersReq payload.
 
     Each entry in raw_blockers exposes `attackerInstanceIds` — the union

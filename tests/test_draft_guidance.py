@@ -11,7 +11,6 @@ import pytest
 
 from arenamcp.draft_guidance import (
     ArchStats,
-    CardData,
     FormatContext,
     _polyval,
     _wheel_probability,
@@ -49,9 +48,7 @@ def mk(
     color_list = list(colors) if colors else []
     if mana_cost is None:
         generic = int(cmc) - len(color_list)
-        mana_cost = ("{%d}" % generic if generic > 0 else "") + "".join(
-            "{%s}" % c for c in color_list
-        )
+        mana_cost = ("{%d}" % generic if generic > 0 else "") + "".join(f"{{{c}}}" for c in color_list)
     return normalize_card(
         {
             "grp_id": grp_id if grp_id is not None else next(_ids),
@@ -104,17 +101,13 @@ class TestNormalization:
         assert card.alsa is None
 
     def test_colors_derived_from_mana_cost_including_hybrid(self):
-        card = normalize_card(
-            {"grp_id": 1, "name": "A", "mana_cost": "{1}{W/U}{B}"}
-        )
+        card = normalize_card({"grp_id": 1, "name": "A", "mana_cost": "{1}{W/U}{B}"})
         assert set(card.colors) == {"W", "U", "B"}
         # WUBRG canonical ordering
         assert card.colors == ("W", "U", "B")
 
     def test_explicit_colors_win_over_mana_cost(self):
-        card = normalize_card(
-            {"grp_id": 1, "name": "A", "colors": ["R"], "mana_cost": "{W}"}
-        )
+        card = normalize_card({"grp_id": 1, "name": "A", "colors": ["R"], "mana_cost": "{W}"})
         assert card.colors == ("R",)
 
     def test_tags_derived_from_oracle_text(self):
@@ -184,8 +177,7 @@ class TestNormalization:
 class TestBombDetection:
     def test_pack_relative_bomb_tops_the_ranking_with_reasons(self):
         pack = filler_pack(9, wr=0.535) + [
-            mk("Dragon Bomb", wr=0.63, iwd=0.06, colors="R", cmc=5,
-               rarity="mythic", alsa=1.4)
+            mk("Dragon Bomb", wr=0.63, iwd=0.06, colors="R", cmc=5, rarity="mythic", alsa=1.4)
         ]
         result = evaluate_pack(pack, pool=[], pick_number=1, pack_number=1, fmt=FMT)
         top = result[0]
@@ -198,9 +190,7 @@ class TestBombDetection:
         assert any("true bomb" in r.lower() for r in top.reasons)
 
     def test_same_card_is_not_a_bomb_in_a_strong_pack(self):
-        strong_pack = filler_pack(9, wr=0.615) + [
-            mk("Dragon Bomb", wr=0.63, iwd=0.06, colors="R", cmc=5)
-        ]
+        strong_pack = filler_pack(9, wr=0.615) + [mk("Dragon Bomb", wr=0.63, iwd=0.06, colors="R", cmc=5)]
         result = evaluate_pack(strong_pack, pool=[], pick_number=1, fmt=FMT)
         top = {g.name: g for g in result}["Dragon Bomb"]
         assert not top.is_bomb  # z-score is pack-relative
@@ -255,18 +245,15 @@ class TestLaneCommitment:
         pool_small = committed_pool(("W", "U"), n=6)
         pool_big = committed_pool(("W", "U"), n=30)
         red = [mk("Red Spell", wr=0.57, colors="R", grp_id=42)]
-        early = evaluate_pack(red + filler_pack(5), pool_small,
-                              pick_number=3, pack_number=1, fmt=FMT)
-        late = evaluate_pack(red + filler_pack(5), pool_big,
-                             pick_number=5, pack_number=3, fmt=FMT)
+        early = evaluate_pack(red + filler_pack(5), pool_small, pick_number=3, pack_number=1, fmt=FMT)
+        late = evaluate_pack(red + filler_pack(5), pool_big, pick_number=5, pack_number=3, fmt=FMT)
         early_red = {g.grp_id: g for g in early}[42]
         late_red = {g.grp_id: g for g in late}[42]
         assert early_red.score > late_red.score
 
     def test_lane_reported_on_guidance_records(self):
         pool = committed_pool(("W", "U"), n=14)
-        result = evaluate_pack(filler_pack(4), pool, pick_number=4,
-                               pack_number=2, fmt=FMT)
+        result = evaluate_pack(filler_pack(4), pool, pick_number=4, pack_number=2, fmt=FMT)
         assert all(g.lane == "WU" for g in result)
 
 
@@ -278,8 +265,9 @@ class TestLaneCommitment:
 class TestCastability:
     def test_double_off_pip_no_fixing_is_nearly_uncastable(self):
         pool = committed_pool(("W", "U"), n=20)
-        pack = [mk("RR Spell", wr=0.60, colors="R", mana_cost="{1}{R}{R}",
-                   grp_id=7)] + filler_pack(5, wr=0.53)
+        pack = [mk("RR Spell", wr=0.60, colors="R", mana_cost="{1}{R}{R}", grp_id=7)] + filler_pack(
+            5, wr=0.53
+        )
         result = evaluate_pack(pack, pool, pick_number=4, pack_number=3, fmt=FMT)
         rr = {g.grp_id: g for g in result}[7]
         assert rr.score < 10
@@ -288,19 +276,23 @@ class TestCastability:
     def test_bomb_splash_allowed_with_fixing(self):
         base_pool = committed_pool(("W", "U"), n=12)
         duals = [
-            normalize_card({
-                "grp_id": next(_ids), "name": f"Dual {i}",
-                "colors": ["W", "U"], "type_line": "Land", "mana_cost": "",
-            })
+            normalize_card(
+                {
+                    "grp_id": next(_ids),
+                    "name": f"Dual {i}",
+                    "colors": ["W", "U"],
+                    "type_line": "Land",
+                    "mana_cost": "",
+                }
+            )
             for i in range(3)
         ]
-        pack = [mk("Off Bomb", wr=0.66, iwd=0.06, colors="R", cmc=5,
-                   mana_cost="{4}{R}", grp_id=8)] + filler_pack(6, wr=0.525)
+        pack = [
+            mk("Off Bomb", wr=0.66, iwd=0.06, colors="R", cmc=5, mana_cost="{4}{R}", grp_id=8)
+        ] + filler_pack(6, wr=0.525)
 
-        with_fixing = evaluate_pack(pack, base_pool + duals, pick_number=4,
-                                    pack_number=2, fmt=FMT)
-        without_fixing = evaluate_pack(pack, base_pool, pick_number=4,
-                                       pack_number=2, fmt=FMT)
+        with_fixing = evaluate_pack(pack, base_pool + duals, pick_number=4, pack_number=2, fmt=FMT)
+        without_fixing = evaluate_pack(pack, base_pool, pick_number=4, pack_number=2, fmt=FMT)
         bomb_with = {g.grp_id: g for g in with_fixing}[8]
         bomb_without = {g.grp_id: g for g in without_fixing}[8]
         assert bomb_with.score > bomb_without.score
@@ -329,8 +321,15 @@ class TestComposition:
     def test_removal_boosted_when_pool_lacks_removal(self):
         pool = [mk(f"Bear {i}", wr=0.55, colors="W", cmc=3) for i in range(15)]
         pack = [
-            mk("Zap", wr=0.55, colors="W", cmc=3, type_line="Instant",
-               oracle_text="Destroy target creature.", grp_id=1),
+            mk(
+                "Zap",
+                wr=0.55,
+                colors="W",
+                cmc=3,
+                type_line="Instant",
+                oracle_text="Destroy target creature.",
+                grp_id=1,
+            ),
             mk("Vanilla", wr=0.55, colors="W", cmc=3, grp_id=2),
         ]
         result = evaluate_pack(pack, pool, pick_number=3, pack_number=2, fmt=FMT)
@@ -340,13 +339,26 @@ class TestComposition:
 
     def test_removal_saturation_penalized(self):
         pool = [
-            mk(f"Kill {i}", wr=0.55, colors="W", cmc=3, type_line="Instant",
-               oracle_text="Destroy target creature.")
+            mk(
+                f"Kill {i}",
+                wr=0.55,
+                colors="W",
+                cmc=3,
+                type_line="Instant",
+                oracle_text="Destroy target creature.",
+            )
             for i in range(7)
         ] + [mk(f"Bear {i}", wr=0.55, colors="W") for i in range(8)]
         pack = [
-            mk("Another Kill", wr=0.55, colors="W", cmc=3, type_line="Instant",
-               oracle_text="Destroy target creature.", grp_id=1),
+            mk(
+                "Another Kill",
+                wr=0.55,
+                colors="W",
+                cmc=3,
+                type_line="Instant",
+                oracle_text="Destroy target creature.",
+                grp_id=1,
+            ),
             mk("Vanilla", wr=0.55, colors="W", cmc=3, grp_id=2),
         ]
         result = evaluate_pack(pack, pool, pick_number=3, pack_number=2, fmt=FMT)
@@ -368,12 +380,12 @@ class TestComposition:
 
     def test_analyze_pool_census(self):
         pool = [
-            mk("Bear", cmc=2),                                        # creature + early
-            mk("Kill", cmc=1, type_line="Instant",
-               oracle_text="Destroy target creature."),               # removal + early
-            mk("Fatty", cmc=6),                                       # heavy
-            normalize_card({"grp_id": 1, "name": "Dual",
-                            "colors": ["W", "U"], "type_line": "Land"}),  # fixing
+            mk("Bear", cmc=2),  # creature + early
+            mk("Kill", cmc=1, type_line="Instant", oracle_text="Destroy target creature."),  # removal + early
+            mk("Fatty", cmc=6),  # heavy
+            normalize_card(
+                {"grp_id": 1, "name": "Dual", "colors": ["W", "U"], "type_line": "Land"}
+            ),  # fixing
         ]
         lane = compute_lane(pool, FMT)
         needs = analyze_pool(pool, FMT, lane)
@@ -413,9 +425,7 @@ class TestWheel:
 
     def test_wheel_probability_surfaces_on_guidance(self):
         # A weak high-ALSA card in a pack with 5 better cards.
-        pack = filler_pack(5, wr=0.58) + [
-            mk("Wheeler", wr=0.52, alsa=9.0, grp_id=3)
-        ]
+        pack = filler_pack(5, wr=0.58) + [mk("Wheeler", wr=0.52, alsa=9.0, grp_id=3)]
         result = evaluate_pack(pack, pool=[], pick_number=2, fmt=FMT)
         wheeler = {g.grp_id: g for g in result}[3]
         assert wheeler.wheel_probability >= 75.0
@@ -431,8 +441,13 @@ class TestArchetypeBlend:
     def test_pair_overperformer_scores_higher_late_when_committed(self):
         pool = committed_pool(("W", "U"), n=25)
         plain = mk("Glue Card", wr=0.54, colors="U", grp_id=1)
-        gluey = mk("Glue Card", wr=0.54, colors="U", grp_id=2,
-                   arch_stats={"WU": ArchStats(gih_wr_pct=60.0, games=5000)})
+        gluey = mk(
+            "Glue Card",
+            wr=0.54,
+            colors="U",
+            grp_id=2,
+            arch_stats={"WU": ArchStats(gih_wr_pct=60.0, games=5000)},
+        )
         pack = [plain, gluey] + filler_pack(4, wr=0.53)
         result = evaluate_pack(pack, pool, pick_number=5, pack_number=3, fmt=FMT)
         by_id = {g.grp_id: g for g in result}
@@ -442,8 +457,9 @@ class TestArchetypeBlend:
     def test_tiny_sample_pair_stats_are_ignored(self):
         pool = committed_pool(("W", "U"), n=25)
         plain = mk("Glue Card", wr=0.54, colors="U", grp_id=1)
-        noisy = mk("Glue Card", wr=0.54, colors="U", grp_id=2,
-                   arch_stats={"WU": ArchStats(gih_wr_pct=65.0, games=5)})
+        noisy = mk(
+            "Glue Card", wr=0.54, colors="U", grp_id=2, arch_stats={"WU": ArchStats(gih_wr_pct=65.0, games=5)}
+        )
         pack = [plain, noisy] + filler_pack(4, wr=0.53)
         result = evaluate_pack(pack, pool, pick_number=5, pack_number=3, fmt=FMT)
         by_id = {g.grp_id: g for g in result}
@@ -457,9 +473,13 @@ class TestArchetypeBlend:
         def score_at(pick, pack_num):
             plain = mk("Plain", wr=0.54, colors="U", grp_id=1)
             gluey = mk("Gluey", wr=0.54, colors="U", grp_id=2, arch_stats=arch)
-            res = evaluate_pack([plain, gluey] + filler_pack(4, wr=0.53),
-                                pool, pick_number=pick, pack_number=pack_num,
-                                fmt=FMT)
+            res = evaluate_pack(
+                [plain, gluey] + filler_pack(4, wr=0.53),
+                pool,
+                pick_number=pick,
+                pack_number=pack_num,
+                fmt=FMT,
+            )
             by_id = {g.grp_id: g for g in res}
             return by_id[2].score - by_id[1].score
 
@@ -484,17 +504,16 @@ class TestSignals:
         assert signals["W"] == 0.0  # not late (alsa >= pick)
 
     def test_signal_tie_breaker_reason_appears(self):
-        pack = [mk("Blue Pick", wr=0.56, colors="U", grp_id=1)] + \
-            filler_pack(4, wr=0.53, colors="G")
-        result = evaluate_pack(pack, pool=[], pick_number=6, pack_number=1,
-                               fmt=FMT, color_signals={"U": 15.0})
+        pack = [mk("Blue Pick", wr=0.56, colors="U", grp_id=1)] + filler_pack(4, wr=0.53, colors="G")
+        result = evaluate_pack(
+            pack, pool=[], pick_number=6, pack_number=1, fmt=FMT, color_signals={"U": 15.0}
+        )
         blue = {g.grp_id: g for g in result}[1]
         assert any("open" in r.lower() for r in blue.reasons)
 
     def test_late_signal_bonus_in_pack_one(self):
         # Strong card at pick 7 with ALSA 3: the lane is being passed to us.
-        pack = [mk("Passed Bomb", wr=0.61, colors="U", alsa=3.0, grp_id=1)] + \
-            filler_pack(5, wr=0.53)
+        pack = [mk("Passed Bomb", wr=0.61, colors="U", alsa=3.0, grp_id=1)] + filler_pack(5, wr=0.53)
         result = evaluate_pack(pack, pool=[], pick_number=7, pack_number=1, fmt=FMT)
         top = {g.grp_id: g for g in result}[1]
         assert any("late signal" in r.lower() for r in top.reasons)
@@ -524,8 +543,7 @@ class TestReasonsAndShape:
 
     def test_basic_land_is_skipped(self):
         pack = [
-            mk("Plains", wr=None, colors="", cmc=0,
-               type_line="Basic Land — Plains", grp_id=1),
+            mk("Plains", wr=None, colors="", cmc=0, type_line="Basic Land — Plains", grp_id=1),
             mk("Bear", wr=0.55, grp_id=2),
         ]
         result = evaluate_pack(pack, [], pick_number=1, fmt=FMT)
@@ -536,8 +554,7 @@ class TestReasonsAndShape:
         assert result[0].grp_id == 2
 
     def test_lone_basic_land_is_acknowledged(self):
-        pack = [mk("Plains", wr=None, colors="", cmc=0,
-                   type_line="Basic Land — Plains")]
+        pack = [mk("Plains", wr=None, colors="", cmc=0, type_line="Basic Land — Plains")]
         result = evaluate_pack(pack, [], pick_number=14, fmt=FMT)
         assert any("only card" in r.lower() for r in result[0].reasons)
 

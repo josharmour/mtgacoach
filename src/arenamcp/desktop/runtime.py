@@ -11,7 +11,6 @@ import webbrowser
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 try:
     import winreg
@@ -45,23 +44,23 @@ class RuntimeState:
     runtime_root: str
     runtime_venv_dir: str
     runtime_venv_exists: bool
-    python_exe: Optional[str]
+    python_exe: str | None
     python_source: str
     python_ready: bool
     python_ready_detail: str
-    mtga_dir: Optional[str]
+    mtga_dir: str | None
     mtga_dir_source: str
-    mtga_exe_path: Optional[str]
+    mtga_exe_path: str | None
     mtga_running: bool
     player_log: str
-    bepinex_log: Optional[str]
-    bepinex_dir: Optional[str]
+    bepinex_log: str | None
+    bepinex_dir: str | None
     bepinex_installed: bool
-    plugin_install_path: Optional[str]
+    plugin_install_path: str | None
     plugin_installed: bool
-    plugin_build_path: Optional[str]
+    plugin_build_path: str | None
     plugin_built: bool
-    bepinex_bundle: Optional[str]
+    bepinex_bundle: str | None
     restart_mtga_required: bool
     issues: list[str] = field(default_factory=list)
 
@@ -79,11 +78,7 @@ class RuntimeState:
 
     @property
     def bridge_ready(self) -> bool:
-        return (
-            self.mtga_dir is not None
-            and self.bepinex_installed
-            and self.plugin_installed
-        )
+        return self.mtga_dir is not None and self.bepinex_installed and self.plugin_installed
 
     @property
     def bridge_applicable(self) -> bool:
@@ -121,9 +116,7 @@ def _is_app_root(path: Path) -> bool:
     bridge_dir = path / "bepinex-plugin" / "MtgaCoachBridge"
     if pyproject.exists() and src_dir.is_dir():
         return True
-    if src_dir.is_dir() and bridge_dir.is_dir():
-        return True
-    return False
+    return bool(src_dir.is_dir() and bridge_dir.is_dir())
 
 
 def get_app_root() -> str:
@@ -186,7 +179,7 @@ def _is_real_python(path: Path) -> bool:
     return path.exists() and name.startswith("python")
 
 
-def _normalize_current_python(path: Path) -> Optional[Path]:
+def _normalize_current_python(path: Path) -> Path | None:
     if not _is_real_python(path):
         return None
 
@@ -197,7 +190,7 @@ def _normalize_current_python(path: Path) -> Optional[Path]:
     return path
 
 
-def _find_python_on_path() -> tuple[Optional[str], str]:
+def _find_python_on_path() -> tuple[str | None, str]:
     if sys.platform == "win32":
         try:
             result = subprocess.run(
@@ -239,7 +232,7 @@ def _find_python_on_path() -> tuple[Optional[str], str]:
     return (None, "not_found")
 
 
-def _check_python_runtime(python_exe: Optional[str]) -> tuple[bool, str]:
+def _check_python_runtime(python_exe: str | None) -> tuple[bool, str]:
     if not python_exe:
         return (False, "Python executable not found")
 
@@ -291,12 +284,12 @@ def _python_responds(path: Path) -> bool:
     return ok
 
 
-def find_python_executable() -> tuple[Optional[str], str]:
+def find_python_executable() -> tuple[str | None, str]:
     runtime_root = Path(get_runtime_root())
     app_root = Path(get_app_root())
     scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
     py_exe = "python.exe" if sys.platform == "win32" else "python"
-    
+
     app_runtime = app_root / "runtime" / scripts_dir / py_exe
 
     candidates: list[tuple[Path, str]] = [
@@ -321,7 +314,7 @@ def find_python_executable() -> tuple[Optional[str], str]:
     return (None, "not_found")
 
 
-def get_saved_mtga_dir() -> Optional[str]:
+def get_saved_mtga_dir() -> str | None:
     try:
         if not _SETTINGS_FILE.exists():
             return None
@@ -351,7 +344,7 @@ def set_saved_mtga_dir(path: str) -> None:
         json.dump(data, handle, indent=2)
 
 
-def _find_mtga_from_registry() -> Optional[str]:
+def _find_mtga_from_registry() -> str | None:
     if sys.platform != "win32" or winreg is None:
         return None
 
@@ -383,7 +376,7 @@ def _find_mtga_from_registry() -> Optional[str]:
     return None
 
 
-def find_mtga_install_dir() -> tuple[Optional[str], str]:
+def find_mtga_install_dir() -> tuple[str | None, str]:
     saved = get_saved_mtga_dir()
     if saved and Path(saved).is_dir():
         return (saved, "settings")
@@ -406,9 +399,12 @@ def find_mtga_install_dir() -> tuple[Optional[str], str]:
 
     if sys.platform != "win32":
         linux_paths = [
-            Path.home() / ".steam/steam/steamapps/compatdata/2141910/pfx/drive_c/Program Files/Wizards of the Coast/MTGA",
-            Path.home() / ".local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/Program Files/Wizards of the Coast/MTGA",
-            Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/Program Files/Wizards of the Coast/MTGA",
+            Path.home()
+            / ".steam/steam/steamapps/compatdata/2141910/pfx/drive_c/Program Files/Wizards of the Coast/MTGA",
+            Path.home()
+            / ".local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/Program Files/Wizards of the Coast/MTGA",
+            Path.home()
+            / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/2141910/pfx/drive_c/Program Files/Wizards of the Coast/MTGA",
         ]
         for candidate in linux_paths:
             if candidate.is_dir():
@@ -421,7 +417,7 @@ def find_mtga_install_dir() -> tuple[Optional[str], str]:
     return (None, "not_found")
 
 
-_running_cache_value: Optional[bool] = None
+_running_cache_value: bool | None = None
 _running_cache_time: float = 0.0
 _running_cache_lock = threading.Lock()
 
@@ -485,7 +481,7 @@ def is_mtga_running() -> bool:
         return _running_cache_value
 
 
-def _safe_mtime(path: Optional[Path]) -> float:
+def _safe_mtime(path: Path | None) -> float:
     if path is None or not path.exists():
         return 0.0
     try:
@@ -523,11 +519,7 @@ def get_saved_config_mtimes(mtga_dir: str) -> dict[str, float]:
         if isinstance(all_mtimes, dict):
             entry = all_mtimes.get(mtga_dir)
             if isinstance(entry, dict):
-                return {
-                    str(k): float(v)
-                    for k, v in entry.items()
-                    if isinstance(v, (int, float))
-                }
+                return {str(k): float(v) for k, v in entry.items() if isinstance(v, (int, float))}
     except Exception:
         pass
     return {}
@@ -572,9 +564,9 @@ def _record_config_mtimes(mtga_dir: str) -> None:
 def _restart_mtga_required(
     *,
     player_log: Path,
-    bepinex_dir: Optional[Path],
-    plugin_install_path: Optional[Path],
-    mtga_dir: Optional[str] = None,
+    bepinex_dir: Path | None,
+    plugin_install_path: Path | None,
+    mtga_dir: str | None = None,
 ) -> bool:
     if bepinex_dir is None and plugin_install_path is None:
         return False
@@ -620,10 +612,10 @@ def detect_runtime_state() -> RuntimeState:
     runtime_root = Path(get_runtime_root())
     app_runtime_dir = app_root / "runtime"
     runtime_venv_dir = runtime_root / "venv"
-    
+
     scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
     py_exe = "python.exe" if sys.platform == "win32" else "python"
-    
+
     runtime_dir = app_runtime_dir if (app_runtime_dir / scripts_dir / py_exe).exists() else runtime_venv_dir
     runtime_venv_exists = (runtime_dir / scripts_dir / py_exe).exists()
     python_exe, python_source = find_python_executable()
@@ -647,18 +639,35 @@ def detect_runtime_state() -> RuntimeState:
                     if curr.parent == curr:
                         break
                     curr = curr.parent
-                
+
                 if not prefix_dir:
                     prefix_dir = Path(mtga_dir).parent.parent.parent.parent
 
-                player_log_path = prefix_dir / "drive_c" / "users" / "steamuser" / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+                player_log_path = (
+                    prefix_dir
+                    / "drive_c"
+                    / "users"
+                    / "steamuser"
+                    / "AppData"
+                    / "LocalLow"
+                    / "Wizards Of The Coast"
+                    / "MTGA"
+                    / "Player.log"
+                )
                 if not player_log_path.exists():
                     drive_c = prefix_dir / "drive_c"
                     if drive_c.exists():
                         users_dir = drive_c / "users"
                         if users_dir.exists():
                             for user_folder in users_dir.iterdir():
-                                candidate = user_folder / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+                                candidate = (
+                                    user_folder
+                                    / "AppData"
+                                    / "LocalLow"
+                                    / "Wizards Of The Coast"
+                                    / "MTGA"
+                                    / "Player.log"
+                                )
                                 if candidate.exists():
                                     player_log_path = candidate
                                     break
@@ -666,30 +675,41 @@ def detect_runtime_state() -> RuntimeState:
                 common_prefixes = [
                     Path.home() / ".steam/steam/steamapps/compatdata/2141910/pfx",
                     Path.home() / ".local/share/Steam/steamapps/compatdata/2141910/pfx",
-                    Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/2141910/pfx",
+                    Path.home()
+                    / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/2141910/pfx",
                 ]
                 for pfx in common_prefixes:
-                    candidate = pfx / "drive_c" / "users" / "steamuser" / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+                    candidate = (
+                        pfx
+                        / "drive_c"
+                        / "users"
+                        / "steamuser"
+                        / "AppData"
+                        / "LocalLow"
+                        / "Wizards Of The Coast"
+                        / "MTGA"
+                        / "Player.log"
+                    )
                     if candidate.exists():
                         player_log_path = candidate
                         break
                 else:
-                    player_log_path = Path.home() / ".steam/steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast" / "MTGA" / "Player.log"
+                    player_log_path = (
+                        Path.home()
+                        / ".steam/steam/steamapps/compatdata/2141910/pfx/drive_c/users/steamuser/AppData/LocalLow/Wizards Of The Coast"
+                        / "MTGA"
+                        / "Player.log"
+                    )
         else:
             player_log_path = (
-                Path.home()
-                / "AppData"
-                / "LocalLow"
-                / "Wizards Of The Coast"
-                / "MTGA"
-                / "Player.log"
+                Path.home() / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
             )
     player_log = str(player_log_path)
 
-    bepinex_dir: Optional[str] = None
+    bepinex_dir: str | None = None
     bepinex_installed = False
-    bepinex_log: Optional[str] = None
-    plugin_install_path: Optional[str] = None
+    bepinex_log: str | None = None
+    plugin_install_path: str | None = None
     plugin_installed = False
 
     if mtga_dir:
@@ -766,7 +786,7 @@ def detect_runtime_state() -> RuntimeState:
     )
 
 
-def tail_text(path: Optional[str], max_bytes: int = 8192) -> str:
+def tail_text(path: str | None, max_bytes: int = 8192) -> str:
     if not path:
         return ""
 
@@ -890,7 +910,7 @@ def install_bepinex(mtga_dir: str) -> str:
     return str(target_dir)
 
 
-def find_bepinex_bundle() -> Optional[str]:
+def find_bepinex_bundle() -> str | None:
     """Locate the BepInEx bundle — packaged resource first so pip installs
     can repair BepInEx without a repo checkout, then the dev-tree layouts."""
     try:
@@ -912,7 +932,7 @@ def find_bepinex_bundle() -> Optional[str]:
     return None
 
 
-def find_plugin_dll() -> Optional[Path]:
+def find_plugin_dll() -> Path | None:
     """Locate the MtgaCoachBridge.dll to deploy, wherever this app lives.
 
     Order: the DLL shipped inside the installed package (works for pip/uv
@@ -995,10 +1015,6 @@ def repair_bridge_stack(mtga_dir: str) -> list[str]:
     return changed
 
 
-
-
-
-
 def _invalidate_mtga_running_cache() -> None:
     global _running_cache_time, _running_cache_value
     _running_cache_time = 0.0
@@ -1054,7 +1070,7 @@ def close_mtga() -> bool:
     return True
 
 
-def _find_mac_app_bundle(mtga_dir: str) -> Optional[Path]:
+def _find_mac_app_bundle(mtga_dir: str) -> Path | None:
     """Locate the native MTGA.app bundle for a macOS install dir.
 
     Accepts either the Steam install dir containing ``MTGA.app`` (e.g.
@@ -1139,12 +1155,12 @@ def _copy_directory(source: Path, dest: Path) -> None:
             shutil.copy2(child, target)
 
 
-_geometry_cache_value: Optional[dict[str, int]] = None
+_geometry_cache_value: dict[str, int] | None = None
 _geometry_cache_time: float = 0.0
 _geometry_cache_lock = threading.Lock()
 
 
-def get_linux_window_geometry(title: str = "MTGA") -> Optional[dict[str, int]]:
+def get_linux_window_geometry(title: str = "MTGA") -> dict[str, int] | None:
     global _geometry_cache_value, _geometry_cache_time
     now = time.monotonic()
     if now - _geometry_cache_time < 0.3:
@@ -1162,11 +1178,7 @@ def get_linux_window_geometry(title: str = "MTGA") -> Optional[dict[str, int]]:
             return None
         try:
             result = subprocess.run(
-                [xwininfo, "-name", title],
-                capture_output=True,
-                text=True,
-                timeout=2,
-                check=False
+                [xwininfo, "-name", title], capture_output=True, text=True, timeout=2, check=False
             )
             if result.returncode != 0:
                 _geometry_cache_value = None

@@ -43,9 +43,7 @@ def _game_state(opp_extras=(), lands=4):
         *opp_extras,
     ]
     for i in range(lands):
-        battlefield.append(
-            _card(f"Forest {i}", owner=1, types="Basic Land — Forest")
-        )
+        battlefield.append(_card(f"Forest {i}", owner=1, types="Basic Land — Forest"))
     return {
         "players": [
             {"seat_id": 1, "is_local": True},
@@ -53,8 +51,7 @@ def _game_state(opp_extras=(), lands=4):
         ],
         "battlefield": battlefield,
         "hand": [],
-        "decision_context": {"type": "declare_attackers",
-                             "legal_attackers": ["Bear", "Spirit"]},
+        "decision_context": {"type": "declare_attackers", "legal_attackers": ["Bear", "Spirit"]},
         "pending_decision": "Declare Attackers",
         "turn": {"turn_number": 5, "phase": "Phase_Combat"},
     }
@@ -81,9 +78,7 @@ def test_tax_lines_state_price_and_budget():
     c = _coach()
     gs = _game_state(lands=4)
     with mock.patch.object(CoachEngine, "_available_mana_now", return_value=4):
-        lines = c._attack_tax_lines(
-            [b for b in gs["battlefield"] if b["owner_seat_id"] == 2], gs
-        )
+        lines = c._attack_tax_lines([b for b in gs["battlefield"] if b["owner_seat_id"] == 2], gs)
     text = "\n".join(lines)
     assert "ATTACK TAX" in text
     assert "Ghostly Prison" in text

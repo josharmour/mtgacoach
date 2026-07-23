@@ -48,7 +48,8 @@ def test_bridge_resolve_pending(monkeypatch):
     dc.note_unresolved(194020)
     bridge = GREBridge.__new__(GREBridge)
     monkeypatch.setattr(
-        bridge, "resolve_grp_ids",
+        bridge,
+        "resolve_grp_ids",
         lambda ids: {194020: "Mightform Harmonizer"} if 194020 in ids else {},
         raising=False,
     )

@@ -16,7 +16,6 @@ import pytest
 from arenamcp.platform_integration import MtgaInstall
 from arenamcp.repair_engine import RepairEngine
 
-
 DISABLED_LINE = b"[UnityCrossThreadLogger]DETAILED LOGS: DISABLED\n"
 ENABLED_LINE = b"[UnityCrossThreadLogger]DETAILED LOGS: ENABLED\n"
 
@@ -29,9 +28,7 @@ def _engine_with_log(tmp_path: Path, log_bytes, platform: str = "windows"):
     if log_bytes is not None:
         log.write_bytes(log_bytes)
     eng = RepairEngine()
-    eng._install = MtgaInstall(
-        install_dir=mtga, player_log=log, platform=platform
-    )
+    eng._install = MtgaInstall(install_dir=mtga, player_log=log, platform=platform)
     return eng
 
 
@@ -39,11 +36,10 @@ def _engine_with_log(tmp_path: Path, log_bytes, platform: str = "windows"):
 # _check_detailed_logs — every platform
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("platform", ["windows", "linux-steam", "darwin", "darwin-wine"])
 def test_detailed_logs_disabled_flags_action(tmp_path, platform):
-    eng = _engine_with_log(
-        tmp_path, b"boot noise\n" + DISABLED_LINE + b"more lines\n", platform
-    )
+    eng = _engine_with_log(tmp_path, b"boot noise\n" + DISABLED_LINE + b"more lines\n", platform)
     r = eng._check_detailed_logs()
     assert r is not None
     assert r.status == "action_needed"
@@ -53,9 +49,7 @@ def test_detailed_logs_disabled_flags_action(tmp_path, platform):
 
 @pytest.mark.parametrize("platform", ["windows", "darwin"])
 def test_detailed_logs_enabled_passes(tmp_path, platform):
-    eng = _engine_with_log(
-        tmp_path, b"boot noise\n" + ENABLED_LINE + b"gre data...\n", platform
-    )
+    eng = _engine_with_log(tmp_path, b"boot noise\n" + ENABLED_LINE + b"gre data...\n", platform)
     r = eng._check_detailed_logs()
     assert r.status == "ok"
 
@@ -106,27 +100,32 @@ def test_detailed_logs_registered_after_player_log(monkeypatch):
         def _f():
             called.append(name)
             return None
+
         _f.__name__ = name
         return _f
 
     for name in (
-        "_check_python_runtime", "_check_settings", "_check_license",
-        "_check_mtga_install", "_check_player_log", "_check_detailed_logs",
-        "_check_bepinex", "_check_plugin", "_check_launch_options",
+        "_check_python_runtime",
+        "_check_settings",
+        "_check_license",
+        "_check_mtga_install",
+        "_check_player_log",
+        "_check_detailed_logs",
+        "_check_bepinex",
+        "_check_plugin",
+        "_check_launch_options",
         "_check_bridge_signal",
     ):
         setattr(eng, name, _stub(name))
     eng.run()
     assert "_check_detailed_logs" in called
-    assert (
-        called.index("_check_detailed_logs")
-        == called.index("_check_player_log") + 1
-    )
+    assert called.index("_check_detailed_logs") == called.index("_check_player_log") + 1
 
 
 # ---------------------------------------------------------------------------
 # _check_mtga_install — darwin is a found install, not a failure
 # ---------------------------------------------------------------------------
+
 
 def test_mtga_install_darwin_found(monkeypatch, tmp_path):
     install = MtgaInstall(
@@ -134,9 +133,7 @@ def test_mtga_install_darwin_found(monkeypatch, tmp_path):
         player_log=tmp_path / "Player.log",
         platform="darwin",
     )
-    monkeypatch.setattr(
-        "arenamcp.platform_integration.find_mtga", lambda: install
-    )
+    monkeypatch.setattr("arenamcp.platform_integration.find_mtga", lambda: install)
 
     class _S:
         store: dict = {}
@@ -161,6 +158,7 @@ def test_mtga_install_darwin_found(monkeypatch, tmp_path):
 # Bridge checks — native darwin: informational not-applicable, never failure
 # ---------------------------------------------------------------------------
 
+
 def _native_mac_engine(tmp_path):
     eng = RepairEngine()
     eng._install = MtgaInstall(
@@ -171,12 +169,8 @@ def _native_mac_engine(tmp_path):
     return eng
 
 
-@pytest.mark.parametrize(
-    "check", ["_check_bepinex", "_check_plugin", "_check_bridge_signal"]
-)
-@pytest.mark.parametrize(
-    "platform", ["darwin", "darwin-steam", "darwin-epic"]
-)
+@pytest.mark.parametrize("check", ["_check_bepinex", "_check_plugin", "_check_bridge_signal"])
+@pytest.mark.parametrize("platform", ["darwin", "darwin-steam", "darwin-epic"])
 def test_bridge_checks_native_darwin_not_applicable(tmp_path, check, platform):
     eng = _native_mac_engine(tmp_path)
     eng._install.platform = platform
@@ -199,6 +193,7 @@ def test_launch_options_check_skipped_on_darwin(tmp_path):
 # Bridge checks — darwin-wine bottle: run like Linux/Proton
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("platform", ["darwin-wine", "darwin-crossover"])
 def test_bepinex_check_runs_for_darwin_wine(tmp_path, platform):
     # Bottle with BepInEx properly installed → the real check runs and passes.
@@ -207,9 +202,7 @@ def test_bepinex_check_runs_for_darwin_wine(tmp_path, platform):
     (mtga / "BepInEx" / "core" / "BepInEx.dll").write_bytes(b"core")
     (mtga / "winhttp.dll").write_bytes(b"doorstop")
     eng = RepairEngine()
-    eng._install = MtgaInstall(
-        install_dir=mtga, player_log=None, platform=platform
-    )
+    eng._install = MtgaInstall(install_dir=mtga, player_log=None, platform=platform)
     r = eng._check_bepinex()
     assert r.status == "ok"
     assert "Not applicable" not in r.detail
@@ -230,16 +223,13 @@ def test_plugin_check_runs_for_darwin_wine(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "find_plugin_dll", lambda: packaged)
     monkeypatch.setattr(rt, "is_mtga_running", lambda: False)
     monkeypatch.setattr(
-        rt, "install_plugin",
-        lambda d: (plugins / "MtgaCoachBridge.dll").write_bytes(
-            packaged.read_bytes()
-        ),
+        rt,
+        "install_plugin",
+        lambda d: (plugins / "MtgaCoachBridge.dll").write_bytes(packaged.read_bytes()),
     )
 
     eng = RepairEngine()
-    eng._install = MtgaInstall(
-        install_dir=mtga, player_log=None, platform="darwin-wine"
-    )
+    eng._install = MtgaInstall(install_dir=mtga, player_log=None, platform="darwin-wine")
     assert eng._check_plugin().status == "fixed"
     assert eng._check_plugin().status == "ok"
 
@@ -249,9 +239,7 @@ def test_bridge_signal_darwin_wine_hint_mentions_bottle(tmp_path):
     mtga = tmp_path / "bottle" / "drive_c" / "MTGA"
     mtga.mkdir(parents=True)
     eng = RepairEngine()
-    eng._install = MtgaInstall(
-        install_dir=mtga, player_log=None, platform="darwin-wine"
-    )
+    eng._install = MtgaInstall(install_dir=mtga, player_log=None, platform="darwin-wine")
     r = eng._check_bridge_signal()
     assert r.status == "action_needed"
     assert "winhttp=n,b" in r.action_hint
@@ -261,19 +249,16 @@ def test_bridge_signal_darwin_wine_hint_mentions_bottle(tmp_path):
 def test_bridge_signal_darwin_wine_detects_banner(tmp_path):
     mtga = tmp_path / "bottle" / "drive_c" / "MTGA"
     (mtga / "BepInEx").mkdir(parents=True)
-    (mtga / "BepInEx" / "LogOutput.log").write_text(
-        "[Info: BepInEx] Loading [MtgaCoachBridge v3.0.0]\n"
-    )
+    (mtga / "BepInEx" / "LogOutput.log").write_text("[Info: BepInEx] Loading [MtgaCoachBridge v3.0.0]\n")
     eng = RepairEngine()
-    eng._install = MtgaInstall(
-        install_dir=mtga, player_log=None, platform="darwin-wine"
-    )
+    eng._install = MtgaInstall(install_dir=mtga, player_log=None, platform="darwin-wine")
     assert eng._check_bridge_signal().status == "ok"
 
 
 # ---------------------------------------------------------------------------
 # Windows behavior unchanged
 # ---------------------------------------------------------------------------
+
 
 def test_windows_bridge_checks_still_run(tmp_path):
     # BepInEx present → real check, real ok (not a not-applicable stub).
@@ -282,9 +267,7 @@ def test_windows_bridge_checks_still_run(tmp_path):
     (mtga / "BepInEx" / "core" / "BepInEx.dll").write_bytes(b"core")
     (mtga / "winhttp.dll").write_bytes(b"doorstop")
     eng = RepairEngine()
-    eng._install = MtgaInstall(
-        install_dir=mtga, player_log=None, platform="windows"
-    )
+    eng._install = MtgaInstall(install_dir=mtga, player_log=None, platform="windows")
     r = eng._check_bepinex()
     assert r.status == "ok"
     assert "Not applicable" not in r.detail
@@ -294,9 +277,7 @@ def test_windows_bridge_signal_hint_unchanged(tmp_path):
     mtga = tmp_path / "MTGA"
     mtga.mkdir()
     eng = RepairEngine()
-    eng._install = MtgaInstall(
-        install_dir=mtga, player_log=None, platform="windows"
-    )
+    eng._install = MtgaInstall(install_dir=mtga, player_log=None, platform="windows")
     r = eng._check_bridge_signal()
     assert r.status == "action_needed"
     assert "Start MTGA once" in r.action_hint

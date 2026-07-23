@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ class RequestTracker:
 
     def __init__(self) -> None:
         self._records: dict[Fingerprint, _Record] = {}
-        self._in_flight: Optional[Fingerprint] = None
+        self._in_flight: Fingerprint | None = None
 
     def _record(self, fp: Fingerprint) -> _Record:
         rec = self._records.get(fp)
@@ -91,7 +91,7 @@ class RequestTracker:
 
     # -- lifecycle ----------------------------------------------------
 
-    def observe(self, fp: Optional[Fingerprint]) -> None:
+    def observe(self, fp: Fingerprint | None) -> None:
         """Feed the currently-pending decision fingerprint (None = nothing).
 
         Settles any in-flight submission:
@@ -108,6 +108,7 @@ class RequestTracker:
             logger.debug(f"request {flight[0]}: ADVANCED after submit")
             try:
                 from arenamcp.match_packets import get_current_packet
+
                 packet = get_current_packet()
                 if packet:
                     packet.update_outcome(flight, "ADVANCED")
@@ -125,6 +126,7 @@ class RequestTracker:
             )
             try:
                 from arenamcp.match_packets import get_current_packet
+
                 packet = get_current_packet()
                 if packet:
                     packet.update_outcome(flight, "REJECTED")
@@ -152,6 +154,7 @@ class RequestTracker:
             self._in_flight = None
             try:
                 from arenamcp.match_packets import get_current_packet
+
                 packet = get_current_packet()
                 if packet:
                     packet.update_outcome(fp, "ROLLED_BACK")
@@ -163,10 +166,7 @@ class RequestTracker:
     def exhausted(self, fp: Fingerprint) -> bool:
         """True when the request hit the submission cap without advancing."""
         rec = self._record(fp)
-        return (
-            not rec.in_flight
-            and rec.submissions >= self.MAX_SUBMISSIONS_PER_REQUEST
-        )
+        return not rec.in_flight and rec.submissions >= self.MAX_SUBMISSIONS_PER_REQUEST
 
     def may_escape(self, fp: Fingerprint) -> bool:
         """AutoRespond is allowed only after enough real rejections."""

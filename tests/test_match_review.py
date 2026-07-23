@@ -66,6 +66,7 @@ def test_matcher_dead_end_requires_repeats():
 
 def test_win_prob_miss_on_low_estimate_win(tmp_path, monkeypatch):
     import arenamcp.match_review as mr
+
     monkeypatch.setattr(mr, "CALIBRATION_LOG", tmp_path / "cal.jsonl")
     f = detect_win_prob_misses(LOG, "win")
     assert len(f) == 1 and "15%" in f[0].title
@@ -80,12 +81,20 @@ def test_platform_noise_needs_two_hits():
 
 
 def test_rejected_decisions_from_packet():
-    packet = {"decisions": [
-        {"pending_decision": {"request_type": "SelectTargets", "request_id": [1, 2]},
-         "chosen_options": ["tgt:5"], "outcome": "REJECTED"},
-        {"pending_decision": {"request_type": "Mulligan"},
-         "chosen_options": ["mull:keep"], "outcome": "ADVANCED"},
-    ]}
+    packet = {
+        "decisions": [
+            {
+                "pending_decision": {"request_type": "SelectTargets", "request_id": [1, 2]},
+                "chosen_options": ["tgt:5"],
+                "outcome": "REJECTED",
+            },
+            {
+                "pending_decision": {"request_type": "Mulligan"},
+                "chosen_options": ["mull:keep"],
+                "outcome": "ADVANCED",
+            },
+        ]
+    }
     f = detect_rejected_decisions(packet)
     assert len(f) == 1 and "REJECTED" in f[0].title
 
@@ -98,6 +107,7 @@ def test_advice_repetition_threshold():
 
 def test_run_match_review_end_to_end(tmp_path, monkeypatch):
     import arenamcp.match_review as mr
+
     monkeypatch.setattr(mr, "CALIBRATION_LOG", tmp_path / "cal.jsonl")
     findings = run_match_review(
         advice_history=[{"advice": "Play Forest."}],
@@ -121,9 +131,7 @@ def test_low_only_findings_do_not_file():
 def test_read_log_slice_respects_since(tmp_path):
     p = tmp_path / "log.txt"
     p.write_text(
-        "2026-06-10 11:00:00 | old line\n"
-        "2026-06-10 12:00:00 | new line\n"
-        "continuation without timestamp\n",
+        "2026-06-10 11:00:00 | old line\n2026-06-10 12:00:00 | new line\ncontinuation without timestamp\n",
         encoding="utf-8",
     )
     s = read_log_slice(p, datetime(2026, 6, 10, 11, 30))

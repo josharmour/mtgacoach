@@ -9,11 +9,11 @@ draft UI layout constants.
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from typing import Any
 
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer
+from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QWidget
 
 try:
     import win32con
@@ -56,18 +56,18 @@ GRID_LAYOUT_COLUMN_VIEW = (2, 8, 0.157, 0.371, 1.1845, -0.0037)
 
 
 TIER_COLORS = {
-    "FIRE": "#f97316",    # orange
-    "GOLD": "#facc15",    # yellow
+    "FIRE": "#f97316",  # orange
+    "GOLD": "#facc15",  # yellow
     "SILVER": "#d1d5db",  # light grey
     "BRONZE": "#a16207",  # brown
-    "WEAK": "#6b7280",    # dark grey
+    "WEAK": "#6b7280",  # dark grey
 }
 
 
 class CardBadge(QLabel):
     """A single badge overlay shown on a card position."""
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -80,11 +80,11 @@ class CardBadge(QLabel):
 
     def set_data(
         self,
-        score: Optional[float],
-        tier: Optional[str],
-        pair: Optional[str],
-        reason: Optional[str] = None,
-        synergy_badge: Optional[str] = None,
+        score: float | None,
+        tier: str | None,
+        pair: str | None,
+        reason: str | None = None,
+        synergy_badge: str | None = None,
         is_locked: bool = False,
     ) -> None:
         self._score = float(score) if score is not None else 0.0
@@ -108,7 +108,11 @@ class CardBadge(QLabel):
             pair_text = ""
 
         reason_text = f"<br><span style='font-size:9px;'>{self._reason}</span>" if self._reason else ""
-        synergy_text = f"<br><span style='font-size:9px; font-weight: bold;'>{self._synergy_badge}</span>" if self._synergy_badge else ""
+        synergy_text = (
+            f"<br><span style='font-size:9px; font-weight: bold;'>{self._synergy_badge}</span>"
+            if self._synergy_badge
+            else ""
+        )
 
         border_style = "2px solid #3b82f6" if self._is_locked else "1px solid rgba(0,0,0,180)"
         self.setText(f"<b>{score_text}</b>{pair_text}{synergy_text}{reason_text}")
@@ -143,13 +147,13 @@ class CardOverlayWindow(QWidget):
     # but keep reasonable since MTGA rarely moves during a draft.
     FOLLOW_INTERVAL_MS = 500
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._badges: list[CardBadge] = []
         self._last_cards_data: list[dict[str, Any]] = []
         self._should_show = False
         self._user_enabled = True
-        self._locked_color_pair: Optional[str] = None
+        self._locked_color_pair: str | None = None
         # Calibration mode draws a red outline around the computed card grid
         # and cell boundaries, so we can see whether the hardcoded coords match
         # MTGA's actual card layout. Toggle via set_calibration(True).
@@ -157,9 +161,7 @@ class CardOverlayWindow(QWidget):
         self._calibration_rects: list[QRect] = []
 
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -331,7 +333,7 @@ class CardOverlayWindow(QWidget):
 
     # -- Geometry / MTGA tracking -----------------------------------------
 
-    def _get_mtga_rect(self) -> Optional[QRect]:
+    def _get_mtga_rect(self) -> QRect | None:
         """Return MTGA's **client-area** rect in Qt logical pixels.
 
         Prefers `GetClientRect + ClientToScreen` so grid fractions (derived
@@ -362,6 +364,7 @@ class CardOverlayWindow(QWidget):
         ratio = 1.0
         try:
             from PySide6.QtGui import QGuiApplication
+
             center_px = (left_px + width_px // 2, top_px + height_px // 2)
             screen = QGuiApplication.primaryScreen()
             for s in QGuiApplication.screens():
@@ -402,7 +405,7 @@ class CardOverlayWindow(QWidget):
         # Repaint badge positions (layout may depend on current geometry)
         self._reposition_and_draw()
 
-    def set_locked_color_pair(self, color_pair: Optional[str]) -> None:
+    def set_locked_color_pair(self, color_pair: str | None) -> None:
         """Lock color-pair preference (e.g. 'UR' or 'WB') for draft badge rendering."""
         self._locked_color_pair = color_pair
         if self._last_cards_data:
@@ -432,7 +435,6 @@ class CardOverlayWindow(QWidget):
         rows, cols, top_frac, height_frac, width_frac, left_off_frac = layout
 
         ratio = w / h if h > 0 else 1.78
-        is_16_10 = abs(ratio - 1.6) < 0.05
 
         grid_top = int(h * top_frac)
         grid_height = int(h * height_frac)

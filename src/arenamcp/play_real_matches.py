@@ -32,7 +32,7 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # Ensure in-repo src and repo root are importable (mirrors self_play.py).
 REPO = Path(__file__).resolve().parents[2]
@@ -44,10 +44,11 @@ if str(REPO) not in sys.path:
 
 # Reuse the self-play helpers wholesale (preflight, MTGA launch/discovery,
 # port check, bridge port constant) so behaviour stays consistent.
-from arenamcp import self_play
+import contextlib
+
 from arenamcp.self_play import (
-    GRE_BRIDGE_PORT,
     DEFAULT_BACKEND,
+    GRE_BRIDGE_PORT,
     _backend_base_url,
     _port_bindable,
     ensure_mtga_running,
@@ -67,6 +68,7 @@ logger = logging.getLogger("arenamcp.play_real_matches")
 # ---------------------------------------------------------------------------
 # Dry-run readiness check
 # ---------------------------------------------------------------------------
+
 
 def run_dry_run(backend_spec: str) -> int:
     """Preflight readiness WITHOUT launching MTGA or starting a match.
@@ -106,8 +108,7 @@ def run_dry_run(backend_spec: str) -> int:
         logger.info("GRE bridge port %d: bindable (free)", GRE_BRIDGE_PORT)
     else:
         logger.error(
-            "GRE bridge port %d: NOT bindable (in use). Stop the desktop "
-            "coach/bridge before running.",
+            "GRE bridge port %d: NOT bindable (in use). Stop the desktop coach/bridge before running.",
             GRE_BRIDGE_PORT,
         )
         ok = False
@@ -123,6 +124,7 @@ def run_dry_run(backend_spec: str) -> int:
 # Autopilot construction (mirrors StandaloneCoach._init_autopilot, headless)
 # ---------------------------------------------------------------------------
 
+
 def _build_autopilot(backend_spec: str, recorder: TrajectoryRecorder, license_key: str):
     """Construct an AutopilotEngine wired to the real game-state pipeline.
 
@@ -131,11 +133,12 @@ def _build_autopilot(backend_spec: str, recorder: TrajectoryRecorder, license_ke
     logic is reimplemented here.
     """
     from tools.eval.run import BackendSpec
+
+    from arenamcp import server
     from arenamcp.action_planner import ActionPlanner
     from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
     from arenamcp.input_controller import InputController
     from arenamcp.screen_mapper import ScreenMapper
-    from arenamcp import server
 
     # Start the in-process log watcher so server.get_game_state() is live.
     server.start_watching()
@@ -199,7 +202,8 @@ def _build_autopilot(backend_spec: str, recorder: TrajectoryRecorder, license_ke
 # Match orchestration
 # ---------------------------------------------------------------------------
 
-def _start_practice_match(bridge, deck_name: Optional[str], attempts: int = 30) -> bool:
+
+def _start_practice_match(bridge, deck_name: str | None, attempts: int = 30) -> bool:
     """Send ``start_practice_match`` and wait for ``ok:true`` (with retries).
 
     The user must be on the MTGA Home screen. Surfaces the plugin's error text
@@ -215,14 +219,18 @@ def _start_practice_match(bridge, deck_name: Optional[str], attempts: int = 30) 
         if resp and resp.get("ok"):
             logger.info(
                 "start_practice_match OK: deck=%s (id=%s) event=%s",
-                resp.get("deck_name"), resp.get("deck_id"), resp.get("event"),
+                resp.get("deck_name"),
+                resp.get("deck_id"),
+                resp.get("event"),
             )
             return True
         last_err = (resp or {}).get("error") if resp else "timeout/no response"
         logger.info(
             "start_practice_match attempt %d/%d failed: %s "
             "(make sure MTGA is on the Home screen). Retrying in 2s...",
-            attempt, attempts, last_err,
+            attempt,
+            attempts,
+            last_err,
         )
         time.sleep(2.0)
 
@@ -255,7 +263,7 @@ def _wait_for_match_active(server_mod, poller, timeout: float = 90.0) -> bool:
     return False
 
 
-def _drive_match(engine, server_mod, poller, poll_interval: float = 0.4) -> Optional[str]:
+def _drive_match(engine, server_mod, poller, poll_interval: float = 0.4) -> str | None:
     """Drive a single match through the autopilot until it ends.
 
     Returns the raw game result string ("win"/"loss"/None) consumed from the
@@ -321,7 +329,7 @@ def _drive_match(engine, server_mod, poller, poll_interval: float = 0.4) -> Opti
 def run_matches(
     backend_spec: str,
     matches: int,
-    deck_name: Optional[str],
+    deck_name: str | None,
     out_path: Path,
     license_key: str,
     launch: bool,
@@ -395,9 +403,7 @@ def run_matches(
             from arenamcp.match_evaluator import MatchEvaluator
 
             eval_client = engine._planner._backend
-            evaluator = MatchEvaluator(
-                eval_client, model_label=getattr(recorder, "backend_label", "")
-            )
+            evaluator = MatchEvaluator(eval_client, model_label=getattr(recorder, "backend_label", ""))
             logger.info("Post-match self-evaluation ON -> %s", evaluator.out_path)
         except Exception as e:
             logger.warning("Could not init MatchEvaluator (continuing without): %s", e)
@@ -411,18 +417,15 @@ def run_matches(
             poller.reset()
 
             if attach:
-                logger.info(
-                    "--attach: playing the match already in progress "
-                    "(not starting a new one)."
-                )
+                logger.info("--attach: playing the match already in progress (not starting a new one).")
             elif not _start_practice_match(bridge, deck_name):
                 logger.error("Could not start match %d; stopping run.", m)
                 break
 
             if not _wait_for_match_active(server_mod, poller, timeout=120.0):
                 logger.warning(
-                    "Match %d did not become active within timeout; "
-                    "discarding and stopping.", m,
+                    "Match %d did not become active within timeout; discarding and stopping.",
+                    m,
                 )
                 recorder.discard_match()
                 break
@@ -432,12 +435,15 @@ def run_matches(
             # Snapshot this match's decisions BEFORE flush_match clears the
             # buffer — the evaluator needs them to review the game.
             match_decisions = recorder.current_match_records()
-            match_id = (match_decisions[0].get("match_id") if match_decisions else None)
+            match_id = match_decisions[0].get("match_id") if match_decisions else None
             n = recorder.flush_match(winner)
             completed += 1
             logger.info(
                 "Match %d complete: result=%s winner=%s decisions=%d",
-                m, result, winner, n,
+                m,
+                result,
+                winner,
+                n,
             )
 
             # Post-match self-evaluation: the playing model critiques its own
@@ -473,18 +479,17 @@ def run_matches(
         recorder.flush_match(None)
     finally:
         # 6. Clean shutdown.
-        try:
+        with contextlib.suppress(Exception):
             bridge.stop_keepalive()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             bridge.disconnect()
-        except Exception:
-            pass
 
     logger.info(
         "Run complete: %d/%d matches, %d decisions recorded -> %s",
-        completed, matches, recorder.total_flushed, out_path,
+        completed,
+        matches,
+        recorder.total_flushed,
+        out_path,
     )
     return 0
 
@@ -496,37 +501,51 @@ def main() -> None:
     p.add_argument("--matches", type=int, default=1, help="Number of matches to play.")
     p.add_argument("--deck", default=None, help="Optional deck name to pass to start_practice_match.")
     p.add_argument(
-        "--out", type=Path, default=DEFAULT_TRAJECTORY_PATH,
+        "--out",
+        type=Path,
+        default=DEFAULT_TRAJECTORY_PATH,
         help=f"Output trajectory JSONL (default: {DEFAULT_TRAJECTORY_PATH}).",
     )
     p.add_argument(
-        "--backend", default=DEFAULT_BACKEND,
+        "--backend",
+        default=DEFAULT_BACKEND,
         help=f"Backend spec for the playing model (default: {DEFAULT_BACKEND}).",
     )
     import os
+
     p.add_argument("--license-key", default=os.environ.get("MTGACOACH_LICENSE_KEY", ""))
     p.add_argument(
-        "--launch-mtga", dest="launch", action="store_true", default=True,
+        "--launch-mtga",
+        dest="launch",
+        action="store_true",
+        default=True,
         help="Launch MTGA via proton_launch if not running (default).",
     )
     p.add_argument(
-        "--no-launch", dest="launch", action="store_false",
+        "--no-launch",
+        dest="launch",
+        action="store_false",
         help="Do NOT launch MTGA; require it to already be running.",
     )
     p.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Preflight only: vLLM reachable + MTGA found + port check. "
-             "Never launches MTGA or starts a match.",
+        "Never launches MTGA or starts a match.",
     )
     p.add_argument(
-        "--attach", action="store_true",
+        "--attach",
+        action="store_true",
         help="Play/record the match already in progress instead of starting "
-             "one (implies --no-launch, single match).",
+        "one (implies --no-launch, single match).",
     )
     p.add_argument(
-        "--no-eval", dest="eval_matches", action="store_false", default=True,
+        "--no-eval",
+        dest="eval_matches",
+        action="store_false",
+        default=True,
         help="Disable per-match self-evaluation (the playing model critiquing "
-             "its own game after each match).",
+        "its own game after each match).",
     )
     args = p.parse_args()
 

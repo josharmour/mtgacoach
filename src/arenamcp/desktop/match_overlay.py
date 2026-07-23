@@ -19,7 +19,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
@@ -43,6 +43,8 @@ except Exception:
     find_mtga_hwnd = None  # type: ignore[assignment]
     get_client_rect = None  # type: ignore[assignment]
 
+import contextlib
+
 from arenamcp.desktop.advice_panel import AdvicePanelWindow
 
 logger = logging.getLogger(__name__)
@@ -51,20 +53,20 @@ logger = logging.getLogger(__name__)
 # Action type → highlight color (RGB). These are GRE-flavored names, we map
 # the common ones. Unknown types fall back to yellow.
 ACTION_COLORS: dict[str, tuple[int, int, int]] = {
-    "cast_spell":           (74, 222, 128),   # green
-    "play_land":            (74, 222, 128),   # green
-    "activate_ability":     (147, 197, 253),  # light blue
-    "declare_attackers":    (248, 113, 113),  # red
-    "declare_blockers":     (96, 165, 250),   # blue
-    "select_target":        (250, 204, 21),   # yellow
-    "select_n":             (250, 204, 21),   # yellow
-    "search_library":       (216, 180, 254),  # purple
-    "modal_choice":         (251, 191, 36),   # amber
-    "pay_costs":            (251, 146, 60),   # orange
-    "mulligan_keep":        (74, 222, 128),   # green
-    "mulligan_mull":        (248, 113, 113),  # red
-    "distribute":           (250, 204, 21),   # yellow
-    "pass_priority":        (156, 163, 175),  # grey
+    "cast_spell": (74, 222, 128),  # green
+    "play_land": (74, 222, 128),  # green
+    "activate_ability": (147, 197, 253),  # light blue
+    "declare_attackers": (248, 113, 113),  # red
+    "declare_blockers": (96, 165, 250),  # blue
+    "select_target": (250, 204, 21),  # yellow
+    "select_n": (250, 204, 21),  # yellow
+    "search_library": (216, 180, 254),  # purple
+    "modal_choice": (251, 191, 36),  # amber
+    "pay_costs": (251, 146, 60),  # orange
+    "mulligan_keep": (74, 222, 128),  # green
+    "mulligan_mull": (248, 113, 113),  # red
+    "distribute": (250, 204, 21),  # yellow
+    "pass_priority": (156, 163, 175),  # grey
 }
 
 DEFAULT_COLOR = (250, 204, 21)  # yellow
@@ -81,14 +83,14 @@ class MatchOverlayWindow(QWidget):
     - Pulses a numbered ring at each suggested card; auto-clears after TTL
     """
 
-    FOLLOW_INTERVAL_MS = 250      # overlay reposition cadence
-    POSITION_POLL_MS = 300        # bridge.get_card_positions() cadence in match
-    ACTION_TTL_SEC = 30.0         # clear highlights after this if no new event
-    PULSE_MS = 1200               # pulse cycle length
+    FOLLOW_INTERVAL_MS = 250  # overlay reposition cadence
+    POSITION_POLL_MS = 300  # bridge.get_card_positions() cadence in match
+    ACTION_TTL_SEC = 30.0  # clear highlights after this if no new event
+    PULSE_MS = 1200  # pulse cycle length
 
     ADVICE_TTL_SEC = 25.0  # auto-fade advice after this many seconds
 
-    def __init__(self, bridge_getter=None, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, bridge_getter=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         # bridge_getter is a callable returning the GREBridge or None if
         # unavailable. We inject it so this class doesn't depend on the
@@ -102,7 +104,7 @@ class MatchOverlayWindow(QWidget):
         self._screen_w: int = 0
         self._screen_h: int = 0
         # Default overlay UI to False on macOS (sys.platform == 'darwin') per user preference
-        self._user_enabled = False if sys.platform == "darwin" else True
+        self._user_enabled = sys.platform != "darwin"
         self._match_active = False
         self._calibration_mode = False
         # Affine post-transform applied on top of the auto-derived window
@@ -114,7 +116,7 @@ class MatchOverlayWindow(QWidget):
         self._calib_scale_x: float = 1.0
         self._calib_scale_y: float = 1.0
         # Active drag state for pan gesture
-        self._calib_drag_origin: Optional[QPoint] = None
+        self._calib_drag_origin: QPoint | None = None
         self._calib_drag_ox0: float = 0.0
         self._calib_drag_oy0: float = 0.0
         self._calib_saved_at: float = 0.0
@@ -128,9 +130,7 @@ class MatchOverlayWindow(QWidget):
         self._show_advice_panel: bool = True
 
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -153,10 +153,8 @@ class MatchOverlayWindow(QWidget):
         for t in (self._follow_timer, self._position_timer, self._pulse_timer):
             if t.isActive():
                 t.stop()
-        try:
+        with contextlib.suppress(Exception):
             self._advice_panel.close()
-        except Exception:
-            pass
         super().closeEvent(event)
 
     # -- Public API ----------------------------------------------------------
@@ -278,13 +276,12 @@ class MatchOverlayWindow(QWidget):
         """
         try:
             from arenamcp.desktop.runtime import get_runtime_root
+
             root = Path(get_runtime_root())
         except Exception:
             root = Path.home() / ".mtgacoach"
-        try:
+        with contextlib.suppress(Exception):
             root.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
         return root / "overlay_calibration.json"
 
     def _load_calibration(self) -> None:
@@ -292,7 +289,7 @@ class MatchOverlayWindow(QWidget):
             p = self._calibration_path()
             if not p.exists():
                 return
-            with open(p, "r", encoding="utf-8") as f:
+            with open(p, encoding="utf-8") as f:
                 data = json.load(f) or {}
             self._calib_offset_x = float(data.get("offset_x", 0.0) or 0.0)
             self._calib_offset_y = float(data.get("offset_y", 0.0) or 0.0)
@@ -309,7 +306,7 @@ class MatchOverlayWindow(QWidget):
         try:
             p = self._calibration_path()
             if p.exists():
-                with open(p, "r", encoding="utf-8") as f:
+                with open(p, encoding="utf-8") as f:
                     return json.load(f) or {}
         except Exception as e:
             logger.debug(f"read overlay_calibration failed: {e}")
@@ -413,7 +410,7 @@ class MatchOverlayWindow(QWidget):
         if steps == 0:
             event.accept()
             return
-        factor = self._CALIB_WHEEL_FACTOR ** steps
+        factor = self._CALIB_WHEEL_FACTOR**steps
         mods = event.modifiers()
         shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
         ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
@@ -496,7 +493,7 @@ class MatchOverlayWindow(QWidget):
 
     # -- MTGA bounds tracking ------------------------------------------------
 
-    def _get_mtga_rect(self) -> Optional[QRect]:
+    def _get_mtga_rect(self) -> QRect | None:
         """Return MTGA's **client-area** rect in Qt logical pixels.
 
         The plugin reports normalized card coords against Unity's
@@ -538,10 +535,12 @@ class MatchOverlayWindow(QWidget):
         ratio = 1.0
         try:
             from PySide6.QtGui import QGuiApplication
+
             center_px = (left_px + width_px // 2, top_px + height_px // 2)
-            screen = QGuiApplication.screenAt(
-                self.mapToGlobal(self.rect().topLeft())
-            ) or QGuiApplication.primaryScreen()
+            screen = (
+                QGuiApplication.screenAt(self.mapToGlobal(self.rect().topLeft()))
+                or QGuiApplication.primaryScreen()
+            )
             for s in QGuiApplication.screens():
                 geo = s.geometry()
                 if geo.contains(center_px[0], center_px[1]):
@@ -594,9 +593,7 @@ class MatchOverlayWindow(QWidget):
         # invisible click-stealing window over the game area.
         self._advice_panel.apply_mtga_rect(rect)
         panel_should_show = (
-            self._show_advice_panel
-            and self._match_active
-            and self._advice_panel.has_content()
+            self._show_advice_panel and self._match_active and self._advice_panel.has_content()
         )
         if panel_should_show and not self._advice_panel.isVisible():
             self._advice_panel.show()
@@ -627,15 +624,16 @@ class MatchOverlayWindow(QWidget):
             win32gui.SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,
-                0, 0, 0, 0,
+                0,
+                0,
+                0,
+                0,
                 SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
             )
         except Exception:
             # Fallback: Qt-level raise
-            try:
+            with contextlib.suppress(Exception):
                 self.raise_()
-            except Exception:
-                pass
 
     # -- Card position polling ----------------------------------------------
 
@@ -701,7 +699,7 @@ class MatchOverlayWindow(QWidget):
 
     # -- Coord mapping ------------------------------------------------------
 
-    def _plugin_to_local(self, card: dict[str, Any]) -> Optional[QRect]:
+    def _plugin_to_local(self, card: dict[str, Any]) -> QRect | None:
         """Map a card entry from the plugin (pixels in Unity Screen space, with
         the overlay having already flipped Y to top-left origin) to this
         widget's local coordinates.
@@ -797,21 +795,24 @@ class MatchOverlayWindow(QWidget):
             painter.drawRoundedRect(6, 6, min(self.width() - 12, 720), block_h, 6, 6)
             painter.setBrush(Qt.NoBrush)
             painter.setPen(QColor("white"))
-            font = QFont(); font.setBold(True); font.setPixelSize(13)
+            font = QFont()
+            font.setBold(True)
+            font.setPixelSize(13)
             painter.setFont(font)
             for i, line in enumerate(header_lines):
                 painter.drawText(14, 24 + i * 18, line)
 
             # Zone colors for quick visual grouping
             zone_colors = {
-                "Hand":        QColor(74, 222, 128),
+                "Hand": QColor(74, 222, 128),
                 "Battlefield": QColor(251, 191, 36),
-                "Graveyard":   QColor(156, 163, 175),
-                "Stack":       QColor(248, 113, 113),
-                "Exile":       QColor(216, 180, 254),
-                "Library":     QColor(96, 165, 250),
+                "Graveyard": QColor(156, 163, 175),
+                "Stack": QColor(248, 113, 113),
+                "Exile": QColor(216, 180, 254),
+                "Library": QColor(96, 165, 250),
             }
-            small = QFont(); small.setPixelSize(10)
+            small = QFont()
+            small.setPixelSize(10)
             painter.setFont(small)
             for iid, card in self._card_positions.items():
                 rect = self._plugin_to_local(card)

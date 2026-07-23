@@ -7,7 +7,7 @@ returns the DECLINE_DECISION sentinel so the autopilot cancels the window
 or pauses for manual instead.
 """
 
-from arenamcp.action_planner import ActionPlanner, DECLINE_DECISION
+from arenamcp.action_planner import DECLINE_DECISION, ActionPlanner
 from arenamcp.decisions import DecisionOption, PendingDecision
 
 
@@ -19,10 +19,7 @@ def _decision(candidate_ids, source_label=""):
     return PendingDecision(
         request_id=(1, 1),
         request_type="SelectTargets",
-        options=tuple(
-            DecisionOption(option_id=f"tgt:{iid}", label=f"target {iid}")
-            for iid in candidate_ids
-        ),
+        options=tuple(DecisionOption(option_id=f"tgt:{iid}", label=f"target {iid}") for iid in candidate_ids),
         min_select=1,
         max_select=1,
         source_label=source_label,
@@ -33,35 +30,40 @@ def _state(own_ids=(), their_ids=(), oracle="destroy target creature"):
     battlefield = []
     for iid in own_ids:
         battlefield.append(
-            {"instance_id": iid, "name": f"own-{iid}", "power": 1,
-             "controller_seat_id": 1, "owner_seat_id": 1}
+            {
+                "instance_id": iid,
+                "name": f"own-{iid}",
+                "power": 1,
+                "controller_seat_id": 1,
+                "owner_seat_id": 1,
+            }
         )
     for iid in their_ids:
         battlefield.append(
-            {"instance_id": iid, "name": f"opp-{iid}", "power": 5,
-             "controller_seat_id": 2, "owner_seat_id": 2}
+            {
+                "instance_id": iid,
+                "name": f"opp-{iid}",
+                "power": 5,
+                "controller_seat_id": 2,
+                "owner_seat_id": 2,
+            }
         )
     return {
         "players": [{"is_local": True, "seat_id": 1}, {"seat_id": 2}],
         "battlefield": battlefield,
-        "stack": [{"instance_id": 900, "name": "Go-Shintai of Hidden Cruelty",
-                   "oracle_text": oracle}],
+        "stack": [{"instance_id": 900, "name": "Go-Shintai of Hidden Cruelty", "oracle_text": oracle}],
     }
 
 
 def test_harmful_own_only_candidates_decline():
     p = _planner()
-    picked = p._targeting_fallback_pick(
-        _decision([607]), _state(own_ids=(607,))
-    )
+    picked = p._targeting_fallback_pick(_decision([607]), _state(own_ids=(607,)))
     assert picked == [DECLINE_DECISION]
 
 
 def test_harmful_prefers_opponent_when_available():
     p = _planner()
-    picked = p._targeting_fallback_pick(
-        _decision([607, 812]), _state(own_ids=(607,), their_ids=(812,))
-    )
+    picked = p._targeting_fallback_pick(_decision([607, 812]), _state(own_ids=(607,), their_ids=(812,)))
     assert picked == ["tgt:812"]
 
 
@@ -93,8 +95,7 @@ def test_controller_seat_id_takes_precedence_over_owner():
     p = _planner()
     state = _state()
     state["battlefield"] = [
-        {"instance_id": 607, "name": "stolen", "power": 3,
-         "controller_seat_id": 2, "owner_seat_id": 1}
+        {"instance_id": 607, "name": "stolen", "power": 3, "controller_seat_id": 2, "owner_seat_id": 1}
     ]
     picked = p._targeting_fallback_pick(_decision([607]), state)
     assert picked == ["tgt:607"]
@@ -109,14 +110,12 @@ def test_llm_decision_options_tolerates_prose_prefix():
     class _ProseBackend:
         def complete(self, *a, **k):
             return (
-                'Based on the game state, you should remove the flyer. '
+                "Based on the game state, you should remove the flyer. "
                 '{"option_ids": ["tgt:812"], "reasoning": "biggest threat"}'
             )
 
     p._backend = _ProseBackend()
-    picked = p.plan_decision_options(
-        _decision([607, 812]), _state(own_ids=(607,), their_ids=(812,))
-    )
+    picked = p.plan_decision_options(_decision([607, 812]), _state(own_ids=(607,), their_ids=(812,)))
     assert picked == ["tgt:812"]
 
 
@@ -134,9 +133,7 @@ def test_harmful_llm_pick_of_own_creature_overridden():
     p = _planner()
     p._timeout = 1.0
     p._backend = _OwnPickBackend()
-    picked = p.plan_decision_options(
-        _decision([607, 812]), _state(own_ids=(607,), their_ids=(812,))
-    )
+    picked = p.plan_decision_options(_decision([607, 812]), _state(own_ids=(607,), their_ids=(812,)))
     assert picked == ["tgt:812"]
 
 
@@ -154,8 +151,7 @@ def test_beneficial_llm_pick_of_own_creature_kept():
     p._backend = _OwnPickBackend()
     picked = p.plan_decision_options(
         _decision([607, 812]),
-        _state(own_ids=(607,), their_ids=(812,),
-               oracle="target creature gains hexproof"),
+        _state(own_ids=(607,), their_ids=(812,), oracle="target creature gains hexproof"),
     )
     assert picked == ["tgt:607"]
 
@@ -171,8 +167,6 @@ def test_target_options_labeled_with_controller():
             return '{"option_ids": ["tgt:812"]}'
 
     p._backend = _CapturingBackend()
-    p.plan_decision_options(
-        _decision([607, 812]), _state(own_ids=(607,), their_ids=(812,))
-    )
+    p.plan_decision_options(_decision([607, 812]), _state(own_ids=(607,), their_ids=(812,)))
     assert "tgt:607: target 607 (YOURS)" in captured["user"]
     assert "tgt:812: target 812 (opponent's)" in captured["user"]

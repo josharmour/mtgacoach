@@ -133,14 +133,10 @@ def test_live_pending_request_verification(monkeypatch):
     eng._gre_bridge = _PollBridge({"has_pending": False})
     assert eng._live_pending_request_is("PayCosts") is False
 
-    eng._gre_bridge = _PollBridge(
-        {"has_pending": True, "request_class": "PayCostsRequest"}
-    )
+    eng._gre_bridge = _PollBridge({"has_pending": True, "request_class": "PayCostsRequest"})
     assert eng._live_pending_request_is("PayCosts") is True
 
-    eng._gre_bridge = _PollBridge(
-        {"has_pending": True, "request_type": "SelectTargets"}
-    )
+    eng._gre_bridge = _PollBridge({"has_pending": True, "request_type": "SelectTargets"})
     assert eng._live_pending_request_is("PayCosts") is False
 
     class _DeadBridge:
@@ -164,15 +160,11 @@ def test_reusable_advice_same_window_only(monkeypatch):
         "pending_decision": "Action Required",
         "turn": {"turn_number": 7, "phase": "Main1", "step": ""},
     }
-    eng._last_plan_advice = (
-        eng._priority_window_signature(state), "Cast the thing.", _time.time()
-    )
+    eng._last_plan_advice = (eng._priority_window_signature(state), "Cast the thing.", _time.time())
     assert eng.get_reusable_advice(state) == "Cast the thing."
 
     moved = dict(state, _bridge_game_state_id=43)
     assert eng.get_reusable_advice(moved) is None
 
-    eng._last_plan_advice = (
-        eng._priority_window_signature(state), "Cast the thing.", _time.time() - 30
-    )
+    eng._last_plan_advice = (eng._priority_window_signature(state), "Cast the thing.", _time.time() - 30)
     assert eng.get_reusable_advice(state) is None

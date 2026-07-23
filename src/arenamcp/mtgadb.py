@@ -5,6 +5,7 @@ providing complete coverage of all Arena cards including tokens and
 special versions that Scryfall may not have arena_id mappings for.
 """
 
+import contextlib
 import glob
 import logging
 import os
@@ -12,7 +13,6 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MTGACard:
     """Card data from MTGA's local database."""
+
     grp_id: int
     name: str
     types: str
@@ -34,16 +35,12 @@ class MTGACard:
 # Common MTGA installation paths
 MTGA_PATHS = [
     # Steam
-    Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"))
-        / "Steam/steamapps/common/MTGA",
+    Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Steam/steamapps/common/MTGA",
     # Epic Games
-    Path(os.environ.get("ProgramFiles", "C:/Program Files"))
-        / "Epic Games/MagicTheGathering",
+    Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Epic Games/MagicTheGathering",
     # Standalone installer
-    Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"))
-        / "Wizards of the Coast/MTGA",
-    Path(os.environ.get("ProgramFiles", "C:/Program Files"))
-        / "Wizards of the Coast/MTGA",
+    Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Wizards of the Coast/MTGA",
+    Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Wizards of the Coast/MTGA",
     # WSL — same install, mounted via /mnt/c. Lets eval/dev tooling running
     # under Linux resolve the same DB the Windows desktop app uses.
     Path("/mnt/c/Program Files/Wizards of the Coast/MTGA"),
@@ -75,17 +72,15 @@ def _darwin_crossover_paths() -> list[Path]:
         "Program Files (x86)/Wizards of the Coast/MTGA",
         "Program Files (x86)/Steam/steamapps/common/MTGA",
     ):
-        paths.extend(
-            Path(p) for p in glob.glob(str(bottles / "*" / "drive_c" / win_dir))
-        )
+        paths.extend(Path(p) for p in glob.glob(str(bottles / "*" / "drive_c" / win_dir)))
     return paths
 
 
-def find_mtga_database() -> Optional[Path]:
+def find_mtga_database() -> Path | None:
     """Find the most recent MTGA CardDatabase SQLite file.
 
     Searches common installation paths and returns the newest database file found.
-    This handles cases where multiple installations exist (some stale) or 
+    This handles cases where multiple installations exist (some stale) or
     multiple DB versions exist in the folder.
 
     Returns:
@@ -96,12 +91,14 @@ def find_mtga_database() -> Optional[Path]:
     # 1. Start with MTGA_PATHS
     search_paths = list(MTGA_PATHS)
     import sys
+
     if sys.platform == "darwin":
         search_paths.extend(_darwin_crossover_paths())
 
     # 2. Check settings for mtga_install_dir (imported locally to avoid circular dependencies)
     try:
         from arenamcp.settings import get_settings
+
         settings_path_str = get_settings().get("mtga_install_dir")
         if settings_path_str:
             settings_path = Path(settings_path_str)
@@ -109,7 +106,7 @@ def find_mtga_database() -> Optional[Path]:
                 search_paths.insert(0, settings_path)
     except Exception as e:
         logger.debug(f"Could not read mtga_install_dir from settings: {e}")
-    
+
     for base_path in search_paths:
         # Standard layout has an MTGA_Data level; the macOS direct-install
         # data folder (com.wizards.mtga) holds Downloads/Raw directly.
@@ -124,18 +121,16 @@ def find_mtga_database() -> Optional[Path]:
             matches = glob.glob(pattern)
             for match in matches:
                 p = Path(match)
-                try:
+                with contextlib.suppress(Exception):
                     candidates.append((p.stat().st_mtime, p))
-                except Exception:
-                    pass
 
     if not candidates:
         logger.warning("MTGA CardDatabase not found in common locations")
         return None
-        
+
     # Sort by modification time descending (newest first)
     candidates.sort(key=lambda x: x[0], reverse=True)
-    
+
     best_path = candidates[0][1]
     logger.info(f"Found MTGA database: {best_path} (timestamp: {candidates[0][0]})")
     return best_path
@@ -158,17 +153,17 @@ class MTGADatabase:
         5: "mythic",
     }
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Path | None = None):
         """Initialize the database reader.
 
         Args:
             db_path: Path to CardDatabase file. Auto-detects if not provided.
         """
         self._db_path = db_path or find_mtga_database()
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
         self._conn_lock = threading.RLock()
         self._card_cache: dict[int, MTGACard] = {}
-        self._rarity_cache: dict[str, Optional[str]] = {}
+        self._rarity_cache: dict[str, str | None] = {}
         self._available = False
         self._error_count = 0  # Track consecutive errors for reconnection
 
@@ -178,10 +173,8 @@ class MTGADatabase:
         """Open a read-only SQLite connection to the MTGA database."""
         with self._conn_lock:
             if self._conn:
-                try:
+                with contextlib.suppress(Exception):
                     self._conn.close()
-                except Exception:
-                    pass
 
             self._conn = None
             self._available = False
@@ -196,10 +189,7 @@ class MTGADatabase:
             try:
                 # Use non-URI mode to avoid path encoding issues on Windows
                 # (spaces, backslashes in "C:\Program Files (x86)\..." break URI mode)
-                self._conn = sqlite3.connect(
-                    str(self._db_path),
-                    check_same_thread=False
-                )
+                self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
                 # Open as read-only via PRAGMA
                 self._conn.execute("PRAGMA query_only = true;")
                 self._conn.execute("PRAGMA read_uncommitted = true;")
@@ -214,7 +204,7 @@ class MTGADatabase:
         """Check if the database is available."""
         return self._available
 
-    def _resolve_oracle_text(self, ability_ids_str: Optional[str]) -> str:
+    def _resolve_oracle_text(self, ability_ids_str: str | None) -> str:
         """Resolve full oracle text from AbilityIds string.
 
         Args:
@@ -234,8 +224,8 @@ class MTGADatabase:
                 # Parse 'AbilityGrpId:TextId' pairs — convert to integers,
                 # skipping malformed entries that would cause SQLite MISUSE errors.
                 text_ids: list[int] = []
-                for pair in str(ability_ids_str).split(','):
-                    parts = pair.split(':')
+                for pair in str(ability_ids_str).split(","):
+                    parts = pair.split(":")
                     if len(parts) >= 2:
                         raw = parts[1].strip()
                         if raw:
@@ -252,16 +242,17 @@ class MTGADatabase:
                 # Embed integer IDs directly in CASE WHEN — SQLite doesn't support
                 # parameterized ? placeholders in CASE expressions (causes MISUSE error).
                 # Safe because text_ids are validated ints parsed above.
-                case_whens = " ".join(
-                    f"WHEN {tid} THEN {i}" for i, tid in enumerate(text_ids)
-                )
-                cursor = self._conn.execute(f"""
+                case_whens = " ".join(f"WHEN {tid} THEN {i}" for i, tid in enumerate(text_ids))
+                cursor = self._conn.execute(
+                    f"""
                     SELECT Loc FROM Localizations_enUS
                     WHERE LocId IN ({placeholders})
                     ORDER BY CASE LocId
                         {case_whens}
                     END
-                """, text_ids)
+                """,
+                    text_ids,
+                )
 
                 texts = [row["Loc"] for row in cursor.fetchall() if row["Loc"]]
                 return "\n".join(texts)
@@ -270,7 +261,7 @@ class MTGADatabase:
                 logger.warning(f"Failed to resolve oracle text: {e}")
                 return ""
 
-    def get_card(self, grp_id: int) -> Optional[MTGACard]:
+    def get_card(self, grp_id: int) -> MTGACard | None:
         """Look up a card by GrpId (arena_id).
 
         Args:
@@ -288,7 +279,8 @@ class MTGADatabase:
                 return None
 
             try:
-                cursor = self._conn.execute("""
+                cursor = self._conn.execute(
+                    """
                     SELECT
                         c.GrpId,
                         l.Loc as Name,
@@ -303,7 +295,9 @@ class MTGADatabase:
                     FROM Cards c
                     LEFT JOIN Localizations_enUS l ON c.TitleId = l.LocId AND l.Formatted = 1
                     WHERE c.GrpId = ?
-                """, (grp_id,))
+                """,
+                    (grp_id,),
+                )
 
                 row = cursor.fetchone()
                 if row:
@@ -312,6 +306,7 @@ class MTGADatabase:
                     # Strip HTML tags that MTGA injects into hyphenated names
                     if "<" in name:
                         import re
+
                         name = re.sub(r"<[^>]+>", "", name)
 
                     self._error_count = 0
@@ -324,7 +319,7 @@ class MTGADatabase:
                         colors=row["Colors"] or "",
                         is_token=bool(row["IsToken"]),
                         expansion_code=row["ExpansionCode"] or "",
-                        oracle_text=oracle_text
+                        oracle_text=oracle_text,
                     )
                     self._card_cache[grp_id] = card
                     return card
@@ -369,7 +364,8 @@ class MTGADatabase:
 
             try:
                 placeholders = ",".join("?" * len(missing_ids))
-                cursor = self._conn.execute(f"""
+                cursor = self._conn.execute(
+                    f"""
                     SELECT
                         c.GrpId,
                         l.Loc as Name,
@@ -384,7 +380,9 @@ class MTGADatabase:
                     FROM Cards c
                     LEFT JOIN Localizations_enUS l ON c.TitleId = l.LocId AND l.Formatted = 1
                     WHERE c.GrpId IN ({placeholders})
-                """, missing_ids)
+                """,
+                    missing_ids,
+                )
 
                 for row in cursor.fetchall():
                     oracle_text = self._resolve_oracle_text(row["AbilityIds"])
@@ -392,6 +390,7 @@ class MTGADatabase:
                     # Strip HTML tags that MTGA injects into hyphenated names
                     if "<" in name:
                         import re
+
                         name = re.sub(r"<[^>]+>", "", name)
 
                     card = MTGACard(
@@ -403,7 +402,7 @@ class MTGADatabase:
                         colors=row["Colors"] or "",
                         is_token=bool(row["IsToken"]),
                         expansion_code=row["ExpansionCode"] or "",
-                        oracle_text=oracle_text
+                        oracle_text=oracle_text,
                     )
                     self._card_cache[card.grp_id] = card
                     results[card.grp_id] = card
@@ -436,7 +435,7 @@ class MTGADatabase:
         with self._conn_lock:
             return self.get_cards_batch(clean_ids)
 
-    def get_rarity_by_name(self, name: str) -> Optional[str]:
+    def get_rarity_by_name(self, name: str) -> str | None:
         """Look up a card's rarity by English name.
 
         Uses the lowest rarity among non-token printings (the cheapest
@@ -461,14 +460,17 @@ class MTGADatabase:
                 return None
 
             try:
-                cursor = self._conn.execute("""
+                cursor = self._conn.execute(
+                    """
                     SELECT MIN(c.Rarity) as Rarity
                     FROM Cards c
                     JOIN Localizations_enUS l ON c.TitleId = l.LocId AND l.Formatted = 1
                     WHERE l.Loc = ? COLLATE NOCASE
                       AND c.IsToken = 0
                       AND c.Rarity >= 1
-                """, (name.strip(),))
+                """,
+                    (name.strip(),),
+                )
                 row = cursor.fetchone()
                 self._error_count = 0
                 rarity = None
@@ -492,12 +494,12 @@ class MTGADatabase:
             self._card_cache.clear()
             self._rarity_cache.clear()
 
-    def get_ability_text(self, ability_id: int) -> Optional[str]:
+    def get_ability_text(self, ability_id: int) -> str | None:
         """Look up text for an ability ID (e.g. stack object).
-        
+
         Args:
             ability_id: The Ability Id (grp_id of the stack object).
-            
+
         Returns:
             Review of the ability text, or None if not found.
         """
@@ -507,10 +509,7 @@ class MTGADatabase:
 
             try:
                 # First get TextId from Abilities table
-                cursor = self._conn.execute(
-                    "SELECT TextId FROM Abilities WHERE Id = ?",
-                    (int(ability_id),)
-                )
+                cursor = self._conn.execute("SELECT TextId FROM Abilities WHERE Id = ?", (int(ability_id),))
                 row = cursor.fetchone()
 
                 if not row:
@@ -519,10 +518,7 @@ class MTGADatabase:
                 text_id = row["TextId"]
 
                 # Then get text from Localizations
-                cursor = self._conn.execute(
-                    "SELECT Loc FROM Localizations_enUS WHERE LocId = ?",
-                    (text_id,)
-                )
+                cursor = self._conn.execute("SELECT Loc FROM Localizations_enUS WHERE LocId = ?", (text_id,))
                 loc_row = cursor.fetchone()
 
                 if loc_row:

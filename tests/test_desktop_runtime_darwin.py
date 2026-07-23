@@ -5,7 +5,6 @@ All tests monkeypatch ``sys.platform`` / subprocess so they run on any host.
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -60,9 +59,7 @@ def test_runtime_root_darwin_ignores_empty_legacy_xdg_path(monkeypatch, tmp_path
     monkeypatch.setattr(runtime.sys, "platform", "darwin")
     _patch_home(monkeypatch, tmp_path)
 
-    assert runtime.get_runtime_root() == str(
-        tmp_path / "Library" / "Application Support" / "mtgacoach"
-    )
+    assert runtime.get_runtime_root() == str(tmp_path / "Library" / "Application Support" / "mtgacoach")
 
 
 def test_runtime_root_linux_unchanged(monkeypatch, tmp_path: Path) -> None:
@@ -91,9 +88,7 @@ def test_open_path_darwin_uses_usr_bin_open(monkeypatch, tmp_path: Path) -> None
     calls: list[list[str]] = []
     monkeypatch.setattr(runtime.sys, "platform", "darwin")
     monkeypatch.setattr(runtime.subprocess, "Popen", lambda args, **_: calls.append(args))
-    monkeypatch.setattr(
-        runtime.shutil, "which", lambda name: pytest.fail(f"unexpected which({name!r})")
-    )
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: pytest.fail(f"unexpected which({name!r})"))
 
     runtime.open_path(str(target))
 
@@ -234,9 +229,7 @@ def test_close_mtga_windows_taskkill_is_reachable(monkeypatch) -> None:
 
 def test_close_mtga_returns_false_when_not_running(monkeypatch) -> None:
     monkeypatch.setattr(runtime, "is_mtga_running", lambda: False)
-    monkeypatch.setattr(
-        runtime.subprocess, "run", lambda *a, **k: pytest.fail("should not shell out")
-    )
+    monkeypatch.setattr(runtime.subprocess, "run", lambda *a, **k: pytest.fail("should not shell out"))
 
     assert runtime.close_mtga() is False
 
@@ -301,9 +294,7 @@ def test_launch_mtga_darwin_steam_fallback_reports_wine_exe(monkeypatch, tmp_pat
 
 def test_launch_mtga_linux_still_requires_exe(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(runtime.sys, "platform", "linux")
-    monkeypatch.setattr(
-        runtime.subprocess, "Popen", lambda *a, **k: pytest.fail("should not launch")
-    )
+    monkeypatch.setattr(runtime.subprocess, "Popen", lambda *a, **k: pytest.fail("should not launch"))
 
     with pytest.raises(FileNotFoundError):
         runtime.launch_mtga(str(tmp_path))
@@ -441,7 +432,5 @@ def test_windows_still_requires_bridge(monkeypatch, tmp_path):
     state = _minimal_state(mtga_dir=str(tmp_path))
     assert state.bridge_applicable is True
     assert state.is_fully_provisioned is False
-    provisioned = _minimal_state(
-        mtga_dir=str(tmp_path), bepinex_installed=True, plugin_installed=True
-    )
+    provisioned = _minimal_state(mtga_dir=str(tmp_path), bepinex_installed=True, plugin_installed=True)
     assert provisioned.is_fully_provisioned is True

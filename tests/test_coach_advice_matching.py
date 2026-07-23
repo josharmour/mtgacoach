@@ -1,16 +1,19 @@
-"""Unit tests for enhanced advice-matching logic in coach.py.
-"""
+"""Unit tests for enhanced advice-matching logic in coach.py."""
 
 from __future__ import annotations
+
 from typing import Any
+
 from arenamcp.coach import CoachEngine
 
 
 def _make_coach() -> CoachEngine:
     class _Stub:
         timeout_s = 5.0
+
         def complete(self, *a, **k):
             return ""
+
     return CoachEngine(backend=_Stub())
 
 
@@ -40,7 +43,7 @@ def test_match_partial_cast_card_name():
     coach = _make_coach()
     state = _make_state(
         legal_actions=["Cast Michelangelo, Weirdness to 11 [OK]"],
-        hand=[{"name": "Michelangelo, Weirdness to 11", "type_line": "Creature"}]
+        hand=[{"name": "Michelangelo, Weirdness to 11", "type_line": "Creature"}],
     )
 
     # Cast Michelangelo is a substring of Michelangelo, Weirdness to 11, so it should match
@@ -64,7 +67,7 @@ def test_match_play_land_partial_name():
     coach = _make_coach()
     state = _make_state(
         legal_actions=["Play Land: Spara's Headquarters"],
-        hand=[{"name": "Spara's Headquarters", "type_line": "Land"}]
+        hand=[{"name": "Spara's Headquarters", "type_line": "Land"}],
     )
 
     out = coach._postprocess_advice("Play Spara's Headquarters to get colors.", state)
@@ -112,7 +115,7 @@ def test_match_need_mana_tag_stripping_and_fallback():
         hand=[
             {"name": "Northern Air Temple", "type_line": "Enchantment"},
             {"name": "Planar Incision", "type_line": "Instant"},
-        ]
+        ],
     )
 
     out = coach._postprocess_advice("Cast Northern Air Temple to establish your first Shrine.", state)
@@ -120,4 +123,3 @@ def test_match_need_mana_tag_stripping_and_fallback():
     assert "Northern Air Temple" in out
     # Ensure it did NOT fall back to blind-casting Planar Incision
     assert "Planar Incision" not in out
-

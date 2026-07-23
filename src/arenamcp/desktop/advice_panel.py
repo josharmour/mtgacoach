@@ -11,12 +11,13 @@ is resized or moved between monitors.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
@@ -59,7 +60,7 @@ class AdvicePanelWindow(QWidget):
 
     ADVICE_TTL_SEC = 25.0
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._advice_text: str = ""
         self._advice_seat: str = ""
@@ -70,9 +71,9 @@ class AdvicePanelWindow(QWidget):
         self._frac_w: float = _DEFAULT_FRAC_W
         self._frac_h: float = _DEFAULT_FRAC_H
 
-        self._mtga_rect: Optional[QRect] = None
-        self._drag_origin: Optional[QPoint] = None
-        self._drag_start_pos: Optional[QPoint] = None
+        self._mtga_rect: QRect | None = None
+        self._drag_origin: QPoint | None = None
+        self._drag_start_pos: QPoint | None = None
         # Suspend MTGA-rect-driven repositioning while the user actively drags
         # or resizes. Without this, _tick would keep snapping the panel back
         # to the saved fraction every 250 ms.
@@ -80,9 +81,7 @@ class AdvicePanelWindow(QWidget):
         self._save_pending: bool = False
 
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -139,7 +138,7 @@ class AdvicePanelWindow(QWidget):
             self.setGeometry(self._geom_from_fractions(self._mtga_rect))
         self._save_geometry()
 
-    def apply_mtga_rect(self, rect: Optional[QRect]) -> None:
+    def apply_mtga_rect(self, rect: QRect | None) -> None:
         """Reposition the panel to its saved fraction of the new MTGA rect.
 
         No-op if the user is currently dragging/resizing.
@@ -156,13 +155,12 @@ class AdvicePanelWindow(QWidget):
     def _calibration_path(self) -> Path:
         try:
             from arenamcp.desktop.runtime import get_runtime_root
+
             root = Path(get_runtime_root())
         except Exception:
             root = Path.home() / ".mtgacoach"
-        try:
+        with contextlib.suppress(Exception):
             root.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
         return root / "overlay_calibration.json"
 
     def _load_geometry(self) -> None:
@@ -170,7 +168,7 @@ class AdvicePanelWindow(QWidget):
             p = self._calibration_path()
             if not p.exists():
                 return
-            with open(p, "r", encoding="utf-8") as f:
+            with open(p, encoding="utf-8") as f:
                 data = json.load(f) or {}
             panel = data.get("advice_panel") or {}
             self._frac_x = self._clamp01(panel.get("frac_x", self._frac_x))
@@ -185,7 +183,7 @@ class AdvicePanelWindow(QWidget):
             p = self._calibration_path()
             existing: dict[str, Any] = {}
             if p.exists():
-                with open(p, "r", encoding="utf-8") as f:
+                with open(p, encoding="utf-8") as f:
                     existing = json.load(f) or {}
             existing["advice_panel"] = {
                 "frac_x": round(self._frac_x, 4),
@@ -197,7 +195,10 @@ class AdvicePanelWindow(QWidget):
                 json.dump(existing, f, indent=2)
             logger.debug(
                 "advice_panel saved: x=%.3f y=%.3f w=%.3f h=%.3f",
-                self._frac_x, self._frac_y, self._frac_w, self._frac_h,
+                self._frac_x,
+                self._frac_y,
+                self._frac_w,
+                self._frac_h,
             )
         except Exception as e:
             logger.debug(f"advice_panel: save geometry failed: {e}")
@@ -235,12 +236,8 @@ class AdvicePanelWindow(QWidget):
         if mtga is None or mtga.width() <= 0 or mtga.height() <= 0:
             return
         cur = self.geometry()
-        self._frac_x = self._clamp01(
-            (cur.left() - mtga.left()) / mtga.width()
-        )
-        self._frac_y = self._clamp01(
-            (cur.top() - mtga.top()) / mtga.height()
-        )
+        self._frac_x = self._clamp01((cur.left() - mtga.left()) / mtga.width())
+        self._frac_y = self._clamp01((cur.top() - mtga.top()) / mtga.height())
         self._frac_w = self._clamp_size(cur.width() / mtga.width())
         self._frac_h = self._clamp_size(cur.height() / mtga.height())
 
@@ -269,12 +266,8 @@ class AdvicePanelWindow(QWidget):
         # Constrain inside MTGA rect.
         mtga = self._mtga_rect
         if mtga is not None:
-            new_pos.setX(
-                max(mtga.left(), min(mtga.right() - self.width(), new_pos.x()))
-            )
-            new_pos.setY(
-                max(mtga.top(), min(mtga.bottom() - self.height(), new_pos.y()))
-            )
+            new_pos.setX(max(mtga.left(), min(mtga.right() - self.width(), new_pos.x())))
+            new_pos.setY(max(mtga.top(), min(mtga.bottom() - self.height(), new_pos.y())))
         self.move(new_pos)
         event.accept()
 
@@ -337,14 +330,15 @@ class AdvicePanelWindow(QWidget):
             win32gui.SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,
-                0, 0, 0, 0,
+                0,
+                0,
+                0,
+                0,
                 SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
             )
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 self.raise_()
-            except Exception:
-                pass
 
     # -- Painting -----------------------------------------------------------
 
@@ -368,7 +362,9 @@ class AdvicePanelWindow(QWidget):
         painter.drawRect(0, 0, 3, self.height())
 
         # Title bar.
-        title_font = QFont(); title_font.setPixelSize(11); title_font.setBold(True)
+        title_font = QFont()
+        title_font.setPixelSize(11)
+        title_font.setBold(True)
         painter.setFont(title_font)
         title_metrics = painter.fontMetrics()
         title = f"COACH{f'  ·  {self._advice_seat}' if self._advice_seat else ''}"
@@ -378,12 +374,16 @@ class AdvicePanelWindow(QWidget):
         # Body — only render text if advice present and unexpired.
         if not self._advice_text:
             painter.setPen(QColor(120, 130, 140))
-            body_font = QFont(); body_font.setPixelSize(12)
+            body_font = QFont()
+            body_font.setPixelSize(12)
             painter.setFont(body_font)
             painter.drawText(
-                QRect(12, 4 + title_metrics.height() + 4,
-                      self.width() - 24,
-                      self.height() - (4 + title_metrics.height() + 4) - _GRIP_PX),
+                QRect(
+                    12,
+                    4 + title_metrics.height() + 4,
+                    self.width() - 24,
+                    self.height() - (4 + title_metrics.height() + 4) - _GRIP_PX,
+                ),
                 int(Qt.TextFlag.TextWordWrap),
                 "(no advice yet — drag me, resize via the corner grip)",
             )
@@ -392,7 +392,8 @@ class AdvicePanelWindow(QWidget):
         if self._advice_expire_at and time.time() > self._advice_expire_at:
             return
 
-        body_font = QFont(); body_font.setPixelSize(15)
+        body_font = QFont()
+        body_font.setPixelSize(15)
         painter.setFont(body_font)
         painter.setPen(QColor(240, 244, 248))
         body_rect = QRect(

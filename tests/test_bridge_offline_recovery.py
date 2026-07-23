@@ -132,35 +132,26 @@ def test_execute_action_retries_bridge_after_reconnect(monkeypatch):
 def test_no_plugin_warning_fires_once(caplog, monkeypatch):
     # Pin a bridge-capable install: on a native Mac (bridge_capable False)
     # the warning is intentionally replaced by an informational log-mode line.
-    monkeypatch.setattr(
-        "arenamcp.platform_integration.bridge_capable", lambda: True
-    )
+    monkeypatch.setattr("arenamcp.platform_integration.bridge_capable", lambda: True)
     bridge = GREBridge()
     bridge._server_socket = object()
     bridge._server_started_at = time.monotonic() - 60.0
     with caplog.at_level(logging.WARNING, logger="arenamcp.gre_bridge"):
         bridge._maybe_warn_no_plugin()
         bridge._maybe_warn_no_plugin()
-    warnings = [
-        r for r in caplog.records if "plugin is not loading" in r.getMessage()
-    ]
+    warnings = [r for r in caplog.records if "plugin is not loading" in r.getMessage()]
     assert len(warnings) == 1
 
 
-def test_no_plugin_log_mode_instead_of_warning_when_bridge_impossible(
-    caplog, monkeypatch
-):
-    monkeypatch.setattr(
-        "arenamcp.platform_integration.bridge_capable", lambda: False
-    )
+def test_no_plugin_log_mode_instead_of_warning_when_bridge_impossible(caplog, monkeypatch):
+    monkeypatch.setattr("arenamcp.platform_integration.bridge_capable", lambda: False)
     bridge = GREBridge()
     bridge._server_socket = object()
     bridge._server_started_at = time.monotonic() - 60.0
     with caplog.at_level(logging.INFO, logger="arenamcp.gre_bridge"):
         bridge._maybe_warn_no_plugin()
     assert not any(
-        "plugin is not loading" in r.getMessage()
-        for r in caplog.records if r.levelno >= logging.WARNING
+        "plugin is not loading" in r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
     )
     assert any("log-only" in r.getMessage() for r in caplog.records)
 
@@ -173,9 +164,7 @@ def test_no_plugin_warning_suppressed_after_any_connection(caplog):
     with caplog.at_level(logging.WARNING, logger="arenamcp.gre_bridge"):
         bridge._maybe_warn_no_plugin()
     assert not bridge._no_plugin_warned
-    assert not any(
-        "plugin is not loading" in r.getMessage() for r in caplog.records
-    )
+    assert not any("plugin is not loading" in r.getMessage() for r in caplog.records)
 
 
 def test_no_plugin_warning_waits_for_grace_period(caplog):

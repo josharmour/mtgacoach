@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 from pathlib import Path
-from typing import Optional
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
@@ -15,9 +15,9 @@ class CoachProcess(QObject):
     stderr_line = Signal(str)
     exited = Signal(int)
 
-    def __init__(self, parent: Optional[QObject] = None) -> None:
+    def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._process: Optional[QProcess] = None
+        self._process: QProcess | None = None
         self._stdout_buffer = ""
         self._stderr_buffer = ""
         self.last_error = ""
@@ -94,10 +94,8 @@ class CoachProcess(QObject):
                 process.deleteLater()
                 return
 
-            try:
+            with contextlib.suppress(RuntimeError):
                 process.closeWriteChannel()
-            except RuntimeError:
-                pass
 
             process.terminate()
             if not process.waitForFinished(3000):
@@ -123,14 +121,10 @@ class CoachProcess(QObject):
             process.deleteLater()
             return
 
-        try:
+        with contextlib.suppress(RuntimeError):
             process.closeWriteChannel()
-        except RuntimeError:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             process.terminate()
-        except Exception:
-            pass
 
         # Hard-kill after a grace period if the process hasn't died.
         def _hard_kill():
@@ -141,14 +135,14 @@ class CoachProcess(QObject):
                 pass
 
         from PySide6.QtCore import QTimer
+
         QTimer.singleShot(5000, _hard_kill)
 
         # Clean up the QProcess object once it finishes
         def _cleanup(*_args):
-            try:
+            with contextlib.suppress(Exception):
                 process.deleteLater()
-            except Exception:
-                pass
+
         try:
             process.finished.connect(_cleanup)
         except Exception:
@@ -157,7 +151,7 @@ class CoachProcess(QObject):
             # won't leak the QProcess object.
             process.deleteLater()
 
-    def send_command(self, command: str, text: Optional[str] = None) -> None:
+    def send_command(self, command: str, text: str | None = None) -> None:
         if self._process is None or self._process.state() == QProcess.NotRunning:
             return
 

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
-import threading
 import ssl
-from typing import Optional
-from urllib.request import urlopen, Request as UrlRequest
-from urllib.error import URLError, HTTPError
+import threading
+from urllib.error import HTTPError, URLError
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 
 from PySide6.QtCore import QEvent, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
@@ -36,10 +37,10 @@ from arenamcp.settings import get_settings
 from .coach_process import CoachProcess
 from .coach_tab import CoachTab
 from .compact_coach import CompactCoachPanel
+from .hotkeys import HotkeyManager
 from .repair_tab import RepairTab
 from .runtime import RuntimeState, open_url, read_version
 from .theme import THEME_LABELS, apply_theme, available_themes, load_saved_theme, save_theme
-from .hotkeys import HotkeyManager
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +49,12 @@ UI_MODE_COMPACT = "compact"
 _UI_MODE_KEY = "desktop_ui_mode"
 
 
-
 # -- custom event for cross-thread probe result -------------------------
+
 
 class _ProbeResultEvent(QEvent):
     """Delivered from the probe worker thread to the UI thread."""
+
     _EVENT_TYPE = QEvent.Type(QEvent.registerEventType())
 
     def __init__(self, models: list[str]) -> None:
@@ -75,7 +77,7 @@ class ModelEndpointDialog(QDialog):
 
     _KNOWN_KEY = "known_endpoints"
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Model Endpoint")
         self.setMinimumWidth(520)
@@ -118,8 +120,11 @@ class ModelEndpointDialog(QDialog):
             models = data.get("data") or data if isinstance(data, list) else data.get("data", [])
             ids = [m["id"] for m in models if isinstance(m, dict) and m.get("id")]
             if not ids and "models" in data:
-                ids = [m["name"] if "name" in m else m.get("model", "")
-                       for m in data["models"] if isinstance(m, dict)]
+                ids = [
+                    m["name"] if "name" in m else m.get("model", "")
+                    for m in data["models"]
+                    if isinstance(m, dict)
+                ]
             return sorted(set(ids))
 
         try:
@@ -152,9 +157,7 @@ class ModelEndpointDialog(QDialog):
         self._url_combo.setToolTip(
             "OpenAI-compatible API base URL —\n"
             "previous endpoints are auto-completed.\n"
-            "Known endpoints: " + ", ".join(
-                self._get_known().keys() or ["(none yet)"]
-            )
+            "Known endpoints: " + ", ".join(self._get_known().keys() or ["(none yet)"])
         )
         self._url_edit = self._url_combo.lineEdit()
         self._url_edit.textChanged.connect(self._on_url_changed)
@@ -162,9 +165,7 @@ class ModelEndpointDialog(QDialog):
         url_row.addWidget(self._url_combo, stretch=1)
 
         self._probe_btn = QPushButton("Probe")
-        self._probe_btn.setToolTip(
-            "Query the endpoint for available model IDs (GET /v1/models)"
-        )
+        self._probe_btn.setToolTip("Query the endpoint for available model IDs (GET /v1/models)")
         self._probe_btn.clicked.connect(self._on_probe)
         url_row.addWidget(self._probe_btn)
 
@@ -173,9 +174,7 @@ class ModelEndpointDialog(QDialog):
         # API key
         self._key_edit = QLineEdit()
         self._key_edit.setPlaceholderText("vllm")
-        self._key_edit.setToolTip(
-            "API key for the endpoint (vLLM accepts any value; "
-            "Ollama expects 'ollama'")
+        self._key_edit.setToolTip("API key for the endpoint (vLLM accepts any value; Ollama expects 'ollama'")
         form.addRow("API Key:", self._key_edit)
 
         # Model ID — editable combo so the user can probe, then select from
@@ -256,9 +255,7 @@ class ModelEndpointDialog(QDialog):
 
         # If this is a known endpoint, restore models too
         self._restore_models_for_url(url)
-        self._status_label.setText(
-            "Local endpoint" if mode == "local" else "Online (mtgacoach.com)"
-        )
+        self._status_label.setText("Local endpoint" if mode == "local" else "Online (mtgacoach.com)")
 
     def _restore_models_for_url(self, url: str) -> None:
         """If *url* is in the known list, restore its models + separator label."""
@@ -272,9 +269,7 @@ class ModelEndpointDialog(QDialog):
             self._model_combo.addItem("")  # blank default
             self._model_combo.addItems(models)
             self._model_combo.setCurrentText("")
-            self._status_label.setText(
-                f"\u2714 {len(models)} known models \u2014 probe again to refresh"
-            )
+            self._status_label.setText(f"\u2714 {len(models)} known models \u2014 probe again to refresh")
             self._status_label.setStyleSheet("color: #888;")
 
     # -- probe logic ----------------------------------------------------------
@@ -291,9 +286,7 @@ class ModelEndpointDialog(QDialog):
     def _probe_worker(self) -> None:
         """Background thread helper. Returns results via postEvent."""
         models = self._probe_endpoint()
-        QApplication.instance().postEvent(
-            self, _ProbeResultEvent(models)
-        )
+        QApplication.instance().postEvent(self, _ProbeResultEvent(models))
 
     def _on_probe_result(self, models: list[str]) -> None:
         if not models:
@@ -353,7 +346,7 @@ class ModelEndpointDialog(QDialog):
         rec = known.get(url)
         if not isinstance(rec, dict):
             return
-        models = rec.get("models", [])
+        rec.get("models", [])
         key = rec.get("key", "")
         if key:
             self._key_edit.setText(key)
@@ -415,6 +408,7 @@ class ModelEndpointDialog(QDialog):
             return True
         return super().event(event)
 
+
 class MainWindow(QMainWindow):
     # (local_version, remote_version) — emitted from the update-check thread.
     _update_ready = Signal(str, str)
@@ -428,12 +422,12 @@ class MainWindow(QMainWindow):
         self._closing = False
         self._update_prompted = False
         self._launch_flags = (False, False, False)
-        self._process: Optional[CoachProcess] = None
+        self._process: CoachProcess | None = None
         self._startup_prompt_shown = False
         self._settings = get_settings()
         self._theme_actions: dict[str, QAction] = {}
-        self._debug_logging_action: Optional[QAction] = None
-        self._compact_action: Optional[QAction] = None
+        self._debug_logging_action: QAction | None = None
+        self._compact_action: QAction | None = None
         self._current_theme = load_saved_theme()
 
         mode = str(self._settings.get(_UI_MODE_KEY, UI_MODE_CLASSIC) or "").strip().lower()
@@ -447,10 +441,10 @@ class MainWindow(QMainWindow):
         self.repair_tab.guided_setup_finished.connect(self._handle_guided_setup_finished)
 
         self.coach_tab: CoachTab | None = None
-        self.tabs: Optional[QTabWidget] = None
-        self._stack: Optional[QStackedWidget] = None
-        self._repair_scroll: Optional[QScrollArea] = None
-        self._repair_back_btn: Optional[QPushButton] = None
+        self.tabs: QTabWidget | None = None
+        self._stack: QStackedWidget | None = None
+        self._repair_scroll: QScrollArea | None = None
+        self._repair_back_btn: QPushButton | None = None
         self._build_central_widget()
 
         status_bar = QStatusBar()
@@ -468,6 +462,7 @@ class MainWindow(QMainWindow):
         # always uses the server-assigned model, so hide it unless
         # MTGACOACH_DEV is set.
         import os as _os
+
         if _os.environ.get("MTGACOACH_DEV"):
             self._build_model_menu()
 
@@ -680,10 +675,8 @@ class MainWindow(QMainWindow):
         if old_coach is not None:
             if process is not None:
                 old_coach.detach_process()
-            try:
+            with contextlib.suppress(RuntimeError, TypeError):
                 old_coach.restart_requested.disconnect(self._restart_coach_keep_flags)
-            except (RuntimeError, TypeError):
-                pass
             old_coach.shutdown()
 
         # Keep the repair tab alive across layouts — it owns provisioning
@@ -728,10 +721,8 @@ class MainWindow(QMainWindow):
         old_process = self._process
         if old_process is not None:
             self.coach_tab.detach_process()
-            try:
+            with contextlib.suppress(RuntimeError, TypeError):
                 old_process.exited.disconnect(self._on_process_exited)
-            except (RuntimeError, TypeError):
-                pass
             # Async stop — doesn't block the Qt main thread while the old
             # process exits (old code did waitForFinished(3000) then a
             # waitForFinished(2000) on kill, freezing the UI for up to 5s).
@@ -764,13 +755,16 @@ class MainWindow(QMainWindow):
 
         # Save window geometry so it reopens in the same spot.
         geom = self.frameGeometry()
-        self._settings.set(self._WINDOW_GEOMETRY_KEY, {
-            "x": geom.x(),
-            "y": geom.y(),
-            "width": geom.width(),
-            "height": geom.height(),
-            "ui_mode": self._ui_mode,
-        })
+        self._settings.set(
+            self._WINDOW_GEOMETRY_KEY,
+            {
+                "x": geom.x(),
+                "y": geom.y(),
+                "width": geom.width(),
+                "height": geom.height(),
+                "ui_mode": self._ui_mode,
+            },
+        )
 
         self._settings.set(
             "desktop_debug_logging",
@@ -862,9 +856,7 @@ class MainWindow(QMainWindow):
             return
 
         delay_ms = 250 * (4 ** (self._coach_crash_count - 1))  # 250ms, 1s
-        self._status_bar.showMessage(
-            f"Coach exited ({exit_code}). Restarting in {delay_ms / 1000:.1f}s..."
-        )
+        self._status_bar.showMessage(f"Coach exited ({exit_code}). Restarting in {delay_ms / 1000:.1f}s...")
         QTimer.singleShot(delay_ms, lambda: self._start_coach(*self._launch_flags))
 
     def _build_theme_menu(self) -> None:
@@ -893,9 +885,7 @@ class MainWindow(QMainWindow):
         compact_action = QAction("Compact Sidebar Layout", self)
         compact_action.setCheckable(True)
         compact_action.setChecked(self._ui_mode == UI_MODE_COMPACT)
-        compact_action.setToolTip(
-            "Narrow single-column layout sized to sit beside the MTGA window"
-        )
+        compact_action.setToolTip("Narrow single-column layout sized to sit beside the MTGA window")
         compact_action.toggled.connect(
             lambda checked: self._set_ui_mode(UI_MODE_COMPACT if checked else UI_MODE_CLASSIC)
         )
@@ -912,8 +902,12 @@ class MainWindow(QMainWindow):
 
         brain_stream_action = QAction("Brain Stream Inspector", self)
         brain_stream_action.setShortcut("Ctrl+B")
-        brain_stream_action.setToolTip("Open live streaming inspector for Prompt Context, Reasoning, and Telemetry")
-        brain_stream_action.triggered.connect(lambda: self.coach_tab.toggle_brain_stream() if self.coach_tab else None)
+        brain_stream_action.setToolTip(
+            "Open live streaming inspector for Prompt Context, Reasoning, and Telemetry"
+        )
+        brain_stream_action.triggered.connect(
+            lambda: self.coach_tab.toggle_brain_stream() if self.coach_tab else None
+        )
         view_menu.addAction(brain_stream_action)
 
     def _set_debug_logging(self, enabled: bool) -> None:
@@ -967,9 +961,7 @@ class MainWindow(QMainWindow):
 
         if state.python_exe is None:
             dialog.setText("Python 3.10+ is required before mtgacoach can finish setup.")
-            dialog.setInformativeText(
-                "Install Python, then return here and retry detection."
-            )
+            dialog.setInformativeText("Install Python, then return here and retry detection.")
             open_python = dialog.addButton("Open Python Downloads", QMessageBox.AcceptRole)
             retry = dialog.addButton("Retry Detection", QMessageBox.ActionRole)
             dialog.addButton("Later", QMessageBox.RejectRole)
@@ -998,9 +990,7 @@ class MainWindow(QMainWindow):
     def _build_model_menu(self) -> None:
         model_menu = self.menuBar().addMenu("Model")
         config_action = QAction("Configure Endpoint\u2026", self)
-        config_action.setToolTip(
-            "Configure the LLM endpoint URL, API key, and model name"
-        )
+        config_action.setToolTip("Configure the LLM endpoint URL, API key, and model name")
         config_action.triggered.connect(self._show_model_dialog)
         model_menu.addAction(config_action)
 

@@ -3,10 +3,10 @@ from __future__ import annotations
 import datetime
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QPalette
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
@@ -38,7 +38,7 @@ class BrainStreamWindow(QMainWindow):
 
     MAX_LOG_BLOCKS = 2000
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Brain Stream Inspector — mtgacoach")
         self.resize(1350, 880)
@@ -46,10 +46,10 @@ class BrainStreamWindow(QMainWindow):
 
         self._trigger_count = 0
         self._turn_history_set: set[str] = set()
-        self._last_turn_key: Optional[str] = None
+        self._last_turn_key: str | None = None
         self._last_turn_num = 0
-        self._last_match_id: Optional[str] = None
-        self._last_raw_fingerprint: Optional[tuple] = None
+        self._last_match_id: str | None = None
+        self._last_raw_fingerprint: tuple | None = None
         self._last_state_payload: dict[str, Any] = {}
         self._build_ui()
         self._apply_dark_theme()
@@ -117,7 +117,7 @@ class BrainStreamWindow(QMainWindow):
         context_layout.setContentsMargins(6, 6, 6, 6)
 
         self.context_tabs = QTabWidget()
-        
+
         # --- TAB 1: Live Game Dashboard (2x2 Multi-Pane Grid) ---
         dashboard_widget = QWidget()
         dash_layout = QVBoxLayout(dashboard_widget)
@@ -185,7 +185,9 @@ class BrainStreamWindow(QMainWindow):
         self.advice_history_view.setReadOnly(True)
         self.advice_history_view.setFont(QFont("Consolas", 10))
         self.advice_history_view.document().setMaximumBlockCount(self.MAX_LOG_BLOCKS)
-        self.advice_history_view.setPlaceholderText("Concatenated advice history across turns will appear here...")
+        self.advice_history_view.setPlaceholderText(
+            "Concatenated advice history across turns will appear here..."
+        )
         self.context_tabs.addTab(self.advice_history_view, "💬 Advice Stream")
 
         # --- TAB 3: Raw GRE State ---
@@ -449,9 +451,7 @@ class BrainStreamWindow(QMainWindow):
             if turn_key not in self._turn_history_set:
                 self._turn_history_set.add(turn_key)
                 ts = datetime.datetime.now().strftime("%H:%M:%S")
-                self.turn_history_view.append(
-                    f"[{ts}] Turn {turn_num} ({phase_display}) — {who}'s Turn"
-                )
+                self.turn_history_view.append(f"[{ts}] Turn {turn_num} ({phase_display}) — {who}'s Turn")
 
         # Append any structural history items passed in payload (deduped per turn,
         # so a repeated event on a later turn is not silently dropped forever)

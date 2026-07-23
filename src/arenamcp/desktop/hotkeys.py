@@ -1,7 +1,8 @@
+import contextlib
 import logging
 import os
 import sys
-from typing import Callable, Dict
+from collections.abc import Callable
 
 from PySide6.QtCore import QObject, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -13,13 +14,14 @@ logger = logging.getLogger(__name__)
 class HotkeyManager(QObject):
     def __init__(self, parent=None):
         super().__init__(parent if isinstance(parent, QObject) else None)
-        self._callbacks: Dict[str, Callable] = {}
-        self._shortcuts: Dict[str, QShortcut] = {}
+        self._callbacks: dict[str, Callable] = {}
+        self._shortcuts: dict[str, QShortcut] = {}
         self._darwin_listener = None
 
         if sys.platform == "darwin":
             try:
                 from arenamcp.desktop.hotkeys_darwin import DarwinHotkeyListener
+
                 listener = DarwinHotkeyListener()
                 if listener.is_available:
                     self._darwin_listener = listener
@@ -32,6 +34,7 @@ class HotkeyManager(QObject):
         if os.name == "nt":
             try:
                 import keyboard
+
                 keyboard.add_hotkey(key, callback)
                 return
             except Exception as e:
@@ -61,14 +64,13 @@ class HotkeyManager(QObject):
         if os.name == "nt":
             try:
                 import keyboard
+
                 keyboard.unhook_all()
             except Exception:
                 pass
         if self._darwin_listener:
-            try:
+            with contextlib.suppress(Exception):
                 self._darwin_listener.unregister_all()
-            except Exception:
-                pass
         for shortcut in self._shortcuts.values():
             shortcut.setEnabled(False)
         self._shortcuts.clear()

@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+
 pytest.importorskip("fastapi")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -33,6 +34,7 @@ def _load_patreon(tmp_path, monkeypatch):
         sys.modules.pop(name, None)
 
     import db  # noqa: F401  (fresh module bound to tmp cwd)
+
     db.init_db()
 
     spec = importlib.util.spec_from_file_location("patreon", WEBSITE_DIR / "patreon.py")

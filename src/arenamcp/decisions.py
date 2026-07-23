@@ -17,8 +17,9 @@ Option-id scheme (family-agnostic; the executor dispatches on prefix):
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 class DecisionOption:
     option_id: str
     label: str  # display only — NEVER parsed for semantics
-    payable: Optional[bool] = None  # casts: autotap solution exists; else None
+    payable: bool | None = None  # casts: autotap solution exists; else None
     meta: dict = field(default_factory=dict)  # prompt enrichment only
 
 
@@ -72,7 +73,7 @@ class PendingDecision:
     def option_ids(self) -> set[str]:
         return {o.option_id for o in self.options}
 
-    def find(self, option_id: str) -> Optional[DecisionOption]:
+    def find(self, option_id: str) -> DecisionOption | None:
         for o in self.options:
             if o.option_id == option_id:
                 return o
@@ -101,11 +102,11 @@ _GROUP_TYPES = {"Group", "GroupReq", "GroupRequest"}
 
 
 def build_pending_decision(
-    poll: Optional[dict[str, Any]],
+    poll: dict[str, Any] | None,
     *,
     resolve_name: Callable[[int], str] = _default_name_resolver,
-    resolve_instance: Optional[Callable[[int], str]] = None,
-) -> Optional[PendingDecision]:
+    resolve_instance: Callable[[int], str] | None = None,
+) -> PendingDecision | None:
     """Build a PendingDecision from a raw get_pending_actions() response.
 
     Returns None when nothing is pending or the request family isn't
@@ -126,20 +127,12 @@ def build_pending_decision(
     can_cancel = bool(poll.get("can_cancel"))
     source_label = str(poll.get("source_card") or poll.get("prompt") or "")
 
-    if rtype in _ACTIONS_AVAILABLE_TYPES or (
-        not rtype and poll.get("actions")
-    ):
-        return _build_actions_available(
-            poll, request_id, can_pass, can_cancel, source_label, resolve_name
-        )
+    if rtype in _ACTIONS_AVAILABLE_TYPES or (not rtype and poll.get("actions")):
+        return _build_actions_available(poll, request_id, can_pass, can_cancel, source_label, resolve_name)
     if rtype in _SELECT_TARGETS_TYPES or request_class in _SELECT_TARGETS_TYPES:
-        return _build_select_targets(
-            poll, request_id, can_cancel, source_label, resolve_name
-        )
+        return _build_select_targets(poll, request_id, can_cancel, source_label, resolve_name)
     if rtype in _SELECT_N_TYPES or request_class in _SELECT_N_TYPES:
-        return _build_select_n(
-            poll, request_id, rtype, can_cancel, source_label, resolve_name
-        )
+        return _build_select_n(poll, request_id, rtype, can_cancel, source_label, resolve_name)
     if rtype in _GROUP_TYPES or request_class in _GROUP_TYPES:
         return _build_group(poll, request_id, can_cancel, source_label, resolve_instance)
     if rtype in _MULLIGAN_TYPES or request_class in _MULLIGAN_TYPES:
@@ -163,23 +156,21 @@ def _build_actions_available(
     can_cancel: bool,
     source_label: str,
     resolve_name: Callable[[int], str],
-) -> Optional[PendingDecision]:
+) -> PendingDecision | None:
     options: list[DecisionOption] = []
     saw_pass = False
     for i, action in enumerate(poll.get("actions") or []):
         atype = str(action.get("actionType") or "")
         grp_id = int(action.get("grpId") or 0)
         name = resolve_name(grp_id) if grp_id else ""
-        payable: Optional[bool] = None
+        payable: bool | None = None
         if atype == "ActionType_Pass":
             saw_pass = True
             options.append(DecisionOption("pass", "Pass"))
             continue
         if atype == "ActionType_Cast":
             payable = action.get("autoTapSolution") is not None
-            label = f"Cast {name or 'spell'}" + (
-                "" if payable else " (cannot auto-pay)"
-            )
+            label = f"Cast {name or 'spell'}" + ("" if payable else " (cannot auto-pay)")
         elif atype == "ActionType_Play":
             label = f"Play land: {name or 'land'}"
         elif atype == "ActionType_Activate":
@@ -218,7 +209,7 @@ def _build_select_targets(
     can_cancel: bool,
     source_label: str,
     resolve_name: Callable[[int], str],
-) -> Optional[PendingDecision]:
+) -> PendingDecision | None:
     options: list[DecisionOption] = []
     seen: set[int] = set()
     for cand in poll.get("target_candidates") or []:
@@ -287,7 +278,7 @@ def _build_select_n(
     can_cancel: bool,
     source_label: str,
     resolve_name: Callable[[int], str],
-) -> Optional[PendingDecision]:
+) -> PendingDecision | None:
     ids = poll.get("select_n_ids") or poll.get("search_candidates") or []
     options: list[DecisionOption] = []
     for raw in ids:
@@ -328,8 +319,8 @@ def _build_group(
     request_id: tuple[int, int],
     can_cancel: bool,
     source_label: str,
-    resolve_instance: Optional[Callable[[int], str]],
-) -> Optional[PendingDecision]:
+    resolve_instance: Callable[[int], str] | None,
+) -> PendingDecision | None:
     """GroupRequest — London mulligan bottoming and ordering windows.
 
     Option semantics: each option is a card; CHOSEN options go to the
@@ -471,7 +462,7 @@ def decision_from_dict(data: dict[str, Any]) -> PendingDecision:
 # ---------------------------------------------------------------------------
 
 
-def _tgt_iid(option_id: str) -> Optional[int]:
+def _tgt_iid(option_id: str) -> int | None:
     if not option_id.startswith("tgt:"):
         return None
     try:
@@ -480,9 +471,7 @@ def _tgt_iid(option_id: str) -> Optional[int]:
         return None
 
 
-def expand_target_selection(
-    decision: PendingDecision, chosen_ids: list[str]
-) -> list[int]:
+def expand_target_selection(decision: PendingDecision, chosen_ids: list[str]) -> list[int]:
     """Resolve a SelectTargets pick into one legal instance id per slot.
 
     The planner chooses from the flat option list and may only name one
@@ -509,9 +498,7 @@ def expand_target_selection(
         if slot.needs <= 0:
             continue
         legal = set(slot.candidate_ids)
-        pick = next(
-            (iid for iid in preferred if iid in legal and iid not in used), None
-        )
+        pick = next((iid for iid in preferred if iid in legal and iid not in used), None)
         if pick is None:
             pick = next((iid for iid in slot.candidate_ids if iid not in used), None)
         if pick is None:
@@ -570,9 +557,7 @@ def submit_option(
         # response shape: [Hand/Top keep group, Library/Bottom group]).
         bottom = [int(o.split(":", 1)[1]) for o in chosen if o.startswith("grp:")]
         all_ids = [
-            int(o.option_id.split(":", 1)[1])
-            for o in decision.options
-            if o.option_id.startswith("grp:")
+            int(o.option_id.split(":", 1)[1]) for o in decision.options if o.option_id.startswith("grp:")
         ]
         keep = [i for i in all_ids if i not in bottom]
         groups = [

@@ -7,6 +7,7 @@ from the UI process.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -15,7 +16,7 @@ import subprocess
 import sys
 import threading
 import webbrowser
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from arenamcp.standalone import StandaloneCoach
@@ -44,6 +45,7 @@ class PipeAdapter:
         # Non-blocking write queue — prevents coaching loop from freezing
         # when the parent process is slow to read stdout
         import queue
+
         self._write_queue: queue.Queue[str] = queue.Queue(maxsize=500)
 
     def bind_coach(self, coach: StandaloneCoach) -> None:
@@ -54,9 +56,7 @@ class PipeAdapter:
         # unbounded and eventually get dropped.
         self._running = True
         if self._stdout_thread is None:
-            self._stdout_thread = threading.Thread(
-                target=self._stdout_loop, daemon=True, name="pipe-stdout"
-            )
+            self._stdout_thread = threading.Thread(target=self._stdout_loop, daemon=True, name="pipe-stdout")
             self._stdout_thread.start()
         # Startup beacon — confirms pipe is alive
         self._emit({"type": "log", "message": "Pipe adapter connected."})
@@ -66,16 +66,12 @@ class PipeAdapter:
         in bind_coach() so no events are dropped during coach init."""
         self._running = True
         if self._stdin_thread is None:
-            self._stdin_thread = threading.Thread(
-                target=self._stdin_loop, daemon=True, name="pipe-stdin"
-            )
+            self._stdin_thread = threading.Thread(target=self._stdin_loop, daemon=True, name="pipe-stdin")
             self._stdin_thread.start()
         # Stdout thread is already running from bind_coach(); start it here
         # only if it somehow wasn't started (defensive)
         if self._stdout_thread is None:
-            self._stdout_thread = threading.Thread(
-                target=self._stdout_loop, daemon=True, name="pipe-stdout"
-            )
+            self._stdout_thread = threading.Thread(target=self._stdout_loop, daemon=True, name="pipe-stdout")
             self._stdout_thread.start()
 
     def stop(self) -> None:
@@ -89,7 +85,7 @@ class PipeAdapter:
     def advice(self, text: str, seat_info: str) -> None:
         self._emit({"type": "advice", "text": strip_markup(text), "seat_info": seat_info})
 
-    def turn_plan(self, payload: Optional[dict[str, Any]]) -> None:
+    def turn_plan(self, payload: dict[str, Any] | None) -> None:
         """Emit the static turn-plan panel payload (or None to clear).
 
         Wholesale-replace event: the UI replaces the panel contents on each
@@ -98,7 +94,7 @@ class PipeAdapter:
         """
         self._emit({"type": "turn_plan", "data": payload or {}})
 
-    def game_plan(self, payload: Optional[dict[str, Any]] = None) -> None:
+    def game_plan(self, payload: dict[str, Any] | None = None) -> None:
         """Forward the structured strategic game plan to the GUI.
 
         Wholesale-replace event like ``turn_plan``: the UI swaps its strategy
@@ -214,23 +210,19 @@ class PipeAdapter:
         try:
             line = json.dumps(event, default=str, ensure_ascii=False) + "\n"
         except Exception as e:
-            logger.error("pipe _emit JSON encode failed: %s (event type: %s)", e,
-                         event.get("type", "?"))
+            logger.error("pipe _emit JSON encode failed: %s (event type: %s)", e, event.get("type", "?"))
             return
 
         import queue
+
         try:
             self._write_queue.put_nowait(line)
         except queue.Full:
             # Drop oldest to make room — better than blocking the coaching loop
-            try:
+            with contextlib.suppress(queue.Empty):
                 self._write_queue.get_nowait()
-            except queue.Empty:
-                pass
-            try:
+            with contextlib.suppress(queue.Full):
                 self._write_queue.put_nowait(line)
-            except queue.Full:
-                pass
 
     def _copy_to_clipboard(self, text: str) -> bool:
         """Copy text to the clipboard without depending on UI thread state."""
@@ -249,10 +241,8 @@ class PipeAdapter:
             process.communicate(input=text.encode("utf-8"), timeout=2)
             return process.returncode == 0
         except subprocess.TimeoutExpired:
-            try:
+            with contextlib.suppress(Exception):
                 process.kill()
-            except Exception:
-                pass
             logger.debug("clip command timed out in pipe adapter")
             return False
         except Exception as e:
@@ -278,8 +268,7 @@ class PipeAdapter:
 
     def _get_github_token(self) -> str:
         token = (
-            os.environ.get("MTGACOACH_GITHUB_TOKEN", "").strip()
-            or os.environ.get("GITHUB_TOKEN", "").strip()
+            os.environ.get("MTGACOACH_GITHUB_TOKEN", "").strip() or os.environ.get("GITHUB_TOKEN", "").strip()
         )
         if token:
             return token
@@ -418,19 +407,22 @@ class PipeAdapter:
                 bridge_connected = False
                 try:
                     from arenamcp.gre_bridge import get_bridge
+
                     bridge_connected = bool(getattr(get_bridge(), "connected", False))
                 except Exception:
                     pass
                 backend = getattr(getattr(coach, "_coach", None), "_backend", None)
-                self._emit({
-                    "type": "status_report",
-                    "autopilot_enabled": bool(getattr(coach, "_autopilot_enabled", False)),
-                    "autopilot_initialized": ap is not None,
-                    "autopilot_state": str(getattr(ap, "_state", "") or ""),
-                    "bridge_connected": bridge_connected,
-                    "model_alias": str(getattr(backend, "model", "") or ""),
-                    "served_model": str(getattr(backend, "last_served_model", "") or ""),
-                })
+                self._emit(
+                    {
+                        "type": "status_report",
+                        "autopilot_enabled": bool(getattr(coach, "_autopilot_enabled", False)),
+                        "autopilot_initialized": ap is not None,
+                        "autopilot_state": str(getattr(ap, "_state", "") or ""),
+                        "bridge_connected": bridge_connected,
+                        "model_alias": str(getattr(backend, "model", "") or ""),
+                        "served_model": str(getattr(backend, "last_served_model", "") or ""),
+                    }
+                )
             elif action == "toggle_mute":
                 if coach._voice_output:
                     muted = coach._voice_output.toggle_mute()
@@ -457,9 +449,7 @@ class PipeAdapter:
                     self.log(f"AFK mode: {state}")
             elif action == "toggle_land_only":
                 if coach._autopilot:
-                    coach._autopilot._land_only = not getattr(
-                        coach._autopilot, "_land_only", False
-                    )
+                    coach._autopilot._land_only = not getattr(coach._autopilot, "_land_only", False)
                     state = "ON" if coach._autopilot._land_only else "OFF"
                     self.status("LAND_ONLY", state)
                     self.log(f"Land-only mode: {state}")
@@ -470,9 +460,7 @@ class PipeAdapter:
                 if coach._autopilot:
                     coach._autopilot.on_abort()
             elif action == "analyze_screen":
-                threading.Thread(
-                    target=coach.take_screenshot_analysis, daemon=True
-                ).start()
+                threading.Thread(target=coach.take_screenshot_analysis, daemon=True).start()
             elif action == "debug_report":
                 # Optional screenshot paths provided by the UI (coach + MTGA window).
                 screenshots = cmd.get("screenshots") or {}
@@ -484,13 +472,9 @@ class PipeAdapter:
             elif action == "read_win_plan":
                 coach._on_read_win_plan()
             elif action == "win_probability":
-                threading.Thread(
-                    target=self._handle_win_probability, daemon=True
-                ).start()
+                threading.Thread(target=self._handle_win_probability, daemon=True).start()
             elif action == "deck_strategy":
-                threading.Thread(
-                    target=self._handle_deck_strategy, daemon=True
-                ).start()
+                threading.Thread(target=self._handle_deck_strategy, daemon=True).start()
             elif action == "bugreport":
                 msg = cmd.get("text", "")
                 extra_context = {
@@ -503,33 +487,23 @@ class PipeAdapter:
                     target=self._handle_bugreport, args=(msg, extra_context), daemon=True
                 ).start()
             elif action == "subscribe":
-                threading.Thread(
-                    target=self._handle_subscribe, daemon=True
-                ).start()
+                threading.Thread(target=self._handle_subscribe, daemon=True).start()
             elif action == "set_local_endpoint":
                 self._handle_local_config(cmd.get("text", ""))
             elif action == "switch_online":
-                threading.Thread(
-                    target=self._handle_switch_online, daemon=True
-                ).start()
+                threading.Thread(target=self._handle_switch_online, daemon=True).start()
             elif action == "set_license_key":
                 self._handle_set_key(cmd.get("text", ""))
             elif action == "analyze_match":
-                threading.Thread(
-                    target=self._handle_analyze_match, daemon=True
-                ).start()
+                threading.Thread(target=self._handle_analyze_match, daemon=True).start()
             elif action in ("sideboard", "sideboard_recommendation"):
-                threading.Thread(
-                    target=self._handle_sideboard_recommendation, daemon=True
-                ).start()
+                threading.Thread(target=self._handle_sideboard_recommendation, daemon=True).start()
             elif action == "toggle_frequency":
                 coach._on_frequency_toggle_hotkey()
             elif action == "replay_advice":
                 self._handle_replay_advice()
             elif action == "force_advice":
-                threading.Thread(
-                    target=self._handle_force_advice, daemon=True
-                ).start()
+                threading.Thread(target=self._handle_force_advice, daemon=True).start()
             elif action == "chat":
                 text = cmd.get("text", "")
                 if text:
@@ -537,9 +511,7 @@ class PipeAdapter:
                     if self._try_slash_command(text):
                         pass  # Handled
                     else:
-                        threading.Thread(
-                            target=self._handle_chat, args=(text,), daemon=True
-                        ).start()
+                        threading.Thread(target=self._handle_chat, args=(text,), daemon=True).start()
             elif action == "restart":
                 coach._restart_requested = True
                 coach._running = False
@@ -555,7 +527,7 @@ class PipeAdapter:
         """Bridge-only mode is fixed on; legacy fallback toggles do nothing."""
         self.log("Bridge-only autopilot is always on. Mouse fallback has been removed.")
 
-    def _handle_debug_report(self, screenshots: Optional[dict[str, str]] = None) -> None:
+    def _handle_debug_report(self, screenshots: dict[str, str] | None = None) -> None:
         """Save a bug report and notify the GUI of the path.
 
         Args:
@@ -582,30 +554,45 @@ class PipeAdapter:
                 if screenshots:
                     for kind, p in screenshots.items():
                         self.log(f"  Screenshot ({kind}): {p}")
-                self._emit({
-                    "type": "bug_report_saved",
-                    "path": str(bug_path),
-                    "screenshots": screenshots or {},
-                })
+                self._emit(
+                    {
+                        "type": "bug_report_saved",
+                        "path": str(bug_path),
+                        "screenshots": screenshots or {},
+                    }
+                )
             else:
                 self.error("Failed to save bug report")
-                self._emit({
-                    "type": "bug_report_saved",
-                    "path": "",
-                    "error": "Failed to save bug report",
-                })
+                self._emit(
+                    {
+                        "type": "bug_report_saved",
+                        "path": "",
+                        "error": "Failed to save bug report",
+                    }
+                )
         except Exception as e:
             self.error(f"Bug report failed: {e}")
-            self._emit({
-                "type": "bug_report_saved",
-                "path": "",
-                "error": str(e),
-            })
+            self._emit(
+                {
+                    "type": "bug_report_saved",
+                    "path": "",
+                    "error": str(e),
+                }
+            )
 
     def _handle_chat(self, text: str) -> None:
         """Process a chat message or slash command from the GUI."""
         cmd_text = (text or "").strip().lower()
-        if cmd_text in ("/assess", "/strategy", "/concede", "/win", "game assessment", "win strategy", "concede", "concede?"):
+        if cmd_text in (
+            "/assess",
+            "/strategy",
+            "/concede",
+            "/win",
+            "game assessment",
+            "win strategy",
+            "concede",
+            "concede?",
+        ):
             # Pass natural-language phrasings through so the LLM answers the
             # user's actual words, not just the canned assessment question.
             user_text = "" if cmd_text.startswith("/") else text.strip()
@@ -644,11 +631,7 @@ class PipeAdapter:
             turn_number = int((game_state.get("turn") or {}).get("turn_number") or 0)
         except (TypeError, ValueError):
             turn_number = 0
-        return bool(
-            turn_number > 0
-            or game_state.get("hand")
-            or game_state.get("battlefield")
-        )
+        return bool(turn_number > 0 or game_state.get("hand") or game_state.get("battlefield"))
 
     def _handle_game_assessment(self, user_text: str = "") -> None:
         """Perform a full game state assessment: evaluate win plan, path to victory, and concede decision."""
@@ -697,10 +680,8 @@ class PipeAdapter:
         if voice_id:
             coach.settings.set("voice", voice_id)
         if speed_value is not None:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 coach.settings.set("voice_speed", float(speed_value))
-            except (TypeError, ValueError):
-                pass
         if muted_value is not None:
             coach.settings.set("muted", bool(muted_value))
 
@@ -800,7 +781,7 @@ class PipeAdapter:
             threading.Thread(target=self._handle_deck_strategy, daemon=True).start()
             return True
         if t.startswith("/bugreport"):
-            msg = text.strip()[len("/bugreport"):].strip()
+            msg = text.strip()[len("/bugreport") :].strip()
             threading.Thread(target=self._handle_bugreport, args=(msg,), daemon=True).start()
             return True
         if t == "/subscribe":
@@ -823,7 +804,6 @@ class PipeAdapter:
             return True
         return False
 
-
     # --- Handler implementations ---
 
     def _handle_win_probability(self) -> None:
@@ -836,7 +816,7 @@ class PipeAdapter:
         try:
             game_state = coach._mcp.get_game_state() if coach._mcp else {}
             coach._inject_library_summary_if_needed(game_state)
-            opp_cards = getattr(coach, '_opponent_played_cards', None)
+            opp_cards = getattr(coach, "_opponent_played_cards", None)
             if opp_cards is None:
                 opp_cards = game_state.get("_match_context", {}).get("opponent_played_cards", [])
             result = coach._coach.generate_win_probability(game_state, opp_cards)
@@ -886,6 +866,7 @@ class PipeAdapter:
 
         try:
             from arenamcp.deck_builder import DeckBuilderV2
+
             builder = DeckBuilderV2(
                 draft_stats=getattr(coach, "draft_stats", None),
                 enrich_fn=lambda gid: coach._mcp.get_card_info(gid) if coach._mcp else {},
@@ -931,8 +912,7 @@ class PipeAdapter:
                 notes.append("format assumed Standard (active event format not detected)")
             if not collection_known:
                 notes.append(
-                    "collection/wildcard data unavailable — craft costs "
-                    "assume you own none of these cards"
+                    "collection/wildcard data unavailable — craft costs assume you own none of these cards"
                 )
             if has_suggestions and notes:
                 lines.append("\n*Note: " + "; ".join(notes) + ".*")
@@ -985,9 +965,7 @@ class PipeAdapter:
             else:
                 game_state = {}
             coach._inject_library_summary_if_needed(game_state)
-            advice = coach._coach.get_advice(
-                game_state, trigger="user_request", style=coach.advice_style
-            )
+            advice = coach._coach.get_advice(game_state, trigger="user_request", style=coach.advice_style)
             if advice and advice.strip():
                 coach._record_advice(advice, "force_advice", game_state=game_state)
                 self.advice(advice, "ON DEMAND")
@@ -1015,7 +993,7 @@ class PipeAdapter:
 
         # Auto-save a bug report
         report_path = None
-        if hasattr(coach, 'save_bug_report'):
+        if hasattr(coach, "save_bug_report"):
             report_path = coach.save_bug_report(
                 f"/bugreport {user_message}".strip(),
                 announce=False,
@@ -1028,8 +1006,9 @@ class PipeAdapter:
             self.error("Failed to save bug report.")
             return
 
-        from arenamcp.logging_config import LOG_DIR
         from arenamcp.bugreport import GITHUB_REPO, build_issue_payload, build_issue_url
+        from arenamcp.logging_config import LOG_DIR
+
         bug_dir = LOG_DIR / "bug_reports"
         if not bug_dir.exists():
             self.error("No bug reports found.")
@@ -1043,6 +1022,7 @@ class PipeAdapter:
         report_path = reports[0]
         try:
             import json as _json
+
             report_data = _json.loads(report_path.read_text(encoding="utf-8"))
         except Exception as e:
             self.error(f"Failed to read bug report: {e}")
@@ -1084,6 +1064,7 @@ class PipeAdapter:
             logger.warning("GitHub API submission failed: %s", e)
 
         import shutil
+
         gh = shutil.which("gh")
         if gh:
             try:
@@ -1116,7 +1097,9 @@ class PipeAdapter:
             if opened:
                 self.log("Browser opened with prefilled issue draft.")
             else:
-                self.log("Browser launch was not confirmed. Open the saved report and submit manually if needed.")
+                self.log(
+                    "Browser launch was not confirmed. Open the saved report and submit manually if needed."
+                )
         except Exception as e:
             self.error(f"Bug report submission failed: {e}")
 
@@ -1124,12 +1107,14 @@ class PipeAdapter:
         """Show subscription status."""
         try:
             from arenamcp.settings import get_settings
-            from arenamcp.subscription import check_subscription, SUBSCRIBE_URL
+            from arenamcp.subscription import SUBSCRIBE_URL, check_subscription
 
             license_key = get_settings().get("license_key", "")
             if not license_key:
-                self.log(f"No license key configured. Visit {SUBSCRIBE_URL} to subscribe, "
-                         "then use /key YOUR_LICENSE_KEY")
+                self.log(
+                    f"No license key configured. Visit {SUBSCRIBE_URL} to subscribe, "
+                    "then use /key YOUR_LICENSE_KEY"
+                )
                 return
 
             status = check_subscription(license_key, force=True)
@@ -1186,6 +1171,7 @@ class PipeAdapter:
 
         key = parts[1].strip()
         from arenamcp.settings import get_settings
+
         get_settings().set("license_key", key)
         self.log(f"License key set: {key[:8]}...")
 
@@ -1210,4 +1196,3 @@ class PipeAdapter:
             coach.get_sideboard_recommendations()
         except Exception as e:
             self.error(f"Sideboarding recommendation failed: {e}")
-

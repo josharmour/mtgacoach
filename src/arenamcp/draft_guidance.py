@@ -30,8 +30,9 @@ from __future__ import annotations
 
 import re
 import statistics
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any
 
 __all__ = [
     "ArchStats",
@@ -82,7 +83,7 @@ IWD_PREMIUM_PCT = 4.5
 
 # Bayesian archetype-blend knobs — unrealities engine.py _calculate_weighted_score.
 ARCH_SAMPLE_FULL_CONFIDENCE = 1000  # games at which pair stats are fully trusted
-ARCH_SAMPLE_MIN = 10                # below this, ignore pair stats entirely
+ARCH_SAMPLE_MIN = 10  # below this, ignore pair stats entirely
 
 # Wheel-probability cubic polynomials, one per pick 1..6 (index pick-1,
 # clamped), evaluated at ALSA. Ported verbatim from unrealities
@@ -134,7 +135,7 @@ class ArchStats:
     """
 
     gih_wr_pct: float  # GIH win rate in percentage points (e.g. 57.2)
-    games: int = 0     # sample size backing that win rate
+    games: int = 0  # sample size backing that win rate
 
 
 @dataclass(frozen=True)
@@ -143,16 +144,16 @@ class CardData:
 
     grp_id: int
     name: str
-    colors: tuple[str, ...] = ()          # subset of WUBRG
-    mana_cost: str = ""                   # "{1}{W}{W}" style, may be ""
+    colors: tuple[str, ...] = ()  # subset of WUBRG
+    mana_cost: str = ""  # "{1}{W}{W}" style, may be ""
     cmc: float = 0.0
-    types: tuple[str, ...] = ()           # ("Creature", "Human", ...)
-    rarity: str = ""                      # "common"/"uncommon"/"rare"/"mythic"
-    tags: frozenset[str] = frozenset()    # "removal", "evasion", "card_advantage", "fixing"
-    gih_wr_pct: Optional[float] = None    # GIH WR in percentage points (54.0)
-    alsa: Optional[float] = None          # average last seen at
-    iwd_pct: Optional[float] = None       # improvement-when-drawn, pct points
-    games: int = 0                        # GIH sample size
+    types: tuple[str, ...] = ()  # ("Creature", "Human", ...)
+    rarity: str = ""  # "common"/"uncommon"/"rare"/"mythic"
+    tags: frozenset[str] = frozenset()  # "removal", "evasion", "card_advantage", "fixing"
+    gih_wr_pct: float | None = None  # GIH WR in percentage points (54.0)
+    alsa: float | None = None  # average last seen at
+    iwd_pct: float | None = None  # improvement-when-drawn, pct points
+    games: int = 0  # GIH sample size
     arch_stats: Mapping[str, ArchStats] = field(default_factory=dict)  # "WU" -> stats
 
     @property
@@ -186,7 +187,7 @@ class FormatContext:
 class LaneState:
     """Where the drafter is committed, with soft weights per color."""
 
-    main_colors: tuple[str, ...] = ()          # up to 3, strongest first
+    main_colors: tuple[str, ...] = ()  # up to 3, strongest first
     weights: dict[str, float] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
 
@@ -211,10 +212,10 @@ class PoolNeeds:
     """Composition census of the current pool."""
 
     creatures: int = 0
-    early_plays: int = 0          # cmc<=2 creatures + cheap non-creature removal
+    early_plays: int = 0  # cmc<=2 creatures + cheap non-creature removal
     removal: int = 0
-    heavy_drops: int = 0          # cmc>=5 nonland
-    fixing: int = 0               # nonbasic lands with 2+ colors / fixing tag
+    heavy_drops: int = 0  # cmc>=5 nonland
+    fixing: int = 0  # nonbasic lands with 2+ colors / fixing tag
     splash_targets: set[str] = field(default_factory=set)  # off-lane bomb colors
 
 
@@ -224,15 +225,15 @@ class PickGuidance:
 
     grp_id: int
     name: str
-    score: float                       # 0-100
-    tier: str                          # WEAK/BRONZE/SILVER/GOLD/FIRE
-    reasons: list[str]                 # human-readable, voice-narratable
-    wheel_probability: float           # 0-100 (% chance this card wheels)
-    gih_wr_pct: Optional[float] = None
-    z_score: float = 0.0               # pack-relative power
+    score: float  # 0-100
+    tier: str  # WEAK/BRONZE/SILVER/GOLD/FIRE
+    reasons: list[str]  # human-readable, voice-narratable
+    wheel_probability: float  # 0-100 (% chance this card wheels)
+    gih_wr_pct: float | None = None
+    z_score: float = 0.0  # pack-relative power
     is_bomb: bool = False
     on_lane: bool = True
-    lane: str = ""                     # committed pair key ("WU") or ""
+    lane: str = ""  # committed pair key ("WU") or ""
 
 
 # ---------------------------------------------------------------------------
@@ -265,13 +266,19 @@ def _types_from_type_line(type_line: str) -> tuple[str, ...]:
 # tags from their scryfall_tagger; we don't have that pipeline, so derive the
 # handful the engine actually uses from oracle text (same spirit as our
 # draft_eval.get_card_type_score keyword scan).
-_REMOVAL_WORDS = ("destroy target", "exile target", "damage to any target",
-                  "damage to target creature", "fights", "-x/-x",
-                  "destroy all", "deals damage equal")
+_REMOVAL_WORDS = (
+    "destroy target",
+    "exile target",
+    "damage to any target",
+    "damage to target creature",
+    "fights",
+    "-x/-x",
+    "destroy all",
+    "deals damage equal",
+)
 _EVASION_WORDS = ("flying", "menace", "trample", "can't be blocked", "shadow")
 _DRAW_WORDS = ("draw a card", "draw two", "draw cards")
-_FIXING_WORDS = ("add one mana of any color", "search your library for a basic land",
-                 "any color of mana")
+_FIXING_WORDS = ("add one mana of any color", "search your library for a basic land", "any color of mana")
 
 
 def _derive_tags(type_line: str, oracle_text: str, colors: tuple[str, ...]) -> frozenset[str]:
@@ -291,7 +298,7 @@ def _derive_tags(type_line: str, oracle_text: str, colors: tuple[str, ...]) -> f
     return frozenset(tags)
 
 
-def _as_pct(value: Any) -> Optional[float]:
+def _as_pct(value: Any) -> float | None:
     """Accept a win rate as fraction (0.57) or percentage (57.0) → pct points.
 
     17lands / our draftstats serve fractions; unrealities datasets store
@@ -319,7 +326,7 @@ def normalize_card(
     source: Any,
     stats: Any = None,
     *,
-    arch_stats: Optional[Mapping[str, ArchStats]] = None,
+    arch_stats: Mapping[str, ArchStats] | None = None,
 ) -> CardData:
     """Adapt any of our card shapes into :class:`CardData`.
 
@@ -344,8 +351,7 @@ def normalize_card(
 
     raw_colors = _get(source, "colors", None)
     if raw_colors:
-        colors = tuple(c for c in COLOR_LETTERS
-                       if c in {str(x).upper() for x in raw_colors})
+        colors = tuple(c for c in COLOR_LETTERS if c in {str(x).upper() for x in raw_colors})
     else:
         colors = _colors_from_mana_cost(mana_cost)
 
@@ -397,10 +403,9 @@ def normalize_card(
     )
 
 
-def format_context_from_pair_stats(pair_stats: Mapping[str, Any],
-                                   *,
-                                   mean_gih_wr_pct: float = 54.0,
-                                   std_gih_wr_pct: float = 4.0) -> FormatContext:
+def format_context_from_pair_stats(
+    pair_stats: Mapping[str, Any], *, mean_gih_wr_pct: float = 54.0, std_gih_wr_pct: float = 4.0
+) -> FormatContext:
     """Build a :class:`FormatContext` from ``draftstats.get_color_pair_stats``.
 
     Accepts the ``{"WU": ColorPairStats(...)}`` dict our cache returns (any
@@ -413,9 +418,7 @@ def format_context_from_pair_stats(pair_stats: Mapping[str, Any],
             wr = float(val)
         if wr is not None:
             rates[str(key)] = float(wr)
-    return FormatContext(mean_gih_wr_pct=mean_gih_wr_pct,
-                         std_gih_wr_pct=std_gih_wr_pct,
-                         pair_win_rates=rates)
+    return FormatContext(mean_gih_wr_pct=mean_gih_wr_pct, std_gih_wr_pct=std_gih_wr_pct, pair_win_rates=rates)
 
 
 # ---------------------------------------------------------------------------
@@ -443,9 +446,7 @@ def compute_lane(pool: Sequence[CardData], fmt: FormatContext) -> LaneState:
         wr = card.gih_wr_pct
         if wr is None or wr < playable_floor:
             continue
-        base_points = max(
-            0.2, 1.0 + 2.0 * ((wr - fmt.mean_gih_wr_pct) / max(0.1, fmt.std_gih_wr_pct))
-        )
+        base_points = max(0.2, 1.0 + 2.0 * ((wr - fmt.mean_gih_wr_pct) / max(0.1, fmt.std_gih_wr_pct)))
         recency_mult = 1.0 + 2.0 * (idx / max(1, n))  # oldest 1.0x → newest ~3.0x
         for c in card.colors:
             weights[c] += base_points * recency_mult
@@ -457,8 +458,7 @@ def compute_lane(pool: Sequence[CardData], fmt: FormatContext) -> LaneState:
         # Established pool: main colors = the two most-counted colors plus
         # anything holding >=15% of pips (allows a committed 3-color lane).
         threshold = total_pips * 0.15
-        leaders = [c for c, cnt in sorted(counts.items(), key=lambda kv: kv[1],
-                                          reverse=True)[:2] if cnt > 0]
+        leaders = [c for c, cnt in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:2] if cnt > 0]
         for c, w in sorted_w:
             if c in leaders or counts[c] >= threshold:
                 main.append(c)
@@ -471,8 +471,7 @@ def compute_lane(pool: Sequence[CardData], fmt: FormatContext) -> LaneState:
     return LaneState(main_colors=tuple(main[:3]), weights=weights, counts=counts)
 
 
-def analyze_pool(pool: Sequence[CardData], fmt: FormatContext,
-                 lane: LaneState) -> PoolNeeds:
+def analyze_pool(pool: Sequence[CardData], fmt: FormatContext, lane: LaneState) -> PoolNeeds:
     """Census the pool for composition pressure (unrealities ``_analyze_pool``,
     trimmed to the roles our tag derivation can actually see)."""
     needs = PoolNeeds()
@@ -503,8 +502,7 @@ def analyze_pool(pool: Sequence[CardData], fmt: FormatContext,
     return needs
 
 
-def compute_pack_signals(pack: Sequence[CardData], pick_number: int,
-                         fmt: FormatContext) -> dict[str, float]:
+def compute_pack_signals(pack: Sequence[CardData], pick_number: int, fmt: FormatContext) -> dict[str, float]:
     """Open-lane lateness signal per color from the current pack.
 
     Port of unrealities signals.py ``calculate_pack_signals``: an
@@ -541,8 +539,9 @@ def _polyval(coeffs: Sequence[float], x: float) -> float:
     return result
 
 
-def _blended_base_score(card: CardData, lane_pair: str, overall_pick: int,
-                        total_picks: int, fmt: FormatContext) -> tuple[float, Optional[str]]:
+def _blended_base_score(
+    card: CardData, lane_pair: str, overall_pick: int, total_picks: int, fmt: FormatContext
+) -> tuple[float, str | None]:
     """Base 0-100ish score from Bayesian-smoothed global/archetype blend.
 
     Port of unrealities engine.py ``_calculate_weighted_score``: the weight
@@ -568,18 +567,15 @@ def _blended_base_score(card: CardData, lane_pair: str, overall_pick: int,
         blended = global_wr * (1.0 - arch_weight) + trusted * arch_weight
         delta = trusted - global_wr
         if delta >= 1.0:
-            reason = (f"Overperforms in {lane_pair} decks "
-                      f"(+{delta:.1f} points over its global rate)")
+            reason = f"Overperforms in {lane_pair} decks (+{delta:.1f} points over its global rate)"
         elif delta <= -1.0:
             reason = f"Weaker in {lane_pair} decks than its global rate suggests"
 
-    score = 50.0 + ((blended - fmt.mean_gih_wr_pct)
-                    / max(0.1, fmt.std_gih_wr_pct)) * 15.0
+    score = 50.0 + ((blended - fmt.mean_gih_wr_pct) / max(0.1, fmt.std_gih_wr_pct)) * 15.0
     return max(0.0, score), reason
 
 
-def _bomb_bonus(card: CardData, pack_mean: float, pack_std: float
-                ) -> tuple[float, float, bool, list[str]]:
+def _bomb_bonus(card: CardData, pack_mean: float, pack_std: float) -> tuple[float, float, bool, list[str]]:
     """Pack-relative bomb detection (unrealities engine.py STEP 2).
 
     Returns (bonus, z_score, is_true_bomb, reasons). z is computed against
@@ -591,8 +587,7 @@ def _bomb_bonus(card: CardData, pack_mean: float, pack_std: float
         return 0.0, 0.0, False, []
     z = (wr - pack_mean) / max(0.1, pack_std)
     reasons: list[str] = []
-    true_bomb = (card.iwd_pct is not None and card.iwd_pct > IWD_PREMIUM_PCT
-                 and z > 1.0)
+    true_bomb = card.iwd_pct is not None and card.iwd_pct > IWD_PREMIUM_PCT and z > 1.0
     iwd_mult = 1.15 if true_bomb else 1.0
     bonus = max(0.0, z * 10.0 * iwd_mult) if z > 0.5 else 0.0
     if z >= BOMB_Z_SCORE:
@@ -604,8 +599,9 @@ def _bomb_bonus(card: CardData, pack_mean: float, pack_std: float
     return bonus, z, true_bomb, reasons
 
 
-def _late_signal_bonus(card: CardData, z: float, pack_number: int,
-                       pick_number: int) -> tuple[float, Optional[str]]:
+def _late_signal_bonus(
+    card: CardData, z: float, pack_number: int, pick_number: int
+) -> tuple[float, str | None]:
     """A strong card far past its ALSA in pack 1 = the lane is being passed
     to us (unrealities engine.py STEP 3)."""
     if pack_number != 1 or pick_number < 5:
@@ -624,8 +620,9 @@ def _late_signal_bonus(card: CardData, z: float, pack_number: int,
     return 0.0, None
 
 
-def _lane_fit(card: CardData, lane: LaneState, pack_number: int,
-              on_color_pool_count: int) -> tuple[float, bool, Optional[str]]:
+def _lane_fit(
+    card: CardData, lane: LaneState, pack_number: int, on_color_pool_count: int
+) -> tuple[float, bool, str | None]:
     """On-lane multiplier (unrealities STEP 4, minus their curated-tag glue
     detection). Returns (multiplier, on_lane, reason)."""
     main = set(lane.main_colors)
@@ -644,9 +641,9 @@ def _lane_fit(card: CardData, lane: LaneState, pack_number: int,
     return mult, True, None
 
 
-def _castability(card: CardData, lane: LaneState, needs: PoolNeeds,
-                 pack_number: int, pick_number: int, z: float
-                 ) -> tuple[float, Optional[str]]:
+def _castability(
+    card: CardData, lane: LaneState, needs: PoolNeeds, pack_number: int, pick_number: int, z: float
+) -> tuple[float, str | None]:
     """Castability pressure by pick number (unrealities STEP 6 /
     ``_calculate_castability_v5``, simplified: no per-color fixing map — we
     use the pool's total fixing count).
@@ -691,32 +688,32 @@ def _castability(card: CardData, lane: LaneState, needs: PoolNeeds,
     if z >= BOMB_Z_SCORE or is_premium_removal:
         if off_pips == 1 and needs.fixing >= (4 if pack_number == 3 else 3):
             what = "Bomb" if z >= BOMB_Z_SCORE else "Premium removal"
-            return ((0.35 if pack_number == 3 else 0.45),
-                    f"{what} splash — your fixing can support the stretch")
+            return (
+                (0.35 if pack_number == 3 else 0.45),
+                f"{what} splash — your fixing can support the stretch",
+            )
 
     if off_pips == 1 and needs.fixing >= 2:
         return 0.3, "Splashable with your fixing, but off your main colors"
 
-    return ((0.02 if pack_number == 3 else 0.05),
-            f"Off-color — you're committed to {lane_phrase}")
+    return ((0.02 if pack_number == 3 else 0.05), f"Off-color — you're committed to {lane_phrase}")
 
 
-def _composition(card: CardData, needs: PoolNeeds, pack_number: int,
-                 pool_size: int, total_picks: int) -> tuple[float, Optional[str]]:
+def _composition(
+    card: CardData, needs: PoolNeeds, pack_number: int, pool_size: int, total_picks: int
+) -> tuple[float, str | None]:
     """Composition pressure: what does the DECK need right now?
     (unrealities STEP 7 / ``_calculate_composition_bonus``, minus their
     curated synergy tags.) First matching rule wins, like the original."""
     # 1. Curve too heavy
     if card.cmc >= 5 and needs.heavy_drops >= HEAVY_DROP_CAP and not card.is_land:
-        return 0.7, (f"Curve is getting top-heavy — you already have "
-                     f"{needs.heavy_drops} five-plus drops")
+        return 0.7, (f"Curve is getting top-heavy — you already have {needs.heavy_drops} five-plus drops")
 
     # 2. Creature quota (projected to end of draft)
     if pack_number >= 2 and card.is_creature:
         projected = needs.creatures * (total_picks / max(1, pool_size))
         if projected < TARGET_CREATURES:
-            return 1.25, (f"You need creatures — only {needs.creatures} so far, "
-                          f"on pace for {projected:.0f}")
+            return 1.25, (f"You need creatures — only {needs.creatures} so far, on pace for {projected:.0f}")
 
     # 3. Fixing that enables a bomb splash already in the pool
     if (card.is_land or "fixing" in card.tags) and needs.splash_targets:
@@ -726,8 +723,10 @@ def _composition(card: CardData, needs: PoolNeeds, pack_number: int,
     # 4. Removal quota / saturation
     if "removal" in card.tags:
         if pack_number >= 2 and needs.removal < TARGET_HARD_REMOVAL:
-            return 1.3, (f"You still need removal — only {needs.removal} "
-                         f"piece{'s' if needs.removal != 1 else ''} so far")
+            return 1.3, (
+                f"You still need removal — only {needs.removal} "
+                f"piece{'s' if needs.removal != 1 else ''} so far"
+            )
         if needs.removal > REMOVAL_SATURATION:
             return 0.8, f"Removal saturated — you already have {needs.removal}"
 
@@ -737,15 +736,15 @@ def _composition(card: CardData, needs: PoolNeeds, pack_number: int,
         if projected < TARGET_EARLY_PLAYS:
             if pack_number >= 2:
                 boost = 1.0 + min(0.5, (TARGET_EARLY_PLAYS - projected) * 0.15)
-                return boost, (f"Two-drops badly needed — only "
-                               f"{needs.early_plays} early plays in the pool")
+                return boost, (f"Two-drops badly needed — only {needs.early_plays} early plays in the pool")
             return 1.1, "Good curve foundation — early plays win limited games"
 
     return 1.0, None
 
 
-def _wheel_probability(card: CardData, pick_number: int, rank_in_pack: int
-                       ) -> tuple[float, float, Optional[str]]:
+def _wheel_probability(
+    card: CardData, pick_number: int, rank_in_pack: int
+) -> tuple[float, float, str | None]:
     """ALSA-based wheel estimate (unrealities ``_check_relative_wheel``).
 
     The cubic polynomial (fit on 17lands wheel data, constants.py:792 in the
@@ -763,13 +762,16 @@ def _wheel_probability(card: CardData, pick_number: int, rank_in_pack: int
     coeffs = WHEEL_COEFFICIENTS[min(pick_number - 1, len(WHEEL_COEFFICIENTS) - 1)]
     prob = _polyval(coeffs, alsa)
     if rank_in_pack == 0:
-        prob *= 0.10   # best card in pack: someone will take it
+        prob *= 0.10  # best card in pack: someone will take it
     elif rank_in_pack <= 2:
         prob *= 0.40
     prob = max(0.0, min(100.0, prob))
     if prob >= 75.0 and rank_in_pack >= 4:
-        return 0.8, prob, (f"Likely wheels (~{prob:.0f}%) — you can take "
-                           f"something else and still get it back")
+        return (
+            0.8,
+            prob,
+            (f"Likely wheels (~{prob:.0f}%) — you can take something else and still get it back"),
+        )
     return 1.0, prob, None
 
 
@@ -785,8 +787,8 @@ def evaluate_pack(
     pack_number: int = 1,
     *,
     picks_per_pack: int = DEFAULT_PICKS_PER_PACK,
-    fmt: Optional[FormatContext] = None,
-    color_signals: Optional[Mapping[str, float]] = None,
+    fmt: FormatContext | None = None,
+    color_signals: Mapping[str, float] | None = None,
 ) -> list[PickGuidance]:
     """Rank the pack. Pure function — safe to call on every pack update.
 
@@ -817,15 +819,14 @@ def evaluate_pack(
     needs = analyze_pool(pool, fmt, lane)
     lane_pair = lane.pair_key
     main = set(lane.main_colors)
-    on_color_pool = sum(
-        1 for c in pool if c.colors and all(col in main for col in c.colors)
-    ) if main else len(pool)
+    on_color_pool = (
+        sum(1 for c in pool if c.colors and all(col in main for col in c.colors)) if main else len(pool)
+    )
 
     # Pack-relative power baseline (bombs are relative to THIS pack).
     pack_wrs = [c.gih_wr_pct for c in pack if c.gih_wr_pct]
     pack_mean = statistics.mean(pack_wrs) if pack_wrs else fmt.mean_gih_wr_pct
-    pack_std = (statistics.pstdev(pack_wrs) if len(pack_wrs) > 1
-                else fmt.std_gih_wr_pct)
+    pack_std = statistics.pstdev(pack_wrs) if len(pack_wrs) > 1 else fmt.std_gih_wr_pct
     if pack_std <= 0:
         pack_std = fmt.std_gih_wr_pct
     # Floor the pack std at 1pp: in a flat pack (all cards within a point of
@@ -845,18 +846,23 @@ def evaluate_pack(
 
         # Basic lands are never the pick (unless they're all that's left).
         if card.is_basic_land:
-            reasons = (["Only card left in the pack"] if len(pack) == 1
-                       else ["Basic land — skip"])
-            results.append(PickGuidance(
-                grp_id=card.grp_id, name=card.name, score=0.0, tier="WEAK",
-                reasons=reasons, wheel_probability=0.0,
-                gih_wr_pct=card.gih_wr_pct, lane=lane_pair,
-            ))
+            reasons = ["Only card left in the pack"] if len(pack) == 1 else ["Basic land — skip"]
+            results.append(
+                PickGuidance(
+                    grp_id=card.grp_id,
+                    name=card.name,
+                    score=0.0,
+                    tier="WEAK",
+                    reasons=reasons,
+                    wheel_probability=0.0,
+                    gih_wr_pct=card.gih_wr_pct,
+                    lane=lane_pair,
+                )
+            )
             continue
 
         # 1. Bayesian-blended base (global → pair archetype across the draft)
-        base, base_reason = _blended_base_score(
-            card, lane_pair, overall_pick, total_picks, fmt)
+        base, base_reason = _blended_base_score(card, lane_pair, overall_pick, total_picks, fmt)
         if base_reason:
             reasons.append(base_reason)
 
@@ -875,34 +881,31 @@ def evaluate_pack(
             strength = sum(signals.get(c, 0.0) for c in card.colors)
             if strength > 10.0:
                 base *= 1.05
-                open_colors = " and ".join(
-                    COLOR_NAMES.get(c, c) for c in card.colors
-                    if signals.get(c, 0.0) > 5.0
-                ) or "its colors"
-                reasons.append(f"{open_colors.capitalize()} keeps coming late "
-                               f"— that seat looks open")
+                open_colors = (
+                    " and ".join(COLOR_NAMES.get(c, c) for c in card.colors if signals.get(c, 0.0) > 5.0)
+                    or "its colors"
+                )
+                reasons.append(f"{open_colors.capitalize()} keeps coming late — that seat looks open")
 
         # 4. Lane fit multiplier
-        lane_mult, on_lane, lane_reason = _lane_fit(
-            card, lane, pack_number, on_color_pool)
+        lane_mult, on_lane, lane_reason = _lane_fit(card, lane, pack_number, on_color_pool)
         if lane_reason:
             reasons.append(lane_reason)
 
         # 5. Castability pressure
-        cast_mult, cast_reason = _castability(
-            card, lane, needs, pack_number, pick_number, z)
+        cast_mult, cast_reason = _castability(card, lane, needs, pack_number, pick_number, z)
         if cast_reason:
             reasons.append(cast_reason)
 
         # 6. Composition needs
-        comp_mult, comp_reason = _composition(
-            card, needs, pack_number, len(pool), total_picks)
+        comp_mult, comp_reason = _composition(card, needs, pack_number, len(pool), total_picks)
         if comp_reason:
             reasons.append(comp_reason)
 
         # 7. Wheel estimate
         wheel_mult, wheel_pct, wheel_reason = _wheel_probability(
-            card, pick_number, pack_rank.get(card.grp_id, 99))
+            card, pick_number, pack_rank.get(card.grp_id, 99)
+        )
         if wheel_reason:
             reasons.append(wheel_reason)
 
@@ -919,19 +922,21 @@ def evaluate_pack(
             else:
                 reasons.append("Average playable for the format")
 
-        results.append(PickGuidance(
-            grp_id=card.grp_id,
-            name=card.name,
-            score=round(score, 1),
-            tier=get_tier(score),
-            reasons=reasons,
-            wheel_probability=round(wheel_pct, 1),
-            gih_wr_pct=card.gih_wr_pct,
-            z_score=round(z, 2),
-            is_bomb=(z >= BOMB_Z_SCORE and cast_mult > 0.4),
-            on_lane=on_lane,
-            lane=lane_pair,
-        ))
+        results.append(
+            PickGuidance(
+                grp_id=card.grp_id,
+                name=card.name,
+                score=round(score, 1),
+                tier=get_tier(score),
+                reasons=reasons,
+                wheel_probability=round(wheel_pct, 1),
+                gih_wr_pct=card.gih_wr_pct,
+                z_score=round(z, 2),
+                is_bomb=(z >= BOMB_Z_SCORE and cast_mult > 0.4),
+                on_lane=on_lane,
+                lane=lane_pair,
+            )
+        )
 
     results.sort(key=lambda g: g.score, reverse=True)
     return results

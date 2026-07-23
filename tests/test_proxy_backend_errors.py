@@ -1,12 +1,12 @@
 """R4: typed backend errors, bounded retry, served-model capture."""
 
+import pytest
+
 from arenamcp.backends.proxy import (
     BackendError,
     ProxyBackend,
     _classify_api_error,
 )
-
-import pytest
 
 
 class _FakeAPIError(Exception):
@@ -66,9 +66,7 @@ def _backend(script) -> ProxyBackend:
 
 
 def test_classify_502_with_retry_after():
-    err = _classify_api_error(
-        _FakeAPIError("bad gateway", status_code=502, body={"retry_after": 60})
-    )
+    err = _classify_api_error(_FakeAPIError("bad gateway", status_code=502, body={"retry_after": 60}))
     assert err.retryable is True
     assert err.retry_after_s == 60.0
     assert err.status_code == 502

@@ -6,8 +6,6 @@ gameStateId values can't disguise a rejection as a new window — and a
 fresh window can't inherit a stale window's failure count.
 """
 
-import time
-
 from arenamcp.decisions import build_pending_decision
 from arenamcp.request_tracker import RequestTracker, decision_fingerprint
 
@@ -110,12 +108,10 @@ def test_mulligan_fingerprint_distinguishes_rounds_when_ids_available():
     surfacing request identity, round 2 must NOT inherit round 1's
     rejection/submission history (fable Phase E)."""
     round1 = build_pending_decision(
-        {"has_pending": True, "request_type": "Mulligan",
-         "game_state_id": 10, "msg_id": 5}
+        {"has_pending": True, "request_type": "Mulligan", "game_state_id": 10, "msg_id": 5}
     )
     round2 = build_pending_decision(
-        {"has_pending": True, "request_type": "Mulligan",
-         "game_state_id": 22, "msg_id": 9}
+        {"has_pending": True, "request_type": "Mulligan", "game_state_id": 22, "msg_id": 9}
     )
     assert decision_fingerprint(round1) != decision_fingerprint(round2)
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 from .settings import get_settings
 
@@ -14,7 +13,7 @@ def _current_version() -> str:
     return str(__version__).strip() or "unknown"
 
 
-def _normalize_frontend(value: Optional[str]) -> str:
+def _normalize_frontend(value: str | None) -> str:
     frontend = str(value or "").strip().lower()
     if frontend in {"pyside", "tui", "standalone"}:
         return frontend

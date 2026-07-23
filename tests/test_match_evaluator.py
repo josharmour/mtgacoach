@@ -6,14 +6,28 @@ import json
 
 from arenamcp.match_evaluator import MatchEvaluator, _extract_json
 
-
 SAMPLE_DECISIONS = [
-    {"match_id": "m1", "turn": 1, "phase": "Main1", "request_type": "ActionsAvailable",
-     "planned_action": "play Mountain"},
-    {"match_id": "m1", "turn": 2, "phase": "Main1", "request_type": "ActionsAvailable",
-     "planned_action": "cast Monastery Swiftspear"},
-    {"match_id": "m1", "turn": 3, "phase": "Combat", "request_type": "Attacker",
-     "planned_action": "attack with Monastery Swiftspear"},
+    {
+        "match_id": "m1",
+        "turn": 1,
+        "phase": "Main1",
+        "request_type": "ActionsAvailable",
+        "planned_action": "play Mountain",
+    },
+    {
+        "match_id": "m1",
+        "turn": 2,
+        "phase": "Main1",
+        "request_type": "ActionsAvailable",
+        "planned_action": "cast Monastery Swiftspear",
+    },
+    {
+        "match_id": "m1",
+        "turn": 3,
+        "phase": "Combat",
+        "request_type": "Attacker",
+        "planned_action": "attack with Monastery Swiftspear",
+    },
 ]
 
 
@@ -59,8 +73,16 @@ def test_evaluate_writes_record_with_required_fields(tmp_path):
     assert len(rows) == 1
     row = rows[0]
     for field in (
-        "match_id", "result", "winner", "deck_name", "n_decisions",
-        "summary", "key_mistakes", "improvements", "self_score", "model",
+        "match_id",
+        "result",
+        "winner",
+        "deck_name",
+        "n_decisions",
+        "summary",
+        "key_mistakes",
+        "improvements",
+        "self_score",
+        "model",
     ):
         assert field in row
     assert row["match_id"] == "m1"

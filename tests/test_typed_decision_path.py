@@ -180,18 +180,14 @@ def test_typed_path_fsm_blocks_double_submit_and_exhausts(monkeypatch):
 
     # 4th call: cap reached → owns the trigger, no 4th submission.
     pauses = []
-    monkeypatch.setattr(
-        eng, "_pause_for_manual", lambda reason, gs=None: pauses.append(reason)
-    )
+    monkeypatch.setattr(eng, "_pause_for_manual", lambda reason, gs=None: pauses.append(reason))
     assert eng._try_typed_decision_path(_state(), "decision_required") is True
     assert len(bridge.submitted) == 3
     assert pauses and "not accepted after" in pauses[0]
 
 
 def test_planner_respects_max_select():
-    planner = _planner_with(
-        '{"option_ids": ["sel:10", "sel:11", "sel:12"], "reasoning": "all"}'
-    )
+    planner = _planner_with('{"option_ids": ["sel:10", "sel:11", "sel:12"], "reasoning": "all"}')
     d = build_pending_decision(
         {
             "has_pending": True,
@@ -218,9 +214,7 @@ _GROUP_POLL = {
 
 
 def test_group_family_builds_bottoming_decision():
-    d = build_pending_decision(
-        _GROUP_POLL, resolve_instance=lambda iid: f"Card{iid}"
-    )
+    d = build_pending_decision(_GROUP_POLL, resolve_instance=lambda iid: f"Card{iid}")
     assert d is not None and d.request_type == "Group"
     assert d.min_select == 1 and d.max_select == 1
     assert d.find("grp:101").label == "Bottom Card101"

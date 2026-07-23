@@ -2,21 +2,22 @@
 
 from typing import Optional
 
-from arenamcp.watcher import MTGALogWatcher
-from arenamcp.parser import LogParser
-from arenamcp.gamestate import GameState, create_game_state_handler
-from arenamcp.scryfall import ScryfallCache, ScryfallCard
-from arenamcp.draftstats import DraftStatsCache, DraftStats
-from arenamcp.draftstate import DraftState, create_draft_handler
-from arenamcp.mtgadb import MTGADatabase, MTGACard
 from arenamcp.card_db import (
-    CardInfo,
     CardDatabase,
+    CardInfo,
     FallbackCardDatabase,
-    get_card_database,
     create_card_database,
+    get_card_database,
 )
-from arenamcp.draft_eval import evaluate_pack, format_pick_recommendation, CardEvaluation
+from arenamcp.draft_eval import CardEvaluation, evaluate_pack, format_pick_recommendation
+from arenamcp.draftstate import DraftState, create_draft_handler
+from arenamcp.draftstats import DraftStats, DraftStatsCache
+from arenamcp.gamestate import GameState, create_game_state_handler
+from arenamcp.mtgadb import MTGACard, MTGADatabase
+from arenamcp.parser import LogParser
+from arenamcp.scryfall import ScryfallCache, ScryfallCard
+from arenamcp.watcher import MTGALogWatcher
+
 try:
     from arenamcp.server import mcp, start_watching, stop_watching
 except ImportError:
@@ -26,6 +27,8 @@ except ImportError:
 # Voice/TTS imports deferred — sounddevice initializes PortAudio on import
 # which can hang if an audio device/driver is misbehaving.
 # These are imported lazily on first use instead.
+import contextlib
+
 from arenamcp.coach import (
     CoachEngine,
     GameStateTrigger,
@@ -34,44 +37,36 @@ from arenamcp.coach import (
     get_available_modes,
     get_models_for_mode,
 )
+
 # Optional modules — these have extra dependencies that may not be installed.
 # They are lazily imported so the core package works without them.
 try:
-    from arenamcp.action_planner import ActionPlanner, ActionPlan, GameAction, ActionType
-    from arenamcp.screen_mapper import ScreenMapper, ScreenCoord, FixedCoordinates
-    from arenamcp.input_controller import InputController, ClickResult
-    from arenamcp.autopilot import AutopilotEngine, AutopilotConfig, AutopilotState
+    from arenamcp.action_planner import ActionPlan, ActionPlanner, ActionType, GameAction
+    from arenamcp.autopilot import AutopilotConfig, AutopilotEngine, AutopilotState
+    from arenamcp.input_controller import ClickResult, InputController
+    from arenamcp.screen_mapper import FixedCoordinates, ScreenCoord, ScreenMapper
 except ImportError:
     pass
 
-try:
+with contextlib.suppress(ImportError):
     from arenamcp.synergy import SynergyGraph, get_synergy_graph
-except ImportError:
-    pass
 
-try:
-    from arenamcp.deck_builder import DeckBuilderV2, DeckSuggestion, CardRating
-except ImportError:
-    pass
+with contextlib.suppress(ImportError):
+    from arenamcp.deck_builder import CardRating, DeckBuilderV2, DeckSuggestion
 
-try:
+with contextlib.suppress(ImportError):
     from arenamcp.edhrec import EDHRECClient
-except ImportError:
-    pass
 
-try:
+with contextlib.suppress(ImportError):
     from arenamcp.mtggoldfish import MTGGoldfishClient
-except ImportError:
-    pass
 
-from arenamcp.gamestate import save_match_state, load_match_state, mark_match_ended
+from arenamcp.gamestate import load_match_state, mark_match_ended, save_match_state
 
 __version__ = "2.7.3"
 
 
 def create_log_pipeline(
-    log_path: Optional[str] = None,
-    backfill: bool = True
+    log_path: str | None = None, backfill: bool = True
 ) -> tuple[MTGALogWatcher, LogParser]:
     """Create a connected watcher -> parser pipeline.
 
@@ -96,11 +91,7 @@ def create_log_pipeline(
             time.sleep(10)
     """
     parser = LogParser()
-    watcher = MTGALogWatcher(
-        callback=parser.process_chunk,
-        log_path=log_path,
-        backfill=backfill
-    )
+    watcher = MTGALogWatcher(callback=parser.process_chunk, log_path=log_path, backfill=backfill)
     return watcher, parser
 
 
@@ -146,13 +137,25 @@ __all__ = [
 
 # Extend __all__ with optional modules that were successfully imported
 for _name in [
-    "ActionPlanner", "ActionPlan", "GameAction", "ActionType",
-    "ScreenMapper", "ScreenCoord", "FixedCoordinates",
-    "InputController", "ClickResult",
-    "AutopilotEngine", "AutopilotConfig", "AutopilotState",
-    "SynergyGraph", "get_synergy_graph",
-    "DeckBuilderV2", "DeckSuggestion", "CardRating",
-    "EDHRECClient", "MTGGoldfishClient",
+    "ActionPlanner",
+    "ActionPlan",
+    "GameAction",
+    "ActionType",
+    "ScreenMapper",
+    "ScreenCoord",
+    "FixedCoordinates",
+    "InputController",
+    "ClickResult",
+    "AutopilotEngine",
+    "AutopilotConfig",
+    "AutopilotState",
+    "SynergyGraph",
+    "get_synergy_graph",
+    "DeckBuilderV2",
+    "DeckSuggestion",
+    "CardRating",
+    "EDHRECClient",
+    "MTGGoldfishClient",
 ]:
     if _name in globals():
         __all__.append(_name)

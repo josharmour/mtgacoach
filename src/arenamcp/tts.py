@@ -10,28 +10,28 @@ NOTE: Model files must be downloaded manually (~300MB total):
 Place files in ~/.cache/kokoro/ or specify paths explicitly.
 """
 
+import ctypes
 import io
+import logging
 import os
-import struct
 import subprocess
 import sys
 import tempfile
 import threading
-import ctypes
 import wave
 from pathlib import Path
-from typing import Optional
-
-import logging
 
 # Lazy numpy import — module-level import hangs in subprocess contexts
 np = None
+
 
 def _ensure_numpy():
     global np
     if np is None:
         import numpy
+
         np = numpy
+
 
 # Audio backend selection:
 # - Windows: use winsound with temp WAV files. SND_MEMORY blocks when the
@@ -43,7 +43,6 @@ sd = None
 winsound = None
 if _USE_WINSOUND:
     import winsound
-    import wave as _wave_mod
 else:
     try:
         import sounddevice as sd
@@ -68,7 +67,7 @@ if _USE_WINSOUND:
     _SND_SYSTEM = 0x00200000
 
 
-def _native_play_sound(path: Optional[str], flags: int) -> bool:
+def _native_play_sound(path: str | None, flags: int) -> bool:
     if not _USE_WINSOUND:
         return False
 
@@ -92,7 +91,7 @@ def _samples_to_wav_bytes(samples, sample_rate: int) -> bytes:
             samples = samples * (0.95 / peak)
     int_samples = np.clip(samples * 32767, -32768, 32767).astype(np.int16)
     buf = io.BytesIO()
-    with wave.open(buf, 'wb') as wf:
+    with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)  # 16-bit
         wf.setframerate(sample_rate)
@@ -101,7 +100,7 @@ def _samples_to_wav_bytes(samples, sample_rate: int) -> bytes:
 
 
 # Temp WAV file for winsound file-based playback (avoids SND_MEMORY focus bug)
-_winsound_tmp_path: Optional[str] = None
+_winsound_tmp_path: str | None = None
 
 
 def _winsound_play_samples(samples, sample_rate: int, blocking: bool = True) -> None:
@@ -122,7 +121,7 @@ def _winsound_play_samples(samples, sample_rate: int, blocking: bool = True) -> 
         fd, _winsound_tmp_path = tempfile.mkstemp(suffix=".wav", prefix="mtgacoach_")
         os.close(fd)
 
-    with open(_winsound_tmp_path, 'wb') as f:
+    with open(_winsound_tmp_path, "wb") as f:
         f.write(wav_data)
 
     # Always use SND_ASYNC — blocking PlaySound hangs when the process
@@ -141,6 +140,7 @@ def _winsound_play_samples(samples, sample_rate: int, blocking: bool = True) -> 
         # Approximate playback duration and wait
         duration = len(samples) / sample_rate
         import time as _time
+
         _time.sleep(duration)
 
 
@@ -194,8 +194,8 @@ class KokoroTTS:
 
     def __init__(
         self,
-        model_path: Optional[str] = None,
-        voices_path: Optional[str] = None,
+        model_path: str | None = None,
+        voices_path: str | None = None,
         voice: str = "am_adam",
         speed: float = 1.0,
         lang: str = "en-us",
@@ -227,7 +227,7 @@ class KokoroTTS:
         self._lang = lang
 
         # Lazy-loaded model
-        self._kokoro: Optional[object] = None
+        self._kokoro: object | None = None
         self._load_lock = threading.Lock()
 
     def _ensure_model_loaded(self) -> None:
@@ -250,13 +250,11 @@ class KokoroTTS:
             missing_files = []
             if not self._model_path.exists():
                 missing_files.append(
-                    f"Model file not found: {self._model_path}\n"
-                    f"  Download from: {MODEL_URL}"
+                    f"Model file not found: {self._model_path}\n  Download from: {MODEL_URL}"
                 )
             if not self._voices_path.exists():
                 missing_files.append(
-                    f"Voices file not found: {self._voices_path}\n"
-                    f"  Download from: {VOICES_URL}"
+                    f"Voices file not found: {self._voices_path}\n  Download from: {VOICES_URL}"
                 )
 
             if missing_files:
@@ -269,18 +267,14 @@ class KokoroTTS:
                     f"  curl -LO {VOICES_URL}"
                 )
                 raise FileNotFoundError(
-                    "Kokoro TTS model files not found:\n\n"
-                    + "\n\n".join(missing_files)
-                    + cache_hint
+                    "Kokoro TTS model files not found:\n\n" + "\n\n".join(missing_files) + cache_hint
                 )
 
             # Import and load kokoro
             try:
                 from kokoro_onnx import Kokoro
             except ImportError as e:
-                raise ImportError(
-                    "kokoro-onnx not installed. Run: pip install kokoro-onnx"
-                ) from e
+                raise ImportError("kokoro-onnx not installed. Run: pip install kokoro-onnx") from e
 
             self._kokoro = Kokoro(
                 str(self._model_path),
@@ -362,8 +356,8 @@ class VoiceOutput:
 
     def __init__(
         self,
-        voice: Optional[str] = None,
-        speed: Optional[float] = None,
+        voice: str | None = None,
+        speed: float | None = None,
     ) -> None:
         """Initialize VoiceOutput.
 
@@ -375,6 +369,7 @@ class VoiceOutput:
         """
         # Load from settings if not specified
         from arenamcp.settings import get_settings
+
         settings = get_settings()
 
         self._voice = voice if voice is not None else settings.get("voice", "am_adam")
@@ -403,8 +398,8 @@ class VoiceOutput:
         self._is_speaking = False
         self._stop_requested = False
         self._stream = None
-        self._playback_thread: Optional[threading.Thread] = None
-        self._windows_tts_proc: Optional[subprocess.Popen] = None
+        self._playback_thread: threading.Thread | None = None
+        self._windows_tts_proc: subprocess.Popen | None = None
         self._fallback_tts_error_logged = False
 
     def warmup(self, delay: float = 0) -> None:
@@ -420,6 +415,7 @@ class VoiceOutput:
         try:
             if delay > 0:
                 import time as _time
+
                 _time.sleep(delay)
             self._ensure_tts()
             # Run a tiny synthesis to warm the ONNX runtime session.
@@ -555,7 +551,7 @@ class VoiceOutput:
 
         # Recreate TTS with new voice
         if self._tts_engine is not None:
-             # Force re-init with new voice
+            # Force re-init with new voice
             self._tts_engine = None
             self._ensure_tts()
 
@@ -667,8 +663,7 @@ class VoiceOutput:
                 samples, sample_rate = engine.synthesize(text)
             except (ImportError, FileNotFoundError) as e:
                 logger.warning(
-                    "Kokoro unavailable while rendering pipe audio (%s); "
-                    "falling back to in-process playback",
+                    "Kokoro unavailable while rendering pipe audio (%s); falling back to in-process playback",
                     e,
                 )
                 return None
@@ -710,6 +705,7 @@ class VoiceOutput:
     def _clean_text(self, text: str) -> str:
         """Remove markdown and special characters that TTS shouldn't pronounce."""
         import re
+
         # Remove asterisks (bold/italic)
         text = text.replace("**", "").replace("*", "")
         # Remove hash (headers)
@@ -729,9 +725,18 @@ class VoiceOutput:
         # turning the prefix into its own sentence fixes the "KEEP" being
         # swallowed in mulligan advice.
         _DECISION_PREFIXES = (
-            "KEEP", "MULLIGAN", "TOP", "BOTTOM",
-            "GRAVEYARD", "LIBRARY", "SKIP", "ATTACK",
-            "BLOCK", "PASS", "DRAW", "DISCARD",
+            "KEEP",
+            "MULLIGAN",
+            "TOP",
+            "BOTTOM",
+            "GRAVEYARD",
+            "LIBRARY",
+            "SKIP",
+            "ATTACK",
+            "BLOCK",
+            "PASS",
+            "DRAW",
+            "DISCARD",
         )
         text = re.sub(
             r"^\s*(" + "|".join(_DECISION_PREFIXES) + r")\s*[:\-\u2014]+\s+",
@@ -757,13 +762,13 @@ class VoiceOutput:
             return
 
         # SAPI-only mode (pipe) — use Windows built-in TTS directly
-        if getattr(self, '_sapi_only', False):
+        if getattr(self, "_sapi_only", False):
             if not text or not text.strip():
                 return
             text = self._clean_for_tts(text)
             self._try_windows_tts_fallback(text, blocking=blocking)
             return
-            
+
         text = self._clean_text(text)
 
         if not blocking:
@@ -923,4 +928,3 @@ class VoiceOutput:
 
         with self._lock:
             self._is_speaking = False
-
