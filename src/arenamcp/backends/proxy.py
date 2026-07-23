@@ -11,6 +11,7 @@ import re
 import threading
 import time
 
+from arenamcp.backend_health import BACKEND_ERROR_PREFIX, BackendHealth
 from arenamcp.client_metadata import get_client_headers
 
 logger = logging.getLogger(__name__)
@@ -122,7 +123,7 @@ DEFAULT_LOCAL_MODEL = "gemma4:e2b"
 class BackendError(Exception):
     """Typed API failure for consumers that must branch on error semantics.
 
-    Replaces the "Error getting advice: ..." prose sentinel for callers
+    Replaces the "[BACKEND ERROR] ..." prose sentinel for callers
     that pass raise_on_error=True (the autopilot planner). Carries enough
     structure that retry policy lives HERE, not in string matching.
     """
@@ -311,7 +312,7 @@ class ProxyBackend:
                 it, hung backends silently leak threads forever (the future
                 timeout only abandons the thread, it doesn't kill it).
             raise_on_error: Re-raise API errors instead of returning the
-                "Error getting advice: ..." sentinel string. The autopilot
+                "[BACKEND ERROR] ..." sentinel string. The autopilot
                 planner sets this — during the 2026-07-05 gateway outage the
                 sentinel was fed to the JSON parser, parsed to 0 actions, and
                 the fallback then SUBMITTED real passes on windows with
@@ -384,7 +385,9 @@ class ProxyBackend:
             last_err: BackendError | None = None
             for attempt in (1, 2):
                 try:
-                    return self._complete_once(client, params)
+                    result = self._complete_once(client, params)
+                    BackendHealth.instance().record_success()
+                    return result
                 except Exception as e:
                     err = _classify_api_error(e)
                     if (
@@ -400,17 +403,19 @@ class ProxyBackend:
                     break
             last_err = last_err or BackendError("unknown API failure")
             logger.error(f"API error: {last_err}")
+            BackendHealth.instance().record_failure(error=str(last_err), status_code=last_err.status_code)
             if raise_on_error:
                 raise last_err
-            return f"Error getting advice: {last_err}"
+            return f"{BACKEND_ERROR_PREFIX} {last_err}"
         except BackendError:
             raise
         except Exception as e:
             # Setup failures (client init, params construction).
             logger.error(f"API error: {e}")
+            BackendHealth.instance().record_failure(error=str(e), status_code=getattr(e, "status_code", None))
             if raise_on_error:
                 raise _classify_api_error(e) from e
-            return f"Error getting advice: {e}"
+            return f"{BACKEND_ERROR_PREFIX} {e}"
 
     def _note_served_model(self, served: str | None) -> None:
         """Record the model the server actually ran (gateway aliases lie).
@@ -566,7 +571,7 @@ class ProxyBackend:
         import time
 
         if getattr(self, "_vision_dead", False):
-            return "Error getting vision analysis: vision endpoint disabled after repeated failures"
+            return f"{BACKEND_ERROR_PREFIX} vision endpoint disabled after repeated failures"
 
         try:
             client = self._get_client()
@@ -626,7 +631,7 @@ class ProxyBackend:
                     f"{self._vision_fail_count} consecutive failures — the "
                     "configured backend/gateway cannot serve vision requests"
                 )
-            return f"Error getting vision analysis: {e}"
+            return f"{BACKEND_ERROR_PREFIX} vision analysis failed: {e}"
 
     def list_models(self) -> list[str]:
         """List available models from the endpoint."""

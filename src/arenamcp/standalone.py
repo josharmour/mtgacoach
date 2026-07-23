@@ -53,6 +53,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
+from arenamcp.backend_health import (
+    BackendHealth,
+    HealthState,
+    check_gateway_health,
+    is_backend_error_text,
+    strip_health_tags,
+)
 from arenamcp.decision_arbiter import arbitrate
 from arenamcp.logging_config import LOG_DIR, LOG_FILE, configure_logging
 from arenamcp.settings import get_settings
@@ -1196,6 +1203,11 @@ class StandaloneCoach:
         if not text:
             return
 
+        # TTS must never read health tags aloud — display text keeps them.
+        text = strip_health_tags(text)
+        if not text:
+            return
+
         # Filter out passive calls from TTS (User Request): Wait, Pass, etc.
         if self._is_passive_advice(text):
             return
@@ -1227,6 +1239,53 @@ class StandaloneCoach:
                     logger.info("Kokoro speak retry succeeded")
                 except Exception as e2:
                     logger.error(f"Kokoro speak retry also failed: {e2}")
+
+    def _probe_backend_health_at_startup(self) -> None:
+        """Probe the LLM gateway once at boot and wire health transitions to the UI.
+
+        A dead gateway must be announced at startup — not discovered mid-match
+        as a stream of tagged error advice.
+        """
+        try:
+            backend = getattr(self._coach, "_backend", None) if self._coach else None
+            if backend is None:
+                return
+
+            def _on_health_transition(snapshot: dict[str, Any]) -> None:
+                try:
+                    emit = getattr(self.ui, "emit_backend_health", None)
+                    if callable(emit):
+                        emit(snapshot)
+                    logger.info(
+                        f"Backend health transition: {snapshot.get('state')} — {snapshot.get('detail')}"
+                    )
+                except Exception as e:
+                    logger.debug(f"Backend health transition emit failed: {e}")
+
+            BackendHealth.instance().add_listener(_on_health_transition)
+
+            # Only HTTP-style backends expose a probeable base URL.
+            if not getattr(backend, "_base_url", None):
+                logger.debug("Backend has no _base_url; skipping startup health probe")
+                return
+
+            state, detail = check_gateway_health(backend)
+            logger.info(f"Backend health: {state.value.upper()} ({detail})")
+            self.ui.log(f"Backend health: {state.value.upper()} ({detail})")
+            if state is HealthState.DOWN:
+                logger.warning(
+                    "Backend health: DOWN — coaching will emit [BACKEND ERROR] until the gateway recovers"
+                )
+                with contextlib.suppress(Exception):
+                    self.ui.log(
+                        "[red]LLM gateway unreachable — coaching will show "
+                        "[BACKEND ERROR] until it recovers.[/]"
+                    )
+            # Emit the boot snapshot so pipe-mode UIs get an initial state even
+            # when no transition fired (probe OK from a fresh OK tracker).
+            _on_health_transition(BackendHealth.instance().snapshot())
+        except Exception as e:
+            logger.debug(f"Startup backend health probe failed (non-fatal): {e}")
 
     def _emit_coach_game_plan(self) -> None:
         """Push the coach's structured game plan to the UI strategy card.
@@ -3630,7 +3689,7 @@ class StandaloneCoach:
                             from arenamcp.backend_detect import is_query_failure_retriable as _is_err
 
                             if (
-                                advice.startswith("Error")
+                                is_backend_error_text(advice)
                                 or "didn't catch that" in advice
                                 or (_is_err(advice) and len(advice) < 200)
                             ):
@@ -3784,7 +3843,7 @@ class StandaloneCoach:
                     from arenamcp.backend_detect import is_query_failure_retriable as _is_err2
 
                     is_error_response = (
-                        advice.startswith("Error")
+                        is_backend_error_text(advice)
                         or "didn't catch that" in advice
                         or (_is_err2(advice) and len(advice) < 200)
                     )
@@ -4169,7 +4228,7 @@ class StandaloneCoach:
                 self.ui.log("[red]VLM returned garbled output — is the Ollama model a vision model?[/]")
                 advice = None
 
-            if advice and not advice.startswith("Error"):
+            if advice and not is_backend_error_text(advice):
                 self.ui.advice(advice, "Visual Analysis")
                 if self._auto_speak:
                     self.speak_advice(advice, blocking=False)
@@ -5829,7 +5888,7 @@ class StandaloneCoach:
                     logger.warning(f"Win-in-{n} future failed: {e}")
                     continue
 
-                if not plan or plan.startswith("Error"):
+                if not plan or is_backend_error_text(plan):
                     continue
 
                 # Parse viability from first line
@@ -6022,7 +6081,7 @@ class StandaloneCoach:
         # or raw short error text (e.g. "Credit balance is too low") that the CLI
         # returns as normal assistant text.  The len<200 guard prevents false
         # positives on real advice that incidentally contains words like "account".
-        if is_query_failure_retriable(advice) and (advice.startswith("Error") or len(advice) < 200):
+        if is_query_failure_retriable(advice) and (is_backend_error_text(advice) or len(advice) < 200):
             self._report_backend_failure(advice)
 
             # Auth/billing errors are permanent — fall back immediately
@@ -6253,6 +6312,7 @@ class StandaloneCoach:
             self.ui.log("Connecting to LLM backend...")
             self._init_llm()
             self.ui.log("LLM backend ready.")
+            self._probe_backend_health_at_startup()
             # Get actual model name from backend
             if self._coach and hasattr(self._coach, "_backend"):
                 actual_model = getattr(self._coach._backend, "model", self.model_name)
@@ -6449,7 +6509,7 @@ class StandaloneCoach:
                     response = backend.complete("You are a helpful assistant.", "Say 'ok' and nothing else.")
                     req_ms = (time.perf_counter() - start_req) * 1000
 
-                    if response.startswith("Error"):
+                    if is_backend_error_text(response):
                         raise Exception(response)
 
                     latencies.append(req_ms)

@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from arenamcp.backend_health import is_backend_error_text
+
 logger = logging.getLogger(__name__)
 
 # Sentinel returned by plan_decision_options when the safe move is to
@@ -551,7 +553,7 @@ class ActionPlanner:
         # Belt-and-braces for backends that still return the error sentinel
         # as a string (raise_on_error TypeError fallback, third-party
         # backends): never feed it to the parser / fallback picker.
-        if response and response.lstrip().startswith("Error getting advice"):
+        if response and is_backend_error_text(response):
             logger.error(f"Backend returned error sentinel; no plan: {response[:160]}")
             diag["failure"] = "llm_error_sentinel"
             self._record_diagnostic(diag)
@@ -1748,7 +1750,7 @@ class ActionPlanner:
 
         # A backend error sentinel is not advice — auto-picking a real game
         # action from it submitted blind passes during the 2026-07-05 outage.
-        if response and response.lstrip().startswith("Error getting advice"):
+        if response and is_backend_error_text(response):
             logger.warning("Planner fallback skipped: backend error, not model output")
             return plan
 

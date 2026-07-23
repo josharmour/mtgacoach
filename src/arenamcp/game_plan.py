@@ -25,6 +25,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from arenamcp.backend_health import is_backend_error_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -370,7 +372,7 @@ class GamePlanManager:
         if not response or not isinstance(response, str):
             return None
         text = response.strip()
-        if text.startswith("Error"):
+        if is_backend_error_text(text):
             return None
         # Strip markdown fences.
         if text.startswith("```"):

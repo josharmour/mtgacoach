@@ -2,6 +2,7 @@
 
 import pytest
 
+from arenamcp.backend_health import BACKEND_ERROR_PREFIX
 from arenamcp.backends.proxy import (
     BackendError,
     ProxyBackend,
@@ -95,7 +96,7 @@ def test_sentinel_string_backcompat_without_raise():
     boom = _FakeAPIError("auth", status_code=401)
     be = _backend([boom])
     out = be.complete("sys", "user", 16)
-    assert out.startswith("Error getting advice")
+    assert out.startswith(BACKEND_ERROR_PREFIX)
     # 401 is not retryable → one attempt
     assert be._client.chat.completions.calls == 1
 
@@ -116,7 +117,7 @@ def test_vision_circuit_breaker_disables_after_repeated_failures():
     be = _backend([boom, boom, boom])
     for _ in range(3):
         out = be.complete_with_image("sys", "user", b"\x89PNG fake")
-        assert out.startswith("Error getting vision analysis")
+        assert out.startswith(BACKEND_ERROR_PREFIX)
     assert be._vision_dead is True
     # Circuit open: no further backend calls.
     out = be.complete_with_image("sys", "user", b"\x89PNG fake")

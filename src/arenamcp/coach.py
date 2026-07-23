@@ -16,6 +16,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from arenamcp.rules_db import RulesDB
 
+from arenamcp.backend_health import (
+    BACKEND_ERROR_PREFIX,
+    LOCAL_FALLBACK_PREFIX,
+    is_backend_error_text,
+)
 from arenamcp.backends import LLMBackend, ProxyBackend
 
 logger = logging.getLogger(__name__)
@@ -260,6 +265,9 @@ def _fallback_non_action_advice(game_state: dict[str, Any]) -> str:
     non-passable requests (target/mode/search/cast-time) need manual
     intervention instead. Surface that clearly rather than issuing a
     literal "pass priority" the user can't actually submit.
+
+    Output is tagged [LOCAL FALLBACK] — it is generated locally without
+    the LLM and must never be mistaken for model advice.
     """
     req_type = str(game_state.get("_bridge_request_type") or "")
     req_class = str(game_state.get("_bridge_request_class") or "")
@@ -267,27 +275,29 @@ def _fallback_non_action_advice(game_state: dict[str, Any]) -> str:
     can_pass = game_state.get("_bridge_can_pass")
 
     if in_intermission:
-        return "Match ending — no action needed."
-
-    non_passable = (
-        req_class in _NON_PASSABLE_REQUEST_CLASSES
-        or req_type in _NON_PASSABLE_REQUEST_TYPES
-        or (can_pass is False and req_class)
-    )
-    if non_passable:
-        if "Target" in req_class or req_type == "SelectTargets":
-            return "Pick a target manually."
-        if "Search" in req_class:
-            return "Pick a card manually."
-        if req_class.startswith("CastingTimeOption") or "Modal" in req_class:
-            return "Choose a mode manually."
-        if "PayCosts" in req_class or req_type == "PayCosts":
-            return "Confirm the mana payment."
-        if "Mulligan" in req_class:
-            return "Make the mulligan call."
-        return "Make this decision manually."
-
-    return "pass priority"
+        msg = "Match ending — no action needed."
+    else:
+        non_passable = (
+            req_class in _NON_PASSABLE_REQUEST_CLASSES
+            or req_type in _NON_PASSABLE_REQUEST_TYPES
+            or (can_pass is False and req_class)
+        )
+        if non_passable:
+            if "Target" in req_class or req_type == "SelectTargets":
+                msg = "Pick a target manually."
+            elif "Search" in req_class:
+                msg = "Pick a card manually."
+            elif req_class.startswith("CastingTimeOption") or "Modal" in req_class:
+                msg = "Choose a mode manually."
+            elif "PayCosts" in req_class or req_type == "PayCosts":
+                msg = "Confirm the mana payment."
+            elif "Mulligan" in req_class:
+                msg = "Make the mulligan call."
+            else:
+                msg = "Make this decision manually."
+        else:
+            msg = "pass priority"
+    return f"{LOCAL_FALLBACK_PREFIX} {msg}"
 
 
 # LLM Backend Protocol and Implementations
@@ -1210,6 +1220,11 @@ class CoachEngine:
         return "\n".join(lines)
 
     def _build_threat_fallback(self, game_state: dict[str, Any], threat: dict[str, Any]) -> str:
+        """Local threat advice used when the LLM errors or returns empty.
+
+        Output is tagged [LOCAL FALLBACK] — generated locally without the
+        LLM, must never be mistaken for model advice.
+        """
         name = str(threat.get("name", "That card") or "That card")
         warning = str(threat.get("warning", "") or "").strip()
         answers = self._identify_threat_answers(game_state, threat)
@@ -1218,15 +1233,14 @@ class CoachEngine:
         threat_type = str(threat_card.get("type_line", "") or "").lower()
 
         if answers:
-            return f"{name} is the key threat. Best line: use {answers[0].split(' (', 1)[0]} on it now, because {warning.lower() if warning else 'it will snowball if it stays in play'}."
-
-        if "planeswalker" in threat_type and "No untapped creatures" not in pressure:
-            return f"{name} is the problem. Attack it this turn with the creatures you can spare and keep it from snowballing. {pressure}"
-
-        if "creature" in threat_type:
-            return f"{name} is the threat to plan around. You do not have clean instant removal up, so preserve blockers, avoid bad attacks into it, and dig toward an answer."
-
-        return f"{name} is the card to answer. {warning if warning else 'It will generate value if left alone.'} If you cannot remove it now, play to contain it and protect your life total."
+            msg = f"{name} is the key threat. Best line: use {answers[0].split(' (', 1)[0]} on it now, because {warning.lower() if warning else 'it will snowball if it stays in play'}."
+        elif "planeswalker" in threat_type and "No untapped creatures" not in pressure:
+            msg = f"{name} is the problem. Attack it this turn with the creatures you can spare and keep it from snowballing. {pressure}"
+        elif "creature" in threat_type:
+            msg = f"{name} is the threat to plan around. You do not have clean instant removal up, so preserve blockers, avoid bad attacks into it, and dig toward an answer."
+        else:
+            msg = f"{name} is the card to answer. {warning if warning else 'It will generate value if left alone.'} If you cannot remove it now, play to contain it and protect your life total."
+        return f"{LOCAL_FALLBACK_PREFIX} {msg}"
 
     def clear_deck_strategy(self) -> None:
         """Reset deck strategy for a new match."""
@@ -1301,7 +1315,7 @@ class CoachEngine:
             from arenamcp.backend_detect import is_query_failure_retriable
 
             if (
-                strategy.startswith("Error")
+                is_backend_error_text(strategy)
                 or "didn't catch that" in strategy
                 or is_query_failure_retriable(strategy)
             ):
@@ -1369,7 +1383,7 @@ class CoachEngine:
 
             strategy = be.complete(DECK_STRATEGY_BRIEF_PROMPT, user_message)
 
-            if not strategy or strategy.startswith("Error"):
+            if not strategy or is_backend_error_text(strategy):
                 logger.warning(f"Deck strategy brief failed: {strategy and strategy[:80]}")
                 return None
 
@@ -4001,14 +4015,14 @@ class CoachEngine:
             )
             # Return error string (not empty) to avoid triggering the
             # consecutive-empty-response restart counter in standalone.py
-            response = f"Error: LLM timed out after {api_timeout}s"
+            response = f"{BACKEND_ERROR_PREFIX} LLM timed out after {api_timeout}s"
         # shutdown(wait=False) only abandons the thread; the SDK-level
         # request_timeout_s above is what actually unblocks it. Without
         # that, every hung backend call leaks a thread forever.
         executor.shutdown(wait=False)
         api_time = (time.perf_counter() - api_start) * 1000
 
-        if trigger == "threat_detected" and threat and (not response or response.startswith("Error")):
+        if trigger == "threat_detected" and threat and (not response or is_backend_error_text(response)):
             response = self._build_threat_fallback(game_state, threat)
 
         # Prepend a short plan framing for longer styles only (the "quick" style
@@ -4017,7 +4031,7 @@ class CoachEngine:
             if (
                 style_key in ("normal", "chatty", "explain")
                 and response
-                and not response.startswith("Error")
+                and not is_backend_error_text(response)
                 and not response.lstrip().lower().startswith("plan")
             ):
                 mgr = self._game_plan_mgr
@@ -4289,7 +4303,7 @@ class CoachEngine:
         api_time = (time.perf_counter() - api_start) * 1000
         logger.info(f"[POST-MATCH] API: {api_time:.0f}ms, response: {len(response)} chars")
 
-        if not response or response.startswith("Error"):
+        if not response or is_backend_error_text(response):
             return ""
 
         return response
@@ -4405,7 +4419,7 @@ class CoachEngine:
             else:
                 rec = be.complete(SIDEBOARD_RECOMMENDATION_PROMPT, user_message)
 
-            if not rec or rec.startswith("Error"):
+            if not rec or is_backend_error_text(rec):
                 logger.warning(f"Sideboard recommendation failed: {rec[:80] if rec else 'empty'}")
                 return None
 
@@ -4469,7 +4483,7 @@ class CoachEngine:
             response = ""
         executor.shutdown(wait=False)
 
-        if not response or response.startswith("Error"):
+        if not response or is_backend_error_text(response):
             return ""
 
         logger.info(f"[WIN-PROB] {response[:100]}")
@@ -5160,7 +5174,7 @@ class CoachEngine:
                             matches = True
                             break
 
-            if not matches and advice.lstrip().startswith("Error getting advice:"):
+            if not matches and is_backend_error_text(advice):
                 # Transport/auth failure — NEVER mask it as coaching. On
                 # 2026-07-16 an empty license key produced 435 silent 401s
                 # while the fallback scorer replaced every response with a

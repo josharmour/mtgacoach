@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from typing import TYPE_CHECKING, Any
 
@@ -189,6 +190,19 @@ class PipeAdapter:
         so the coach polls the bridge and relays the result via this event.
         """
         self._emit({"type": "card_positions", "data": payload or {}})
+
+    def emit_backend_health(self, snapshot: dict[str, Any]) -> None:
+        """Emit a backend-health snapshot (ok/degraded/down) to the GUI."""
+        snap = dict(snapshot or {})
+        self._emit(
+            {
+                "type": "backend_health",
+                "state": snap.get("state", "unknown"),
+                "detail": snap.get("detail", ""),
+                "timestamp": snap.get("timestamp", time.time()),
+                "data": snap,
+            }
+        )
 
     def emit_post_match_feedback_request(self, analysis: str, match_result: str) -> None:
         self._emit(
@@ -423,6 +437,10 @@ class PipeAdapter:
                         "served_model": str(getattr(backend, "last_served_model", "") or ""),
                     }
                 )
+            elif action == "get_backend_health":
+                from arenamcp.backend_health import BackendHealth
+
+                self.emit_backend_health(BackendHealth.instance().snapshot())
             elif action == "toggle_mute":
                 if coach._voice_output:
                     muted = coach._voice_output.toggle_mute()
