@@ -53,6 +53,8 @@ if str(SRC) not in sys.path:
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from arenamcp.action_planner import game_action_to_schema_json
+
 logger = logging.getLogger("tools.training.build_dataset")
 
 
@@ -284,6 +286,9 @@ def main():
                     logger.warning(f"Skipping malformed self-play line {idx + 1}: {e}")
                     continue
 
+                if rec.get("fallback") is True:
+                    continue
+
                 winner = rec.get("winner")
                 if not winner or winner not in ("local", "opp"):
                     continue
@@ -377,19 +382,22 @@ def main():
                 chosen = alt
                 rejected = planned
 
-            if chosen:
+            chosen_json = game_action_to_schema_json(chosen) if chosen else None
+            rejected_json = game_action_to_schema_json(rejected) if rejected else None
+
+            if chosen_json:
                 sft_data.append({
                     "system": prompt_system,
                     "user": prompt_user,
-                    "response": chosen,
+                    "response": chosen_json,
                 })
 
-            if chosen and rejected and chosen != rejected:
+            if chosen_json and rejected_json and chosen_json != rejected_json:
                 dpo_entry = {
                     "system": prompt_system,
                     "user": prompt_user,
-                    "chosen": chosen,
-                    "rejected": rejected,
+                    "chosen": chosen_json,
+                    "rejected": rejected_json,
                 }
 
                 judge_result = _judge_move_pair(
@@ -402,12 +410,14 @@ def main():
 
                 if judge_result:
                     superior_idx, confidence, reasoning = judge_result
+                    planned_json = game_action_to_schema_json(planned)
+                    alt_json = game_action_to_schema_json(alt)
                     if superior_idx == 1:
-                        dpo_entry["chosen"] = planned
-                        dpo_entry["rejected"] = alt
+                        dpo_entry["chosen"] = planned_json
+                        dpo_entry["rejected"] = alt_json
                     else:
-                        dpo_entry["chosen"] = alt
-                        dpo_entry["rejected"] = planned
+                        dpo_entry["chosen"] = alt_json
+                        dpo_entry["rejected"] = planned_json
                     dpo_entry["judge_backend"] = getattr(judge_client, "model", None)
                     dpo_entry["judge_confidence"] = confidence
                     dpo_entry["judge_reasoning"] = reasoning

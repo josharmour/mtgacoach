@@ -28,7 +28,13 @@ data/
 !website/config.yaml
 !website/docker-compose.yml
 # Dev-only (not for public repo)
-tools/
+rl-pipeline-fix.md
+tools/*
+!tools/training/
+tools/training/checkpoints/
+tools/training/data/
+!tools/eval/
+tools/eval/data/
 docs/
 CLAUDE.md
 *.spec

@@ -349,15 +349,12 @@ class PipelineRunner:
         pipeline still functions.
         """
         if quality is None:
-            # Degraded path: quality couldn't be measured. Demand the legacy
-            # (stricter) win-rate so we don't promote unverified models.
-            passed = win_rate > self.fallback_win_rate
-            verdict = "passes" if passed else "fails"
-            logger.warning(
-                f"Quality gate unavailable; using legacy win-rate gate: "
-                f"{win_rate * 100:.1f}% {verdict} (> {self.fallback_win_rate * 100:.0f}%)."
+            # Fail-closed gate (WP-0.6): Quality metrics unavailable -> BLOCK promotion
+            logger.error(
+                "GATE BLOCKED: Quality evaluation or judge metrics are unavailable. "
+                "Failing closed — candidate rejected to prevent unverified model promotion."
             )
-            return passed
+            return False
 
         legality_mean = quality.get("legality", 0.0)
         reasoning_mean = quality.get("reasoning", 0.0)

@@ -197,6 +197,64 @@ short "reasoning"); a structured action needs ONLY action_type + its own
 fields. Never emit empty placeholder fields."""
 
 
+def game_action_to_schema_json(action: Any) -> str:
+    """Serialize a GameAction, dict, int (pick), or string into a JSON string conforming to ACTION_SCHEMA."""
+    if isinstance(action, str):
+        s = action.strip()
+        if s.startswith("{") and s.endswith("}"):
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, dict) and "actions" in parsed:
+                    return s
+                if isinstance(parsed, dict):
+                    return json.dumps({"actions": [parsed]}, ensure_ascii=False)
+            except Exception:
+                pass
+        return json.dumps({"actions": [{"reasoning": s}]}, ensure_ascii=False)
+
+    if isinstance(action, int):
+        return json.dumps({"actions": [{"pick": action}]}, ensure_ascii=False)
+
+    if isinstance(action, dict):
+        if "actions" in action:
+            return json.dumps(action, ensure_ascii=False)
+        return json.dumps({"actions": [action]}, ensure_ascii=False)
+
+    if hasattr(action, "action_type"):
+        action_type_val = (
+            action.action_type.value
+            if hasattr(action.action_type, "value")
+            else str(action.action_type)
+        )
+        item: dict[str, Any] = {"action_type": action_type_val}
+        if getattr(action, "card_name", ""):
+            item["card_name"] = action.card_name
+        if getattr(action, "target_names", None):
+            item["target_names"] = action.target_names
+        if getattr(action, "attacker_names", None):
+            item["attacker_names"] = action.attacker_names
+        if getattr(action, "blocker_assignments", None):
+            item["blocker_assignments"] = action.blocker_assignments
+        if getattr(action, "modal_index", 0):
+            item["modal_index"] = action.modal_index
+        if getattr(action, "select_card_names", None):
+            item["select_card_names"] = action.select_card_names
+        if getattr(action, "scry_position", ""):
+            item["scry_position"] = action.scry_position
+        if getattr(action, "numeric_value", 0):
+            item["numeric_value"] = action.numeric_value
+        if getattr(action, "distribution", None):
+            item["distribution"] = action.distribution
+        if getattr(action, "play_or_draw", ""):
+            item["play_or_draw"] = action.play_or_draw
+        if getattr(action, "reasoning", ""):
+            item["reasoning"] = action.reasoning
+        return json.dumps({"actions": [item]}, ensure_ascii=False)
+
+    return json.dumps({"actions": [{"reasoning": str(action)}]}, ensure_ascii=False)
+
+
+
 AUTOPILOT_SYSTEM_PROMPT = (
     """You are an MTG Arena autopilot. Given the game state and trigger, output a JSON action plan to execute.
 
