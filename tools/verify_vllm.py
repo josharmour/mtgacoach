@@ -53,7 +53,7 @@ def chat_round_trip(base_url: str, model: str, api_key: str = "vllm") -> None:
             last_model_seen = chunk.model
         if chunk.choices and chunk.choices[0].delta:
             delta = chunk.choices[0].delta
-            
+
             # Extract reasoning
             r = None
             if getattr(delta, "reasoning_content", None):
@@ -62,12 +62,12 @@ def chat_round_trip(base_url: str, model: str, api_key: str = "vllm") -> None:
                 r = delta.model_extra.get("reasoning")
             elif getattr(delta, "reasoning", None):
                 r = delta.reasoning
-                
+
             if r:
                 reasoning_chunks.append(r)
             if delta.content:
                 chunks.append(delta.content)
-                
+
     elapsed = (time.perf_counter() - start) * 1000
     print(f"    latency: {elapsed:.0f}ms")
     print(f"    server-reported model: {last_model_seen}")
@@ -86,7 +86,7 @@ def chat_round_trip(base_url: str, model: str, api_key: str = "vllm") -> None:
     elapsed = (time.perf_counter() - start) * 1000
     print(f"    latency: {elapsed:.0f}ms")
     print(f"    server-reported model: {resp.model}")
-    
+
     message = resp.choices[0].message
     reasoning = None
     if getattr(message, "reasoning_content", None):
@@ -95,7 +95,7 @@ def chat_round_trip(base_url: str, model: str, api_key: str = "vllm") -> None:
         reasoning = message.model_extra.get("reasoning")
     elif getattr(message, "reasoning", None):
         reasoning = message.reasoning
-        
+
     if reasoning:
         print(f"    thinking process: {reasoning!r}")
     print(f"    content: {message.content!r}")

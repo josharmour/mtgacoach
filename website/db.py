@@ -1,7 +1,7 @@
 """SQLite database for subscriber management."""
 
-import sqlite3
 import secrets
+import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path

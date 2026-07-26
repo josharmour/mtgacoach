@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,52 @@ logger = logging.getLogger("tools.training.train")
 # Default early-stopping patience: number of consecutive evaluations without a
 # `metric_for_best_model` improvement before training halts.
 DEFAULT_EARLY_STOPPING_PATIENCE = 3
+
+
+def resolve_ddp_context(ddp: bool, env: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Resolve device placement for single-GPU vs. distributed data-parallel.
+
+    Two fundamentally different multi-GPU modes must not be confused:
+
+    * ``device_map="auto"`` (the default, unchanged) *shards one model* across
+      every visible GPU — model/pipeline parallelism. Layers run sequentially,
+      so only one GPU computes at a time and adding a second card buys capacity,
+      not speed. Correct for a model too big for one card.
+    * DDP puts a **full model replica on each rank's own GPU** and feeds each a
+      different micro-batch, so both cards compute simultaneously. That needs
+      the model pinned to ``{"": local_rank}`` — leaving it on ``"auto"`` under
+      torchrun would make every rank try to shard across every GPU and
+      deadlock/OOM.
+
+    A 31B in bf16 (~62 GB) fits on one 96 GB card, so DDP is the throughput win
+    and ``"auto"`` is the wrong tool. This helper is deliberately pure (no torch)
+    so the placement decision is unit-testable on any machine.
+
+    ``--ddp`` without torchrun's ``LOCAL_RANK`` is a hard error rather than a
+    silent fallback: a run that *looks* distributed but is quietly single-GPU is
+    exactly the failure a 10-hour job must not discover at hour nine.
+    """
+    env = os.environ if env is None else env
+
+    if not ddp:
+        return {"ddp": False, "local_rank": -1, "world_size": 1, "device_map": "auto"}
+
+    if "LOCAL_RANK" not in env:
+        raise SystemExit(
+            "--ddp requires torchrun/accelerate (LOCAL_RANK is unset). "
+            "Launch with e.g. `torchrun --nproc_per_node=2 -m tools.training.train --ddp ...`, "
+            "or drop --ddp for single-process (device_map='auto') behaviour."
+        )
+
+    local_rank = int(env["LOCAL_RANK"])
+    world_size = int(env.get("WORLD_SIZE", "1"))
+    return {
+        "ddp": True,
+        "local_rank": local_rank,
+        "world_size": world_size,
+        # Pin the whole replica to this rank's card; no sharding.
+        "device_map": {"": local_rank},
+    }
 
 
 def resolve_eval_save_strategy(
@@ -118,6 +166,17 @@ def main():
     p.add_argument("--method", choices=["sft", "dpo"], default="dpo", help="Training method")
     p.add_argument("--epochs", type=int, default=1, help="Number of training epochs")
     p.add_argument("--batch_size", type=int, default=2, help="Batch size per device")
+    p.add_argument(
+        "--eval_batch_size",
+        type=int,
+        default=0,
+        help=(
+            "Eval batch size per device (0 = mirror --batch_size). HF's default of 8 "
+            "is a memory trap for large-vocab models: eval materialises "
+            "[B, seq, vocab] logits plus an fp32 upcast, and unlike training that "
+            "peak is not bounded by gradient checkpointing."
+        ),
+    )
     p.add_argument("--gradient_accumulation_steps", type=int, default=4, help="Gradient accumulation steps")
     p.add_argument("--gradient_checkpointing", action="store_true", help="Enable gradient checkpointing")
     p.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
@@ -147,9 +206,32 @@ def main():
         default="eval_loss",
         help="Metric that selects the best checkpoint for early stopping",
     )
+    p.add_argument(
+        "--ddp",
+        action="store_true",
+        help=(
+            "Distributed data-parallel: one full model replica per GPU, pinned to "
+            "LOCAL_RANK. Requires launching under torchrun. Without this flag the "
+            "model is placed with device_map='auto' exactly as before."
+        ),
+    )
     args = p.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s | %(message)s")
+    ddp_ctx = resolve_ddp_context(args.ddp)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format=(
+            f"%(asctime)s %(levelname)s | [rank{ddp_ctx['local_rank']}] %(message)s"
+            if ddp_ctx["ddp"]
+            else "%(asctime)s %(levelname)s | %(message)s"
+        ),
+    )
+    if ddp_ctx["ddp"]:
+        logger.info(
+            f"DDP enabled: local_rank={ddp_ctx['local_rank']} world_size={ddp_ctx['world_size']} "
+            f"device_map={ddp_ctx['device_map']} (full replica per GPU, data-parallel)"
+        )
 
     import torch
     from datasets import load_dataset
@@ -210,7 +292,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
         quantization_config=bnb_config,
-        device_map="auto",
+        device_map=ddp_ctx["device_map"],
         dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
         attn_implementation="sdpa",
     )
@@ -227,6 +309,28 @@ def main():
         task_type="CAUSAL_LM",
         target_modules="(.*language_model.*(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj))",
     )
+
+    # DDP-only trainer settings. Empty (and therefore inert) for single-GPU runs,
+    # so the pre-existing single-process behaviour is bit-for-bit unchanged.
+    #   * find_unused_parameters=False: with LoRA every trainable param gets a
+    #     gradient every step, so DDP's unused-param scan is pure overhead.
+    #   * use_reentrant=False: reentrant gradient checkpointing does not compose
+    #     with DDP's autograd hooks (params get marked ready twice). TRL only
+    #     forces this default on transformers < 5, and 5.0.0 is installed here.
+    ddp_kwargs: dict[str, Any] = {}
+    if ddp_ctx["ddp"]:
+        ddp_kwargs["ddp_find_unused_parameters"] = False
+        if args.gradient_checkpointing:
+            ddp_kwargs["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
+
+    # Eval is the *peakier* of the two phases for large-vocab models. A training
+    # step's activation memory is capped by gradient checkpointing, but the
+    # evaluation forward still materialises a full [B, seq, vocab] logits tensor
+    # and then upcasts it to fp32 for the cross-entropy — for gemma-4's 262k
+    # vocab at seq 3072 that is ~4.5 GiB *per sample*. Inheriting HF's default
+    # per_device_eval_batch_size=8 while training at 2 therefore OOMs at the
+    # first eval, long after the run looks healthy.
+    eval_batch_size = args.eval_batch_size if args.eval_batch_size > 0 else args.batch_size
 
     if args.method == "sft":
         logger.info("Initializing SFTTrainer")
@@ -267,6 +371,7 @@ def main():
             output_dir=str(args.output_dir),
             num_train_epochs=args.epochs,
             per_device_train_batch_size=args.batch_size,
+            per_device_eval_batch_size=eval_batch_size,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             gradient_checkpointing=args.gradient_checkpointing,
             learning_rate=args.lr,
@@ -285,6 +390,7 @@ def main():
             remove_unused_columns=False,
             max_length=args.max_length,
             completion_only_loss=True,
+            **ddp_kwargs,
         )
 
         trainer = SFTTrainer(
@@ -328,6 +434,7 @@ def main():
             output_dir=str(args.output_dir),
             num_train_epochs=args.epochs,
             per_device_train_batch_size=args.batch_size,
+            per_device_eval_batch_size=eval_batch_size,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             gradient_checkpointing=args.gradient_checkpointing,
             learning_rate=args.lr,
@@ -346,6 +453,7 @@ def main():
             remove_unused_columns=False,
             max_length=args.max_length,
             beta=0.1,
+            **ddp_kwargs,
         )
 
         trainer = DPOTrainer(
@@ -372,6 +480,14 @@ def main():
 
     logger.info("Starting training...")
     trainer.train()
+
+    # Under DDP every rank reaches this point with identical weights; letting all
+    # of them write the same files would interleave partial safetensors. Only the
+    # world-process-zero rank persists (this is a no-op guard single-process,
+    # where is_world_process_zero() is always True).
+    if not trainer.is_world_process_zero():
+        logger.info("Training finished; non-zero rank skipping save.")
+        return
 
     logger.info(f"Saving fine-tuned adapter model to {args.output_dir}")
     trainer.model.save_pretrained(str(args.output_dir))

@@ -840,9 +840,9 @@ def step_detect_and_choose_backend(settings: dict) -> tuple[str, str]:
     local_tag = f" [{local_info['details']}]" if local_info["available"] else ""
 
     print(f"    [1] Online (mtgacoach.com subscription){online_tag}")
-    print(f"        Cloud-hosted models, no GPU needed")
+    print("        Cloud-hosted models, no GPU needed")
     print(f"    [2] Local (Ollama / LM Studio){local_tag}")
-    print(f"        Run models on your own hardware")
+    print("        Run models on your own hardware")
 
     print()
     choice = prompt_choice(["Online (mtgacoach.com)", "Local (Ollama / LM Studio)"], "Select mode")
@@ -1036,7 +1036,7 @@ def step_verify(settings: dict) -> None:
             if license_key:
                 req.add_header("Authorization", f"Bearer {license_key}")
             with urllib.request.urlopen(req, timeout=5):
-                ok(f"mtgacoach.com API responding")
+                ok("mtgacoach.com API responding")
         except Exception:
             fail("Could not reach mtgacoach.com (check your license key and internet)")
     elif mode == "local":

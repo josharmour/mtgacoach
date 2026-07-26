@@ -86,7 +86,7 @@ C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe tools/eval/replay
 ### Top-Level Layout
 * **`src/`**: The core Python codebase (`arenamcp`). This is the heart of the backend coaching loop, logs, game-state logic, Named Pipe GRE bridge server, and PySide6 desktop UI.
 * **`bepinex-plugin/`**: The C# Unity plugin injected into Magic: The Gathering Arena. It intercepts internal game states and acts as a Named Pipe client connecting directly to Python.
-* **`website/`**: A FastAPI application running on `api.mtgacoach.com` (under Synology/Docker) that validates licenses, routes LLM requests to Azure OpenAI (gpt-5.4), and serves the admin evaluation dashboard.
+* **`website/`**: A FastAPI application running on `api.mtgacoach.com` (under Synology/Docker) that validates licenses, routes LLM requests to the LiteLLM gateway (self-hosted models only; the legacy Azure/OpenAI path is decommissioned), and serves the admin evaluation dashboard.
 * **`tools/`**: Diagnostic scripts, vLLM verification tools, and the comprehensive evaluation harness (`tools/eval/`) for measuring LLM output quality.
 * **`installer/`**: Inno Setup script (`mtgacoach.iss`) and build automation scripts (`build-installer.ps1`) to generate the lightweight Windows setup executable.
 * **`dist/`** *(Generated)*: Where release builds of the app and final installer packages are staged.
@@ -140,7 +140,7 @@ C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe tools/eval/replay
 * [templates/admin.html](file:///Z:/mtgacoach/website/templates/admin.html) — Cloud admin evaluation dashboard, displaying real-time latencies, charts, and metrics tables.
 
 ### Evaluation Harness ([tools/eval/](file:///Z:/mtgacoach/tools/eval))
-* [run.py](file:///Z:/mtgacoach/tools/eval/run.py) & [judge.py](file:///Z:/mtgacoach/tools/eval/judge.py) — Replays prompt sets through custom backends and uses online judges (GPT-5.4) to grade model output.
+* [run.py](file:///Z:/mtgacoach/tools/eval/run.py) & [judge.py](file:///Z:/mtgacoach/tools/eval/judge.py) — Replays prompt sets through custom backends and uses a self-hosted judge model to grade model output.
 * [report.py](file:///Z:/mtgacoach/tools/eval/report.py) — Generates accuracy tables and markdown report summaries.
 * [replay/run.py](file:///Z:/mtgacoach/tools/eval/replay/run.py) & [replay/score.py](file:///Z:/mtgacoach/tools/eval/replay/score.py) — Runs and scores model outputs on real-game replay prompts, focusing on contested decisions to filter out easy play bias.
 * [seventeenlands/score_mulligan.py](file:///Z:/mtgacoach/tools/eval/seventeenlands/score_mulligan.py) & [seventeenlands/score_turn_actions.py](file:///Z:/mtgacoach/tools/eval/seventeenlands/score_turn_actions.py) — Scores decisions against 17lands data using balanced accuracy and Jaccard metrics.

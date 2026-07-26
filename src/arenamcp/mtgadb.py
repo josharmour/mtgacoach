@@ -13,13 +13,25 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class MTGACard:
-    """Card data from MTGA's local database."""
+    """Card data from MTGA's local database.
+
+    ``types`` is MTGA's raw ``Cards.Types`` column: a comma-separated list of
+    numeric CardType enum ids ("5" = Land, "2" = Creature, "1,2" = Artifact
+    Creature).  It is NOT a type line and must never be presented as one — a
+    permanent whose type line reads "5" is invisible to every ``"land" in
+    type_line`` check in the codebase, which is how battlefield lands came to
+    render as 0 available mana.  ``type_line`` is the real, localized printed
+    type line ("Basic Land — Plains"), resolved from ``TypeTextId`` /
+    ``SubtypeTextId``; it is empty only when the localization is genuinely
+    missing, so an empty value is an honest "unknown" rather than a lie.
+    """
 
     grp_id: int
     name: str
@@ -30,6 +42,7 @@ class MTGACard:
     is_token: bool
     expansion_code: str
     oracle_text: str = ""
+    type_line: str = ""
 
 
 # Common MTGA installation paths
@@ -166,6 +179,10 @@ class MTGADatabase:
         self._rarity_cache: dict[str, str | None] = {}
         self._available = False
         self._error_count = 0  # Track consecutive errors for reconnection
+        # Whether this DB build exposes the printed-type-line localization
+        # columns. Probed rather than assumed so a schema change degrades to
+        # "no type line" instead of making every card lookup fail.
+        self._has_type_text_cols = False
 
         self._connect()
 
@@ -195,6 +212,17 @@ class MTGADatabase:
                 self._conn.execute("PRAGMA read_uncommitted = true;")
                 self._conn.row_factory = sqlite3.Row
                 self._available = True
+                try:
+                    cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(Cards)")}
+                    self._has_type_text_cols = {"TypeTextId", "SubtypeTextId"} <= cols
+                    if not self._has_type_text_cols:
+                        logger.warning(
+                            "MTGA database has no TypeTextId/SubtypeTextId columns — "
+                            "card type lines will be reported as unknown"
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not probe MTGA Cards schema: {e}")
+                    self._has_type_text_cols = False
                 logger.info("MTGA database connected")
             except Exception as e:
                 logger.error(f"Failed to open MTGA database: {e}")
@@ -261,6 +289,57 @@ class MTGADatabase:
                 logger.warning(f"Failed to resolve oracle text: {e}")
                 return ""
 
+    def _type_col_sql(self) -> str:
+        """SELECT fragment for the type-line columns, or "" if absent."""
+        return (
+            ",\n                        c.TypeTextId,\n                        c.SubtypeTextId"
+            if self._has_type_text_cols
+            else ""
+        )
+
+    def _type_line_from_row(self, row: Any) -> str:
+        """Printed type line for a Cards row, or "" when unavailable."""
+        if not self._has_type_text_cols:
+            return ""
+        return self._resolve_type_line(row["TypeTextId"], row["SubtypeTextId"])
+
+    def _resolve_type_line(self, type_text_id: Any, subtype_text_id: Any) -> str:
+        """Resolve the printed type line from MTGA's localization table.
+
+        MTGA stores the *rendered* type line in ``Localizations_enUS`` and
+        points at it from ``Cards.TypeTextId`` / ``Cards.SubtypeTextId``, so
+        the real answer is available locally and needs no network lookup.
+        Formatted to match MTGJSON ("Basic Land — Plains", em dash U+2014)
+        so the two sources are interchangeable to downstream string checks.
+
+        Returns "" when the localization is missing — callers must treat an
+        empty type line as unknown, never as a card with no types.
+        """
+        ids = [int(v) for v in (type_text_id, subtype_text_id) if v]
+        if not ids:
+            return ""
+
+        with self._conn_lock:
+            if not self._available or not self._conn:
+                return ""
+            try:
+                placeholders = ",".join("?" * len(ids))
+                cursor = self._conn.execute(
+                    f"SELECT LocId, Loc FROM Localizations_enUS "  # noqa: S608 - ints only
+                    f"WHERE LocId IN ({placeholders}) AND Formatted = 1",
+                    ids,
+                )
+                by_id = {row["LocId"]: (row["Loc"] or "").strip() for row in cursor.fetchall()}
+            except Exception as e:
+                logger.warning(f"Failed to resolve type line: {e}")
+                return ""
+
+        types = by_id.get(int(type_text_id)) if type_text_id else ""
+        subtypes = by_id.get(int(subtype_text_id)) if subtype_text_id else ""
+        if types and subtypes:
+            return f"{types} — {subtypes}"
+        return types or subtypes or ""
+
     def get_card(self, grp_id: int) -> MTGACard | None:
         """Look up a card by GrpId (arena_id).
 
@@ -280,7 +359,7 @@ class MTGADatabase:
 
             try:
                 cursor = self._conn.execute(
-                    """
+                    f"""
                     SELECT
                         c.GrpId,
                         l.Loc as Name,
@@ -292,16 +371,18 @@ class MTGADatabase:
                         c.ExpansionCode,
                         c.AbilityIds,
                         c.Order_Title
+                        {self._type_col_sql()}
                     FROM Cards c
                     LEFT JOIN Localizations_enUS l ON c.TitleId = l.LocId AND l.Formatted = 1
                     WHERE c.GrpId = ?
-                """,
+                """,  # noqa: S608 - _type_col_sql is a fixed literal, not user input
                     (grp_id,),
                 )
 
                 row = cursor.fetchone()
                 if row:
                     oracle_text = self._resolve_oracle_text(row["AbilityIds"])
+                    type_line = self._type_line_from_row(row)
                     name = row["Name"] or row["Order_Title"] or f"Unknown_({grp_id})"
                     # Strip HTML tags that MTGA injects into hyphenated names
                     if "<" in name:
@@ -320,6 +401,7 @@ class MTGADatabase:
                         is_token=bool(row["IsToken"]),
                         expansion_code=row["ExpansionCode"] or "",
                         oracle_text=oracle_text,
+                        type_line=type_line,
                     )
                     self._card_cache[grp_id] = card
                     return card
@@ -377,15 +459,17 @@ class MTGADatabase:
                         c.ExpansionCode,
                         c.AbilityIds,
                         c.Order_Title
+                        {self._type_col_sql()}
                     FROM Cards c
                     LEFT JOIN Localizations_enUS l ON c.TitleId = l.LocId AND l.Formatted = 1
                     WHERE c.GrpId IN ({placeholders})
-                """,
+                """,  # noqa: S608 - placeholders/_type_col_sql are fixed literals
                     missing_ids,
                 )
 
                 for row in cursor.fetchall():
                     oracle_text = self._resolve_oracle_text(row["AbilityIds"])
+                    type_line = self._type_line_from_row(row)
                     name = row["Name"] or row["Order_Title"] or f"Unknown_({row['GrpId']})"
                     # Strip HTML tags that MTGA injects into hyphenated names
                     if "<" in name:
@@ -403,6 +487,7 @@ class MTGADatabase:
                         is_token=bool(row["IsToken"]),
                         expansion_code=row["ExpansionCode"] or "",
                         oracle_text=oracle_text,
+                        type_line=type_line,
                     )
                     self._card_cache[card.grp_id] = card
                     results[card.grp_id] = card

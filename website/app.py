@@ -1,7 +1,5 @@
 """mtgacoach.com proxy server — routes AI requests and manages subscriptions."""
 
-from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
 import json
 import logging
 import logging.handlers
@@ -9,12 +7,15 @@ import os
 import re
 import secrets
 import time
+from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import db
 import httpx
 import yaml
-from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -24,8 +25,6 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-
-import db
 from providers import ProviderRouter
 
 # Logging: console + file

@@ -144,6 +144,7 @@ if str(SRC) not in sys.path:
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from tools.training import corpus_selfcheck  # noqa: E402
 from tools.training.gate_stage0 import paired_bootstrap_ci  # noqa: E402
 from tools.training.validators import validate_action_schema_json  # noqa: E402
 
@@ -292,43 +293,30 @@ class _CardFacts:
 
     ``gate`` never touches this: the built corpus carries everything the gate
     needs, so gating runs on any machine without a card database.
+
+    Construction is **fail-closed**: it blocks until every local card source
+    is loaded and raises if one is missing. It used to accept whatever
+    ``get_mtgjson()`` had managed to load in its background thread by the time
+    the first record was rendered, which corrupted 20.4% of the on-disk
+    corpus with no error and no log line — a battlefield whose lands did not
+    resolve renders "Mana: 0", which reads exactly like a real empty board.
     """
 
     def __init__(self, *, allow_network: bool = False) -> None:
+        from arenamcp.card_db import require_card_database
+
         self._cache: dict[int, dict] = {}
-        self._db = None
-        self._mtga = None
         self.creature_rows = 0
         self.unknown_pt_rows = 0
-        try:
-            from arenamcp.mtgadb import MTGADatabase
-
-            with contextlib.redirect_stdout(io.StringIO()):
-                self._mtga = MTGADatabase()
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"MTGA local DB unavailable (no base P/T): {type(e).__name__}: {e}")
-        try:
-            if allow_network:
-                from arenamcp.card_db import get_card_database
-
-                with contextlib.redirect_stdout(io.StringIO()):
-                    self._db = get_card_database()
-            else:
-                # Local sources only. Scryfall's API fallback would make the
-                # built corpus depend on network weather (and it rate-limits at
-                # this volume) — a gate corpus has to be reproducible.
-                from arenamcp.card_db import create_card_database
-                from arenamcp.mtgjson import get_mtgjson
-
-                mtgjson = None
-                try:
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        mtgjson = get_mtgjson()
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(f"MTGJSON unavailable: {type(e).__name__}: {e}")
-                self._db = create_card_database(scryfall_cache=None, mtgjson_db=mtgjson, mtga_db=self._mtga)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"card database unavailable: {type(e).__name__}: {e}")
+        # grpIds the database could not resolve at all — surfaced in the
+        # manifest and rejected by the corpus self-check.
+        self.unresolved_grp_ids: set[int] = set()
+        # Scryfall's API fallback would make the built corpus depend on
+        # network weather (and it rate-limits at this volume) — a gate corpus
+        # has to be reproducible, so it is opt-in.
+        with contextlib.redirect_stdout(io.StringIO()):
+            self._db = require_card_database(allow_network=allow_network)
+            self._mtga = self._db.get_raw_mtgadb()
 
     def get(self, grp_id: Any) -> dict:
         if grp_id is None:
@@ -362,6 +350,12 @@ class _CardFacts:
             "toughness": None,
             "resolved": info is not None,
         }
+        if info is None or not out["type_line"]:
+            # A grpId with no card facts renders as a nameless, typeless
+            # permanent: it contributes no mana and no board presence. Track
+            # it so the self-check can refuse the corpus rather than let it
+            # pass as a legitimately empty board.
+            self.unresolved_grp_ids.add(gid)
         if self._mtga is not None:
             try:
                 card = self._mtga.get_card(gid)
@@ -377,6 +371,21 @@ class _CardFacts:
                     out["oracle_text"] = getattr(card, "oracle_text", "") or ""
         self._cache[gid] = out
         return out
+
+
+def _pick_type_line(recorded: Any, resolved: str) -> str:
+    """Prefer the recorded type line, but never a numeric type code.
+
+    ``recorded or resolved`` treated MTGA's internal type encoding ("3") as a
+    valid answer because it is truthy, so a stale groundtruth corpus could
+    override a correctly resolved type line with a meaningless one.
+    """
+    from arenamcp.card_db import is_bogus_type_line
+
+    text = str(recorded or "").strip()
+    if text and not is_bogus_type_line(text):
+        return text
+    return resolved
 
 
 def _as_int_pt(value: Any) -> int | None:
@@ -459,7 +468,11 @@ def build_game_state(rec: dict, facts: _CardFacts) -> dict:
                 "instance_id": card.get("instance_id"),
                 "grp_id": card.get("grp_id"),
                 "name": card.get("name") or f["name"],
-                "type_line": card.get("type_line") or f["type_line"],
+                # The groundtruth record's own type_line is preferred, but only
+                # when it is actually a type line: corpora extracted before the
+                # card-DB fix stored MTGA's numeric type codes ("3"), and
+                # ``x or y`` happily prefers a truthy "3" over the real answer.
+                "type_line": _pick_type_line(card.get("type_line"), f["type_line"]),
                 "mana_cost": card.get("mana_cost") or f["mana_cost"],
                 "cmc": card.get("cmc") if card.get("cmc") is not None else f["cmc"],
                 "oracle_text": f["oracle_text"],
@@ -637,6 +650,15 @@ def build_decision(rec: dict, facts: _CardFacts) -> dict | None:
     if gold_pick is None:
         return {"drop_reason": "gold_pick_lost_in_filter"}
 
+    # Card-fact provenance for this decision. Carried into the corpus so a
+    # built file can be re-verified later, and checked at build time so a
+    # corpus assembled against a half-loaded card database is never written.
+    card_facts_audit = corpus_selfcheck.audit_game_state(
+        game_state,
+        local_seat=int(rec["local_seat"]),
+        mana_total=int(mana_pool.get("total", 0)),
+    )
+
     equivalents = [r["index"] for r in rows if r["action_key"] == gold_key]
     # Every card id this decision exposes — used at split time to measure how
     # much of the held-out game the training split has already seen.
@@ -649,6 +671,7 @@ def build_decision(rec: dict, facts: _CardFacts) -> dict | None:
     }
     return {
         "game_state": game_state,
+        corpus_selfcheck.AUDIT_KEY: card_facts_audit,
         "_card_ids": sorted(card_ids),
         "_menu_card_ids": sorted({r["grp_id"] for r in rows if r["grp_id"] is not None}),
         "menu": rows,
@@ -1067,6 +1090,7 @@ def cmd_build(args: argparse.Namespace) -> int:
 
     decisions_by_file: dict[str, list[dict]] = defaultdict(list)
     drops = Counter()
+    selfcheck_findings: list[corpus_selfcheck.Finding] = []
     for rec in raw:
         built = build_decision(rec, facts)
         if built is None or "drop_reason" in built:
@@ -1074,6 +1098,28 @@ def cmd_build(args: argparse.Namespace) -> int:
             continue
         built["_gt"] = rec
         decisions_by_file[rec["replay_file"]].append(built)
+        selfcheck_findings.extend(
+            corpus_selfcheck.findings_from_audit(
+                f"{rec.get('replay_file')}#{rec.get('decision_index')}",
+                built[corpus_selfcheck.AUDIT_KEY],
+            )
+        )
+
+    # Fail closed on degraded card facts. A corpus built against a card
+    # database that was still loading renders battlefield lands as 0 mana and
+    # mis-tags affordability throughout, with no error anywhere — 20.4% of a
+    # previous on-disk gate corpus was corrupted exactly this way. A gate whose
+    # prompts are wrong makes the training verdict unreadable, so nothing is
+    # written rather than something plausible.
+    if selfcheck_findings:
+        summary = corpus_selfcheck.summarise(selfcheck_findings)
+        logger.error(f"corpus self-check FAILED — refusing to write: {json.dumps(summary)}")
+        for finding in selfcheck_findings[:20]:
+            logger.error(f"    {finding}")
+        if len(selfcheck_findings) > 20:
+            logger.error(f"    ... and {len(selfcheck_findings) - 20} more")
+        return 2
+    logger.info(f"corpus self-check passed for {sum(len(v) for v in decisions_by_file.values())} decisions")
 
     total = sum(len(v) for v in decisions_by_file.values())
     if total == 0:

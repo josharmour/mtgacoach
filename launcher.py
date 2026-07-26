@@ -11,13 +11,12 @@ user-facing launcher surface is `launch.bat`, which opens the launcher GUI
 by default and can dispatch to this TUI runtime when requested.
 """
 
+import ctypes
+import json
 import os
+import subprocess
 import sys
 import time
-import signal
-import subprocess
-import json
-import ctypes
 from pathlib import Path
 
 # Constants
@@ -382,8 +381,8 @@ def run_coach(extra_args=None):
 def watch_for_changes():
     """Simple file watcher that returns True when .py files change."""
     try:
-        from watchdog.observers import Observer
         from watchdog.events import FileSystemEventHandler
+        from watchdog.observers import Observer
 
         changed = [False]
 
@@ -482,7 +481,11 @@ def main():
 
     # Setup file watcher if requested
     observer = None
-    check_changed = lambda: False
+
+    def check_changed() -> bool:
+        """Default no-op watcher predicate; replaced below when --watch is on."""
+        return False
+
     instance_guard = SingleInstanceGuard(LOCK_FILE)
 
     if not instance_guard.acquire():

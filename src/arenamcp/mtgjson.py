@@ -7,6 +7,7 @@ card data including oracle text, updated daily for new sets.
 import gzip
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +61,10 @@ class MTGJSONDatabase:
         self._name_index: dict[str, MTGJSONCard] = {}  # lowercase name -> card
         self._loaded = False
         self._available = False
+        # Serializes load(). ``get_mtgjson()`` starts a background loader, so
+        # a caller that needs the data has to be able to *wait* for it rather
+        # than kick off a second concurrent load over the same indexes.
+        self._load_lock = threading.RLock()
 
     @property
     def available(self) -> bool:
@@ -290,12 +295,21 @@ class MTGJSONDatabase:
     def load(self, force_download: bool = False) -> bool:
         """Load the database, downloading if needed.
 
+        Blocks until the data is actually loaded. If a background loader
+        (started by ``get_mtgjson()``) is mid-flight, this waits for it and
+        returns its result instead of racing a second load over the same
+        indexes — that is what makes ``load()`` usable as "wait until ready".
+
         Args:
             force_download: If True, re-download even if cache exists
 
         Returns:
             True if database loaded successfully, False otherwise.
         """
+        with self._load_lock:
+            return self._load_locked(force_download)
+
+    def _load_locked(self, force_download: bool = False) -> bool:
         if self._loaded and not force_download:
             return self._available
 
@@ -372,19 +386,32 @@ class MTGJSONDatabase:
 
 # Global singleton instance
 _mtgjson_db: MTGJSONDatabase | None = None
+_mtgjson_lock = threading.Lock()
 
 
-def get_mtgjson() -> MTGJSONDatabase:
+def get_mtgjson(*, block: bool = False) -> MTGJSONDatabase:
     """Get the global MTGJSON database instance.
 
-    Lazily initializes and loads the database on first call.
+    By default the load runs in a background daemon thread so app startup and
+    the UI loop are not blocked, and the returned database is very likely NOT
+    yet loaded. **Anything that builds prompts, corpora or training data must
+    pass ``block=True``** (or call ``db.load()``): building against a
+    half-loaded database silently produces degraded card facts — battlefield
+    lands that yield no mana, permanents with no type line — which is
+    indistinguishable from a genuinely empty board. See
+    ``arenamcp.card_db.require_card_database``.
+
+    Args:
+        block: Wait for the load to finish before returning.
     """
     global _mtgjson_db
-    if _mtgjson_db is None:
-        _mtgjson_db = MTGJSONDatabase()
-        # Load asynchronously in a background thread to prevent blocking startup / UI loop.
-        import threading
-
-        thread = threading.Thread(target=_mtgjson_db.load, daemon=True)
-        thread.start()
-    return _mtgjson_db
+    with _mtgjson_lock:
+        if _mtgjson_db is None:
+            _mtgjson_db = MTGJSONDatabase()
+            # Load asynchronously so startup / the UI loop are not blocked.
+            thread = threading.Thread(target=_mtgjson_db.load, daemon=True, name="mtgjson-load")
+            thread.start()
+        db = _mtgjson_db
+    if block:
+        db.load()  # serialized against the loader thread; returns when ready
+    return db

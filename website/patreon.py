@@ -27,11 +27,10 @@ import time
 from email.message import EmailMessage
 from typing import Any, Optional
 
+import db
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
-
-import db
 
 logger = logging.getLogger(__name__)
 

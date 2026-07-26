@@ -72,7 +72,7 @@ SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from arenamcp.card_db import get_card_database  # noqa: E402
+from arenamcp.card_db import require_card_database  # noqa: E402
 
 from .decisions import pair_request_response  # noqa: E402
 from .reader import ReplayMessage, parse_replay_path  # noqa: E402
@@ -101,9 +101,18 @@ _CARD_CACHE: dict[int, dict] = {}
 
 
 def _cdb():
+    """The card database, **fully loaded**, or an exception.
+
+    This corpus is the input every downstream play-decision corpus is built
+    from, so a card fact that is missing here is missing everywhere. It used
+    to call ``get_card_database()``, whose MTGJSON source loads in a
+    background daemon thread — records extracted in the first seconds got
+    empty type lines, and a permanent with no type line yields no mana. Fail
+    closed instead: an absent database is an error, never a silent downgrade.
+    """
     global _CARD_DB
     if _CARD_DB is None:
-        _CARD_DB = get_card_database()
+        _CARD_DB = require_card_database()
     return _CARD_DB
 
 

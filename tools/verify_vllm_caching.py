@@ -21,12 +21,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 import urllib.error
 import urllib.request
-
 
 _METRICS_KEYS = (
     "vllm:prefix_cache_queries_total",
@@ -128,7 +126,7 @@ def main() -> int:
 
     # 3. Second call — same prefix, different seed in the trailing line
     sys_prompt2, user_prompt2 = _prompt_with_stable_prefix(seed=2)
-    print(f">>> call 2 (warm prefix, seed flipped at the tail)")
+    print(">>> call 2 (warm prefix, seed flipped at the tail)")
     warm_ms, _, warm_tokens = _one_shot(client, args.model, sys_prompt2, user_prompt2)
     print(f"    {warm_ms:.0f} ms total, prompt_tokens={warm_tokens}")
 

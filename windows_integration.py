@@ -10,15 +10,16 @@ this copy exists solely so a dead runtime can still show a repair window.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
-from typing import Iterable, Optional
 import zipfile
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
 
 try:
     import winreg  # type: ignore[attr-defined]

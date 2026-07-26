@@ -4,10 +4,10 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
 import webbrowser
+from pathlib import Path
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from windows_integration import (
     REPO_DIR,
@@ -24,7 +24,6 @@ from windows_integration import (
     set_saved_mtga_dir,
     tail_text,
 )
-
 
 APP_NAME = "mtgacoach Launcher"
 GITHUB_RELEASES = "https://github.com/josharmour/mtgacoach/releases"
