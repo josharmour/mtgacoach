@@ -27,7 +27,6 @@ if str(SRC) not in sys.path:
 
 from tools.eval.run import _read_jsonl  # noqa: E402
 
-
 SCORE_DIMS = ("correctness", "reasoning", "conciseness", "legality")
 
 
@@ -39,8 +38,9 @@ def _median(xs: list[float]) -> float:
     return statistics.median(xs) if xs else 0.0
 
 
-def report(responses_path: Path, scores_path: Path, csv_path: Path | None,
-           json_path: Path | None = None) -> None:
+def report(
+    responses_path: Path, scores_path: Path, csv_path: Path | None, json_path: Path | None = None
+) -> None:
     responses = list(_read_jsonl(responses_path))
     scores = list(_read_jsonl(scores_path))
 
@@ -51,13 +51,16 @@ def report(responses_path: Path, scores_path: Path, csv_path: Path | None,
     by_backend: dict[str, dict] = {}
     for r in responses:
         be = str(r.get("backend"))
-        slot = by_backend.setdefault(be, {
-            "n": 0,
-            "errors": 0,
-            "latency_ms": [],
-            "response_chars": [],
-            **{k: [] for k in SCORE_DIMS},
-        })
+        slot = by_backend.setdefault(
+            be,
+            {
+                "n": 0,
+                "errors": 0,
+                "latency_ms": [],
+                "response_chars": [],
+                **{k: [] for k in SCORE_DIMS},
+            },
+        )
         slot["n"] += 1
         if r.get("error"):
             slot["errors"] += 1
@@ -77,13 +80,13 @@ def report(responses_path: Path, scores_path: Path, csv_path: Path | None,
 
     # Print table
     cols = [
-        ("backend",       30),
-        ("n",              4),
-        ("err",            4),
-        ("latency_med",   12),
-        ("chars_med",     10),
-        *[(k[:6],          7) for k in SCORE_DIMS],
-        ("overall",        8),
+        ("backend", 30),
+        ("n", 4),
+        ("err", 4),
+        ("latency_med", 12),
+        ("chars_med", 10),
+        *[(k[:6], 7) for k in SCORE_DIMS],
+        ("overall", 8),
     ]
     header = " ".join(f"{name:<{width}}" for name, width in cols)
     print(header)
@@ -108,7 +111,7 @@ def report(responses_path: Path, scores_path: Path, csv_path: Path | None,
             f"{overall:.2f}",
         ]
         rows.append((be, row, slot, score_means, overall, latency_med, chars_med))
-        line = " ".join(f"{str(val):<{width}}" for val, (_, width) in zip(row, cols))
+        line = " ".join(f"{str(val):<{width}}" for val, (_, width) in zip(row, cols, strict=True))
         print(line)
 
     print()
@@ -119,24 +122,35 @@ def report(responses_path: Path, scores_path: Path, csv_path: Path | None,
     if csv_path:
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow([
-                "backend", "n", "errors",
-                "latency_ms_median", "response_chars_median",
-                *[f"{k}_mean" for k in SCORE_DIMS],
-                "overall_mean",
-            ])
+            w.writerow(
+                [
+                    "backend",
+                    "n",
+                    "errors",
+                    "latency_ms_median",
+                    "response_chars_median",
+                    *[f"{k}_mean" for k in SCORE_DIMS],
+                    "overall_mean",
+                ]
+            )
             for be, row, slot, score_means, overall, latency_med, chars_med in rows:
-                w.writerow([
-                    be, slot["n"], slot["errors"],
-                    f"{latency_med:.1f}", int(chars_med),
-                    *[f"{score_means[k]:.3f}" for k in SCORE_DIMS],
-                    f"{overall:.3f}",
-                ])
+                w.writerow(
+                    [
+                        be,
+                        slot["n"],
+                        slot["errors"],
+                        f"{latency_med:.1f}",
+                        int(chars_med),
+                        *[f"{score_means[k]:.3f}" for k in SCORE_DIMS],
+                        f"{overall:.3f}",
+                    ]
+                )
         print(f"\nWrote {csv_path}")
 
     if json_path:
         import json as _json
         import time as _time
+
         backends_payload = []
         for be, row, slot, score_means, overall, latency_med, chars_med in rows:
             # Score histograms: per-dimension count of 1..5
@@ -149,20 +163,22 @@ def report(responses_path: Path, scores_path: Path, csv_path: Path | None,
                 for v in slot[k]:
                     bucket = max(1, min(5, int(round(v))))
                     hist[k][str(bucket)] += 1
-            backends_payload.append({
-                "backend": be,
-                "n": slot["n"],
-                "errors": slot["errors"],
-                "latency_ms_median": round(latency_med, 1),
-                "response_chars_median": int(chars_med),
-                **{f"{k}_mean": round(score_means[k], 3) for k in SCORE_DIMS},
-                "overall_mean": round(overall, 3),
-                "score_histograms": hist,
-            })
+            backends_payload.append(
+                {
+                    "backend": be,
+                    "n": slot["n"],
+                    "errors": slot["errors"],
+                    "latency_ms_median": round(latency_med, 1),
+                    "response_chars_median": int(chars_med),
+                    **{f"{k}_mean": round(score_means[k], 3) for k in SCORE_DIMS},
+                    "overall_mean": round(overall, 3),
+                    "score_histograms": hist,
+                }
+            )
         payload = {
             "target": "general",
             "ts": _time.time(),
-            "n_prompts_unique": len({(r['prompt_id'],) for r in responses}),
+            "n_prompts_unique": len({(r["prompt_id"],) for r in responses}),
             "n_responses": len(responses),
             "n_scored": len(scores),
             "backends": backends_payload,
@@ -177,8 +193,9 @@ def main():
     parser.add_argument("--responses", required=True, type=Path)
     parser.add_argument("--scores", required=True, type=Path)
     parser.add_argument("--csv", type=Path)
-    parser.add_argument("--json", type=Path,
-                        help="Optional structured JSON summary (for the admin dashboard)")
+    parser.add_argument(
+        "--json", type=Path, help="Optional structured JSON summary (for the admin dashboard)"
+    )
     args = parser.parse_args()
     report(args.responses, args.scores, args.csv, args.json)
 

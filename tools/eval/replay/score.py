@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
-import sys
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -21,7 +20,7 @@ from typing import Optional
 
 
 def _read_jsonl(path: Path):
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -51,6 +50,7 @@ def _cmc_for(grp_id: Optional[int]) -> Optional[float]:
     if _CARD_DB is None:
         try:
             from arenamcp.card_db import get_card_database  # type: ignore
+
             _CARD_DB = get_card_database()
         except Exception:
             _CARD_DB = False  # sentinel: never try again
@@ -95,12 +95,8 @@ def _is_contested(rec: dict) -> bool:
         return len(attackers) >= 1 and len(blockers) >= 1
     if kind == "ActionsAvailable":
         actions = rec.get("actions") or []
-        card_types = {"ActionType_Cast", "ActionType_Play",
-                      "ActionType_PlayMDFC", "ActionType_CastOmen"}
-        card_actions = [
-            a for a in actions
-            if (a.get("action_type") or a.get("actionType")) in card_types
-        ]
+        card_types = {"ActionType_Cast", "ActionType_Play", "ActionType_PlayMDFC", "ActionType_CastOmen"}
+        card_actions = [a for a in actions if (a.get("action_type") or a.get("actionType")) in card_types]
         chosen_type = (rec.get("ground_truth") or {}).get("action_type")
         gt = rec.get("ground_truth") or {}
         chosen_grp_ids = gt.get("grp_ids") or []
@@ -143,34 +139,59 @@ def _is_contested(rec: dict) -> bool:
 def score(responses_path: Path, json_out: Path | None) -> None:
     def _new_kind_stats():
         return {
-            "n": 0, "matched": 0, "jaccard_sum": 0.0,
-            "n_contested": 0, "matched_contested": 0, "jaccard_sum_contested": 0.0,
+            "n": 0,
+            "matched": 0,
+            "jaccard_sum": 0.0,
+            "n_contested": 0,
+            "matched_contested": 0,
+            "jaccard_sum_contested": 0.0,
         }
 
     def _new_be_stats():
         return {
-            "n": 0, "errors": 0, "parsed": 0, "matched": 0,
+            "n": 0,
+            "errors": 0,
+            "parsed": 0,
+            "matched": 0,
             "jaccard_sum": 0.0,
-            "n_contested": 0, "matched_contested": 0, "jaccard_sum_contested": 0.0,
+            "n_contested": 0,
+            "matched_contested": 0,
+            "jaccard_sum_contested": 0.0,
             "latencies_ms": [],
+            # Which seat each record was scored from. Records written before
+            # per-replay seat detection landed carry no "local_seat" and may
+            # have been scored from the OPPONENT's perspective.
+            "by_seat": defaultdict(int),
+            "seat_missing": 0,
             "by_kind": defaultdict(_new_kind_stats),
-            "by_action_type": defaultdict(lambda: {"n": 0, "matched": 0, "jaccard_sum": 0.0,
-                                                    "n_contested": 0, "matched_contested": 0}),
+            "by_action_type": defaultdict(
+                lambda: {"n": 0, "matched": 0, "jaccard_sum": 0.0, "n_contested": 0, "matched_contested": 0}
+            ),
             "by_replay": defaultdict(lambda: {"n": 0, "matched": 0, "jaccard_sum": 0.0}),
         }
+
     by_backend: dict[str, dict] = defaultdict(_new_be_stats)
 
     def _was_parsed(rec: dict) -> bool:
-        if rec.get("choice_number") is not None: return True
-        if rec.get("coach_attacker_ids") is not None: return True
-        if rec.get("coach_blocks") is not None: return True
-        if rec.get("coach_keep") is not None: return True
+        if rec.get("choice_number") is not None:
+            return True
+        if rec.get("coach_attacker_ids") is not None:
+            return True
+        if rec.get("coach_blocks") is not None:
+            return True
+        if rec.get("coach_keep") is not None:
+            return True
         return False
 
     for r in _read_jsonl(responses_path):
         be = r.get("backend") or "?"
         s = by_backend[be]
         s["n"] += 1
+        seat = r.get("local_seat")
+        if seat is None:
+            s["seat_missing"] += 1
+        else:
+            s["by_seat"][int(seat)] += 1
         if r.get("error"):
             s["errors"] += 1
             continue
@@ -229,17 +250,39 @@ def score(responses_path: Path, json_out: Path | None) -> None:
         if jacc_f is not None:
             sr["jaccard_sum"] += jacc_f
 
+    # ---- seat provenance (must come first: it invalidates everything below) ----
+    total_missing = sum(s["seat_missing"] for s in by_backend.values())
+    if total_missing:
+        print()
+        print("=" * 78)
+        print(f"WARNING: {total_missing} record(s) carry no 'local_seat' field.")
+        print("They were produced before per-replay seat detection existed, when")
+        print("the local player was hardcoded to seat 2 — and 55 of the 104 corpus")
+        print("replays record as seat 1. Any such record may have been scored from")
+        print("the OPPONENT's hand and board. Re-run replay/run.py before trusting")
+        print("the numbers below.")
+        print("=" * 78)
+    seat_line = []
+    for be, s in sorted(by_backend.items()):
+        parts = ", ".join(f"seat {k}: {v}" for k, v in sorted(s["by_seat"].items()))
+        if s["seat_missing"]:
+            parts = (parts + ", " if parts else "") + f"unknown: {s['seat_missing']}"
+        seat_line.append(f"  {be}  {parts}")
+    if seat_line:
+        print("\nRecords by scored seat:")
+        print("\n".join(seat_line))
+
     # ---- print headline ----
     print()
     cols = [
-        ("backend",         30),
-        ("n",                5),
-        ("parse%",           7),
-        ("match%",           8),
-        ("contested%",      11),
-        ("jaccard",          8),
-        ("jacc_contested",  16),
-        ("median_ms",       11),
+        ("backend", 30),
+        ("n", 5),
+        ("parse%", 7),
+        ("match%", 8),
+        ("contested%", 11),
+        ("jaccard", 8),
+        ("jacc_contested", 16),
+        ("median_ms", 11),
     ]
     print(" ".join(f"{name:<{w}}" for name, w in cols))
     print("-" * sum(w + 1 for _, w in cols))
@@ -252,10 +295,17 @@ def score(responses_path: Path, json_out: Path | None) -> None:
         mean_jacc = s["jaccard_sum"] / n
         mean_jacc_c = s["jaccard_sum_contested"] / nc if s["n_contested"] else 0.0
         med_ms = statistics.median(s["latencies_ms"]) if s["latencies_ms"] else 0.0
-        row = [be[:30], s["n"], f"{parse_pct:.0f}%", f"{match_pct:.1f}%",
-               f"{contested_pct:.1f}% (n={s['n_contested']})",
-               f"{mean_jacc:.3f}", f"{mean_jacc_c:.3f}", f"{med_ms:.0f}"]
-        print(" ".join(f"{str(v):<{w}}" for v, (_, w) in zip(row, cols)))
+        row = [
+            be[:30],
+            s["n"],
+            f"{parse_pct:.0f}%",
+            f"{match_pct:.1f}%",
+            f"{contested_pct:.1f}% (n={s['n_contested']})",
+            f"{mean_jacc:.3f}",
+            f"{mean_jacc_c:.3f}",
+            f"{med_ms:.0f}",
+        ]
+        print(" ".join(f"{str(v):<{w}}" for v, (_, w) in zip(row, cols, strict=True)))
 
     print("\nMatch% / mean Jaccard by decision KIND (all / contested-only):")
     for be, s in sorted(by_backend.items()):
@@ -267,10 +317,12 @@ def score(responses_path: Path, json_out: Path | None) -> None:
             mp_c = sk["matched_contested"] / nc * 100 if sk["n_contested"] else 0.0
             mj = sk["jaccard_sum"] / n
             mj_c = sk["jaccard_sum_contested"] / nc if sk["n_contested"] else 0.0
-            print(f"    {kind:18s}  n={sk['n']:4d}  match={sk['matched']:4d}  "
-                  f"match%={mp:5.1f}%  jacc={mj:.3f}  "
-                  f"|  contested n={sk['n_contested']:4d}  "
-                  f"match%={mp_c:5.1f}%  jacc={mj_c:.3f}")
+            print(
+                f"    {kind:18s}  n={sk['n']:4d}  match={sk['matched']:4d}  "
+                f"match%={mp:5.1f}%  jacc={mj:.3f}  "
+                f"|  contested n={sk['n_contested']:4d}  "
+                f"match%={mp_c:5.1f}%  jacc={mj_c:.3f}"
+            )
 
     # ---- per action-type ----
     print("\nMatch% by player's actual ActionType:")
@@ -278,7 +330,9 @@ def score(responses_path: Path, json_out: Path | None) -> None:
         print(f"  {be}")
         for atype, sub in sorted(s["by_action_type"].items(), key=lambda kv: -kv[1]["n"]):
             pct = sub["matched"] / sub["n"] * 100 if sub["n"] else 0.0
-            print(f"    {atype.replace('ActionType_', ''):20s}  n={sub['n']:4d}  match={sub['matched']:4d}  {pct:.1f}%")
+            print(
+                f"    {atype.replace('ActionType_', ''):20s}  n={sub['n']:4d}  match={sub['matched']:4d}  {pct:.1f}%"
+            )
 
     # ---- per-replay distribution ----
     print("\nPer-replay match% distribution:")
@@ -287,10 +341,12 @@ def score(responses_path: Path, json_out: Path | None) -> None:
         if not replays:
             continue
         pcts = [r["matched"] / r["n"] * 100 for r in replays if r["n"]]
-        print(f"  {be}  replays={len(replays)}  "
-              f"median={statistics.median(pcts):.1f}%  "
-              f"mean={statistics.mean(pcts):.1f}%  "
-              f"top10={statistics.mean(sorted(pcts, reverse=True)[:max(1, len(pcts)//10)]):.1f}%")
+        print(
+            f"  {be}  replays={len(replays)}  "
+            f"median={statistics.median(pcts):.1f}%  "
+            f"mean={statistics.mean(pcts):.1f}%  "
+            f"top10={statistics.mean(sorted(pcts, reverse=True)[: max(1, len(pcts) // 10)]):.1f}%"
+        )
 
     # ---- JSON summary for upload ----
     if json_out:
@@ -300,70 +356,85 @@ def score(responses_path: Path, json_out: Path | None) -> None:
             replay_pcts = []
             for replay_name, sub in s["by_replay"].items():
                 if sub["n"]:
-                    replay_pcts.append({
-                        "replay": replay_name,
-                        "n": sub["n"],
-                        "matched": sub["matched"],
-                        "match_rate": round(sub["matched"] / sub["n"], 4),
-                    })
+                    replay_pcts.append(
+                        {
+                            "replay": replay_name,
+                            "n": sub["n"],
+                            "matched": sub["matched"],
+                            "match_rate": round(sub["matched"] / sub["n"], 4),
+                        }
+                    )
             nc = s["n_contested"] or 0
-            backends_payload.append({
-                "backend": be,
-                "n": s["n"],
-                "errors": s["errors"],
-                "parsed": s["parsed"],
-                "matched": s["matched"],
-                "match_rate": round(s["matched"] / n, 4) if n else None,
-                "parse_rate": round(s["parsed"] / n, 4) if n else None,
-                "mean_jaccard": round(s["jaccard_sum"] / n, 4) if n else None,
-                "n_contested": nc,
-                "matched_contested": s["matched_contested"],
-                "match_rate_contested": round(s["matched_contested"] / nc, 4) if nc else None,
-                "mean_jaccard_contested": round(s["jaccard_sum_contested"] / nc, 4) if nc else None,
-                "latency_ms_median": round(statistics.median(s["latencies_ms"]), 1) if s["latencies_ms"] else None,
-                "latency_ms_p90": round(statistics.quantiles(s["latencies_ms"], n=10)[-1], 1)
-                                  if len(s["latencies_ms"]) >= 10 else None,
-                "by_kind": {
-                    kind: {
-                        "n": sub["n"],
-                        "matched": sub["matched"],
-                        "match_rate": round(sub["matched"] / sub["n"], 4) if sub["n"] else None,
-                        "mean_jaccard": round(sub["jaccard_sum"] / sub["n"], 4) if sub["n"] else None,
-                        "n_contested": sub.get("n_contested", 0),
-                        "matched_contested": sub.get("matched_contested", 0),
-                        "match_rate_contested": (
-                            round(sub["matched_contested"] / sub["n_contested"], 4)
-                            if sub.get("n_contested") else None
-                        ),
-                        "mean_jaccard_contested": (
-                            round(sub["jaccard_sum_contested"] / sub["n_contested"], 4)
-                            if sub.get("n_contested") else None
-                        ),
-                    }
-                    for kind, sub in s["by_kind"].items()
-                },
-                "by_action_type": {
-                    atype: {
-                        "n": sub["n"],
-                        "matched": sub["matched"],
-                        "match_rate": round(sub["matched"] / sub["n"], 4) if sub["n"] else None,
-                        "mean_jaccard": round(sub["jaccard_sum"] / sub["n"], 4) if sub["n"] else None,
-                        "n_contested": sub.get("n_contested", 0),
-                        "matched_contested": sub.get("matched_contested", 0),
-                        "match_rate_contested": (
-                            round(sub["matched_contested"] / sub["n_contested"], 4)
-                            if sub.get("n_contested") else None
-                        ),
-                    }
-                    for atype, sub in s["by_action_type"].items()
-                },
-                "per_replay": sorted(replay_pcts, key=lambda r: -r["match_rate"]),
-            })
+            backends_payload.append(
+                {
+                    "backend": be,
+                    "n": s["n"],
+                    "errors": s["errors"],
+                    "parsed": s["parsed"],
+                    "matched": s["matched"],
+                    "match_rate": round(s["matched"] / n, 4) if n else None,
+                    "parse_rate": round(s["parsed"] / n, 4) if n else None,
+                    "mean_jaccard": round(s["jaccard_sum"] / n, 4) if n else None,
+                    "n_contested": nc,
+                    "matched_contested": s["matched_contested"],
+                    "match_rate_contested": round(s["matched_contested"] / nc, 4) if nc else None,
+                    "mean_jaccard_contested": round(s["jaccard_sum_contested"] / nc, 4) if nc else None,
+                    "latency_ms_median": round(statistics.median(s["latencies_ms"]), 1)
+                    if s["latencies_ms"]
+                    else None,
+                    "latency_ms_p90": round(statistics.quantiles(s["latencies_ms"], n=10)[-1], 1)
+                    if len(s["latencies_ms"]) >= 10
+                    else None,
+                    "by_seat": {str(k): v for k, v in sorted(s["by_seat"].items())},
+                    "seat_missing": s["seat_missing"],
+                    "by_kind": {
+                        kind: {
+                            "n": sub["n"],
+                            "matched": sub["matched"],
+                            "match_rate": round(sub["matched"] / sub["n"], 4) if sub["n"] else None,
+                            "mean_jaccard": round(sub["jaccard_sum"] / sub["n"], 4) if sub["n"] else None,
+                            "n_contested": sub.get("n_contested", 0),
+                            "matched_contested": sub.get("matched_contested", 0),
+                            "match_rate_contested": (
+                                round(sub["matched_contested"] / sub["n_contested"], 4)
+                                if sub.get("n_contested")
+                                else None
+                            ),
+                            "mean_jaccard_contested": (
+                                round(sub["jaccard_sum_contested"] / sub["n_contested"], 4)
+                                if sub.get("n_contested")
+                                else None
+                            ),
+                        }
+                        for kind, sub in s["by_kind"].items()
+                    },
+                    "by_action_type": {
+                        atype: {
+                            "n": sub["n"],
+                            "matched": sub["matched"],
+                            "match_rate": round(sub["matched"] / sub["n"], 4) if sub["n"] else None,
+                            "mean_jaccard": round(sub["jaccard_sum"] / sub["n"], 4) if sub["n"] else None,
+                            "n_contested": sub.get("n_contested", 0),
+                            "matched_contested": sub.get("matched_contested", 0),
+                            "match_rate_contested": (
+                                round(sub["matched_contested"] / sub["n_contested"], 4)
+                                if sub.get("n_contested")
+                                else None
+                            ),
+                        }
+                        for atype, sub in s["by_action_type"].items()
+                    },
+                    "per_replay": sorted(replay_pcts, key=lambda r: -r["match_rate"]),
+                }
+            )
         payload = {
             "target": "replay_match",
             "ts": time.time(),
             "n_decisions": sum(s["n"] for s in by_backend.values()),
             "n_replays": len({r for s in by_backend.values() for r in s["by_replay"]}),
+            # Non-zero means part of the corpus predates per-replay seat
+            # detection and may have been scored from the opponent's side.
+            "n_seat_missing": total_missing,
             "backends": backends_payload,
         }
         with open(json_out, "w", encoding="utf-8") as f:
@@ -372,11 +443,9 @@ def score(responses_path: Path, json_out: Path | None) -> None:
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawTextHelpFormatter)
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("--responses", required=True, type=Path)
-    p.add_argument("--json", type=Path,
-                   help="Optional structured JSON summary for the admin dashboard")
+    p.add_argument("--json", type=Path, help="Optional structured JSON summary for the admin dashboard")
     args = p.parse_args()
     score(args.responses, args.json)
 

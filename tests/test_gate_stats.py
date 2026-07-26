@@ -19,7 +19,7 @@ def test_gate_decision_fails_closed_when_quality_none(tmp_path):
         gate_matches=6,
         sets="ONE",
     )
-    
+
     # Even if win rate is 100%, if quality is None, the gate MUST return False (BLOCKED)
     verdict = runner._gate_decision(win_rate=1.0, quality=None)
     assert verdict is False

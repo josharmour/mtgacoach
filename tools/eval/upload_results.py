@@ -46,10 +46,11 @@ def upload(json_path: Path, proxy_url: str, admin_key: str) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawTextHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("--json", required=True, type=Path)
-    parser.add_argument("--proxy-url", default=os.environ.get("MTGACOACH_PROXY_URL", "https://api.mtgacoach.com"))
+    parser.add_argument(
+        "--proxy-url", default=os.environ.get("MTGACOACH_PROXY_URL", "https://api.mtgacoach.com")
+    )
     parser.add_argument("--admin-key", default=os.environ.get("MTGACOACH_ADMIN_KEY", ""))
     args = parser.parse_args()
     if not args.admin_key:

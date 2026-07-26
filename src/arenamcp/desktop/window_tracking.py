@@ -241,6 +241,11 @@ def apply_system_click_through(widget: Any, enabled: bool = True) -> bool:
         if window is None:
             return False
         window.setIgnoresMouseEvents_(bool(enabled))
+        try:
+            window.setHidesOnDeactivate_(False)
+            window.setLevel_(25)  # Overlay / status window level (stays above game when MTGA gains focus)
+        except Exception:
+            pass
         return True
     except Exception:
         return False

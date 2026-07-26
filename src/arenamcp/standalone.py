@@ -238,7 +238,7 @@ class StandaloneCoach(_DeckAnalysisMixin, _PostMatchMixin, _DiagnosticsMixin):
         # advice_style can be "quick" (terse, speakable) or "chatty" (longer,
         # explanatory). Legacy values "concise"/"verbose" are still accepted.
         self.advice_style = "quick"
-        self._advice_frequency = self.settings.get("advice_frequency", "start_of_turn")
+        self._advice_frequency = self.settings.get("advice_frequency", "every_priority")
         self._auto_deck_strategy = bool(self.settings.get("auto_deck_strategy", True))
         self._auto_post_match_analysis = bool(self.settings.get("auto_post_match_analysis", False))
 
@@ -2568,9 +2568,21 @@ class StandaloneCoach(_DeckAnalysisMixin, _PostMatchMixin, _DiagnosticsMixin):
                         # pass-only/no-instant filler, so these fire frequently
                         # but only when the human has a real choice.
                         is_frequent = (
-                            self.advice_frequency == "every_priority"
-                            and trigger in ("priority_gained", "combat_attackers", "combat_blockers")
-                            and (turn_num > last_advice_turn or phase != last_advice_phase)
+                            self.advice_frequency in ("every_priority", "smart")
+                            and trigger
+                            in (
+                                "priority_gained",
+                                "combat_attackers",
+                                "combat_blockers",
+                                "decision_required",
+                                "land_played",
+                            )
+                            and (
+                                turn_num > last_advice_turn
+                                or phase != last_advice_phase
+                                or has_pending_decision
+                                or trigger in ("decision_required", "land_played")
+                            )
                         )
 
                         # Additional check: Don't spam priority triggers if we just advised on new_turn
@@ -2793,6 +2805,7 @@ class StandaloneCoach(_DeckAnalysisMixin, _PostMatchMixin, _DiagnosticsMixin):
                             # Snapshot turn state BEFORE the (slow) LLM call
                             pre_advice_turn = turn_num
                             pre_advice_phase = phase
+                            pre_advice_active_player = turn.get("active_player")
 
                             # Inject library targets when a tutor spell is in hand
                             self._inject_library_summary_if_needed(curr_state)
@@ -2898,8 +2911,11 @@ class StandaloneCoach(_DeckAnalysisMixin, _PostMatchMixin, _DiagnosticsMixin):
                                 # Combat advice: stale if no longer in combat
                                 is_stale = fresh_turn_num != pre_advice_turn or "Combat" not in fresh_phase
                             else:
-                                # General advice: only stale if the turn number changed
-                                is_stale = fresh_turn_num != pre_advice_turn
+                                # General advice: stale if turn number or active player changed
+                                fresh_active = fresh_turn.get("active_player")
+                                is_stale = (fresh_turn_num != pre_advice_turn) or (
+                                    fresh_active != pre_advice_active_player
+                                )
 
                             if is_stale:
                                 stale_label = "[STALE - discarded]"

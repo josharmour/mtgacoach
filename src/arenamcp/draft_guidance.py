@@ -444,9 +444,15 @@ def compute_lane(pool: Sequence[CardData], fmt: FormatContext) -> LaneState:
             for c in card.colors:
                 counts[c] += 1
         wr = card.gih_wr_pct
-        if wr is None or wr < playable_floor:
+        if wr is None:
+            # Fallback for Cube/custom sets: count color weight by card quality
+            rarity_lower = (card.rarity or "").lower()
+            rarity_boost = 2.0 if "mythic" in rarity_lower else (1.5 if "rare" in rarity_lower else 1.0)
+            base_points = max(0.5, rarity_boost)
+        elif wr < playable_floor:
             continue
-        base_points = max(0.2, 1.0 + 2.0 * ((wr - fmt.mean_gih_wr_pct) / max(0.1, fmt.std_gih_wr_pct)))
+        else:
+            base_points = max(0.2, 1.0 + 2.0 * ((wr - fmt.mean_gih_wr_pct) / max(0.1, fmt.std_gih_wr_pct)))
         recency_mult = 1.0 + 2.0 * (idx / max(1, n))  # oldest 1.0x → newest ~3.0x
         for c in card.colors:
             weights[c] += base_points * recency_mult
@@ -463,9 +469,10 @@ def compute_lane(pool: Sequence[CardData], fmt: FormatContext) -> LaneState:
             if c in leaders or counts[c] >= threshold:
                 main.append(c)
     else:
-        # Early draft: only colors with real accumulated quality count.
+        # Early draft: pick top weighted colors (threshold scales with pool size)
+        threshold = 1.5 if n >= 3 else 2.5
         for c, w in sorted_w:
-            if w >= 2.5:
+            if w >= threshold:
                 main.append(c)
 
     return LaneState(main_colors=tuple(main[:3]), weights=weights, counts=counts)
@@ -552,9 +559,41 @@ def _blended_base_score(
     """
     global_wr = card.gih_wr_pct
     if global_wr is None:
-        # No data: park it at the format mean so type/composition factors
-        # still differentiate. Callers see the reason string.
-        return 50.0, "No 17lands data yet"
+        # Full 0-90+ heuristic power scale for Cube & custom formats
+        est = 35.0
+        rarity_lower = (card.rarity or "").lower()
+        if "mythic" in rarity_lower:
+            est += 24.0
+        elif "rare" in rarity_lower:
+            est += 18.0
+        elif "uncommon" in rarity_lower:
+            est += 8.0
+
+        if "Planeswalker" in card.types:
+            est += 18.0
+        if "removal" in card.tags or "sweeper" in card.tags:
+            est += 14.0
+        if "card_advantage" in card.tags or "draw" in card.tags:
+            est += 9.0
+        if "evasion" in card.tags:
+            est += 8.0
+        if "fixing" in card.tags or (card.is_land and len(card.colors) != 1):
+            est += 12.0
+        if card.cmc <= 2 and (card.is_creature or "removal" in card.tags):
+            est += 6.0
+
+        # Cap filler cards without major tags or high rarity
+        if not (
+            "removal" in card.tags
+            or "evasion" in card.tags
+            or "card_advantage" in card.tags
+            or "fixing" in card.tags
+            or "Planeswalker" in card.types
+        ):
+            if "rare" not in rarity_lower and "mythic" not in rarity_lower:
+                est = min(40.0, est)
+
+        return max(0.0, min(100.0, est)), "No 17lands data yet (estimated by card quality)"
 
     reason = None
     blended = global_wr

@@ -28,7 +28,7 @@ Usage:
     # With an LLM judge and diversity-aware sampling:
     python -m tools.training.build_dataset \\
         --trajectories tools/eval/data/self_play_trajectories.jsonl \\
-        --judge-backend online:gpt-5.4 \\
+        --judge-backend online:deepseek-v4-flash \\
         --dedup --hard-mine --max-examples 5000
 """
 
@@ -115,14 +115,14 @@ def _parse_move_judge_response(text: str) -> Optional[dict]:
     if text.startswith("```"):
         first_nl = text.find("\n")
         if first_nl != -1:
-            text = text[first_nl + 1:]
+            text = text[first_nl + 1 :]
         if text.endswith("```"):
             text = text[:-3]
     text = text.strip()
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
-        text = text[start:end + 1]
+        text = text[start : end + 1]
     try:
         return json.loads(text)
     except (json.JSONDecodeError, ValueError):
@@ -138,6 +138,7 @@ def _build_judge_client(judge_backend_spec: Optional[str], license_key: str):
         # suite do not require the arenamcp runtime dependencies to be
         # installed just to build heuristic datasets.
         from tools.eval.run import BackendSpec  # noqa: WPS433
+
         spec = BackendSpec.parse(judge_backend_spec, license_key=license_key)
         client = spec.build()
         logger.info(f"Judge backend initialized: {spec.label}")
@@ -243,22 +244,41 @@ def main():
     p.add_argument("--seventeenlands-turn-action", type=Path, help="Input 17lands turn action prompts JSONL")
     p.add_argument("--out-sft", type=Path, default=Path("tools/training/data/sft_dataset.json"))
     p.add_argument("--out-dpo", type=Path, default=Path("tools/training/data/dpo_dataset.json"))
-    p.add_argument("--judge-backend", type=str, default=None,
-                   help="Optional judge backend spec for DPO pair selection (e.g., 'online:gpt-5.4'). "
-                        "When omitted, falls back to the deterministic winner-takes-all heuristic.")
-    p.add_argument("--license-key", type=str, default=os.environ.get("MTGACOACH_LICENSE_KEY", ""),
-                   help="License key for online judge access")
-    p.add_argument("--dedup", action="store_true",
-                   help="Deduplicate self-play trajectories by game-state signature, "
-                        "keeping the hardest example per state.")
-    p.add_argument("--hard-mine", action="store_true",
-                   help="Sort deduplicated trajectories by hardness (descending) so the "
-                        "hardest examples are processed first / survive --max-examples.")
-    p.add_argument("--max-examples", type=int, default=0,
-                   help="Cap the number of self-play trajectory examples (0 = no cap). "
-                        "Hard examples are always kept; easier ones are subsampled.")
-    p.add_argument("--seed", type=int, default=1234,
-                   help="Random seed for --max-examples subsampling (deterministic).")
+    p.add_argument(
+        "--judge-backend",
+        type=str,
+        default=None,
+        help="Optional judge backend spec for DPO pair selection (e.g., 'online:deepseek-v4-flash'). "
+        "When omitted, falls back to the deterministic winner-takes-all heuristic.",
+    )
+    p.add_argument(
+        "--license-key",
+        type=str,
+        default=os.environ.get("MTGACOACH_LICENSE_KEY", ""),
+        help="License key for online judge access",
+    )
+    p.add_argument(
+        "--dedup",
+        action="store_true",
+        help="Deduplicate self-play trajectories by game-state signature, "
+        "keeping the hardest example per state.",
+    )
+    p.add_argument(
+        "--hard-mine",
+        action="store_true",
+        help="Sort deduplicated trajectories by hardness (descending) so the "
+        "hardest examples are processed first / survive --max-examples.",
+    )
+    p.add_argument(
+        "--max-examples",
+        type=int,
+        default=0,
+        help="Cap the number of self-play trajectory examples (0 = no cap). "
+        "Hard examples are always kept; easier ones are subsampled.",
+    )
+    p.add_argument(
+        "--seed", type=int, default=1234, help="Random seed for --max-examples subsampling (deterministic)."
+    )
     args = p.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s | %(message)s")
@@ -278,7 +298,7 @@ def main():
         # over the full set. When no sampling flags are set, records are
         # processed in original file order, identical to the legacy behavior.
         records = []
-        with open(args.trajectories, "r", encoding="utf-8") as f:
+        with open(args.trajectories, encoding="utf-8") as f:
             for idx, line in enumerate(f):
                 try:
                     rec = json.loads(line.strip())
@@ -315,15 +335,11 @@ def main():
 
             if args.dedup or args.max_examples:
                 logger.info(
-                    f"Dedup complete: {original_count} trajectories -> "
-                    f"{len(dedup_records)} unique states"
+                    f"Dedup complete: {original_count} trajectories -> {len(dedup_records)} unique states"
                 )
             elif args.hard_mine:
                 # hard-mine alone still dedups by signature for stable ordering
-                logger.info(
-                    f"Hard-mine: {original_count} trajectories -> "
-                    f"{len(dedup_records)} unique states"
-                )
+                logger.info(f"Hard-mine: {original_count} trajectories -> {len(dedup_records)} unique states")
 
             # Hardness distribution (easy/medium/hard buckets).
             easy = sum(1 for _, h in dedup_records if h < 0.5)
@@ -346,16 +362,13 @@ def main():
                 sorted_h = sorted(h for _, h in dedup_records)
                 hard_threshold = sorted_h[len(sorted_h) // 2]
                 sampled = [
-                    (rec, h) for rec, h in dedup_records
-                    if h >= hard_threshold or rng.random() < (1.0 - h)
+                    (rec, h) for rec, h in dedup_records if h >= hard_threshold or rng.random() < (1.0 - h)
                 ]
                 # If still over the cap, keep the hardest max_examples.
                 if len(sampled) > args.max_examples:
                     sampled.sort(key=lambda x: x[1], reverse=True)
-                    sampled = sampled[:args.max_examples]
-                logger.info(
-                    f"Sampled down to {len(sampled)} examples (cap={args.max_examples})"
-                )
+                    sampled = sampled[: args.max_examples]
+                logger.info(f"Sampled down to {len(sampled)} examples (cap={args.max_examples})")
                 dedup_records = sampled
 
             final_records = [rec for rec, _ in dedup_records]
@@ -386,11 +399,13 @@ def main():
             rejected_json = game_action_to_schema_json(rejected) if rejected else None
 
             if chosen_json:
-                sft_data.append({
-                    "system": prompt_system,
-                    "user": prompt_user,
-                    "response": chosen_json,
-                })
+                sft_data.append(
+                    {
+                        "system": prompt_system,
+                        "user": prompt_user,
+                        "response": chosen_json,
+                    }
+                )
 
             if chosen_json and rejected_json and chosen_json != rejected_json:
                 dpo_entry = {
@@ -435,7 +450,7 @@ def main():
     if args.seventeenlands_mulligan and args.seventeenlands_mulligan.exists():
         logger.info(f"Processing 17lands mulligan prompts: {args.seventeenlands_mulligan}")
         count = 0
-        with open(args.seventeenlands_mulligan, "r", encoding="utf-8") as f:
+        with open(args.seventeenlands_mulligan, encoding="utf-8") as f:
             for idx, line in enumerate(f):
                 try:
                     rec = json.loads(line.strip())
@@ -453,11 +468,13 @@ def main():
 
                 if correct:
                     response = "KEEP" if correct == "keep" else "MULLIGAN"
-                    sft_data.append({
-                        "system": rec.get("system") or "",
-                        "user": rec.get("user") or "",
-                        "response": response,
-                    })
+                    sft_data.append(
+                        {
+                            "system": rec.get("system") or "",
+                            "user": rec.get("user") or "",
+                            "response": response,
+                        }
+                    )
                     count += 1
         logger.info(f"Added {count} 17lands mulligan SFT examples")
 
@@ -465,7 +482,7 @@ def main():
     if args.seventeenlands_turn_action and args.seventeenlands_turn_action.exists():
         logger.info(f"Processing 17lands turn-action prompts: {args.seventeenlands_turn_action}")
         count = 0
-        with open(args.seventeenlands_turn_action, "r", encoding="utf-8") as f:
+        with open(args.seventeenlands_turn_action, encoding="utf-8") as f:
             for idx, line in enumerate(f):
                 try:
                     rec = json.loads(line.strip())
@@ -478,11 +495,13 @@ def main():
 
                 if did:
                     response = ", ".join(did)
-                    sft_data.append({
-                        "system": rec.get("system") or "",
-                        "user": rec.get("user") or "",
-                        "response": response,
-                    })
+                    sft_data.append(
+                        {
+                            "system": rec.get("system") or "",
+                            "user": rec.get("user") or "",
+                            "response": response,
+                        }
+                    )
                     count += 1
         logger.info(f"Added {count} 17lands turn-action SFT examples")
 

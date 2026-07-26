@@ -531,33 +531,11 @@ class MatchOverlayWindow(QWidget):
                 return None
             left_px, top_px, width_px, height_px = rect
 
-        # Per-monitor DPI ratio so the overlay sits correctly on high-DPI displays.
-        ratio = 1.0
-        try:
-            from PySide6.QtGui import QGuiApplication
-
-            center_px = (left_px + width_px // 2, top_px + height_px // 2)
-            screen = (
-                QGuiApplication.screenAt(self.mapToGlobal(self.rect().topLeft()))
-                or QGuiApplication.primaryScreen()
-            )
-            for s in QGuiApplication.screens():
-                geo = s.geometry()
-                if geo.contains(center_px[0], center_px[1]):
-                    screen = s
-                    break
-            if screen:
-                ratio = float(screen.devicePixelRatio() or 1.0)
-        except Exception:
-            ratio = 1.0
-        if ratio <= 0:
-            ratio = 1.0
-
         return QRect(
-            int(left_px / ratio),
-            int(top_px / ratio),
-            int(width_px / ratio),
-            int(height_px / ratio),
+            int(left_px),
+            int(top_px),
+            int(width_px),
+            int(height_px),
         )
 
     def _tick(self) -> None:

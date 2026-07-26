@@ -68,7 +68,7 @@ def parse_action_set(response: str) -> set[str] | None:
 
 
 def _read_jsonl(path: Path):
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -97,18 +97,24 @@ def score(
     prompts = {p["id"]: p for p in _read_jsonl(prompts_path)}
     responses = list(_read_jsonl(responses_path))
     if not prompts:
-        print(f"no prompts in {prompts_path}", file=sys.stderr); sys.exit(1)
+        print(f"no prompts in {prompts_path}", file=sys.stderr)
+        sys.exit(1)
     if not responses:
-        print(f"no responses in {responses_path}", file=sys.stderr); sys.exit(1)
+        print(f"no responses in {responses_path}", file=sys.stderr)
+        sys.exit(1)
 
-    stats: dict[str, dict] = defaultdict(lambda: {
-        "n": 0, "errors": 0, "parsed": 0,
-        "exact_match": 0,
-        "jaccard_sum": 0.0,
-        "unparsed_examples": [],
-        # Per-category confusion: tp/fp/fn per category
-        "per_cat": {c: {"tp": 0, "fp": 0, "fn": 0} for c in CATEGORIES},
-    })
+    stats: dict[str, dict] = defaultdict(
+        lambda: {
+            "n": 0,
+            "errors": 0,
+            "parsed": 0,
+            "exact_match": 0,
+            "jaccard_sum": 0.0,
+            "unparsed_examples": [],
+            # Per-category confusion: tp/fp/fn per category
+            "per_cat": {c: {"tp": 0, "fp": 0, "fn": 0} for c in CATEGORIES},
+        }
+    )
 
     for r in responses:
         be = r.get("backend") or "?"
@@ -154,11 +160,11 @@ def score(
 
     # Print headline table
     cols = [
-        ("backend",            30),
-        ("n",                   4),
-        ("parse%",              7),
-        ("exact_match%",       14),
-        ("mean_jaccard",       14),
+        ("backend", 30),
+        ("n", 4),
+        ("parse%", 7),
+        ("exact_match%", 14),
+        ("mean_jaccard", 14),
     ]
     header = " ".join(f"{name:<{w}}" for name, w in cols)
     print()
@@ -170,10 +176,16 @@ def score(
         parse_pct = s["parsed"] / n * 100
         exact = s["exact_match"] / s["parsed"] * 100 if s["parsed"] else 0.0
         mean_j = s["jaccard_sum"] / s["parsed"] if s["parsed"] else 0.0
-        print(" ".join(f"{str(v):<{w}}" for v, (_, w) in zip(
-            [be[:30], s["n"], f"{parse_pct:.0f}%", f"{exact:.1f}%", f"{mean_j:.3f}"],
-            cols,
-        )))
+        print(
+            " ".join(
+                f"{str(v):<{w}}"
+                for v, (_, w) in zip(
+                    [be[:30], s["n"], f"{parse_pct:.0f}%", f"{exact:.1f}%", f"{mean_j:.3f}"],
+                    cols,
+                    strict=True,
+                )
+            )
+        )
 
     print()
     print("Per-category P/R/F1 (per backend):")
@@ -185,8 +197,7 @@ def score(
             prec = tp / (tp + fp) if (tp + fp) else 0.0
             rec = tp / (tp + fn) if (tp + fn) else 0.0
             f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
-            print(f"    {c:14}  tp={tp:3d}  fp={fp:3d}  fn={fn:3d}  "
-                  f"P={prec:.2f}  R={rec:.2f}  F1={f1:.2f}")
+            print(f"    {c:14}  tp={tp:3d}  fp={fp:3d}  fn={fn:3d}  P={prec:.2f}  R={rec:.2f}  F1={f1:.2f}")
 
     print()
     print("Unparsed examples (first 3 per backend):")
@@ -208,25 +219,32 @@ def score(
                 tp, fp, fn = pc["tp"], pc["fp"], pc["fn"]
                 prec = tp / (tp + fp) if (tp + fp) else None
                 rec = tp / (tp + fn) if (tp + fn) else None
-                f1 = (2 * prec * rec / (prec + rec)
-                      if (prec is not None and rec is not None and (prec + rec)) else None)
+                f1 = (
+                    2 * prec * rec / (prec + rec)
+                    if (prec is not None and rec is not None and (prec + rec))
+                    else None
+                )
                 cats[c] = {
-                    "tp": tp, "fp": fp, "fn": fn,
+                    "tp": tp,
+                    "fp": fp,
+                    "fn": fn,
                     "precision": round(prec, 4) if prec is not None else None,
                     "recall": round(rec, 4) if rec is not None else None,
                     "f1": round(f1, 4) if f1 is not None else None,
                 }
-            backends_payload.append({
-                "backend": be,
-                "n": s["n"],
-                "errors": s["errors"],
-                "parsed": s["parsed"],
-                "exact_match": s["exact_match"],
-                "exact_match_rate": round(exact_rate, 4) if exact_rate is not None else None,
-                "mean_jaccard": round(mean_j, 4) if mean_j is not None else None,
-                "parse_rate": round(parse_rate, 4) if parse_rate is not None else None,
-                "per_category": cats,
-            })
+            backends_payload.append(
+                {
+                    "backend": be,
+                    "n": s["n"],
+                    "errors": s["errors"],
+                    "parsed": s["parsed"],
+                    "exact_match": s["exact_match"],
+                    "exact_match_rate": round(exact_rate, 4) if exact_rate is not None else None,
+                    "mean_jaccard": round(mean_j, 4) if mean_j is not None else None,
+                    "parse_rate": round(parse_rate, 4) if parse_rate is not None else None,
+                    "per_category": cats,
+                }
+            )
         payload = {
             "target": "17lands_turn_action",
             "ts": time.time(),
@@ -243,13 +261,13 @@ def score(
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawTextHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("--prompts", required=True, type=Path)
     parser.add_argument("--responses", required=True, type=Path)
     parser.add_argument("--json", type=Path)
-    parser.add_argument("--set", dest="set_code", default=None,
-                        help="Optional set code to embed in the summary payload")
+    parser.add_argument(
+        "--set", dest="set_code", default=None, help="Optional set code to embed in the summary payload"
+    )
     args = parser.parse_args()
     score(args.prompts, args.responses, args.json, set_code=args.set_code)
 

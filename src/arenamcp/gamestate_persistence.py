@@ -51,6 +51,9 @@ def save_match_state(
     if not game_state.match_id:
         return
 
+    status = (
+        "ended" if (game_state.last_game_result or getattr(game_state, "match_ended", False)) else "active"
+    )
     state = {
         "match_id": game_state.match_id,
         "local_seat_id": game_state.local_seat_id,
@@ -58,7 +61,7 @@ def save_match_state(
         "turn_number": game_state.turn_info.turn_number,
         "phase": game_state.turn_info.phase,
         "timestamp": time.time(),
-        "status": "active",
+        "status": status,
         "checkpoint": game_state.export_checkpoint(),
     }
 

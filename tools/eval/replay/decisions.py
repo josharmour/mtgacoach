@@ -26,12 +26,12 @@ class GroundTruth:
     `kind` and `summary`; other fields are optional.
     """
 
-    kind: str            # request type stripped of GREMessageType_ prefix
-    summary: str         # human-readable one-liner ("Cast Lightning Strike", "Pass", ...)
-    action_type: Optional[str] = None     # ActionType_Cast / ActionType_Pass / ActionType_PlayLand / ...
-    grp_ids: list[int] = field(default_factory=list)        # cards played/cast/searched
-    instance_ids: list[int] = field(default_factory=list)   # board entities targeted
-    keep: Optional[bool] = None           # mulligan answer
+    kind: str  # request type stripped of GREMessageType_ prefix
+    summary: str  # human-readable one-liner ("Cast Lightning Strike", "Pass", ...)
+    action_type: Optional[str] = None  # ActionType_Cast / ActionType_Pass / ActionType_PlayLand / ...
+    grp_ids: list[int] = field(default_factory=list)  # cards played/cast/searched
+    instance_ids: list[int] = field(default_factory=list)  # board entities targeted
+    keep: Optional[bool] = None  # mulligan answer
     raw: dict = field(default_factory=dict)
 
 
@@ -39,7 +39,7 @@ class GroundTruth:
 class Decision:
     """One (request, response, ground_truth) tuple."""
 
-    index: int                   # decision number within the replay (0-based)
+    index: int  # decision number within the replay (0-based)
     request: ReplayMessage
     response: Optional[ReplayMessage]
     ground_truth: Optional[GroundTruth]
@@ -60,8 +60,9 @@ def _extract_actions_available(req: dict, resp: dict) -> Optional[GroundTruth]:
     actions = ((resp.get("performActionResp") or {}).get("actions")) or []
     if not actions:
         # Some responses are pure ack with no action; treat as Pass-equivalent.
-        return GroundTruth(kind="ActionsAvailable", summary="(empty action)",
-                           action_type="ActionType_Pass", raw={})
+        return GroundTruth(
+            kind="ActionsAvailable", summary="(empty action)", action_type="ActionType_Pass", raw={}
+        )
     # Player can submit multiple actions in one response (rare); summarize.
     parts = []
     grp_ids: list[int] = []
@@ -101,10 +102,12 @@ def _extract_declare_attackers(req: dict, resp: dict) -> Optional[GroundTruth]:
     da = req.get("declareAttackersReq") or {}
     chosen = da.get("attackers") or []
     qualified = da.get("qualifiedAttackers") or []
-    instance_ids = sorted(int(a.get("attackerInstanceId")) for a in chosen
-                          if a.get("attackerInstanceId") is not None)
-    qual_ids = sorted(int(a.get("attackerInstanceId")) for a in qualified
-                      if a.get("attackerInstanceId") is not None)
+    instance_ids = sorted(
+        int(a.get("attackerInstanceId")) for a in chosen if a.get("attackerInstanceId") is not None
+    )
+    qual_ids = sorted(
+        int(a.get("attackerInstanceId")) for a in qualified if a.get("attackerInstanceId") is not None
+    )
     if instance_ids:
         summary = f"Attack with {instance_ids}"
     else:
@@ -128,8 +131,9 @@ def _extract_declare_blockers(req: dict, resp: dict) -> Optional[GroundTruth]:
     """
     db = req.get("declareBlockersReq") or {}
     blockers = db.get("blockers") or []
-    instance_ids = sorted({int(b["blockerInstanceId"])
-                           for b in blockers if b.get("blockerInstanceId") is not None})
+    instance_ids = sorted(
+        {int(b["blockerInstanceId"]) for b in blockers if b.get("blockerInstanceId") is not None}
+    )
     if not blockers:
         summary = "No blocks"
     else:
@@ -153,12 +157,16 @@ def _extract_declare_blockers(req: dict, resp: dict) -> Optional[GroundTruth]:
 
 def _extract_mulligan(req: dict, resp: dict) -> Optional[GroundTruth]:
     sub = resp.get("mulliganResp") or {}
-    decision = (sub.get("decision") or "")
+    decision = sub.get("decision") or ""
     keep = decision == "MulliganOption_AcceptHand"
     summary = "Keep" if keep else "Mulligan"
-    return GroundTruth(kind="Mulligan", summary=summary, keep=keep,
-                       action_type="ActionType_Keep" if keep else "ActionType_Mulligan",
-                       raw=sub)
+    return GroundTruth(
+        kind="Mulligan",
+        summary=summary,
+        keep=keep,
+        action_type="ActionType_Keep" if keep else "ActionType_Mulligan",
+        raw=sub,
+    )
 
 
 def _extract_search(req: dict, resp: dict) -> Optional[GroundTruth]:
@@ -182,9 +190,12 @@ def _extract_optional_action(req: dict, resp: dict) -> Optional[GroundTruth]:
     decision = sub.get("decision")
     chose_yes = decision in ("OptionalActionDecision_Yes", "Yes", True, 1)
     summary = "Yes" if chose_yes else "No"
-    return GroundTruth(kind="OptionalAction", summary=summary,
-                       action_type="ActionType_OptionalYes" if chose_yes else "ActionType_OptionalNo",
-                       raw=sub)
+    return GroundTruth(
+        kind="OptionalAction",
+        summary=summary,
+        action_type="ActionType_OptionalYes" if chose_yes else "ActionType_OptionalNo",
+        raw=sub,
+    )
 
 
 def _extract_select_n(req: dict, resp: dict) -> Optional[GroundTruth]:
@@ -243,8 +254,9 @@ def extract_decisions(messages: list[ReplayMessage]) -> list[Decision]:
             try:
                 truth = extractor(m.payload, resp.payload)
             except Exception as exc:  # noqa: BLE001
-                truth = GroundTruth(kind=m.msg_type.replace("GREMessageType_", ""),
-                                    summary=f"<extract error: {exc}>")
+                truth = GroundTruth(
+                    kind=m.msg_type.replace("GREMessageType_", ""), summary=f"<extract error: {exc}>"
+                )
         out.append(Decision(index=idx, request=m, response=resp, ground_truth=truth))
         idx += 1
     return out
@@ -254,13 +266,17 @@ def main():
     """CLI: dump decisions + ground truth for a single replay."""
     import argparse
     from pathlib import Path
+
     from .reader import parse_replay_path
 
     p = argparse.ArgumentParser(description="Dump decision + ground truth")
     p.add_argument("path", type=Path)
     p.add_argument("--limit", type=int, default=30)
-    p.add_argument("--kinds", default=None,
-                   help="Comma-separated request types to keep (e.g. ActionsAvailable,DeclareAttackers)")
+    p.add_argument(
+        "--kinds",
+        default=None,
+        help="Comma-separated request types to keep (e.g. ActionsAvailable,DeclareAttackers)",
+    )
     args = p.parse_args()
 
     meta, messages = parse_replay_path(args.path)

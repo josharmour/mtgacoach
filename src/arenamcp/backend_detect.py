@@ -25,8 +25,8 @@ def detect_backends_quick() -> dict[str, bool]:
     # Online: check if mtgacoach.com API is reachable and we have a license key
     results["online"] = _is_online_available()
 
-    # Local: disabled for now
-    results["local"] = False
+    # Local: check if local endpoint is reachable
+    results["local"] = _validate_local()[0]
 
     return results
 
@@ -81,7 +81,7 @@ def validate_backend(mode: str) -> tuple[bool, str]:
     if mode == "online":
         return _validate_online()
     elif mode == "local":
-        return False, "Local mode is disabled."
+        return _validate_local()
     else:
         return False, f"Unknown mode: {mode}. Use 'online'."
 

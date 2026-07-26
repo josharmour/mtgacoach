@@ -1,6 +1,6 @@
 # mtgacoach LLM eval harness
 
-Quantify how local Ollama models compare to the production online (GPT-5.4)
+Quantify how local Ollama models compare to the production online model (self-hosted; `deepseek-v4-flash` alias)
 backend on **your** real coach prompts. The harness is a 3-step pipeline:
 
 1. **Capture** real prompts during live play (or use the seed corpus).
@@ -28,7 +28,7 @@ produce trustworthy quality numbers. Confirmed issues from a live run on
   action, but Cut Down only hits creatures with mana value ≤2 or
   toughness ≤2; Sheoldred is mv-4 toughness-5. The legal_actions field
   is wrong, so models that "follow" the prompt's lie get penalized.
-- The judge model (GPT-5.4) also occasionally gets card text wrong on
+- The judge model also occasionally gets card text wrong on
   edge cases (e.g. Glistening Deluge's color clause), so seed-corpus
   judge scores have noise from both the prompt AND the judge.
 
@@ -48,17 +48,17 @@ $env:MTGACOACH_LICENSE_KEY = "<your license key>"
 python -m tools.eval.run `
     --prompts tools/eval/data/seed_prompts.jsonl `
     --responses tools/eval/data/responses.jsonl `
-    --backend online:gpt-5.4 `
+    --backend online:deepseek-v4-flash `
     --backend ollama:gemma4:latest `
     --backend ollama:qwen2.5:14b `
     --backend ollama:gemma4:26b
 
-# Score every response with GPT-5.4 as the judge.
+# Score every response with the self-hosted judge.
 python -m tools.eval.judge `
     --prompts tools/eval/data/seed_prompts.jsonl `
     --responses tools/eval/data/responses.jsonl `
     --scores tools/eval/data/scores.jsonl `
-    --judge-backend online:gpt-5.4
+    --judge-backend online:deepseek-v4-flash
 
 # Print summary + write CSV.
 python -m tools.eval.report `
@@ -97,7 +97,7 @@ python -m tools.eval.run --prompts ~/.arenamcp/eval_prompts.jsonl ...
 
 | Spec                                          | Routes to                          |
 |-----------------------------------------------|------------------------------------|
-| `online:gpt-5.4`                              | `api.mtgacoach.com` (proxy)        |
+| `online:deepseek-v4-flash`                              | `api.mtgacoach.com` (proxy)        |
 | `online:claude-sonnet-4-6`                    | proxy → whatever model it pins     |
 | `ollama:gemma4:latest`                        | `localhost:11434/v1` (your 8B)     |
 | `ollama:qwen2.5:14b`                          | `localhost:11434/v1` (your 14B)    |
@@ -133,7 +133,7 @@ A useful shape of result:
 backend                        n    err  latency_med  chars_med  correc reason concis legal  overall
 ollama:llama3.1:8b             32   0    580ms        180        3.21   3.10   4.50   4.00   3.70
 ollama:qwen2.5:14b             32   0    1850ms       210        3.95   3.80   4.20   4.40   4.09
-online:gpt-5.4                 32   0    1100ms       150        4.45   4.30   4.60   4.85   4.55
+online:deepseek-v4-flash                 32   0    1100ms       150        4.45   4.30   4.60   4.85   4.55
 ```
 
 Reading guide:

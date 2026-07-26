@@ -19,19 +19,53 @@ import time
 import webbrowser
 from typing import TYPE_CHECKING, Any
 
+from arenamcp.backend_health import (
+    BACKEND_ERROR_PREFIX,
+    LOCAL_FALLBACK_PREFIX,
+    is_backend_error_text,
+    is_local_fallback_text,
+)
+
 if TYPE_CHECKING:
     from arenamcp.standalone import StandaloneCoach
 
 logger = logging.getLogger(__name__)
 
+# Backend-health tags are bracketed like Rich markup but are *content*, not
+# formatting: `[BACKEND ERROR]` / `[LOCAL FALLBACK]` exist precisely so the
+# user can see that the text did not come from the LLM. The markup stripper
+# used to eat them (they match `[a-zA-Z_][a-zA-Z0-9_ ...]*`), so the desktop
+# UI never displayed a single one. Guard them explicitly.
+_HEALTH_TAGS = (BACKEND_ERROR_PREFIX, LOCAL_FALLBACK_PREFIX)
+_HEALTH_TAG_GUARD = "".join(f"(?!{re.escape(tag)})" for tag in _HEALTH_TAGS)
+
 # Regex to strip Textual/Rich markup tags like [bold], [red], [/], [link=...]
-_MARKUP_RE = re.compile(r"\[/?[a-zA-Z_][a-zA-Z0-9_ =.:#/\"'-]*\]|\[/\]")
+_MARKUP_RE = re.compile(_HEALTH_TAG_GUARD + r"\[/?[a-zA-Z_][a-zA-Z0-9_ =.:#/\"'-]*\]|\[/\]")
 _ISSUE_URL_RE = re.compile(r"/issues/(\d+)(?:$|[?#])")
 
 
 def strip_markup(text: str) -> str:
-    """Remove Rich/Textual markup tags from text."""
+    """Remove Rich/Textual markup tags from text, preserving health tags.
+
+    ``[BACKEND ERROR]`` and ``[LOCAL FALLBACK]`` survive this pass — they are
+    the whole point of the backend-health work and must reach the GUI.
+    """
     return _MARKUP_RE.sub("", text).strip()
+
+
+def health_tag_of(text: str) -> str:
+    """Structured health marker for a piece of coach text.
+
+    Returns ``"backend_error"``, ``"local_fallback"`` or ``""``. Emitted
+    alongside the text so the UI can badge the message without re-parsing
+    the prefix (and so the marker survives even if some other layer strips
+    the bracketed tag).
+    """
+    if is_backend_error_text(text):
+        return "backend_error"
+    if is_local_fallback_text(text):
+        return "local_fallback"
+    return ""
 
 
 class PipeAdapter:
@@ -84,7 +118,15 @@ class PipeAdapter:
         self._emit({"type": "log", "message": strip_markup(message)})
 
     def advice(self, text: str, seat_info: str) -> None:
-        self._emit({"type": "advice", "text": strip_markup(text), "seat_info": seat_info})
+        clean = strip_markup(text)
+        self._emit(
+            {
+                "type": "advice",
+                "text": clean,
+                "seat_info": seat_info,
+                "health_tag": health_tag_of(clean),
+            }
+        )
 
     def turn_plan(self, payload: dict[str, Any] | None) -> None:
         """Emit the static turn-plan panel payload (or None to clear).
@@ -108,7 +150,8 @@ class PipeAdapter:
         self._emit({"type": "status", "key": key, "value": strip_markup(value)})
 
     def error(self, message: str) -> None:
-        self._emit({"type": "error", "message": strip_markup(message)})
+        clean = strip_markup(message)
+        self._emit({"type": "error", "message": clean, "health_tag": health_tag_of(clean)})
 
     def speak(self, text: str) -> None:
         # Forward to voice output if available
@@ -889,9 +932,40 @@ class PipeAdapter:
                 draft_stats=getattr(coach, "draft_stats", None),
                 enrich_fn=lambda gid: coach._mcp.get_card_info(gid) if coach._mcp else {},
             )
-            # Collection/wildcard counts are likewise not log-derivable yet;
-            # empty means "assume the player owns nothing" — degraded but
-            # honest, and flagged in the output rather than silently wrong.
+
+            # Check if we have an active or recently completed draft/sealed pool
+            draft_state = getattr(coach, "_draft_state", None)
+            draft_pool = []
+            if draft_state:
+                draft_pool = (
+                    getattr(draft_state, "picked_cards", None)
+                    or getattr(draft_state, "last_completed_pool", None)
+                    or getattr(draft_state, "sealed_pool", None)
+                )
+
+            if draft_pool:
+                self.log(
+                    f"Building 40-card Limited deck recommendations from pool of {len(draft_pool)} cards..."
+                )
+                set_code = getattr(draft_state, "set_code", "") or ""
+                limited_suggestions = builder.suggest_decks_for_pool(draft_pool, set_code=set_code, top_n=3)
+                if limited_suggestions:
+                    lines = [f"### 🎴 Limited Deck Recommendations ({len(draft_pool)} Card Pool)"]
+                    for d in limited_suggestions:
+                        lines.append(f"\n#### {d.color_pair_name} ({d.main_colors}) — Score: {d.score:.1f}")
+                        lines.append(
+                            f"**Archetype**: {d.archetype} | **Lands**: {sum(d.lands.values())} | **Playables**: {sum(d.maindeck.values())}"
+                        )
+                        lines.append("```mtga\n" + d.to_arena_import() + "\n```")
+                    text = "\n".join(lines)
+                    self.advice(text, "LIMITED DECK RECOMMENDATIONS")
+                    if getattr(coach, "_voice_output", None):
+                        coach.speak_advice(
+                            "Generated Limited deck recommendations for your draft pool.", blocking=False
+                        )
+                    return
+
+            # Collection/wildcard counts for constructed Standard suggestions:
             player_cards = game_state.get("player_cards") or {}
             wildcards = game_state.get("player_wildcards") or {}
             collection_known = bool(player_cards or wildcards)

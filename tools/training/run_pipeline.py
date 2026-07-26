@@ -28,11 +28,9 @@ import argparse
 import json
 import logging
 import os
-import shutil
 import statistics
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 # Ensure in-repo src is importable
@@ -71,7 +69,7 @@ class PipelineRunner:
         sets: str,
         license_key: str = "",
         eval_corpus: Path | None = None,
-        judge_backend: str = "online:gpt-5.4",
+        judge_backend: str = "online:deepseek-v4-flash",
         legality_min: float = 4.0,
         reasoning_min: float = 3.5,
         win_rate_min: float = 0.45,
@@ -112,13 +110,14 @@ class PipelineRunner:
         """
         try:
             from tools.eval.run import _read_jsonl  # type: ignore
+
             yield from _read_jsonl(path)
             return
         except Exception:
             pass
         if not path.exists():
             return
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -182,26 +181,41 @@ class PipelineRunner:
                     logger.warning(f"Could not remove stale {p.name}: {e}")
 
         logger.info("Step 4.5a: Generating Challenger responses on eval corpus...")
-        ok = _run_cmd([
-            sys.executable, "-m", "tools.eval.run",
-            "--prompts", str(self.eval_corpus),
-            "--responses", str(self.gating_responses_path),
-            "--backend", challenger_spec,
-            *(["--license-key", self.license_key] if self.license_key else []),
-        ])
+        ok = _run_cmd(
+            [
+                sys.executable,
+                "-m",
+                "tools.eval.run",
+                "--prompts",
+                str(self.eval_corpus),
+                "--responses",
+                str(self.gating_responses_path),
+                "--backend",
+                challenger_spec,
+                *(["--license-key", self.license_key] if self.license_key else []),
+            ]
+        )
         if not ok:
             logger.warning("eval.run failed; skipping quality gate (falling back to win-rate).")
             return None
 
         logger.info(f"Step 4.5b: Judging Challenger responses with {self.judge_backend}...")
-        ok = _run_cmd([
-            sys.executable, "-m", "tools.eval.judge",
-            "--prompts", str(self.eval_corpus),
-            "--responses", str(self.gating_responses_path),
-            "--scores", str(self.gating_scores_path),
-            "--judge-backend", self.judge_backend,
-            *(["--license-key", self.license_key] if self.license_key else []),
-        ])
+        ok = _run_cmd(
+            [
+                sys.executable,
+                "-m",
+                "tools.eval.judge",
+                "--prompts",
+                str(self.eval_corpus),
+                "--responses",
+                str(self.gating_responses_path),
+                "--scores",
+                str(self.gating_scores_path),
+                "--judge-backend",
+                self.judge_backend,
+                *(["--license-key", self.license_key] if self.license_key else []),
+            ]
+        )
         if not ok:
             logger.warning("eval.judge failed; skipping quality gate (falling back to win-rate).")
             return None
@@ -209,8 +223,7 @@ class PipelineRunner:
         metrics = self._aggregate_eval_scores(self.gating_scores_path)
         if metrics is None:
             logger.warning(
-                "No usable judge scores produced; skipping quality gate "
-                "(falling back to win-rate)."
+                "No usable judge scores produced; skipping quality gate (falling back to win-rate)."
             )
         return metrics
 
@@ -218,9 +231,9 @@ class PipelineRunner:
         logger.info(f"Starting self-improvement pipeline: {self.iterations} iteration(s)")
 
         for iter_idx in range(self.iterations):
-            logger.info(f"\n==========================================")
+            logger.info("\n==========================================")
             logger.info(f"  ITERATION {iter_idx + 1} / {self.iterations}")
-            logger.info(f"==========================================")
+            logger.info("==========================================")
 
             # Step 1: Self-play Data Generation (Champion vs Champion to collect base trajectories)
             logger.info("Step 1: Running self-play matches...")
@@ -231,27 +244,43 @@ class PipelineRunner:
                 # If using local adapters, we construct the spec accordingly
                 champ_spec = f"openai-compatible|http://localhost:8000/v1|{self.champion_dir}"
 
-            success = _run_cmd([
-                sys.executable, "-m", "arenamcp.self_play",
-                "--local-backend", champ_spec,
-                "--opponent-backend", champ_spec,
-                "--matches", str(self.matches_per_iter),
-                "--sets", self.sets,
-                "--out-trajectories", str(self.trajectories_path),
-                *(["--license-key", self.license_key] if self.license_key else []),
-            ])
+            success = _run_cmd(
+                [
+                    sys.executable,
+                    "-m",
+                    "arenamcp.self_play",
+                    "--local-backend",
+                    champ_spec,
+                    "--opponent-backend",
+                    champ_spec,
+                    "--matches",
+                    str(self.matches_per_iter),
+                    "--sets",
+                    self.sets,
+                    "--out-trajectories",
+                    str(self.trajectories_path),
+                    *(["--license-key", self.license_key] if self.license_key else []),
+                ]
+            )
             if not success:
                 logger.error("Self-play data generation failed. Aborting iteration.")
                 sys.exit(1)
 
             # Step 2: Build SFT and DPO Datasets
             logger.info("Step 2: Building training datasets...")
-            success = _run_cmd([
-                sys.executable, "-m", "tools.training.build_dataset",
-                "--trajectories", str(self.trajectories_path),
-                "--out-sft", str(self.sft_path),
-                "--out-dpo", str(self.dpo_path),
-            ])
+            success = _run_cmd(
+                [
+                    sys.executable,
+                    "-m",
+                    "tools.training.build_dataset",
+                    "--trajectories",
+                    str(self.trajectories_path),
+                    "--out-sft",
+                    str(self.sft_path),
+                    "--out-dpo",
+                    str(self.dpo_path),
+                ]
+            )
             if not success:
                 logger.error("Dataset building failed. Aborting iteration.")
                 sys.exit(1)
@@ -262,16 +291,26 @@ class PipelineRunner:
             method = "dpo" if self.dpo_path.exists() and self.dpo_path.stat().st_size > 10 else "sft"
             dataset_path = self.dpo_path if method == "dpo" else self.sft_path
 
-            success = _run_cmd([
-                sys.executable, "-m", "tools.training.train",
-                "--model_id", "google/gemma-4-E2B-it",
-                "--dataset", str(dataset_path),
-                "--output_dir", str(self.checkpoint_dir),
-                "--method", method,
-                "--epochs", "1",
-                "--batch_size", "2",
-                "--load_in_4bit",
-            ])
+            success = _run_cmd(
+                [
+                    sys.executable,
+                    "-m",
+                    "tools.training.train",
+                    "--model_id",
+                    "google/gemma-4-E2B-it",
+                    "--dataset",
+                    str(dataset_path),
+                    "--output_dir",
+                    str(self.checkpoint_dir),
+                    "--method",
+                    method,
+                    "--epochs",
+                    "1",
+                    "--batch_size",
+                    "2",
+                    "--load_in_4bit",
+                ]
+            )
             if not success:
                 logger.error("Fine-tuning failed. Aborting iteration.")
                 sys.exit(1)
@@ -279,21 +318,30 @@ class PipelineRunner:
             # Step 4: Gating Validation (Challenger vs Champion bot battles)
             logger.info("Step 4: Running gating evaluation matches...")
             challenger_spec = f"openai-compatible|http://localhost:8000/v1|{self.checkpoint_dir}"
-            
+
             # Clear previous evaluation trajectories
             eval_trajectories = REPO / "tools/eval/data/eval_gating_trajectories.jsonl"
             if eval_trajectories.exists():
                 eval_trajectories.unlink()
 
-            success = _run_cmd([
-                sys.executable, "-m", "arenamcp.self_play",
-                "--local-backend", challenger_spec,
-                "--opponent-backend", champ_spec,
-                "--matches", str(self.gate_matches),
-                "--sets", self.sets,
-                "--out-trajectories", str(eval_trajectories),
-                *(["--license-key", self.license_key] if self.license_key else []),
-            ])
+            success = _run_cmd(
+                [
+                    sys.executable,
+                    "-m",
+                    "arenamcp.self_play",
+                    "--local-backend",
+                    challenger_spec,
+                    "--opponent-backend",
+                    champ_spec,
+                    "--matches",
+                    str(self.gate_matches),
+                    "--sets",
+                    self.sets,
+                    "--out-trajectories",
+                    str(eval_trajectories),
+                    *(["--license-key", self.license_key] if self.license_key else []),
+                ]
+            )
             if not success:
                 logger.error("Gating evaluation matches failed. Aborting iteration.")
                 sys.exit(1)
@@ -303,7 +351,7 @@ class PipelineRunner:
             challenger_wins = 0
             total_matches = 0
             if eval_trajectories.exists():
-                with open(eval_trajectories, "r", encoding="utf-8") as f:
+                with open(eval_trajectories, encoding="utf-8") as f:
                     for line in f:
                         try:
                             rec = json.loads(line.strip())
@@ -318,7 +366,9 @@ class PipelineRunner:
                             continue
 
             win_rate = (challenger_wins / total_matches) if total_matches > 0 else 0.0
-            logger.info(f"Gating outcomes: Challenger won {challenger_wins} of {total_matches} matches ({win_rate * 100:.1f}% win rate)")
+            logger.info(
+                f"Gating outcomes: Challenger won {challenger_wins} of {total_matches} matches ({win_rate * 100:.1f}% win rate)"
+            )
 
             # Step 4.5: Quality evaluation via the eval harness (run + judge).
             logger.info("Step 4.5: Evaluating Challenger advice quality (eval harness)...")
@@ -329,11 +379,23 @@ class PipelineRunner:
             promote = self._gate_decision(win_rate, quality)
 
             if promote:
-                logger.info("✓ Challenger promoted! Overwriting Champion baseline.")
-                # Copy Challenger adapter directory as the new Champion
-                if self.champion_dir.exists():
-                    shutil.rmtree(self.champion_dir)
-                shutil.copytree(self.checkpoint_dir, self.champion_dir)
+                logger.info(
+                    "✓ Challenger passed gate! Registering generation in content-addressed ModelRegistry."
+                )
+                from tools.training.registry import ModelRegistry
+
+                reg = ModelRegistry(REPO / "models")
+                gen_id = f"gen-pipe-iter-{iter_idx + 1:04d}"
+                try:
+                    reg.register_generation(
+                        gen_id=gen_id,
+                        base_model=self.base_model,
+                        adapter_path=self.checkpoint_dir,
+                        metadata={"stage": "pipeline-iter", "win_rate": win_rate, "quality": quality},
+                        gate_report={"verdict": "PASS", "win_rate": win_rate, "quality": quality},
+                    )
+                except ValueError as ve:
+                    logger.warning(f"Registration note: {ve}")
             else:
                 logger.info("✗ Challenger rejected. Retaining Champion baseline.")
 
@@ -369,10 +431,7 @@ class PipelineRunner:
         # Weighted composite: 30% legality, 30% reasoning, 20% correctness, 20% win-rate.
         if legality_mean > 0 and reasoning_mean > 0:
             composite_score = (
-                0.30 * legality_norm
-                + 0.30 * reasoning_norm
-                + 0.20 * correctness_norm
-                + 0.20 * win_rate_norm
+                0.30 * legality_norm + 0.30 * reasoning_norm + 0.20 * correctness_norm + 0.20 * win_rate_norm
             )
         else:
             composite_score = 0.0
@@ -391,9 +450,7 @@ class PipelineRunner:
         if reasoning_mean < self.reasoning_min:
             failures.append(f"reasoning {reasoning_mean:.2f} < {self.reasoning_min}")
         if win_rate < self.win_rate_min:
-            failures.append(
-                f"win-rate {win_rate * 100:.1f}% < {self.win_rate_min * 100:.0f}%"
-            )
+            failures.append(f"win-rate {win_rate * 100:.1f}% < {self.win_rate_min * 100:.0f}%")
 
         if not failures:
             logger.info(
@@ -416,18 +473,38 @@ def main():
     p.add_argument("--gate-matches", type=int, default=6, help="Evaluation matches for gating promotion")
     p.add_argument("--sets", default="EOE", help="MTGA set codes for random decks")
     p.add_argument("--license-key", default=os.environ.get("MTGACOACH_LICENSE_KEY", ""))
-    p.add_argument("--eval-corpus", type=Path, default=None,
-                   help="Prompt corpus for the quality gate (default: tools/eval/data/seed_prompts.jsonl)")
-    p.add_argument("--judge-backend", default="online:gpt-5.4",
-                   help="Judge model spec for scoring Challenger responses (default: online:gpt-5.4)")
-    p.add_argument("--legality-min", type=float, default=4.0,
-                   help="Hard minimum mean Legality score (1-5) to promote (default: 4.0)")
-    p.add_argument("--reasoning-min", type=float, default=3.5,
-                   help="Hard minimum mean Reasoning score (1-5) to promote (default: 3.5)")
-    p.add_argument("--win-rate-min", type=float, default=0.45,
-                   help="Secondary win-rate floor to promote (default: 0.45)")
-    p.add_argument("--fallback-win-rate", type=float, default=0.55,
-                   help="Legacy binary win-rate gate used only when the eval harness can't run (default: 0.55)")
+    p.add_argument(
+        "--eval-corpus",
+        type=Path,
+        default=None,
+        help="Prompt corpus for the quality gate (default: tools/eval/data/seed_prompts.jsonl)",
+    )
+    p.add_argument(
+        "--judge-backend",
+        default="online:deepseek-v4-flash",
+        help="Judge model spec for scoring Challenger responses (default: online:deepseek-v4-flash)",
+    )
+    p.add_argument(
+        "--legality-min",
+        type=float,
+        default=4.0,
+        help="Hard minimum mean Legality score (1-5) to promote (default: 4.0)",
+    )
+    p.add_argument(
+        "--reasoning-min",
+        type=float,
+        default=3.5,
+        help="Hard minimum mean Reasoning score (1-5) to promote (default: 3.5)",
+    )
+    p.add_argument(
+        "--win-rate-min", type=float, default=0.45, help="Secondary win-rate floor to promote (default: 0.45)"
+    )
+    p.add_argument(
+        "--fallback-win-rate",
+        type=float,
+        default=0.55,
+        help="Legacy binary win-rate gate used only when the eval harness can't run (default: 0.55)",
+    )
     args = p.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s | %(message)s")

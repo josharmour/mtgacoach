@@ -10,6 +10,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
+
 from transformers import AutoTokenizer
 
 logger = logging.getLogger("tools.training.measure_prompt_lengths")
@@ -28,7 +29,7 @@ def main():
 
     lengths = []
     logger.info(f"Reading dataset: {args.dataset}")
-    with open(args.dataset, "r", encoding="utf-8") as f:
+    with open(args.dataset, encoding="utf-8") as f:
         content = f.read().strip()
         if content.startswith("["):
             data = json.loads(content)

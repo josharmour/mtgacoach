@@ -31,8 +31,8 @@ import json
 import os
 import sys
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 REPO = Path(__file__).resolve().parents[3]
 SRC = REPO / "src"
@@ -41,31 +41,34 @@ if str(SRC) not in sys.path:
 
 from tools.eval.run import BackendSpec  # noqa: E402
 
-from .reader import parse_replay_path  # noqa: E402
-from .decisions import extract_decisions, Decision  # noqa: E402
-from .state import snapshot_at_decision, GameStateSnapshot  # noqa: E402
+from .decisions import Decision, extract_decisions  # noqa: E402
 from .prompts import (  # noqa: E402
-    SYSTEM_PROMPT,
     DA_SYSTEM_PROMPT,
     DB_SYSTEM_PROMPT,
     MULL_SYSTEM_PROMPT,
-    ActionChoice,
-    CreatureChoice,
-    enumerate_actions,
+    SYSTEM_PROMPT,
+    _creatures_from_ids,
+    _name_for_grpid,
     build_actions_available_prompt,
     build_actions_available_prompt_raw_json,
     build_declare_attackers_prompt,
     build_declare_blockers_prompt,
     build_mulligan_prompt,
-    parse_coach_choice,
-    parse_attack_set,
-    parse_block_assignment,
-    parse_mulligan_choice,
-    matches_ground_truth,
+    enumerate_actions,
     is_high_signal_actions_available,
     jaccard,
-    _creatures_from_ids,
-    _name_for_grpid,
+    matches_ground_truth,
+    parse_attack_set,
+    parse_block_assignment,
+    parse_coach_choice,
+    parse_mulligan_choice,
+)
+from .reader import parse_replay_path  # noqa: E402
+from .state import (  # noqa: E402
+    GameStateSnapshot,
+    LocalSeatUndetermined,
+    resolve_local_seat,
+    snapshot_at_decision,
 )
 
 
@@ -80,7 +83,7 @@ def _existing_keys(out_path: Path) -> set[tuple[str, int, str]]:
     seen: set[tuple[str, int, str]] = set()
     if not out_path.exists():
         return seen
-    with open(out_path, "r", encoding="utf-8") as f:
+    with open(out_path, encoding="utf-8") as f:
         for line in f:
             try:
                 rec = json.loads(line)
@@ -90,7 +93,9 @@ def _existing_keys(out_path: Path) -> set[tuple[str, int, str]]:
     return seen
 
 
-def _ask_backend(backend, system_prompt: str, user_text: str, max_tokens: int = 400) -> tuple[str, str | None, float]:
+def _ask_backend(
+    backend, system_prompt: str, user_text: str, max_tokens: int = 400
+) -> tuple[str, str | None, float]:
     """Returns (response, error, latency_ms)."""
     started = time.perf_counter()
     error = None
@@ -117,6 +122,10 @@ def _make_base_record(replay_path: Path, meta, d: Decision, snap: GameStateSnaps
         "phase": snap.phase,
         "active_player": snap.active_player,
         "priority_player": snap.priority_player,
+        # Which seat this record was scored from. Recorded explicitly so a
+        # responses file can never again be silently attributed to the wrong
+        # player — score.py rejects/flags records that lack it.
+        "local_seat": snap.local_seat_id,
         "kind": d.ground_truth.kind,
         "ground_truth": {
             "action_type": d.ground_truth.action_type,
@@ -134,9 +143,18 @@ def _make_base_record(replay_path: Path, meta, d: Decision, snap: GameStateSnaps
 
 
 def _handle_actions_available(
-    snap: GameStateSnapshot, d: Decision, replay_path, meta, messages,
-    backends, backend_specs: list[str], seen: set, high_signal_only: bool,
-    out_f, log_prefix: str, prompt_variant: str = "default",
+    snap: GameStateSnapshot,
+    d: Decision,
+    replay_path,
+    meta,
+    messages,
+    backends,
+    backend_specs: list[str],
+    seen: set,
+    high_signal_only: bool,
+    out_f,
+    log_prefix: str,
+    prompt_variant: str = "default",
 ) -> int:
     actions = enumerate_actions(d.request)
     if len(actions) <= 1:
@@ -150,7 +168,7 @@ def _handle_actions_available(
         user_text = build_actions_available_prompt(snap, d.request, actions)
         label_suffix = ""
     written = 0
-    for spec, backend in zip(backend_specs, backends):
+    for spec, backend in zip(backend_specs, backends, strict=True):
         label = backend.label + label_suffix
         key = (replay_path.name, int(d.request.msg_id), label)
         if key in seen:
@@ -159,45 +177,69 @@ def _handle_actions_available(
         choice = parse_coach_choice(response, actions)
         matched = matches_ground_truth(choice, d.ground_truth)
         rec = _make_base_record(replay_path, meta, d, snap)
-        rec.update({
-            "actions": [{"number": a.number, "action_type": a.action_type,
-                         "grp_id": a.grp_id, "instance_id": a.instance_id,
-                         "label": a.label} for a in actions],
-            "backend": label, "spec": spec,
-            "model": getattr(backend, "model", spec),
-            "prompt_variant": prompt_variant,
-            "response": response, "error": error,
-            "choice_number": choice.number if choice else None,
-            "choice_action_type": choice.action_type if choice else None,
-            "choice_grp_id": choice.grp_id if choice else None,
-            "match": matched, "jaccard": 1.0 if matched else 0.0,
-            "latency_ms": round(lat, 1),
-        })
+        rec.update(
+            {
+                "actions": [
+                    {
+                        "number": a.number,
+                        "action_type": a.action_type,
+                        "grp_id": a.grp_id,
+                        "instance_id": a.instance_id,
+                        "label": a.label,
+                    }
+                    for a in actions
+                ],
+                "backend": label,
+                "spec": spec,
+                "model": getattr(backend, "model", spec),
+                "prompt_variant": prompt_variant,
+                "response": response,
+                "error": error,
+                "choice_number": choice.number if choice else None,
+                "choice_action_type": choice.action_type if choice else None,
+                "choice_grp_id": choice.grp_id if choice else None,
+                "match": matched,
+                "jaccard": 1.0 if matched else 0.0,
+                "latency_ms": round(lat, 1),
+            }
+        )
         out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         out_f.flush()
         seen.add(key)
         flag = "OK" if matched else ("ERR" if error else "MISS")
-        print(f"  {log_prefix} {label[:30]:30}  AA  chose#{choice.number if choice else '?':>3}  "
-              f"truth={d.ground_truth.summary[:35]:35} {flag} {lat:.0f}ms")
+        print(
+            f"  {log_prefix} {label[:30]:30}  AA  chose#{choice.number if choice else '?':>3}  "
+            f"truth={d.ground_truth.summary[:35]:35} {flag} {lat:.0f}ms"
+        )
         written += 1
     return written
 
 
 def _handle_declare_attackers(
-    snap: GameStateSnapshot, d: Decision, replay_path, meta, messages,
-    backends, backend_specs: list[str], seen: set,
-    out_f, log_prefix: str,
+    snap: GameStateSnapshot,
+    d: Decision,
+    replay_path,
+    meta,
+    messages,
+    backends,
+    backend_specs: list[str],
+    seen: set,
+    out_f,
+    log_prefix: str,
 ) -> int:
     da = d.request.payload.get("declareAttackersReq") or {}
-    qualified_ids = sorted(int(a.get("attackerInstanceId")) for a in (da.get("qualifiedAttackers") or [])
-                           if a.get("attackerInstanceId") is not None)
+    qualified_ids = sorted(
+        int(a.get("attackerInstanceId"))
+        for a in (da.get("qualifiedAttackers") or [])
+        if a.get("attackerInstanceId") is not None
+    )
     if not qualified_ids:
         return 0
     qualified = _creatures_from_ids(snap, qualified_ids)
     truth_set = set(d.ground_truth.instance_ids)
     user_text = build_declare_attackers_prompt(snap, d.request, qualified)
     written = 0
-    for spec, backend in zip(backend_specs, backends):
+    for spec, backend in zip(backend_specs, backends, strict=True):
         label = backend.label
         key = (replay_path.name, int(d.request.msg_id), label)
         if key in seen:
@@ -207,31 +249,42 @@ def _handle_declare_attackers(
         matched = (coach_set == truth_set) if coach_set is not None else False
         jacc = jaccard(coach_set or set(), truth_set) if coach_set is not None else 0.0
         rec = _make_base_record(replay_path, meta, d, snap)
-        rec.update({
-            "qualified_ids": qualified_ids,
-            "qualified_names": [c.name for c in qualified],
-            "backend": label, "spec": spec,
-            "model": getattr(backend, "model", spec),
-            "response": response, "error": error,
-            "coach_attacker_ids": sorted(coach_set) if coach_set is not None else None,
-            "match": matched, "jaccard": round(jacc, 3),
-            "latency_ms": round(lat, 1),
-        })
+        rec.update(
+            {
+                "qualified_ids": qualified_ids,
+                "qualified_names": [c.name for c in qualified],
+                "backend": label,
+                "spec": spec,
+                "model": getattr(backend, "model", spec),
+                "response": response,
+                "error": error,
+                "coach_attacker_ids": sorted(coach_set) if coach_set is not None else None,
+                "match": matched,
+                "jaccard": round(jacc, 3),
+                "latency_ms": round(lat, 1),
+            }
+        )
         out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         out_f.flush()
         seen.add(key)
         flag = "OK" if matched else ("ERR" if error else f"J{jacc:.2f}")
         cs = sorted(coach_set) if coach_set is not None else "?"
-        print(f"  {log_prefix} {label[:25]:25}  ATK  coach={cs} truth={sorted(truth_set)} "
-              f"{flag} {lat:.0f}ms")
+        print(f"  {log_prefix} {label[:25]:25}  ATK  coach={cs} truth={sorted(truth_set)} {flag} {lat:.0f}ms")
         written += 1
     return written
 
 
 def _handle_declare_blockers(
-    snap: GameStateSnapshot, d: Decision, replay_path, meta, messages,
-    backends, backend_specs: list[str], seen: set,
-    out_f, log_prefix: str,
+    snap: GameStateSnapshot,
+    d: Decision,
+    replay_path,
+    meta,
+    messages,
+    backends,
+    backend_specs: list[str],
+    seen: set,
+    out_f,
+    log_prefix: str,
 ) -> int:
     db = d.request.payload.get("declareBlockersReq") or {}
     blockers_proto = db.get("blockers") or []
@@ -243,7 +296,7 @@ def _handle_declare_blockers(
         bid = b.get("blockerInstanceId")
         if bid is not None:
             blocker_id_set.add(int(bid))
-        for aid in (b.get("attackerInstanceIds") or []):
+        for aid in b.get("attackerInstanceIds") or []:
             attacker_id_set.add(int(aid))
     if not attacker_id_set:
         return 0
@@ -262,7 +315,7 @@ def _handle_declare_blockers(
         truth_assignment[int(bid)] = int(atks[0])
     user_text = build_declare_blockers_prompt(snap, d.request, attackers_choices, blockers_choices)
     written = 0
-    for spec, backend in zip(backend_specs, backends):
+    for spec, backend in zip(backend_specs, backends, strict=True):
         label = backend.label
         key = (replay_path.name, int(d.request.msg_id), label)
         if key in seen:
@@ -274,18 +327,26 @@ def _handle_declare_blockers(
         matched = (coach_pairs == truth_pairs) if coach_assignment is not None else False
         jacc = jaccard(coach_pairs, truth_pairs) if coach_assignment is not None else 0.0
         rec = _make_base_record(replay_path, meta, d, snap)
-        rec.update({
-            "attacker_ids": attacker_ids,
-            "blocker_ids": blocker_ids,
-            "ground_truth_blocks": [{"blocker": k, "attacker": v} for k, v in truth_assignment.items()],
-            "backend": label, "spec": spec,
-            "model": getattr(backend, "model", spec),
-            "response": response, "error": error,
-            "coach_blocks": ([{"blocker": k, "attacker": v} for k, v in coach_assignment.items()]
-                              if coach_assignment is not None else None),
-            "match": matched, "jaccard": round(jacc, 3),
-            "latency_ms": round(lat, 1),
-        })
+        rec.update(
+            {
+                "attacker_ids": attacker_ids,
+                "blocker_ids": blocker_ids,
+                "ground_truth_blocks": [{"blocker": k, "attacker": v} for k, v in truth_assignment.items()],
+                "backend": label,
+                "spec": spec,
+                "model": getattr(backend, "model", spec),
+                "response": response,
+                "error": error,
+                "coach_blocks": (
+                    [{"blocker": k, "attacker": v} for k, v in coach_assignment.items()]
+                    if coach_assignment is not None
+                    else None
+                ),
+                "match": matched,
+                "jaccard": round(jacc, 3),
+                "latency_ms": round(lat, 1),
+            }
+        )
         out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         out_f.flush()
         seen.add(key)
@@ -296,9 +357,16 @@ def _handle_declare_blockers(
 
 
 def _handle_mulligan(
-    snap: GameStateSnapshot, d: Decision, replay_path, meta, messages,
-    backends, backend_specs: list[str], seen: set,
-    out_f, log_prefix: str,
+    snap: GameStateSnapshot,
+    d: Decision,
+    replay_path,
+    meta,
+    messages,
+    backends,
+    backend_specs: list[str],
+    seen: set,
+    out_f,
+    log_prefix: str,
 ) -> int:
     # Hand cards: pull from the current zone-of-type-Hand for the local seat.
     seat = snap.local_seat_id
@@ -308,7 +376,7 @@ def _handle_mulligan(
     mulligan_count = 0  # We don't track this without reading prompt parameters.
     # Best-effort: derive from the prompt parameters (NumberOfCards).
     prompt = d.request.payload.get("prompt") or {}
-    for p in (prompt.get("parameters") or []):
+    for p in prompt.get("parameters") or []:
         if p.get("parameterName") == "NumberOfCards":
             n = p.get("numberValue")
             if isinstance(n, int):
@@ -317,7 +385,7 @@ def _handle_mulligan(
     user_text = build_mulligan_prompt(snap, d.request, hand_cards, mulligan_count)
     truth_keep = bool(d.ground_truth.keep)
     written = 0
-    for spec, backend in zip(backend_specs, backends):
+    for spec, backend in zip(backend_specs, backends, strict=True):
         label = backend.label
         key = (replay_path.name, int(d.request.msg_id), label)
         if key in seen:
@@ -326,22 +394,29 @@ def _handle_mulligan(
         coach_keep = parse_mulligan_choice(response)
         matched = (coach_keep == truth_keep) if coach_keep is not None else False
         rec = _make_base_record(replay_path, meta, d, snap)
-        rec.update({
-            "mulligan_count": mulligan_count,
-            "hand_grp_ids": [c.get("grpId") for c in hand_cards],
-            "hand_names": [_name_for_grpid(c.get("grpId")) for c in hand_cards],
-            "backend": label, "spec": spec,
-            "model": getattr(backend, "model", spec),
-            "response": response, "error": error,
-            "coach_keep": coach_keep,
-            "match": matched, "jaccard": 1.0 if matched else 0.0,
-            "latency_ms": round(lat, 1),
-        })
+        rec.update(
+            {
+                "mulligan_count": mulligan_count,
+                "hand_grp_ids": [c.get("grpId") for c in hand_cards],
+                "hand_names": [_name_for_grpid(c.get("grpId")) for c in hand_cards],
+                "backend": label,
+                "spec": spec,
+                "model": getattr(backend, "model", spec),
+                "response": response,
+                "error": error,
+                "coach_keep": coach_keep,
+                "match": matched,
+                "jaccard": 1.0 if matched else 0.0,
+                "latency_ms": round(lat, 1),
+            }
+        )
         out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         out_f.flush()
         seen.add(key)
         flag = "OK" if matched else ("ERR" if error else "MISS")
-        print(f"  {log_prefix} {label[:25]:25}  MUL  coach={coach_keep} truth={truth_keep} {flag} {lat:.0f}ms")
+        print(
+            f"  {log_prefix} {label[:25]:25}  MUL  coach={coach_keep} truth={truth_keep} {flag} {lat:.0f}ms"
+        )
         written += 1
     return written
 
@@ -365,16 +440,30 @@ def run(
     backend_specs: list[str],
     license_key: str = "",
     max_decisions_per_replay: int | None = None,
-    seat: int = 2,
+    seat: int | None = None,
     kinds: set[str] | None = None,
     high_signal_only: bool = False,
     prompt_variant: str = "default",
 ) -> None:
+    """Score replay decisions against one or more backends.
+
+    ``seat`` is an OVERRIDE, not a default: leave it None and each replay's
+    recording seat is derived from its own ConnectResp. Forcing one seat
+    across a mixed corpus scores the opponent's hand and board on every
+    replay that disagrees (55 of the 104-file corpus record as seat 1).
+    """
     backends = [BackendSpec.parse(s, license_key=license_key) for s in backend_specs]
     out_path.parent.mkdir(parents=True, exist_ok=True)
     seen = _existing_keys(out_path)
     print(f"loaded {len(seen)} existing records from {out_path}")
     kinds = kinds or set(_HANDLERS.keys())
+    if seat is not None:
+        print(
+            f"WARNING: --seat {seat} forces one seat for every replay; per-replay detection is disabled.",
+            file=sys.stderr,
+        )
+    seat_census: dict[int, int] = {}
+    seat_failures: list[str] = []
 
     with open(out_path, "a", encoding="utf-8") as out_f:
         for replay_path in replay_paths:
@@ -383,56 +472,117 @@ def run(
             except Exception as exc:
                 print(f"skip {replay_path.name}: parse failed: {exc}", file=sys.stderr)
                 continue
+            # Resolve ONCE per replay: detection re-scans every message.
+            try:
+                replay_seat = resolve_local_seat(messages, seat)
+            except LocalSeatUndetermined as exc:
+                seat_failures.append(replay_path.name)
+                print(f"skip {replay_path.name}: {exc}", file=sys.stderr)
+                continue
+            seat_census[replay_seat] = seat_census.get(replay_seat, 0) + 1
             decisions = extract_decisions(messages)
-            scoreable = [d for d in decisions
-                         if d.ground_truth and d.ground_truth.kind in kinds and d.request.msg_id is not None]
+            scoreable = [
+                d
+                for d in decisions
+                if d.ground_truth and d.ground_truth.kind in kinds and d.request.msg_id is not None
+            ]
             if max_decisions_per_replay is not None:
                 scoreable = scoreable[:max_decisions_per_replay]
-            print(f"\n=== {replay_path.name} === local={meta.local_screen_name!r} "
-                  f"opp={meta.opponent_screen_name!r} candidates={len(scoreable)}")
+            print(
+                f"\n=== {replay_path.name} === local={meta.local_screen_name!r} "
+                f"opp={meta.opponent_screen_name!r} seat={replay_seat} "
+                f"candidates={len(scoreable)}"
+            )
 
             for d in scoreable:
                 handler = _HANDLERS.get(d.ground_truth.kind)
                 if handler is None:
                     continue
-                snap = snapshot_at_decision(messages, d.request, local_seat_id=seat)
+                snap = snapshot_at_decision(messages, d.request, local_seat_id=replay_seat)
                 log_prefix = f"d{d.index:3d} T{snap.turn_number}"
                 if d.ground_truth.kind == "ActionsAvailable":
-                    handler(snap, d, replay_path, meta, messages, backends, backend_specs,
-                            seen, high_signal_only, out_f, log_prefix,
-                            prompt_variant=prompt_variant)
+                    handler(
+                        snap,
+                        d,
+                        replay_path,
+                        meta,
+                        messages,
+                        backends,
+                        backend_specs,
+                        seen,
+                        high_signal_only,
+                        out_f,
+                        log_prefix,
+                        prompt_variant=prompt_variant,
+                    )
                 else:
-                    handler(snap, d, replay_path, meta, messages, backends, backend_specs,
-                            seen, out_f, log_prefix)
+                    handler(
+                        snap, d, replay_path, meta, messages, backends, backend_specs, seen, out_f, log_prefix
+                    )
+
+    census = ", ".join(f"seat {s}: {n}" for s, n in sorted(seat_census.items()))
+    print(f"\nlocal-seat census across scored replays: {census or 'none'}")
+    if seat_failures:
+        print(
+            f"UNSCORED (seat undeterminable): {len(seat_failures)} replay(s): {', '.join(seat_failures)}",
+            file=sys.stderr,
+        )
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawTextHelpFormatter)
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("--replays-dir", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--backend", action="append", required=True,
-                   help="Backend spec (online:gpt-5.4, openai-compatible|url|model, ollama:qwen2.5:14b, ...)")
+    p.add_argument(
+        "--backend",
+        action="append",
+        required=True,
+        help="Backend spec (online:deepseek-v4-flash, openai-compatible|url|model, ollama:qwen2.5:14b, ...)",
+    )
     p.add_argument("--license-key", default=os.environ.get("MTGACOACH_LICENSE_KEY", ""))
     p.add_argument("--max-replays", type=int, default=None)
     p.add_argument("--max-decisions-per-replay", type=int, default=None)
-    p.add_argument("--seat", type=int, default=2)
-    p.add_argument("--kinds", default="ActionsAvailable,DeclareAttackers,DeclareBlockers,Mulligan",
-                   help="Comma-separated decision kinds to score")
-    p.add_argument("--high-signal-only", action="store_true",
-                   help="For ActionsAvailable, only score decisions on your Main Phase with priority and a card-action available")
-    p.add_argument("--prompt-variant", choices=["default", "raw_json"], default="default",
-                   help="ActionsAvailable prompt format: structured English (default) or raw JSON state. Backend label is suffixed with '#raw_json' so variants don't collide in the responses file.")
+    p.add_argument(
+        "--seat",
+        type=int,
+        default=None,
+        help="Override the local seat for EVERY replay. Omit this: "
+        "the recording seat is detected per replay from its "
+        "ConnectResp (it is seat 1 for 55 of the 104-replay "
+        "corpus and seat 2 for 49).",
+    )
+    p.add_argument(
+        "--kinds",
+        default="ActionsAvailable,DeclareAttackers,DeclareBlockers,Mulligan",
+        help="Comma-separated decision kinds to score",
+    )
+    p.add_argument(
+        "--high-signal-only",
+        action="store_true",
+        help="For ActionsAvailable, only score decisions on your Main Phase with priority and a card-action available",
+    )
+    p.add_argument(
+        "--prompt-variant",
+        choices=["default", "raw_json"],
+        default="default",
+        help="ActionsAvailable prompt format: structured English (default) or raw JSON state. Backend label is suffixed with '#raw_json' so variants don't collide in the responses file.",
+    )
     args = p.parse_args()
 
     files = _list_replays(args.replays_dir, args.max_replays)
     print(f"replay corpus: {len(files)} file(s) from {args.replays_dir}")
     kinds = set(k.strip() for k in args.kinds.split(",") if k.strip())
-    run(replay_paths=files, out_path=args.out, backend_specs=args.backend,
+    run(
+        replay_paths=files,
+        out_path=args.out,
+        backend_specs=args.backend,
         license_key=args.license_key,
-        max_decisions_per_replay=args.max_decisions_per_replay, seat=args.seat,
-        kinds=kinds, high_signal_only=args.high_signal_only,
-        prompt_variant=args.prompt_variant)
+        max_decisions_per_replay=args.max_decisions_per_replay,
+        seat=args.seat,
+        kinds=kinds,
+        high_signal_only=args.high_signal_only,
+        prompt_variant=args.prompt_variant,
+    )
 
 
 if __name__ == "__main__":

@@ -57,11 +57,7 @@ def replay_fixture(data: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "errors": ["fixture has no options"], "picked": []}
 
     valid = decision.option_ids()
-    answered = [
-        oid
-        for oid in (data.get("planner_answer") or {}).get("option_ids") or []
-        if oid in valid
-    ]
+    answered = [oid for oid in (data.get("planner_answer") or {}).get("option_ids") or [] if oid in valid]
     picked = answered or ActionPlanner.deterministic_option_pick(decision)
 
     if not picked:

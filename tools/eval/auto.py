@@ -20,13 +20,13 @@ Examples:
     # Quick general eval against the seed corpus, upload:
     python -m tools.eval.auto general \\
         --prompts tools/eval/data/seed_prompts.jsonl \\
-        --backends online:gpt-5.4 \\
+        --backends online:deepseek-v4-flash \\
         --upload
 
     # 17lands EOE mulligan eval, full pipeline, upload:
     python -m tools.eval.auto mulligan \\
         --set EOE --n 200 \\
-        --backends online:gpt-5.4 \\
+        --backends online:deepseek-v4-flash \\
         --upload
 
 Env vars:
@@ -73,16 +73,24 @@ def _admin_upload(json_path: Path) -> None:
         print("MTGACOACH_ADMIN_KEY not set; skipping --upload", file=sys.stderr)
         sys.exit(2)
     proxy = os.environ.get("MTGACOACH_PROXY_URL", "https://api.mtgacoach.com")
-    rc = _run([
-        sys.executable, "-m", "tools.eval.upload_results",
-        "--json", str(json_path),
-        "--proxy-url", proxy,
-        "--admin-key", admin_key,
-    ])
+    rc = _run(
+        [
+            sys.executable,
+            "-m",
+            "tools.eval.upload_results",
+            "--json",
+            str(json_path),
+            "--proxy-url",
+            proxy,
+            "--admin-key",
+            admin_key,
+        ]
+    )
     _require_zero(rc, "upload")
 
 
 # -- general subcommand ------------------------------------------------------
+
 
 def cmd_general(args: argparse.Namespace) -> None:
     data = _data_dir()
@@ -98,23 +106,50 @@ def cmd_general(args: argparse.Namespace) -> None:
     for b in args.backends:
         backend_args.extend(["--backend", b])
 
-    rc = _run([sys.executable, "-m", "tools.eval.run",
-               "--prompts", str(prompts),
-               "--responses", str(responses),
-               *backend_args])
+    rc = _run(
+        [
+            sys.executable,
+            "-m",
+            "tools.eval.run",
+            "--prompts",
+            str(prompts),
+            "--responses",
+            str(responses),
+            *backend_args,
+        ]
+    )
     _require_zero(rc, "run")
 
-    rc = _run([sys.executable, "-m", "tools.eval.judge",
-               "--prompts", str(prompts),
-               "--responses", str(responses),
-               "--scores", str(scores),
-               "--judge-backend", args.judge_backend])
+    rc = _run(
+        [
+            sys.executable,
+            "-m",
+            "tools.eval.judge",
+            "--prompts",
+            str(prompts),
+            "--responses",
+            str(responses),
+            "--scores",
+            str(scores),
+            "--judge-backend",
+            args.judge_backend,
+        ]
+    )
     _require_zero(rc, "judge")
 
-    rc = _run([sys.executable, "-m", "tools.eval.report",
-               "--responses", str(responses),
-               "--scores", str(scores),
-               "--json", str(summary)])
+    rc = _run(
+        [
+            sys.executable,
+            "-m",
+            "tools.eval.report",
+            "--responses",
+            str(responses),
+            "--scores",
+            str(scores),
+            "--json",
+            str(summary),
+        ]
+    )
     _require_zero(rc, "report")
 
     print(f"\n[auto] general summary written to {summary}")
@@ -124,25 +159,47 @@ def cmd_general(args: argparse.Namespace) -> None:
 
 # -- mulligan subcommand -----------------------------------------------------
 
+
 def cmd_mulligan(args: argparse.Namespace) -> None:
     data = _data_dir()
 
     csv_path = data / "17lands" / f"replay_data_public.{args.set_code}.{args.event}.csv.gz"
     if not csv_path.exists() or args.redownload:
-        rc = _run([sys.executable, "-m", "tools.eval.seventeenlands.download",
-                   "--set", args.set_code, "--event", args.event,
-                   *(["--force"] if args.redownload else [])])
+        rc = _run(
+            [
+                sys.executable,
+                "-m",
+                "tools.eval.seventeenlands.download",
+                "--set",
+                args.set_code,
+                "--event",
+                args.event,
+                *(["--force"] if args.redownload else []),
+            ]
+        )
         _require_zero(rc, "download")
 
     prompts = data / args.prompts_name
     if not prompts.exists() or args.rebuild_prompts:
-        rc = _run([sys.executable, "-m", "tools.eval.seventeenlands.build_mulligan_prompts",
-                   "--csv", str(csv_path),
-                   "--out", str(prompts),
-                   "--n", str(args.n_samples),
-                   "--min-rank", args.min_rank,
-                   "--min-bucket-n", str(args.min_bucket_n),
-                   "--seed", str(args.seed)])
+        rc = _run(
+            [
+                sys.executable,
+                "-m",
+                "tools.eval.seventeenlands.build_mulligan_prompts",
+                "--csv",
+                str(csv_path),
+                "--out",
+                str(prompts),
+                "--n",
+                str(args.n_samples),
+                "--min-rank",
+                args.min_rank,
+                "--min-bucket-n",
+                str(args.min_bucket_n),
+                "--seed",
+                str(args.seed),
+            ]
+        )
         _require_zero(rc, "build_mulligan_prompts")
     else:
         print(f"[auto] reusing existing prompts: {prompts} (--rebuild-prompts to refresh)")
@@ -154,17 +211,35 @@ def cmd_mulligan(args: argparse.Namespace) -> None:
     for b in args.backends:
         backend_args.extend(["--backend", b])
 
-    rc = _run([sys.executable, "-m", "tools.eval.run",
-               "--prompts", str(prompts),
-               "--responses", str(responses),
-               *backend_args])
+    rc = _run(
+        [
+            sys.executable,
+            "-m",
+            "tools.eval.run",
+            "--prompts",
+            str(prompts),
+            "--responses",
+            str(responses),
+            *backend_args,
+        ]
+    )
     _require_zero(rc, "run")
 
-    rc = _run([sys.executable, "-m", "tools.eval.seventeenlands.score_mulligan",
-               "--prompts", str(prompts),
-               "--responses", str(responses),
-               "--json", str(summary),
-               "--set", args.set_code])
+    rc = _run(
+        [
+            sys.executable,
+            "-m",
+            "tools.eval.seventeenlands.score_mulligan",
+            "--prompts",
+            str(prompts),
+            "--responses",
+            str(responses),
+            "--json",
+            str(summary),
+            "--set",
+            args.set_code,
+        ]
+    )
     _require_zero(rc, "score_mulligan")
 
     print(f"\n[auto] mulligan summary written to {summary}")
@@ -174,24 +249,45 @@ def cmd_mulligan(args: argparse.Namespace) -> None:
 
 # -- turn-action subcommand --------------------------------------------------
 
+
 def cmd_turn_action(args: argparse.Namespace) -> None:
     data = _data_dir()
 
     csv_path = data / "17lands" / f"replay_data_public.{args.set_code}.{args.event}.csv.gz"
     if not csv_path.exists() or args.redownload:
-        rc = _run([sys.executable, "-m", "tools.eval.seventeenlands.download",
-                   "--set", args.set_code, "--event", args.event,
-                   *(["--force"] if args.redownload else [])])
+        rc = _run(
+            [
+                sys.executable,
+                "-m",
+                "tools.eval.seventeenlands.download",
+                "--set",
+                args.set_code,
+                "--event",
+                args.event,
+                *(["--force"] if args.redownload else []),
+            ]
+        )
         _require_zero(rc, "download")
 
     prompts = data / args.prompts_name
     if not prompts.exists() or args.rebuild_prompts:
-        rc = _run([sys.executable, "-m", "tools.eval.seventeenlands.build_turn_action_prompts",
-                   "--csv", str(csv_path),
-                   "--out", str(prompts),
-                   "--n", str(args.n_samples),
-                   "--min-rank", args.min_rank,
-                   "--seed", str(args.seed)])
+        rc = _run(
+            [
+                sys.executable,
+                "-m",
+                "tools.eval.seventeenlands.build_turn_action_prompts",
+                "--csv",
+                str(csv_path),
+                "--out",
+                str(prompts),
+                "--n",
+                str(args.n_samples),
+                "--min-rank",
+                args.min_rank,
+                "--seed",
+                str(args.seed),
+            ]
+        )
         _require_zero(rc, "build_turn_action_prompts")
     else:
         print(f"[auto] reusing existing prompts: {prompts} (--rebuild-prompts to refresh)")
@@ -203,17 +299,35 @@ def cmd_turn_action(args: argparse.Namespace) -> None:
     for b in args.backends:
         backend_args.extend(["--backend", b])
 
-    rc = _run([sys.executable, "-m", "tools.eval.run",
-               "--prompts", str(prompts),
-               "--responses", str(responses),
-               *backend_args])
+    rc = _run(
+        [
+            sys.executable,
+            "-m",
+            "tools.eval.run",
+            "--prompts",
+            str(prompts),
+            "--responses",
+            str(responses),
+            *backend_args,
+        ]
+    )
     _require_zero(rc, "run")
 
-    rc = _run([sys.executable, "-m", "tools.eval.seventeenlands.score_turn_actions",
-               "--prompts", str(prompts),
-               "--responses", str(responses),
-               "--json", str(summary),
-               "--set", args.set_code])
+    rc = _run(
+        [
+            sys.executable,
+            "-m",
+            "tools.eval.seventeenlands.score_turn_actions",
+            "--prompts",
+            str(prompts),
+            "--responses",
+            str(responses),
+            "--json",
+            str(summary),
+            "--set",
+            args.set_code,
+        ]
+    )
     _require_zero(rc, "score_turn_actions")
 
     print(f"\n[auto] turn-action summary written to {summary}")
@@ -222,16 +336,18 @@ def cmd_turn_action(args: argparse.Namespace) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawTextHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_g = sub.add_parser("general", help="run/judge/report the general eval")
-    p_g.add_argument("--prompts", required=True,
-                     help="Prompts JSONL (e.g. seed corpus or captured)")
-    p_g.add_argument("--backends", nargs="+", required=True,
-                     help="Backend specs (online:gpt-5.4, ollama:qwen2.5:14b, ...)")
-    p_g.add_argument("--judge-backend", default="online:gpt-5.4")
+    p_g.add_argument("--prompts", required=True, help="Prompts JSONL (e.g. seed corpus or captured)")
+    p_g.add_argument(
+        "--backends",
+        nargs="+",
+        required=True,
+        help="Backend specs (online:deepseek-v4-flash, ollama:qwen2.5:14b, ...)",
+    )
+    p_g.add_argument("--judge-backend", default="online:deepseek-v4-flash")
     p_g.add_argument("--responses-name", default="responses.jsonl")
     p_g.add_argument("--scores-name", default="scores.jsonl")
     p_g.add_argument("--json-name", default="general_summary.json")
@@ -239,8 +355,7 @@ def main():
     p_g.set_defaults(func=cmd_general)
 
     p_m = sub.add_parser("mulligan", help="full 17lands mulligan eval pipeline")
-    p_m.add_argument("--set", required=True, dest="set_code",
-                     help="Arena set code (EOE, OTJ, ...)")
+    p_m.add_argument("--set", required=True, dest="set_code", help="Arena set code (EOE, OTJ, ...)")
     p_m.add_argument("--event", default="PremierDraft")
     p_m.add_argument("--backends", nargs="+", required=True)
     p_m.add_argument("--n", dest="n_samples", type=int, default=200)

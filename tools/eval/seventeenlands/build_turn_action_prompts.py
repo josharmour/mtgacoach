@@ -38,8 +38,6 @@ SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from arenamcp.card_db import get_card_database  # noqa: E402
-
 from tools.eval.seventeenlands.loader import (  # noqa: E402
     RANK_ORDER,
     iter_rows,
@@ -47,6 +45,8 @@ from tools.eval.seventeenlands.loader import (  # noqa: E402
     parse_grpid_list,
     rank_tier,
 )
+
+from arenamcp.card_db import get_card_database  # noqa: E402
 
 logger = logging.getLogger("eval.17l.turn_action")
 
@@ -76,30 +76,56 @@ SYSTEM_PROMPT = (
 # ---------------------------------------------------------------------------
 
 _STATIC_COLS = (
-    "expansion", "event_type", "rank", "opp_rank", "on_play", "won",
-    "num_mulligans", "num_turns", "opening_hand",
-    "main_colors", "splash_colors", "opp_colors",
-    "draft_id", "match_number", "game_number",
+    "expansion",
+    "event_type",
+    "rank",
+    "opp_rank",
+    "on_play",
+    "won",
+    "num_mulligans",
+    "num_turns",
+    "opening_hand",
+    "main_colors",
+    "splash_colors",
+    "opp_colors",
+    "draft_id",
+    "match_number",
+    "game_number",
 )
 
 # Per-turn suffixes (after `(user|oppo)_turn_N_`) that we project from the CSV.
-_TURN_SUFFIXES = frozenset({
-    # End-of-turn state snapshot
-    "eot_user_life", "eot_oppo_life",
-    "eot_user_lands_in_play", "eot_oppo_lands_in_play",
-    "eot_user_creatures_in_play", "eot_oppo_creatures_in_play",
-    "eot_user_non_creatures_in_play", "eot_oppo_non_creatures_in_play",
-    "eot_user_cards_in_hand", "eot_oppo_cards_in_hand",
-    # Action counts
-    "lands_played", "creatures_cast", "non_creatures_cast",
-    "user_instants_sorceries_cast", "oppo_instants_sorceries_cast",
-    "user_abilities", "oppo_abilities",
-    "creatures_attacked", "creatures_blocked",
-    "user_combat_damage_taken", "oppo_combat_damage_taken",
-    # Card-name fields
-    "cards_drawn", "cards_drawn_or_tutored",
-    "cards_tutored", "cards_discarded",
-})
+_TURN_SUFFIXES = frozenset(
+    {
+        # End-of-turn state snapshot
+        "eot_user_life",
+        "eot_oppo_life",
+        "eot_user_lands_in_play",
+        "eot_oppo_lands_in_play",
+        "eot_user_creatures_in_play",
+        "eot_oppo_creatures_in_play",
+        "eot_user_non_creatures_in_play",
+        "eot_oppo_non_creatures_in_play",
+        "eot_user_cards_in_hand",
+        "eot_oppo_cards_in_hand",
+        # Action counts
+        "lands_played",
+        "creatures_cast",
+        "non_creatures_cast",
+        "user_instants_sorceries_cast",
+        "oppo_instants_sorceries_cast",
+        "user_abilities",
+        "oppo_abilities",
+        "creatures_attacked",
+        "creatures_blocked",
+        "user_combat_damage_taken",
+        "oppo_combat_damage_taken",
+        # Card-name fields
+        "cards_drawn",
+        "cards_drawn_or_tutored",
+        "cards_tutored",
+        "cards_discarded",
+    }
+)
 
 _TURN_RE = re.compile(r"^(user|oppo)_turn_(\d+)_(.+)$")
 
@@ -121,6 +147,7 @@ def _peek_header(csv_gz: Path) -> list[str]:
     """Read just the CSV header for column allowlisting."""
     import csv as _csv
     import gzip
+
     with gzip.open(csv_gz, "rt", encoding="utf-8", newline="") as f:
         return next(_csv.reader(f))
 
@@ -128,6 +155,7 @@ def _peek_header(csv_gz: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _to_int(v) -> int:
     """Parse a numeric scalar field (e.g. '20.0', '20', ''). Returns 0 on miss."""
@@ -299,11 +327,13 @@ def _format_prompt(row: dict, n: int, cdb) -> str:
             return f"  {label} (0): (none)"
         return f"  {label} ({len(names)}): {', '.join(names)}"
 
-    hand_block = "\n".join([
-        _hand_section("LAND", hand_lands),
-        _hand_section("CREATURE", hand_creatures),
-        _hand_section("OTHER SPELL", hand_spells),
-    ])
+    hand_block = "\n".join(
+        [
+            _hand_section("LAND", hand_lands),
+            _hand_section("CREATURE", hand_creatures),
+            _hand_section("OTHER SPELL", hand_spells),
+        ]
+    )
 
     # Opp's prior turn summary.
     if n == 1 and on_play:
@@ -313,9 +343,8 @@ def _format_prompt(row: dict, n: int, cdb) -> str:
         op = f"oppo_turn_{opp_turn_n}_"
         opp_lands_played = _count_list(row.get(op + "lands_played"))
         opp_creatures_cast = _count_list(row.get(op + "creatures_cast"))
-        opp_spells_cast = (
-            _count_list(row.get(op + "non_creatures_cast"))
-            + _count_list(row.get(op + "oppo_instants_sorceries_cast"))
+        opp_spells_cast = _count_list(row.get(op + "non_creatures_cast")) + _count_list(
+            row.get(op + "oppo_instants_sorceries_cast")
         )
         opp_attacks = _count_list(row.get(op + "creatures_attacked"))
         damage_we_took = _to_int(row.get(op + "user_combat_damage_taken"))
@@ -362,6 +391,7 @@ def _format_prompt(row: dict, n: int, cdb) -> str:
 # Main build
 # ---------------------------------------------------------------------------
 
+
 def build(
     csv_gz: Path,
     out_path: Path,
@@ -383,7 +413,9 @@ def build(
     eligible: list[tuple[dict, list[int]]] = []  # (row, sampled_turns)
 
     for row in iter_rows(
-        csv_gz, cols, limit=max_rows_scan,
+        csv_gz,
+        cols,
+        limit=max_rows_scan,
         where={"event_type": "PremierDraft"},
     ):
         rows_seen += 1
@@ -450,6 +482,7 @@ def build(
     # Surface the action-set distribution so we can catch trivial baselines
     # like "PASS dominates the dataset".
     from collections import Counter
+
     set_counts: Counter = Counter(tuple(sorted(_action_set(r, n))) for r, n in picked)
     print("\nActual-action-set distribution (top 10):")
     for tags, count in set_counts.most_common(10):
@@ -458,15 +491,15 @@ def build(
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawTextHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("--csv", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--n", dest="n_samples", type=int, default=200)
     parser.add_argument("--min-rank", default="diamond", choices=RANK_ORDER)
     parser.add_argument("--max-rows-scan", type=int, default=None)
-    parser.add_argument("--max-turn", type=int, default=15,
-                        help="Cap turn columns we project from CSV (default 15)")
+    parser.add_argument(
+        "--max-turn", type=int, default=15, help="Cap turn columns we project from CSV (default 15)"
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
@@ -477,9 +510,13 @@ def main():
     )
 
     build(
-        csv_gz=args.csv, out_path=args.out, n_samples=args.n_samples,
-        min_rank=args.min_rank, max_rows_scan=args.max_rows_scan,
-        seed=args.seed, max_turn=args.max_turn,
+        csv_gz=args.csv,
+        out_path=args.out,
+        n_samples=args.n_samples,
+        min_rank=args.min_rank,
+        max_rows_scan=args.max_rows_scan,
+        seed=args.seed,
+        max_turn=args.max_turn,
     )
 
 

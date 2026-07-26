@@ -91,9 +91,12 @@ class DraftState:
     sealed_pool: list[int] = field(default_factory=list)
     sealed_analyzed: bool = False
     picks_per_pack: int = 1
+    last_completed_pool: list[int] = field(default_factory=list)
 
     def reset(self) -> None:
         """Reset draft state for a new draft."""
+        if len(self.picked_cards) >= 5:
+            self.last_completed_pool = list(self.picked_cards)
         self.event_name = ""
         self.draft_type = DRAFT_TYPE_UNKNOWN
         self.set_code = ""

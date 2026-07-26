@@ -2,8 +2,18 @@
 #define MyAppPublisher "Josh Armour"
 #define MyAppURL "https://github.com/josharmour/mtgacoach"
 
+; AppVersion is supplied by the caller (/DAppVersion=X.Y.Z):
+;   installer\build-installer.ps1   - local release builds
+;   .github/workflows/installer.yml - CI release builds
+; Both read the single source of truth, src\arenamcp\__init__.py (pyproject.toml
+; uses hatch dynamic versioning and carries no literal version).
+;
+; There is deliberately NO hardcoded fallback here. There used to be one, and a
+; hardcoded literal silently stamps the PREVIOUS version onto every installer
+; built after a version bump: a wrong number in Add/Remove Programs and on the
+; release asset, with nothing failing to warn you. Fail loudly instead.
 #ifndef AppVersion
-  #define AppVersion "2.7.3"
+  #error AppVersion is not defined. Build with installer\build-installer.ps1, or pass /DAppVersion=X.Y.Z matching __version__ in src\arenamcp\__init__.py.
 #endif
 
 [Setup]

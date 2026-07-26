@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
 
 
 def validate_action_schema_json(response: str) -> tuple[bool, str]:
@@ -57,7 +56,10 @@ def validate_keyword_contract(prompt_user: str, response: str) -> tuple[bool, st
             # Check if JSON pick
             is_valid_json, _ = validate_action_schema_json(response)
             if not is_valid_json:
-                return False, f"Mulligan decision response must be KEEP/MULLIGAN or valid JSON, got: {response[:50]}"
+                return (
+                    False,
+                    f"Mulligan decision response must be KEEP/MULLIGAN or valid JSON, got: {response[:50]}",
+                )
 
     return True, "Keyword contract valid"
 
@@ -73,7 +75,7 @@ def validate_action_legality(prompt_user: str, response: str) -> tuple[bool, str
         actions = data.get("actions", [])
         if not actions:
             return True, "No actions to check"
-        
+
         act = actions[0]
         pick = act.get("pick")
         card_name = act.get("card_name")
@@ -81,9 +83,9 @@ def validate_action_legality(prompt_user: str, response: str) -> tuple[bool, str
         if "Legal:" in prompt_user:
             legal_section = prompt_user.split("Legal:")[1].split("\n\n")[0]
             if pick is not None:
-                pattern = rf"\[{pick}\]"
+                pattern = rf"(?:\[{pick}\]|\b{pick}\.\s)"
                 if not re.search(pattern, legal_section):
-                    return False, f"Pick [{pick}] does not exist in prompt Legal: menu"
+                    return False, f"Pick {pick} does not exist in prompt Legal: menu"
             elif card_name:
                 if card_name.lower() not in legal_section.lower():
                     return False, f"Card '{card_name}' not found in prompt Legal: menu"
@@ -96,7 +98,7 @@ def validate_action_legality(prompt_user: str, response: str) -> tuple[bool, str
 def validate_all(prompt_system: str, prompt_user: str, response: str) -> tuple[bool, list[str]]:
     """Run all validators over a (system, user, response) triplet."""
     reasons = []
-    
+
     ok_schema, msg_schema = validate_action_schema_json(response)
     if not ok_schema:
         reasons.append(msg_schema)

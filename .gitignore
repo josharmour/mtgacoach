@@ -45,3 +45,7 @@ test_env/
 # BepInEx plugin build artifacts
 bepinex-plugin/**/bin/
 bepinex-plugin/**/obj/
+.DS_Store
+stage0v2_31b_train.log
+*_train.log
+models/

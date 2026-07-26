@@ -6,7 +6,11 @@ import logging
 from collections import Counter
 from typing import Any
 
-from arenamcp.backend_health import is_backend_error_text
+from arenamcp.backend_health import (
+    BACKEND_ERROR_PREFIX,
+    LOCAL_FALLBACK_PREFIX,
+    is_backend_error_text,
+)
 from arenamcp.coach_prompt_utils import (
     _NON_PASSABLE_REQUEST_CLASSES,
     _NON_PASSABLE_REQUEST_TYPES,
@@ -14,6 +18,45 @@ from arenamcp.coach_prompt_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Backend-error wins over local-fallback when both somehow appear.
+_HEALTH_TAG_PRECEDENCE = (BACKEND_ERROR_PREFIX, LOCAL_FALLBACK_PREFIX)
+
+
+def _normalize_health_tags(text: str, *, force_local_fallback: bool = False) -> str:
+    """Hoist any health tag to the front of ``text`` (exactly once).
+
+    Two problems this solves:
+
+    1. Callers prepend framing to advice ("<game plan intro>. <advice>"),
+       which buries a leading ``[LOCAL FALLBACK]`` mid-string. ``strip_health_tags``
+       is ``startswith``-based, so a buried tag is never removed and TTS reads
+       "local fallback" out loud.
+    2. Fallback advice generated inside this module needs the tag applied
+       *after* the spoken-form rewrites below, which are anchored regexes
+       (``^Done \\(confirm attackers\\)$``) that a prefix would break.
+
+    ``force_local_fallback`` tags locally generated advice that carried no tag.
+    """
+    if not text:
+        return text
+    import re as _re
+
+    tag = ""
+    for prefix in _HEALTH_TAG_PRECEDENCE:
+        if prefix in text:
+            if not tag:
+                tag = prefix
+            text = text.replace(prefix, " ")
+    text = _re.sub(r"\s+", " ", text).strip()
+    # Framing prepended before a tag can leave a dangling separator
+    # ("Plan: race. . pass priority") once the tag is lifted out.
+    text = _re.sub(r"^[.,;:]+\s*", "", text).strip()
+    if not tag and force_local_fallback:
+        tag = LOCAL_FALLBACK_PREFIX
+    if not tag:
+        return text
+    return f"{tag} {text}".strip()
 
 
 class _AdvicePostprocessMixin:
@@ -36,6 +79,12 @@ class _AdvicePostprocessMixin:
             return ""
 
         import re
+
+        # Set when this method substitutes locally generated advice for the
+        # model's. The tag is applied at the very end (see
+        # ``_normalize_health_tags``) so the spoken-form rewrites below —
+        # anchored regexes like ``^Done \(confirm attackers\)$`` — still match.
+        local_fallback_used = False
 
         # 0a. Strip markdown formatting — this is spoken aloud, not rendered
         # Remove headers (# Header or ##Header — with or without space)
@@ -303,6 +352,48 @@ class _AdvicePostprocessMixin:
                     advice = re.sub(r"(?i)\bwin!\b", "", advice)
                     advice = advice.replace("lethal on board", "pressure on board")
 
+        # 5. Suicide / Self-Damage Safety Filter:
+        # Prevent advising spells or lands that inflict self-damage when life total is too low.
+        players = game_state.get("players", [])
+        local_player = next((p for p in players if p.get("is_local")), None)
+        your_life = local_player.get("life_total", 20) if local_player else 20
+
+        if isinstance(your_life, int) and your_life <= 5:
+            advice_lower = advice.lower()
+            if "sunspine lynx" in advice_lower:
+                nonbasics = sum(
+                    1
+                    for c in battlefield
+                    if c.get("owner_seat_id") == local_seat
+                    and "land" in c.get("type_line", "").lower()
+                    and "basic" not in c.get("type_line", "").lower()
+                )
+                if your_life <= max(1, nonbasics):
+                    advice = f"Pass priority. Do not cast Sunspine Lynx — its ETB nonbasic damage would deal {nonbasics} to you and be fatal at {your_life} life!"
+            elif "thoughtseize" in advice_lower and your_life <= 2:
+                advice = f"Pass priority. Do not cast Thoughtseize — the 2 life loss would be fatal at {your_life} life!"
+            elif (
+                any(
+                    p in advice_lower
+                    for p in [
+                        "city of brass",
+                        "mana confluence",
+                        "battlefield forge",
+                        "shivan reef",
+                        "llanowar wastes",
+                        "caves of koilos",
+                        "adarkar wastes",
+                        "karplusan forest",
+                        "sulfurous springs",
+                        "brushland",
+                        "underground river",
+                        "yavimaya coast",
+                    ]
+                )
+                and your_life <= 1
+            ):
+                advice = f"Pass priority. Do not tap self-damage lands — taking 1 damage is fatal at {your_life} life!"
+
         # Clean up double spaces
         advice = re.sub(r"\s+", " ", advice).strip()
 
@@ -482,11 +573,11 @@ class _AdvicePostprocessMixin:
             # always valid strategic choices — the player can decline to act.
             PASSTHROUGH_PHRASES = [
                 "don't attack",
-                "don\u2019t attack",
+                "don't attack",
                 "do not attack",
                 "no attack",
                 "don't block",
-                "don\u2019t block",
+                "don't block",
                 "do not block",
                 "no block",
                 "pass priority",
@@ -497,11 +588,44 @@ class _AdvicePostprocessMixin:
                 "wait",
                 "no response",
                 "don't respond",
-                "don\u2019t respond",
+                "don't respond",
                 "nothing to do",
                 "pass",
                 "resolve",
+                "select",
+                "choose",
+                "pick",
+                "both options",
+                "option 1",
+                "option 2",
+                "first option",
+                "second option",
             ]
+            dec_ctx = game_state.get("decision_context") or {}
+            dec_type = str(dec_ctx.get("type", "") or "").lower()
+            if dec_type in (
+                "select_items",
+                "select_targets",
+                "modal_choice",
+                "distribution",
+                "pay_costs",
+                "numeric_input",
+            ):
+                if any(
+                    word in advice_lower
+                    for word in [
+                        "select",
+                        "choose",
+                        "pick",
+                        "option",
+                        "both",
+                        "mode",
+                        "target",
+                        "accept",
+                        "decline",
+                    ]
+                ):
+                    matches = True
             has_ok_actions = any(
                 "[ok]" in act.lower() for act in legal_actions if not act.lower().startswith("pass")
             )
@@ -782,6 +906,10 @@ class _AdvicePostprocessMixin:
                 best = _normalize_best_legal_action(best)
                 logger.info(f"Replaced illegal advice with legal action: {best} (original: {advice[:80]})")
                 advice = best
+                # This line came from the deterministic scorer, not the LLM.
+                # Untagged it is indistinguishable from model advice — the
+                # exact failure mode the health tags exist to prevent.
+                local_fallback_used = True
         else:
             # No legal_actions reported. For passable idle windows this
             # means "pass priority" — but for SelectTargets/Search/Modal/
@@ -850,6 +978,13 @@ class _AdvicePostprocessMixin:
         # with the deterministic solver's assignment so the spoken line is
         # always actionable.
         advice = self._ensure_block_advice_names_attacker(advice, game_state)
+
+        # 7. Health-tag normalization — MUST be last. Tags locally generated
+        # advice, and hoists any tag that a caller's prepended framing (the
+        # game-plan intro) buried mid-string, where the startswith-based
+        # strip_health_tags used at the TTS boundary cannot remove it and
+        # the voice reads "local fallback" out loud.
+        advice = _normalize_health_tags(advice, force_local_fallback=local_fallback_used)
 
         return advice
 

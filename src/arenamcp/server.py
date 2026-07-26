@@ -116,6 +116,8 @@ def _deactivate_draft_state(reason: str) -> None:
 def _has_live_match_state() -> bool:
     """Return True when the published snapshot already looks like real gameplay."""
     snap = game_state.get_published_snapshot(deep_copy=False)
+    if snap.get("last_game_result") or snap.get("match_ended") or snap.get("_bridge_in_intermission"):
+        return False
     if not snap.get("match_id"):
         return False
 

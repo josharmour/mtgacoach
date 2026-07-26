@@ -222,9 +222,7 @@ def game_action_to_schema_json(action: Any) -> str:
 
     if hasattr(action, "action_type"):
         action_type_val = (
-            action.action_type.value
-            if hasattr(action.action_type, "value")
-            else str(action.action_type)
+            action.action_type.value if hasattr(action.action_type, "value") else str(action.action_type)
         )
         item: dict[str, Any] = {"action_type": action_type_val}
         if getattr(action, "card_name", ""):
@@ -252,7 +250,6 @@ def game_action_to_schema_json(action: Any) -> str:
         return json.dumps({"actions": [item]}, ensure_ascii=False)
 
     return json.dumps({"actions": [{"reasoning": str(action)}]}, ensure_ascii=False)
-
 
 
 AUTOPILOT_SYSTEM_PROMPT = (

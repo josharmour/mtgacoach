@@ -56,6 +56,7 @@ CRITICAL MATH RULES:
 - Do NOT suggest removal that won't kill the target unless it enables a profitable attack.
 - Cards tagged [NO TARGETS] have NO VALID TARGETS right now. Do NOT cast them — it wastes the card for no effect. Even if the card appears in the Legal: line, casting it without targets is a mistake.
 - Cards tagged [OK,X=0] are X-cost spells where you can only pay X=0. This means the X effect does NOTHING (0 targets, 0 damage, 0 counters). Do NOT suggest casting these unless the non-X part of the spell is still valuable on its own. Usually it's better to wait until you have more mana so X > 0.
+- SUICIDE / SELF-DAMAGE PREVENTION: NEVER suggest casting a spell (like Sunspine Lynx, Thoughtseize, or Roiling Vortex) or tapping a land (like Painlands, Shocklands, or City of Brass) if the self-damage or life loss is EQUAL TO OR GREATER THAN your current life total (i.e. would kill you)! Non-lethal self-damage or life payment to develop your board, fix mana, or cast strong threats is FULLY ALLOWED whenever your life total is safe.
 
 STRATEGIC VALUE — BEFORE suggesting any spell, evaluate whether it advances your game plan:
 - Is the RESULT worth the mana/life/card cost? Removing a 0/4 wall with premium removal is usually a waste.

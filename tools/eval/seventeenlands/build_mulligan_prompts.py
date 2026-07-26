@@ -43,8 +43,6 @@ SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from arenamcp.card_db import get_card_database  # noqa: E402
-
 from tools.eval.seventeenlands.loader import (  # noqa: E402
     RANK_ORDER,
     iter_rows,
@@ -53,17 +51,26 @@ from tools.eval.seventeenlands.loader import (  # noqa: E402
     rank_tier,
 )
 
+from arenamcp.card_db import get_card_database  # noqa: E402
+
 logger = logging.getLogger("eval.17l.mulligan")
 
 
 # Columns we project out of the giant CSV
 NEEDED_COLS = (
-    "expansion", "event_type",
-    "rank", "on_play", "num_mulligans",
-    "main_colors", "splash_colors",
-    "won", "num_turns",
+    "expansion",
+    "event_type",
+    "rank",
+    "on_play",
+    "num_mulligans",
+    "main_colors",
+    "splash_colors",
+    "won",
+    "num_turns",
     "candidate_hand_1",
-    "draft_id", "match_number", "game_number",
+    "draft_id",
+    "match_number",
+    "game_number",
 )
 
 
@@ -133,9 +140,7 @@ def _format_prompt(
     )
 
 
-def _summarize_buckets(
-    bucket_stats: dict, min_bucket_n: int
-) -> dict[tuple, dict]:
+def _summarize_buckets(bucket_stats: dict, min_bucket_n: int) -> dict[tuple, dict]:
     """Compute per-bucket {keep_n, keep_wins, mull_n, mull_wins, correct}."""
     summary: dict[tuple, dict] = {}
     for key, s in bucket_stats.items():
@@ -146,12 +151,7 @@ def _summarize_buckets(
         # Need both arms to assert a "correct" option, and need enough samples
         # in each arm to be trustworthy.
         correct: Optional[str] = None
-        if (
-            keep_wr is not None
-            and mull_wr is not None
-            and keep_n >= min_bucket_n
-            and mull_n >= min_bucket_n
-        ):
+        if keep_wr is not None and mull_wr is not None and keep_n >= min_bucket_n and mull_n >= min_bucket_n:
             if keep_wr > mull_wr:
                 correct = "keep"
             elif mull_wr > keep_wr:
@@ -236,26 +236,31 @@ def build(
             if won:
                 b["mull_wins"] += 1
 
-        eligible.append({
-            "key": key,
-            "hand": hand,
-            "hand_resolved": [(g, n) for g, n, _ in hand_resolved],
-            "on_play": on_play,
-            "main_colors": row.get("main_colors", ""),
-            "splash_colors": row.get("splash_colors", ""),
-            "kept": kept,
-            "won": won,
-            "rank": row.get("rank", ""),
-            "draft_id": row.get("draft_id", ""),
-            "match_number": row.get("match_number", ""),
-            "game_number": row.get("game_number", ""),
-            "num_lands": num_lands,
-        })
+        eligible.append(
+            {
+                "key": key,
+                "hand": hand,
+                "hand_resolved": [(g, n) for g, n, _ in hand_resolved],
+                "on_play": on_play,
+                "main_colors": row.get("main_colors", ""),
+                "splash_colors": row.get("splash_colors", ""),
+                "kept": kept,
+                "won": won,
+                "rank": row.get("rank", ""),
+                "draft_id": row.get("draft_id", ""),
+                "match_number": row.get("match_number", ""),
+                "game_number": row.get("game_number", ""),
+                "num_lands": num_lands,
+            }
+        )
 
     summary = _summarize_buckets(bucket_stats, min_bucket_n)
     logger.info(
         "pass 1 done: rows_seen=%d eligible=%d buckets=%d (with min_n=%d on both arms)",
-        rows_seen, len(eligible), len(summary), min_bucket_n,
+        rows_seen,
+        len(eligible),
+        len(summary),
+        min_bucket_n,
     )
 
     # Filter eligible rows to ones whose bucket has a determinable "correct"
@@ -265,15 +270,19 @@ def build(
 
     if not scorable:
         logger.error(
-            "no scorable rows — try lowering --min-bucket-n or scanning more "
-            "rows. Bucket summary so far:"
+            "no scorable rows — try lowering --min-bucket-n or scanning more rows. Bucket summary so far:"
         )
         for key in sorted(bucket_stats):
             s = summary[key]
-            logger.error("  %s: keep n=%d wr=%s, mull n=%d wr=%s, correct=%s",
-                         _bucket_label(key),
-                         s["keep_n"], s["keep_wr"],
-                         s["mull_n"], s["mull_wr"], s["correct"])
+            logger.error(
+                "  %s: keep n=%d wr=%s, mull n=%d wr=%s, correct=%s",
+                _bucket_label(key),
+                s["keep_n"],
+                s["keep_wr"],
+                s["mull_n"],
+                s["mull_wr"],
+                s["correct"],
+            )
         sys.exit(2)
 
     # Stratified sampling: try to spread sampled rows across buckets so we
@@ -343,9 +352,11 @@ def build(
         counts[r["key"]] += 1
     for key in sorted(counts):
         s = summary[key]
-        print(f"  {_bucket_label(key):30}  n={counts[key]:>3}  "
-              f"keep_wr={s['keep_wr']}  mull_wr={s['mull_wr']}  "
-              f"correct={s['correct']}")
+        print(
+            f"  {_bucket_label(key):30}  n={counts[key]:>3}  "
+            f"keep_wr={s['keep_wr']}  mull_wr={s['mull_wr']}  "
+            f"correct={s['correct']}"
+        )
 
 
 def main():
@@ -353,19 +364,29 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawTextHelpFormatter,
     )
-    parser.add_argument("--csv", required=True, type=Path,
-                        help="Path to a 17lands replay_data_public.*.csv.gz file")
-    parser.add_argument("--out", required=True, type=Path,
-                        help="Output prompts.jsonl path")
-    parser.add_argument("--n", dest="n_samples", type=int, default=200,
-                        help="Number of mulligan prompts to sample (default 200)")
-    parser.add_argument("--min-rank", default="diamond",
-                        choices=RANK_ORDER,
-                        help="Minimum player rank to include (default diamond)")
-    parser.add_argument("--min-bucket-n", type=int, default=20,
-                        help="Per-bucket arm minimum to call a 'correct' option")
-    parser.add_argument("--max-rows-scan", type=int, default=None,
-                        help="Cap on rows scanned in pass 1 (default: all)")
+    parser.add_argument(
+        "--csv", required=True, type=Path, help="Path to a 17lands replay_data_public.*.csv.gz file"
+    )
+    parser.add_argument("--out", required=True, type=Path, help="Output prompts.jsonl path")
+    parser.add_argument(
+        "--n",
+        dest="n_samples",
+        type=int,
+        default=200,
+        help="Number of mulligan prompts to sample (default 200)",
+    )
+    parser.add_argument(
+        "--min-rank",
+        default="diamond",
+        choices=RANK_ORDER,
+        help="Minimum player rank to include (default diamond)",
+    )
+    parser.add_argument(
+        "--min-bucket-n", type=int, default=20, help="Per-bucket arm minimum to call a 'correct' option"
+    )
+    parser.add_argument(
+        "--max-rows-scan", type=int, default=None, help="Cap on rows scanned in pass 1 (default: all)"
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()

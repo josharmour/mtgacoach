@@ -151,6 +151,7 @@ def test_find_mtga_database_checks_settings_dir(tmp_path: Path, monkeypatch: pyt
 def test_combat_advice_override_matching(monkeypatch: pytest.MonkeyPatch) -> None:
     from unittest.mock import MagicMock
 
+    from arenamcp.backend_health import LOCAL_FALLBACK_PREFIX
     from arenamcp.coach import CoachEngine
     from arenamcp.rules_engine import RulesEngine
 
@@ -185,13 +186,15 @@ def test_combat_advice_override_matching(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     assert res == "Attack with all creatures."
 
-    # Case 2: Irrelevant advice gets overridden to default "Don't attack"
+    # Case 2: Irrelevant advice gets overridden to default "Don't attack".
+    # The override is generated locally by the deterministic scorer, so it
+    # carries the [LOCAL FALLBACK] tag (see tests/test_health_tag_visibility.py).
     res = coach._postprocess_advice(
         advice="Cast a random spell.",
         game_state=game_state_atk,  # type: ignore
         style="quick",
     )
-    assert res == "Don't attack"
+    assert res == f"{LOCAL_FALLBACK_PREFIX} Don't attack"
 
     # Case 3: Done (confirm blockers) matches positive block advice
     game_state_blk = MockGameState(

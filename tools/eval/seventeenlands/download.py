@@ -22,7 +22,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-
 REPO = Path(__file__).resolve().parents[3]
 DEFAULT_CACHE = REPO / "tools" / "eval" / "data" / "17lands"
 
@@ -38,8 +37,9 @@ def cache_path(set_code: str, event: str, cache_dir: Path) -> Path:
     return cache_dir / f"replay_data_public.{set_code.upper()}.{event}.csv.gz"
 
 
-def download(set_code: str, event: str = "PremierDraft", cache_dir: Path = DEFAULT_CACHE,
-             force: bool = False) -> Path:
+def download(
+    set_code: str, event: str = "PremierDraft", cache_dir: Path = DEFAULT_CACHE, force: bool = False
+) -> Path:
     """Download the gzipped CSV if not already cached. Returns the local path."""
     out = cache_path(set_code, event, cache_dir)
     if out.exists() and not force:
@@ -70,8 +70,7 @@ def download(set_code: str, event: str = "PremierDraft", cache_dir: Path = DEFAU
                         pct = (bytes_written / content_length * 100) if content_length else 0
                         mb = bytes_written / (1024 * 1024)
                         rate = mb / max(0.001, now - started)
-                        print(f"            {pct:5.1f}%  {mb:6.1f} MB  {rate:5.1f} MB/s",
-                              flush=True)
+                        print(f"            {pct:5.1f}%  {mb:6.1f} MB  {rate:5.1f} MB/s", flush=True)
                         last_log = now
     except urllib.error.HTTPError as e:
         try:
@@ -91,22 +90,23 @@ def download(set_code: str, event: str = "PremierDraft", cache_dir: Path = DEFAU
     tmp.replace(out)
     elapsed = time.time() - started
     size_mb = out.stat().st_size / (1024 * 1024)
-    print(f"[done]      {size_mb:.1f} MB in {elapsed:.0f}s "
-          f"({size_mb/elapsed:.1f} MB/s)")
+    print(f"[done]      {size_mb:.1f} MB in {elapsed:.0f}s ({size_mb / elapsed:.1f} MB/s)")
     return out
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument("--set", required=True, dest="set_code",
-                        help="3-letter Arena set code (e.g. EOE, OTJ, BLB)")
-    parser.add_argument("--event", default="PremierDraft",
-                        help="Event type (default: PremierDraft)")
-    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE,
-                        help=f"Where to cache the CSV (default: {DEFAULT_CACHE})")
-    parser.add_argument("--force", action="store_true",
-                        help="Re-download even if cached")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument(
+        "--set", required=True, dest="set_code", help="3-letter Arena set code (e.g. EOE, OTJ, BLB)"
+    )
+    parser.add_argument("--event", default="PremierDraft", help="Event type (default: PremierDraft)")
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=DEFAULT_CACHE,
+        help=f"Where to cache the CSV (default: {DEFAULT_CACHE})",
+    )
+    parser.add_argument("--force", action="store_true", help="Re-download even if cached")
     args = parser.parse_args()
     download(args.set_code, args.event, args.cache_dir, args.force)
 

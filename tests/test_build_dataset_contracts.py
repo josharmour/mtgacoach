@@ -1,6 +1,7 @@
 """Unit test for WP-0.1 contract serialization in build_dataset & action_planner."""
 
 import json
+
 from arenamcp.action_planner import ActionType, GameAction, game_action_to_schema_json
 
 

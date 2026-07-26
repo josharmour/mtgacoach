@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import csv
 import gzip
-import io
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import Optional
 
 
 def iter_rows(
@@ -47,7 +47,7 @@ def iter_rows(
         if missing:
             raise KeyError(
                 f"columns missing from CSV header: {missing[:5]}"
-                + (f" (and {len(missing)-5} more)" if len(missing) > 5 else "")
+                + (f" (and {len(missing) - 5} more)" if len(missing) > 5 else "")
             )
 
         proj_idx = [(c, col_idx[c]) for c in columns]

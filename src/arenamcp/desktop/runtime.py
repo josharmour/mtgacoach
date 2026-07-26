@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -824,15 +825,18 @@ def read_version() -> str:
         return version("arenamcp")
     except Exception:
         pass
-    # Dev fallback: the repo checkout has pyproject.toml.
+    # Dev fallback: a source checkout whose package isn't importable from this
+    # interpreter (launcher running on a different/unprovisioned Python).
+    # This parses src/arenamcp/__init__.py, NOT pyproject.toml: pyproject uses
+    # hatch dynamic versioning (`dynamic = ["version"]`) and has carried no
+    # literal `version = "..."` line since 8a274d2, so the old parse here was
+    # dead code that could only ever fall through to "unknown".
     try:
-        pyproject = Path(get_app_root()) / "pyproject.toml"
-        for line in pyproject.read_text(encoding="utf-8").splitlines():
-            trimmed = line.strip()
-            if trimmed.startswith("version = "):
-                parts = trimmed.split('"')
-                if len(parts) >= 2:
-                    return parts[1]
+        init_py = Path(get_app_root()) / "src" / "arenamcp" / "__init__.py"
+        for line in init_py.read_text(encoding="utf-8").splitlines():
+            match = re.match(r'^__version__\s*=\s*"([^"]+)"', line)
+            if match:
+                return match.group(1)
     except Exception:
         pass
     return "unknown"

@@ -26,7 +26,6 @@ from .decisions import GroundTruth  # noqa: E402
 from .reader import ReplayMessage  # noqa: E402
 from .state import GameStateSnapshot  # noqa: E402
 
-
 SYSTEM_PROMPT = (
     "You are a Magic: The Gathering Arena coach. The user will describe "
     "a game state and a list of legal numbered actions. Your job is to "
@@ -42,12 +41,12 @@ SYSTEM_PROMPT = (
 class ActionChoice:
     """One legal action enumerated for the coach's choice list."""
 
-    number: int             # 1-based
-    action_type: str        # ActionType_Cast / Pass / Activate / PlayLand / ...
+    number: int  # 1-based
+    action_type: str  # ActionType_Cast / Pass / Activate / PlayLand / ...
     grp_id: Optional[int]
     instance_id: Optional[int]
-    label: str              # human-readable: "Cast Lightning Strike"
-    raw: dict               # original action dict from the request
+    label: str  # human-readable: "Cast Lightning Strike"
+    raw: dict  # original action dict from the request
 
 
 _CARD_DB = None
@@ -75,9 +74,13 @@ def _format_mana_cost(cost: list[dict]) -> str:
         return ""
     parts: list[str] = []
     color_short = {
-        "ManaColor_White": "W", "ManaColor_Blue": "U", "ManaColor_Black": "B",
-        "ManaColor_Red": "R", "ManaColor_Green": "G",
-        "ManaColor_Generic": None, "ManaColor_Colorless": "C",
+        "ManaColor_White": "W",
+        "ManaColor_Blue": "U",
+        "ManaColor_Black": "B",
+        "ManaColor_Red": "R",
+        "ManaColor_Green": "G",
+        "ManaColor_Generic": None,
+        "ManaColor_Colorless": "C",
     }
     for entry in cost:
         n = int(entry.get("count") or 0)
@@ -96,8 +99,8 @@ def _format_mana_cost(cost: list[dict]) -> str:
 # moves a coach shouldn't be reasoning about explicitly, and including
 # them blows the prompt up to 30+ choices on Main1.
 _FILTERED_ACTION_TYPES = {
-    "ActionType_Activate_Mana",   # tapping a single land for a single color
-    "ActionType_FloatMana",       # auto-float at phase end
+    "ActionType_Activate_Mana",  # tapping a single land for a single color
+    "ActionType_FloatMana",  # auto-float at phase end
 }
 
 
@@ -107,7 +110,7 @@ def enumerate_actions(request: ReplayMessage) -> list[ActionChoice]:
     out: list[ActionChoice] = []
     saw_pass = False
     for a in aa:
-        atype = (a.get("actionType") or "?")
+        atype = a.get("actionType") or "?"
         if atype in _FILTERED_ACTION_TYPES:
             continue
         gid = a.get("grpId")
@@ -136,18 +139,27 @@ def enumerate_actions(request: ReplayMessage) -> list[ActionChoice]:
             label = atype.replace("ActionType_", "")
             if gid is not None:
                 label += f" {_name_for_grpid(gid)}"
-        out.append(ActionChoice(
-            number=len(out) + 1, action_type=atype,
-            grp_id=int(gid) if gid is not None else None,
-            instance_id=int(iid) if iid is not None else None,
-            label=label, raw=a,
-        ))
+        out.append(
+            ActionChoice(
+                number=len(out) + 1,
+                action_type=atype,
+                grp_id=int(gid) if gid is not None else None,
+                instance_id=int(iid) if iid is not None else None,
+                label=label,
+                raw=a,
+            )
+        )
     if not saw_pass:
-        out.append(ActionChoice(
-            number=len(out) + 1, action_type="ActionType_Pass",
-            grp_id=None, instance_id=None,
-            label="Pass priority (auto)", raw={"actionType": "ActionType_Pass"},
-        ))
+        out.append(
+            ActionChoice(
+                number=len(out) + 1,
+                action_type="ActionType_Pass",
+                grp_id=None,
+                instance_id=None,
+                label="Pass priority (auto)",
+                raw={"actionType": "ActionType_Pass"},
+            )
+        )
     return out
 
 
@@ -203,8 +215,7 @@ def build_actions_available_prompt(
 
     lines: list[str] = []
     whose = "Your" if is_your_turn else "Opponent's"
-    lines.append(f"It is turn {snap.turn_number}, phase {phase}. "
-                 f"{whose} turn. Priority: {on_priority}.")
+    lines.append(f"It is turn {snap.turn_number}, phase {phase}. {whose} turn. Priority: {on_priority}.")
     lines.append("")
     lines.append(f"Life — you {you_life}, opp {opp_life}")
     lines.append(f"Your hand ({len(you_hand)}): {_format_card_list(you_hand)}")
@@ -224,8 +235,10 @@ def _card_to_json_dict(c: dict) -> dict:
     out: dict = {"grpId": c.get("grpId"), "name": _name_for_grpid(c.get("grpId"))}
     p = _pt_value(c.get("power"))
     t = _pt_value(c.get("toughness"))
-    if p is not None: out["power"] = p
-    if t is not None: out["toughness"] = t
+    if p is not None:
+        out["power"] = p
+    if t is not None:
+        out["toughness"] = t
     return out
 
 
@@ -242,6 +255,7 @@ def build_actions_available_prompt_raw_json(
     cache); no GRE-internal fields are added — this is pure formatting.
     """
     import json as _json
+
     seat = snap.local_seat_id
     opp_seat = 1 if seat == 2 else 2
 
@@ -255,8 +269,7 @@ def build_actions_available_prompt_raw_json(
         "your_battlefield": [_card_to_json_dict(c) for c in snap.battlefield(seat)],
         "opp_battlefield": [_card_to_json_dict(c) for c in snap.battlefield(opp_seat)],
         "legal_actions": [
-            {"number": a.number, "label": a.label,
-             "action_type": a.action_type, "grp_id": a.grp_id}
+            {"number": a.number, "label": a.label, "action_type": a.action_type, "grp_id": a.grp_id}
             for a in actions
         ],
     }
@@ -304,11 +317,16 @@ def _creatures_from_ids(snap, instance_ids, fallback_objs=None):
         name = _name_for_grpid(gid)
         power = _pt_value(obj.get("power")) if obj else None
         toughness = _pt_value(obj.get("toughness")) if obj else None
-        out.append(CreatureChoice(
-            number=i + 1, instance_id=int(iid),
-            grp_id=int(gid) if gid is not None else None,
-            name=name, power=power, toughness=toughness,
-        ))
+        out.append(
+            CreatureChoice(
+                number=i + 1,
+                instance_id=int(iid),
+                grp_id=int(gid) if gid is not None else None,
+                name=name,
+                power=power,
+                toughness=toughness,
+            )
+        )
     return out
 
 
@@ -324,15 +342,17 @@ def build_declare_attackers_prompt(snap, request, qualified) -> str:
     seat = snap.local_seat_id
     opp_seat = 1 if seat == 2 else 2
     opp_bf = snap.battlefield(opp_seat)
-    opp_creatures_strs = [_format_card_list([c]) for c in opp_bf if "creature" in str(c.get("cardTypes", "")).lower()]
+    opp_creatures_strs = [
+        _format_card_list([c]) for c in opp_bf if "creature" in str(c.get("cardTypes", "")).lower()
+    ]
     if not opp_creatures_strs:
         opp_creatures_strs = [_format_card_list([c]) for c in opp_bf]
 
     lines = [
         f"Combat. Turn {snap.turn_number}. Your turn.",
         f"Life — you {snap.life(seat)}, opp {snap.life(opp_seat)}",
-        f"",
-        f"Your creatures that can attack:",
+        "",
+        "Your creatures that can attack:",
     ]
     for c in qualified:
         lines.append(f"  {c.number}. {_creature_label(c)}")
@@ -365,15 +385,15 @@ DB_SYSTEM_PROMPT = (
 )
 
 
-def build_declare_blockers_prompt(snap, request,
-                                  attackers: list[CreatureChoice],
-                                  blockers: list[CreatureChoice]) -> str:
+def build_declare_blockers_prompt(
+    snap, request, attackers: list[CreatureChoice], blockers: list[CreatureChoice]
+) -> str:
     seat = snap.local_seat_id
     opp_seat = 1 if seat == 2 else 2
     lines = [
         f"Combat (declare blockers). Turn {snap.turn_number}.",
         f"Life — you {snap.life(seat)}, opp {snap.life(opp_seat)}",
-        f"",
+        "",
         "Opponent's attackers (letters):",
     ]
     for i, a in enumerate(attackers):
@@ -432,8 +452,7 @@ def _classify_hand(hand_cards: list[dict]) -> tuple[int, int, int]:
     return lands, spells, low_drops
 
 
-def build_mulligan_prompt(snap, request, hand_cards: list[dict],
-                          mulligan_count: int) -> str:
+def build_mulligan_prompt(snap, request, hand_cards: list[dict], mulligan_count: int) -> str:
     """Stripped-down mulligan prompt for small models.
 
     Designed for E2B-class models that get lost in heavy context. Surfaces
@@ -620,8 +639,7 @@ def is_high_signal_actions_available(snap, request, actions: list[ActionChoice])
     if snap.phase not in ("Phase_Main1", "Phase_Main2"):
         return False
     has_card_action = any(
-        a.action_type in {"ActionType_Cast", "ActionType_Play", "ActionType_PlayMDFC"}
-        for a in actions
+        a.action_type in {"ActionType_Cast", "ActionType_Play", "ActionType_PlayMDFC"} for a in actions
     )
     return has_card_action
 
@@ -629,14 +647,16 @@ def is_high_signal_actions_available(snap, request, actions: list[ActionChoice])
 def main():
     """CLI: print the coach prompt for one decision so you can inspect it."""
     import argparse
-    from .reader import parse_replay_path
+
     from .decisions import extract_decisions
+    from .reader import parse_replay_path
     from .state import snapshot_at_decision
 
     p = argparse.ArgumentParser()
     p.add_argument("path", type=Path)
-    p.add_argument("--decision", type=int, default=3,
-                   help="Which decision index to render (default 3, an early Cast)")
+    p.add_argument(
+        "--decision", type=int, default=3, help="Which decision index to render (default 3, an early Cast)"
+    )
     p.add_argument("--seat", type=int, default=2)
     args = p.parse_args()
 

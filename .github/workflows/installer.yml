@@ -39,8 +39,19 @@ jobs:
       - name: Build installer
         shell: pwsh
         run: |
+          # Version source of truth: src/arenamcp/__init__.py. pyproject.toml
+          # uses hatch dynamic versioning and has no literal `version = "..."`
+          # line, so the old fallback could never resolve a version.
+          $versionMatch = Select-String -Path "src\arenamcp\__init__.py" -Pattern '^\s*__version__\s*=\s*"([^"]+)"' | Select-Object -First 1
+          if (-not $versionMatch) { throw "Could not read __version__ from src/arenamcp/__init__.py" }
+          $packageVersion = $versionMatch.Matches[0].Groups[1].Value
+
           $version = "${{ inputs.release_tag || github.ref_name }}".TrimStart("v")
-          if ($version -notmatch '^\d') { $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value }
+          if ($version -notmatch '^\d') { $version = $packageVersion }
+          if ($version -ne $packageVersion) {
+            Write-Host "::warning::Release tag version '$version' does not match package __version__ '$packageVersion' - the installer asset will be stamped '$version'."
+          }
+
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=$version installer\mtgacoach.iss
           if (-not (Test-Path dist\installer\mtgacoach-Setup.exe)) { throw "installer not produced" }
 

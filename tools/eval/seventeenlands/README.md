@@ -55,7 +55,7 @@ python -m tools.eval.seventeenlands.build_mulligan_prompts `
 python -m tools.eval.run `
     --prompts tools\eval\data\mulligan_prompts.jsonl `
     --responses tools\eval\data\mulligan_responses.jsonl `
-    --backend online:gpt-5.4
+    --backend online:deepseek-v4-flash
 
 # 4. Score: % higher-WR pick rate, % agreement with diamond+ players.
 python -m tools.eval.seventeenlands.score_mulligan `
@@ -68,7 +68,8 @@ Output looks like:
 ```
 backend                        n    parse%  higher_wr%  played%  kept%   mulled%
 ------------------------------------------------------------------------------------
-online:gpt-5.4                 200  98%     67.5%       71%      78%     22%
+online:gpt-5.4 [DECOMMISSIONED 2026-07-24 — historical record; no longer on the gateway]
+                               200  98%     67.5%       71%      78%     22%
 
 Per-decision breakdown (how each backend handles 'keep' buckets vs 'mull' buckets):
   online:gpt-5.4    on 'keep' buckets: 130/154 = 84.4%

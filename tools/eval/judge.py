@@ -19,7 +19,7 @@ Usage:
         --prompts tools/eval/data/prompts.jsonl \\
         --responses tools/eval/data/responses.jsonl \\
         --scores tools/eval/data/scores.jsonl \\
-        --judge-backend online:gpt-5.4 \\
+        --judge-backend online:deepseek-v4-flash \\
         --license-key $MTGACOACH_LICENSE_KEY
 
 Idempotent: existing (prompt_id, backend) score rows are preserved.
@@ -42,9 +42,8 @@ SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from arenamcp.backends.proxy import ProxyBackend  # noqa: E402
 
-from tools.eval.run import BackendSpec, _read_jsonl, _append_jsonl, _stable_prompt_id  # noqa: E402
+from tools.eval.run import BackendSpec, _append_jsonl, _read_jsonl, _stable_prompt_id  # noqa: E402
 
 logger = logging.getLogger("eval.judge")
 
@@ -104,7 +103,7 @@ def _parse_judge_json(text: str) -> dict:
         # Strip ```json ... ``` fence
         first_nl = text.find("\n")
         if first_nl != -1:
-            text = text[first_nl + 1:]
+            text = text[first_nl + 1 :]
         if text.endswith("```"):
             text = text[:-3]
     text = text.strip()
@@ -112,7 +111,7 @@ def _parse_judge_json(text: str) -> dict:
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
-        text = text[start:end + 1]
+        text = text[start : end + 1]
     return json.loads(text)
 
 
@@ -133,10 +132,7 @@ def judge(
     judge_backend: BackendSpec,
     limit: Optional[int] = None,
 ) -> None:
-    prompts = {
-        _stable_prompt_id(p, i): p
-        for i, p in enumerate(_read_jsonl(prompts_path))
-    }
+    prompts = {_stable_prompt_id(p, i): p for i, p in enumerate(_read_jsonl(prompts_path))}
     responses = list(_read_jsonl(responses_path))
     if not responses:
         logger.error(f"no responses in {responses_path}")
@@ -145,16 +141,10 @@ def judge(
     done = _existing_keys(scores_path)
     judge_client = judge_backend.build()
 
-    todo = [
-        r for r in responses
-        if (str(r.get("prompt_id")), str(r.get("backend"))) not in done
-    ]
+    todo = [r for r in responses if (str(r.get("prompt_id")), str(r.get("backend"))) not in done]
     if limit:
         todo = todo[:limit]
-    logger.info(
-        f"to-judge={len(todo)} of {len(responses)} responses; "
-        f"judge={judge_backend.label}"
-    )
+    logger.info(f"to-judge={len(todo)} of {len(responses)} responses; judge={judge_backend.label}")
 
     for r in todo:
         pid = str(r.get("prompt_id"))
@@ -224,8 +214,11 @@ def main():
     parser.add_argument("--prompts", required=True, type=Path)
     parser.add_argument("--responses", required=True, type=Path)
     parser.add_argument("--scores", required=True, type=Path)
-    parser.add_argument("--judge-backend", default="online:gpt-5.4",
-                        help="BackendSpec for the grader (default: online:gpt-5.4)")
+    parser.add_argument(
+        "--judge-backend",
+        default="online:deepseek-v4-flash",
+        help="BackendSpec for the grader (default: online:deepseek-v4-flash)",
+    )
     parser.add_argument("--license-key", default=os.environ.get("MTGACOACH_LICENSE_KEY", ""))
     parser.add_argument("--limit", type=int)
     parser.add_argument("--verbose", "-v", action="store_true")

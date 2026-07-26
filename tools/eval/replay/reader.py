@@ -20,23 +20,24 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Optional
 
 # Anchored prefix: prevents accidental matches if a JSON payload contains
 # a substring that looks like our own prefix. The colon after the
 # timestamp is the separator.
-_LINE_RE = re.compile(r'^(IN|OUT)-(\d+):(.*)$', re.DOTALL)
+_LINE_RE = re.compile(r"^(IN|OUT)-(\d+):(.*)$", re.DOTALL)
 
 
 @dataclass
 class ReplayMessage:
     """One GRE message extracted from a replay line."""
 
-    direction: str       # 'IN' (server->client) or 'OUT' (client->server)
+    direction: str  # 'IN' (server->client) or 'OUT' (client->server)
     timestamp_us: int
-    payload: dict        # parsed JSON of the GRE message
+    payload: dict  # parsed JSON of the GRE message
 
     @property
     def msg_type(self) -> str:
@@ -63,31 +64,33 @@ class ReplayMessage:
         return self.direction == "IN" and self.msg_type in _REQUEST_TYPES
 
 
-_REQUEST_TYPES = frozenset({
-    "GREMessageType_ActionsAvailableReq",
-    "GREMessageType_DeclareAttackersReq",
-    "GREMessageType_DeclareBlockersReq",
-    "GREMessageType_AssignDamageReq",
-    "GREMessageType_MulliganReq",
-    "GREMessageType_ChooseStartingPlayerReq",
-    "GREMessageType_SearchReq",
-    "GREMessageType_SelectNReq",
-    "GREMessageType_GroupReq",
-    "GREMessageType_OrderReq",
-    "GREMessageType_DistributionReq",
-    "GREMessageType_NumericInputReq",
-    "GREMessageType_PayCostsReq",
-    "GREMessageType_SelectTargetsReq",
-    "GREMessageType_AutoTapActionsReq",
-    "GREMessageType_OptionalActionMessage",
-    "GREMessageType_CastingTimeOptionsReq",
-    "GREMessageType_StringInputReq",
-    "GREMessageType_IntermissionReq",
-    "GREMessageType_GatherReq",
-    "GREMessageType_SelectReplacementReq",
-    "GREMessageType_SelectCountersReq",
-    "GREMessageType_SubmitDeckReq",
-})
+_REQUEST_TYPES = frozenset(
+    {
+        "GREMessageType_ActionsAvailableReq",
+        "GREMessageType_DeclareAttackersReq",
+        "GREMessageType_DeclareBlockersReq",
+        "GREMessageType_AssignDamageReq",
+        "GREMessageType_MulliganReq",
+        "GREMessageType_ChooseStartingPlayerReq",
+        "GREMessageType_SearchReq",
+        "GREMessageType_SelectNReq",
+        "GREMessageType_GroupReq",
+        "GREMessageType_OrderReq",
+        "GREMessageType_DistributionReq",
+        "GREMessageType_NumericInputReq",
+        "GREMessageType_PayCostsReq",
+        "GREMessageType_SelectTargetsReq",
+        "GREMessageType_AutoTapActionsReq",
+        "GREMessageType_OptionalActionMessage",
+        "GREMessageType_CastingTimeOptionsReq",
+        "GREMessageType_StringInputReq",
+        "GREMessageType_IntermissionReq",
+        "GREMessageType_GatherReq",
+        "GREMessageType_SelectReplacementReq",
+        "GREMessageType_SelectCountersReq",
+        "GREMessageType_SubmitDeckReq",
+    }
+)
 
 
 @dataclass
@@ -109,7 +112,7 @@ def parse_replay_path(path: Path) -> tuple[ReplayMetadata, list[ReplayMessage]]:
     """
     metadata: Optional[ReplayMetadata] = None
     messages: list[ReplayMessage] = []
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         first = f.readline().rstrip("\r\n")
         if not first.startswith("#Version"):
             raise ValueError(f"unexpected replay header: {first!r}")
@@ -117,8 +120,8 @@ def parse_replay_path(path: Path) -> tuple[ReplayMetadata, list[ReplayMessage]]:
         if meta_line:
             try:
                 meta_obj = json.loads(meta_line)
-                local = (meta_obj.get("Local") or {})
-                opp = (meta_obj.get("Opponent") or {})
+                local = meta_obj.get("Local") or {}
+                opp = meta_obj.get("Opponent") or {}
                 metadata = ReplayMetadata(
                     raw=meta_obj,
                     local_screen_name=str(local.get("ScreenName") or ""),
@@ -126,7 +129,9 @@ def parse_replay_path(path: Path) -> tuple[ReplayMetadata, list[ReplayMessage]]:
                     battlefield_id=meta_obj.get("BattlefieldId"),
                 )
             except json.JSONDecodeError:
-                metadata = ReplayMetadata(raw={}, local_screen_name="", opponent_screen_name="", battlefield_id=None)
+                metadata = ReplayMetadata(
+                    raw={}, local_screen_name="", opponent_screen_name="", battlefield_id=None
+                )
         for line in f:
             line = line.rstrip("\r\n")
             if not line:
@@ -180,6 +185,7 @@ def iter_decision_points(
 def main():
     """CLI: dump a replay's decision points for ad-hoc inspection."""
     import argparse
+
     p = argparse.ArgumentParser(description="Inspect an MTGA .rply file")
     p.add_argument("path", type=Path)
     p.add_argument("--limit", type=int, default=20, help="How many decisions to show")
@@ -189,7 +195,9 @@ def main():
     print(f"=== {args.path.name} ===")
     print(f"local: {meta.local_screen_name!r}  opp: {meta.opponent_screen_name!r}")
     print(f"battlefield: {meta.battlefield_id}")
-    print(f"messages: {len(messages)} (IN={sum(1 for m in messages if m.direction == 'IN')}, OUT={sum(1 for m in messages if m.direction == 'OUT')})")
+    print(
+        f"messages: {len(messages)} (IN={sum(1 for m in messages if m.direction == 'IN')}, OUT={sum(1 for m in messages if m.direction == 'OUT')})"
+    )
 
     decisions = list(iter_decision_points(messages))
     print(f"decision points: {len(decisions)}\n")
