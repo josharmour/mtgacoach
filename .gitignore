@@ -49,3 +49,11 @@ bepinex-plugin/**/obj/
 stage0v2_31b_train.log
 *_train.log
 models/
+
+# Dev-machine scratch, deliberately untracked (2026-07-27):
+#   launch.sh     — hardcodes the old WSL path /home/joshu/repos/mtgacoach
+#   run_update.py — one-shot regex migration that REWRITES src/arenamcp/server.py
+#                   in place; its edits are already merged. Keeping it runnable
+#                   in the repo is a footgun, not history.
+launch.sh
+run_update.py
