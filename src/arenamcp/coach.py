@@ -2324,6 +2324,84 @@ class CoachEngine(_AdvicePostprocessMixin):
                 lines.append(f"    {oracle_stripped}")
         return lines, no_target_card_names, uncastable_card_names
 
+    @staticmethod
+    def _stack_target_name_map(game_state: dict[str, Any]) -> dict[int, str]:
+        """instance_id -> display name across every zone we can see.
+
+        Used to turn a stack object's ``targeting`` instance ids into card
+        names. Deliberately conservative: ids we cannot resolve render as
+        ``#<id>`` rather than being guessed at as players, because a
+        mislabelled target ("targets you" when it targets a creature) is
+        strictly worse for the model than an opaque one.
+        """
+        names: dict[int, str] = {}
+        for zone in ("battlefield", "stack", "graveyard", "hand", "exile", "command"):
+            for card in game_state.get(zone) or []:
+                if not isinstance(card, dict):
+                    continue
+                try:
+                    iid = int(card.get("instance_id"))
+                except (TypeError, ValueError):
+                    continue
+                name = card.get("modified_name") or card.get("name")
+                if name:
+                    names[iid] = str(name)
+        return names
+
+    def _format_stack_section(self, game_state: dict[str, Any], local_seat: int) -> list[str]:
+        """Render the ordered stack with controller, targets and chosen modes.
+
+        The GRE stack zone lists objects in the order they were put on the
+        stack, so the LAST entry is the top and resolves FIRST. The previous
+        one-line ``Stack: A > B`` rendering both dropped targets entirely and
+        implied the opposite resolution order, which made it impossible to
+        reason about responses, counterspells or timing.
+
+        Emits nothing when the stack is empty (the common case), so the token
+        cost is zero for the great majority of decisions.
+        """
+        stack = game_state.get("stack") or []
+        if not stack:
+            return []
+
+        target_names = self._stack_target_name_map(game_state)
+        lines: list[str] = ["STACK (top resolves first):"]
+        # Top of stack = last element in GRE zone order.
+        for position, obj in enumerate(reversed(stack), start=1):
+            if not isinstance(obj, dict):
+                continue
+            controller = obj.get("controller_seat_id")
+            if controller is None:
+                controller = obj.get("owner_seat_id")
+            side = "YOU" if controller == local_seat else "OPP"
+            name = obj.get("modified_name") or obj.get("name") or "Unknown"
+
+            detail = ""
+            targets = obj.get("targeting") or []
+            if targets:
+                rendered = []
+                for tid in targets:
+                    try:
+                        tid_int = int(tid)
+                    except (TypeError, ValueError):
+                        continue
+                    rendered.append(target_names.get(tid_int, f"#{tid_int}"))
+                if rendered:
+                    detail += f" -> targets: {', '.join(rendered)}"
+
+            # Chosen modes are not currently captured by the state model; render
+            # them if a future GRE/bridge path ever supplies them.
+            modes = obj.get("chosen_modes") or obj.get("modes") or []
+            if isinstance(modes, str):
+                modes = [modes]
+            mode_strs = [str(m) for m in modes if m]
+            if mode_strs:
+                detail += f" [mode: {'; '.join(mode_strs)}]"
+
+            suffix = "  <- resolves next" if position == 1 else ""
+            lines.append(f"  {position}. {side} {name}{detail}{suffix}")
+        return lines
+
     def _format_zones_and_events(
         self, game_state: dict[str, Any], local_seat: int, opp_seat: int | None
     ) -> list[str]:
@@ -2331,8 +2409,18 @@ class CoachEngine(_AdvicePostprocessMixin):
         lines: list[str] = []
         recent_events = game_state.get("recent_events", [])
         if recent_events:
+            window = recent_events[-15:]
+            # A spell that finished resolving emits BOTH resolution_start and
+            # resolution_complete. Rendering both wastes tokens on "X
+            # resolving; X resolved" — keep "resolving" only while the object
+            # is still mid-resolution (no matching complete in the window).
+            _completed_ids = {
+                evt.get("instance_id")
+                for evt in window
+                if evt.get("type") == "resolution_complete"
+            }
             event_strs = []
-            for evt in recent_events[-15:]:
+            for evt in window:
                 etype = evt.get("type", "")
                 if etype == "damage_dealt":
                     event_strs.append(
@@ -2350,6 +2438,21 @@ class CoachEngine(_AdvicePostprocessMixin):
                     event_strs.append(f"Revealed: {evt.get('card', '?')}")
                 elif etype == "controller_changed":
                     event_strs.append(f"{evt.get('card', '?')} changed controller")
+                # Action history: what actually went on the stack and what came
+                # off it. These were emitted by gamestate but silently dropped
+                # here, so the prompt had no record of casts/resolutions at all.
+                elif etype in ("resolution_start", "resolution_complete"):
+                    card = str(evt.get("card") or "?")
+                    # An unresolved grp_id renders as "Card#12345" / "Unknown",
+                    # which is pure token cost with no strategic signal.
+                    if card.startswith("Card#") or card.startswith("Unknown"):
+                        continue
+                    if etype == "resolution_start":
+                        if evt.get("instance_id") in _completed_ids:
+                            continue
+                        event_strs.append(f"{card} resolving")
+                    else:
+                        event_strs.append(f"{card} resolved")
             if event_strs:
                 lines.append(f"Recent: {'; '.join(event_strs)}")
 
@@ -2359,13 +2462,7 @@ class CoachEngine(_AdvicePostprocessMixin):
             if opp_revealed:
                 lines.append(f"Opp revealed {len(opp_revealed)} card(s) this game")
 
-        stack = game_state.get("stack", [])
-        if stack:
-            stack_items = [
-                f"{'Y' if c.get('owner_seat_id') == local_seat else 'O'}:{c.get('name', 'Unknown')}"
-                for c in stack
-            ]
-            lines.append(f"Stack: {' > '.join(stack_items)}")
+        lines.extend(self._format_stack_section(game_state, local_seat))
 
         graveyard = game_state.get("graveyard", [])
         if graveyard:
@@ -2740,7 +2837,13 @@ class CoachEngine(_AdvicePostprocessMixin):
                         game_state=game_state,
                     )
                 )
-            elif "Combat" in phase and not is_your_turn:
+            # A GRE declare_blockers decision is authoritative even when the
+            # phase string hasn't caught up (or is missing) — gating the block
+            # solver on "Combat" in phase alone silently dropped the
+            # "Computed optimal blocks:" line on exactly the decision it
+            # exists for. _in_block_decision already encodes this rule for the
+            # inferred-attacker flags above; the dispatch must agree with it.
+            elif ("Combat" in phase or _in_block_decision) and not is_your_turn:
                 lines.extend(
                     self._format_block_combat(
                         your_cards,
