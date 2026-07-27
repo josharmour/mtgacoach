@@ -593,3 +593,279 @@ def test_splits_are_deterministic_disjoint_and_format_stratified():
         buckets.setdefault(by_file[fname][0]["format_bucket"], set()).add(split)
     for bucket, splits in buckets.items():
         assert {"test", "dev", "train"} <= splits, f"bucket {bucket} missing a split"
+
+
+# ---------------------------------------------------------------------------
+# G6 / G7 — the governance floors added 2026-07-26
+#
+# Context: the 2026-07-24 run returned PASS for a LoRA that scored 0.5825
+# overall against a 0.6359 always-land reflex, with a strategic-subset delta of
+# exactly 0.0000 vs the untuned base. Both facts were reported as advisories.
+# These tests pin them as hard, fail-closed floors.
+# ---------------------------------------------------------------------------
+
+
+def test_best_trivial_policy_takes_the_maximum_reflex():
+    refs = {
+        "always_first_option": 0.10,
+        "always_last_option": 0.20,
+        "always_land_else_first": 0.64,
+        "always_pass": 0.05,
+        "always_pass_else_first": 0.07,
+        "uniform_random_expectation": 0.17,
+    }
+    assert gpd.best_trivial_policy(refs) == ("always_land_else_first", 0.64)
+
+
+def test_best_trivial_policy_catches_the_pass_reflex():
+    """Removing land drops promotes always-pass to the cheapest reflex."""
+    refs = {
+        "always_first_option": 0.23,
+        "always_last_option": 0.35,
+        "always_land_else_first": 0.22,
+        "always_pass": 0.31,
+        "always_pass_else_first": 0.40,
+        "uniform_random_expectation": 0.25,
+    }
+    assert gpd.best_trivial_policy(refs) == ("always_pass_else_first", 0.40)
+
+
+def test_gate_blocks_a_candidate_that_loses_to_the_trivial_policy(tmp_path):
+    """G6: worse than always-land, but better than the declared baseline."""
+    paths = _write_gate_inputs(
+        tmp_path,
+        # correct on land drops only — exactly the reflex the last run learned
+        cand_pick=lambda m: m["first_land_pick"] or 1,
+        base_pick=lambda m: 1,
+    )
+    assert gpd.main(_gate_argv(paths)) == 2
+    report = json.loads(paths["report"].read_text())
+    assert report["verdict"] == "BLOCKED"
+    assert any(f.startswith("G6 trivial-policy floor") for f in report["failures"]), report["failures"]
+    floor = report["trivial_policy_floor"]
+    assert floor["candidate_accuracy"] <= floor["policy_accuracy"]
+
+
+def test_gate_blocks_a_candidate_with_no_strategic_movement(tmp_path):
+    """G7: candidate and baseline answer every non-land decision identically.
+
+    The candidate beats the baseline overall (it gets the land drops right),
+    which is precisely how the 2026-07-24 run cleared G5.
+    """
+
+    def cand(meta):
+        return meta["gold_pick"] if meta["is_land_drop"] else meta["menu_size"]
+
+    def base(meta):
+        return 1 if meta["is_land_drop"] else meta["menu_size"]
+
+    paths = _write_gate_inputs(tmp_path, cand, base)
+    assert gpd.main(_gate_argv(paths)) == 2
+    report = json.loads(paths["report"].read_text())
+    assert report["verdict"] == "BLOCKED"
+    assert any(f.startswith("G7 strategic movement") for f in report["failures"]), report["failures"]
+    assert report["paired_bootstrap_strategic"]["point_accuracy_delta"] == 0.0
+    # ... while the overall delta it was passing on is positive
+    assert report["paired_bootstrap"]["point_accuracy_delta"] > 0
+
+
+def test_g6_and_g7_cannot_be_loosened_from_the_cli(tmp_path):
+    paths = _write_gate_inputs(tmp_path, lambda m: m["first_land_pick"] or 1, lambda m: 1)
+    argv = _gate_argv(paths) + [
+        "--min-trivial-margin",
+        "-1.0",
+        "--min-strategic-delta-ci-lower",
+        "-1.0",
+        "--min-decisive-samples",
+        "0",
+    ]
+    assert gpd.main(argv) == 2
+    report = json.loads(paths["report"].read_text())
+    assert report["thresholds"]["min_trivial_margin"] == gpd.MIN_TRIVIAL_POLICY_MARGIN
+    assert report["thresholds"]["min_strategic_delta_ci_lower"] == gpd.MIN_STRATEGIC_DELTA_CI_LOWER
+    assert report["thresholds"]["min_decisive_samples"] == gpd.MIN_DECISIVE_SAMPLES
+    assert len(report["thresholds"]["clamped_cli_overrides"]) == 3
+
+
+def test_decisive_slice_excludes_lands_and_passes():
+    menu = _menu(
+        ("ActionType_Cast", 101, 1),
+        ("ActionType_Play", 200, 2),
+        ("ActionType_Pass", None, None),
+    )
+    cast = _record("a", menu, gold=1)["meta"]
+    land = _record("b", menu, gold=2, land=True)["meta"]
+    passed = _record("c", menu, gold=3)["meta"]
+    assert gpd._is_decisive(cast)
+    assert not gpd._is_decisive(land)
+    assert not gpd._is_decisive(passed)
+
+
+# ---------------------------------------------------------------------------
+# prompt dedup — a gate may not ask an unanswerable question
+# ---------------------------------------------------------------------------
+
+
+def _dedup_rec(rid, user, gold_picks, split="test"):
+    return {"id": rid, "user": user, "meta": {"gold_equivalent_picks": gold_picks, "split": split}}
+
+
+def test_identical_prompt_and_answer_collapses_to_one_record():
+    out = gpd._dedupe_prompts([_dedup_rec("a", "P", [2]), _dedup_rec("b", "P", [2])])
+    assert out["keep_ids"] == {"a"}
+    assert out["collapsed"] == 1
+    assert out["ambiguous"] == 0
+
+
+def test_identical_prompt_with_different_answers_drops_the_group():
+    """Measured on real data: consecutive priority windows reconstruct to the
+    same prompt text but carry different human answers (a cancelled cast leaves
+    hand, board and stack unchanged). Neither record is answerable."""
+    out = gpd._dedupe_prompts([_dedup_rec("a", "P", [2]), _dedup_rec("b", "P", [10])])
+    assert out["keep_ids"] == set()
+    assert out["ambiguous"] == 2
+    assert out["ambiguous_examples"] == [["a", "b"]]
+
+
+def test_dedupe_reports_cross_split_duplicates():
+    out = gpd._dedupe_prompts([_dedup_rec("a", "P", [2], "test"), _dedup_rec("b", "P", [2], "dev")])
+    assert out["cross_split_groups"] == 1
+
+
+# ---------------------------------------------------------------------------
+# leakcheck
+# ---------------------------------------------------------------------------
+
+
+def test_leakcheck_flags_a_held_out_replay_in_the_training_set(tmp_path):
+    (tmp_path / "tr.json").write_text(
+        json.dumps({"trainable_replays": ["a.rply"], "excluded_replays": ["b.rply"]})
+    )
+    gate = tmp_path / "gate.jsonl"
+    gpd._write_jsonl(
+        gate,
+        [{"id": "g1", "user": "PROMPT-1", "meta": {"source": {"replay_file": "b.rply"}}}],
+    )
+    training = tmp_path / "train.jsonl"
+    gpd._write_jsonl(
+        training,
+        [
+            {"user": "PROMPT-2", "meta": {"source": {"replay_file": "b.rply"}}},
+            {"user": "PROMPT-3", "meta": {"source": {"replay_file": "a.rply"}}},
+        ],
+    )
+    argv = [
+        "leakcheck",
+        "--trainable-replays",
+        str(tmp_path / "tr.json"),
+        "--gate-corpus",
+        str(gate),
+        "--training-set",
+        str(training),
+        "--report",
+        str(tmp_path / "leak.json"),
+    ]
+    assert gpd.main(argv) == 2
+    report = json.loads((tmp_path / "leak.json").read_text())
+    assert report["verdict"] == "LEAKED"
+    assert report["training_sets"][str(training)]["held_out_replay_hits"] == 1
+
+
+def test_leakcheck_flags_a_duplicated_prompt_whatever_the_provenance(tmp_path):
+    (tmp_path / "tr.json").write_text(
+        json.dumps({"trainable_replays": ["a.rply"], "excluded_replays": ["b.rply"]})
+    )
+    gate = tmp_path / "gate.jsonl"
+    gpd._write_jsonl(
+        gate,
+        [{"id": "g1", "user": "SAME PROMPT", "meta": {"source": {"replay_file": "b.rply"}}}],
+    )
+    training = tmp_path / "train.jsonl"
+    gpd._write_jsonl(training, [{"user": "SAME PROMPT", "meta": {"source": {"replay_file": "a.rply"}}}])
+    argv = [
+        "leakcheck",
+        "--trainable-replays",
+        str(tmp_path / "tr.json"),
+        "--gate-corpus",
+        str(gate),
+        "--training-set",
+        str(training),
+        "--report",
+        str(tmp_path / "leak.json"),
+    ]
+    assert gpd.main(argv) == 2
+    report = json.loads((tmp_path / "leak.json").read_text())
+    assert report["training_sets"][str(training)]["gate_prompt_hash_collisions"] == 1
+
+
+def test_leakcheck_is_clean_on_disjoint_data(tmp_path):
+    (tmp_path / "tr.json").write_text(
+        json.dumps({"trainable_replays": ["a.rply"], "excluded_replays": ["b.rply"]})
+    )
+    gate = tmp_path / "gate.jsonl"
+    gpd._write_jsonl(gate, [{"id": "g1", "user": "P1", "meta": {"source": {"replay_file": "b.rply"}}}])
+    training = tmp_path / "train.jsonl"
+    gpd._write_jsonl(training, [{"user": "P2", "meta": {"source": {"replay_file": "a.rply"}}}])
+    argv = [
+        "leakcheck",
+        "--trainable-replays",
+        str(tmp_path / "tr.json"),
+        "--gate-corpus",
+        str(gate),
+        "--training-set",
+        str(training),
+    ]
+    assert gpd.main(argv) == 0
+
+
+# ---------------------------------------------------------------------------
+# the 2026-07-24 run, replayed (only when its response files are on disk)
+# ---------------------------------------------------------------------------
+
+_PD_V2 = {
+    "corpus": REPO / "tools/training/data/gate_play_decisions_test.jsonl",
+    "permuted_corpus": REPO / "tools/training/data/gate_play_decisions_test_permuted.jsonl",
+    "responses": REPO / "tools/eval/data/pd_v2_candidate_test.jsonl",
+    "permuted_responses": REPO / "tools/eval/data/pd_v2_candidate_test_permuted.jsonl",
+    "baseline_responses": REPO / "tools/eval/data/pd_v2_baseline_test.jsonl",
+}
+
+
+@pytest.mark.skipif(
+    not all(p.exists() for p in _PD_V2.values()),
+    reason="the 2026-07-24 response files are not on this machine",
+)
+def test_the_2026_07_24_pass_is_now_blocked(tmp_path):
+    """The acceptance test for G6/G7: this exact run used to return PASS."""
+    argv = [
+        "gate",
+        "--corpus",
+        str(_PD_V2["corpus"]),
+        "--permuted-corpus",
+        str(_PD_V2["permuted_corpus"]),
+        "--responses",
+        str(_PD_V2["responses"]),
+        "--permuted-responses",
+        str(_PD_V2["permuted_responses"]),
+        "--baseline-responses",
+        str(_PD_V2["baseline_responses"]),
+        "--backend-label",
+        "openai-compat:play_decisions_v2_gemma31b_lora",
+        "--baseline-label",
+        "openai-compat:gemma-4-31b-base",
+        "--report",
+        str(tmp_path / "report.json"),
+        "--bootstraps",
+        "2000",
+    ]
+    assert gpd.main(argv) == 2
+    report = json.loads((tmp_path / "report.json").read_text())
+    assert report["verdict"] == "BLOCKED"
+    reasons = " | ".join(report["failures"])
+    assert "G6 trivial-policy floor" in reasons
+    assert "G7 strategic movement" in reasons
+    # the numbers that make this the regression it is
+    assert report["candidate"]["overall"]["accuracy"] == pytest.approx(0.5825, abs=1e-3)
+    assert report["reference_policies"]["always_land_else_first"] == pytest.approx(0.6359, abs=1e-3)
+    assert report["candidate"]["strategic_non_land_drop"]["correct"] == 13
+    assert report["baseline"]["strategic_non_land_drop"]["correct"] == 13

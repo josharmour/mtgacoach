@@ -535,3 +535,320 @@ def test_cli_writes_jsonl_summary_and_attribution(tmp_path):
 def test_cli_missing_corpus_dir_is_a_clean_error(tmp_path, capsys):
     assert ing.main(["--corpus-dir", str(tmp_path / "nope"), "--out", str(tmp_path / "o.jsonl")]) == 2
     assert "corpus dir not found" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# All-decision-types extraction
+#
+# ActionsAvailableReq alone made the previous corpus 69% land drops: combat and
+# targeting — the decisions the product actually has to answer — arrive as
+# their own GRE request types and were being dropped by scope, not absence.
+# ---------------------------------------------------------------------------
+
+ATTACKERS_REQ = {
+    "type": "GREMessageType_DeclareAttackersReq",
+    "systemSeatIds": [LOCAL_SEAT],
+    "msgId": 21,
+    "gameStateId": 5,
+    "declareAttackersReq": {
+        "attackers": [
+            {
+                "attackerInstanceId": 201,
+                "legalDamageRecipients": [{"type": "DamageRecType_Player", "playerSystemSeatId": OPP_SEAT}],
+            },
+            {
+                "attackerInstanceId": 202,
+                "legalDamageRecipients": [{"type": "DamageRecType_Player", "playerSystemSeatId": OPP_SEAT}],
+            },
+        ],
+        "qualifiedAttackers": [
+            {
+                "attackerInstanceId": 201,
+                "legalDamageRecipients": [{"type": "DamageRecType_Player", "playerSystemSeatId": OPP_SEAT}],
+            },
+            {
+                "attackerInstanceId": 202,
+                "legalDamageRecipients": [{"type": "DamageRecType_Player", "playerSystemSeatId": OPP_SEAT}],
+            },
+        ],
+        "canSubmitAttackers": True,
+    },
+}
+
+ATTACKERS_RESP_ONE = {
+    "type": "ClientMessageType_SubmitAttackersReq",
+    "gameStateId": 5,
+    "respId": 21,
+    "declareAttackersResp": {
+        "selectedAttackers": [
+            {
+                "attackerInstanceId": 202,
+                "selectedDamageRecipient": {"type": "DamageRecType_Player", "playerSystemSeatId": OPP_SEAT},
+            }
+        ]
+    },
+}
+
+# MTGA answers "I attack with nobody" with an EMPTY submit — no response body
+# at all. Treating that as a missing response would silently discard the
+# decision to hold creatures back, which is a real strategic choice.
+ATTACKERS_RESP_NONE = {
+    "type": "ClientMessageType_SubmitAttackersReq",
+    "gameStateId": 5,
+    "respId": 21,
+}
+
+
+def _msg(payload):
+    return menu_groundtruth.ReplayMessage(direction="IN", timestamp_us=0, payload=payload)
+
+
+def _out(payload):
+    return menu_groundtruth.ReplayMessage(direction="OUT", timestamp_us=1, payload=payload)
+
+
+def test_declare_attackers_normalises_to_menu_shape_and_resolves_pick():
+    dtype, active, _inactive, pick, extra = menu_groundtruth.normalize_decision(
+        _msg(ATTACKERS_REQ), _out(ATTACKERS_RESP_ONE), None
+    )
+    assert dtype == "declare_attackers"
+    # one row per (attacker, legal recipient) plus an explicit "no attacks" row
+    assert [e["action_type"] for e in active] == [
+        menu_groundtruth.AT_DECLARE_ATTACKER,
+        menu_groundtruth.AT_DECLARE_ATTACKER,
+        menu_groundtruth.AT_NO_ATTACKS,
+    ]
+    assert extra["qualified_attacker_count"] == 2
+    assert pick["status"] == "ok"
+    assert pick["menu_indices"] == [1]
+    assert active[pick["menu_index"]]["instance_id"] == 202
+
+
+def test_empty_attack_submit_is_a_real_declined_attack_not_a_missing_response():
+    _dtype, active, _inactive, pick, _extra = menu_groundtruth.normalize_decision(
+        _msg(ATTACKERS_REQ), _out(ATTACKERS_RESP_NONE), None
+    )
+    assert pick["status"] == "ok"
+    assert pick["declined"] is True
+    assert active[pick["menu_index"]]["action_type"] == menu_groundtruth.AT_NO_ATTACKS
+
+
+def test_auto_declared_attack_is_not_a_player_decision():
+    resp = {"type": "x", "respId": 21, "declareAttackersResp": {"autoDeclare": True}}
+    _d, _a, _i, pick, _e = menu_groundtruth.normalize_decision(_msg(ATTACKERS_REQ), _out(resp), None)
+    assert pick["status"] == "auto_declared"
+    assert ing.classify_strategic({"decision_type": "declare_attackers", "real_pick": pick}) == (
+        False,
+        "client_auto_answer:auto_declared",
+    )
+
+
+BLOCKERS_REQ = {
+    "type": "GREMessageType_DeclareBlockersReq",
+    "systemSeatIds": [LOCAL_SEAT],
+    "msgId": 22,
+    "declareBlockersReq": {
+        "blockers": [{"blockerInstanceId": 201, "attackerInstanceIds": [301, 302], "maxAttackers": 1}]
+    },
+}
+
+
+def test_declare_blockers_emits_one_row_per_blocker_attacker_pairing():
+    resp = {
+        "type": "x",
+        "respId": 22,
+        "declareBlockersResp": {
+            "selectedBlockers": [{"blockerInstanceId": 201, "selectedAttackerInstanceIds": [302]}]
+        },
+    }
+    _d, active, _i, pick, _e = menu_groundtruth.normalize_decision(_msg(BLOCKERS_REQ), _out(resp), None)
+    # one creature that can block either of two attackers is TWO choices
+    assert [e.get("blocks_instance_id") for e in active] == [301, 302, None]
+    assert pick["menu_indices"] == [1]
+
+
+def test_select_targets_keeps_slot_index_and_resolves_choice():
+    req = {
+        "type": "GREMessageType_SelectTargetsReq",
+        "systemSeatIds": [LOCAL_SEAT],
+        "msgId": 23,
+        "selectTargetsReq": {
+            "targets": [
+                {
+                    "targetIdx": 1,
+                    "minTargets": 1,
+                    "maxTargets": 1,
+                    "targets": [
+                        {"targetInstanceId": 301, "legalAction": "SelectAction_Select"},
+                        {"targetInstanceId": 302, "legalAction": "SelectAction_Select"},
+                    ],
+                }
+            ],
+            "sourceId": 400,
+        },
+    }
+    resp = {
+        "type": "x",
+        "respId": 23,
+        "selectTargetsResp": {"target": {"targetIdx": 1, "targets": [{"targetInstanceId": 302}]}},
+    }
+    _d, active, _i, pick, extra = menu_groundtruth.normalize_decision(_msg(req), _out(resp), None)
+    assert len(active) == 2
+    assert all(e["target_idx"] == 1 for e in active)
+    assert extra["target_slot_count"] == 1
+    assert active[pick["menu_index"]]["instance_id"] == 302
+
+
+def test_select_n_arbitrary_ordering_is_a_client_auto_answer():
+    req = {
+        "type": "GREMessageType_SelectNReq",
+        "systemSeatIds": [LOCAL_SEAT],
+        "msgId": 24,
+        "selectNReq": {"ids": [1, 2], "idType": "IdType_InstanceId", "minSel": 1, "maxSel": 1},
+    }
+    resp = {
+        "type": "x",
+        "respId": 24,
+        "selectNResp": {"ids": [0], "useArbitrary": "OrderingType_OrderArbitraryOnce"},
+    }
+    _d, _a, _i, pick, _e = menu_groundtruth.normalize_decision(_msg(req), _out(resp), None)
+    assert pick["status"] == "arbitrary_auto"
+
+
+def test_mulligan_is_never_extracted():
+    assert "GREMessageType_MulliganReq" in menu_groundtruth.DECISION_TYPES_EXCLUDED
+    assert "GREMessageType_MulliganReq" not in menu_groundtruth.DECISION_TYPE_BY_MSG
+    assert (
+        menu_groundtruth.normalize_decision(
+            _msg({"type": "GREMessageType_MulliganReq", "msgId": 9}), None, None
+        )
+        is None
+    )
+
+
+def test_all_decision_types_flag_widens_extraction(tmp_path):
+    log = _write_player_log(
+        tmp_path / "s.log.gz",
+        extra_messages=[ATTACKERS_REQ],
+        extra_out=[ATTACKERS_RESP_ONE],
+    )
+    matches, _ranks = ing.parse_player_log(log)
+    narrow, _ = ing.extract_match(matches[0], log.name)
+    wide, _ = ing.extract_match(matches[0], log.name, all_decision_types=True)
+    assert [r["decision_type"] for r in narrow] == ["actions_available"]
+    assert [r["decision_type"] for r in wide] == ["actions_available", "declare_attackers"]
+
+
+# ---------------------------------------------------------------------------
+# Strategic filter
+# ---------------------------------------------------------------------------
+
+
+def _rec(menu, pick_type, *, dtype="actions_available", menu_index=0, status="ok"):
+    return {
+        "decision_type": dtype,
+        "real_menu": menu,
+        "real_pick": {"status": status, "action_type": pick_type, "menu_index": menu_index},
+    }
+
+
+def _opt(action_type, grp_id, name, type_line="Creature — Human", **extra):
+    o = {
+        "action_type": action_type,
+        "grp_id": grp_id,
+        "name": name,
+        "type_line": type_line,
+        "mana_cost": "",
+        "mana_value": 1,
+        "instance_id": None,
+    }
+    o.update(extra)
+    return o
+
+
+LAND = _opt("ActionType_Play", 95815, "Plains", "Basic Land — Plains")
+SPELL = _opt("ActionType_Cast", 92081, "Optimistic Scavenger")
+SPELL2 = _opt("ActionType_Cast", 92102, "Veteran Survivor")
+PASS = _opt("ActionType_Pass", None, None, "")
+
+
+def test_land_only_menu_is_dropped():
+    other_land = _opt("ActionType_Play", 95816, "Island", "Basic Land — Island")
+    keep, why = ing.classify_strategic(_rec([LAND, other_land, PASS], "ActionType_Play"))
+    assert (keep, why) == (False, "land_only_menu")
+
+
+def test_single_option_menu_is_dropped():
+    keep, why = ing.classify_strategic(_rec([SPELL, PASS], "ActionType_Cast"))
+    assert (keep, why) == (False, "single_option")
+
+
+def test_duplicate_copies_of_one_card_are_one_choice():
+    dup = dict(LAND)
+    keep, why = ing.classify_strategic(_rec([LAND, dup, PASS], "ActionType_Play"))
+    assert (keep, why) == (False, "single_option")
+
+
+def test_menu_with_two_spells_is_strategic():
+    keep, why = ing.classify_strategic(_rec([SPELL, SPELL2, LAND, PASS], "ActionType_Cast"))
+    assert (keep, why) == (True, "")
+
+
+def test_pass_survives_only_when_real_alternatives_existed():
+    # forced pass — nothing else to do
+    assert ing.classify_strategic(_rec([PASS], "ActionType_Pass"))[0] is False
+    # deliberate pass — two castable spells declined
+    keep, _ = ing.classify_strategic(_rec([SPELL, SPELL2, PASS], "ActionType_Pass"))
+    assert keep is True
+
+
+def test_tapping_a_land_for_mana_is_never_the_answer():
+    mana = _opt("ActionType_Activate_Mana", 95815, "Plains", "Basic Land — Plains")
+    keep, why = ing.classify_strategic(_rec([SPELL, SPELL2, mana, PASS], "ActionType_Activate_Mana"))
+    assert (keep, why) == (False, "mana_ability_pick")
+
+
+def test_unnameable_options_are_dropped_as_untrainable():
+    # `card_facts` yields "#<grpId>" for ids the card DB cannot resolve; a
+    # prompt listing those asks the model to choose blind.
+    a = _opt("ActionType_ModalOption", 189200, "#189200", "")
+    b = _opt("ActionType_ModalOption", 189201, "#189201", "")
+    keep, why = ing.classify_strategic(_rec([a, b], "ActionType_ModalOption"))
+    assert (keep, why) == (False, "options_not_nameable")
+
+
+def test_pay_costs_is_never_strategic():
+    keep, why = ing.classify_strategic(_rec([SPELL, SPELL2], "ActionType_Cast", dtype="pay_costs"))
+    assert (keep, why) == (False, "non_strategic_decision_type")
+
+
+def test_blocking_the_same_creature_two_ways_is_two_choices():
+    b1 = _opt("ActionType_DeclareBlocker", 111, "Wall", blocks_instance_id=301)
+    b2 = _opt("ActionType_DeclareBlocker", 111, "Wall", blocks_instance_id=302)
+    keep, why = ing.classify_strategic(_rec([b1, b2], "ActionType_DeclareBlocker", dtype="declare_blockers"))
+    assert (keep, why) == (True, "")
+
+
+def test_cap_pass_share_keeps_the_hardest_passes():
+    recs = [_rec([SPELL, SPELL2], "ActionType_Cast") for _ in range(9)]
+    for i, n in enumerate((2, 7, 4)):
+        r = _rec([SPELL, SPELL2, PASS], "ActionType_Pass")
+        r["meaningful_option_count"] = n
+        r["tag"] = i
+        recs.append(r)
+    out, info = ing.cap_pass_share(recs, 0.10)
+    assert info["pass_before"] == 3
+    assert info["pass_kept"] == 1
+    kept = [r for r in out if r["real_pick"]["action_type"] == "ActionType_Pass"]
+    assert kept[0]["meaningful_option_count"] == 7
+
+
+def test_single_qualified_attacker_combat_is_dropped_as_a_reflex_teacher():
+    # Measured: 1 qualified attacker -> 165 declined vs 24 attacked (87% "no").
+    atk = _opt("ActionType_DeclareAttacker", 111, "Bear", damage_recipient_seat=1)
+    none = _opt("ActionType_NoAttacks", None, None, "")
+    rec = _rec([atk, none], "ActionType_NoAttacks", dtype="declare_attackers")
+    rec["decision_context"] = {"qualified_attacker_count": 1}
+    assert ing.classify_strategic(rec) == (False, "single_attacker_combat")
+    rec["decision_context"] = {"qualified_attacker_count": 2}
+    assert ing.classify_strategic(rec)[0] is True

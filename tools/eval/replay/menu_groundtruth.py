@@ -397,6 +397,666 @@ def resolve_pick(request: ReplayMessage, response: Optional[ReplayMessage], acti
     }
 
 
+# ---------------------------------------------------------------------------
+# Non-ActionsAvailable decisions
+# ---------------------------------------------------------------------------
+#
+# `ActionsAvailableReq` is only one of the request types MTGA asks the player.
+# Combat, targeting, tutoring and modal choices arrive as their own GRE
+# request types and were previously discarded — which is why a corpus built
+# from `ActionsAvailableReq` alone is dominated by land drops: the land drop
+# is what the *main-phase menu* is mostly about, while "who attacks", "what
+# do I block", and "what does this removal spell point at" live elsewhere.
+#
+# These normalisers project each request type onto the SAME option/pick shape
+# `normalize_menu` / `resolve_pick` already emit, so one downstream consumer
+# handles every decision type:
+#
+#   option = {action_type, grp_id, instance_id, ability_grp_id, name,
+#             type_line, mana_cost, mana_cost_from_gre, mana_value, ...}
+#   pick   = {status, match, menu_index, action_type, grp_id, instance_id,
+#             name, ...}
+#
+# Two additive extensions are required by the multi-select request types
+# (combat, SelectN, Search) and are absent/degenerate for ActionsAvailable:
+#   * option ``option_role``   — what the row means ("attacker", "no_attacks",
+#                                "block", "target", ...)
+#   * pick ``menu_indices``    — ALL chosen rows; ``menu_index`` stays the
+#                                first one so single-pick consumers still work.
+
+DECISION_TYPE_BY_MSG = {
+    "GREMessageType_ActionsAvailableReq": "actions_available",
+    "GREMessageType_DeclareAttackersReq": "declare_attackers",
+    "GREMessageType_DeclareBlockersReq": "declare_blockers",
+    "GREMessageType_SelectTargetsReq": "select_targets",
+    "GREMessageType_SelectNReq": "select_n",
+    "GREMessageType_SearchReq": "search",
+    "GREMessageType_GroupReq": "group",
+    "GREMessageType_CastingTimeOptionsReq": "casting_time_options",
+    "GREMessageType_OptionalActionMessage": "optional_action",
+    "GREMessageType_AssignDamageReq": "assign_damage",
+    "GREMessageType_PayCostsReq": "pay_costs",
+}
+
+# Deliberately NOT extracted. Mulligans are explicitly out of scope (a
+# mulligan is a generic decision, not "what is the best action on this
+# board"); the rest are lobby/plumbing messages with no board context.
+DECISION_TYPES_EXCLUDED = {
+    "GREMessageType_MulliganReq": "mulligan (out of scope by requirement)",
+    "GREMessageType_ChooseStartingPlayerReq": "pre-game coin flip",
+    "GREMessageType_SubmitDeckReq": "deck submission",
+    "GREMessageType_IntermissionReq": "between-games intermission",
+    "GREMessageType_OrderReq": (
+        "trigger/stack ordering — rarely outcome-relevant, and its wire shape is "
+        "not attested often enough in this corpus to normalise without guessing"
+    ),
+}
+
+# Synthetic action types for decisions MTGA does not express as an "action".
+# Prefixed ActionType_ so they sort and filter alongside the real ones.
+AT_DECLARE_ATTACKER = "ActionType_DeclareAttacker"
+AT_NO_ATTACKS = "ActionType_NoAttacks"
+AT_DECLARE_BLOCKER = "ActionType_DeclareBlocker"
+AT_NO_BLOCKS = "ActionType_NoBlocks"
+AT_SELECT_TARGET = "ActionType_SelectTarget"
+AT_SELECT_N = "ActionType_SelectN"
+AT_SEARCH_FIND = "ActionType_SearchFind"
+AT_SEARCH_FAIL = "ActionType_SearchFailToFind"
+AT_GROUP_PLACE = "ActionType_GroupPlace"
+AT_MODAL_OPTION = "ActionType_ModalOption"
+AT_OPTIONAL_YES = "ActionType_OptionalYes"
+AT_OPTIONAL_NO = "ActionType_OptionalNo"
+AT_ASSIGN_DAMAGE = "ActionType_AssignDamage"
+AT_PAY_COSTS = "ActionType_PayCosts"
+
+
+def _blank_option(action_type: str, **extra) -> dict:
+    """An option row with no card behind it (e.g. "attack with nobody")."""
+    opt = {
+        "action_type": action_type,
+        "grp_id": None,
+        "instance_id": None,
+        "ability_grp_id": None,
+        "name": None,
+        "type_line": "",
+        "mana_cost": "",
+        "mana_cost_from_gre": False,
+        "mana_value": None,
+    }
+    opt.update(extra)
+    return opt
+
+
+def _object_option(
+    instance_id: Optional[int], snap: Optional[GameStateSnapshot], action_type: str, **extra
+) -> dict:
+    """An option row naming a game object by instanceId.
+
+    Combat/targeting/tutor requests identify choices by ``instanceId`` only —
+    the card identity has to come from the reconstructed game state. When the
+    object is not in the snapshot (a face-down library card during a tutor,
+    say) the row is still emitted with ``name=None`` and
+    ``resolved=False`` so the caller can measure how often that happens
+    rather than silently dropping the decision.
+    """
+    iid = int(instance_id) if instance_id is not None else None
+    obj = (snap.game_objects.get(iid) if (snap is not None and iid is not None) else None) or {}
+    gid = obj.get("grpId")
+    gid = int(gid) if gid is not None else None
+    facts = card_facts(gid)
+    opt = {
+        "action_type": action_type,
+        "grp_id": gid,
+        "instance_id": iid,
+        "ability_grp_id": None,
+        "name": facts["name"],
+        "type_line": facts["type_line"],
+        "mana_cost": facts["mana_cost"],
+        "mana_cost_from_gre": False,
+        "mana_value": facts["cmc"],
+        "resolved": gid is not None,
+    }
+    opt.update(extra)
+    return opt
+
+
+def _grp_option(grp_id: Optional[int], action_type: str, **extra) -> dict:
+    """An option row naming a card by grpId (modal options, search results)."""
+    gid = int(grp_id) if grp_id is not None else None
+    facts = card_facts(gid)
+    opt = {
+        "action_type": action_type,
+        "grp_id": gid,
+        "instance_id": None,
+        "ability_grp_id": None,
+        "name": facts["name"],
+        "type_line": facts["type_line"],
+        "mana_cost": facts["mana_cost"],
+        "mana_cost_from_gre": False,
+        "mana_value": facts["cmc"],
+        "resolved": gid is not None,
+    }
+    opt.update(extra)
+    return opt
+
+
+def _pick_from_indices(indices: list[int], active: list[dict], status: str, **extra) -> dict:
+    """Build a pick dict from the chosen row indices."""
+    indices = [i for i in indices if i is not None]
+    first = active[indices[0]] if indices else None
+    pick = {
+        "status": status,
+        "match": "exact" if indices else "none_selected",
+        "menu_index": indices[0] if indices else None,
+        "menu_indices": indices,
+        "n_selected": len(indices),
+        "action_type": first["action_type"] if first else None,
+        "grp_id": first["grp_id"] if first else None,
+        "instance_id": first["instance_id"] if first else None,
+        "name": first["name"] if first else None,
+    }
+    pick.update(extra)
+    return pick
+
+
+def _index_of(active: list[dict], **match) -> Optional[int]:
+    for i, e in enumerate(active):
+        if all(e.get(k) == v for k, v in match.items()):
+            return i
+    return None
+
+
+def _norm_attackers(req: dict, snap, response: Optional[ReplayMessage]) -> tuple[list, list, dict]:
+    """DeclareAttackersReq -> one row per (attacker, legal damage recipient).
+
+    A creature that can attack either the opponent or a planeswalker is two
+    genuinely different plays, so each legal recipient gets its own row. The
+    explicit ``NoAttacks`` row matters: MTGA answers "I attack with nobody"
+    with an EMPTY ``SubmitAttackersReq`` (no ``declareAttackersResp`` body at
+    all), which is a real strategic choice — holding creatures back to block
+    — and not a missing response.
+    """
+    qualified = req.get("qualifiedAttackers") or req.get("attackers") or []
+    active: list[dict] = []
+    for a in qualified:
+        aid = a.get("attackerInstanceId")
+        recips = a.get("legalDamageRecipients") or [{}]
+        for r in recips:
+            rid = r.get("playerSystemSeatId")
+            tgt_iid = r.get("instanceId")
+            active.append(
+                _object_option(
+                    aid,
+                    snap,
+                    AT_DECLARE_ATTACKER,
+                    option_role="attacker",
+                    damage_recipient_type=r.get("type"),
+                    damage_recipient_seat=int(rid) if rid is not None else None,
+                    damage_recipient_instance_id=int(tgt_iid) if tgt_iid is not None else None,
+                )
+            )
+    active.append(_blank_option(AT_NO_ATTACKS, option_role="no_attacks"))
+
+    extra = {
+        "can_submit_attackers": bool(req.get("canSubmitAttackers")),
+        "qualified_attacker_count": len(qualified),
+    }
+    if response is None:
+        return active, [], dict(extra, _pick={"status": "no_response"})
+
+    body = response.payload.get("declareAttackersResp") or {}
+    if body.get("autoDeclare"):
+        # MTGA auto-declared: the player never chose. Not imitation signal.
+        pick = _pick_from_indices([], active, "auto_declared", auto_declare=True)
+    else:
+        selected = body.get("selectedAttackers") or []
+        if not selected:
+            idx = _index_of(active, action_type=AT_NO_ATTACKS)
+            pick = _pick_from_indices([idx] if idx is not None else [], active, "ok", declined=True)
+        else:
+            idxs = []
+            for s in selected:
+                aid = s.get("attackerInstanceId")
+                aid = int(aid) if aid is not None else None
+                rec = s.get("selectedDamageRecipient") or {}
+                rid = rec.get("playerSystemSeatId")
+                i = _index_of(
+                    active,
+                    action_type=AT_DECLARE_ATTACKER,
+                    instance_id=aid,
+                    damage_recipient_seat=int(rid) if rid is not None else None,
+                )
+                if i is None:
+                    i = _index_of(active, action_type=AT_DECLARE_ATTACKER, instance_id=aid)
+                if i is not None:
+                    idxs.append(i)
+            pick = _pick_from_indices(sorted(set(idxs)), active, "ok" if idxs else "not_in_menu")
+    return active, [], dict(extra, _pick=pick)
+
+
+def _norm_blockers(req: dict, snap, response: Optional[ReplayMessage]) -> tuple[list, list, dict]:
+    """DeclareBlockersReq -> one row per legal (blocker, attacker) pairing."""
+    blockers = req.get("blockers") or []
+    active: list[dict] = []
+    for b in blockers:
+        bid = b.get("blockerInstanceId")
+        for aid in b.get("attackerInstanceIds") or []:
+            aid_i = int(aid) if aid is not None else None
+            atk = _object_option(aid_i, snap, AT_DECLARE_BLOCKER)
+            active.append(
+                _object_option(
+                    bid,
+                    snap,
+                    AT_DECLARE_BLOCKER,
+                    option_role="block",
+                    blocks_instance_id=aid_i,
+                    blocks_grp_id=atk["grp_id"],
+                    blocks_name=atk["name"],
+                    max_attackers=b.get("maxAttackers"),
+                )
+            )
+    active.append(_blank_option(AT_NO_BLOCKS, option_role="no_blocks"))
+
+    extra = {"blocker_count": len(blockers)}
+    if response is None:
+        return active, [], dict(extra, _pick={"status": "no_response"})
+
+    body = response.payload.get("declareBlockersResp") or {}
+    selected = body.get("selectedBlockers") or []
+    if not selected:
+        idx = _index_of(active, action_type=AT_NO_BLOCKS)
+        pick = _pick_from_indices([idx] if idx is not None else [], active, "ok", declined=True)
+    else:
+        idxs = []
+        for s in selected:
+            bid = s.get("blockerInstanceId")
+            bid = int(bid) if bid is not None else None
+            for aid in s.get("selectedAttackerInstanceIds") or []:
+                i = _index_of(
+                    active,
+                    action_type=AT_DECLARE_BLOCKER,
+                    instance_id=bid,
+                    blocks_instance_id=int(aid) if aid is not None else None,
+                )
+                if i is not None:
+                    idxs.append(i)
+        pick = _pick_from_indices(sorted(set(idxs)), active, "ok" if idxs else "not_in_menu")
+    return active, [], dict(extra, _pick=pick)
+
+
+def _norm_select_targets(req: dict, snap, response: Optional[ReplayMessage]) -> tuple[list, list, dict]:
+    """SelectTargetsReq -> one row per legal target candidate.
+
+    ``targets[]`` is a list of target SLOTS (a spell with two targets has
+    two); each slot carries its own candidate list. Slot index is preserved
+    on the row so a multi-target spell stays reconstructable.
+    """
+    slots = req.get("targets") or []
+    active: list[dict] = []
+    for slot in slots:
+        tidx = slot.get("targetIdx")
+        for cand in slot.get("targets") or []:
+            iid = cand.get("targetInstanceId")
+            row = _object_option(
+                iid,
+                snap,
+                AT_SELECT_TARGET,
+                option_role="target",
+                target_idx=tidx,
+                legal_action=cand.get("legalAction"),
+                min_targets=slot.get("minTargets"),
+                max_targets=slot.get("maxTargets"),
+            )
+            if row["instance_id"] is None and cand.get("targetPlayerSystemSeatId") is not None:
+                row["name"] = f"player seat {cand['targetPlayerSystemSeatId']}"
+                row["target_player_seat"] = int(cand["targetPlayerSystemSeatId"])
+            active.append(row)
+
+    extra = {
+        "target_slot_count": len(slots),
+        "source_id": req.get("sourceId"),
+        "ability_grp_id": req.get("abilityGrpId"),
+    }
+    src_gid = None
+    if snap is not None and req.get("sourceId") is not None:
+        obj = snap.game_objects.get(int(req["sourceId"])) or {}
+        src_gid = obj.get("grpId")
+    extra["source_grp_id"] = int(src_gid) if src_gid is not None else None
+    extra["source_name"] = card_facts(extra["source_grp_id"])["name"]
+
+    if response is None:
+        return active, [], dict(extra, _pick={"status": "no_response"})
+
+    body = response.payload.get("selectTargetsResp") or {}
+    chosen = body.get("target") or {}
+    picked = chosen.get("targets") or []
+    idxs = []
+    for c in picked:
+        iid = c.get("targetInstanceId")
+        i = _index_of(
+            active,
+            action_type=AT_SELECT_TARGET,
+            instance_id=int(iid) if iid is not None else None,
+            target_idx=chosen.get("targetIdx"),
+        )
+        if i is None:
+            i = _index_of(
+                active, action_type=AT_SELECT_TARGET, instance_id=int(iid) if iid is not None else None
+            )
+        if i is not None:
+            idxs.append(i)
+    status = "ok" if idxs else ("not_in_menu" if picked else "none_selected")
+    return active, [], dict(extra, _pick=_pick_from_indices(sorted(set(idxs)), active, status))
+
+
+def _norm_select_n(req: dict, snap, response: Optional[ReplayMessage]) -> tuple[list, list, dict]:
+    """SelectNReq -> one row per selectable id.
+
+    Only ``IdType_InstanceId`` ids name a game object. The other variants
+    (``SelectionListType_Static`` / ``StaticSubset`` with no ``idType``) are
+    abstract pickers — "choose a number", "name a card" — whose ids cannot be
+    mapped to a board object, so they are emitted with ``resolved=False`` and
+    the caller is expected to exclude them.
+    """
+    ids = req.get("ids") or []
+    id_type = req.get("idType")
+    active: list[dict] = []
+    for i in ids:
+        if id_type == "IdType_InstanceId":
+            active.append(_object_option(i, snap, AT_SELECT_N, option_role="select_n", raw_id=int(i)))
+        else:
+            row = _blank_option(AT_SELECT_N, option_role="select_n", raw_id=int(i))
+            row["resolved"] = False
+            active.append(row)
+
+    extra = {
+        "select_n_min": req.get("minSel"),
+        "select_n_max": req.get("maxSel"),
+        "select_n_context": req.get("context"),
+        "select_n_option_context": req.get("optionContext"),
+        "select_n_list_type": req.get("listType"),
+        "select_n_id_type": id_type,
+    }
+    if response is None:
+        return active, [], dict(extra, _pick={"status": "no_response"})
+
+    body = response.payload.get("selectNResp") or {}
+    if body.get("useArbitrary"):
+        # "any order is fine" — the client auto-answered, no choice was made.
+        return active, [], dict(extra, _pick=_pick_from_indices([], active, "arbitrary_auto"))
+    chosen = body.get("ids") or []
+    idxs = [i for i in (_index_of(active, raw_id=int(c)) for c in chosen) if i is not None]
+    status = "ok" if idxs else ("not_in_menu" if chosen else "none_selected")
+    return active, [], dict(extra, _pick=_pick_from_indices(sorted(set(idxs)), active, status))
+
+
+def _norm_search(req: dict, snap, response: Optional[ReplayMessage]) -> tuple[list, list, dict]:
+    """SearchReq -> one row per tutorable card, plus fail-to-find when legal.
+
+    ``itemsSought`` is the legal subset of ``itemsToSearch`` (the whole
+    library) that actually matches the tutor's filter — that subset is the
+    decision. Ids are library instanceIds; they resolve only if the GRE
+    revealed the library to this client, which it does for a tutor.
+    """
+    sought = req.get("itemsSought") or []
+    searchable = req.get("itemsToSearch") or []
+    active = [
+        _object_option(i, snap, AT_SEARCH_FIND, option_role="search_find", raw_id=int(i)) for i in sought
+    ]
+    allow_fail = req.get("allowFailToFind")
+    if allow_fail and allow_fail != "AllowFailToFind_No":
+        active.append(_blank_option(AT_SEARCH_FAIL, option_role="search_fail"))
+
+    extra = {
+        "search_max_find": req.get("maxFind"),
+        "search_zone_count": len(req.get("zonesToSearch") or []),
+        "search_pool_size": len(searchable),
+        "search_sought_size": len(sought),
+        "search_allow_fail_to_find": allow_fail,
+    }
+    if response is None:
+        return active, [], dict(extra, _pick={"status": "no_response"})
+
+    found = (response.payload.get("searchResp") or {}).get("itemsFound") or []
+    idxs = [i for i in (_index_of(active, raw_id=int(c)) for c in found) if i is not None]
+    if not found:
+        i = _index_of(active, action_type=AT_SEARCH_FAIL)
+        idxs = [i] if i is not None else []
+        status = "ok" if idxs else "none_selected"
+    else:
+        status = "ok" if idxs else "not_in_menu"
+    return active, [], dict(extra, _pick=_pick_from_indices(sorted(set(idxs)), active, status))
+
+
+def _norm_group(req: dict, snap, response: Optional[ReplayMessage]) -> tuple[list, list, dict]:
+    """GroupReq -> one row per (card, destination group). Scry / surveil.
+
+    The decision is which pile each revealed card goes to (library top vs
+    bottom vs graveyard), so the option set is the cross product of the
+    revealed cards and the legal destinations.
+    """
+    ids = req.get("instanceIds") or []
+    specs = req.get("groupSpecs") or []
+    active: list[dict] = []
+    for iid in ids:
+        for gi, spec in enumerate(specs):
+            active.append(
+                _object_option(
+                    iid,
+                    snap,
+                    AT_GROUP_PLACE,
+                    option_role="group_place",
+                    raw_id=int(iid),
+                    group_index=gi,
+                    group_zone_type=spec.get("zoneType"),
+                    group_sub_zone_type=spec.get("subZoneType"),
+                )
+            )
+    extra = {
+        "group_context": req.get("context"),
+        "group_type": req.get("groupType"),
+        "group_card_count": len(ids),
+        "group_destination_count": len(specs),
+    }
+    if response is None:
+        return active, [], dict(extra, _pick={"status": "no_response"})
+
+    groups = (response.payload.get("groupResp") or {}).get("groups") or []
+    idxs = []
+    for g in groups:
+        for iid in g.get("ids") or []:
+            i = _index_of(
+                active,
+                raw_id=int(iid),
+                group_zone_type=g.get("zoneType"),
+                group_sub_zone_type=g.get("subZoneType"),
+            )
+            if i is not None:
+                idxs.append(i)
+    status = "ok" if idxs else "none_selected"
+    return active, [], dict(extra, _pick=_pick_from_indices(sorted(set(idxs)), active, status))
+
+
+def _norm_casting_time_options(req: dict, snap, response: Optional[ReplayMessage]) -> tuple[list, list, dict]:
+    """CastingTimeOptionsReq -> modal-mode rows.
+
+    Only the *modal* child is a card-strategy decision ("which mode do I
+    pick"). Kicker / additional-cost / autotap children are cost plumbing and
+    are reported in ``casting_time_child_types`` but produce no rows.
+    """
+    children = req.get("castingTimeOptionReq") or []
+    active: list[dict] = []
+    child_types = []
+    for c in children:
+        child_types.append(c.get("castingTimeOptionType"))
+        modal = c.get("modalReq") or {}
+        for opt in modal.get("modalOptions") or []:
+            active.append(
+                _grp_option(
+                    opt.get("grpId"),
+                    AT_MODAL_OPTION,
+                    option_role="modal",
+                    cto_id=c.get("ctoId"),
+                    modal_min=modal.get("minSel"),
+                    modal_max=modal.get("maxSel"),
+                    ability_grp_id=modal.get("abilityGrpId"),
+                )
+            )
+    extra = {
+        "casting_time_child_types": child_types,
+        "casting_time_child_count": len(children),
+    }
+    if response is None:
+        return active, [], dict(extra, _pick={"status": "no_response"})
+
+    body = (response.payload.get("castingTimeOptionsResp") or {}).get("castingTimeOptionResp") or {}
+    chosen = (body.get("chooseModalResp") or {}).get("grpIds") or []
+    idxs = [i for i in (_index_of(active, grp_id=int(g)) for g in chosen) if i is not None]
+    status = "ok" if idxs else ("not_in_menu" if chosen else "none_selected")
+    return active, [], dict(extra, _pick=_pick_from_indices(sorted(set(idxs)), active, status))
+
+
+def _norm_optional(req: dict, snap, response: Optional[ReplayMessage]) -> tuple[list, list, dict]:
+    """OptionalActionMessage -> a yes/no row pair."""
+    src = req.get("sourceId")
+    src_opt = _object_option(src, snap, AT_OPTIONAL_YES, option_role="optional_yes")
+    no_opt = _blank_option(AT_OPTIONAL_NO, option_role="optional_no")
+    active = [src_opt, no_opt]
+    extra = {"optional_source_id": src, "optional_source_name": src_opt["name"]}
+    if response is None:
+        return active, [], dict(extra, _pick={"status": "no_response"})
+    resp = (response.payload.get("optionalResp") or {}).get("response") or ""
+    idx = 0 if "Yes" in resp else (1 if resp else None)
+    status = "ok" if idx is not None else "none_selected"
+    return (
+        active,
+        [],
+        dict(extra, _pick=_pick_from_indices([idx] if idx is not None else [], active, status,
+                                             optional_response=resp)),
+    )
+
+
+def _norm_assign_damage(req: dict, snap, response: Optional[ReplayMessage]) -> tuple[list, list, dict]:
+    """AssignDamageReq -> one row per (assigner, damage recipient)."""
+    assigners = req.get("damageAssigners") or []
+    active: list[dict] = []
+    for a in assigners:
+        src = a.get("instanceId")
+        for asn in a.get("assignments") or []:
+            tid = asn.get("instanceId")
+            tgt = _object_option(tid, snap, AT_ASSIGN_DAMAGE)
+            active.append(
+                _object_option(
+                    src,
+                    snap,
+                    AT_ASSIGN_DAMAGE,
+                    option_role="assign_damage",
+                    assign_to_instance_id=int(tid) if tid is not None else None,
+                    assign_to_name=tgt["name"],
+                    min_damage=asn.get("minDamage"),
+                    total_damage=a.get("totalDamage"),
+                )
+            )
+    extra = {"assigner_count": len(assigners)}
+    if response is None:
+        return active, [], dict(extra, _pick={"status": "no_response"})
+    idxs = []
+    for a in (response.payload.get("assignDamageResp") or {}).get("assigners") or []:
+        src = a.get("instanceId")
+        for asn in a.get("assignments") or []:
+            if not asn.get("assignedDamage"):
+                continue
+            tid = asn.get("instanceId")
+            i = _index_of(
+                active,
+                instance_id=int(src) if src is not None else None,
+                assign_to_instance_id=int(tid) if tid is not None else None,
+            )
+            if i is not None:
+                idxs.append(i)
+    status = "ok" if idxs else "none_selected"
+    return active, [], dict(extra, _pick=_pick_from_indices(sorted(set(idxs)), active, status))
+
+
+def _norm_pay_costs(req: dict, snap, response: Optional[ReplayMessage]) -> tuple[list, list, dict]:
+    """PayCostsReq -> mana payment rows. Plumbing, not strategy.
+
+    Extracted for completeness and so the funnel can show it being dropped;
+    almost every instance is answered by MTGA's autotap solver, which is a
+    solver output, not a player decision.
+    """
+    actions = [a for a in ((req.get("paymentActions") or {}).get("actions") or [])]
+    active = [
+        _object_option(
+            a.get("instanceId"),
+            snap,
+            AT_PAY_COSTS,
+            option_role="pay_costs",
+            payment_action_type=a.get("actionType"),
+            ability_grp_id=a.get("abilityGrpId"),
+        )
+        for a in actions
+    ]
+    extra = {
+        "pay_costs_action_count": len(actions),
+        "pay_costs_has_autotap": bool((req.get("autoTapActionsReq") or {}).get("autoTapSolutions")),
+    }
+    if response is None:
+        return active, [], dict(extra, _pick={"status": "no_response"})
+    if "performAutoTapActionsResp" in response.payload:
+        return active, [], dict(extra, _pick=_pick_from_indices([], active, "autotap_auto"))
+    par = response.payload.get("performActionResp") or {}
+    idxs = []
+    for a in par.get("actions") or []:
+        iid = a.get("instanceId")
+        i = _index_of(active, instance_id=int(iid) if iid is not None else None)
+        if i is not None:
+            idxs.append(i)
+    status = "ok" if idxs else "none_selected"
+    return active, [], dict(extra, _pick=_pick_from_indices(sorted(set(idxs)), active, status))
+
+
+_NORMALIZERS = {
+    "declare_attackers": ("declareAttackersReq", _norm_attackers),
+    "declare_blockers": ("declareBlockersReq", _norm_blockers),
+    "select_targets": ("selectTargetsReq", _norm_select_targets),
+    "select_n": ("selectNReq", _norm_select_n),
+    "search": ("searchReq", _norm_search),
+    "group": ("groupReq", _norm_group),
+    "casting_time_options": ("castingTimeOptionsReq", _norm_casting_time_options),
+    "optional_action": ("optionalActionMessage", _norm_optional),
+    "assign_damage": ("assignDamageReq", _norm_assign_damage),
+    "pay_costs": ("payCostsReq", _norm_pay_costs),
+}
+
+
+def normalize_decision(
+    request: ReplayMessage,
+    response: Optional[ReplayMessage],
+    snap: Optional[GameStateSnapshot],
+) -> Optional[tuple[str, list[dict], list[dict], dict, dict]]:
+    """Normalise ANY supported GRE request into the menu-groundtruth shape.
+
+    Returns ``(decision_type, active, inactive, pick, extra)`` or ``None`` if
+    this request type is not extracted. ``actions_available`` is delegated to
+    the existing ``normalize_menu`` / ``resolve_pick`` pair so its records are
+    byte-identical to what they were before this function existed.
+    """
+    dtype = DECISION_TYPE_BY_MSG.get(request.msg_type)
+    if dtype is None:
+        return None
+    if dtype == "actions_available":
+        active, inactive = normalize_menu(request)
+        return dtype, active, inactive, resolve_pick(request, response, active), {}
+    key, fn = _NORMALIZERS[dtype]
+    req_body = request.payload.get(key) or {}
+    active, inactive, extra = fn(req_body, snap, response)
+    pick = extra.pop("_pick")
+    pick.setdefault("menu_indices", [pick["menu_index"]] if pick.get("menu_index") is not None else [])
+    pick.setdefault("n_selected", len(pick["menu_indices"]))
+    return dtype, active, inactive, pick, extra
+
+
 def extract_replay(path: Path, *, all_decisions: bool = False) -> tuple[list[dict], WalkStats]:
     """Walk one `.rply` and emit ground-truth records + per-file stats."""
     stats = WalkStats(file=path.name)

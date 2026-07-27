@@ -54,11 +54,40 @@ Caveats that materially reduce the useful yield
   The logs carry ``RankGetCombinedRankInfo`` responses with
   ``constructedClass`` / ``limitedClass``.
 
+All decision types (``--all-decision-types``)
+---------------------------------------------
+``ActionsAvailableReq`` is only ONE of the request types MTGA asks. Restricting
+extraction to it is why an earlier corpus came out 69% land drops: the main-phase
+menu is mostly about the land drop, while the genuinely strategic decisions —
+who attacks, what blocks what, where the removal spell points, what the tutor
+finds — arrive as ``DeclareAttackersReq`` / ``DeclareBlockersReq`` /
+``SelectTargetsReq`` / ``SelectNReq`` / ``SearchReq``, which were being
+discarded by SCOPE, not absence.
+
+``--all-decision-types`` extracts all of them, projected onto the same
+option/pick record shape (see ``normalize_decision`` in
+`tools/eval/replay/menu_groundtruth.py`). Mulligans are never extracted:
+"should I mulligan" is a generic decision, and the requirement is specifically
+"out of THIS board, what is the next best action".
+
+The strategic filter (``classify_strategic``) then keeps only decisions where a
+competent player could genuinely have chosen otherwise, and the
+``STRATEGIC_FUNNEL`` block in the summary shows every record dropped and why.
+Quote ``stage_4_strategic_after_filter`` — never ``records_emitted``.
+
 Usage
 -----
     # download (43 MB) to ~/.arenamcp/corpora, then ingest
     python -m tools.training.ingest_manasight --download \
         --out tools/training/data/manasight_menu_groundtruth.jsonl
+
+    # every decision type, strategic slices, Pass capped at 10%
+    python -m tools.training.ingest_manasight --all-decision-types \
+        --max-pass-share 0.10 \
+        --out tools/training/data/manasight_all_decisions.jsonl \
+        --strategic-out tools/training/data/manasight_strategic.jsonl \
+        --strategic-action-out tools/training/data/manasight_strategic_action.jsonl \
+        --summary-out tools/training/data/manasight_all_decisions_summary.json
 
     # just report what rank the contributor was, no extraction
     python -m tools.training.ingest_manasight --rank-probe-only
@@ -99,13 +128,25 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from tools.eval.replay.menu_groundtruth import (  # noqa: E402
+    AT_DECLARE_ATTACKER,
+    AT_DECLARE_BLOCKER,
+    AT_MODAL_OPTION,
+    AT_NO_ATTACKS,
+    AT_NO_BLOCKS,
+    AT_OPTIONAL_NO,
+    AT_OPTIONAL_YES,
+    AT_SEARCH_FAIL,
+    AT_SEARCH_FIND,
+    AT_SELECT_N,
+    AT_SELECT_TARGET,
+    DECISION_TYPE_BY_MSG,
+    DECISION_TYPES_EXCLUDED,
     MANA_LEVEL_ACTION_TYPES,
     _battlefield_split,
     _iter_state_messages,
     card_facts,
     menu_key,
-    normalize_menu,
-    resolve_pick,
+    normalize_decision,
 )
 from tools.eval.replay.reader import ReplayMessage  # noqa: E402
 from tools.eval.replay.state import (  # noqa: E402
@@ -470,6 +511,186 @@ def meaningful_options(menu: list[dict]) -> list[dict]:
     return [e for e in menu if e["action_type"] not in TRIVIAL_ACTION_TYPES]
 
 
+# ---------------------------------------------------------------------------
+# Strategic filter
+# ---------------------------------------------------------------------------
+#
+# The requirement: the model must answer "out of THIS board, what is the next
+# best action specifically". A corpus that is 69% land drops teaches a reflex,
+# not that skill — the previous LoRA scored identically to the untuned base on
+# strategic decisions (13/63 both) while getting MORE land-biased (played the
+# first land in 84% of strategic decisions vs 60% for the base).
+#
+# So "is this decision genuinely strategic?" is the primary constraint. A
+# record survives only if a competent player could have chosen differently
+# AND the choice is about cards, not plumbing.
+
+# Casting a spell, in all its MTGA spellings.
+CAST_ACTION_TYPES = frozenset(
+    {
+        "ActionType_Cast",
+        "ActionType_CastLeft",
+        "ActionType_CastRight",
+        "ActionType_CastAdventure",
+        "ActionType_CastOmen",
+        "ActionType_CastRightRoom",
+        "ActionType_CastLeftRoom",
+        "ActionType_CastAsThoughSorcery",
+    }
+)
+
+# Playing a permanent from hand that is NOT a land (MDFC creature side, etc.).
+PLAY_ACTION_TYPES = frozenset({"ActionType_Play", "ActionType_PlayMDFC"})
+
+ACTIVATE_ACTION_TYPES = frozenset({"ActionType_Activate", "ActionType_Special", "ActionType_Special_TurnFaceUp"})
+
+COMBAT_ACTION_TYPES = frozenset({AT_DECLARE_ATTACKER, AT_DECLARE_BLOCKER})
+
+TARGETING_ACTION_TYPES = frozenset({AT_SELECT_TARGET, AT_SELECT_N, AT_SEARCH_FIND, AT_MODAL_OPTION})
+
+# "at least one cast / attack / block / activate / target" — the requirement's
+# own wording, made executable.
+STRATEGIC_ACTION_TYPES = (
+    CAST_ACTION_TYPES | ACTIVATE_ACTION_TYPES | COMBAT_ACTION_TYPES | TARGETING_ACTION_TYPES
+)
+
+# Rows that are choices but carry no card identity on their own. They count
+# toward "could have chosen differently" but never satisfy the "at least one
+# strategic action" test by themselves — otherwise "attack with nobody" alone
+# would qualify a menu with no creatures.
+NEUTRAL_OPTION_TYPES = frozenset({AT_NO_ATTACKS, AT_NO_BLOCKS, AT_SEARCH_FAIL, AT_OPTIONAL_NO, AT_OPTIONAL_YES})
+
+# Decision types that are mana/plumbing by construction.
+NON_STRATEGIC_DECISION_TYPES = frozenset({"pay_costs"})
+
+# Pick statuses that mean the CLIENT answered, not the player.
+AUTO_PICK_STATUSES = frozenset({"auto_declared", "arbitrary_auto", "autotap_auto"})
+
+
+def _is_land_row(opt: dict) -> bool:
+    return "Land" in (opt.get("type_line") or "")
+
+
+def _is_unnamed(opt: dict) -> bool:
+    """True when the row cannot be described to a model.
+
+    ``card_facts`` falls back to ``"#<grpId>"`` for ids the card database does
+    not know (ability ids, mode ids), and to ``None`` for rows with no id at
+    all. Neutral rows ("attack with nobody") are legitimately nameless and are
+    not counted here — they are handled by the caller.
+    """
+    if opt["action_type"] in NEUTRAL_OPTION_TYPES:
+        return False
+    name = opt.get("name")
+    return name is None or (isinstance(name, str) and name.startswith("#"))
+
+
+# Fields that make two rows DIFFERENT plays even when the card is the same.
+# Without these, "block attacker A" and "block attacker B" with the same
+# creature collapse to one option and the whole decision looks trivial.
+_OPTION_DISCRIMINATORS = (
+    "blocks_instance_id",
+    "damage_recipient_seat",
+    "damage_recipient_instance_id",
+    "target_idx",
+    "group_index",
+    "assign_to_instance_id",
+    "raw_id",
+)
+
+
+def option_identity(opt: dict) -> tuple:
+    """Identity of a menu row for 'is there really more than one choice?'.
+
+    Two copies of the same basic land in hand are two rows but one choice.
+    Two different block assignments for one creature are one card but two
+    choices.
+    """
+    return (opt["action_type"], opt["grp_id"]) + tuple(opt.get(k) for k in _OPTION_DISCRIMINATORS)
+
+
+def is_land_drop_pick(rec: dict) -> bool:
+    """Did the player's pick amount to 'play a land'? (explicitly rejected)"""
+    pick = rec.get("real_pick") or {}
+    if pick.get("action_type") not in PLAY_ACTION_TYPES:
+        return False
+    idx = pick.get("menu_index")
+    menu = rec.get("real_menu") or []
+    if idx is None or idx >= len(menu):
+        # No row to inspect; a bare Play is a land drop far more often than not.
+        return True
+    return _is_land_row(menu[idx])
+
+
+def classify_strategic(rec: dict) -> tuple[bool, str]:
+    """Apply the strategic filter. Returns ``(keep, reason_if_dropped)``.
+
+    The rules, in the order the requirement states them:
+      1. drop mulligans                    (never emitted; asserted here)
+      2. drop single-option menus          (<2 distinct choices)
+      3. drop land-only / pass-only menus  (nothing but lands and/or Pass)
+      4. keep >=2 meaningful options with >=1 cast/attack/block/activate/target
+
+    Plus two rules the measured data forced:
+      5. drop client-auto answers  (autoDeclare / arbitrary ordering / autotap)
+         — those are solver output, not a player decision
+      6. drop unresolved picks     (no response, or pick not in menu)
+    """
+    dtype = rec.get("decision_type")
+    if dtype in NON_STRATEGIC_DECISION_TYPES:
+        return False, "non_strategic_decision_type"
+
+    pick = rec.get("real_pick") or {}
+    status = pick.get("status")
+    if status in AUTO_PICK_STATUSES:
+        return False, f"client_auto_answer:{status}"
+    if status not in ("ok", "implicit_pass"):
+        return False, f"unresolved_pick:{status}"
+
+    # Tapping a land for mana is never the answer to "what is the next best
+    # action". MTGA emits it as its own priority window; the spell it pays for
+    # shows up as a separate Cast decision, which is the one worth learning.
+    if pick.get("action_type") in MANA_LEVEL_ACTION_TYPES:
+        return False, "mana_ability_pick"
+
+    menu = rec.get("real_menu") or []
+    meaningful = [e for e in menu if e["action_type"] not in TRIVIAL_ACTION_TYPES]
+
+    # Rule 2 — a menu with one real choice is not a decision.
+    if len({option_identity(e) for e in meaningful}) < 2:
+        return False, "single_option"
+
+    # Rule 3 — nothing but lands (and Pass, already excluded above).
+    non_land = [e for e in meaningful if not (_is_land_row(e) and e["action_type"] in PLAY_ACTION_TYPES)]
+    if not non_land:
+        return False, "land_only_menu"
+
+    # Rule 4 — at least one genuinely strategic row.
+    if not any(e["action_type"] in STRATEGIC_ACTION_TYPES for e in non_land):
+        return False, "no_strategic_action"
+
+    # Rule 6 — a lone-attacker combat is a reflex teacher, not a decision.
+    # MEASURED on this corpus: with exactly one qualified attacker the player
+    # declined 165 times and attacked 24 (87% "no"). Training on that produces
+    # a "never attack" reflex the same way a 69%-land-drop corpus produced a
+    # "always play the land" reflex. With >=2 qualified attackers the split is
+    # 171 declined / 129 attacked, which is a real decision.
+    if dtype == "declare_attackers":
+        if (rec.get("decision_context") or {}).get("qualified_attacker_count", 0) < 2:
+            return False, "single_attacker_combat"
+
+    # Rule 7 — the choice has to be describable. Some requests identify their
+    # options by ids the card database cannot name (abstract SelectN pickers;
+    # modal option grpIds, which are mode/ability ids rather than cards). A
+    # prompt listing unnamed rows asks the model to choose blind, so those are
+    # not trainable no matter how strategic the underlying decision was.
+    nameable = [e for e in meaningful if not _is_unnamed(e)]
+    if len({option_identity(e) for e in nameable}) < 2:
+        return False, "options_not_nameable"
+
+    return True, ""
+
+
 @dataclass
 class MatchStats:
     """Per-match counters used for the corpus summary."""
@@ -495,12 +716,26 @@ class MatchStats:
     other_requests: Counter = field(default_factory=Counter)
     other_paired: Counter = field(default_factory=Counter)
     errors: list[str] = field(default_factory=list)
+    # all-decision-types mode
+    requests_by_type: Counter = field(default_factory=Counter)
+    requests_local_by_type: Counter = field(default_factory=Counter)
+    requests_nonlocal_by_type: Counter = field(default_factory=Counter)
+    emitted_by_type: Counter = field(default_factory=Counter)
+    excluded_by_type: Counter = field(default_factory=Counter)
+    unsupported_requests: Counter = field(default_factory=Counter)
 
 
 def extract_match(
-    lm: LogMatch, log_file: str, *, start_of_main1_only: bool = False
+    lm: LogMatch, log_file: str, *, start_of_main1_only: bool = False, all_decision_types: bool = False
 ) -> tuple[list[dict], MatchStats]:
-    """Emit menu-groundtruth records for one match segment."""
+    """Emit menu-groundtruth records for one match segment.
+
+    ``all_decision_types`` extends extraction beyond ``ActionsAvailableReq``
+    to every GRE request type in ``DECISION_TYPE_BY_MSG`` — combat, targeting,
+    tutoring, modal choices. Those are where the strategic decisions live;
+    restricting to ActionsAvailable is what made the previous corpus 69% land
+    drops.
+    """
     event_name = lm.event_names[0] if lm.event_names else None
     is_bot, is_ranked = classify_event(event_name)
     stats = MatchStats(
@@ -559,24 +794,41 @@ def extract_match(
             if ti and ("step" in ti or "phase" in ti):
                 step = ti.get("step") or ""
 
-        if m.msg_type != "GREMessageType_ActionsAvailableReq":
-            if m.is_request:
-                kind = m.msg_type.replace("GREMessageType_", "")
-                stats.other_requests[kind] += 1
-                if i in pairs:
-                    stats.other_paired[kind] += 1
+        is_aa = m.msg_type == "GREMessageType_ActionsAvailableReq"
+        if m.is_request and not is_aa:
+            kind = m.msg_type.replace("GREMessageType_", "")
+            stats.other_requests[kind] += 1
+            if i in pairs:
+                stats.other_paired[kind] += 1
+
+        if not is_aa and not all_decision_types:
             continue
+        if not is_aa:
+            if m.msg_type in DECISION_TYPES_EXCLUDED:
+                stats.excluded_by_type[m.msg_type.replace("GREMessageType_", "")] += 1
+                continue
+            if m.msg_type not in DECISION_TYPE_BY_MSG:
+                if m.is_request:
+                    stats.unsupported_requests[m.msg_type.replace("GREMessageType_", "")] += 1
+                continue
 
         decision_index += 1
-        stats.actions_available_total += 1
+        dtype_name = DECISION_TYPE_BY_MSG[m.msg_type]
+        stats.requests_by_type[dtype_name] += 1
+        if is_aa:
+            stats.actions_available_total += 1
 
         addressed = [int(x) for x in (m.payload.get("systemSeatIds") or [])]
         if addressed and seat not in addressed:
             # In a bot match the client simulates BOTH seats, so it logs the
             # bot's menus too. Emitting them would train on Sparky's play.
-            stats.actions_available_non_local += 1
+            stats.requests_nonlocal_by_type[dtype_name] += 1
+            if is_aa:
+                stats.actions_available_non_local += 1
             continue
-        stats.actions_available_local += 1
+        stats.requests_local_by_type[dtype_name] += 1
+        if is_aa:
+            stats.actions_available_local += 1
 
         is_own_turn = snap.active_player == seat
         is_main1 = snap.phase == "Phase_Main1"
@@ -584,20 +836,23 @@ def extract_match(
             own_turn_seen.append(snap.turn_number)
 
         window_ordinal = None
-        if is_own_turn and is_main1:
+        if is_own_turn and is_main1 and is_aa:
             main1_windows[snap.turn_number] += 1
             window_ordinal = main1_windows[snap.turn_number]
         is_start_of_main1 = window_ordinal == 1
         if start_of_main1_only and not is_start_of_main1:
             continue
 
-        active, inactive = normalize_menu(m)
         resp = pairs.get(i)
-        pick = resolve_pick(m, resp, active)
-        if pick.get("status") == "no_response":
-            stats.no_response += 1
-        elif pick.get("menu_index") is None:
-            stats.pick_not_in_menu += 1
+        normalized = normalize_decision(m, resp, snap)
+        if normalized is None:
+            continue
+        dtype_name, active, inactive, pick, decision_extra = normalized
+        if is_aa:
+            if pick.get("status") == "no_response":
+                stats.no_response += 1
+            elif pick.get("menu_index") is None:
+                stats.pick_not_in_menu += 1
 
         # Cross-check the seat choice: only the recording client can see grpIds
         # in its own hand, so if the "opponent's" hand is the visible one the
@@ -638,6 +893,8 @@ def extract_match(
             "is_bot_match": is_bot,
             "is_ranked_ladder": is_ranked,
             "match_won": match_won,
+            "decision_type": dtype_name,
+            "gre_request_type": m.msg_type.replace("GREMessageType_", ""),
             "decision_index": decision_index,
             "msg_id": m.msg_id,
             "game_state_id": m.payload.get("gameStateId"),
@@ -686,8 +943,15 @@ def extract_match(
                 "opp_hand_size": snap.hand_size(opp),
             },
         }
+        if decision_extra:
+            rec["decision_context"] = decision_extra
+        keep, drop_reason = classify_strategic(rec)
+        rec["is_strategic"] = keep
+        rec["strategic_drop_reason"] = drop_reason or None
+        rec["is_land_drop_pick"] = is_land_drop_pick(rec)
         records.append(rec)
         stats.emitted += 1
+        stats.emitted_by_type[dtype_name] += 1
 
     return records, stats
 
@@ -773,6 +1037,164 @@ def summarize_ranks(ranks: list[RankSnapshot]) -> dict:
 
 def _median(xs: list) -> Optional[float]:
     return xs[len(xs) // 2] if xs else None
+
+
+def _write_attribution(path: Path, n: int) -> Path:
+    """Every derived file must carry the upstream licence notice."""
+    p = path.with_suffix(".ATTRIBUTION.txt")
+    p.write_text(
+        f"{ATTRIBUTION}\n\nSource: {SOURCE_REPO}\nLicense: {SOURCE_LICENSE}\n"
+        f"Records: {n} in {path.name}\n",
+        encoding="utf-8",
+    )
+    return p
+
+
+def _pct(n: int, d: int) -> float:
+    return round(100.0 * n / d, 2) if d else 0.0
+
+
+def strategic_funnel(all_stats: list[MatchStats], records: list[dict]) -> dict:
+    """The funnel the requirement asks for, stage by stage, with the Pass audit.
+
+    Every number here is a count of records at a named stage, so the drop from
+    "requests seen" to "genuinely strategic" is auditable rather than asserted.
+    """
+    req_by_type: Counter = Counter()
+    local_by_type: Counter = Counter()
+    nonlocal_by_type: Counter = Counter()
+    excluded: Counter = Counter()
+    unsupported: Counter = Counter()
+    for s in all_stats:
+        req_by_type.update(s.requests_by_type)
+        local_by_type.update(s.requests_local_by_type)
+        nonlocal_by_type.update(s.requests_nonlocal_by_type)
+        excluded.update(s.excluded_by_type)
+        unsupported.update(s.unsupported_requests)
+
+    total = len(records)
+    strategic = [r for r in records if r.get("is_strategic")]
+    dropped = Counter(r.get("strategic_drop_reason") for r in records if not r.get("is_strategic"))
+
+    by_type_emitted = Counter(r.get("decision_type") for r in records)
+    by_type_strategic = Counter(r.get("decision_type") for r in strategic)
+
+    # --- the Pass audit ----------------------------------------------------
+    def _is_pass(r):
+        return (r.get("real_pick") or {}).get("action_type") == "ActionType_Pass"
+
+    pass_all = [r for r in records if _is_pass(r)]
+    pass_kept = [r for r in strategic if _is_pass(r)]
+    # A Pass that survived the single-option filter had real alternatives, so
+    # it was a genuine "hold priority / do nothing now" choice, not a forced one.
+    pass_kept_menu_sizes = sorted(r["meaningful_option_count"] for r in pass_kept)
+
+    land_pick_all = sum(1 for r in records if r.get("is_land_drop_pick"))
+    land_pick_strategic = sum(1 for r in strategic if r.get("is_land_drop_pick"))
+    nonland_strategic = [r for r in strategic if not r.get("is_land_drop_pick")]
+
+    return {
+        "READ_THIS_FIRST": (
+            "The requirement is 'out of this board, what is the next best action "
+            "specifically'. Quote strategic_after_filter (or, strictest, "
+            "strategic_nonland_pick) as the corpus size — NEVER records_emitted. "
+            "The previous run's 69%-land-drop corpus came from quoting the wrong "
+            "number."
+        ),
+        "stage_0_gre_requests_by_type": dict(req_by_type.most_common()),
+        "stage_1_addressed_to_local_seat": dict(local_by_type.most_common()),
+        "stage_1_dropped_other_seat": dict(nonlocal_by_type.most_common()),
+        "stage_1_excluded_by_design": {
+            "counts": dict(excluded.most_common()),
+            "why": DECISION_TYPES_EXCLUDED,
+        },
+        "stage_1_unsupported_request_types": dict(unsupported.most_common()),
+        "stage_2_records_emitted": total,
+        "stage_2_emitted_by_decision_type": dict(by_type_emitted.most_common()),
+        "stage_3_dropped_by_filter": dict(dropped.most_common()),
+        "stage_3_filter_rules": [
+            "drop mulligans (never extracted at all)",
+            "drop client-auto answers (autoDeclare / arbitrary ordering / autotap)",
+            "drop unresolved picks (no response, pick not in menu)",
+            "drop single-option menus (<2 distinct meaningful choices)",
+            "drop land-only / pass-only menus",
+            "keep >=2 meaningful options with >=1 cast/attack/block/activate/target",
+        ],
+        "stage_4_strategic_after_filter": len(strategic),
+        "stage_4_strategic_share_of_emitted_pct": _pct(len(strategic), total),
+        "stage_4_strategic_by_decision_type": dict(by_type_strategic.most_common()),
+        "stage_5_strategic_nonland_pick": len(nonland_strategic),
+        "land_drops": {
+            "land_drop_picks_all_records": land_pick_all,
+            "land_drop_pct_all_records": _pct(land_pick_all, total),
+            "land_drop_picks_surviving_filter": land_pick_strategic,
+            "land_drop_pct_of_strategic": _pct(land_pick_strategic, len(strategic)),
+            "note": (
+                "The previous corpus was 69% land drops. A land drop survives this "
+                "filter only when the menu ALSO offered a real spell/attack/activation "
+                "— i.e. the player genuinely chose land over action. Use "
+                "stage_5_strategic_nonland_pick to exclude even those."
+            ),
+        },
+        "PASS_AUDIT": {
+            "pass_picks_before_filter": len(pass_all),
+            "pass_pct_before_filter": _pct(len(pass_all), total),
+            "pass_picks_after_filter": len(pass_kept),
+            "pass_pct_of_strategic": _pct(len(pass_kept), len(strategic)),
+            "surviving_pass_meaningful_options_median": _median(pass_kept_menu_sizes),
+            "surviving_pass_meaningful_options_min": (
+                pass_kept_menu_sizes[0] if pass_kept_menu_sizes else None
+            ),
+            "justification": (
+                "A Pass survives only if the menu held >=2 distinct meaningful options "
+                "including a real cast/activate — the player COULD have acted and chose "
+                "not to. That is 'hold up removal / do not overextend', a genuine "
+                "strategic call. Forced passes (nothing else legal) are removed by the "
+                "single-option rule. If the surviving Pass share is still high enough to "
+                "teach a pass reflex, train on stage_5_strategic_nonland_pick with passes "
+                "downsampled."
+            ),
+        },
+        "strategic_pick_action_types": dict(
+            Counter((r.get("real_pick") or {}).get("action_type") for r in strategic).most_common()
+        ),
+        "strategic_by_match_kind": {
+            "vs_human": sum(1 for r in strategic if not r.get("is_bot_match")),
+            "vs_builtin_bot": sum(1 for r in strategic if r.get("is_bot_match")),
+            "ranked_ladder": sum(1 for r in strategic if r.get("is_ranked_ladder")),
+        },
+    }
+
+
+def cap_pass_share(records: list[dict], max_share: float) -> tuple[list[dict], dict]:
+    """Drop the easiest Pass records until Pass is at most ``max_share``.
+
+    Passes are ranked by how many meaningful options the player declined —
+    a pass with 8 live options is a real restraint decision, a pass with 2 is
+    nearly forced. The easy ones go first, so the corpus keeps the passes that
+    actually carry signal.
+    """
+    passes = [r for r in records if (r.get("real_pick") or {}).get("action_type") == "ActionType_Pass"]
+    others = [r for r in records if (r.get("real_pick") or {}).get("action_type") != "ActionType_Pass"]
+    if not passes:
+        return records, {"applied": False, "reason": "no pass records"}
+    # keep = max_share * (keep + len(others))  ->  solve for keep
+    keep_n = int(len(others) * max_share / (1.0 - max_share)) if max_share < 1.0 else len(passes)
+    keep_n = min(keep_n, len(passes))
+    passes.sort(key=lambda r: r.get("meaningful_option_count", 0), reverse=True)
+    kept = passes[:keep_n]
+    out = others + kept
+    out.sort(key=lambda r: (r.get("replay_file", ""), r.get("match_index", 0), r.get("decision_index", 0)))
+    return out, {
+        "applied": True,
+        "max_pass_share": max_share,
+        "pass_before": len(passes),
+        "pass_kept": len(kept),
+        "pass_dropped": len(passes) - len(kept),
+        "records_after": len(out),
+        "resulting_pass_share_pct": _pct(len(kept), len(out)),
+        "kept_by": "highest meaningful_option_count first (hardest passes)",
+    }
 
 
 def summarize(
@@ -1027,6 +1449,42 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="Emit only start-of-own-Main-1 windows (menu_groundtruth's headline slice)",
     )
+    p.add_argument(
+        "--all-decision-types",
+        action="store_true",
+        help="Extract EVERY supported GRE request type (combat, targeting, tutoring, "
+        "modal choices), not just ActionsAvailableReq. This is where the strategic "
+        "decisions live; ActionsAvailable-only is what made the corpus 69%% land drops.",
+    )
+    p.add_argument(
+        "--strategic-out",
+        type=Path,
+        default=None,
+        help="Also write the strategic-filtered subset here (is_strategic == true)",
+    )
+    p.add_argument(
+        "--strategic-nonland-out",
+        type=Path,
+        default=None,
+        help="Also write the strategic subset whose PICK is not a land drop",
+    )
+    p.add_argument(
+        "--strategic-action-out",
+        type=Path,
+        default=None,
+        help="Also write the strictest slice: strategic, pick is neither a land drop "
+        "NOR a Pass — every record answers 'what action do I take' with an action. "
+        "This is the anti-reflex corpus.",
+    )
+    p.add_argument(
+        "--max-pass-share",
+        type=float,
+        default=None,
+        help="Cap Pass picks at this share (0-1) of --strategic-out by dropping the "
+        "excess (lowest-option-count passes first, keeping the hardest ones). "
+        "Guards against training a pass reflex the way 69%% land drops trained a "
+        "land reflex.",
+    )
     p.add_argument("--limit", type=int, default=None, help="Only process the first N log files")
     p.add_argument(
         "--rank-probe-only",
@@ -1071,7 +1529,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             continue
         n_before = len(all_records)
         for lm in matches:
-            recs, stats = extract_match(lm, f.name, start_of_main1_only=args.start_of_main1_only)
+            recs, stats = extract_match(
+                lm,
+                f.name,
+                start_of_main1_only=args.start_of_main1_only,
+                all_decision_types=args.all_decision_types,
+            )
             all_records.extend(recs)
             all_stats.append(stats)
         print(
@@ -1093,6 +1556,46 @@ def main(argv: Optional[list[str]] = None) -> int:
     summary["output_jsonl"] = str(args.out)
     summary["records_written"] = len(all_records)
     summary["start_of_main1_only"] = bool(args.start_of_main1_only)
+    summary["all_decision_types"] = bool(args.all_decision_types)
+    summary["STRATEGIC_FUNNEL"] = strategic_funnel(all_stats, all_records)
+
+    strategic = [r for r in all_records if r.get("is_strategic")]
+    if args.max_pass_share is not None:
+        strategic, capped = cap_pass_share(strategic, args.max_pass_share)
+        summary["STRATEGIC_FUNNEL"]["pass_cap"] = capped
+    if args.strategic_out:
+        args.strategic_out.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.strategic_out, "w", encoding="utf-8") as fh:
+            for r in strategic:
+                fh.write(json.dumps(r, separators=(",", ":")) + "\n")
+        summary["strategic_jsonl"] = str(args.strategic_out)
+        summary["strategic_records_written"] = len(strategic)
+        _write_attribution(args.strategic_out, len(strategic))
+    if args.strategic_nonland_out:
+        nonland = [r for r in strategic if not r.get("is_land_drop_pick")]
+        args.strategic_nonland_out.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.strategic_nonland_out, "w", encoding="utf-8") as fh:
+            for r in nonland:
+                fh.write(json.dumps(r, separators=(",", ":")) + "\n")
+        summary["strategic_nonland_jsonl"] = str(args.strategic_nonland_out)
+        summary["strategic_nonland_records_written"] = len(nonland)
+        _write_attribution(args.strategic_nonland_out, len(nonland))
+    if args.strategic_action_out:
+        action_only = [
+            r
+            for r in strategic
+            if not r.get("is_land_drop_pick")
+            and (r.get("real_pick") or {}).get("action_type") != "ActionType_Pass"
+        ]
+        args.strategic_action_out.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.strategic_action_out, "w", encoding="utf-8") as fh:
+            for r in action_only:
+                fh.write(json.dumps(r, separators=(",", ":")) + "\n")
+        summary["strategic_action_jsonl"] = str(args.strategic_action_out)
+        summary["strategic_action_records_written"] = len(action_only)
+        summary["STRATEGIC_FUNNEL"]["stage_6_strategic_action_only"] = len(action_only)
+        _write_attribution(args.strategic_action_out, len(action_only))
+
     if not args.no_digests:
         summary["source_files"] = corpus_file_digests(files)
 

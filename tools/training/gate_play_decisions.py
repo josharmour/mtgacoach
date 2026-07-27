@@ -81,15 +81,42 @@ Gates (§17.4) — all hard, all fail-closed
   G5 non-inferiority          paired-bootstrap 95% CI of the accuracy delta
                               vs a declared baseline (same estimator as
                               ``gate_stage0.paired_bootstrap_ci``, imported)
+  G6 trivial-policy floor     candidate overall accuracy must EXCEED the best
+                              reflex policy on the same corpus (max over
+                              always-first / always-last / always-land /
+                              always-pass / uniform-random)
+  G7 strategic movement       paired-bootstrap 95% CI of the accuracy delta on
+                              the NON-LAND-DROP subset must have a lower bound
+                              above zero
+
+Why G6 and G7 exist (2026-07-26)
+--------------------------------
+The 2026-07-24 run returned **PASS** for a LoRA that:
+
+  * scored 0.5825 overall while ``always_land_else_first`` scored **0.6359** on
+    the same corpus — worse than a policy with no knowledge of the board; and
+  * scored **13/63 on the strategic subset, identical to the untuned base
+    model** (delta exactly 0.0000).
+
+Both facts were in the report, as advisory fields nobody could act on. G1-G5
+were all satisfied because 69% of that corpus was land drops and the model had
+learned a land reflex (it played the first land in 84% of strategic decisions
+vs 60% for the base). A gate whose hard floors can all be cleared by a reflex
+is not a gate. G6 and G7 are those two advisories promoted to hard, fail-closed
+floors, and ``tests/test_gate_play_decisions.py`` pins that exact run as a
+regression: replaying those response files must produce BLOCKED.
 
 ANY missing input, sample shortfall, or exception => verdict BLOCKED, exit 2,
 no registration. There is no bypass flag of any kind.
 
-Honesty guard: 67% of this corpus's picks are land drops, so a policy that
-always plays a land scores deceptively well. Every report carries
-``reference_policies`` (always-first / always-land / always-pass / random) and
-a ``strategic`` slice that excludes land drops. Read those before believing an
-accuracy number.
+Honesty guard: every report carries ``reference_policies`` (always-first /
+always-land / always-pass / random), the same policies recomputed on the
+strategic slice, a ``strategic_non_land_drop`` slice, and a
+``decisive_resource_commit`` slice (labels that cast / activate / attack /
+block / target / search — neither a land nor a pass). Read those before
+believing an accuracy number: killing the land reflex with a strategic-only
+corpus just promotes ``always_pass`` to the next cheap reflex, which is why G6
+takes the MAX over reflex policies rather than naming the land one.
 
 Usage
 -----
@@ -161,10 +188,37 @@ CORPUS_STEM = "gate_play_decisions"
 MIN_SAMPLES = 100  # gate refuses to certify the test split below this
 MIN_NONBRAWL_SAMPLES = 40  # the non-Brawl slice is primary — needs a real n
 MIN_STRATEGIC_SAMPLES = 30  # non-land-drop decisions; the honest headline
+MIN_DECISIVE_SAMPLES = 30  # neither a land drop nor a pass — the owner's question
 MIN_SCHEMA_RATE = 0.99  # G1
 MAX_LEGALITY_VIOLATIONS = 0  # G2 — any violation is a hard fail
 MAX_PERMUTATION_ACC_GAP = 0.05  # G3
 MAX_ACCURACY_REGRESSION = 0.02  # G5
+# G6 — the candidate must BEAT the best reflex policy on this corpus, not tie
+# it. Margin is the amount by which it must beat it; 0.0 means "strictly
+# greater". Raise it, never lower it (see _clamp_thresholds).
+MIN_TRIVIAL_POLICY_MARGIN = 0.0
+# G7 — paired-bootstrap 95% CI lower bound of the STRATEGIC-subset accuracy
+# delta vs baseline must exceed this. 0.0 means "the improvement on real
+# decisions must be statistically distinguishable from zero".
+MIN_STRATEGIC_DELTA_CI_LOWER = 0.0
+
+# Realized reflex policies whose max is the G6 floor. ``uniform_random_expectation``
+# is an expectation rather than a policy but is included because a candidate
+# that cannot beat blind guessing is not a candidate.
+TRIVIAL_POLICY_KEYS = (
+    "always_first_option",
+    "always_last_option",
+    "always_land_else_first",
+    "always_pass",
+    "always_pass_else_first",
+    "uniform_random_expectation",
+)
+
+# Labels that commit no resource. A corpus dominated by these teaches a pass
+# reflex exactly the way a land-heavy corpus taught a land reflex, so the
+# "decisive" slice (neither land drop nor passive) is reported separately.
+PASSIVE_ACTION_TYPES = frozenset({"ActionType_Pass", "ActionType_NoBlock"})
+LAND_DROP_ACTION_TYPES = frozenset({"ActionType_Play", "ActionType_PlayMDFC"})
 
 DEFAULT_SEED = 20260725
 DEFAULT_TEST_FRACTION = 0.30
@@ -176,7 +230,11 @@ DEFAULT_DECK_OVERLAP_THRESHOLD = 0.5
 # tests/test_gate_play_decisions.py asserts the two stay in sync.
 MANA_LEVEL_ACTION_TYPES = frozenset({"ActionType_Activate_Mana", "ActionType_FloatMana"})
 
-# The trigger production fires for a start-of-own-main-1 priority window.
+# The trigger production fires for a start-of-own-main-1 priority window. It is
+# the DEFAULT only: a groundtruth record that names its own
+# ``production_trigger`` wins, because a corpus covering every phase contains
+# block and target decisions whose prompt must not open with "Your turn started
+# (Main Phase 1). Plan your plays."
 TRIGGER = "new_turn"
 
 
@@ -267,7 +325,15 @@ def entry_action_key(entry: dict) -> str:
     same choice; crediting only the exact instance the human clicked would
     understate accuracy. Ability activations keep their abilityGrpId because
     different abilities on one permanent are different choices.
+
+    ``equiv_key``, when the extractor supplies one, wins: the combat and
+    targeting menus in ``strategic_groundtruth.py`` have equivalences that
+    (action_type, grpId) cannot express — the same blocker in front of two
+    different attackers is two choices, not one.
     """
+    supplied = entry.get("equiv_key")
+    if supplied:
+        return str(supplied)
     atype = str(entry.get("action_type") or "?").replace("ActionType_", "")
     grp = entry.get("grp_id")
     ability = entry.get("ability_grp_id")
@@ -535,7 +601,16 @@ def _affordable(entry: dict, mana_pool: dict) -> bool:
 
 
 def menu_line(entry: dict, affordable: bool) -> str:
-    """Legal-action text in production's wording (``gamestate_decisions``)."""
+    """Legal-action text in production's wording (``gamestate_decisions``).
+
+    ``menu_text``, when present, is used verbatim. Attack / block / target /
+    search rows are not MTGA ``ActionType_*`` values with a card name to
+    interpolate — "Block Raccoon with Michelangelo" needs two card names and
+    the generic branch below would render it as ``Action: block``.
+    """
+    supplied = entry.get("menu_text")
+    if supplied:
+        return str(supplied)
     atype = entry.get("action_type")
     name = entry.get("name") or "?"
     if atype == "ActionType_Pass":
@@ -572,7 +647,7 @@ def _new_planner():
     return planner
 
 
-def build_user_message(game_state: dict, menu_texts: list[str]) -> str:
+def build_user_message(game_state: dict, menu_texts: list[str], trigger: str = TRIGGER) -> str:
     """Call production's prompt builder. Never re-implement it (§17.2).
 
     ``_build_action_prompt`` swallows a formatter exception and degrades to
@@ -585,7 +660,7 @@ def build_user_message(game_state: dict, menu_texts: list[str]) -> str:
     game_state["legal_actions"] = list(menu_texts)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        message = planner._build_action_prompt(game_state, TRIGGER, legal_actions=list(menu_texts))
+        message = planner._build_action_prompt(game_state, trigger, legal_actions=list(menu_texts))
     if "Legal: (pick by number)" not in message or "Life: You=" not in message:
         raise RuntimeError(
             "production formatter degraded to the fallback shape — refusing to build a "
@@ -611,8 +686,16 @@ def build_decision(rec: dict, facts: _CardFacts) -> dict | None:
         return {"drop_reason": "pick_index_out_of_range"}
     gold_entry = full_menu[int(idx)]
 
-    # Production strips mana-level actions from the numbered menu.
-    menu = [e for e in full_menu if e.get("action_type") not in MANA_LEVEL_ACTION_TYPES]
+    # Production strips mana-level actions from the numbered menu. The original
+    # position is kept so the human's pick is located by POSITION, not by a
+    # reconstructed identity: block menus contain several rows for one blocker
+    # (one per attacker it could block), and (action_type, grpId, instanceId)
+    # cannot tell them apart — identity matching silently labelled the wrong
+    # attacker on 3 of 996 held-out block decisions.
+    kept = [
+        (i, e) for i, e in enumerate(full_menu) if e.get("action_type") not in MANA_LEVEL_ACTION_TYPES
+    ]
+    menu = [e for _, e in kept]
     if gold_entry.get("action_type") in MANA_LEVEL_ACTION_TYPES:
         return {"drop_reason": "gold_pick_is_mana_action"}
     if len(menu) < 2:
@@ -632,7 +715,7 @@ def build_decision(rec: dict, facts: _CardFacts) -> dict | None:
     gold_key = entry_action_key(gold_entry)
     rows = []
     gold_pick = None
-    for i, entry in enumerate(menu):
+    for i, (orig_index, entry) in enumerate(kept):
         affordable = entry.get("action_type") in ("ActionType_Cast",) and _affordable(entry, mana_pool)
         rows.append(
             {
@@ -645,10 +728,15 @@ def build_decision(rec: dict, facts: _CardFacts) -> dict | None:
                 "name": entry.get("name"),
             }
         )
-        if entry_identity(entry) == gold_identity and gold_pick is None:
+        if orig_index == int(idx):
             gold_pick = i + 1
     if gold_pick is None:
         return {"drop_reason": "gold_pick_lost_in_filter"}
+    # Sanity: the positionally-located row must at minimum share the coarse
+    # identity of the recorded pick. A mismatch means real_pick.menu_index does
+    # not index real_menu, which would silently mislabel the whole corpus.
+    if entry_identity(menu[gold_pick - 1]) != gold_identity:
+        return {"drop_reason": "gold_pick_identity_mismatch"}
 
     # Card-fact provenance for this decision. Carried into the corpus so a
     # built file can be re-verified later, and checked at build time so a
@@ -659,7 +747,23 @@ def build_decision(rec: dict, facts: _CardFacts) -> dict | None:
         mana_total=int(mana_pool.get("total", 0)),
     )
 
-    equivalents = [r["index"] for r in rows if r["action_key"] == gold_key]
+    # Equivalence classes for scoring. Two rows count as the same answer when
+    # they share an action key OR when they render the SAME TEXT: MTGA emits a
+    # separate action per printing, so a fetch menu can show "Search out
+    # Overgrown Tomb" twice with different grpIds (alternate art). The model
+    # sees two identical lines and cannot possibly choose "the right one", so
+    # crediting only one of them scores art collection, not play skill.
+    # Measured before this rule: 36 of 550 held-out decisions were scoreable
+    # only by luck.
+    gold_row = rows[gold_pick - 1]
+    equivalents = sorted(
+        {
+            r["index"]
+            for r in rows
+            if r["action_key"] == gold_key
+            or (r["text"] == gold_row["text"] and r["action_type"] == gold_row["action_type"])
+        }
+    )
     # Every card id this decision exposes — used at split time to measure how
     # much of the held-out game the training split has already seen.
     card_ids = {r["grp_id"] for r in rows if r["grp_id"] is not None}
@@ -680,11 +784,20 @@ def build_decision(rec: dict, facts: _CardFacts) -> dict | None:
         "gold_action_type": gold_entry.get("action_type"),
         "gold_equivalent_picks": equivalents,
         "menu_size": len(rows),
-        "is_land_drop": gold_entry.get("action_type") == "ActionType_Play",
+        "is_land_drop": gold_entry.get("action_type") in LAND_DROP_ACTION_TYPES,
         "has_land_option": any(r["action_type"] == "ActionType_Play" for r in rows),
         "pass_pick": next((r["index"] for r in rows if r["action_type"] == "ActionType_Pass"), None),
         "first_land_pick": next((r["index"] for r in rows if r["action_type"] == "ActionType_Play"), None),
         "menu_key_spell": sorted({r["action_key"] for r in rows}),
+        "trigger": rec.get("production_trigger") or TRIGGER,
+        "request_type": rec.get("request_type", "ActionsAvailable"),
+        "decision_kind": rec.get("decision_kind", "priority_action"),
+        "phase": rec.get("phase"),
+        "step": rec.get("step") or "",
+        "is_own_turn": rec.get("is_own_turn"),
+        "turn_number": rec.get("turn_number"),
+        "decision_uid": rec.get("decision_uid"),
+        "n_meaningful_options": (rec.get("strategic") or {}).get("n_meaningful_options"),
         "format": f"{rec.get('super_format')}/{rec.get('variant')}",
         "format_bucket": format_bucket(rec.get("super_format", ""), rec.get("variant", "")),
         "source": {
@@ -721,9 +834,15 @@ def permute_decision(decision: dict, seed_key: str) -> dict:
     out = dict(decision)
     out["menu"] = rows
     out["gold_pick"] = order.index(gold_old) + 1
-    out["gold_equivalent_picks"] = [
-        r["index"] for r in rows if r["action_key"] == decision["gold_action_key"]
-    ]
+    gold_row = rows[out["gold_pick"] - 1]
+    out["gold_equivalent_picks"] = sorted(
+        {
+            r["index"]
+            for r in rows
+            if r["action_key"] == decision["gold_action_key"]
+            or (r["text"] == gold_row["text"] and r["action_type"] == gold_row["action_type"])
+        }
+    )
     out["pass_pick"] = next((r["index"] for r in rows if r["action_type"] == "ActionType_Pass"), None)
     out["first_land_pick"] = next((r["index"] for r in rows if r["action_type"] == "ActionType_Play"), None)
     out["permutation"] = [i + 1 for i in order]
@@ -735,7 +854,7 @@ def to_corpus_record(decision: dict, record_id: str, split: str, variant: str, t
     from arenamcp.action_planner import AUTOPILOT_SYSTEM_PROMPT
 
     menu_texts = [r["text"] for r in decision["menu"]]
-    user = build_user_message(decision["game_state"], menu_texts)
+    user = build_user_message(decision["game_state"], menu_texts, decision.get("trigger", TRIGGER))
     # "_"-prefixed keys are build-time bookkeeping and never reach the corpus.
     meta = {k: v for k, v in decision.items() if k != "game_state" and not k.startswith("_")}
     meta["split"] = split
@@ -830,14 +949,52 @@ def reference_policies(records: list[dict]) -> dict:
     random_expectation = round(
         sum(len(r["meta"]["gold_equivalent_picks"]) / r["meta"]["menu_size"] for r in records) / n, 4
     )
-    return {
+    out = {
         "n": n,
         "always_first_option": _acc(lambda m: 1),
         "always_last_option": _acc(lambda m: m["menu_size"]),
         "always_land_else_first": _acc(lambda m: m["first_land_pick"] or 1),
         "always_pass": _acc(lambda m: m["pass_pick"]),
+        "always_pass_else_first": _acc(lambda m: m["pass_pick"] or 1),
         "uniform_random_expectation": random_expectation,
     }
+    name, value = best_trivial_policy(out)
+    out["best_trivial_policy"] = name
+    out["best_trivial_accuracy"] = value
+    return out
+
+
+def best_trivial_policy(references: dict) -> tuple[str | None, float | None]:
+    """The reflex policy a candidate has to beat (G6).
+
+    The previous run scored 0.5825 against ``always_land_else_first`` 0.6359 and
+    still passed, because this comparison was advisory. Taking the MAX over
+    every reflex — not just the land one — is deliberate: killing the land
+    reflex with a strategic corpus makes ``always_pass`` the next cheap reflex,
+    and a floor that only knows about lands would not see it coming.
+    """
+    best_name: str | None = None
+    best_val: float | None = None
+    for key in TRIVIAL_POLICY_KEYS:
+        val = references.get(key)
+        if val is None:
+            continue
+        if best_val is None or val > best_val:
+            best_name, best_val = key, float(val)
+    return best_name, best_val
+
+
+def _is_decisive(meta: dict) -> bool:
+    """True when the human's answer committed a resource.
+
+    Cast / activate / attack / block / target / search — as opposed to playing
+    a land or passing. This is the slice that actually answers "out of this
+    board, what is the next best action", so it is reported on its own and
+    floored for sample count.
+    """
+    if meta.get("is_land_drop"):
+        return False
+    return meta.get("gold_action_type") not in PASSIVE_ACTION_TYPES
 
 
 def corpus_composition(records: list[dict]) -> dict:
@@ -845,14 +1002,28 @@ def corpus_composition(records: list[dict]) -> dict:
     n = len(records)
     metas = [r["meta"] for r in records]
     land = sum(1 for m in metas if m["is_land_drop"])
+    passive = sum(1 for m in metas if m.get("gold_action_type") in PASSIVE_ACTION_TYPES)
+    decisive = sum(1 for m in metas if _is_decisive(m))
     sizes = sorted(m["menu_size"] for m in metas)
     return {
         "n": n,
         "by_format_bucket": dict(Counter(m["format_bucket"] for m in metas)),
         "by_format": dict(Counter(m["format"] for m in metas)),
         "by_gold_action_type": dict(Counter(m["gold_action_type"] for m in metas)),
+        "by_request_type": dict(Counter(m.get("request_type", "ActionsAvailable") for m in metas)),
+        "by_decision_kind": dict(Counter(m.get("decision_kind", "priority_action") for m in metas)),
+        "by_phase": dict(Counter(m.get("phase") or "unknown" for m in metas)),
+        "by_phase_and_turn": dict(
+            Counter(
+                f"{m.get('phase') or 'unknown'}|{'own' if m.get('is_own_turn') else 'opp'}" for m in metas
+            )
+        ),
         "trivial_land_drop_n": land,
         "trivial_land_drop_share": round(land / n, 4) if n else 0.0,
+        "passive_label_n": passive,
+        "passive_label_share": round(passive / n, 4) if n else 0.0,
+        "decisive_label_n": decisive,
+        "decisive_label_share": round(decisive / n, 4) if n else 0.0,
         "strategic_n": n - land,
         "menu_size": {
             "min": sizes[0] if sizes else 0,
@@ -987,6 +1158,9 @@ def evaluate(corpus: list[dict], responses_path: Path, backend_label: str) -> di
             "correct_exact": bool(legal and pick == meta["gold_pick"]),
             "format_bucket": meta["format_bucket"],
             "is_land_drop": meta["is_land_drop"],
+            "is_decisive": _is_decisive(meta),
+            "gold_action_type": meta.get("gold_action_type"),
+            "request_type": meta.get("request_type", "ActionsAvailable"),
             "deck_seen_in_train": bool(meta.get("deck_seen_in_train")),
             "twin_id": meta.get("twin_id"),
         }
@@ -1000,9 +1174,14 @@ def evaluate(corpus: list[dict], responses_path: Path, backend_label: str) -> di
 
     nonbrawl = [o for o in outcomes if o["format_bucket"] != "brawl"]
     strategic = [o for o in outcomes if not o["is_land_drop"]]
+    decisive = [o for o in outcomes if o["is_decisive"]]
+    passive = [o for o in outcomes if not o["is_land_drop"] and not o["is_decisive"]]
     land = [o for o in outcomes if o["is_land_drop"]]
     seen = [o for o in outcomes if o["deck_seen_in_train"]]
     unseen = [o for o in outcomes if not o["deck_seen_in_train"]]
+    by_request = defaultdict(list)
+    for o in outcomes:
+        by_request[o["request_type"]].append(o)
 
     return {
         "backend": backend_label,
@@ -1023,6 +1202,9 @@ def evaluate(corpus: list[dict], responses_path: Path, backend_label: str) -> di
         "by_format_bucket": {b: _slice_stats(v) for b, v in sorted(by_bucket.items())},
         "non_brawl": _slice_stats(nonbrawl),
         "strategic_non_land_drop": _slice_stats(strategic),
+        "decisive_resource_commit": _slice_stats(decisive),
+        "passive_pass_or_noblock": _slice_stats(passive),
+        "by_request_type": {b: _slice_stats(v) for b, v in sorted(by_request.items())},
         "land_drop": _slice_stats(land),
         "deck_seen_in_train": _slice_stats(seen),
         "deck_unseen_in_train": _slice_stats(unseen),
@@ -1030,6 +1212,33 @@ def evaluate(corpus: list[dict], responses_path: Path, backend_label: str) -> di
         "per_id": per_id,
         "recorded_decoding_params": decoding_params[:5] if decoding_params else [{"temperature": 0.0}],
     }
+
+
+def _paired_outcomes(candidate: dict, baseline: dict, predicate=None) -> list[dict]:
+    """Candidate/baseline outcome pairs for the same prompt id.
+
+    ``predicate`` filters on the CANDIDATE outcome (the slices are properties of
+    the decision, not of the answer, so either side would give the same set).
+    Shape matches ``gate_stage0.paired_bootstrap_ci``: its balanced-accuracy arm
+    is mulligan-specific (``truth`` in {keep, mull}) and comes back null here by
+    construction, so only the raw delta CI is used.
+    """
+    pairs: list[dict] = []
+    for pid, cand_outcome in candidate.get("per_id", {}).items():
+        base_outcome = baseline.get("per_id", {}).get(pid)
+        if base_outcome is None:
+            continue
+        if predicate is not None and not predicate(cand_outcome):
+            continue
+        pairs.append(
+            {
+                "prompt_id": pid,
+                "truth": cand_outcome["format_bucket"],
+                "cand_correct": cand_outcome["correct"],
+                "base_correct": base_outcome["correct"],
+            }
+        )
+    return pairs
 
 
 def permutation_metrics(identity: dict, permuted: dict, permuted_corpus: list[dict]) -> dict:
@@ -1078,12 +1287,50 @@ def permutation_metrics(identity: dict, permuted: dict, permuted_corpus: list[di
 # --------------------------------------------------------------------------
 
 
+def _dedupe_prompts(records: list[dict]) -> dict:
+    """Decide which records survive prompt-level duplication.
+
+    Groups records by the exact user prompt. A group whose members all agree on
+    ``gold_equivalent_picks`` collapses to its first member (the same question
+    asked twice is not two measurements). A group whose members disagree is
+    dropped entirely — the prompt does not contain the information needed to
+    choose, so any score on it is luck.
+    """
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for rec in records:
+        groups[hashlib.sha256(rec["user"].encode("utf-8")).hexdigest()].append(rec)
+
+    keep_ids: set[str] = set()
+    collapsed = ambiguous = cross_split = 0
+    ambiguous_examples: list[list[str]] = []
+    for members in groups.values():
+        if len(members) > 1 and len({m["meta"]["split"] for m in members}) > 1:
+            cross_split += 1
+        answers = {tuple(sorted(m["meta"]["gold_equivalent_picks"])) for m in members}
+        if len(answers) > 1:
+            ambiguous += len(members)
+            if len(ambiguous_examples) < 10:
+                ambiguous_examples.append([m["id"] for m in members])
+            continue
+        keep_ids.add(members[0]["id"])
+        collapsed += len(members) - 1
+    return {
+        "keep_ids": keep_ids,
+        "collapsed": collapsed,
+        "ambiguous": ambiguous,
+        "cross_split_groups": cross_split,
+        "ambiguous_examples": ambiguous_examples,
+        "distinct_prompts": len(groups),
+    }
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     gt_path: Path = args.groundtruth
     if not gt_path.exists():
         logger.error(f"groundtruth corpus missing: {gt_path}")
         return 2
 
+    stem = args.corpus_stem
     raw = list(_read_jsonl(gt_path))
     logger.info(f"read {len(raw)} groundtruth decisions from {gt_path}")
     facts = _CardFacts(allow_network=args.allow_network_card_lookups)
@@ -1092,6 +1339,25 @@ def cmd_build(args: argparse.Namespace) -> int:
     drops = Counter()
     selfcheck_findings: list[corpus_selfcheck.Finding] = []
     for rec in raw:
+        # ---- strategic-only filters, applied BEFORE the expensive build -----
+        # "I want the model to answer 'out of this board, what is the next best
+        # action specifically'. No mulligans, no 'play a land'." A mulligan is
+        # not a request type this extractor emits at all, and it is refused
+        # explicitly here so a future groundtruth file cannot smuggle one in.
+        gold_type = (rec.get("real_pick") or {}).get("action_type")
+        if str(rec.get("request_type", "")).startswith("Mulligan") or rec.get("decision_kind") == "mulligan":
+            drops["mulligan_excluded"] += 1
+            continue
+        if args.exclude_land_drops and gold_type in LAND_DROP_ACTION_TYPES:
+            drops["land_drop_excluded"] += 1
+            continue
+        if args.exclude_passes and gold_type in PASSIVE_ACTION_TYPES:
+            drops["passive_label_excluded"] += 1
+            continue
+        n_meaningful = (rec.get("strategic") or {}).get("n_meaningful_options")
+        if n_meaningful is not None and n_meaningful < args.min_meaningful_options:
+            drops["below_min_meaningful_options"] += 1
+            continue
         built = build_decision(rec, facts)
         if built is None or "drop_reason" in built:
             drops[(built or {}).get("drop_reason", "unknown")] += 1
@@ -1137,6 +1403,33 @@ def cmd_build(args: argparse.Namespace) -> int:
         min_test_files=args.min_test_files,
         min_dev_files=args.min_dev_files,
     )
+    split_source = "stratified-by-format, grouped by replay file, deterministic in seed"
+    inherited: dict[str, str] = {}
+    if args.split_from:
+        # Reuse an existing corpus's replay->split map. Two gate corpora built
+        # from the same replays with independent random splits would each hold
+        # out games the other trains on, so a model trained against one is
+        # contaminated for the other. Inheriting the map makes "held out" mean
+        # the same thing in both.
+        prior = json.loads(Path(args.split_from).read_text(encoding="utf-8"))
+        inherited = dict(prior.get("split_by_replay") or {})
+        if not inherited:
+            logger.error(f"--split-from {args.split_from} has no split_by_replay map — fail closed")
+            return 2
+        unseen = sorted(f for f in decisions_by_file if f not in inherited)
+        for fname in decisions_by_file:
+            if fname in inherited:
+                assignment[fname] = inherited[fname]
+        if unseen:
+            logger.warning(
+                f"{len(unseen)} replay file(s) absent from {args.split_from}; keeping their "
+                f"freshly-assigned split: {unseen[:10]}"
+            )
+        split_source = (
+            f"inherited from {args.split_from} ({len(inherited)} files); "
+            f"{len(unseen)} new file(s) assigned by the stratified path"
+        )
+        logger.info(f"split inherited from {args.split_from}: {Counter(assignment.values())}")
 
     # ---- leakage measurement (the seen-vs-unseen split) --------------------
     # Splitting by replay file stops *decision* leakage, not *deck* leakage:
@@ -1181,6 +1474,7 @@ def cmd_build(args: argparse.Namespace) -> int:
     out_dir: Path = args.out_dir
     written: dict[str, int] = {}
     corpora: dict[str, list[dict]] = {}
+    built: dict[str, list[dict]] = {}
     for split in ("test", "dev"):
         identity_records: list[dict] = []
         permuted_records: list[dict] = []
@@ -1189,8 +1483,8 @@ def cmd_build(args: argparse.Namespace) -> int:
                 continue
             overlap = _deck_overlap(fname)
             for decision in decisions_by_file[fname]:
-                stem = Path(fname).stem
-                rid = f"pd-{stem}-{decision['source']['decision_index']:04d}"
+                file_stem = Path(fname).stem
+                rid = f"pd-{file_stem}-{decision['source']['decision_index']:04d}"
                 menu_ids = decision["_menu_card_ids"]
                 seen_ids = [g for g in menu_ids if g in train_card_ids]
                 decision["menu_key_seen_in_train"] = tuple(decision["menu_key_spell"]) in train_menu_keys
@@ -1202,12 +1496,38 @@ def cmd_build(args: argparse.Namespace) -> int:
                 identity_records.append(to_corpus_record(decision, rid, split, "identity", rid))
                 twin = permute_decision(decision, f"{args.seed}:perm:{rid}")
                 permuted_records.append(to_corpus_record(twin, f"{rid}#perm", split, "permuted", rid))
-        corpora[split] = identity_records
-        corpora[f"{split}_permuted"] = permuted_records
-        written[f"{split}"] = _write_jsonl(out_dir / f"{CORPUS_STEM}_{split}.jsonl", identity_records)
+        built[split] = identity_records
+        built[f"{split}_permuted"] = permuted_records
+
+    # ---- ambiguous / duplicate prompts ------------------------------------
+    # Consecutive priority windows in one turn can reconstruct to a BYTE-
+    # IDENTICAL prompt while carrying different human answers (measured: an
+    # MTGA cast that was submitted then cancelled leaves hand, board and stack
+    # unchanged, so window N says "cast Silkguard" and window N+1 says "pass"
+    # off the same text). A gate cannot ask a question whose answer is not
+    # determined by the question:
+    #   * identical prompt, identical answer   -> collapse to one record
+    #   * identical prompt, different answers  -> drop the whole group
+    # Dropping is the conservative choice; keeping them would put a hard
+    # ceiling below 100% on the gate and score luck as skill.
+    dedup = _dedupe_prompts(built["test"] + built["dev"])
+    keep_ids = dedup["keep_ids"]
+    drops["duplicate_prompt_collapsed"] += dedup["collapsed"]
+    drops["ambiguous_duplicate_prompt_dropped"] += dedup["ambiguous"]
+    for split in ("test", "dev"):
+        corpora[split] = [r for r in built[split] if r["id"] in keep_ids]
+        corpora[f"{split}_permuted"] = [
+            r for r in built[f"{split}_permuted"] if r["meta"]["twin_id"] in keep_ids
+        ]
+        written[f"{split}"] = _write_jsonl(out_dir / f"{stem}_{split}.jsonl", corpora[split])
         written[f"{split}_permuted"] = _write_jsonl(
-            out_dir / f"{CORPUS_STEM}_{split}_permuted.jsonl", permuted_records
+            out_dir / f"{stem}_{split}_permuted.jsonl", corpora[f"{split}_permuted"]
         )
+    logger.info(
+        f"prompt dedup: {dedup['collapsed']} duplicate record(s) collapsed, "
+        f"{dedup['ambiguous']} record(s) dropped for contradictory labels, "
+        f"{dedup['cross_split_groups']} cross-split duplicate group(s)"
+    )
 
     if not corpora["test"]:
         logger.error("test split is empty — fail closed")
@@ -1215,7 +1535,7 @@ def cmd_build(args: argparse.Namespace) -> int:
 
     trainable = sorted(f for f, s in assignment.items() if s == "train")
     held_out = sorted(f for f, s in assignment.items() if s != "train")
-    train_path = out_dir / f"{CORPUS_STEM}_trainable_replays.json"
+    train_path = out_dir / f"{stem}_trainable_replays.json"
     train_path.write_text(
         json.dumps(
             {
@@ -1231,7 +1551,7 @@ def cmd_build(args: argparse.Namespace) -> int:
     )
 
     manifest = {
-        "corpus": "play_decisions_v1",
+        "corpus": f"{stem}_v1",
         "built_ts": time.time(),
         "git_sha": _git_sha(),
         "seed": args.seed,
@@ -1239,11 +1559,23 @@ def cmd_build(args: argparse.Namespace) -> int:
             "path": str(gt_path),
             "sha256": _sha256_file(gt_path),
             "records": len(raw),
-            "generator": "tools/eval/replay/menu_groundtruth.py (real MTGA .rply menus)",
+            "generator": "tools/eval/replay/*_groundtruth.py (real MTGA .rply menus)",
         },
+        "filters": {
+            "exclude_land_drops": bool(args.exclude_land_drops),
+            "exclude_passes": bool(args.exclude_passes),
+            "min_meaningful_options": args.min_meaningful_options,
+            "mulligans": "never included — refused by request_type/decision_kind at read time",
+            "single_option_menus": "dropped (menu_too_small) after mana-level rows are removed, "
+            "the same rows production removes",
+            "duplicate_prompts": "identical prompt + identical answer collapses to one record; "
+            "identical prompt + different answers drops the whole group (unanswerable)",
+        },
+        "prompt_dedup": {k: v for k, v in dedup.items() if k != "keep_ids"},
         "dropped": dict(drops),
         "splits": {
-            "policy": "grouped by replay file, stratified by format bucket, deterministic in seed",
+            "policy": split_source,
+            "inherited_from": str(args.split_from) if args.split_from else None,
             "test_fraction": args.test_fraction,
             "dev_fraction": args.dev_fraction,
             "deck_overlap_threshold": args.deck_overlap_threshold,
@@ -1259,6 +1591,12 @@ def cmd_build(args: argparse.Namespace) -> int:
         "reference_policies": {
             "test": reference_policies(corpora["test"]),
             "test_permuted": reference_policies(corpora["test_permuted"]),
+            "test_strategic_slice": reference_policies(
+                [r for r in corpora["test"] if not r["meta"]["is_land_drop"]]
+            ),
+            "test_decisive_slice": reference_policies(
+                [r for r in corpora["test"] if _is_decisive(r["meta"])]
+            ),
             "dev": reference_policies(corpora["dev"]) if corpora["dev"] else {},
         },
         "prompt_fidelity": {
@@ -1286,14 +1624,17 @@ def cmd_build(args: argparse.Namespace) -> int:
         },
         "honesty_note": (
             f"{corpus_composition(corpora['test'])['trivial_land_drop_share']:.1%} of the test split "
-            "is a land drop. A model that always plays a land scores near that number while knowing "
-            "nothing — read reference_policies and the strategic_non_land_drop slice before believing "
-            "any accuracy figure."
+            f"is a land drop, {corpus_composition(corpora['test'])['passive_label_share']:.1%} is a "
+            f"pass/no-block, and {corpus_composition(corpora['test'])['decisive_label_share']:.1%} "
+            "commits a resource. Whatever the biggest bucket is, a reflex that always answers it "
+            "scores near that number while knowing nothing — read reference_policies "
+            "(best_trivial_accuracy is the G6 floor) and the decisive slice before believing any "
+            "accuracy figure."
         ),
-        "outputs": {k: str(out_dir / f"{CORPUS_STEM}_{k}.jsonl") for k in written},
+        "outputs": {k: str(out_dir / f"{stem}_{k}.jsonl") for k in written},
         "trainable_replays_file": str(train_path),
     }
-    manifest_path = out_dir / f"{CORPUS_STEM}_manifest.json"
+    manifest_path = out_dir / f"{stem}_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
 
     logger.info(f"wrote {written} records; manifest -> {manifest_path}")
@@ -1389,6 +1730,213 @@ def cmd_simulate(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# Subcommand: leakcheck
+# --------------------------------------------------------------------------
+
+
+def _provenance_replay_file(rec: dict) -> str | None:
+    """Best-effort source replay/session file for a training record."""
+    for container in (rec, rec.get("meta") or {}, (rec.get("meta") or {}).get("source") or {}):
+        if isinstance(container, dict):
+            val = container.get("replay_file")
+            if val:
+                return str(val)
+    return None
+
+
+def _prompt_fingerprint(rec: dict) -> str | None:
+    """SHA-256 of the user prompt — the leak test that needs no provenance.
+
+    Two records can come from different files and still be the same decision
+    (re-ingested corpora, overlapping captures). Comparing the actual prompt
+    text catches that; comparing file names does not.
+    """
+    user = rec.get("user")
+    if user is None:
+        meta = rec.get("meta") or {}
+        digest = meta.get("user_sha256")
+        return str(digest) if digest else None
+    return hashlib.sha256(str(user).encode("utf-8")).hexdigest()
+
+
+def cmd_leakcheck(args: argparse.Namespace) -> int:
+    """Prove a training set contains none of the gate's held-out decisions.
+
+    Three independent checks, because each catches what the others miss:
+      1. split integrity  — the held-out replay list and the trainable list are
+         disjoint, and every gate record comes from a held-out replay.
+      2. provenance       — no training record names a held-out replay file.
+      3. prompt identity  — no training record's user prompt hashes to a gate
+         record's user prompt, whatever its provenance claims.
+
+    Exit 2 on any finding: a leaked gate decision makes the verdict meaningless
+    in the direction that flatters the model, which is the direction that has
+    already burned this project twice.
+    """
+    prior = json.loads(Path(args.trainable_replays).read_text(encoding="utf-8"))
+    excluded = set(prior.get("excluded_replays") or [])
+    trainable = set(prior.get("trainable_replays") or [])
+    findings: list[str] = []
+    if excluded & trainable:
+        findings.append(f"split integrity: {len(excluded & trainable)} replay(s) in BOTH lists")
+
+    gate_hashes: dict[str, str] = {}
+    gate_replays: set[str] = set()
+    gate_n = 0
+    for path in args.gate_corpus:
+        for rec in _read_jsonl(path):
+            gate_n += 1
+            src = ((rec.get("meta") or {}).get("source") or {}).get("replay_file")
+            if src:
+                gate_replays.add(src)
+                if src not in excluded:
+                    findings.append(
+                        f"split integrity: gate record {rec.get('id')} comes from {src}, which is "
+                        "NOT in excluded_replays"
+                    )
+            fp = _prompt_fingerprint(rec)
+            if fp:
+                gate_hashes[fp] = str(rec.get("id"))
+
+    per_training: dict[str, dict] = {}
+    for path in args.training_set:
+        n = 0
+        prov_hits: list[str] = []
+        hash_hits: list[str] = []
+        no_prov = 0
+        replays: Counter = Counter()
+        for rec in _read_jsonl(path):
+            n += 1
+            src = _provenance_replay_file(rec)
+            if src:
+                replays[src] += 1
+                if src in excluded:
+                    prov_hits.append(src)
+            else:
+                no_prov += 1
+            fp = _prompt_fingerprint(rec)
+            if fp and fp in gate_hashes:
+                hash_hits.append(gate_hashes[fp])
+        per_training[str(path)] = {
+            "records": n,
+            "records_without_replay_provenance": no_prov,
+            "distinct_source_files": len(replays),
+            "held_out_replay_hits": len(prov_hits),
+            "held_out_replay_examples": sorted(set(prov_hits))[:10],
+            "gate_prompt_hash_collisions": len(hash_hits),
+            "gate_prompt_hash_collision_examples": sorted(set(hash_hits))[:10],
+        }
+        if prov_hits:
+            findings.append(
+                f"provenance: {path} has {len(prov_hits)} record(s) from held-out replays "
+                f"{sorted(set(prov_hits))[:5]}"
+            )
+        if hash_hits:
+            findings.append(
+                f"prompt identity: {path} has {len(hash_hits)} record(s) whose user prompt is "
+                f"byte-identical to a gate record ({sorted(set(hash_hits))[:5]})"
+            )
+
+    report = {
+        "check": "gate_leakage",
+        "verdict": "CLEAN" if not findings else "LEAKED",
+        "findings": findings,
+        "trainable_replays_file": str(args.trainable_replays),
+        "held_out_replays": len(excluded),
+        "trainable_replays": len(trainable),
+        "gate_corpora": [str(p) for p in args.gate_corpus],
+        "gate_records": gate_n,
+        "gate_source_replays": len(gate_replays),
+        "gate_prompt_hashes": len(gate_hashes),
+        "training_sets": per_training,
+        "git_sha": _git_sha(),
+        "ts": time.time(),
+    }
+    if args.report:
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    for f in findings:
+        logger.error(f"  LEAK: {f}")
+    return 0 if not findings else 2
+
+
+# --------------------------------------------------------------------------
+# Subcommand: calibrate
+# --------------------------------------------------------------------------
+
+
+def cmd_calibrate(args: argparse.Namespace) -> int:
+    """Score every reference policy on a corpus, on the same slices the gate uses.
+
+    Run this the moment a corpus is built. A verdict read without knowing what
+    a reflex scores on that corpus is unreadable — that is precisely how a
+    0.5825 model passed against a 0.6359 reflex.
+    """
+    corpus = list(_read_jsonl(args.corpus))
+    if not corpus:
+        logger.error(f"corpus empty: {args.corpus}")
+        return 2
+    identity_gold: dict[str, int] = {}
+    if args.identity_corpus and args.identity_corpus.exists():
+        for rec in _read_jsonl(args.identity_corpus):
+            identity_gold[rec["id"]] = rec["meta"]["gold_pick"]
+
+    results: dict[str, dict] = {}
+    for policy in args.policies:
+        outcomes = []
+        for rec in corpus:
+            meta = dict(rec["meta"])
+            twin = meta.get("twin_id")
+            if twin in identity_gold:
+                meta["identity_gold_pick"] = identity_gold[twin]
+            rng = random.Random(f"{args.seed}:{policy}:{rec['id']}")
+            pick = _policy_pick(policy, meta, rng)
+            legal = pick is not None and 1 <= int(pick) <= meta["menu_size"]
+            outcomes.append(
+                {
+                    "correct": bool(legal and int(pick) in meta["gold_equivalent_picks"]),
+                    "correct_exact": bool(legal and int(pick) == meta["gold_pick"]),
+                    "is_land_drop": meta["is_land_drop"],
+                    "is_decisive": _is_decisive(meta),
+                    "request_type": meta.get("request_type", "ActionsAvailable"),
+                }
+            )
+        by_request = defaultdict(list)
+        for o in outcomes:
+            by_request[o["request_type"]].append(o)
+        results[policy] = {
+            "overall": _slice_stats(outcomes),
+            "strategic_non_land_drop": _slice_stats([o for o in outcomes if not o["is_land_drop"]]),
+            "decisive_resource_commit": _slice_stats([o for o in outcomes if o["is_decisive"]]),
+            "passive_pass_or_noblock": _slice_stats(
+                [o for o in outcomes if not o["is_land_drop"] and not o["is_decisive"]]
+            ),
+            "by_request_type": {k: _slice_stats(v) for k, v in sorted(by_request.items())},
+        }
+
+    references = reference_policies(corpus)
+    best_name, best_val = best_trivial_policy(references)
+    out = {
+        "corpus": str(args.corpus),
+        "n": len(corpus),
+        "composition": corpus_composition(corpus),
+        "reference_policies": references,
+        "g6_floor": {"policy": best_name, "accuracy": best_val},
+        "policy_scores": results,
+        "note": "G6 requires a candidate to EXCEED g6_floor.accuracy. G7 requires the "
+        "strategic_non_land_drop delta vs baseline to have a bootstrap CI lower bound above 0.",
+        "git_sha": _git_sha(),
+        "ts": time.time(),
+    }
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(json.dumps(out, indent=2, ensure_ascii=False))
+    return 0
+
+
+# --------------------------------------------------------------------------
 # Subcommand: gate
 # --------------------------------------------------------------------------
 
@@ -1405,9 +1953,12 @@ def _clamp_thresholds(args: argparse.Namespace) -> list[str]:
         ("min_samples", MIN_SAMPLES, max),
         ("min_nonbrawl_samples", MIN_NONBRAWL_SAMPLES, max),
         ("min_strategic_samples", MIN_STRATEGIC_SAMPLES, max),
+        ("min_decisive_samples", MIN_DECISIVE_SAMPLES, max),
         ("min_schema_rate", MIN_SCHEMA_RATE, max),
         ("max_permutation_gap", MAX_PERMUTATION_ACC_GAP, min),
         ("max_accuracy_regression", MAX_ACCURACY_REGRESSION, min),
+        ("min_trivial_margin", MIN_TRIVIAL_POLICY_MARGIN, max),
+        ("min_strategic_delta_ci_lower", MIN_STRATEGIC_DELTA_CI_LOWER, max),
     )
     for name, floor, op in clamps:
         given = getattr(args, name)
@@ -1424,13 +1975,18 @@ def cmd_gate(args: argparse.Namespace) -> int:
         logger.warning(note)
     verdict = "BLOCKED"
     failures: list[str] = []
+    advisories: list[str] = []
     candidate: dict = {}
     baseline: dict = {}
     permuted: dict = {}
     perm_metrics: dict = {}
     bootstrap: dict = {}
+    strategic_bootstrap: dict = {}
+    decisive_bootstrap: dict = {}
+    trivial_floor: dict = {}
     composition: dict = {}
     references: dict = {}
+    references_strategic: dict = {}
 
     try:
         required = {
@@ -1451,6 +2007,11 @@ def cmd_gate(args: argparse.Namespace) -> int:
                 failures.append("gate corpus is empty — fail closed")
             composition = corpus_composition(corpus) if corpus else {}
             references = reference_policies(corpus) if corpus else {}
+            references_strategic = (
+                reference_policies([r for r in corpus if not r["meta"]["is_land_drop"]])
+                if corpus
+                else {}
+            )
 
         if not failures:
             candidate = evaluate(corpus, args.responses, args.backend_label)
@@ -1534,23 +2095,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
                 )
 
             # ---- G5 paired-bootstrap non-inferiority vs baseline ----
-            pairs = []
-            for pid, cand_outcome in candidate["per_id"].items():
-                base_outcome = baseline["per_id"].get(pid)
-                if base_outcome is None:
-                    continue
-                pairs.append(
-                    {
-                        "prompt_id": pid,
-                        # gate_stage0's estimator computes a balanced delta only
-                        # for keep/mull arms; play decisions have no such arms,
-                        # so the balanced field comes back null by construction
-                        # and only the raw delta CI is used.
-                        "truth": cand_outcome["format_bucket"],
-                        "cand_correct": cand_outcome["correct"],
-                        "base_correct": base_outcome["correct"],
-                    }
-                )
+            pairs = _paired_outcomes(candidate, baseline)
             if len(pairs) < args.min_samples:
                 failures.append(
                     f"G5 paired bootstrap has {len(pairs)} paired decisions < {args.min_samples} — fail closed"
@@ -1569,10 +2114,109 @@ def cmd_gate(args: argparse.Namespace) -> int:
                         f"{args.baseline_label!r}"
                     )
 
+            # ---- G6 trivial-policy floor (HARD) ------------------------------
+            # 2026-07-26: the previous run scored 0.5825 overall against
+            # always_land_else_first at 0.6359 — i.e. WORSE than a policy that
+            # knows nothing about Magic — and the gate returned PASS because
+            # this comparison was advisory. It is now a hard floor.
+            trivial_name, trivial_acc = best_trivial_policy(references or {})
+            cand_acc = candidate["overall"]["accuracy"]
+            trivial_floor = {
+                "policy": trivial_name,
+                "policy_accuracy": trivial_acc,
+                "candidate_accuracy": cand_acc,
+                "margin_required": args.min_trivial_margin,
+                "margin_observed": round(cand_acc - trivial_acc, 4)
+                if (cand_acc is not None and trivial_acc is not None)
+                else None,
+            }
+            if trivial_acc is None or cand_acc is None:
+                failures.append("G6 trivial-policy floor: no reference-policy baseline — fail closed")
+            elif cand_acc - trivial_acc <= args.min_trivial_margin:
+                failures.append(
+                    f"G6 trivial-policy floor: candidate accuracy {cand_acc:.4f} does not beat the best "
+                    f"reflex policy {trivial_name!r} at {trivial_acc:.4f} "
+                    f"(margin {cand_acc - trivial_acc:+.4f} <= {args.min_trivial_margin}) — a model that "
+                    "cannot beat a policy with no knowledge of the board has learned nothing"
+                )
+            candidate["beats_trivial_land_policy"] = bool(
+                cand_acc is not None
+                and (references or {}).get("always_land_else_first") is not None
+                and cand_acc > references["always_land_else_first"]
+            )
+
+            # ---- G7 strategic movement (HARD) --------------------------------
+            # The previous run's strategic slice was 13/63 for BOTH the tuned
+            # model and the untuned base — delta exactly 0.0000 — and it passed
+            # on the strength of land drops alone. Overall movement is no longer
+            # sufficient: the non-land-drop subset must move, with a CI that
+            # excludes zero.
+            strategic_pairs = _paired_outcomes(candidate, baseline, lambda o: not o["is_land_drop"])
+            strategic_delta = None
+            if (
+                candidate["strategic_non_land_drop"]["accuracy"] is not None
+                and baseline["strategic_non_land_drop"]["accuracy"] is not None
+            ):
+                strategic_delta = round(
+                    candidate["strategic_non_land_drop"]["accuracy"]
+                    - baseline["strategic_non_land_drop"]["accuracy"],
+                    4,
+                )
+            if len(strategic_pairs) < args.min_strategic_samples:
+                failures.append(
+                    f"G7 strategic movement: only {len(strategic_pairs)} paired strategic decisions < "
+                    f"{args.min_strategic_samples} — fail closed"
+                )
+            else:
+                strategic_bootstrap = paired_bootstrap_ci(
+                    strategic_pairs, n_bootstraps=args.bootstraps, seed=args.seed
+                )
+                strategic_bootstrap["paired_n"] = len(strategic_pairs)
+                strategic_bootstrap["point_accuracy_delta"] = strategic_delta
+                strat_ci = strategic_bootstrap.get("raw_accuracy_delta_95ci")
+                if not strat_ci:
+                    failures.append("G7 strategic movement: paired bootstrap produced no CI — fail closed")
+                elif strat_ci[0] <= args.min_strategic_delta_ci_lower:
+                    failures.append(
+                        f"G7 strategic movement: strategic-subset accuracy delta 95% CI "
+                        f"[{strat_ci[0]:+.4f}, {strat_ci[1]:+.4f}] does not exclude "
+                        f"{args.min_strategic_delta_ci_lower} (point delta "
+                        f"{strategic_delta:+.4f} on n={len(strategic_pairs)}) vs baseline "
+                        f"{args.baseline_label!r} — no demonstrated improvement on decisions that "
+                        "are not land drops"
+                    )
+
+            # ---- decisive slice (reported; coverage floored, quality advisory)
+            decisive_pairs = _paired_outcomes(candidate, baseline, lambda o: o["is_decisive"])
+            if candidate["decisive_resource_commit"]["n"] < args.min_decisive_samples:
+                failures.append(
+                    f"insufficient decisive (resource-committing) samples: "
+                    f"{candidate['decisive_resource_commit']['n']} < {args.min_decisive_samples} — a corpus "
+                    "that is only lands and passes cannot answer 'what is the next best action'"
+                )
+            elif len(decisive_pairs) >= args.min_decisive_samples:
+                decisive_bootstrap = paired_bootstrap_ci(
+                    decisive_pairs, n_bootstraps=args.bootstraps, seed=args.seed
+                )
+                decisive_bootstrap["paired_n"] = len(decisive_pairs)
+                if (
+                    candidate["decisive_resource_commit"]["accuracy"] is not None
+                    and baseline["decisive_resource_commit"]["accuracy"] is not None
+                ):
+                    decisive_bootstrap["point_accuracy_delta"] = round(
+                        candidate["decisive_resource_commit"]["accuracy"]
+                        - baseline["decisive_resource_commit"]["accuracy"],
+                        4,
+                    )
+                dec_ci = decisive_bootstrap.get("raw_accuracy_delta_95ci")
+                if dec_ci and dec_ci[1] <= 0:
+                    advisories.append(
+                        f"decisive slice (n={len(decisive_pairs)}): accuracy delta 95% CI "
+                        f"[{dec_ci[0]:+.4f}, {dec_ci[1]:+.4f}] is entirely <= 0 — whatever moved, it was "
+                        "not the resource-committing decisions"
+                    )
+
             # ---- advisory (reported, not gated) ----
-            trivial = (references or {}).get("always_land_else_first")
-            if trivial is not None and candidate["overall"]["accuracy"] is not None:
-                candidate["beats_trivial_land_policy"] = bool(candidate["overall"]["accuracy"] > trivial)
             if args.min_accuracy is not None and candidate["overall"]["accuracy"] is not None:
                 if candidate["overall"]["accuracy"] < args.min_accuracy:
                     failures.append(
@@ -1593,21 +2237,29 @@ def cmd_gate(args: argparse.Namespace) -> int:
         "gate": "play_decisions",
         "verdict": verdict,
         "failures": failures,
+        "advisories": advisories,
         "corpus_composition": composition,
         "reference_policies": references,
+        "reference_policies_strategic_slice": references_strategic,
         "candidate": _strip(candidate),
         "candidate_permuted": _strip(permuted),
         "baseline": _strip(baseline),
         "permutation_invariance": perm_metrics,
         "paired_bootstrap": bootstrap,
+        "paired_bootstrap_strategic": strategic_bootstrap,
+        "paired_bootstrap_decisive": decisive_bootstrap,
+        "trivial_policy_floor": trivial_floor,
         "thresholds": {
             "min_samples": args.min_samples,
             "min_nonbrawl_samples": args.min_nonbrawl_samples,
             "min_strategic_samples": args.min_strategic_samples,
+            "min_decisive_samples": args.min_decisive_samples,
             "min_schema_rate": args.min_schema_rate,
             "max_legality_violations": MAX_LEGALITY_VIOLATIONS,
             "max_permutation_gap": args.max_permutation_gap,
             "max_accuracy_regression": args.max_accuracy_regression,
+            "min_trivial_margin": args.min_trivial_margin,
+            "min_strategic_delta_ci_lower": args.min_strategic_delta_ci_lower,
             "min_accuracy": args.min_accuracy,
             "clamped_cli_overrides": clamp_notes,
         },
@@ -1622,10 +2274,14 @@ def cmd_gate(args: argparse.Namespace) -> int:
         },
         "honesty_note": (
             "Land drops are "
-            f"{(composition or {}).get('trivial_land_drop_share', 0):.1%} of this corpus. Compare "
-            "candidate accuracy against reference_policies.always_land_else_first and read the "
-            "strategic_non_land_drop slice before treating overall accuracy as skill. A G3 gap can "
-            "also come from position-based tie-breaking rather than memorisation — check "
+            f"{(composition or {}).get('trivial_land_drop_share', 0):.1%} and passes/no-blocks "
+            f"{(composition or {}).get('passive_label_share', 0):.1%} of this corpus; "
+            f"{(composition or {}).get('decisive_label_share', 0):.1%} of labels commit a resource. "
+            "G6 floors overall accuracy at the best reflex policy and G7 requires the strategic "
+            "subset itself to move, because a run that improved only on land drops passed this gate "
+            "on 2026-07-24 with a strategic delta of exactly 0.0000. Read "
+            "decisive_resource_commit before treating any accuracy as skill. A G3 gap can also come "
+            "from position-based tie-breaking rather than memorisation — check "
             "permutation_invariance.action_agreement to tell them apart."
         ),
         "git_sha": _git_sha(),
@@ -1678,6 +2334,31 @@ def build_parser() -> argparse.ArgumentParser:
     b = sub.add_parser("build", help="build the gate corpus + permuted twins + manifest")
     b.add_argument("--groundtruth", type=Path, default=DEFAULT_GROUNDTRUTH)
     b.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    b.add_argument(
+        "--corpus-stem",
+        default=CORPUS_STEM,
+        help="output filename stem; use a distinct stem for a strategic-only corpus so the "
+        "existing corpus and its recorded verdicts stay reproducible",
+    )
+    b.add_argument(
+        "--exclude-land-drops",
+        action="store_true",
+        help="drop decisions whose human answer was a land drop (the strategic-only corpus). "
+        "Land options remain IN the menus — the model still has to not pick them.",
+    )
+    b.add_argument(
+        "--exclude-passes",
+        action="store_true",
+        help="also drop decisions whose answer was pass / no-block. Off by default: holding "
+        "priority is a real decision, and a corpus that never passes teaches a never-pass reflex.",
+    )
+    b.add_argument(
+        "--min-meaningful-options",
+        type=int,
+        default=1,
+        help="minimum non-land, non-pass options the menu must offer (uses the extractor's own "
+        "strategic.n_meaningful_options when present)",
+    )
     b.add_argument("--seed", type=int, default=DEFAULT_SEED)
     b.add_argument("--test-fraction", type=float, default=DEFAULT_TEST_FRACTION)
     b.add_argument("--dev-fraction", type=float, default=DEFAULT_DEV_FRACTION)
@@ -1687,6 +2368,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_DECK_OVERLAP_THRESHOLD,
         help="Jaccard overlap of card pools above which a held-out replay counts as a deck "
         "the training split has already seen (drives the seen/unseen accuracy split)",
+    )
+    b.add_argument(
+        "--split-from",
+        type=Path,
+        default=None,
+        help="inherit the replay->split map from an existing *_trainable_replays.json, so a second "
+        "corpus built from the same replays holds out the same games",
     )
     b.add_argument("--min-test-files", type=int, default=3, help="floor per format bucket")
     b.add_argument("--min-dev-files", type=int, default=2, help="floor per format bucket")
@@ -1712,6 +2400,21 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--seed", type=int, default=DEFAULT_SEED)
     s.set_defaults(func=cmd_simulate)
 
+    lk = sub.add_parser("leakcheck", help="prove a training set contains no held-out gate decision")
+    lk.add_argument("--trainable-replays", type=Path, required=True)
+    lk.add_argument("--gate-corpus", type=Path, nargs="+", required=True)
+    lk.add_argument("--training-set", type=Path, nargs="+", required=True)
+    lk.add_argument("--report", type=Path, default=None)
+    lk.set_defaults(func=cmd_leakcheck)
+
+    c = sub.add_parser("calibrate", help="score every reference policy on a corpus (run at build time)")
+    c.add_argument("--corpus", type=Path, required=True)
+    c.add_argument("--identity-corpus", type=Path, default=None)
+    c.add_argument("--policies", nargs="+", default=list(POLICIES))
+    c.add_argument("--out", type=Path, default=None)
+    c.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    c.set_defaults(func=cmd_calibrate)
+
     g = sub.add_parser("gate", help="score a candidate; PASS (0) or BLOCKED (2)")
     g.add_argument("--corpus", type=Path, required=True)
     g.add_argument("--permuted-corpus", type=Path, required=True)
@@ -1726,9 +2429,23 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--min-samples", type=int, default=MIN_SAMPLES)
     g.add_argument("--min-nonbrawl-samples", type=int, default=MIN_NONBRAWL_SAMPLES)
     g.add_argument("--min-strategic-samples", type=int, default=MIN_STRATEGIC_SAMPLES)
+    g.add_argument("--min-decisive-samples", type=int, default=MIN_DECISIVE_SAMPLES)
     g.add_argument("--min-schema-rate", type=float, default=MIN_SCHEMA_RATE)
     g.add_argument("--max-permutation-gap", type=float, default=MAX_PERMUTATION_ACC_GAP)
     g.add_argument("--max-accuracy-regression", type=float, default=MAX_ACCURACY_REGRESSION)
+    g.add_argument(
+        "--min-trivial-margin",
+        type=float,
+        default=MIN_TRIVIAL_POLICY_MARGIN,
+        help="G6: how far candidate accuracy must exceed the best reflex policy (may only be raised)",
+    )
+    g.add_argument(
+        "--min-strategic-delta-ci-lower",
+        type=float,
+        default=MIN_STRATEGIC_DELTA_CI_LOWER,
+        help="G7: floor for the strategic-subset paired-bootstrap delta CI lower bound "
+        "(may only be raised)",
+    )
     g.add_argument(
         "--min-accuracy",
         type=float,
