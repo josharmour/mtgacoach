@@ -44,6 +44,7 @@ SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from arenamcp.backend_health import BACKEND_ERROR_PREFIX  # noqa: E402
 from arenamcp.backends.proxy import ProxyBackend  # noqa: E402
 
 logger = logging.getLogger("eval.run")
@@ -203,6 +204,17 @@ def run(
                     request_timeout_s=timeout_s,
                 )
                 err = None
+                # ProxyBackend.complete() defaults to raise_on_error=False, so
+                # an API failure comes back as the prose sentinel
+                # "[BACKEND ERROR] ..." rather than an exception. Left
+                # unchecked it is recorded with error=None and the gate scores
+                # a server outage as a WRONG ANSWER — silently, in every
+                # response set. Hit for real on 2026-07-26 when one 32.4k-token
+                # prompt exceeded max_model_len and vLLM returned HTTP 400.
+                if isinstance(content, str) and content.startswith(BACKEND_ERROR_PREFIX):
+                    err = content.strip()
+                    content = ""
+                    logger.warning(f"{pid} {be.label} backend error: {err}")
             except Exception as e:
                 content = ""
                 err = f"{type(e).__name__}: {e}"
