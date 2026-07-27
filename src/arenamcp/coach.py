@@ -2415,9 +2415,7 @@ class CoachEngine(_AdvicePostprocessMixin):
             # resolving; X resolved" — keep "resolving" only while the object
             # is still mid-resolution (no matching complete in the window).
             _completed_ids = {
-                evt.get("instance_id")
-                for evt in window
-                if evt.get("type") == "resolution_complete"
+                evt.get("instance_id") for evt in window if evt.get("type") == "resolution_complete"
             }
             event_strs = []
             for evt in window:

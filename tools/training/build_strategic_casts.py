@@ -929,7 +929,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--include-pass",
         action="store_true",
         help="keep the Pass entry. OFF by default: every record is a turn the player DID "
-        "cast, so Pass would be wrong in 100% of menus and teach an 'always act' reflex",
+        # 100%% — argparse runs help strings through %-formatting, so a bare
+        # '%' raises TypeError from format_help() and --help dies.
+        "cast, so Pass would be wrong in 100%% of menus and teach an 'always act' reflex",
     )
     ap.add_argument("--menu-order", default="shuffled", choices=("shuffled", "canonical"))
     ap.add_argument("--oracle-chars", type=int, default=160)
