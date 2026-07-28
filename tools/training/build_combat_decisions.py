@@ -2174,6 +2174,17 @@ def _percent(n: int, d: int) -> float:
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.solver_line != "off" and not args.allow_leaky_solver_line:
+        raise SystemExit(
+            "--solver-line "
+            f"{args.solver_line!r} renders the gold answer into the prompt on "
+            "every kept record where the solver matches the human label — a "
+            "label leak. The combat_v1 LoRA trained on exactly this and was "
+            "BLOCKED for hint-copying (2026-07-28 gate). Training corpora "
+            "must use --solver-line off (the solver's pick stays in meta for "
+            "DPO). If this corpus is for eval/debugging only, pass "
+            "--allow-leaky-solver-line."
+        )
     t0 = time.time()
     resolver = CardResolver()
     facts = CombatFacts(resolver, CardDetail(resolver))
@@ -2345,6 +2356,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-rank", default="diamond")
     p.add_argument("--max-rows-per-file", type=int, default=200_000)
     p.add_argument("--oracle-chars", type=int, default=160)
+    p.add_argument(
+        "--allow-leaky-solver-line",
+        action="store_true",
+        help="required to use --solver-line on/agree. Both modes print the "
+        "solver's line only on records where it MATCHES the human label — "
+        "i.e. the gold answer appears verbatim in the prompt. The 2026-07-28 "
+        "combat gate proved a LoRA trained on such a corpus learns to copy "
+        "the hint (1.0000 on hinted records, 0/289 on unhinted blocks "
+        "requiring a block; verdict BLOCKED). Eval/debug corpora only.",
+    )
     p.add_argument(
         "--solver-line",
         choices=("off", "on", "agree"),
