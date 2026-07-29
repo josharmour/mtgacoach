@@ -430,6 +430,10 @@ namespace MtgaCoachBridge
                     HandleSubmitNumeric(cmd);
                     break;
 
+                case "submit_x":
+                    HandleSubmitX(cmd);
+                    break;
+
                 case "submit_targets":
                     HandleSubmitTargets(cmd);
                     break;
@@ -836,6 +840,38 @@ namespace MtgaCoachBridge
                 }
                 resp["actions"] = actionsArr;
                 resp["decision_context"] = BuildCastingTimeOptionDecisionContext(entries);
+                resp["can_pass"] = castingReq.CanCancel;
+
+                // Surface numeric-input child fields for X-cost spells so
+                // Python can reason about the value range directly instead
+                // of relying solely on the enumerated entries.
+                foreach (var child in castingReq.ChildRequests)
+                {
+                    if (child is CastingTimeOption_NumericInputRequest numericChild)
+                    {
+                        resp["numeric_min"] = (int)numericChild.Min;
+                        resp["numeric_max"] = (int)numericChild.Max;
+                        if (numericChild.StepSize > 0)
+                            resp["numeric_step"] = (int)numericChild.StepSize;
+
+                        var disallowedArr = new JArray();
+                        if (numericChild.DisallowedValues != null)
+                            foreach (var v in numericChild.DisallowedValues)
+                                disallowedArr.Add((int)v);
+                        if (disallowedArr.Count > 0)
+                            resp["numeric_disallowed"] = disallowedArr;
+
+                        if (numericChild.DisallowEven)
+                            resp["numeric_disallow_even"] = true;
+                        if (numericChild.DisallowOdd)
+                            resp["numeric_disallow_odd"] = true;
+
+                        if (numericChild.GrpId != 0)
+                            resp["grp_id"] = (int)numericChild.GrpId;
+
+                        break; // At most one numeric child
+                    }
+                }
             }
             else if (request is SelectTargetsRequest targetsReqForCandidates)
             {
@@ -1587,6 +1623,58 @@ namespace MtgaCoachBridge
             else
             {
                 cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = $"Pending is {request?.GetType().Name ?? "null"}, not NumericInputRequest" });
+            }
+        }
+
+        private void HandleSubmitX(PipeCommand cmd)
+        {
+            var request = FindPendingInteraction();
+            if (request is CastingTimeOptionRequest castingReq)
+            {
+                CastingTimeOption_NumericInputRequest numericChild = null;
+                foreach (var child in castingReq.ChildRequests)
+                {
+                    if (child is CastingTimeOption_NumericInputRequest n)
+                    {
+                        numericChild = n;
+                        break;
+                    }
+                }
+
+                if (numericChild == null)
+                {
+                    cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "CastingTimeOptionRequest has no CastingTimeOption_NumericInputRequest child" });
+                    return;
+                }
+
+                uint value = (uint)cmd.Json.Value<int>("value");
+                _log.LogInfo($"Submitting X value {value} via CastingTimeOption_NumericInputRequest.SubmitX");
+                numericChild.SubmitX(value);
+                lock (_interactionLock) { _lastKnownRequest = null; }
+                cmd.SetResponse(new JObject
+                {
+                    ["ok"] = true,
+                    ["submitted_type"] = "CastingTimeOption_X",
+                    ["value"] = (int)value
+                });
+            }
+            else if (request is NumericInputRequest numericReq)
+            {
+                // Also accept standalone NumericInputRequest for flexibility.
+                uint value = (uint)cmd.Json.Value<int>("value");
+                _log.LogInfo($"Submitting X value {value} via NumericInputRequest.SubmitValue (submit_x fallback)");
+                numericReq.SubmitValue(value);
+                lock (_interactionLock) { _lastKnownRequest = null; }
+                cmd.SetResponse(new JObject
+                {
+                    ["ok"] = true,
+                    ["submitted_type"] = "NumericInput",
+                    ["value"] = (int)value
+                });
+            }
+            else
+            {
+                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = $"Pending is {request?.GetType().Name ?? "null"}, not CastingTimeOptionRequest" });
             }
         }
 
