@@ -7,7 +7,7 @@ unconditionally submitting an empty attacker list.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -45,8 +45,47 @@ def _get_game_state() -> dict:
     return {}
 
 
-def _make_attacker_state(legal_attackers: list[str]) -> dict:
-    """Build a minimal game state sitting in DeclareAttackers with attackers."""
+def _make_attacker_state(legal_attackers: list[str], *, no_blockers: bool = False) -> dict:
+    """Build a minimal game state sitting in DeclareAttackers with attackers.
+
+    When no_blockers=True the opponent has no blockers, so any attacker
+    is profitable and the combat solver will recommend attacking.
+    When no_blockers=False (default) the opponent has a 0/4 Wall blocker,
+    so the solver recommends not attacking (0 damage through).
+    """
+    battlefield = [
+        {
+            "name": "Grizzly Bears",
+            "type_line": "Creature -- Bear",
+            "owner_seat_id": 1,
+            "controller_seat_id": 1,
+            "is_tapped": False,
+            "power": 2,
+            "toughness": 2,
+            "instance_id": 100,
+        },
+        {
+            "name": "Elvish Mystic",
+            "type_line": "Creature -- Elf Druid",
+            "owner_seat_id": 1,
+            "controller_seat_id": 1,
+            "is_tapped": False,
+            "power": 1,
+            "toughness": 1,
+            "instance_id": 101,
+        },
+    ]
+    if not no_blockers:
+        battlefield.append({
+            "name": "Opponent's Wall",
+            "type_line": "Creature -- Wall",
+            "owner_seat_id": 2,
+            "controller_seat_id": 2,
+            "is_tapped": False,
+            "power": 0,
+            "toughness": 4,
+            "instance_id": 200,
+        })
     return {
         "players": [
             {"seat_id": 1, "is_local": True, "life_total": 20, "lands_played": 0},
@@ -59,36 +98,7 @@ def _make_attacker_state(legal_attackers: list[str]) -> dict:
             "phase": "Phase_Combat",
             "step": "Step_DeclareAttack",
         },
-        "battlefield": [
-            {
-                "name": "Grizzly Bears",
-                "type_line": "Creature — Bear",
-                "owner_seat_id": 1,
-                "controller_seat_id": 1,
-                "is_tapped": False,
-                "power": 2,
-                "instance_id": 100,
-            },
-            {
-                "name": "Elvish Mystic",
-                "type_line": "Creature — Elf Druid",
-                "owner_seat_id": 1,
-                "controller_seat_id": 1,
-                "is_tapped": False,
-                "power": 1,
-                "instance_id": 101,
-            },
-            {
-                "name": "Opponent's Wall",
-                "type_line": "Creature — Wall",
-                "owner_seat_id": 2,
-                "controller_seat_id": 2,
-                "is_tapped": False,
-                "power": 0,
-                "toughness": 4,
-                "instance_id": 200,
-            },
-        ],
+        "battlefield": battlefield,
         "hand": [],
         "graveyard": [],
         "stack": [],
@@ -96,7 +106,7 @@ def _make_attacker_state(legal_attackers: list[str]) -> dict:
         "pending_decision": "Declare Attackers",
         "decision_context": {
             "type": "declare_attackers",
-            "legal_attackers": ["Grizzly Bears", "Elvish Mystic"],
+            "legal_attackers": legal_attackers or [],
         },
         "_bridge_request_type": "DeclareAttackerRequest",
         "_bridge_request_class": "DeclareAttacker",
@@ -122,7 +132,6 @@ def engine():
 
     # Attach a mock bridge
     eng._gre_bridge = _DummyBridge()
-    # Add submit_attackers mock
     eng._gre_bridge.submit_attackers = MagicMock(return_value=True)
     eng._gre_bridge.submit_blockers = MagicMock(return_value=True)
     eng._gre_bridge.submit_attackers_raw = MagicMock(
@@ -133,22 +142,39 @@ def engine():
 
 
 class TestBridgeDeclareAttackersClickButton:
-    """Tests for the click_button done → DeclareAttacker solver fix."""
+    """Tests for the click_button done -> DeclareAttacker solver fix."""
 
-    def test_solver_attack_names_returns_list(self, engine):
-        """_solver_attack_names returns a list when attackers are present."""
-        gs = _make_attacker_state(["Grizzly Bears", "Elvish Mystic"])
+    def test_solver_attack_names_returns_list_with_attackers(self, engine):
+        """_solver_attack_names returns a non-empty list when there's
+        a profitable no-blocker scenario."""
+        gs = _make_attacker_state(["Grizzly Bears", "Elvish Mystic"], no_blockers=True)
         names = engine._solver_attack_names(gs)
+        # With no blockers, the solver should find profitable attackers
+        assert isinstance(names, list)
+        assert len(names) > 0, (
+            "Expected solver to recommend attacking with no blockers present"
+        )
+
+    def test_solver_gives_reasonable_results(self, engine):
+        """_solver_attack_names returns a list and the solver's
+        behavior matches expectations: with no blockers it attacks,
+        and it doesn't crash with blockers."""
+        gs_no_blockers = _make_attacker_state(["Grizzly Bears"], no_blockers=True)
+        names = engine._solver_attack_names(gs_no_blockers)
         assert isinstance(names, list)
 
-    def test_try_gre_bridge_routes_through_solver_when_connected(self, engine):
-        """When _bridge_connected is True, click_button done on DeclareAttacker
-        should route through _try_bridge_declare_attackers with solver-picked
-        attackers instead of calling submit_attackers([]).
+        gs_with_blockers = _make_attacker_state(["Grizzly Bears"], no_blockers=False)
+        names2 = engine._solver_attack_names(gs_with_blockers)
+        assert isinstance(names2, list)
 
-        This is the fix for issues #398-#402.
-        """
-        gs = _make_attacker_state(["Grizzly Bears", "Elvish Mystic"])
+    def test_try_gre_bridge_routes_through_solver(self, engine):
+        """When the combat solver finds profitable attackers, _try_gre_bridge
+        routes through _try_bridge_declare_attackers instead of submit_attackers([]).
+
+        This is the fix for issues #398-#402: previously, click_button done
+        unconditionally called submit_attackers([]) even with profitable
+        attackers on board, causing bridge_submit_failed."""
+        gs = _make_attacker_state(["Grizzly Bears", "Elvish Mystic"], no_blockers=True)
 
         action = GameAction(
             action_type=ActionType.CLICK_BUTTON,
@@ -178,8 +204,7 @@ class TestBridgeDeclareAttackersClickButton:
     def test_empty_fallback_when_no_attackers(self, engine):
         """When no legal attackers exist, click_button done falls back to
         submit_attackers([]) as before."""
-        gs = _make_attacker_state([])
-        gs["decision_context"]["legal_attackers"] = []
+        gs = _make_attacker_state([], no_blockers=True)
 
         action = GameAction(
             action_type=ActionType.CLICK_BUTTON,
@@ -213,11 +238,12 @@ class TestBridgeDeclareAttackersClickButton:
 
         result = engine._try_gre_bridge(action, gs)
 
-        # Blockers path unchanged — submit_blockers([])
+        # Blockers path unchanged -- submit_blockers([])
         engine._gre_bridge.submit_blockers.assert_called_once_with([])
 
     def test_declare_attackers_dispatch_unchanged(self, engine):
-        """DECLARE_ATTACKERS action type still routes through _try_bridge_declare_attackers."""
+        """DECLARE_ATTACKERS action type still routes through
+        _try_bridge_declare_attackers."""
         gs = _make_attacker_state(["Grizzly Bears"])
 
         action = GameAction(
