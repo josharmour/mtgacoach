@@ -3,6 +3,8 @@
 !.env.example
 tmpclaude-*
 __pycache__/
+.venv/
+tools/training/wp3/scryfall_cache.json
 *.pyc
 debug_log.txt
 log_tail.txt

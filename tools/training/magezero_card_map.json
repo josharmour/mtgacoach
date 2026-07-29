@@ -1,0 +1,597 @@
+{
+  "Adarkar Wastes": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Adarkar Wastes",
+    "type_line": "Land"
+  },
+  "Adeline, Resplendent Cathar": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{W}{W}",
+    "scryfall": "Adeline, Resplendent Cathar",
+    "type_line": "Legendary Creature \u2014 Human Knight"
+  },
+  "Aloe Alchemist": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{G}",
+    "scryfall": "Aloe Alchemist",
+    "type_line": "Creature \u2014 Plant Warlock"
+  },
+  "Ascendant Packleader": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{G}",
+    "scryfall": "Ascendant Packleader",
+    "type_line": "Creature \u2014 Wolf"
+  },
+  "Axebane Ferox": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{2}{G}{G}",
+    "scryfall": "Axebane Ferox",
+    "type_line": "Creature \u2014 Beast"
+  },
+  "Bloodletter of Aclazotz": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{B}{B}{B}",
+    "scryfall": "Bloodletter of Aclazotz",
+    "type_line": "Creature \u2014 Vampire Demon"
+  },
+  "Blue Sun's Twilight": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{X}{U}{U}",
+    "scryfall": "Blue Sun's Twilight",
+    "type_line": "Sorcery"
+  },
+  "Bounce Off": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{U}",
+    "scryfall": "Bounce Off",
+    "type_line": "Instant"
+  },
+  "Brutal Cathar": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Brutal Cathar // Moonrage Brute",
+    "type_line": "Creature \u2014 Human Soldier Werewolf // Creature \u2014 Werewolf"
+  },
+  "Burnout Bashtronaut": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{R}",
+    "scryfall": "Burnout Bashtronaut",
+    "type_line": "Creature \u2014 Goblin Warrior"
+  },
+  "Burst Lightning": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{R}",
+    "scryfall": "Burst Lightning",
+    "type_line": "Instant"
+  },
+  "Cecil, Dark Knight": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Cecil, Dark Knight // Cecil, Redeemed Paladin",
+    "type_line": "Legendary Creature \u2014 Human Knight // Legendary Creature \u2014 Human Knight"
+  },
+  "Cenote Scout": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{G}",
+    "scryfall": "Cenote Scout",
+    "type_line": "Creature \u2014 Merfolk Scout"
+  },
+  "Chrome Host Seedshark": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{2}{U}",
+    "scryfall": "Chrome Host Seedshark",
+    "type_line": "Creature \u2014 Phyrexian Shark"
+  },
+  "Combat Research": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{U}",
+    "scryfall": "Combat Research",
+    "type_line": "Enchantment \u2014 Aura"
+  },
+  "Consider": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{U}",
+    "scryfall": "Consider",
+    "type_line": "Instant"
+  },
+  "Coppercoat Vanguard": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{W}",
+    "scryfall": "Coppercoat Vanguard",
+    "type_line": "Creature \u2014 Human Soldier"
+  },
+  "Deep-Cavern Bat": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{B}",
+    "scryfall": "Deep-Cavern Bat",
+    "type_line": "Creature \u2014 Bat"
+  },
+  "Destroy Evil": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{W}",
+    "scryfall": "Destroy Evil",
+    "type_line": "Instant"
+  },
+  "Dissipate": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{U}{U}",
+    "scryfall": "Dissipate",
+    "type_line": "Instant"
+  },
+  "Eiganjo, Seat of the Empire": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Eiganjo, Seat of the Empire",
+    "type_line": "Legendary Land"
+  },
+  "Emberheart Challenger": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{R}",
+    "scryfall": "Emberheart Challenger",
+    "type_line": "Creature \u2014 Mouse Warrior"
+  },
+  "Essence Scatter": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{U}",
+    "scryfall": "Essence Scatter",
+    "type_line": "Instant"
+  },
+  "Evolving Adaptive": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{G}",
+    "scryfall": "Evolving Adaptive",
+    "type_line": "Creature \u2014 Phyrexian Warrior"
+  },
+  "Extraction Specialist": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{2}{W}",
+    "scryfall": "Extraction Specialist",
+    "type_line": "Creature \u2014 Human Rogue"
+  },
+  "Fading Hope": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{U}",
+    "scryfall": "Fading Hope",
+    "type_line": "Instant"
+  },
+  "Floodfarm Verge": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Floodfarm Verge",
+    "type_line": "Land"
+  },
+  "Flourishing Bloom-Kin": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{G}",
+    "scryfall": "Flourishing Bloom-Kin",
+    "type_line": "Creature \u2014 Plant Elemental"
+  },
+  "Flow of Knowledge": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{4}{U}",
+    "scryfall": "Flow of Knowledge",
+    "type_line": "Instant"
+  },
+  "Forest": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Forest",
+    "type_line": "Basic Land \u2014 Forest"
+  },
+  "Forsaken Miner": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{B}",
+    "scryfall": "Forsaken Miner",
+    "type_line": "Creature \u2014 Skeleton Rogue"
+  },
+  "Full Bore": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{R}",
+    "scryfall": "Full Bore",
+    "type_line": "Instant"
+  },
+  "Gatekeeper of Malakir": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{B}{B}",
+    "scryfall": "Gatekeeper of Malakir",
+    "type_line": "Creature \u2014 Vampire Warrior"
+  },
+  "Get Lost": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{W}",
+    "scryfall": "Get Lost",
+    "type_line": "Instant"
+  },
+  "Hard-Hitting Question": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{G}",
+    "scryfall": "Hard-Hitting Question",
+    "type_line": "Sorcery"
+  },
+  "Haughty Djinn": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{U}{U}",
+    "scryfall": "Haughty Djinn",
+    "type_line": "Creature \u2014 Djinn"
+  },
+  "Hired Claw": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{R}",
+    "scryfall": "Hired Claw",
+    "type_line": "Creature \u2014 Lizard Mercenary"
+  },
+  "Hopeful Initiate": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{W}",
+    "scryfall": "Hopeful Initiate",
+    "type_line": "Creature \u2014 Human Warlock"
+  },
+  "Hullbreaker Horror": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{5}{U}{U}",
+    "scryfall": "Hullbreaker Horror",
+    "type_line": "Creature \u2014 Kraken Horror"
+  },
+  "Impulse": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{U}",
+    "scryfall": "Impulse",
+    "type_line": "Instant"
+  },
+  "Iridescent Vinelasher": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{B}",
+    "scryfall": "Iridescent Vinelasher",
+    "type_line": "Creature \u2014 Lizard Assassin"
+  },
+  "Island": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Island",
+    "type_line": "Basic Land \u2014 Island"
+  },
+  "Kellan, Planar Trailblazer": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{R}",
+    "scryfall": "Kellan, Planar Trailblazer",
+    "type_line": "Legendary Creature \u2014 Human Faerie Scout"
+  },
+  "Kitsa, Otterball Elite": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{U}",
+    "scryfall": "Kitsa, Otterball Elite",
+    "type_line": "Legendary Creature \u2014 Otter Wizard"
+  },
+  "Knight-Errant of Eos": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{4}{W}",
+    "scryfall": "Knight-Errant of Eos",
+    "type_line": "Creature \u2014 Human Knight"
+  },
+  "Lightning Strike": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{R}",
+    "scryfall": "Lightning Strike",
+    "type_line": "Instant"
+  },
+  "Lost Jitte": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "{1}",
+    "scryfall": "Lost Jitte",
+    "type_line": "Legendary Artifact \u2014 Equipment"
+  },
+  "Malcolm, Alluring Scoundrel": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{U}",
+    "scryfall": "Malcolm, Alluring Scoundrel",
+    "type_line": "Legendary Creature \u2014 Siren Pirate"
+  },
+  "Memory Deluge": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{2}{U}{U}",
+    "scryfall": "Memory Deluge",
+    "type_line": "Instant"
+  },
+  "Meticulous Archive": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Meticulous Archive",
+    "type_line": "Land \u2014 Plains Island"
+  },
+  "Mirrex": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Mirrex",
+    "type_line": "Land \u2014 Sphere"
+  },
+  "Mishra's Foundry": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Mishra's Foundry",
+    "type_line": "Land"
+  },
+  "Mountain": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Mountain",
+    "type_line": "Basic Land \u2014 Mountain"
+  },
+  "Negate": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{U}",
+    "scryfall": "Negate",
+    "type_line": "Instant"
+  },
+  "No More Lies": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{W}{U}",
+    "scryfall": "No More Lies",
+    "type_line": "Instant"
+  },
+  "Nova Hellkite": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{3}{R}{R}",
+    "scryfall": "Nova Hellkite",
+    "type_line": "Creature \u2014 Dragon"
+  },
+  "Novice Inspector": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{W}",
+    "scryfall": "Novice Inspector",
+    "type_line": "Creature \u2014 Human Detective"
+  },
+  "Ojer Axonil, Deepest Might": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Ojer Axonil, Deepest Might // Temple of Power",
+    "type_line": "Legendary Creature \u2014 God // Land"
+  },
+  "Plains": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Plains",
+    "type_line": "Basic Land \u2014 Plains"
+  },
+  "Plaza of Heroes": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Plaza of Heroes",
+    "type_line": "Land"
+  },
+  "Polukranos Reborn": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Polukranos Reborn // Polukranos, Engine of Ruin",
+    "type_line": "Legendary Creature \u2014 Hydra // Legendary Creature \u2014 Phyrexian Hydra"
+  },
+  "Quirion Beastcaller": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{G}",
+    "scryfall": "Quirion Beastcaller",
+    "type_line": "Creature \u2014 Dryad Warrior"
+  },
+  "Razorkin Needlehead": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{R}{R}",
+    "scryfall": "Razorkin Needlehead",
+    "type_line": "Creature \u2014 Human Assassin"
+  },
+  "Recruitment Officer": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{W}",
+    "scryfall": "Recruitment Officer",
+    "type_line": "Creature \u2014 Human Soldier"
+  },
+  "Rockface Village": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Rockface Village",
+    "type_line": "Land"
+  },
+  "Seachrome Coast": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Seachrome Coast",
+    "type_line": "Land"
+  },
+  "Sentinel of the Nameless City": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{2}{G}",
+    "scryfall": "Sentinel of the Nameless City",
+    "type_line": "Creature \u2014 Merfolk Warrior Scout"
+  },
+  "Shardmage's Rescue": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{W}",
+    "scryfall": "Shardmage's Rescue",
+    "type_line": "Enchantment \u2014 Aura"
+  },
+  "Sharp-Eyed Rookie": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{G}",
+    "scryfall": "Sharp-Eyed Rookie",
+    "type_line": "Creature \u2014 Human Detective"
+  },
+  "Sheltered by Ghosts": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{W}",
+    "scryfall": "Sheltered by Ghosts",
+    "type_line": "Enchantment \u2014 Aura"
+  },
+  "Shock": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{R}",
+    "scryfall": "Shock",
+    "type_line": "Instant"
+  },
+  "Shoot the Sheriff": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{B}",
+    "scryfall": "Shoot the Sheriff",
+    "type_line": "Instant"
+  },
+  "Skrelv, Defector Mite": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{W}",
+    "scryfall": "Skrelv, Defector Mite",
+    "type_line": "Legendary Artifact Creature \u2014 Phyrexian Mite"
+  },
+  "Sleep-Cursed Faerie": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{U}",
+    "scryfall": "Sleep-Cursed Faerie",
+    "type_line": "Creature \u2014 Faerie Wizard"
+  },
+  "Soul Partition": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{W}",
+    "scryfall": "Soul Partition",
+    "type_line": "Instant"
+  },
+  "Soulstone Sanctuary": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Soulstone Sanctuary",
+    "type_line": "Land"
+  },
+  "Spell Pierce": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{U}",
+    "scryfall": "Spell Pierce",
+    "type_line": "Instant"
+  },
+  "Swamp": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "",
+    "scryfall": "Swamp",
+    "type_line": "Basic Land \u2014 Swamp"
+  },
+  "Teferi, Temporal Pilgrim": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{3}{U}{U}",
+    "scryfall": "Teferi, Temporal Pilgrim",
+    "type_line": "Legendary Planeswalker \u2014 Teferi"
+  },
+  "Thalia, Guardian of Thraben": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{1}{W}",
+    "scryfall": "Thalia, Guardian of Thraben",
+    "type_line": "Legendary Creature \u2014 Human Soldier"
+  },
+  "Thirst for Discovery": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{2}{U}",
+    "scryfall": "Thirst for Discovery",
+    "type_line": "Instant"
+  },
+  "Tolarian Terror": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{6}{U}",
+    "scryfall": "Tolarian Terror",
+    "type_line": "Creature \u2014 Serpent"
+  },
+  "Unholy Annex // Ritual Chamber": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{2}{B} // {3}{B}{B}",
+    "scryfall": "Unholy Annex // Ritual Chamber",
+    "type_line": "Enchantment \u2014 Room // Enchantment \u2014 Room"
+  },
+  "Unstoppable Slasher": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{2}{B}",
+    "scryfall": "Unstoppable Slasher",
+    "type_line": "Creature \u2014 Zombie Assassin"
+  },
+  "Warden of the Inner Sky": {
+    "exact": true,
+    "found": true,
+    "mana_cost": "{W}",
+    "scryfall": "Warden of the Inner Sky",
+    "type_line": "Creature \u2014 Human Soldier"
+  }
+}
