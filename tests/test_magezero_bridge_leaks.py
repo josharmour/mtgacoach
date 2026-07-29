@@ -68,9 +68,6 @@ def _numbers_in_prompt(prompt: str) -> set[int]:
 # Load fixture data once per session
 # ---------------------------------------------------------------------------
 
-pytestmark = [pytest.mark.requires_fixture]
-
-
 @pytest.fixture(scope="session")
 def fixture_rows() -> list[dict]:
     assert FIXTURE_JSONL.exists(), f"fixture not found: {FIXTURE_JSONL}"
