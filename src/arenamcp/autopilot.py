@@ -1615,7 +1615,19 @@ class AutopilotEngine(_BridgeSubmitMixin, _ActionExecMixin):
         if not bridge_type and not bridge_class:
             return True
 
-        if action.action_type in (ActionType.PLAY_LAND, ActionType.CAST_SPELL):
+        if action.action_type in (
+            ActionType.PLAY_LAND,
+            ActionType.CAST_SPELL,
+            # Shape 2a (2026-07-29): ACTIVATE_ABILITY — same shape: planner
+            # picked an ability activation but the bridge has a different
+            # request type pending (SelectTargets / Search / PayCosts / etc.).
+            # In the July 2-6 cluster (#392 Mutagen, #407 Utter Insignificance)
+            # the planner kept picking activate_ability against stale game
+            # state that was no longer offering that ability. Treat as stale
+            # so the system re-plans cleanly instead of filing a
+            # bridge_submit_failed noise bug.
+            ActionType.ACTIVATE_ABILITY,
+        ):
             # Shape 2: bridge has a different request type pending entirely.
             is_actions_available = (
                 bridge_type in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
@@ -1626,15 +1638,19 @@ class AutopilotEngine(_BridgeSubmitMixin, _ActionExecMixin):
 
             # Shape 1: bridge IS ActionsAvailable but doesn't offer the
             # specific Play/Cast the planner picked.
-            bridge_actions = game_state.get("_bridge_actions") or []
-            if not bridge_actions:
-                return False
-            target_type = "Play" if action.action_type == ActionType.PLAY_LAND else "Cast"
-            for ba in bridge_actions:
-                ba_type = ba.get("actionType") or ""
-                if ba_type == target_type or ba_type == f"ActionType_{target_type}":
+            # ACTIVATE_ABILITY skips Shape 1 — the bridge doesn't enumerate
+            # activations as top-level actionType entries in ActionsAvailable
+            # (they're card-contextual). Let the normal execute path decide.
+            if action.action_type in (ActionType.PLAY_LAND, ActionType.CAST_SPELL):
+                bridge_actions = game_state.get("_bridge_actions") or []
+                if not bridge_actions:
                     return False
-            return True
+                target_type = "Play" if action.action_type == ActionType.PLAY_LAND else "Cast"
+                for ba in bridge_actions:
+                    ba_type = ba.get("actionType") or ""
+                    if ba_type == target_type or ba_type == f"ActionType_{target_type}":
+                        return False
+                return True
 
         if action.action_type in (ActionType.DECLARE_ATTACKERS, ActionType.DECLARE_BLOCKERS):
             expected = (

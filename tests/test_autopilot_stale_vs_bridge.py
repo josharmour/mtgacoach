@@ -301,3 +301,85 @@ def test_pass_priority_against_actions_available_is_not_stale():
         "_bridge_request_class": "ActionsAvailableRequest",
     }
     assert engine._is_planner_action_stale_vs_bridge(action, state) is False
+
+# ── ACTIVATE_ABILITY stale detection ─────────────────────────────────────
+# Shape 2a (2026-07-29): when the bridge has a non-ActionsAvailable request
+# pending, activate_ability is stale — the priority window changed between
+# planning and execution. Without this, the system files bridge_submit_failed
+# noise bugs (#392 Mutagen, #407 Utter Insignificance).
+
+
+def _make_activate_ability(card="Mutagen", target_names=None):
+    _, ap = _engine_with_method()
+    return ap.GameAction(
+        action_type=ap.ActionType.ACTIVATE_ABILITY,
+        card_name=card,
+        target_names=target_names or [],
+    )
+
+
+def test_activate_ability_against_select_targets_is_stale():
+    """#392: planner picked activate_ability but bridge moved to a
+    SelectTargets window for a different card/ability."""
+    engine, _ = _engine_with_method()
+    state = {
+        "_bridge_request_type": "SelectTargets",
+        "_bridge_request_class": "SelectTargetsRequest",
+        "_bridge_actions": [],
+    }
+    assert engine._is_planner_action_stale_vs_bridge(
+        _make_activate_ability("Mutagen", ["Michelangelo"]), state
+    ) is True
+
+
+def test_activate_ability_against_actions_available_is_not_stale():
+    """Bridge IS ActionsAvailable — let the normal execution path handle
+    it. The bridge may still fail, but that's a real bridge problem, not a
+    stale-skip."""
+    engine, _ = _engine_with_method()
+    state = {
+        "_bridge_request_type": "ActionsAvailable",
+        "_bridge_request_class": "ActionsAvailableRequest",
+        "_bridge_actions": [],
+    }
+    assert engine._is_planner_action_stale_vs_bridge(
+        _make_activate_ability("Karn's Bastion"), state
+    ) is False
+
+
+def test_activate_ability_against_declare_attackers_is_stale():
+    """#407: planner picked activate_ability but bridge moved to
+    DeclareAttackers (window changed during the LLM call)."""
+    engine, _ = _engine_with_method()
+    state = {
+        "_bridge_request_type": "DeclareAttackers",
+        "_bridge_request_class": "DeclareAttackerRequest",
+        "_bridge_actions": [],
+    }
+    assert engine._is_planner_action_stale_vs_bridge(
+        _make_activate_ability("Utter Insignificance"), state
+    ) is True
+
+
+def test_activate_ability_with_no_bridge_request_is_stale():
+    """Shape 0: no bridge request at all — priority window closed."""
+    engine, _ = _engine_with_method()
+    state = {
+        "_bridge_request_type": None,
+        "_bridge_request_class": None,
+    }
+    assert engine._is_planner_action_stale_vs_bridge(
+        _make_activate_ability("Steelbane Hydra"), state
+    ) is True
+
+
+def test_activate_ability_against_pay_costs_is_stale():
+    """A PayCosts request opened (cast resolving), ability plan is stale."""
+    engine, _ = _engine_with_method()
+    state = {
+        "_bridge_request_type": "PayCosts",
+        "_bridge_request_class": "PayCostsReq",
+    }
+    assert engine._is_planner_action_stale_vs_bridge(
+        _make_activate_ability("Mutagen"), state
+    ) is True
