@@ -37,6 +37,7 @@ tools/training/checkpoints/
 tools/training/data/
 !tools/eval/
 tools/eval/data/
+!tools/monitoring/
 docs/
 CLAUDE.md
 *.spec
