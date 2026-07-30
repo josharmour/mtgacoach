@@ -2208,9 +2208,11 @@ permanently free for MageZero + gemma QLoRA.
 - **Rollback**: `docker stop qwen36-coach && docker start ds4-v9` + restore
   config backup + `docker restart litellm`. ds4-v9 is stopped-not-removed.
 
-**Context window regression to know about:** endpoint now serves **32,768**
-(model native 262,144; raise via `QWEN_MAX_LEN`) vs ds4's 1,048,576. Nothing
-on the coach path needs more than ~7k today.
+**Context window:** initially capped at 32,768, raised same day to
+**262,144 (model native max, now the script default)** per owner — hermes uses
+this endpoint for agentic coding. KV pool 605k tokens at util 0.55, so ~2
+concurrent full-256k sequences; `QWEN_GPU_UTIL` can rise to ~0.70 if parallel
+long-context sessions start queueing. Still down from ds4's 1,048,576.
 
 **Validation debt (deliberate):** cutover ran on latency/VRAM only — no
 captured prompt corpus existed, so the pre-registered quality gate (legality
