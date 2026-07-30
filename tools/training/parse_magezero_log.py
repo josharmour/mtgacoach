@@ -162,11 +162,55 @@ def _emit_pass_decision(
     stats["recovered_pass"] += 1
 
 
+# A menu entry that actually declares attackers or blockers. XMage phrases these
+# as "Block <attacker> with <blocker>" / "Attack with <creature>"; a bare mention
+# inside an oracle text ("can't be blocked by...") must not count, so the match is
+# anchored to the start of the entry.
+RE_COMBAT_DECLARATION = re.compile(r"^\s*(block|attack)\b", re.IGNORECASE)
+
+# XMage's OTHER declaration shape: a multi-select where the options are creature
+# names and one entry terminates the selection. Absent from mz_train_smoke.log
+# (0 of 21,609 rows) but present in the engine, so both shapes are recognised —
+# the classifier must not depend on one phrasing.
+_MULTISELECT_TERMINATORS = frozenset({"stop choosing", "stop", "done", "finish"})
+
+
+def _is_combat_menu(names: set[str]) -> bool:
+    """True when this menu actually offers an attack/block declaration."""
+    if any(RE_COMBAT_DECLARATION.match(n) for n in names):
+        return True
+    return any(n.strip().lower() in _MULTISELECT_TERMINATORS for n in names)
+
+
 def classify_kind(phase_code: str, pool_actions: list[tuple]) -> str:
-    base = DECISION_KIND_MAP.get(phase_code, "priority")
+    """Classify a decision by what was actually OFFERED, not by the phase.
+
+    Mapping DECLARE_ATTACKERS/DECLARE_BLOCKERS straight to "attackers"/"blockers"
+    over-claims badly: XMage grants ordinary priority windows *during* those steps
+    (you may cast an instant in the declare-attackers step), and those windows
+    carry a priority menu. Measured on mz_train_smoke.log with the phase-based
+    rule, of 1,274 rows labelled "attackers" the chosen action was:
+
+        895  Pass
+        116  {1}{U}: Untap {this}.
+         98  {T}: Draw a card, then discard a card.
+         40  Cast Malcolm, Alluring Scoundrel
+         ...
+
+    — not one attack declaration, and the same for "blockers". Those labels then
+    let build_magezero_combat.py reverse-engineer "who is attacking" from stale
+    board markers and present it as the decision the search made, producing 89
+    fabricated labels out of 90 records.
+
+    So a row is combat ONLY if its own menu offers a combat declaration.
+    """
     names = {a[0] for a in pool_actions}
     if names <= {"true", "false"}:
         return "binary"
+    base = DECISION_KIND_MAP.get(phase_code, "priority")
+    if base in ("attackers", "blockers") and not _is_combat_menu(names):
+        # Priority window that merely happens to sit in a combat step.
+        return "priority"
     return base
 
 
