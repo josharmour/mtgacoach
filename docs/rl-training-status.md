@@ -2173,7 +2173,63 @@ the GPUs are free.
 `timeout_ms: 4000`; log shows both regimes working — "290 evaluations in 2.04 s"
 (budget-bound) and "191 evaluations in 4.00 s" (cap-bound on harder positions).
 
-### §26 addendum 15 — WP-3 FLEET DONE: 4 PRs REVIEWED + MERGED (16:45) ← CURRENT
+### §26 addendum 16 — ds4 VRAM incident: 0.95 is a FLOOR, not slack (2026-07-30) ← CURRENT
+
+**Recorded by an agent running in an ephemeral cloud container, NOT on blackwell.**
+Every number below is owner-reported from the incident; none was re-measured here.
+The instrumented follow-ups (Qwen probe, watcher-log check) are still owed — see
+"Still owed" at the end.
+
+**Corrected finding.** `--gpu-memory-utilization 0.95` on ds4-v9 had been read as
+"5% headroom is spare". It is not. Measured during today's incident:
+
+| component | per card |
+|---|---|
+| weights (DeepSeek-V4-Flash FP8, TP=2) | **~79.7 GB** |
+| KV cache @ 1M context | **~14.8 GB** |
+| **total** | **~94.5 GB** |
+
+Against the **97,190 MiB/card** the two TP workers were observed holding
+(§26 addendum 12), the 0.95 pool is **consumed, not reserved**. vLLM sizes the KV
+cache to fill whatever the utilisation flag grants, so the flag does not describe
+spare capacity — it describes a floor the process will grow into and hold. The
+practical consequence: **there is no co-tenant headroom on either RTX card while
+ds4-v9 serves at 0.95/1M.** Anyone reading 0.95 as "5% free" will schedule a
+second workload onto a card that has nothing left to give.
+
+This is the same failure shape as §26 addendum 12's `_dev()` trap — a resource
+number that looks like slack, is not, and fails silently downstream.
+
+**Model-survey decision (owner, 2026-07-30):** move the coach's serving model to
+**Qwen3.6-27B-FP8** to free VRAM for MageZero and gemma training. Rationale and
+comparison live in `model-survey-2026-07-30.md` (dev-only, not in this repo).
+
+**⚠ Scheduling contradiction, flagged not resolved.** The plan of record was to
+probe Qwen3.6-27B-FP8 out-of-band **on card 1 while ds4-v9 keeps serving on both
+cards**. The finding above says that cannot work: 27B at FP8 is ~27 GB of weights
+before any KV cache, and the measured per-card figures leave nothing free. The
+probe therefore requires one of:
+1. restart ds4-v9 at a lower `--gpu-memory-utilization` (and accept the shorter
+   KV / smaller effective context that follows), or
+2. stop ds4-v9 for the duration of the probe, or
+3. run the probe on the R9700 — but note B5 (§#448) found the ROCm quantisation
+   stack broken on that box, so an FP8 path there is unproven.
+
+Do not start the probe without picking one explicitly. Silently launching onto a
+"free" card 1 is exactly the mistake this addendum exists to prevent.
+
+**Owner-reported state at handoff (unverified here):** coach serving at 0.95/1M;
+MageZero on gen-1's final arm; bump watcher armed for the 550 games/gen restart;
+**10 PRs merged to master today**. CI green on master `48a47ac`.
+
+**Still owed — requires a shell on blackwell:**
+- [ ] Read `model-survey-2026-07-30.md` and record the Qwen selection criteria here.
+- [ ] Run the Qwen3.6-27B-FP8 out-of-band probe under one of the three options above.
+- [ ] Confirm `~/mz_bump_watcher.log` shows the 550 games/gen restart actually fired.
+- [ ] Port this addendum's finding into `rl-pipeline-fix.md` (gitignored; not
+      reachable from a cloud session).
+
+### §26 addendum 15 — WP-3 FLEET DONE: 4 PRs REVIEWED + MERGED (16:45)
 The 4-agent Hermes fleet finished in ~14 min wall clock. All PRs independently
 verified by the orchestrator (re-ran every suite + the parser acceptance battery
 on the real smoke log) and **squash-merged to master**: #421 filters/splits,
