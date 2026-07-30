@@ -853,6 +853,7 @@ namespace MtgaCoachBridge
                         resp["numeric_max"] = (int)numericChild.Max;
                         if (numericChild.StepSize > 0)
                             resp["numeric_step"] = (int)numericChild.StepSize;
+                        resp["numeric_input_type"] = numericChild.NumericInputType.ToString();
 
                         var disallowedArr = new JArray();
                         if (numericChild.DisallowedValues != null)
