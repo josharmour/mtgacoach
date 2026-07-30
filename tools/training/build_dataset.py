@@ -298,6 +298,7 @@ def main():
         # over the full set. When no sampling flags are set, records are
         # processed in original file order, identical to the legacy behavior.
         records = []
+        unresolved_winner_count = 0
         with open(args.trajectories, encoding="utf-8") as f:
             for idx, line in enumerate(f):
                 try:
@@ -311,6 +312,7 @@ def main():
 
                 winner = rec.get("winner")
                 if not winner or winner not in ("local", "opp"):
+                    unresolved_winner_count += 1
                     continue
 
                 if not rec.get("planned_action"):
@@ -319,6 +321,11 @@ def main():
                 records.append(rec)
 
         original_count = len(records)
+        if unresolved_winner_count:
+            logger.warning(
+                f"Skipped {unresolved_winner_count} trajectory record(s) with missing or "
+                f"unrecognised winner — counted as unresolved."
+            )
 
         # Optional diversity-aware sampling (off by default).
         if args.dedup or args.hard_mine or args.max_examples:
