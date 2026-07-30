@@ -178,3 +178,42 @@ def test_malformed_lines_counted(tmp_path):
     assert scores["total_matches"] == 2, f"Expected 2 resolved, got {scores['total_matches']}"
     assert scores["challenger_wins"] == 1
     assert scores["malformed"] == 2, f"Expected 2 malformed, got {scores['malformed']}"
+
+
+# ---------------------------------------------------------------------------
+# Fixture F: rows without a usable match_id must NOT merge into one bucket
+# ---------------------------------------------------------------------------
+
+# Three distinct matches whose rows all lost their match_id (producer emits the
+# literal "unknown_match" at self_play.py:597 when the game state has no id),
+# plus one row with the key absent entirely, plus one clean resolved match.
+FIXTURE_F: list[dict] = [
+    {"match_id": "unknown_match", "winner": "local"},
+    {"match_id": "unknown_match", "winner": "opp"},
+    {"match_id": "unknown_match", "winner": "opp"},
+    {"winner": "local"},  # key absent
+    {"match_id": "m-good", "winner": "local"},
+]
+
+
+def test_unattributable_rows_do_not_collapse_into_one_match(tmp_path):
+    """Regression: rows with missing/placeholder match_id counted individually.
+
+    The previous code bucketed every such row under one "unknown_match" key,
+    so 3 distinct matches with contradictory winners read as ONE unresolved
+    match — hiding N-1 of every N attribution failures. Each unattributable
+    ROW must count as unresolved, and none may enter the win rate.
+    """
+    path = _write_trajectories(tmp_path / "traj_f.jsonl", FIXTURE_F)
+    scores = _score_gating_trajectories(path)
+
+    assert scores["unattributable_rows"] == 4, (
+        f"expected 4 unattributable rows, got {scores['unattributable_rows']}"
+    )
+    assert scores["unresolved"] == 4, (
+        f"old behaviour merged them into 1 pseudo-match; expected 4, got {scores['unresolved']}"
+    )
+    # Only the clean match contributes to the rate.
+    assert scores["total_matches"] == 1
+    assert scores["challenger_wins"] == 1
+    assert scores["win_rate"] == 1.0

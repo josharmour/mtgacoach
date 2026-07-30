@@ -94,6 +94,7 @@ def _score_gating_trajectories(
     # match_id -> set of winner values seen across all rows for that match
     match_winners: dict[str, set[str | None]] = {}
     malformed = 0
+    unattributable = 0
 
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -103,7 +104,16 @@ def _score_gating_trajectories(
                 malformed += 1
                 continue
 
-            mid = rec.get("match_id", "unknown_match")
+            mid = rec.get("match_id")
+            # A missing match_id cannot be deduplicated, and the producer's own
+            # placeholder is no better: self_play.py:597 emits the literal
+            # "unknown_match" when the game state carries no id. Merging those
+            # rows into one bucket would collapse N distinct matches into one
+            # "contradictory" entry — under-counting the very failures this
+            # counter exists to surface. Count each such ROW as unresolved.
+            if not mid or mid == "unknown_match":
+                unattributable += 1
+                continue
             winner = rec.get("winner")
             if mid not in match_winners:
                 match_winners[mid] = set()
@@ -128,12 +138,21 @@ def _score_gating_trajectories(
             if "local" in valid:
                 challenger_wins += 1
 
+    # Rows with no usable match_id join the unresolved count: they are matches
+    # (at least one each) that cannot contribute to the win rate. Counting rows
+    # over-counts multi-row matches, but over-counting the unresolved bucket is
+    # the safe direction — it can only make the gate MORE suspicious, never
+    # less. The alternative (merging them into one pseudo-match) hid N-1 of
+    # every N attribution failures.
+    unresolved += unattributable
+
     win_rate = challenger_wins / total_matches if total_matches > 0 else 0.0
 
     return {
         "challenger_wins": challenger_wins,
         "total_matches": total_matches,
         "unresolved": unresolved,
+        "unattributable_rows": unattributable,
         "win_rate": win_rate,
         "malformed": malformed,
     }
