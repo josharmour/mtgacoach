@@ -414,6 +414,22 @@ class ProxyBackend:
                 params["max_tokens"] = max_tokens
 
             extra = {}
+            # vLLM / DeepSeek dialect. The gateway's ds4-v9 server is launched
+            # with `--default-chat-template-kwargs.thinking=true` and
+            # `.reasoning_effort=high`, so a request that says nothing about
+            # thinking gets EXTENDED reasoning on the real-time coaching path.
+            # Measured cost on the live gateway (2026-07-29, standalone.log,
+            # n=29 advice calls): p50 6134ms, 52% over 5s, and 79 calls whose
+            # visible content came back EMPTY because every token went to
+            # reasoning — which is how chain-of-thought reached the TTS in bug
+            # 20260729_225652. Same prompt A/B'd against the gateway:
+            #   default (thinking=high): 0.82s, 120 completion tokens, content EMPTY
+            #   chat_template_kwargs.thinking=false: 0.20s, 15 tokens, real advice
+            # `think` below is the Ollama spelling; neither it nor
+            # reasoning_effort overrides a vLLM chat-template default, so this
+            # key is required — without it enable_thinking=False is silently a
+            # no-op against this server.
+            extra["chat_template_kwargs"] = {"thinking": bool(self.enable_thinking)}
             if self.enable_thinking:
                 if "claude" in model_lower:
                     extra["thinking"] = {"type": "enabled", "budget_tokens": 8000}
