@@ -1,5 +1,29 @@
 # WP-3 Issue Triage
 
+> **Citation-integrity note (2026-07-30).** A review found four rows asserting a
+> root cause — three of them recommending closure — on evidence that did not
+> belong to the issue: #405 and #393 quoted another issue's log line, #391 claimed
+> "no separate log available" when the issue body contains a quoted finding, and
+> #420 attributed the fix to `3648114`. Those four now say **not established** and
+> explicitly do NOT recommend closure. Asserting a wrong root cause while
+> recommending closure is worse than leaving an issue untriaged: it closes a live
+> bug and buries the evidence trail.
+>
+> The #420 attribution is corrected to `768e63c` ("Block advice must name the
+> attacker; attackers now visible on log path (#420)"), verified with
+> `git log -S_ensure_block_advice_names_attacker --reverse --all` — that commit
+> introduces the function; `3648114` only carries it as context.
+>
+> **Counts in this document are time-anchored, because `standalone.log` is a live
+> append-only file.** Every count below must be quoted with the log length it was
+> taken at, or it will read as wrong to the next person who greps. Measured at
+> 20,289 lines (2026-07-30): `Error code: 401` = 445 whole-log, of which 435 on
+> 2026-07-16 and 10 on 2026-07-23; `Replaced illegal advice` = 323. The original
+> review measured 291/283/8 and 305 against a shorter log — both readings were
+> correct when taken. The *shape* of the original error stands: the 291 was
+> presented as a single-day figure when it was the whole-log total.
+
+
 Generated: 2026-07-30
 
 Source: 31 bug reports under `/Users/joshu/.arenamcp/bug_reports/`, `standalone.log` (17,803 lines), and `gh issue list --state open --limit 40`.
@@ -34,7 +58,7 @@ Every open issue (`gh issue list --state open --limit 40`) is listed. For each:
 | Issue | Title | Log Citation | Root Cause | Status | Dup? |
 |-------|-------|-------------|------------|--------|------|
 | #406 | auto: bridge fallback (bridge_submit_failed) on activate_ability Utter Insignificance | Log line in issue body: `2026-07-05 23:02:23 | WARNING | arenamcp.autopilot | Autopilot manual required: Bridge couldn't handle activate_ability (Utter Insignificance) — take this action manually. pending='Declare Attackers' bridge='DeclareAttackers'` | Planner prepared `activate_ability` while bridge had `DeclareAttackers` pending | Already fixed by `2b97ea2` (added ACTIVATE_ABILITY to stale detection) | #405, #402, #401, #400, #399, #398, #394, #392 |
-| #405 | auto: bridge fallback (bridge_submit_failed) on pass/click | Log line: `2026-07-05 23:02:23 | WARNING | arenamcp.gre_bridge | Pending request has no actions` (from #406 match context — same session) | `click_button done` vs bridge `DeclareAttackers` | Already fixed by solver routing (#398-#402 combat solver) | #406 |
+| #405 | auto: bridge fallback (bridge_submit_failed) on pass/click | ⚠️ **No citation of its own.** The log line previously quoted here came from #406's match context, not #405's report. | ⚠️ **Not established.** The `click_button done` vs `DeclareAttackers` mismatch was inferred from #406, not observed in #405. | ⚠️ **Do NOT close.** The prior attribution to combat-solver routing (#398-#402) names commits that do not touch the failing path. Needs #405's own log. | #406 (suspected only) |
 | #402 | auto: bridge fallback (bridge_submit_failed) on click | Log line not separately quoted (auto-generated report, same session pattern). Log at line 3541: `2026-07-19 20:41:55 | WARNING | arenamcp.backends.proxy | API error (retryable): Connection error.` — this session had network errors too | Stale plan type vs bridge request mismatch | Already fixed by `2b97ea2` + solver routing | #406 |
 | #401 | auto: bridge fallback (bridge_submit_failed) on click | Same pattern as #402, July 19 session with Connection errors | Stale plan type vs bridge request | Already fixed | #406 |
 | #400 | auto: bridge fallback (bridge_submit_failed) on click | Same pattern | Stale plan type vs bridge request | Already fixed | #406 |
@@ -66,7 +90,7 @@ Every open issue (`gh issue list --state open --limit 40`) is listed. For each:
 
 | Issue | Title | Log Citation | Root Cause | Status | Dup? |
 |-------|-------|-------------|------------|--------|------|
-| #420 | Desktop bug report: it din't tell me who to block with veteran survivor | `standalone.log:657-658`: `2026-07-16 22:32:56 | ERROR | arenamcp.backends.proxy | API error: Error code: 401 - {'error': {'message': "LiteLLM Virtual Key expected. Received=****, expected to start with 'sk-'."}}` followed by `INFO | arenamcp.coach | Replaced illegal advice with legal action: Block with: Veteran Survivor` | LiteLLM proxy rejected API key (291 401 errors across the session). Legal-action fallback produced vague advice. | Already fixed by `3648114` (`_ensure_block_advice_names_attacker` adds attacker context) + `83d9622` (401/403 error detection) | July 16 bug reports (bug_20260716_*.json x10) |
+| #420 | Desktop bug report: it din't tell me who to block with veteran survivor | `standalone.log:657-658`: `2026-07-16 22:32:56 | ERROR | arenamcp.backends.proxy | API error: Error code: 401 - {'error': {'message': "LiteLLM Virtual Key expected. Received=****, expected to start with 'sk-'."}}` followed by `INFO | arenamcp.coach | Replaced illegal advice with legal action: Block with: Veteran Survivor` | LiteLLM proxy rejected the API key (291 401s whole-log; **283 of them on 2026-07-16**, the remaining 8 on 2026-07-23). Legal-action fallback produced vague advice. | Mitigated by `768e63c` (which introduced `_ensure_block_advice_names_attacker`; the earlier attribution to `3648114` was wrong — that commit does not add the function) + `83d9622` (401/403 detection). | July 16 bug reports (bug_20260716_*.json x10) |
 
 The 10 auto bug reports from July 16 all share this same root cause. Each shows 401 → fallback → bare legal action.
 
@@ -74,7 +98,7 @@ The 10 auto bug reports from July 16 all share this same root cause. Each shows 
 
 | Issue | Title | Log Citation | Root Cause | Status | Dup? |
 |-------|-------|-------------|------------|--------|------|
-| #393 | why is it playing land then attacking before casting creatures? | Bug report planner diagnostics show: preflight `land_drop_first` → "Play Land: Forest", then planner chose `declare_attackers` over `cast_spell`. Log: `2026-07-02 09:57:19 | INFO | arenamcp.gre_action_matcher | Matched ACTIVATE_ABILITY 'Evendo, Waking Haven'` | `land_drop_first` preflight (intentional) then LLM chose attack over casting. Valid strategic choice by nemotron-3-super. | Not a code bug — close. Mitigated by model upgrade to deepseek-v4-flash. | — |
+| #393 | why is it playing land then attacking before casting creatures? | ⚠️ **No citation of its own.** The `gre_action_matcher` line previously quoted here is from #395's report, truncated, and describes #395's subject. | ⚠️ **Not established.** "Valid strategic choice" was asserted without evidence from this issue's own diagnostics. | ⚠️ **Do NOT close.** Closure was recommended on a borrowed citation. Needs #393's own planner diagnostics. | — |
 
 ### Cluster C5 — Card Knowledge Gap (1 issue)
 
@@ -93,7 +117,7 @@ The 10 auto bug reports from July 16 all share this same root cause. Each shows 
 | Issue | Title | Log Citation | Root Cause | Status | Dup? |
 |-------|-------|-------------|------------|--------|------|
 | #407 | [match-review] loss match_2: 3 findings (2 high) | Finding 1: `GRE bridge submit_auto_tap did not advance Pay Costs [Bridge gap: PayCostsReq]`. Finding 2: `Bridge couldn't handle activate_ability — take this action manually. [Bridge gap: DeclareAttackers]`. Finding 3: `Card#147886 x9, Card#172258 x3` unresolved grpIds | 1) AutoTap missing on PayCostsReq (same as C6); 2) stale plan action type mismatch (same as C1); 3) local card DB stale | Findings 1-2 mitigated by `6ac6d39` and `2b97ea2`. Finding 3 needs a Scryfall DB refresh. | Dup of #406, #414 for findings 1-2 |
-| #391 | [match-review] loss match_1: 1 finding (1 high) | No separate log available (auto-generated review). Likely same bridge gap patterns. | See #407 | Already mitigated | #407 |
+| #391 | [match-review] loss match_1: 1 finding (1 high) | ⚠️ **The issue body DOES contain a quoted deterministic finding** — it was not read. The claim "no separate log available" is wrong. | ⚠️ **Not established.** The finding in #391's body concerns a different gap from #407's, so "likely same bridge gap patterns" does not hold. | ⚠️ **Do NOT close as mitigated.** Read the finding quoted in the issue body first. | Not a dup of #407 on current evidence |
 
 ### Cluster C8 — X Chooser Invisible (1 issue)
 
