@@ -356,10 +356,13 @@ class ModelRegistry:
         try:
             # 1) Flip the database in a single transaction.
             with sqlite3.connect(self.db_path) as conn:
-                self._exec_tx(conn, [
-                    ("UPDATE models SET is_champion = 0", ()),
-                    ("UPDATE models SET is_champion = 1 WHERE gen_id = ?", (gen_id,)),
-                ])
+                self._exec_tx(
+                    conn,
+                    [
+                        ("UPDATE models SET is_champion = 0", ()),
+                        ("UPDATE models SET is_champion = 1 WHERE gen_id = ?", (gen_id,)),
+                    ],
+                )
 
             # 2) Stage the pointer and swap it in.
             with open(tmp, "w", encoding="utf-8") as f:
