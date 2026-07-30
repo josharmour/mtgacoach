@@ -851,9 +851,9 @@ namespace MtgaCoachBridge
                     {
                         resp["numeric_min"] = (int)numericChild.Min;
                         resp["numeric_max"] = (int)numericChild.Max;
+                        resp["numeric_input_type"] = numericChild.InputType.ToString();
                         if (numericChild.StepSize > 0)
                             resp["numeric_step"] = (int)numericChild.StepSize;
-                        resp["numeric_input_type"] = numericChild.NumericInputType.ToString();
 
                         var disallowedArr = new JArray();
                         if (numericChild.DisallowedValues != null)
@@ -861,6 +861,13 @@ namespace MtgaCoachBridge
                                 disallowedArr.Add((int)v);
                         if (disallowedArr.Count > 0)
                             resp["numeric_disallowed"] = disallowedArr;
+
+                        var suggestedArr = new JArray();
+                        if (numericChild.SuggestedValues != null)
+                            foreach (var v in numericChild.SuggestedValues)
+                                suggestedArr.Add((int)v);
+                        if (suggestedArr.Count > 0)
+                            resp["numeric_suggested"] = suggestedArr;
 
                         if (numericChild.DisallowEven)
                             resp["numeric_disallow_even"] = true;
@@ -1648,7 +1655,15 @@ namespace MtgaCoachBridge
                     return;
                 }
 
-                uint value = (uint)cmd.Json.Value<int>("value");
+                // Clamp into [Min, Max] before the uint cast: a negative or
+                // over-range value from the planner would otherwise wrap to a
+                // huge uint and risk wedging the client on the X slider
+                // (Steelbane Hydra, issue #390).
+                int requested = cmd.Json.Value<int>("value");
+                int clamped = Math.Max((int)numericChild.Min, Math.Min((int)numericChild.Max, requested));
+                if (clamped != requested)
+                    _log.LogInfo($"submit_x: clamped requested {requested} to {clamped} (min={(int)numericChild.Min}, max={(int)numericChild.Max})");
+                uint value = (uint)clamped;
                 _log.LogInfo($"Submitting X value {value} via CastingTimeOption_NumericInputRequest.SubmitX");
                 numericChild.SubmitX(value);
                 lock (_interactionLock) { _lastKnownRequest = null; }
@@ -1656,13 +1671,19 @@ namespace MtgaCoachBridge
                 {
                     ["ok"] = true,
                     ["submitted_type"] = "CastingTimeOption_X",
-                    ["value"] = (int)value
+                    ["value"] = (int)value,
+                    ["clamped"] = clamped != requested
                 });
             }
             else if (request is NumericInputRequest numericReq)
             {
                 // Also accept standalone NumericInputRequest for flexibility.
-                uint value = (uint)cmd.Json.Value<int>("value");
+                // Same clamp rationale as the CastingTimeOption child above.
+                int requested = cmd.Json.Value<int>("value");
+                int clamped = Math.Max((int)numericReq.Min, Math.Min((int)numericReq.Max, requested));
+                if (clamped != requested)
+                    _log.LogInfo($"submit_x: clamped requested {requested} to {clamped} (min={(int)numericReq.Min}, max={(int)numericReq.Max})");
+                uint value = (uint)clamped;
                 _log.LogInfo($"Submitting X value {value} via NumericInputRequest.SubmitValue (submit_x fallback)");
                 numericReq.SubmitValue(value);
                 lock (_interactionLock) { _lastKnownRequest = null; }
@@ -1670,7 +1691,8 @@ namespace MtgaCoachBridge
                 {
                     ["ok"] = true,
                     ["submitted_type"] = "NumericInput",
-                    ["value"] = (int)value
+                    ["value"] = (int)value,
+                    ["clamped"] = clamped != requested
                 });
             }
             else
