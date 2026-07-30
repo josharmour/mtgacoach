@@ -9,7 +9,6 @@ When a card has multiple roles they are comma-separated:
     "Cast Lightning Helix [REMOVAL: 3 damage to any target]"
 """
 
-
 # Short descriptions for each role, used in annotation
 _ROLE_DESC = {
     "REMOVAL": "remove target permanent",
@@ -20,6 +19,14 @@ _ROLE_DESC = {
     "DRAW": "draw cards",
     "COMBAT_TRICK": "pump creatures",
     "TOKEN": "create creature tokens",
+    "GROWTH": "put +1/+1 counters",
+    "LIFEGAIN": "gain life",
+    "ANIMATION": "animate permanent",
+    "DISRUPTION": "force discard",
+    "ATTACKER": "large attacker",
+    "BLOCKER": "defensive creature",
+    "EVASION": "evasive creature",
+    "LIFELINK": "lifelink creature",
 }
 
 # Primitives that sound natural in annotation, mapped to short phrases
@@ -37,6 +44,10 @@ _PRIMITIVE_DESC = {
     "GainControl": "gain control",
     "Sacrifice": "force sacrifice",
     "Charm": "choose mode",
+    "PutCounter": "put counters",
+    "GainLife": "gain life",
+    "Animate": "animate permanent",
+    "Discard": "force discard",
 }
 
 # Short type abbreviations
@@ -112,6 +123,22 @@ def _describe_card(name, entry, roles, primitives):
             return "create tokens"
         if role == "COMBAT_TRICK":
             return "pump creatures"
+        if role == "GROWTH":
+            return "put +1/+1 counters"
+        if role == "LIFEGAIN":
+            return "gain life"
+        if role == "ANIMATION":
+            return "animate permanent"
+        if role == "DISRUPTION":
+            return "force discard"
+        if role == "ATTACKER":
+            return "large aggressive creature"
+        if role == "BLOCKER":
+            return "defensive creature"
+        if role == "EVASION":
+            return "evasive creature"
+        if role == "LIFELINK":
+            return "lifelink creature"
 
     # Multi-role: use most distinctive primitive
     if primitives:

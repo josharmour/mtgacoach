@@ -22,8 +22,14 @@ from collections import Counter
 CARDSFOLDER = "/Users/joshu/.forge/res/cardsfolder"
 OUTPUT_JSON = "tools/training/taxonomy/card_taxonomy.json"
 DECK_DIR = "/Volumes/repos/magezero/xmage/decks"
-DECK_FILES = ["UWTempo.dck", "Standard-MonoR.dck", "Standard-MonoG.dck",
-              "Standard-MonoB.dck", "Standard-MonoW.dck", "Standard-MonoU.dck"]
+DECK_FILES = [
+    "UWTempo.dck",
+    "Standard-MonoR.dck",
+    "Standard-MonoG.dck",
+    "Standard-MonoB.dck",
+    "Standard-MonoW.dck",
+    "Standard-MonoU.dck",
+]
 
 # ── Role definitions ──────────────────────────────────────────────────────
 #
@@ -52,9 +58,15 @@ ROLE_MAP = {
         {"primitive": "DestroyAll"},
         {"primitive": "DamageAll"},
         # Sacrifice forced on opponent's permanents
-        {"primitive": "Sacrifice", "check": lambda p: p.get("Defined", "") in ("Opponent", "EachOpponent", "TargetedController")},
+        {
+            "primitive": "Sacrifice",
+            "check": lambda p: p.get("Defined", "") in ("Opponent", "EachOpponent", "TargetedController"),
+        },
         # Bounce (Battlefield -> Hand) — tempo removal
-        {"primitive": "ChangeZone", "check": lambda p: p.get("Origin") == "Battlefield" and p.get("Destination") == "Hand"},
+        {
+            "primitive": "ChangeZone",
+            "check": lambda p: p.get("Origin") == "Battlefield" and p.get("Destination") == "Hand",
+        },
         # GainControl — steal a permanent (removes from opponent's control)
         {"primitive": "GainControl"},
     ],
@@ -63,29 +75,39 @@ ROLE_MAP = {
     ],
     "TUTOR": [
         # Search library -> hand for non-land, non-basic cards
-        {"primitive": "ChangeZone",
-         "check": lambda p: p.get("Origin") == "Library"
-                             and p.get("Destination") == "Hand"
-                             and "Land" not in p.get("ChangeType", "")},
+        {
+            "primitive": "ChangeZone",
+            "check": lambda p: (
+                p.get("Origin") == "Library"
+                and p.get("Destination") == "Hand"
+                and "Land" not in p.get("ChangeType", "")
+            ),
+        },
     ],
     "RECURSION": [
         # Graveyard -> Battlefield (reanimate)
-        {"primitive": "ChangeZone",
-         "check": lambda p: p.get("Origin") == "Graveyard"
-                             and p.get("Destination") == "Battlefield"},
+        {
+            "primitive": "ChangeZone",
+            "check": lambda p: p.get("Origin") == "Graveyard" and p.get("Destination") == "Battlefield",
+        },
         # Graveyard -> Hand (raise dead)
-        {"primitive": "ChangeZone",
-         "check": lambda p: p.get("Origin") == "Graveyard"
-                             and p.get("Destination") == "Hand"},
+        {
+            "primitive": "ChangeZone",
+            "check": lambda p: p.get("Origin") == "Graveyard" and p.get("Destination") == "Hand",
+        },
     ],
     "RAMP": [
         # Mana-producing abilities (rituals + mana abilities)
         {"primitive": "Mana"},
         # Land-fetch (Library -> Battlefield for lands)
-        {"primitive": "ChangeZone",
-         "check": lambda p: p.get("Origin") == "Library"
-                             and p.get("Destination") == "Battlefield"
-                             and "Land" in p.get("ChangeType", "")},
+        {
+            "primitive": "ChangeZone",
+            "check": lambda p: (
+                p.get("Origin") == "Library"
+                and p.get("Destination") == "Battlefield"
+                and "Land" in p.get("ChangeType", "")
+            ),
+        },
     ],
     "DRAW": [
         {"primitive": "Draw"},
@@ -94,14 +116,29 @@ ROLE_MAP = {
     ],
     "COMBAT_TRICK": [
         # Instant-speed pump to creatures
-        {"primitive": "Pump", "sp_ab": "SP",
-         "check": lambda p: "Creature" in p.get("ValidTgts", "")},
+        {"primitive": "Pump", "sp_ab": "SP", "check": lambda p: "Creature" in p.get("ValidTgts", "")},
         # PumpAll at instant speed to your creatures
         {"primitive": "PumpAll", "sp_ab": "SP"},
     ],
     "TOKEN": [
         # Creating creature tokens
         {"primitive": "Token"},
+    ],
+    "GROWTH": [
+        # Putting +1/+1 counters on creatures
+        {"primitive": "PutCounter"},
+    ],
+    "LIFEGAIN": [
+        # Gaining life
+        {"primitive": "GainLife"},
+    ],
+    "ANIMATION": [
+        # Animating non-creature permanents into creatures
+        {"primitive": "Animate"},
+    ],
+    "DISRUPTION": [
+        # Forcing opponent(s) to discard cards — hand disruption
+        {"primitive": "Discard"},
     ],
 }
 
@@ -122,8 +159,12 @@ def parse_card_script(text):
         "all_names": [],   # all Name: lines (for DFC lookup)
         "mana_cost": "",
         "types": "",
+        "power": "",       # Power from PT: line (may be "*" for CDA)
+        "toughness": "",   # Toughness from PT: line
+        "keywords": [],    # Keywords from K: lines on front face
         "primitives": [],  # list of {"primitive": str, "sp_ab": str, **params}
         "svars": {},       # SVar definitions for sub-ability traversal
+        "_alternate": False,  # internal: have we hit the ALTERNATE marker?
     }
 
     for line in text.splitlines():
@@ -131,8 +172,13 @@ def parse_card_script(text):
         if not line or line.startswith("#"):
             continue
 
-        # Name (collect ALL Name lines for DFC support)
-        if line.startswith("Name:"):
+        # Alternate (DFC separator) — stop collecting body info
+        if line.startswith("ALTERNATE"):
+            result["_alternate"] = True
+
+        # Name (collect ALL Name lines for DFC support) — must be elif
+        # so it's exclusive with the other line-type handlers below
+        elif line.startswith("Name:"):
             name_val = line[len("Name:"):].strip()
             result["all_names"].append(name_val)
             if not result["name"]:
@@ -140,11 +186,34 @@ def parse_card_script(text):
 
         # ManaCost
         elif line.startswith("ManaCost:") and not result["mana_cost"]:
-            result["mana_cost"] = line[len("ManaCost:"):].strip()
+            result["mana_cost"] = line[len("ManaCost:") :].strip()
 
         # Types
         elif line.startswith("Types:") and not result["types"]:
-            result["types"] = line[len("Types:"):].strip()
+            result["types"] = line[len("Types:") :].strip()
+
+        # PT — Power/Toughness (first line only; DFC back face has its own PT)
+        elif line.startswith("PT:") and not result["power"]:
+            pt = line[len("PT:") :].strip()
+            if "/" in pt:
+                parts = pt.split("/", 1)
+                result["power"] = parts[0].strip()
+                result["toughness"] = parts[1].strip()
+
+        # K: — Keyword abilities (front face only, skip DFC back face)
+        elif line.startswith("K:") and not line.startswith("K:</") and not result["_alternate"]:
+            kw_raw = line[len("K:") :].strip()
+            if kw_raw:
+                # Handle compound K: lines like "K:First Strike, Lifelink"
+                # and parameterized keywords like "K:Toxic:1"
+                for segment in kw_raw.split(","):
+                    segment = segment.strip()
+                    if not segment:
+                        continue
+                    # Take keyword name before first colon (handles K:Toxic:1, K:Enchant:...)
+                    kw_name = segment.split(":")[0].strip()
+                    if kw_name:
+                        result["keywords"].append(kw_name)
 
         # A: lines — ability definitions
         elif line.startswith("A:") and "$" in line:
@@ -171,7 +240,7 @@ def _parse_ability_line(line):
         return None
 
     sp_ab = rest[:dollar_idx].strip()  # e.g. "SP", "AB"
-    remainder = rest[dollar_idx + 1:].strip()
+    remainder = rest[dollar_idx + 1 :].strip()
 
     parts = [p.strip() for p in remainder.split("|")]
     params = {"sp_ab": sp_ab, "primitive": parts[0] if parts else ""}
@@ -193,7 +262,7 @@ def _parse_svar_line(line):
         return None
 
     prefix = rest[:dollar_idx]  # e.g. "DBGainLife:DB" or "STCantBeCast:Mode"
-    remainder = rest[dollar_idx + 1:].strip()
+    remainder = rest[dollar_idx + 1 :].strip()
 
     # Type is always the part after the last colon before $, Name is everything before
     colon_idx = prefix.rfind(":")
@@ -201,7 +270,7 @@ def _parse_svar_line(line):
         return {"svar_name": prefix, "svar_type": "", "primitive": remainder.split("|")[0].strip()}
 
     svar_name = prefix[:colon_idx]
-    svar_type = prefix[colon_idx + 1:]
+    svar_type = prefix[colon_idx + 1 :]
 
     if svar_type != "DB":
         # Not a sub-ability — static ability, stored but not traversed
@@ -270,7 +339,11 @@ def _resolve_sub(card, svar_name, all_primitives, seen_svars):
 
 
 def classify_card(card):
-    """Given a parsed card, return (roles_set, unmatched_primitives_set)."""
+    """Given a parsed card, return (roles_set, unmatched_primitives_set).
+
+    First maps ability primitives to roles, then applies the creature-body
+    heuristic for cards whose function isn't captured by A: line primitives.
+    """
     primitives = resolve_primitives(card)
     roles = set()
     unmatched_primitives = set()
@@ -316,7 +389,86 @@ def classify_card(card):
         if not matched_any_role:
             unmatched_primitives.add(primitive_name)
 
+    # Apply creature-body heuristic — supplements primitive roles with
+    # combat-relevant body data (ATTACKER, BLOCKER, EVASION, LIFELINK)
+    # for any creature card, regardless of primitive role assignment
+    body_roles = classify_creature_body(card)
+    roles.update(body_roles)
+
     return roles, unmatched_primitives
+
+
+# ── Creature-body heuristic ──────────────────────────────────────────────
+#
+# For creatures whose function isn't captured by A: line primitives (vanilla
+# creatures, creatures with only triggered/static abilities, etc.), derive
+# roles from the card's body: power/toughness and keyword abilities.
+
+_EVASION_KEYWORDS = {
+    "Flying",
+    "Menace",
+    "Trample",
+    "Fear",
+    "Shadow",
+    "Intimidate",
+    "Unblockable",
+    "Skulk",
+    "Horsemanship",
+}
+
+
+def classify_creature_body(card):
+    """Derive combat roles from a creature's body (PT, keywords, types).
+
+    Only meaningful for creatures with no primitive-based role assignment.
+    Returns a set of roles (ATTACKER, BLOCKER, EVASION, LIFELINK).
+    """
+    roles = set()
+    types = card.get("types", "")
+
+    if "Creature" not in types:
+        return roles
+
+    # Cards with no creature type subtype are typically just "Creature"
+    # with no tribal ties — they still have a body to evaluate.
+
+    power_str = card.get("power", "")
+    toughness_str = card.get("toughness", "")
+    keywords = card.get("keywords", [])
+    kw_set = set(k.strip() for k in keywords if isinstance(k, str))
+
+    # ── Numeric power/toughness ──
+    power_val = None
+    toughness_val = None
+    try:
+        power_val = int(power_str)
+    except (ValueError, TypeError):
+        pass
+    try:
+        toughness_val = int(toughness_str)
+    except (ValueError, TypeError):
+        pass
+
+    # ATTACKER: power >= 3 (threat on its own)
+    if power_val is not None and power_val >= 3:
+        roles.add("ATTACKER")
+
+    # BLOCKER: toughness > power (defensive profile)
+    if toughness_val is not None and power_val is not None and toughness_val > power_val:
+        roles.add("BLOCKER")
+    # Vigilance is a blocker enabler (can attack and still block)
+    if "Vigilance" in kw_set:
+        roles.add("BLOCKER")
+
+    # EVASION: keywords that make the creature hard to block
+    if kw_set & _EVASION_KEYWORDS:
+        roles.add("EVASION")
+
+    # LIFELINK
+    if "Lifelink" in kw_set:
+        roles.add("LIFELINK")
+
+    return roles
 
 
 def dfc_names(all_names):
@@ -367,8 +519,8 @@ def main():
     total_scripts = len(scripts)
     print(f"  Found {total_scripts} .txt scripts")
     parse_errors = 0
-    parsed_cards = {}    # canonical name -> entry
-    name_aliases = {}    # alt_name -> canonical_name (for DFCs)
+    parsed_cards = {}  # canonical name -> entry
+    name_aliases = {}  # alt_name -> canonical_name (for DFCs)
     all_unmatched = Counter()
     distinct_primitives_found = set()
     role_counter = Counter()
@@ -396,6 +548,7 @@ def main():
             distinct_primitives_found.add(p.get("primitive", ""))
 
         roles, unmatched = classify_card(card)
+
         for r in roles:
             role_counter[r] += 1
         for u in unmatched:
@@ -404,9 +557,7 @@ def main():
         # Build output entry
         entry = {
             "roles": sorted(roles),
-            "primitives": sorted(
-                set(p.get("primitive", "") for p in prims if p.get("primitive"))
-            ),
+            "primitives": sorted(set(p.get("primitive", "") for p in prims if p.get("primitive"))),
             "types": card["types"],
             "mana_cost": card["mana_cost"],
         }
@@ -442,9 +593,29 @@ def main():
     print(f"  Cards with no role:          {num_no_roles} ({pct_no_roles:.1f}%)")
     print(f"  DFC aliases registered:      {len(name_aliases)}")
 
-    print("\n  Role histogram:")
-    for role in ["REMOVAL", "COUNTER", "TUTOR", "RECURSION", "RAMP",
-                 "DRAW", "COMBAT_TRICK", "TOKEN"]:
+    print("\n  Role histogram (all roles, primitive + creature-body):")
+    for role in [
+        "REMOVAL",
+        "COUNTER",
+        "TUTOR",
+        "RECURSION",
+        "RAMP",
+        "DRAW",
+        "LIBRARY",
+        "COMBAT_TRICK",
+        "ANTHEM",
+        "TOKEN",
+        "GROWTH",
+        "LIFEGAIN",
+        "LIFELOSS",
+        "ANIMATION",
+        "DISRUPTION",
+        "PROTECTION",
+        "ATTACKER",
+        "BLOCKER",
+        "EVASION",
+        "LIFELINK",
+    ]:
         count = role_counter.get(role, 0)
         pct = 100 * count / max(cards_with_ability_api, 1)
         print(f"    {role:15s} {count:6d} cards ({pct:5.1f}% of API-enabled)")
@@ -472,20 +643,26 @@ def main():
 
     # ── Deck coverage ──────────────────────────────────────────────────
     deck_names = extract_deck_card_names()
-    basics = {"Plains", "Island", "Swamp", "Mountain", "Forest",
-              "Snow-Covered Plains", "Snow-Covered Island",
-              "Snow-Covered Swamp", "Snow-Covered Mountain",
-              "Snow-Covered Forest"}
+    basics = {
+        "Plains",
+        "Island",
+        "Swamp",
+        "Mountain",
+        "Forest",
+        "Snow-Covered Plains",
+        "Snow-Covered Island",
+        "Snow-Covered Swamp",
+        "Snow-Covered Mountain",
+        "Snow-Covered Forest",
+    }
     unique_deck_names = {n for n in deck_names if n not in basics}
-    covered = sum(1 for n in unique_deck_names
-                  if n in output and output[n]["roles"])
+    covered = sum(1 for n in unique_deck_names if n in output and output[n]["roles"])
     pct_coverage = 100 * covered / max(len(unique_deck_names), 1)
     print(f"\n  Deck coverage ({len(unique_deck_names)} unique cards, basics excluded):")
     print(f"    Resolved to >=1 role: {covered} ({pct_coverage:.1f}%)")
 
     not_found = [n for n in unique_deck_names if n not in output]
-    no_role = sorted(n for n in unique_deck_names
-                     if n in output and not output[n]["roles"])
+    no_role = sorted(n for n in unique_deck_names if n in output and not output[n]["roles"])
     if not_found:
         print(f"    Missing from taxonomy: {not_found}")
     if no_role:
