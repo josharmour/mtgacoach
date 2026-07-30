@@ -23,6 +23,7 @@ _ROLE_DESC = {
     "LIFEGAIN": "gain life",
     "ANIMATION": "animate permanent",
     "DISRUPTION": "force discard",
+    "PROTECTION": "protect permanents",
     "ATTACKER": "large attacker",
     "BLOCKER": "defensive creature",
     "EVASION": "evasive creature",
@@ -131,6 +132,8 @@ def _describe_card(name, entry, roles, primitives):
             return "animate permanent"
         if role == "DISRUPTION":
             return "force discard"
+        if role == "PROTECTION":
+            return "regenerate or prevent damage"
         if role == "ATTACKER":
             return "large aggressive creature"
         if role == "BLOCKER":
