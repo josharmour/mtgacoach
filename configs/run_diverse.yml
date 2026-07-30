@@ -1,0 +1,64 @@
+# run_diverse.yml — deck-diverse training run
+#
+# Primary deck: UWTempo
+# Opponents:  5 greedy-optimal for maximum card/role coverage
+#             (+ the original 5 Standard-Mono decks retained for baseline)
+#
+# Coverage analysis (from tools/training/wp3/deck_inventory.py):
+#   Current pool (UWTempo + 5 mono):       83 distinct cards
+#   Added by 5 optimal opponents:         152 new cards
+#   New pool:                             235 distinct cards (2.8× expansion)
+#
+# Optimal opponent set (exhaustive search over 23 candidates):
+#   1. Oathbreaker_UR   — 46 cards, 41 new, UR storm/combo
+#   2. GBLegends        — 37 cards, 31 new, WUBRG 5c legends
+#   3. EVG_Elves        — 28 cards, 27 new, G tribal aggro
+#   4. EVG_Goblins      — 28 cards, 27 new, R tribal aggro
+#   5. Mind(MindvsMight)— 29 cards, 27 new, UR spellslinger
+#
+# Role diversity added:
+#   - Storm/combo (Oathbreaker_UR)   — no current opponent is combo
+#   - 5-colour goodstuff (GBLegends) — no current opponent is 5c
+#   - Tribal (EVG_Elves, EVG_Goblins)— tribal synergy != mono-goodstuff
+#   - Spellslinger (Mind vs Might)   — non-creature-centric strategy
+
+deck: UWTempo
+version: 2
+start_from_version: null     # bootstrap from scratch; resume by pointing at checkpoint
+
+generations: 6
+games_per_gen: 200
+replay_buffer_gens: 3
+
+opponents:
+  # — original Standard-Mono opponents (retained) —
+  - deck: Standard-MonoR
+    mode: minimax
+  - deck: Standard-MonoG
+    mode: minimax
+  - deck: Standard-MonoB
+    mode: minimax
+  - deck: Standard-MonoW
+    mode: minimax
+  - deck: Standard-MonoU
+    mode: minimax
+  # — diverse coverage opponents —
+  - deck: Oathbreaker_UR
+    mode: minimax
+  - deck: GBLegends
+    mode: minimax
+  - deck: EVG_Elves
+    mode: minimax
+  - deck: EVG_Goblins
+    mode: minimax
+  - deck: Mind(MindvsMight)
+    mode: minimax
+
+training:
+  analyze_dataset: true
+  generate_plots: true
+  eval_previous_model: true
+
+log_level: ACTIONS
+
+curriculum: configs/curriculum.yml
