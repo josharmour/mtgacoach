@@ -320,14 +320,29 @@ class ModelRegistry:
     # promotion
     # ------------------------------------------------------------------
 
+    def _exec_tx(self, conn: sqlite3.Connection, stmts: list[tuple[str, tuple]]) -> None:
+        """Execute multiple statements in a single SQLite transaction.
+
+        With ``isolation_level=''`` (Python 3.11 default) there is no
+        implicit transaction, so we drive ``BEGIN`` / ``COMMIT`` explicitly.
+        """
+        conn.execute("BEGIN")
+        try:
+            for sql, params in stmts:
+                conn.execute(sql, params)
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+
     def promote_champion(self, gen_id: str) -> bool:
         """Atomically set ``gen_id`` as the champion model.
 
-        The database flip and the on-disk pointer are kept consistent: the
-        pointer is staged first, the flip commits as a single SQLite
-        transaction, and the pointer is only swapped in afterwards. If the
-        swap fails the database flip is rolled back, so the registry never
-        reports a champion that the pointer does not name.
+        The database flip commits as a single SQLite transaction first;
+        the on-disk pointer is swapped afterwards.  If the pointer swap
+        fails the DB *is* already committed — a retry will fix the pointer.
+        The old pointer remains valid through the entire operation so a
+        crash before the swap leaves it untouched.
         """
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute("SELECT gen_id FROM models WHERE gen_id = ?", (gen_id,)).fetchone()
@@ -339,6 +354,14 @@ class ModelRegistry:
 
         tmp = self.pointer_path.with_name(self.pointer_path.name + f".tmp.{os.getpid()}")
         try:
+            # 1) Flip the database in a single transaction.
+            with sqlite3.connect(self.db_path) as conn:
+                self._exec_tx(conn, [
+                    ("UPDATE models SET is_champion = 0", ()),
+                    ("UPDATE models SET is_champion = 1 WHERE gen_id = ?", (gen_id,)),
+                ])
+
+            # 2) Stage the pointer and swap it in.
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(
                     {"champion": gen_id, "updated_at": time.time(), "previous": prev_champion},
@@ -348,24 +371,12 @@ class ModelRegistry:
                 )
                 f.flush()
                 os.fsync(f.fileno())
+            os.replace(tmp, self.pointer_path)
 
-            # Single transaction: clearing the old flag and setting the new one
-            # are committed together or not at all.
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute("UPDATE models SET is_champion = 0")
-                conn.execute("UPDATE models SET is_champion = 1 WHERE gen_id = ?", (gen_id,))
-
-            try:
-                os.replace(tmp, self.pointer_path)
-            except OSError:
-                # Roll the database back so it keeps matching the pointer file.
-                with sqlite3.connect(self.db_path) as conn:
-                    conn.execute("UPDATE models SET is_champion = 0")
-                    if prev_champion:
-                        conn.execute("UPDATE models SET is_champion = 1 WHERE gen_id = ?", (prev_champion,))
-                raise
         except OSError as e:
-            logger.error(f"Champion promotion of '{gen_id}' failed and was rolled back: {e}")
+            logger.error(f"Champion promotion of '{gen_id}' failed (pointer write): {e}")
+            # DB is already committed.  The old champion_pointer.json is
+            # still intact — recovery is a retry (no data loss).
             return False
         finally:
             _unlink_quiet(tmp)

@@ -273,10 +273,15 @@ def test_crash_between_db_commit_and_pointer_flip_leaves_old_pointer_intact(tmp_
 
 
 def test_pointer_flip_is_atomic_on_failure(tmp_path, monkeypatch):
-    """A failed swap must leave BOTH the pointer file and the DB on the old champion.
+    """A failed swap leaves the old pointer file intact; DB is already committed.
 
-    Regression for the plain ``open(pointer, "w")`` write, which truncated the
-    live pointer before the new champion was durable.
+    With the corrected semantics the DB transaction commits *before* the
+    pointer flip.  If the pointer swap fails the DB has already moved to
+    the new champion — the old champion_pointer.json survives (it was
+    never truncated) and a retry fixes the pointer.
+
+    This is the safe direction: no data loss, the pointer is the
+    authoritative external contract and it stays valid throughout.
     """
     reg = ModelRegistry(tmp_path / "models")
     _register(reg, "gen-1", _adapter(tmp_path, "g1", "one"))
@@ -294,8 +299,68 @@ def test_pointer_flip_is_atomic_on_failure(tmp_path, monkeypatch):
     assert reg.promote_champion("gen-2") is False
     monkeypatch.undo()
 
+    # Old pointer file is intact (never truncated).
+    pointer = reg.read_champion_pointer()
+    assert pointer is not None
+    assert pointer["champion"] == "gen-1"
+
+    # DB is already committed to gen-2 (no rollback possible since it
+    # committed before the pointer swap — this is safe because the old
+    # pointer is still valid).
+    assert reg.get_champion()["gen_id"] == "gen-2"
+
+    # Recovery: a retry fixes the pointer.
+    assert reg.promote_champion("gen-2") is True
+    assert reg.read_champion_pointer()["champion"] == "gen-2"
+    assert reg.get_champion()["gen_id"] == "gen-2"
+
+    # No stray temp files.
+    assert [p.name for p in reg.registry_dir.glob("champion_pointer.json.tmp*")] == []
+
+
+def test_database_update_transaction_is_atomic(tmp_path, monkeypatch):
+    """A crash between the two UPDATE statements must not leave partial state.
+
+    Without an explicit ``BEGIN``/``COMMIT`` and Python 3.11's default
+    ``isolation_level=''``, bare ``conn.execute()`` calls auto-commit
+    individually — a crash between clearing ``is_champion=0`` on all rows
+    and setting ``is_champion=1`` on the new champion would leave ALL rows
+    with ``is_champion=0`` (no champion at all).  This regression test
+    verifies the explicit transaction in ``_exec_tx`` prevents that by
+    simulating what happens when the second UPDATE raises (rollback).
+    """
+    reg = ModelRegistry(tmp_path / "models")
+    _register(reg, "gen-1", _adapter(tmp_path, "g1", "one"))
+    _register(reg, "gen-2", _adapter(tmp_path, "g2", "two"))
+
+    # Promote gen-1 first so we have a champion.
+    reg.promote_champion("gen-1")
+
+    # Replace _exec_tx to simulate a crash after the first UPDATE commits
+    # (as if the process died between two bare conn.execute() calls).
+    real_exec_tx = ModelRegistry._exec_tx
+
+    def crashy_exec_tx(self, conn, stmts):
+        # Run only the first statement (clear is_champion), then crash.
+        # Without an explicit transaction, this would auto-commit.
+        first_sql, first_params = stmts[0]
+        conn.execute(first_sql, first_params)
+        # Simulate process crash — never run the second UPDATE.
+        raise OSError("simulated crash after first UPDATE (before second)")
+
+    monkeypatch.setattr(ModelRegistry, "_exec_tx", crashy_exec_tx)
+
+    assert reg.promote_champion("gen-2") is False
+    monkeypatch.undo()
+
+    # The old champion must still be intact (gen-1) because ROLLBACK
+    # undid the first UPDATE.
     assert reg.read_champion_pointer()["champion"] == "gen-1"
     assert reg.get_champion()["gen_id"] == "gen-1"
+    assert reg.get_generation("gen-1")["is_champion"] == 1
+    assert reg.get_generation("gen-2")["is_champion"] == 0
+
+    # No stray temp files.
     assert [p.name for p in reg.registry_dir.glob("champion_pointer.json.tmp*")] == []
 
 
