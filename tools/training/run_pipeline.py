@@ -62,6 +62,83 @@ def _run_cmd(cmd: list[str]) -> bool:
         return False
 
 
+def _score_gating_trajectories(
+    path: Path,
+    min_gate_matches: int = 6,
+) -> dict:
+    """Compute match-weighted win rate from a gating trajectory JSONL.
+
+    Deduplicates by *match_id* so one match contributes at most one data
+    point.  Tracks and reports **unresolved** matches — those whose winner
+    is missing, unrecognised, or contradictory across rows from the same
+    match (a data bug that must be surfaced, not majority-voted away).
+
+    Returns
+    -------
+    dict with keys:
+        challenger_wins  — matches where the local (challenger) model won
+        total_matches    — resolved matches with a clear single winner
+        unresolved       — matches that were excluded from the win rate
+        win_rate         — challenger_wins / total_matches (0.0 if 0)
+        malformed        — unparseable JSON lines skipped
+    """
+    if not path.exists():
+        return {
+            "challenger_wins": 0,
+            "total_matches": 0,
+            "unresolved": 0,
+            "win_rate": 0.0,
+            "malformed": 0,
+        }
+
+    # match_id -> set of winner values seen across all rows for that match
+    match_winners: dict[str, set[str | None]] = {}
+    malformed = 0
+
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                rec = json.loads(line.strip())
+            except Exception:
+                malformed += 1
+                continue
+
+            mid = rec.get("match_id", "unknown_match")
+            winner = rec.get("winner")
+            if mid not in match_winners:
+                match_winners[mid] = set()
+            match_winners[mid].add(winner)
+
+    unresolved = 0
+    challenger_wins = 0
+    total_matches = 0
+
+    for mid, winners in match_winners.items():
+        # Only values in {"local", "opp"} are valid winner signals.
+        valid = {w for w in winners if w in ("local", "opp")}
+
+        if not valid:
+            # No row carried a recognised winner → unresolved.
+            unresolved += 1
+        elif len(valid) > 1:
+            # Contradictory winners within the same match → data bug → unresolved.
+            unresolved += 1
+        else:
+            total_matches += 1
+            if "local" in valid:
+                challenger_wins += 1
+
+    win_rate = challenger_wins / total_matches if total_matches > 0 else 0.0
+
+    return {
+        "challenger_wins": challenger_wins,
+        "total_matches": total_matches,
+        "unresolved": unresolved,
+        "win_rate": win_rate,
+        "malformed": malformed,
+    }
+
+
 class PipelineRunner:
     """Manages the recursive self-improvement iterations."""
 
@@ -354,27 +431,23 @@ class PipelineRunner:
 
             # Step 5: Score Gating and Promote Champion
             logger.info("Step 5: Gating promotion scoring...")
-            challenger_wins = 0
-            total_matches = 0
-            skip_count = 0
-            if eval_trajectories.exists():
-                with open(eval_trajectories, encoding="utf-8") as f:
-                    for line in f:
-                        try:
-                            rec = json.loads(line.strip())
-                            winner = rec.get("winner")
-                            seat = rec.get("seat")
-                            # We only count once per match (e.g. when seat == "local")
-                            if seat == "local" and winner:
-                                total_matches += 1
-                                if winner == "local":  # Challenger won (since Challenger was local)
-                                    challenger_wins += 1
-                        except Exception:
-                            skip_count += 1
-                            continue
+            scores = _score_gating_trajectories(eval_trajectories, min_gate_matches=MIN_GATE_MATCHES)
 
-            if skip_count:
-                logger.warning(f"Skipped {skip_count} malformed trajectory line(s) in {eval_trajectories.name}")
+            challenger_wins = scores["challenger_wins"]
+            total_matches = scores["total_matches"]
+            unresolved = scores["unresolved"]
+            win_rate = scores["win_rate"]
+
+            if scores["malformed"]:
+                logger.warning(
+                    f"Skipped {scores['malformed']} malformed trajectory line(s) in {eval_trajectories.name}"
+                )
+
+            if unresolved:
+                logger.warning(
+                    f"{unresolved} match(es) had no attributable or contradictory "
+                    f"winner — counted as unresolved, excluded from win rate."
+                )
 
             # Fail-closed: a gate run below the minimum sample size BLOCKS
             if total_matches < MIN_GATE_MATCHES:
@@ -385,7 +458,6 @@ class PipelineRunner:
                 win_rate = 0.0
                 quality = None
             else:
-                win_rate = challenger_wins / total_matches
                 logger.info(
                     f"Gating outcomes: Challenger won {challenger_wins} of {total_matches} matches "
                     f"({win_rate * 100:.1f}% win rate)"
