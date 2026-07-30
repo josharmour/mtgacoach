@@ -2223,11 +2223,31 @@ MageZero on gen-1's final arm; bump watcher armed for the 550 games/gen restart;
 **10 PRs merged to master today**. CI green on master `48a47ac`.
 
 **Still owed — requires a shell on blackwell:**
-- [ ] Read `model-survey-2026-07-30.md` and record the Qwen selection criteria here.
-- [ ] Run the Qwen3.6-27B-FP8 out-of-band probe under one of the three options above.
-- [ ] Confirm `~/mz_bump_watcher.log` shows the 550 games/gen restart actually fired.
-- [ ] Port this addendum's finding into `rl-pipeline-fix.md` (gitignored; not
-      reachable from a cloud session).
+- [x] Read `model-survey-2026-07-30.md` and record the Qwen selection criteria here.
+      *(2026-07-30 15:25, on-box)* Qwen3.6-27B-FP8 is the survey's #1: dense
+      (routes around every sm_120 FP4/FP8 MoE kernel bug), smallest Tier-A
+      quality gap (AA 37 vs DeepSeek's 40 — and the 40 is Max-Effort reasoning,
+      a mode the coach deliberately does not run), TP=1 on one card (~49 GiB at
+      util 0.55), Apache-2.0, published dual-RTX-6000-Blackwell config exists.
+      Fallback if p95 > ~1.2 s: Qwen3.6-35B-A3B-FP8 (170–208 tok/s measured on
+      this card). Cutover gate: legality ≥ 4.5, correctness within 0.5, on real
+      captured prompts via tools/eval.
+- [ ] Run the Qwen3.6-27B-FP8 out-of-band probe under one of the three options
+      above. *(in progress: weights downloading to the host HF cache; blocked
+      on the owner picking a ds4 service window — and note
+      `~/.arenamcp/eval_prompts.jsonl` does not exist yet, so the DeepSeek
+      baseline arm must be captured before any cutover judgement.)*
+- [x] Confirm `~/mz_bump_watcher.log` shows the 550 games/gen restart actually
+      fired. *(2026-07-30 15:20, on-box)* Arm 5/5 (Mono-U) landed 10:29 at
+      24.62% (49/199); watcher stopped mz train 11:29:29, relaunched with
+      `games_per_gen=550`, `RESTARTED ok (pid 3082421)`; pid verified alive at
+      3h49m uptime. On-box `nvidia-smi` also corroborates this addendum's VRAM
+      numbers: 94,484 / 94,466 MiB held by the two TP workers on 97,887 MiB
+      cards.
+- [x] Port this addendum's finding into `rl-pipeline-fix.md`. *(2026-07-30
+      15:30, on-box)* Added to the STATUS SNAPSHOT as "ds4 incident — 0.95 is a
+      FLOOR, not slack", plus the Qwen decision row in the owner-decisions
+      table and a probe entry in next-actions.
 
 ### §26 addendum 15 — WP-3 FLEET DONE: 4 PRs REVIEWED + MERGED (16:45)
 The 4-agent Hermes fleet finished in ~14 min wall clock. All PRs independently
