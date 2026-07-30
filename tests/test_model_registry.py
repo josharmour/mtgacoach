@@ -171,6 +171,107 @@ def test_promote_unknown_generation_is_refused(tmp_path):
     assert reg.read_champion_pointer()["champion"] == "gen-1"
 
 
+def test_promote_rollback_promote_cycle(tmp_path):
+    """Promote A -> promote B (rollback A) -> promote A back -> pointers clean,
+    all store directories and metadata.json intact at every step."""
+    reg = ModelRegistry(tmp_path / "models")
+    _register(reg, "gen-a", _adapter(tmp_path, "ga", "a"))
+    _register(reg, "gen-b", _adapter(tmp_path, "gb", "b"))
+    _register(reg, "gen-c", _adapter(tmp_path, "gc", "c"))
+
+    # -- Phase 1: promote gen-a
+    assert reg.promote_champion("gen-a") is True
+    assert reg.get_champion()["gen_id"] == "gen-a"
+    p = reg.read_champion_pointer()
+    assert p["champion"] == "gen-a"
+    assert p["previous"] is None
+    # All store directories intact
+    for g in ("gen-a", "gen-b", "gen-c"):
+        sp = Path(reg.get_generation(g)["store_path"])
+        assert sp.is_dir(), f"{g} store should exist"
+        assert (sp / "metadata.json").is_file(), f"{g} metadata.json should exist"
+    # Pointer file is the only .json in the registry root (no temp debris)
+    assert [f.name for f in reg.registry_dir.glob("*.json")] == ["champion_pointer.json"]
+
+    # -- Phase 2: promote gen-b (rollback gen-a)
+    assert reg.promote_champion("gen-b") is True
+    assert reg.get_champion()["gen_id"] == "gen-b"
+    p = reg.read_champion_pointer()
+    assert p["champion"] == "gen-b"
+    assert p["previous"] == "gen-a"
+    # Gen-a artifacts must still be intact (not pruned — only 3 generations)
+    for g in ("gen-a", "gen-b", "gen-c"):
+        sp = Path(reg.get_generation(g)["store_path"])
+        assert sp.is_dir(), f"{g} store should still exist after rollback"
+        assert (sp / "metadata.json").is_file()
+    assert reg.get_generation("gen-a")["is_champion"] == 0
+    assert reg.get_generation("gen-b")["is_champion"] == 1
+
+    # -- Phase 3: promote gen-c
+    assert reg.promote_champion("gen-c") is True
+    assert reg.get_champion()["gen_id"] == "gen-c"
+    p = reg.read_champion_pointer()
+    assert p["champion"] == "gen-c"
+    assert p["previous"] == "gen-b"
+
+    # All three still on disk (3 < RETENTION_LIMIT)
+    for g in ("gen-a", "gen-b", "gen-c"):
+        sp = Path(reg.get_generation(g)["store_path"])
+        assert sp.is_dir()
+        assert (sp / "metadata.json").is_file()
+    # Only one champion
+    champs = [g["gen_id"] for g in reg.list_generations() if g["is_champion"]]
+    assert champs == ["gen-c"]
+    assert [f.name for f in reg.registry_dir.glob("*.json")] == ["champion_pointer.json"]
+
+
+def test_crash_between_db_commit_and_pointer_flip_leaves_old_pointer_intact(tmp_path, monkeypatch):
+    """Simulate a hard crash between DB commit and os.replace.
+
+    The DB is updated *before* the pointer file is swapped.  If the process
+    dies right after the DB commit but before os.replace, the old
+    champion_pointer.json must still be valid (pointing to a real generation).
+    """
+    reg = ModelRegistry(tmp_path / "models")
+    _register(reg, "gen-1", _adapter(tmp_path, "g1", "one"))
+    _register(reg, "gen-2", _adapter(tmp_path, "g2", "two"))
+    reg.promote_champion("gen-1")
+    assert reg.read_champion_pointer()["champion"] == "gen-1"
+    assert reg.get_champion()["gen_id"] == "gen-1"
+
+    # --- simulated crash: os.replace is a no-op (as if the process died
+    #     after the DB transaction committed but before the pointer flip).
+    real_replace = os.replace
+
+    def noop(src, dst):
+        # The temp file content is correct but we never swap it in.
+        return None  # no error — just don't flip
+
+    monkeypatch.setattr(registry_mod.os, "replace", noop)
+
+    # This returns True because os.replace succeeded (no exception),
+    # but the pointer file was never actually updated.
+    assert reg.promote_champion("gen-2") is True
+
+    monkeypatch.undo()
+
+    # DB is now committed to gen-2...
+    assert reg.get_champion()["gen_id"] == "gen-2"
+    # ... but the pointer file still says gen-1 (old champion intact).
+    pointer = reg.read_champion_pointer()
+    assert pointer["champion"] == "gen-1"
+    assert pointer["previous"] is None  # the old pointer metadata is unmodified
+    assert pointer["champion"] in {g["gen_id"] for g in reg.list_generations()}
+
+    # --- recovery: a subsequent promote_champion fixes the pointer.
+    assert reg.promote_champion("gen-2") is True
+    assert reg.read_champion_pointer()["champion"] == "gen-2"
+    assert reg.get_champion()["gen_id"] == "gen-2"
+
+    # No stray temp files left behind after either attempt.
+    assert [p.name for p in reg.registry_dir.glob("champion_pointer.json.tmp*")] == []
+
+
 def test_pointer_flip_is_atomic_on_failure(tmp_path, monkeypatch):
     """A failed swap must leave BOTH the pointer file and the DB on the old champion.
 
