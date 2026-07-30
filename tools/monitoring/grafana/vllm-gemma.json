@@ -1,0 +1,1884 @@
+{
+  "dashboard": {
+    "id": 9,
+    "uid": "vllm-gemma",
+    "title": "vLLM \u2014 DeepSeek V4 Flash",
+    "tags": [
+      "vllm",
+      "deepseek-v4-flash",
+      "inference"
+    ],
+    "schemaVersion": 39,
+    "version": 301,
+    "refresh": "5s",
+    "time": {
+      "from": "now-15m",
+      "to": "now"
+    },
+    "timepicker": {},
+    "templating": {
+      "list": []
+    },
+    "annotations": {
+      "list": [
+        {
+          "name": "vLLM restarts",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "enable": true,
+          "iconColor": "rgba(255, 96, 96, 1)",
+          "expr": "changes(process_start_time_seconds{job=~\"vllm-.*\"}[1m]) > 0",
+          "titleFormat": "{{job}} restarted"
+        }
+      ]
+    },
+    "panels": [
+      {
+        "id": 100,
+        "type": "row",
+        "title": "\ud83d\udda5\ufe0f Live Topology \u2014 All 3 GPUs & Serving Endpoints At-a-Glance",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 1
+        },
+        "collapsed": false,
+        "panels": []
+      },
+      {
+        "id": 101,
+        "type": "stat",
+        "title": "DeepSeek-V4-Flash (vLLM :8002)",
+        "description": "Active requests on vLLM serving DeepSeek-V4-Flash across Blackwell GPU 0 & GPU 1.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 0,
+          "y": 1,
+          "w": 5,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                }
+              ]
+            },
+            "displayName": "${__field.labels.job}"
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "center",
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "auto"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "vllm:num_requests_running{job=\"vllm-dsv4-flash\"}",
+            "legendFormat": "{{job}}"
+          }
+        ]
+      },
+      {
+        "id": 102,
+        "type": "stat",
+        "title": "Ollama (gemma4:12b)",
+        "description": "Loaded models in Ollama on Plex machine (AMD R9700 eGPU / GPU 2).",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 5,
+          "y": 1,
+          "w": 5,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "purple"
+                }
+              ]
+            },
+            "displayName": "${__field.labels.job}"
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "center",
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "auto"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "ollama_running_models_count{job=\"ollama-metrics-agent\"}",
+            "legendFormat": "{{job}}"
+          }
+        ]
+      },
+      {
+        "id": 104,
+        "type": "stat",
+        "title": "Total Tokens Today (LiteLLM)",
+        "description": "Total tokens processed across all users today via LiteLLM.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 10,
+          "y": 1,
+          "w": 4,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "blue"
+                }
+              ]
+            },
+            "displayName": "${__field.labels.job}"
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "center",
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "auto"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "sum(litellm_total_tokens{job=\"litellm-exporter\"})",
+            "legendFormat": "{{job}}"
+          }
+        ]
+      },
+      {
+        "id": 105,
+        "type": "stat",
+        "title": "Active Users Today",
+        "description": "Number of active user key aliases issuing API requests today.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 14,
+          "y": 1,
+          "w": 5,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "orange"
+                }
+              ]
+            },
+            "displayName": "${__field.labels.job}"
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "center",
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "auto"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "count(litellm_prompt_tokens{job=\"litellm-exporter\"} > 0)",
+            "legendFormat": "{{job}}"
+          }
+        ]
+      },
+      {
+        "id": 200,
+        "type": "row",
+        "title": "\u26a1 GPU Hardware Saturation \u2014 ALL 3 GPUs Overlayed (Blackwell GPU 0, GPU 1 + AMD eGPU / GPU 2)",
+        "gridPos": {
+          "x": 0,
+          "y": 5,
+          "w": 24,
+          "h": 1
+        },
+        "collapsed": false,
+        "panels": []
+      },
+      {
+        "id": 201,
+        "type": "gauge",
+        "title": "GPU 0 (Blackwell) Util (%)",
+        "description": "NVIDIA RTX PRO 6000 Blackwell GPU 0 (vLLM TP=2).",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 0,
+          "y": 6,
+          "w": 4,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 75.0,
+                  "color": "yellow"
+                },
+                {
+                  "value": 90.0,
+                  "color": "red"
+                }
+              ]
+            },
+            "displayName": "GPU 0 (Blackwell)"
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "showThresholdLabels": false,
+          "showThresholdMarkers": false,
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "DCGM_FI_DEV_GPU_UTIL{gpu=\"0\"}",
+            "legendFormat": "GPU 0 (Blackwell)"
+          }
+        ]
+      },
+      {
+        "id": 202,
+        "type": "gauge",
+        "title": "GPU 1 (Blackwell) Util (%)",
+        "description": "NVIDIA RTX PRO 6000 Blackwell GPU 1 (vLLM TP=2).",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 4,
+          "y": 6,
+          "w": 4,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 75.0,
+                  "color": "yellow"
+                },
+                {
+                  "value": 90.0,
+                  "color": "red"
+                }
+              ]
+            },
+            "displayName": "GPU 1 (Blackwell)"
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "showThresholdLabels": false,
+          "showThresholdMarkers": false,
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "DCGM_FI_DEV_GPU_UTIL{gpu=\"1\"}",
+            "legendFormat": "GPU 1 (Blackwell)"
+          }
+        ]
+      },
+      {
+        "id": 203,
+        "type": "gauge",
+        "title": "GPU 2 (AMD eGPU) Util (%)",
+        "description": "AMD R9700 eGPU (GPU 2 on Plex machine for Ollama Gemma & llama.cpp Qwen).",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 8,
+          "y": 6,
+          "w": 4,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 75.0,
+                  "color": "yellow"
+                },
+                {
+                  "value": 90.0,
+                  "color": "red"
+                }
+              ]
+            },
+            "displayName": "GPU 2 (AMD eGPU)"
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "showThresholdLabels": false,
+          "showThresholdMarkers": false,
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "amdgpu_gpu_busy_percent{job=\"plex-egpu\"}",
+            "legendFormat": "GPU 2 (AMD eGPU)"
+          }
+        ]
+      },
+      {
+        "id": 204,
+        "type": "gauge",
+        "title": "GPU 0 (Blackwell) Temp (\u00b0C)",
+        "description": "Temperature on Blackwell GPU 0.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 12,
+          "y": 6,
+          "w": 4,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "celsius",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 75.0,
+                  "color": "yellow"
+                },
+                {
+                  "value": 90.0,
+                  "color": "red"
+                }
+              ]
+            },
+            "displayName": "GPU 0 (Blackwell)"
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "showThresholdLabels": false,
+          "showThresholdMarkers": false,
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "DCGM_FI_DEV_GPU_TEMP{gpu=\"0\"}",
+            "legendFormat": "GPU 0 (Blackwell)"
+          }
+        ]
+      },
+      {
+        "id": 205,
+        "type": "gauge",
+        "title": "GPU 1 (Blackwell) Temp (\u00b0C)",
+        "description": "Temperature on Blackwell GPU 1.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 16,
+          "y": 6,
+          "w": 4,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "celsius",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 75.0,
+                  "color": "yellow"
+                },
+                {
+                  "value": 90.0,
+                  "color": "red"
+                }
+              ]
+            },
+            "displayName": "GPU 1 (Blackwell)"
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "showThresholdLabels": false,
+          "showThresholdMarkers": false,
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "DCGM_FI_DEV_GPU_TEMP{gpu=\"1\"}",
+            "legendFormat": "GPU 1 (Blackwell)"
+          }
+        ]
+      },
+      {
+        "id": 206,
+        "type": "gauge",
+        "title": "GPU 2 (AMD eGPU) Temp (\u00b0C)",
+        "description": "Temperature on AMD R9700 eGPU (GPU 2).",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 20,
+          "y": 6,
+          "w": 4,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "celsius",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 75.0,
+                  "color": "yellow"
+                },
+                {
+                  "value": 90.0,
+                  "color": "red"
+                }
+              ]
+            },
+            "displayName": "GPU 2 (AMD eGPU)"
+          },
+          "overrides": []
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "showThresholdLabels": false,
+          "showThresholdMarkers": false,
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "amdgpu_temp_celsius{job=\"plex-egpu\"} / 1000",
+            "legendFormat": "GPU 2 (AMD eGPU)"
+          }
+        ]
+      },
+      {
+        "id": 210,
+        "type": "timeseries",
+        "title": "ALL 3 GPUs \u2014 Compute Utilization (%) [Overlayed]",
+        "description": "Compute utilization overlayed across ALL THREE GPUs: GPU 0 (Blackwell), GPU 1 (Blackwell), and GPU 2 (AMD R9700 eGPU).",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 0,
+          "y": 10,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 12,
+              "showPoints": "never",
+              "spanNulls": true
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max",
+              "last"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "DCGM_FI_DEV_GPU_UTIL",
+            "legendFormat": "GPU {{gpu}} (NVIDIA Blackwell)"
+          },
+          {
+            "refId": "B",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "amdgpu_gpu_busy_percent{job=\"plex-egpu\"}",
+            "legendFormat": "GPU 2 (AMD R9700 eGPU)"
+          }
+        ]
+      },
+      {
+        "id": 211,
+        "type": "timeseries",
+        "title": "ALL 3 GPUs \u2014 VRAM Frame-Buffer Usage [Overlayed]",
+        "description": "VRAM frame-buffer memory used overlayed across ALL THREE GPUs.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 12,
+          "y": 10,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 12,
+              "showPoints": "never",
+              "spanNulls": true
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max",
+              "last"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "DCGM_FI_DEV_FB_USED * 1048576",
+            "legendFormat": "GPU {{gpu}} (NVIDIA Blackwell)"
+          },
+          {
+            "refId": "B",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "amdgpu_vram_used_bytes{job=\"plex-egpu\"}",
+            "legendFormat": "GPU 2 (AMD R9700 eGPU)"
+          }
+        ]
+      },
+      {
+        "id": 212,
+        "type": "timeseries",
+        "title": "ALL 3 GPUs \u2014 Power Draw (Watts) [Overlayed]",
+        "description": "Board power draw overlayed across ALL THREE GPUs.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 0,
+          "y": 18,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "watt",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 12,
+              "showPoints": "never",
+              "spanNulls": true
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max",
+              "last"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "DCGM_FI_DEV_POWER_USAGE",
+            "legendFormat": "GPU {{gpu}} (NVIDIA Blackwell)"
+          },
+          {
+            "refId": "B",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "amdgpu_power_microwatts{job=\"plex-egpu\"} / 1000000",
+            "legendFormat": "GPU 2 (AMD R9700 eGPU)"
+          }
+        ]
+      },
+      {
+        "id": 213,
+        "type": "timeseries",
+        "title": "ALL 3 GPUs \u2014 Operating Temperature (\u00b0C) [Overlayed]",
+        "description": "Operating temperature (\u00b0C) overlayed across ALL THREE GPUs.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 12,
+          "y": 18,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "celsius",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 12,
+              "showPoints": "never",
+              "spanNulls": true
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max",
+              "last"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "DCGM_FI_DEV_GPU_TEMP",
+            "legendFormat": "GPU {{gpu}} (NVIDIA Blackwell)"
+          },
+          {
+            "refId": "B",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "amdgpu_temp_celsius{job=\"plex-egpu\"} / 1000",
+            "legendFormat": "GPU 2 (AMD R9700 eGPU)"
+          }
+        ]
+      },
+      {
+        "id": 300,
+        "type": "row",
+        "title": "\ud83d\ude80 Token Throughput & tok/s Across All Inference Endpoints (vLLM, Ollama, llama.cpp, LiteLLM)",
+        "gridPos": {
+          "x": 0,
+          "y": 26,
+          "w": 24,
+          "h": 1
+        },
+        "collapsed": false,
+        "panels": []
+      },
+      {
+        "id": 301,
+        "type": "timeseries",
+        "title": "ALL Endpoints \u2014 Decode tok/s (Output Generation Speed)",
+        "description": "Real generation speed (decode tok/s) overlayed across all inference servers and proxy.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 0,
+          "y": 27,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 12,
+              "showPoints": "never",
+              "spanNulls": true
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max",
+              "last"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "rate(vllm:generation_tokens_total[1m])",
+            "legendFormat": "vLLM DeepSeek-V4-Flash (GPU 0 & 1)"
+          },
+          {
+            "refId": "B",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "ollama_gemma_tok_s{job=\"plex-egpu\"}",
+            "legendFormat": "Ollama Gemma 4 12B Benchmark (GPU 2)"
+          },
+          {
+            "refId": "C",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "rate(litellm_completion_tokens[1m])",
+            "legendFormat": "LiteLLM Gateway Output Rate"
+          }
+        ]
+      },
+      {
+        "id": 302,
+        "type": "timeseries",
+        "title": "ALL Endpoints \u2014 Prompt tok/s (Input Prefill Speed)",
+        "description": "Input prompt processing rate (prefill tok/s) overlayed across all endpoints.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 12,
+          "y": 27,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 12,
+              "showPoints": "never",
+              "spanNulls": true
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max",
+              "last"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "rate(vllm:prompt_tokens_total[1m])",
+            "legendFormat": "vLLM DeepSeek-V4-Flash prefill tok/s"
+          },
+          {
+            "refId": "B",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "rate(litellm_prompt_tokens[1m])",
+            "legendFormat": "LiteLLM Gateway prompt tok/s"
+          }
+        ]
+      },
+      {
+        "id": 303,
+        "type": "timeseries",
+        "title": "ALL Endpoints \u2014 Total tok/s (Prompt + Decode Combined)",
+        "description": "Combined input + output token processing rate across engines.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 0,
+          "y": 35,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 12,
+              "showPoints": "never",
+              "spanNulls": true
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max",
+              "last"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "rate(vllm:prompt_tokens_total[1m]) + rate(vllm:generation_tokens_total[1m])",
+            "legendFormat": "vLLM DeepSeek-V4-Flash Total tok/s"
+          },
+          {
+            "refId": "B",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "rate(litellm_total_tokens[1m])",
+            "legendFormat": "LiteLLM Gateway Total tok/s"
+          }
+        ]
+      },
+      {
+        "id": 304,
+        "type": "timeseries",
+        "title": "Per-Stream Output Speed (1 / Mean ITL)",
+        "description": "True single-request decode speed, independent of request concurrency.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 12,
+          "y": 35,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 12,
+              "showPoints": "never",
+              "spanNulls": true
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max",
+              "last"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "rate(vllm:inter_token_latency_seconds_count[1m]) / rate(vllm:inter_token_latency_seconds_sum[1m])",
+            "legendFormat": "vLLM DeepSeek-V4-Flash per-stream tok/s"
+          },
+          {
+            "refId": "B",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "ollama_gemma_tok_s{job=\"plex-egpu\"}",
+            "legendFormat": "Ollama Gemma 4 12B benchmark tok/s"
+          }
+        ]
+      },
+      {
+        "id": 400,
+        "type": "row",
+        "title": "\ud83d\udc65 LiteLLM Proxy \u2014 Per-User & Model Routing ('Who is using What')",
+        "gridPos": {
+          "x": 0,
+          "y": 43,
+          "w": 24,
+          "h": 1
+        },
+        "collapsed": false,
+        "panels": []
+      },
+      {
+        "id": 401,
+        "type": "table",
+        "title": "Per-User & Model Token Leaderboard",
+        "description": "Live breakdown of today's total token volume grouped by User (key_alias) and Model route.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 0,
+          "y": 44,
+          "w": 24,
+          "h": 10
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "align": "auto"
+            },
+            "unit": "short"
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "value": "key_alias"
+              },
+              "properties": [
+                {
+                  "id": "displayName",
+                  "value": "User / Key Alias"
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "value": "model"
+              },
+              "properties": [
+                {
+                  "id": "displayName",
+                  "value": "Model Route"
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "value": "Value"
+              },
+              "properties": [
+                {
+                  "id": "displayName",
+                  "value": "Total Tokens"
+                }
+              ]
+            }
+          ]
+        },
+        "options": {
+          "showTypeIcons": false,
+          "sortBy": [
+            {
+              "desc": true,
+              "displayName": "Total Tokens"
+            }
+          ]
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "topk(30, sum by (key_alias, model) (litellm_total_tokens{job=\"litellm-exporter\"}))",
+            "format": "table",
+            "instant": true,
+            "legendFormat": ""
+          }
+        ]
+      },
+      {
+        "id": 402,
+        "type": "barchart",
+        "title": "Per-User Prompt Tokens Today (Stacked by Model)",
+        "description": "Input prompt tokens consumed by each user key alias, color-coded by model.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 0,
+          "y": 54,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "stacking": {
+                "mode": "normal"
+              }
+            },
+            "unit": "short"
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "calcs": [],
+            "displayMode": "list",
+            "placement": "right"
+          },
+          "orientation": "horizontal",
+          "showValue": "auto",
+          "sort": {
+            "mode": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "topk(15, sum by (key_alias, model) (litellm_prompt_tokens{job=\"litellm-exporter\"}))",
+            "legendFormat": "{{model}}"
+          }
+        ]
+      },
+      {
+        "id": 403,
+        "type": "barchart",
+        "title": "Per-User Completion Tokens Today (Stacked by Model)",
+        "description": "Output completion tokens generated for each user key alias, color-coded by model.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 12,
+          "y": 54,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "stacking": {
+                "mode": "normal"
+              }
+            },
+            "unit": "short"
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "calcs": [],
+            "displayMode": "list",
+            "placement": "right"
+          },
+          "orientation": "horizontal",
+          "showValue": "auto",
+          "sort": {
+            "mode": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "topk(15, sum by (key_alias, model) (litellm_completion_tokens{job=\"litellm-exporter\"}))",
+            "legendFormat": "{{model}}"
+          }
+        ]
+      },
+      {
+        "id": 404,
+        "type": "stat",
+        "title": "LiteLLM Gateway Success Rate",
+        "description": "Overall request success rate through LiteLLM proxy.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 0,
+          "y": 62,
+          "w": 12,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percentunit",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                }
+              ]
+            },
+            "displayName": "${__field.labels.job}"
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "center",
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "auto"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "sum(litellm_requests_successful{job=\"litellm-exporter\"}) / (sum(litellm_requests_successful) + sum(litellm_requests_failed))",
+            "legendFormat": "{{job}}"
+          }
+        ]
+      },
+      {
+        "id": 405,
+        "type": "stat",
+        "title": "Total Gateway API Requests Today",
+        "description": "Total API requests routed through LiteLLM today.",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 12,
+          "y": 62,
+          "w": 12,
+          "h": 4
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "blue"
+                }
+              ]
+            },
+            "displayName": "${__field.labels.job}"
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "center",
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "auto"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "sum(litellm_requests_total{job=\"litellm-exporter\"})",
+            "legendFormat": "{{job}}"
+          }
+        ]
+      },
+      {
+        "id": 500,
+        "type": "row",
+        "title": "\u23f1\ufe0f Latency, Concurrency & MTP Speculative Decoding",
+        "gridPos": {
+          "x": 0,
+          "y": 66,
+          "w": 24,
+          "h": 1
+        },
+        "collapsed": false,
+        "panels": []
+      },
+      {
+        "id": 501,
+        "type": "timeseries",
+        "title": "TTFT \u2014 Time to First Token (s)",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 0,
+          "y": 67,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 12,
+              "showPoints": "never",
+              "spanNulls": true
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max",
+              "last"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "histogram_quantile(0.5,  sum by(le, job) (rate(vllm:time_to_first_token_seconds_bucket[5m])))",
+            "legendFormat": "vLLM DSV4-Flash p50"
+          },
+          {
+            "refId": "B",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "histogram_quantile(0.95, sum by(le, job) (rate(vllm:time_to_first_token_seconds_bucket[5m])))",
+            "legendFormat": "vLLM DSV4-Flash p95"
+          },
+          {
+            "refId": "C",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "histogram_quantile(0.99, sum by(le, job) (rate(vllm:time_to_first_token_seconds_bucket[5m])))",
+            "legendFormat": "vLLM DSV4-Flash p99"
+          }
+        ]
+      },
+      {
+        "id": 502,
+        "type": "timeseries",
+        "title": "Inter-Token Latency (ms)",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 12,
+          "y": 67,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ms",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 12,
+              "showPoints": "never",
+              "spanNulls": true
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max",
+              "last"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "1000 * histogram_quantile(0.5,  sum by(le, job) (rate(vllm:inter_token_latency_seconds_bucket[5m])))",
+            "legendFormat": "vLLM DSV4-Flash p50"
+          },
+          {
+            "refId": "B",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "1000 * histogram_quantile(0.95, sum by(le, job) (rate(vllm:inter_token_latency_seconds_bucket[5m])))",
+            "legendFormat": "vLLM DSV4-Flash p95"
+          },
+          {
+            "refId": "C",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "1000 * histogram_quantile(0.99, sum by(le, job) (rate(vllm:inter_token_latency_seconds_bucket[5m])))",
+            "legendFormat": "vLLM DSV4-Flash p99"
+          }
+        ]
+      },
+      {
+        "id": 503,
+        "type": "timeseries",
+        "title": "End-to-End Request Latency (s)",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 0,
+          "y": 75,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 12,
+              "showPoints": "never",
+              "spanNulls": true
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max",
+              "last"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "histogram_quantile(0.5,  sum by(le, job) (rate(vllm:e2e_request_latency_seconds_bucket[5m])))",
+            "legendFormat": "vLLM DSV4-Flash p50"
+          },
+          {
+            "refId": "B",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "histogram_quantile(0.95, sum by(le, job) (rate(vllm:e2e_request_latency_seconds_bucket[5m])))",
+            "legendFormat": "vLLM DSV4-Flash p95"
+          },
+          {
+            "refId": "C",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "histogram_quantile(0.99, sum by(le, job) (rate(vllm:e2e_request_latency_seconds_bucket[5m])))",
+            "legendFormat": "vLLM DSV4-Flash p99"
+          }
+        ]
+      },
+      {
+        "id": 504,
+        "type": "timeseries",
+        "title": "Active vs Waiting Requests Across Endpoints",
+        "description": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 12,
+          "y": 75,
+          "w": 12,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 12,
+              "showPoints": "never",
+              "spanNulls": true
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max",
+              "last"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "vllm:num_requests_running",
+            "legendFormat": "vLLM running"
+          },
+          {
+            "refId": "B",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "vllm:num_requests_waiting",
+            "legendFormat": "vLLM waiting"
+          }
+        ]
+      },
+      {
+        "id": 505,
+        "type": "timeseries",
+        "title": "Spec-Decode Acceptance Rate & Drafts/sec (DSV4-Flash MTP)",
+        "description": "Fraction of MTP draft tokens accepted (>0.5 is healthy).",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "gridPos": {
+          "x": 0,
+          "y": 83,
+          "w": 24,
+          "h": 8
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 12,
+              "showPoints": "never",
+              "spanNulls": true
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "calcs": [
+              "mean",
+              "max",
+              "last"
+            ]
+          },
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          }
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "rate(vllm:spec_decode_num_accepted_tokens_total[5m]) / rate(vllm:spec_decode_num_draft_tokens_total[5m])",
+            "legendFormat": "Acceptance Rate"
+          },
+          {
+            "refId": "B",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "expr": "rate(vllm:spec_decode_num_drafts_total[5m])",
+            "legendFormat": "Drafts/sec"
+          }
+        ]
+      }
+    ]
+  },
+  "overwrite": true
+}
