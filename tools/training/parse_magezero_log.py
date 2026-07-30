@@ -50,6 +50,51 @@ RE_TIMESTAMP = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 RE_ACTION_TUPLE = re.compile(r"\[([^\]]+?) score: (-?[\d.eE+-]+) count: (\d+)\]")
 
 
+# ── Known basic and dual land names for land tracking ─────────────────
+
+BASIC_LANDS = {"Plains", "Island", "Swamp", "Mountain", "Forest"}
+# Basic lands that appear ONLY in opponent mono-decks, never in UWTempo
+OPPONENT_BASICS = {"Mountain", "Forest", "Swamp", "Plains"}
+# Lands from UWTempo (Island is shared with MonoU but never with other mono-decks)
+UWTEMPO_LANDS = {"Island"}
+
+
+def _is_land_action(chosen: str) -> bool:
+    """Check if a chosen action is playing a land."""
+    if not chosen.startswith("Play "):
+        return False
+    rest = chosen[5:]  # everything after "Play "
+    # Basic lands
+    if rest in BASIC_LANDS:
+        return True
+    # Non-basic lands: check if this is a known land card or looks like one
+    # (no curly braces, not a spell-like name)
+    if '{' in rest or '}' in rest:
+        return False
+    return True  # Treat "Play <anything>" as a land play
+
+
+def _hand_player_is_a(hand: list[str]) -> bool | None:
+    """Determine if the current turn player (whose hand this is) is PlayerA.
+    
+    Uses basic-land detection: if the hand contains an opponent-only basic
+    (Mountain/Forest/Swamp/Plains) it's PlayerB's turn.  If it contains
+    Island (absent from MonoR/G/B/W hands) it's PlayerA's turn.
+    Returns None when both are present or neither (can't determine).
+    """
+    has_opp_basic = any(c in OPPONENT_BASICS for c in hand)
+    has_uw_land = any(c in UWTEMPO_LANDS for c in hand)
+    
+    # Case: hand has at least one of each — can't differentiate
+    if has_opp_basic and has_uw_land:
+        return None
+    if has_uw_land and not has_opp_basic:
+        return True   # PlayerA's turn
+    if has_opp_basic and not has_uw_land:
+        return False  # PlayerB's turn
+    return None       # No basic lands in hand at all — can't tell
+
+
 # ── Phase → decision_kind mapping ───────────────────────────────────────
 
 DECISION_KIND_MAP = {
@@ -206,6 +251,7 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
             _finalize_game(state, decisions)
             thread_game_seq[thread_id] += 1
             state.start_new_game(thread_game_seq[thread_id])
+            state.turn_player_is_a = (dm.group(1) == "A")
             pending_pool.pop(thread_id, None)
             pending_menu.pop(thread_id, None)
             continue
@@ -248,6 +294,36 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
             kind = classify_kind(phase_code, pool_actions)
             mcts_counts = {name: count for name, _, count in pool_actions}
 
+            # ── Turn tracking ──────────────────────────────────
+            if turn != state.last_turn:
+                # New turn — reset lands_played counter
+                state.lands_played_this_turn = 0
+                state.last_turn = turn
+
+            # Clear stale _perm_buffer — any permanents sitting in the
+            # buffer from before this chose_action (e.g. the opponent's
+            # starting board before the first decision) must not leak
+            # into this decision's permanents.
+            state._perm_buffer = []
+
+            # Derive lands_played this turn
+            if _is_land_action(chosen):
+                state.lands_played_this_turn += 1
+
+            # Derive land_playable: a land-play menu action exists and
+            # the player hasn't played a land yet this turn.
+            land_playable = False
+            has_play_land_in_menu = any(
+                _is_land_action(a[0]) for a in pool_actions
+            )
+            if has_play_land_in_menu and state.lands_played_this_turn == 0:
+                land_playable = True
+            elif has_play_land_in_menu:
+                # Land is available in menu but already played one this turn
+                land_playable = False
+
+            state.total_decisions += 1
+
             decision = {
                 "game_id": state.game_id,
                 "turn": turn,
@@ -260,6 +336,8 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
                 "menu": list(menu),
                 "chosen": chosen,
                 "mcts_counts": mcts_counts,
+                "lands_played": max(0, state.lands_played_this_turn),
+                "land_playable": land_playable,
                 "actor": "PlayerA",
                 "outcome": "unknown",
                 "decision_kind": kind,
@@ -318,6 +396,26 @@ class _ThreadState:
         self.last_log_life_a: int | None = None
         self.last_log_life_b: int | None = None
         self._perm_buffer: list[list[dict]] = []
+        # ── Turn tracking for self/opp disambiguation ──────────
+        self.turn_player_is_a: bool | None = None  # set on die roll
+        self.last_turn: int = 0
+        # lands_played in the current turn (resets on turn change)
+        self.lands_played_this_turn: int = 0
+        # Counter for rows excluded because land-playability is underivable
+        self.excluded_no_land_menu: int = 0
+        # Counter for total decisions
+        self.total_decisions: int = 0
+
+    @property
+    def _is_player_a_turn(self) -> bool | None:
+        """Determine if the current turn belongs to PlayerA.
+        Uses die-roll result: winner takes turn 1.
+        """
+        if self.turn_player_is_a is None:
+            return None
+        return (
+            (self.last_turn % 2 == 1) == self.turn_player_is_a
+        )
 
     def start_new_game(self, game_seq: int):
         self.game_seq = game_seq
@@ -331,6 +429,11 @@ class _ThreadState:
         self.last_log_life_a = None
         self.last_log_life_b = None
         self._perm_buffer = []
+        self.turn_player_is_a = None
+        self.last_turn = 0
+        self.lands_played_this_turn = 0
+        self.excluded_no_land_menu = 0
+        self.total_decisions = 0
 
     def on_log_life(self, turn: int, phase_name: str, phase_code: str,
                     life_a: int, life_b: int):
@@ -350,8 +453,22 @@ class _ThreadState:
             self._perm_buffer = [permanents]
         elif len(self._perm_buffer) == 1:
             self._perm_buffer.append(permanents)
-            self.latest_perms_self = list(self._perm_buffer[0])
-            self.latest_perms_opp = list(self._perm_buffer[1])
+            # The first Permanents line is the HAND PLAYER's board.
+            # The hand is always the current turn player's.  Determine who
+            # that is by checking which deck's basic lands appear in the hand.
+            hand_player_is_a = _hand_player_is_a(self.latest_hand)
+            if hand_player_is_a is True:
+                # Hand is PlayerA (UWTempo) → first perm = PlayerA = self
+                self.latest_perms_self = list(self._perm_buffer[0])
+                self.latest_perms_opp = list(self._perm_buffer[1])
+            elif hand_player_is_a is False:
+                # Hand is PlayerB (opponent) → second perm = PlayerA = self
+                self.latest_perms_self = list(self._perm_buffer[1])
+                self.latest_perms_opp = list(self._perm_buffer[0])
+            else:
+                # Unknown — fall back to first perm = self
+                self.latest_perms_self = list(self._perm_buffer[0])
+                self.latest_perms_opp = list(self._perm_buffer[1])
             _backfill_battlefield(self)
         else:
             self._perm_buffer = [permanents]
