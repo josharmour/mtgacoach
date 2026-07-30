@@ -28,7 +28,7 @@ _KNOWN_CARDS: list[str] = []
 def _load_cards() -> list[str]:
     """Load known card names from the card map, sorted longest-first."""
     try:
-        with open(_CARD_MAP_PATH, "r") as f:
+        with open(_CARD_MAP_PATH) as f:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return []

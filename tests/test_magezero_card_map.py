@@ -3,6 +3,7 @@
 
 import json
 import os
+
 import pytest
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -16,36 +17,26 @@ ACTIONS_MODULE = os.path.join(TOOLS_TRAINING, "magezero_actions.py")
 
 # Known deck file names (6 decks, ~83 unique card names)
 DECK_FILES = {
-    "UWTempo": os.path.join(
-        REPO_ROOT, "..", "..", "magezero", "xmage", "decks", "UWTempo.dck"
-    ),
-    "Standard-MonoR": os.path.join(
-        REPO_ROOT, "..", "..", "magezero", "xmage", "decks", "Standard-MonoR.dck"
-    ),
-    "Standard-MonoG": os.path.join(
-        REPO_ROOT, "..", "..", "magezero", "xmage", "decks", "Standard-MonoG.dck"
-    ),
-    "Standard-MonoB": os.path.join(
-        REPO_ROOT, "..", "..", "magezero", "xmage", "decks", "Standard-MonoB.dck"
-    ),
-    "Standard-MonoW": os.path.join(
-        REPO_ROOT, "..", "..", "magezero", "xmage", "decks", "Standard-MonoW.dck"
-    ),
-    "Standard-MonoU": os.path.join(
-        REPO_ROOT, "..", "..", "magezero", "xmage", "decks", "Standard-MonoU.dck"
-    ),
+    "UWTempo": os.path.join(REPO_ROOT, "..", "..", "magezero", "xmage", "decks", "UWTempo.dck"),
+    "Standard-MonoR": os.path.join(REPO_ROOT, "..", "..", "magezero", "xmage", "decks", "Standard-MonoR.dck"),
+    "Standard-MonoG": os.path.join(REPO_ROOT, "..", "..", "magezero", "xmage", "decks", "Standard-MonoG.dck"),
+    "Standard-MonoB": os.path.join(REPO_ROOT, "..", "..", "magezero", "xmage", "decks", "Standard-MonoB.dck"),
+    "Standard-MonoW": os.path.join(REPO_ROOT, "..", "..", "magezero", "xmage", "decks", "Standard-MonoW.dck"),
+    "Standard-MonoU": os.path.join(REPO_ROOT, "..", "..", "magezero", "xmage", "decks", "Standard-MonoU.dck"),
 }
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+
 def count_deck_names() -> set[str]:
     """Parse all 6 deck files and return the set of card names found."""
     import re
+
     names: set[str] = set()
     for _deck_name, path in DECK_FILES.items():
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            with open(path, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     line = line.strip().rstrip("\r")
                     if not line or line.startswith("LAYOUT"):
@@ -59,7 +50,7 @@ def count_deck_names() -> set[str]:
 
 
 def load_card_map() -> dict:
-    with open(CARD_MAP_PATH, "r") as f:
+    with open(CARD_MAP_PATH) as f:
         return json.load(f)
 
 
@@ -78,16 +69,12 @@ class TestCardMapCompleteness:
         return load_card_map()
 
     def test_map_exists(self):
-        assert os.path.exists(CARD_MAP_PATH), (
-            f"Card map not found at {CARD_MAP_PATH}"
-        )
+        assert os.path.exists(CARD_MAP_PATH), f"Card map not found at {CARD_MAP_PATH}"
 
     def test_all_deck_names_in_map(self, deck_names, card_map):
         """Every name from the deck files is a key in the output map."""
         missing = deck_names - set(card_map.keys())
-        assert not missing, (
-            f"{len(missing)} deck card names missing from map: {sorted(missing)}"
-        )
+        assert not missing, f"{len(missing)} deck card names missing from map: {sorted(missing)}"
 
     def test_all_names_have_scryfall_field(self, card_map):
         """Every entry has a non-empty scryfall canonical name."""
@@ -97,22 +84,16 @@ class TestCardMapCompleteness:
     def test_all_names_found(self, card_map):
         """Every card was found (exact or fuzzy) on Scryfall."""
         missing = [k for k, v in card_map.items() if not v.get("found")]
-        assert not missing, (
-            f"{len(missing)} cards not found on Scryfall: {missing}"
-        )
+        assert not missing, f"{len(missing)} cards not found on Scryfall: {missing}"
 
     def test_exact_count(self, card_map):
         """At most 2 entries may be fuzzy (the layout-only refs)."""
         fuzzy = [k for k, v in card_map.items() if v.get("found") and not v.get("exact")]
-        assert len(fuzzy) <= 2, (
-            f"Expected ≤2 fuzzy matches, got {len(fuzzy)}: {fuzzy}"
-        )
+        assert len(fuzzy) <= 2, f"Expected ≤2 fuzzy matches, got {len(fuzzy)}: {fuzzy}"
 
     def test_at_least_83_entries(self, card_map):
         """At least 83 entries in the map (the number of deck card names)."""
-        assert len(card_map) >= 83, (
-            f"Expected ≥83 entries in card map, got {len(card_map)}"
-        )
+        assert len(card_map) >= 83, f"Expected ≥83 entries in card map, got {len(card_map)}"
 
 
 class TestClassifyAction:
@@ -122,6 +103,7 @@ class TestClassifyAction:
     def _import_module(self):
         """Import once, before any test in the class."""
         import importlib.util
+
         spec = importlib.util.spec_from_file_location("magezero_actions", ACTIONS_MODULE)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -232,9 +214,7 @@ class TestCardNameResolution:
         cm = load_card_map()
         entry = cm.get("Brutal Cathar")
         assert entry is not None
-        assert "//" in entry["scryfall"], (
-            f"Expected DFC notation, got: {entry['scryfall']}"
-        )
+        assert "//" in entry["scryfall"], f"Expected DFC notation, got: {entry['scryfall']}"
 
     def test_unholy_annex_has_separator(self):
         """Unholy Annex // Ritual Chamber is already a DFC name."""

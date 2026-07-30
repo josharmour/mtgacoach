@@ -6,7 +6,6 @@ hand/perm parsing, outcome calibration, and edge cases.
 
 from __future__ import annotations
 
-import json
 import sys
 import tempfile
 from pathlib import Path
@@ -15,6 +14,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "tools" / "training"))
 
+import pytest
 from parse_magezero_log import (
     RE_CHOSE_ACTION,
     RE_DIE_ROLL,
@@ -25,8 +25,8 @@ from parse_magezero_log import (
     RE_PLAYER_LIFE,
     RE_POOL,
     RE_POOL_TOP,
-    RE_WIN_RATE,
     RE_THREAD,
+    RE_WIN_RATE,
     SessionInfo,
     detect_sessions,
     parse_card_list,
@@ -35,18 +35,14 @@ from parse_magezero_log import (
     parse_pool_actions,
 )
 
-import pytest
-
-
 # ════════════════════════════════════════════════════════════════════════
 # Regex tests
 # ════════════════════════════════════════════════════════════════════════
 
+
 class TestRegex:
     def test_thread_id(self):
-        m = RE_THREAD.search(
-            "INFO  ts  msg =>[pool-3-thread-6] ComputerPlayerMCTS.priority"
-        )
+        m = RE_THREAD.search("INFO  ts  msg =>[pool-3-thread-6] ComputerPlayerMCTS.priority")
         assert m is not None
         assert m.group(1) == "pool-3-thread-6"
 
@@ -61,8 +57,7 @@ class TestRegex:
         assert m.group(1) == "B"
 
     def test_log_life(self):
-        line = ("INFO  ts [4:Precombat Main:PRECOMBAT_MAIN]"
-                "[player PlayerA:18][player PlayerB:20] =>[t]")
+        line = "INFO  ts [4:Precombat Main:PRECOMBAT_MAIN][player PlayerA:18][player PlayerB:20] =>[t]"
         m = RE_LOG_LIFE.search(line)
         assert m is not None
         assert m.group(1) == "4"
@@ -72,9 +67,11 @@ class TestRegex:
         assert m.group(5) == "20"
 
     def test_chose_action(self):
-        line = ("INFO  ts "
-                "[1:Precombat Main:PRECOMBAT_MAIN]chose action:Play Adarkar Wastes "
-                "success ratio: 0.0589 =>[t]")
+        line = (
+            "INFO  ts "
+            "[1:Precombat Main:PRECOMBAT_MAIN]chose action:Play Adarkar Wastes "
+            "success ratio: 0.0589 =>[t]"
+        )
         m = RE_CHOSE_ACTION.search(line)
         assert m is not None
         assert m.group(1) == "1"
@@ -84,9 +81,11 @@ class TestRegex:
         assert float(m.group(5)) == pytest.approx(0.0589, abs=1e-4)
 
     def test_chose_action_declare_attackers(self):
-        line = ("INFO  ts "
-                "[12:Combat:DECLARE_ATTACKERS]chose action:"
-                "{1}{U}: Untap {this}. success ratio: 0.5676 =>[t]")
+        line = (
+            "INFO  ts "
+            "[12:Combat:DECLARE_ATTACKERS]chose action:"
+            "{1}{U}: Untap {this}. success ratio: 0.5676 =>[t]"
+        )
         m = RE_CHOSE_ACTION.search(line)
         assert m is not None
         assert m.group(1) == "12"
@@ -94,9 +93,11 @@ class TestRegex:
         assert "{1}{U}: Untap {this}." in m.group(4)
 
     def test_pool(self):
-        line = ("INFO PRECOMBAT_MAIN0pool= actions: "
-                "[Pass score: -0.075 count: 57] "
-                "[Play Adarkar Wastes score: 0.059 count: 304]  =>[t]")
+        line = (
+            "INFO PRECOMBAT_MAIN0pool= actions: "
+            "[Pass score: -0.075 count: 57] "
+            "[Play Adarkar Wastes score: 0.059 count: 304]  =>[t]"
+        )
         m = RE_POOL.search(line)
         assert m is not None
         assert m.group(1) == "PRECOMBAT_MAIN"
@@ -104,18 +105,22 @@ class TestRegex:
         assert "Play Adarkar Wastes" in m.group(3)
 
     def test_pool_top(self):
-        line = ("INFO PRECOMBAT_MAIN1 (top: Cast Combat Research)pool= actions: "
-                "[Hired Claw score: 0.055 count: 324] "
-                "[Sleep-Cursed Faerie score: 0.055 count: 326]  =>[t]")
+        line = (
+            "INFO PRECOMBAT_MAIN1 (top: Cast Combat Research)pool= actions: "
+            "[Hired Claw score: 0.055 count: 324] "
+            "[Sleep-Cursed Faerie score: 0.055 count: 326]  =>[t]"
+        )
         m = RE_POOL_TOP.search(line)
         assert m is not None
         assert m.group(1) == "PRECOMBAT_MAIN"
         assert m.group(2) == "1"
 
     def test_pool_binary(self):
-        line = ("INFO DECLARE_ATTACKERS0pool= actions: "
-                "[false score: -0.106 count: 764] "
-                "[true score: -0.153 count: 235]  =>[t]")
+        line = (
+            "INFO DECLARE_ATTACKERS0pool= actions: "
+            "[false score: -0.106 count: 764] "
+            "[true score: -0.153 count: 235]  =>[t]"
+        )
         m = RE_POOL.search(line)
         assert m is not None
         assert m.group(1) == "DECLARE_ATTACKERS"
@@ -128,8 +133,10 @@ class TestRegex:
         assert items == ["Play Adarkar Wastes", "Pass"]
 
     def test_hand(self):
-        line = ("INFO  -> Hand: [Island; Meticulous Archive; "
-                "No More Lies; Bounce Off; Combat Research; Combat Research] =>[t]")
+        line = (
+            "INFO  -> Hand: [Island; Meticulous Archive; "
+            "No More Lies; Bounce Off; Combat Research; Combat Research] =>[t]"
+        )
         m = RE_HAND.search(line)
         assert m is not None
         assert "Island" in m.group(1)
@@ -158,8 +165,7 @@ class TestRegex:
         assert m.group(2) == "18"
 
     def test_win_rate(self):
-        line = ("INFO  2026-07-28 22:02:41,755 "
-                "Player A win rate: 31.67% (19/60) =>[main]")
+        line = "INFO  2026-07-28 22:02:41,755 Player A win rate: 31.67% (19/60) =>[main]"
         m = RE_WIN_RATE.search(line)
         assert m is not None
         assert float(m.group(1)) == pytest.approx(31.67, abs=0.01)
@@ -170,6 +176,7 @@ class TestRegex:
 # ════════════════════════════════════════════════════════════════════════
 # Parser function tests
 # ════════════════════════════════════════════════════════════════════════
+
 
 class TestParseFunctions:
     def test_parse_card_list_basic(self):
@@ -219,6 +226,7 @@ class TestParseFunctions:
 # ════════════════════════════════════════════════════════════════════════
 # Session detection tests
 # ════════════════════════════════════════════════════════════════════════
+
 
 class TestSessionDetection:
     def test_smoke_session_count(self):
@@ -324,8 +332,14 @@ class TestLogParsing:
         assert d["phase"] == "PRECOMBAT_MAIN"
         assert d["chosen"] == "Play Island"
         assert d["active_life"] == 20
-        assert d["hand"] == ["Island", "Adarkar Wastes", "Bounce Off",
-                             "Combat Research", "Shardmage's Rescue", "Sleep-Cursed Faerie"]
+        assert d["hand"] == [
+            "Island",
+            "Adarkar Wastes",
+            "Bounce Off",
+            "Combat Research",
+            "Shardmage's Rescue",
+            "Sleep-Cursed Faerie",
+        ]
         assert d["battlefield_self"] == [{"name": "Island", "tapped": False}]
         assert d["battlefield_opp"] == []
         assert d["menu"] == ["Play Island", "Pass"]
@@ -337,10 +351,7 @@ class TestLogParsing:
 
     def test_comma_in_card_name(self):
         """Card names with commas (Skrelv, Defector Mite) should parse correctly."""
-        log = TEST_LOG_MULTI_THREAD.replace(
-            "Permanents: [Island]",
-            "Permanents: [Skrelv, Defector Mite]"
-        )
+        log = TEST_LOG_MULTI_THREAD.replace("Permanents: [Island]", "Permanents: [Skrelv, Defector Mite]")
         with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
             f.write(log)
             log_path = f.name
@@ -445,6 +456,7 @@ class TestLogParsing:
 # ════════════════════════════════════════════════════════════════════════
 # Edge case tests
 # ════════════════════════════════════════════════════════════════════════
+
 
 class TestEdgeCases:
     def test_empty_log(self):

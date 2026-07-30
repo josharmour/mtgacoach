@@ -2,12 +2,11 @@
 """Tests for baseline_plan.py — power maths against hand-computed values."""
 
 import sys
-import math
 
 import pytest
 
 sys.path.insert(0, "tools/training/wp3")
-from baseline_plan import mde, baseline_games_needed, Z_ALPHA_2, Z_BETA
+from baseline_plan import Z_ALPHA_2, Z_BETA, baseline_games_needed, mde
 
 # ── known constants ────────────────────────────────────────────
 P_BL = 86 / 299  # 0.287625...
@@ -17,8 +16,10 @@ def assert_approx(actual, expected, tol_pp=0.02, label=""):
     """Assert |actual - expected| <= tol_pp (in percentage points)."""
     ok = abs(actual - expected) <= tol_pp
     status = "✓" if ok else "✗"
-    print(f"  {status} {label}: got {actual:.4f} pp, expected ~{expected:.2f} pp"
-          + ("" if ok else f"  *** FAIL (delta={abs(actual-expected):.4f})"))
+    print(
+        f"  {status} {label}: got {actual:.4f} pp, expected ~{expected:.2f} pp"
+        + ("" if ok else f"  *** FAIL (delta={abs(actual - expected):.4f})")
+    )
     if not ok:
         raise AssertionError(f"{label}: {actual:.4f} != {expected:.2f} pp")
 
@@ -27,8 +28,10 @@ def assert_int_approx(actual, expected, tol=50, label=""):
     """Assert |actual - expected| <= tol integer."""
     ok = abs(actual - expected) <= tol
     status = "✓" if ok else "✗"
-    print(f"  {status} {label}: got {actual}, expected ~{expected}"
-          + ("" if ok else f"  *** FAIL (delta={abs(actual-expected)})"))
+    print(
+        f"  {status} {label}: got {actual}, expected ~{expected}"
+        + ("" if ok else f"  *** FAIL (delta={abs(actual - expected)})")
+    )
     if not ok:
         raise AssertionError(f"{label}: {actual} != {expected}")
 
@@ -75,14 +78,13 @@ def test_z_values():
     """Verify the z-quantile constants are correct."""
     pytest.importorskip("scipy.stats")
     from scipy.stats import norm
+
     # z_{0.025} = 1.959964
     expected_alpha = norm.ppf(1 - 0.05 / 2)
-    assert abs(Z_ALPHA_2 - expected_alpha) < 0.0001, \
-        f"Z_ALPHA_2 off: {Z_ALPHA_2} vs {expected_alpha}"
+    assert abs(Z_ALPHA_2 - expected_alpha) < 0.0001, f"Z_ALPHA_2 off: {Z_ALPHA_2} vs {expected_alpha}"
     # z_{0.20} = 0.841621
     expected_beta = norm.ppf(0.80)
-    assert abs(Z_BETA - expected_beta) < 0.0001, \
-        f"Z_BETA off: {Z_BETA} vs {expected_beta}"
+    assert abs(Z_BETA - expected_beta) < 0.0001, f"Z_BETA off: {Z_BETA} vs {expected_beta}"
     print(f"\n5) Z-quantiles: Z_ALPHA_2={Z_ALPHA_2:.6f} Z_BETA={Z_BETA:.6f}")
 
 
@@ -93,14 +95,12 @@ def test_inverse():
     n = baseline_games_needed(P_BL, 1299, 5.0)
     assert_int_approx(n, 1275, tol=50, label="n_baseline for 5 pp (net=1299)")
     # Verify that n actually achieves <= 5pp
-    assert mde(P_BL, n, 1299) <= 5.0, \
-        f"MDE({n}, 1299) = {mde(P_BL, n, 1299):.4f} > 5.0 pp"
+    assert mde(P_BL, n, 1299) <= 5.0, f"MDE({n}, 1299) = {mde(P_BL, n, 1299):.4f} > 5.0 pp"
 
     # At 4 pp with n_net=1299, should be ~4444 games
     n = baseline_games_needed(P_BL, 1299, 4.0)
     assert_int_approx(n, 4444, tol=50, label="n_baseline for 4 pp (net=1299)")
-    assert mde(P_BL, n, 1299) <= 4.0, \
-        f"MDE({n}, 1299) = {mde(P_BL, n, 1299):.4f} > 4.0 pp"
+    assert mde(P_BL, n, 1299) <= 4.0, f"MDE({n}, 1299) = {mde(P_BL, n, 1299):.4f} > 4.0 pp"
 
 
 def test_formula_bounds():
@@ -112,8 +112,7 @@ def test_formula_bounds():
     total = 2000
     asymmetric = mde(P_BL, 500, 1500)
     symmetric = mde(P_BL, 1000, 1000)
-    assert asymmetric > symmetric, \
-        f"Asymmetric ({asymmetric:.4f}) should be > symmetric ({symmetric:.4f})"
+    assert asymmetric > symmetric, f"Asymmetric ({asymmetric:.4f}) should be > symmetric ({symmetric:.4f})"
     print(f"  ✓ asymmetric (500+1500)={asymmetric:.4f} > symmetric (1000+1000)={symmetric:.4f}")
 
 

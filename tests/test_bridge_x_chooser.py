@@ -15,7 +15,6 @@ import pytest
 
 from arenamcp.gre_bridge import GREBridge, GREBridgeError
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -30,9 +29,7 @@ class _MockPipe:
         self._closed = threading.Event()
         if responses:
             for r in responses:
-                self._responses.append(
-                    (json.dumps(r, separators=(",", ":")) + "\n").encode("utf-8")
-                )
+                self._responses.append((json.dumps(r, separators=(",", ":")) + "\n").encode("utf-8"))
 
     def write(self, data: bytes) -> int:
         if self._closed.is_set():
@@ -92,7 +89,14 @@ def test_submit_x_returns_true_on_success():
 
 def test_submit_x_returns_false_on_plugin_error():
     """submit_x returns False when the plugin returns ok=False."""
-    pipe = _MockPipe([{"ok": False, "error": "CastingTimeOptionRequest has no CastingTimeOption_NumericInputRequest child"}])
+    pipe = _MockPipe(
+        [
+            {
+                "ok": False,
+                "error": "CastingTimeOptionRequest has no CastingTimeOption_NumericInputRequest child",
+            }
+        ]
+    )
     bridge = _bridge_with_pipe(pipe)
     assert bridge.submit_x(3) is False
 
@@ -156,9 +160,24 @@ def _casting_option_response(
             ],
         },
         "actions": [
-            {"actionType": "CastingTimeOption", "choiceKind": "numeric_input", "label": "X = 0", "numericValue": 0},
-            {"actionType": "CastingTimeOption", "choiceKind": "numeric_input", "label": "X = 2", "numericValue": 2},
-            {"actionType": "CastingTimeOption", "choiceKind": "numeric_input", "label": "X = 4", "numericValue": 4},
+            {
+                "actionType": "CastingTimeOption",
+                "choiceKind": "numeric_input",
+                "label": "X = 0",
+                "numericValue": 0,
+            },
+            {
+                "actionType": "CastingTimeOption",
+                "choiceKind": "numeric_input",
+                "label": "X = 2",
+                "numericValue": 2,
+            },
+            {
+                "actionType": "CastingTimeOption",
+                "choiceKind": "numeric_input",
+                "label": "X = 4",
+                "numericValue": 4,
+            },
             {"actionType": "CastingTimeOption", "choiceKind": "done", "label": "Done"},
         ],
         "numeric_min": numeric_min,
@@ -184,7 +203,9 @@ def _casting_option_response(
 def test_get_pending_actions_passes_numeric_fields():
     """get_pending_actions for CastingTimeOptionRequest must include numeric fields."""
     response = _casting_option_response(
-        numeric_min=0, numeric_max=7, numeric_step=1,
+        numeric_min=0,
+        numeric_max=7,
+        numeric_step=1,
         numeric_disallowed=[1, 3, 5],
         grp_id=12345,
     )
@@ -238,7 +259,8 @@ def test_get_pending_actions_numeric_fields_absent_older_plugin():
 def test_get_pending_actions_disallow_even():
     """Numeric fields must include disallow_even flag when set."""
     response = _casting_option_response(
-        numeric_min=0, numeric_max=10,
+        numeric_min=0,
+        numeric_max=10,
         numeric_disallow_even=True,
     )
     pipe = _MockPipe([response])
@@ -252,7 +274,8 @@ def test_get_pending_actions_disallow_even():
 def test_get_pending_actions_disallow_odd():
     """Numeric fields must include disallow_odd flag when set."""
     response = _casting_option_response(
-        numeric_min=1, numeric_max=9,
+        numeric_min=1,
+        numeric_max=9,
         numeric_disallow_odd=True,
     )
     pipe = _MockPipe([response])
@@ -313,7 +336,9 @@ def test_get_pending_actions_numeric_input_type():
 def test_get_pending_actions_numeric_suggested():
     """SuggestedValues from the plugin must pass through as numeric_suggested."""
     response = _casting_option_response(
-        numeric_min=0, numeric_max=12, numeric_suggested=[4, 6],
+        numeric_min=0,
+        numeric_max=12,
+        numeric_suggested=[4, 6],
     )
     pipe = _MockPipe([response])
     bridge = _bridge_with_pipe(pipe)
@@ -329,11 +354,15 @@ def test_submit_x_clamped_response_still_ok():
     submit_x must treat a clamped-but-ok response as success — the cast
     went through with a sane X rather than wedging the client (#390).
     """
-    pipe = _MockPipe([{
-        "ok": True,
-        "submitted_type": "CastingTimeOption_X",
-        "value": 10,
-        "clamped": True,
-    }])
+    pipe = _MockPipe(
+        [
+            {
+                "ok": True,
+                "submitted_type": "CastingTimeOption_X",
+                "value": 10,
+                "clamped": True,
+            }
+        ]
+    )
     bridge = _bridge_with_pipe(pipe)
     assert bridge.submit_x(999) is True

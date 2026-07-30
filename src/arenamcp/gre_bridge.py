@@ -937,10 +937,7 @@ class GREBridge:
         try:
             resp = self._send_safe({"action": "submit_x", "value": value})
             if resp.get("ok"):
-                logger.info(
-                    f"GRE bridge submitted X value: {value} "
-                    f"(type={resp.get('submitted_type', '?')})"
-                )
+                logger.info(f"GRE bridge submitted X value: {value} (type={resp.get('submitted_type', '?')})")
                 return True
             logger.warning(f"GRE bridge submit_x failed: {resp.get('error')}")
         except GREBridgeError as e:

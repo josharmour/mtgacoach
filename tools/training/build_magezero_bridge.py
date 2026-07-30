@@ -40,7 +40,6 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger("tools.training.build_magezero_bridge")
 
@@ -503,16 +502,16 @@ def main(argv: list[str] | None = None) -> int:
     # Write PROGRESS file
     progress_dir = REPO / "tools" / "training" / "wp3"
     progress_dir.mkdir(parents=True, exist_ok=True)
-    progress_path = progress_dir / f"PROGRESS-build_magezero_bridge.md"
+    progress_path = progress_dir / "PROGRESS-build_magezero_bridge.md"
     with open(progress_path, "w", encoding="utf-8") as f:
-        f.write(f"# PROGRESS: build_magezero_bridge\n\n")
+        f.write("# PROGRESS: build_magezero_bridge\n\n")
         f.write(f"Built: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-        f.write(f"## Stats\n\n")
+        f.write("## Stats\n\n")
         f.write(f"- Input: {stats['input']['path']} ({stats['input']['rows_read']} rows)\n")
         f.write(f"- Output: {stats['output']['path']} ({stats['output']['records']} records)\n")
         f.write(f"- Drops: {_fmt_counter(drops)}\n")
         f.write(f"- Elapsed: {elapsed:.2f}s\n\n")
-        f.write(f"## Drops\n\n")
+        f.write("## Drops\n\n")
         for reason, count in drops.most_common():
             f.write(f"- {reason}: {count}\n")
         f.write("\n## Known gaps\n\n")

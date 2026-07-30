@@ -118,7 +118,7 @@ def main():
     print("  MageZero Baseline Arm — Power Analysis")
     print("=" * 72)
     print()
-    print(f"  Current observations")
+    print("  Current observations")
     print(f"    No-net (baseline): {cur['baseline_wins']}/{cur['baseline_games']}"
           f"  = {p_bl:.4f}  ({p_bl*100:.2f}%)")
     print(f"    Net-guided:        {cur['net_wins']}/{cur['net_games']}"
@@ -168,11 +168,9 @@ def main():
     # ── Single-gen cost estimate ──────────────────────────────
     print("  ── Cost: single-generation config")
     print("     games_per_gen: 1000  →  ~1,000 baseline games"
-          "  (MDE ≈ {:.2f} pp, net arm at current 1299)".format(
-              mde(p_bl, 1000, n_net)))
+          f"  (MDE ≈ {mde(p_bl, 1000, n_net):.2f} pp, net arm at current 1299)")
     print("     games_per_gen: 1000  →  ~1,000 baseline games"
-          "  (MDE ≈ {:.2f} pp, symmetric n_net=1000)".format(
-              mde(p_bl, 1000, 1000)))
+          f"  (MDE ≈ {mde(p_bl, 1000, 1000):.2f} pp, symmetric n_net=1000)")
     print()
 
     # ── Key takeaway ──────────────────────────────────────────

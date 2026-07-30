@@ -302,6 +302,7 @@ def test_pass_priority_against_actions_available_is_not_stale():
     }
     assert engine._is_planner_action_stale_vs_bridge(action, state) is False
 
+
 # ── ACTIVATE_ABILITY stale detection ─────────────────────────────────────
 # Shape 2a (2026-07-29): when the bridge has a non-ActionsAvailable request
 # pending, activate_ability is stale — the priority window changed between
@@ -327,9 +328,10 @@ def test_activate_ability_against_select_targets_is_stale():
         "_bridge_request_class": "SelectTargetsRequest",
         "_bridge_actions": [],
     }
-    assert engine._is_planner_action_stale_vs_bridge(
-        _make_activate_ability("Mutagen", ["Michelangelo"]), state
-    ) is True
+    assert (
+        engine._is_planner_action_stale_vs_bridge(_make_activate_ability("Mutagen", ["Michelangelo"]), state)
+        is True
+    )
 
 
 def test_activate_ability_against_actions_available_is_not_stale():
@@ -342,9 +344,7 @@ def test_activate_ability_against_actions_available_is_not_stale():
         "_bridge_request_class": "ActionsAvailableRequest",
         "_bridge_actions": [],
     }
-    assert engine._is_planner_action_stale_vs_bridge(
-        _make_activate_ability("Karn's Bastion"), state
-    ) is False
+    assert engine._is_planner_action_stale_vs_bridge(_make_activate_ability("Karn's Bastion"), state) is False
 
 
 def test_activate_ability_against_declare_attackers_is_stale():
@@ -356,9 +356,10 @@ def test_activate_ability_against_declare_attackers_is_stale():
         "_bridge_request_class": "DeclareAttackerRequest",
         "_bridge_actions": [],
     }
-    assert engine._is_planner_action_stale_vs_bridge(
-        _make_activate_ability("Utter Insignificance"), state
-    ) is True
+    assert (
+        engine._is_planner_action_stale_vs_bridge(_make_activate_ability("Utter Insignificance"), state)
+        is True
+    )
 
 
 def test_activate_ability_with_no_bridge_request_is_stale():
@@ -368,9 +369,7 @@ def test_activate_ability_with_no_bridge_request_is_stale():
         "_bridge_request_type": None,
         "_bridge_request_class": None,
     }
-    assert engine._is_planner_action_stale_vs_bridge(
-        _make_activate_ability("Steelbane Hydra"), state
-    ) is True
+    assert engine._is_planner_action_stale_vs_bridge(_make_activate_ability("Steelbane Hydra"), state) is True
 
 
 def test_activate_ability_against_pay_costs_is_stale():
@@ -380,6 +379,4 @@ def test_activate_ability_against_pay_costs_is_stale():
         "_bridge_request_type": "PayCosts",
         "_bridge_request_class": "PayCostsReq",
     }
-    assert engine._is_planner_action_stale_vs_bridge(
-        _make_activate_ability("Mutagen"), state
-    ) is True
+    assert engine._is_planner_action_stale_vs_bridge(_make_activate_ability("Mutagen"), state) is True
