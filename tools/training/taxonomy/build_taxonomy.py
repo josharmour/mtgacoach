@@ -126,22 +126,43 @@ ROLE_MAP = {
         {"primitive": "Explore"},
         # Surveil — look at top card, put in graveyard
         {"primitive": "Surveil"},
-        # Scry — library filtering
+    ],
+    # Scry and Mill were mapped to DRAW, whose annotation is literally "draw
+    # cards" — neither draws anything. Scry reorders your own library; Mill puts
+    # cards into a graveyard (usually the OPPONENT's, i.e. a clock, not card
+    # advantage). Distinct role rather than a conflation.
+    "LIBRARY": [
         {"primitive": "Scry"},
-        # Mill — putting cards from top of library into graveyard
         {"primitive": "Mill"},
     ],
     "COMBAT_TRICK": [
         # Instant-speed pump to creatures
-        {"primitive": "Pump", "check": lambda p: "Creature" in p.get("ValidTgts", "")},
-        # PumpAll at instant/sorcery speed to your creatures
+        {"primitive": "Pump", "sp_ab": "SP", "check": lambda p: "Creature" in p.get("ValidTgts", "")},
+        # PumpAll at instant/sorcery speed to your creatures.
+        # sp_ab="SP" restored: without it a static/activated lord ability
+        # (Coppercoat Vanguard's anthem) is labelled a COMBAT_TRICK, which is a
+        # different card role entirely — a trick is held, an anthem is deployed.
+        {"primitive": "PumpAll", "sp_ab": "SP"},
+    ],
+    # The non-instant half of PumpAll. Restoring the sp_ab="SP" filter above
+    # correctly stopped labelling lords and auras as COMBAT_TRICK, but that left
+    # them with NO role (Coppercoat Vanguard, Combat Research,
+    # Shardmage's Rescue). Unclassified is better than mislabelled, but an anthem
+    # has a real and different role: a trick is HELD for a blowout, an anthem is
+    # DEPLOYED and changes every future combat. Separate role, not a shared one.
+    "ANTHEM": [
         {"primitive": "PumpAll"},
+        {"primitive": "Pump", "check": lambda p: "Creature" not in p.get("ValidTgts", "")},
     ],
     "TOKEN": [
         # Creating creature tokens
         {"primitive": "Token"},
-        # RepeatEach — often creates tokens per opponent (Adeline)
-        {"primitive": "RepeatEach"},
+        # RepeatEach is NOT mapped here. It is Forge's generic loop primitive
+        # ("for each opponent...", "for each creature you control..."), used by
+        # effects that make tokens AND by effects that drain, draw, or destroy.
+        # Adeline happens to loop over opponents to make tokens, which is what
+        # made it look like a token maker; the primitive itself carries no such
+        # meaning, so mapping it to TOKEN mislabels every non-token loop.
     ],
     "GROWTH": [
         # Putting +1/+1 counters on creatures
@@ -152,7 +173,12 @@ ROLE_MAP = {
     "LIFEGAIN": [
         # Gaining life
         {"primitive": "GainLife"},
-        # LoseLife — life total manipulation (opponent loses life)
+    ],
+    # LoseLife was mapped to LIFEGAIN as "life manipulation (both sides)". The
+    # two are opposite effects and lead to opposite plays: LIFEGAIN is a
+    # stabiliser you cast when behind, LifeLoss is a clock you point at the
+    # opponent. Collapsing them teaches the model they are interchangeable.
+    "LIFELOSS": [
         {"primitive": "LoseLife"},
     ],
     "ANIMATION": [
@@ -496,8 +522,23 @@ def resolve_primitives(card):
 def _resolve_sub(card, svar_name, all_primitives, seen_svars):
     """Helper to recursively follow sub-ability chains.
 
-    Follows SubAbility (standard chain) plus TrueSubAbility / FalseSubAbility
-    (Branch nodes used in conditional effects).
+    Follows SubAbility (standard chain), TrueSubAbility / FalseSubAbility
+    (Branch nodes used in conditional effects), and RepeatSubAbility (the body of
+    a RepeatEach loop).
+
+    RepeatSubAbility is why RepeatEach must NOT be mapped to a role directly.
+    RepeatEach is Forge's generic loop; what the loop DOES lives one hop away.
+    Adeline, Resplendent Cathar:
+
+        T:Mode$ AttackersDeclared | Execute$ DBRepeat
+        SVar:DBRepeat:DB$ RepeatEach | RepeatPlayers$ Opponent | RepeatSubAbility$ DBToken
+        SVar:DBToken:DB$ Token | TokenScript$ ...
+
+    so her Token primitive is two hops from the trigger, and without following
+    RepeatSubAbility she resolves to no token role at all. Other RepeatEach cards
+    point at DBTap (Raiding Party), TrigSac (Rishadan Brigand), DBFlip (Rakdos) —
+    following the reference classifies each by what it actually does instead of
+    assuming every loop makes tokens.
     """
     sub = card["svars"].get(svar_name)
     if not sub or sub.get("svar_type") not in ("DB", "AB"):
@@ -510,8 +551,8 @@ def _resolve_sub(card, svar_name, all_primitives, seen_svars):
         seen_svars.add(next_sub)
         _resolve_sub(card, next_sub, all_primitives, seen_svars)
 
-    # Branch chains (conditional effects — TrueSubAbility / FalseSubAbility)
-    for branch_key in ("TrueSubAbility", "FalseSubAbility"):
+    # Branch chains + RepeatEach body
+    for branch_key in ("TrueSubAbility", "FalseSubAbility", "RepeatSubAbility"):
         branch_sub = sub.get(branch_key)
         if branch_sub and branch_sub not in seen_svars:
             seen_svars.add(branch_sub)

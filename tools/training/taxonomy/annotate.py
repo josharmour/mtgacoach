@@ -18,9 +18,12 @@ _ROLE_DESC = {
     "RAMP": "accelerate mana",
     "DRAW": "draw cards",
     "COMBAT_TRICK": "pump creatures",
+    "ANTHEM": "permanently pump your team",
     "TOKEN": "create creature tokens",
     "GROWTH": "put +1/+1 counters",
     "LIFEGAIN": "gain life",
+    "LIFELOSS": "drain opponent life",
+    "LIBRARY": "manipulate library",
     "ANIMATION": "animate permanent",
     "DISRUPTION": "force discard",
     "PROTECTION": "protect permanents",
@@ -124,10 +127,18 @@ def _describe_card(name, entry, roles, primitives):
             return "create tokens"
         if role == "COMBAT_TRICK":
             return "pump creatures"
+        if role == "ANTHEM":
+            return "permanently pump your team"
         if role == "GROWTH":
             return "put +1/+1 counters"
         if role == "LIFEGAIN":
             return "gain life"
+        if role == "LIFELOSS":
+            return "drain opponent life"
+        if role == "LIBRARY":
+            if "Mill" in primitives:
+                return "mill library"
+            return "scry library"
         if role == "ANIMATION":
             return "animate permanent"
         if role == "DISRUPTION":
