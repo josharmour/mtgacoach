@@ -42,6 +42,20 @@ RE_HAND = re.compile(r"-> Hand: \[(.*?)\]")
 RE_PERMANENTS = re.compile(r"-> Permanents: \[(.*?)\]")
 RE_PLAYER_LIFE = re.compile(r"\[(Player[AB])\], life = (\d+)")
 
+# The emitter tag at end of line disambiguates the two battlefield-block
+# grammars (#430). `ComputerPlayerMCTS.printBattlefieldScore` blocks are
+#   [PlayerX] header -> Hand -> Permanents (SELF) -> Permanents (OPPONENT)
+# while `GameStateEvaluator2.printBattlefield` blocks are
+#   [PlayerX] header -> Hand -> Permanents (header player's own) -> Graveyard
+# The old parser ignored both the header and the emitter and paired every
+# Permanents line on the thread into an anonymous [self, opp] buffer, so each
+# one-line evaluator block shifted the pairing frame permanently — swapping
+# boards for the rest of the game. Measured on mz_train_smoke.log: 40,860
+# two-line blocks vs 34,912 one-line blocks (4,337 of them PlayerB-headed).
+RE_EMITTER = re.compile(r"=>\[pool-3-thread-\d+\]\s+(\S+)")
+EMITTER_MCTS = "ComputerPlayerMCTS.printBattlefieldScore"
+EMITTER_EVAL = "GameStateEvaluator2.printBattlefield"
+
 RE_WIN_RATE = re.compile(r"Player A win rate: ([\d.]+)% \((\d+)/(\d+)\)")
 RE_SIMULATING = re.compile(r"Simulating (\d+) games")
 RE_TIMESTAMP = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
@@ -271,25 +285,31 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
             decisions.append(decision)
             continue
 
-        # ── Player life ──────────────────────────────────────────
+        # ── Player life: also opens a battlefield block (#430) ───
         pl = RE_PLAYER_LIFE.search(line)
         if pl:
-            state.on_player_life(pl.group(1), int(pl.group(2)))
+            em = RE_EMITTER.search(line)
+            state.on_block_header(pl.group(1), int(pl.group(2)), em.group(1) if em else None)
             continue
 
-        # ── Hand: backfill into pending decision ─────────────────
+        # ── Hand: PlayerA's backfills the decision; PlayerB's is the
+        # OPPONENT'S HAND (GameStateEvaluator2 prints both players' views)
+        # and must never enter a training row — the old parser backfilled
+        # it blindly, which is both wrong data and an L4 leak. ──────────
         hm = RE_HAND.search(line)
         if hm:
             cards = parse_card_list(hm.group(1))
-            state.latest_hand = cards
-            _backfill_hand(state, cards)
+            state.on_hand_line(cards)
             continue
 
-        # ── Permanents ───────────────────────────────────────────
+        # ── Permanents: attributed via block header + emitter ────
         perm = RE_PERMANENTS.search(line)
         if perm:
-            parsed = parse_permanents(perm.group(1))
-            state._accumulate_permanents(parsed)
+            em = RE_EMITTER.search(line)
+            state.on_permanents_line(
+                parse_permanents(perm.group(1)),
+                em.group(1) if em else None,
+            )
             continue
 
     # Finalize remaining games
@@ -312,11 +332,18 @@ class _ThreadState:
         self.life_a = 20
         self.life_b = 20
         self.latest_hand: list[str] = []
-        self.latest_perms_self: list[dict] = []
-        self.latest_perms_opp: list[dict] = []
+        # Last known board per player (#430). "Self" for a decision row is
+        # always PlayerA — the MCTS/primary player; decisions carry
+        # actor="PlayerA" — so battlefield_self is boards["PlayerA"].
+        self.boards: dict[str, list[dict]] = {"PlayerA": [], "PlayerB": []}
         self.last_log_life_a: int | None = None
         self.last_log_life_b: int | None = None
-        self._perm_buffer: list[list[dict]] = []
+        # Open battlefield block: which player's header we are inside, which
+        # emitter printed it, and how many Permanents lines it has produced.
+        self._block_player: str | None = None
+        self._block_emitter: str | None = None
+        self._block_perm_lines = 0
+        self._block_flushed = False
 
     def start_new_game(self, game_seq: int):
         self.game_seq = game_seq
@@ -325,11 +352,13 @@ class _ThreadState:
         self.life_a = 20
         self.life_b = 20
         self.latest_hand = []
-        self.latest_perms_self = []
-        self.latest_perms_opp = []
+        self.boards = {"PlayerA": [], "PlayerB": []}
         self.last_log_life_a = None
         self.last_log_life_b = None
-        self._perm_buffer = []
+        self._block_player = None
+        self._block_emitter = None
+        self._block_perm_lines = 0
+        self._block_flushed = False
 
     def on_log_life(self, turn: int, phase_name: str, phase_code: str,
                     life_a: int, life_b: int):
@@ -338,22 +367,64 @@ class _ThreadState:
         self.last_log_life_a = life_a
         self.last_log_life_b = life_b
 
-    def on_player_life(self, player: str, life: int):
+    def on_block_header(self, player: str, life: int, emitter: str | None):
+        # A new header closes the previous block. If that block produced
+        # board updates that were never flushed into a decision (possible
+        # only for a one-line block with no emitter tag, where we cannot
+        # tell "complete" from "awaiting the opponent line"), flush now.
+        if self._block_perm_lines > 0 and not self._block_flushed:
+            _backfill_battlefield(self)
         if player == "PlayerA":
             self.life_a = life
         else:
             self.life_b = life
+        self._block_player = player
+        self._block_emitter = emitter
+        self._block_perm_lines = 0
+        self._block_flushed = False
 
-    def _accumulate_permanents(self, permanents: list[dict]):
-        if not self._perm_buffer:
-            self._perm_buffer = [permanents]
-        elif len(self._perm_buffer) == 1:
-            self._perm_buffer.append(permanents)
-            self.latest_perms_self = list(self._perm_buffer[0])
-            self.latest_perms_opp = list(self._perm_buffer[1])
-            _backfill_battlefield(self)
+    def on_hand_line(self, cards: list[str]):
+        # Only the primary player's hand may reach a training row. A PlayerB
+        # hand line (GameStateEvaluator2 prints the opponent's view too) is
+        # the opponent's hidden hand: backfilling it poisons the `hand` field
+        # AND leaks information the model must never see (leak class L4).
+        if self._block_player == "PlayerB":
+            return
+        self.latest_hand = cards
+        _backfill_hand(self, cards)
+
+    def on_permanents_line(self, permanents: list[dict], emitter: str | None):
+        # Attribution is positional WITHIN the current header block, which is
+        # correct under both known grammars (and self-verifying on the real
+        # log: 10,215 MCTS headers x 2 lines = 20,430; 8,728 evaluator
+        # headers x 1 = 8,728, no other emitter prints Permanents):
+        #   line 1 after a [PlayerX] header = X's own board (both emitters)
+        #   line 2 (MCTS only)             = the other player's board
+        # A line with NO preceding header is unattributable — skip it rather
+        # than guess; anonymous pairing was exactly the old bug.
+        player = self._block_player
+        if player is None:
+            return
+
+        other = "PlayerB" if player == "PlayerA" else "PlayerA"
+        if self._block_perm_lines == 0:
+            self.boards[player] = list(permanents)
+        elif self._block_perm_lines == 1:
+            self.boards[other] = list(permanents)
         else:
-            self._perm_buffer = [permanents]
+            # A third line under one header would be a new grammar — ignore.
+            return
+        self._block_perm_lines += 1
+
+        # Flush into the pending decision only when the block is COMPLETE —
+        # flushing after an MCTS block's first line would hand the decision a
+        # fresh self board and a stale (or empty) opponent board. An evaluator
+        # block is complete at its single line; an MCTS block at its second;
+        # a one-line block with no emitter tag flushes on the next header.
+        em = emitter or self._block_emitter
+        if (em == EMITTER_EVAL and self._block_perm_lines == 1) or self._block_perm_lines == 2:
+            _backfill_battlefield(self)
+            self._block_flushed = True
 
     def infer_outcome(self) -> str:
         """Infer outcome from life values at the last known state."""
@@ -380,10 +451,16 @@ def _backfill_hand(state: _ThreadState, cards: list[str]):
 
 
 def _backfill_battlefield(state: _ThreadState):
-    for d in reversed(state.game_decisions):
-        if not d.get("battlefield_self") and not d.get("battlefield_opp"):
-            d["battlefield_self"] = list(state.latest_perms_self)
-            d["battlefield_opp"] = list(state.latest_perms_opp)
+    # A fill FLAG, not emptiness, marks a decision as done: both boards can be
+    # legitimately empty on early turns, and re-filling an "empty-looking"
+    # decision on every later Permanents line would hand a turn-1 decision a
+    # turn-5 board. Oldest-unfilled first: the boards known NOW are closer in
+    # time to the oldest pending decision than any future line will be.
+    for d in state.game_decisions:
+        if not d.get("_bf_filled"):
+            d["battlefield_self"] = list(state.boards["PlayerA"])
+            d["battlefield_opp"] = list(state.boards["PlayerB"])
+            d["_bf_filled"] = True
             return
 
 
@@ -395,10 +472,9 @@ def _finalize_game(state: _ThreadState, all_decisions: list[dict]):
         d["outcome"] = outcome
         if not d.get("hand"):
             d["hand"] = list(state.latest_hand)
-        if not d.get("battlefield_self"):
-            d["battlefield_self"] = list(state.latest_perms_self)
-        if not d.get("battlefield_opp"):
-            d["battlefield_opp"] = list(state.latest_perms_opp)
+        if not d.pop("_bf_filled", False):
+            d["battlefield_self"] = list(state.boards["PlayerA"])
+            d["battlefield_opp"] = list(state.boards["PlayerB"])
 
 
 # ── Session enrichment ──────────────────────────────────────────────────
