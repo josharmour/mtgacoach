@@ -2173,7 +2173,34 @@ the GPUs are free.
 `timeout_ms: 4000`; log shows both regimes working — "290 evaluations in 2.04 s"
 (budget-bound) and "191 evaluations in 4.00 s" (cap-bound on harder positions).
 
-### §26 addendum 17 — CUTOVER: coach now Qwen3.6-27B-FP8 on ONE card; ds4-v9 retired to standby (2026-07-30 ~16:00) ← CURRENT
+### §26 addendum 18 — COMBAT RETRACTION: the data was in the log all along (2026-07-30 ~17:00) ← CURRENT
+
+Addendum 15/16-era conclusion "combat is blocked upstream, the data does not
+exist" is **retracted**. While enriching upstream issue #1 with code refs, the
+actual mechanism surfaced: XMage runs combat as per-creature micro-decisions
+(`ComputerPlayer.selectAttackersOneAtATime`/`selectBlockersOneAtATime`), each
+MCTS-deliberated via `ComputerPlayerMCTS.chooseUse`/`makeChoice`, and each
+**logged at INFO with visit counts and Q-values** on the adjacent
+`MCTSNode.bestChild` `pool=` line:
+
+```
+DECLARE_ATTACKERS0pool= actions: [false 0.013/104] [true 0.147/867]
+use attack with: Skrelv, Defector Mite?: true
+```
+
+Smoke log yield: **6,705 attack + 1,088 block decisions** (~36% corpus expansion,
+the whole missing modality). #453's fail-closed kill of the fabricated records
+remains correct — those were reverse-engineered from stale board markers; these
+are the real emitters nobody grepped for. The miss happened because every search
+targeted declaration-style lines and emitters named like "attack".
+
+Consequences: upstream issue #1 corrected and narrowed
+(issues/1#issuecomment-5137514593); no XMage fork needed; next concrete task is
+a parser combat adapter for the three line shapes (pair by thread tag +
+adjacency). B5 smoke LoRA (priority-only) unaffected — combat joins the corpus
+at the next pipeline regeneration after the adapter lands.
+
+### §26 addendum 17 — CUTOVER: coach now Qwen3.6-27B-FP8 on ONE card; ds4-v9 retired to standby (2026-07-30 ~16:00)
 
 **Recorded on blackwell; every number below measured here.** Owner order: "ds4
 stays stopped, single-card smart models are the option" — card 0 is now
