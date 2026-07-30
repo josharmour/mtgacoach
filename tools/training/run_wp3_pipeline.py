@@ -49,9 +49,9 @@ for p in [str(SRC), str(REPO)]:
         sys.path.insert(0, p)
 
 # ── WP-3 module imports ───────────────────────────────────────────────────
-from tools.training import parse_magezero_log as PARSER
-from tools.training import magezero_filters as FILTERS
 from tools.training import build_magezero_bridge as BRIDGE
+from tools.training import magezero_filters as FILTERS
+from tools.training import parse_magezero_log as PARSER
 
 # ---------------------------------------------------------------------------
 # Output paths
@@ -90,6 +90,7 @@ def _git_sha() -> str:
 # Stage 1: Parse
 # ---------------------------------------------------------------------------
 
+
 def stage_parse(log_paths: list[Path]) -> list[dict]:
     """Parse log files, returning combined decisions list."""
     all_decisions: list[dict] = []
@@ -109,8 +110,19 @@ def stage_parse(log_paths: list[Path]) -> list[dict]:
 # Stage 2: Filter
 # ---------------------------------------------------------------------------
 
-def stage_filter(rows: list[dict]) -> tuple[list[dict], dict[str, int]]:
+
+def stage_filter(
+    rows: list[dict],
+    *,
+    balance: str | None = None,
+    max_pass_frac: float = 0.40,
+    seed: int = 7,
+) -> tuple[list[dict], dict[str, int]]:
     """Apply filters in order: drop_single_option → outcome_filter → dedupe.
+
+    With ``balance="downsample-pass"``, surplus PRIORITY passes are then dropped
+    to meet ``max_pass_frac`` before the tripwire runs. Combat declines are never
+    dropped — see magezero_filters.downsample_passes for why.
 
     Returns (filtered, filter_counts).
     """
@@ -128,12 +140,35 @@ def stage_filter(rows: list[dict]) -> tuple[list[dict], dict[str, int]]:
     counts["dedupe"] = n
     print(f"  dedupe: {n} dropped ({len(rows)} kept)")
 
+    # Pass-rate visibility per decision_kind, before any balancing, so the raw
+    # corpus shape is on the record. The literal-"Pass" gate misses binary
+    # CHOOSE_USE declines ("false"), which are also do-nothing decisions.
+    for kind, st in FILTERS.pass_rate_report(rows).items():
+        print(
+            f"    pass rate {kind:<12s} rows={int(st['rows']):6d}  "
+            f"literal={st['literal_frac'] * 100:5.1f}%  pass-like={st['pass_like_frac'] * 100:5.1f}%"
+        )
+
+    if balance == "downsample-pass":
+        rows, bstats = FILTERS.downsample_passes(rows, max_frac=max_pass_frac, seed=seed)
+        counts["downsample_pass"] = bstats["dropped"]
+        print(
+            f"  downsample_pass: {bstats['dropped']} dropped ({len(rows)} kept; "
+            f"{bstats['eligible']} priority passes eligible)"
+        )
+        if bstats.get("shortfall"):
+            print(
+                f"  ** {bstats['shortfall']} more drops needed than eligible priority "
+                f"passes; the tripwire will reject this corpus **"
+            )
+
     return rows, counts
 
 
 # ---------------------------------------------------------------------------
 # Stage 3: Tripwire
 # ---------------------------------------------------------------------------
+
 
 def stage_tripwire(rows: list[dict], max_frac: float = 0.40) -> float:
     """Check pass rate. Returns the pass fraction (exits on violation)."""
@@ -142,7 +177,7 @@ def stage_tripwire(rows: list[dict], max_frac: float = 0.40) -> float:
         return 0.0
     n_pass = sum(1 for r in rows if r.get("chosen") == "Pass")
     frac = n_pass / total
-    print(f"  Pass rate: {n_pass}/{total} = {frac:.4f} ({frac*100:.1f}%)")
+    print(f"  Pass rate: {n_pass}/{total} = {frac:.4f} ({frac * 100:.1f}%)")
     FILTERS.pass_rate_tripwire(rows, max_frac)
     return frac
 
@@ -150,6 +185,7 @@ def stage_tripwire(rows: list[dict], max_frac: float = 0.40) -> float:
 # ---------------------------------------------------------------------------
 # Stage 4: Count attackers/blockers
 # ---------------------------------------------------------------------------
+
 
 def count_attackers_blockers(splits: dict[str, list[dict]]) -> dict[str, int]:
     """Count how many rows per split are attackers/blockers."""
@@ -167,6 +203,7 @@ def count_attackers_blockers(splits: dict[str, list[dict]]) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 # Stage 5: Render (via build_magezero_bridge.build_record)
 # ---------------------------------------------------------------------------
+
 
 def stage_render(
     splits: dict[str, list[dict]],
@@ -210,6 +247,7 @@ def stage_render(
 # Stage 6: Leak scan
 # ---------------------------------------------------------------------------
 
+
 def stage_leak_scan(
     rendered: dict[str, list[dict]],
     raw_decisions: list[dict],
@@ -249,6 +287,18 @@ def stage_leak_scan(
     errors: list[str] = []
 
     re_bare_int = re.compile(r"\b(\d{2,})\b")
+    # The rendered menu is NUMBERED ("  31. Pass") and that numbering is the
+    # answer mechanism, not a leak — the model must see it to emit {"pick": N}.
+    # Scanning it for bare integers made the scan reject the whole corpus the
+    # moment a menu grew past the smallest MCTS count (reproduced: 31 options
+    # with an MCTS count of 31). Strip menu lines before the integer scan; the
+    # word-level checks above still cover the whole prompt.
+    re_menu_line = re.compile(r"^\s*\d+\.\s", re.MULTILINE)
+
+    def _strip_menu_lines(text: str) -> str:
+        return "\n".join(
+            "" if re_menu_line.match(line) else line for line in text.splitlines()
+        )
 
     for split_name, records in rendered.items():
         for i, rec in enumerate(records):
@@ -257,19 +307,17 @@ def stage_leak_scan(
 
             # 1. "score:" leak
             if "score:" in user or "score:" in system:
-                errors.append(
-                    f"[{split_name} record {i}] 'score:' found in prompt"
-                )
+                errors.append(f"[{split_name} record {i}] 'score:' found in prompt")
 
             # 2. "count:" leak
             if "count:" in user or "count:" in system:
-                errors.append(
-                    f"[{split_name} record {i}] 'count:' found in prompt"
-                )
+                errors.append(f"[{split_name} record {i}] 'count:' found in prompt")
 
             # 3. MCTS integer ≥30 leak: find all bare integers in the prompt
-            # and check if any are in our high MCTS set
-            combined = user + " " + system
+            # and check if any are in our high MCTS set. Menu numbering is
+            # excluded (see _strip_menu_lines) because it is the input
+            # mechanism, not model-invisible search data.
+            combined = _strip_menu_lines(user) + " " + _strip_menu_lines(system)
             for match in re_bare_int.finditer(combined):
                 val = int(match.group(1))
                 if val in mcts_values_high:
@@ -291,18 +339,18 @@ def stage_leak_scan(
         for e in errors:
             print(f"  LEAK: {e}", file=sys.stderr)
         print(
-            f"\nLEAK SCAN FAILED: {len(errors)} violation(s) found. "
-            f"Corpus REJECTED.\n",
+            f"\nLEAK SCAN FAILED: {len(errors)} violation(s) found. Corpus REJECTED.\n",
             file=sys.stderr,
         )
         raise SystemExit(42)
     else:
-        print(f"  Leak scan passed: 0 violations.")
+        print("  Leak scan passed: 0 violations.")
 
 
 # ---------------------------------------------------------------------------
 # Stage 7: Write output
 # ---------------------------------------------------------------------------
+
 
 def stage_write(
     rendered: dict[str, list[dict]],
@@ -379,6 +427,7 @@ def stage_write(
 # Stage 8: REPORT.md
 # ---------------------------------------------------------------------------
 
+
 def stage_report(
     manifest: dict,
     filter_counts: dict[str, int],
@@ -406,8 +455,8 @@ def stage_report(
     lines.append("")
     lines.append("## Per-Stage Drop Counts")
     lines.append("")
-    lines.append(f"| Stage | In | Out | Drop |")
-    lines.append(f"|-------|----|-----|------|")
+    lines.append("| Stage | In | Out | Drop |")
+    lines.append("|-------|----|-----|------|")
     total_in = len(raw_decisions)
     n1 = filter_counts.get("drop_single_option", 0)
     after_1 = total_in - n1
@@ -419,18 +468,17 @@ def stage_report(
     after_3 = after_2 - n3
     lines.append(f"| outcome_filter → dedupe | {after_2} | {after_3} | {n3} |")
     lines.append("")
-    lines.append(f"## Pass Rate")
+    lines.append("## Pass Rate")
     lines.append("")
-    lines.append(f"Pass fraction (post-filter): {pass_rate:.4f} ({pass_rate*100:.1f}%)")
+    lines.append(f"Pass fraction (post-filter): {pass_rate:.4f} ({pass_rate * 100:.1f}%)")
     lines.append(f"Pass rate tripwire: {pass_rate <= 0.40} ({'PASS' if pass_rate <= 0.40 else 'FAIL'})")
     lines.append("")
-    lines.append(f"## Attackers/Blockers Excluded")
+    lines.append("## Attackers/Blockers Excluded")
     lines.append("")
     lines.append(f"Total attackers/blockers rows: {attackers_blockers_total}")
     for split_name, records in rendered.items():
         ab_in_split = sum(
-            1 for rec in records
-            if rec.get("meta", {}).get("decision_kind") in ("attackers", "blockers")
+            1 for rec in records if rec.get("meta", {}).get("decision_kind") in ("attackers", "blockers")
         )
         # Actually attackers/blockers were excluded before rendering, so this
         # should be 0 for all splits.
@@ -478,10 +526,13 @@ def stage_report(
 # Pipeline runner
 # ---------------------------------------------------------------------------
 
+
 def run_pipeline(
     log_paths: list[Path],
     outdir: Path,
     max_pass_frac: float = 0.40,
+    seed: int = 7,
+    balance: str | None = None,
 ) -> dict[str, Any]:
     """Run the full WP-3 pipeline.
 
@@ -504,7 +555,9 @@ def run_pipeline(
 
     # ── Stage 2: Filter ────────────────────────────────────────────────────
     print("Stage 2/5 — Filter decisions")
-    filtered, filter_counts = stage_filter(raw_decisions)
+    filtered, filter_counts = stage_filter(
+        raw_decisions, balance=balance, max_pass_frac=max_pass_frac, seed=seed
+    )
     filtered_count = len(filtered)
 
     # Save intermediate: filtered
@@ -520,21 +573,35 @@ def run_pipeline(
 
     # ── Stage 4: Split ─────────────────────────────────────────────────────
     print("Stage 4/5 — Split by game")
-    splits = FILTERS.split_by_game(filtered, seed=7)
+    splits = FILTERS.split_by_game(filtered, seed=seed)
     for name, group in splits.items():
         unique_games = len(set(FILTERS._game_id(r) for r in group))
         print(f"  split '{name}': {len(group)} rows ({unique_games} games)")
 
     # Count attackers/blockers before rendering
-    attackers_blockers_total = sum(
-        1 for d in filtered if d.get("decision_kind") in ("attackers", "blockers")
-    )
+    attackers_blockers_total = sum(1 for d in filtered if d.get("decision_kind") in ("attackers", "blockers"))
     print(f"  Attackers/blockers rows (pre-render): {attackers_blockers_total}")
 
     # ── Stage 5: Render ────────────────────────────────────────────────────
     print("Stage 5/5 — Render training records via build_magezero_bridge")
     split_drops: dict[str, Counter] = {}
     rendered = stage_render(splits, split_drops, {})
+
+    # Surface the per-reason drop tally. It was computed into split_drops and
+    # then never read, so the PR body's claim about WHY rows were dropped could
+    # not have come from this code. An unexplained drop count is how a silently
+    # broken adapter looks exactly like a working one.
+    render_drops: dict[str, dict[str, int]] = {
+        split: dict(counter) for split, counter in split_drops.items() if counter
+    }
+    total_dropped = sum(sum(c.values()) for c in split_drops.values())
+    if total_dropped:
+        print(f"  render drops: {total_dropped} row(s) not rendered, by reason:")
+        agg: Counter = Counter()
+        for counter in split_drops.values():
+            agg.update(counter)
+        for reason, n in agg.most_common():
+            print(f"    {reason}: {n}")
 
     # ── Leak scan ──────────────────────────────────────────────────────────
     print("Leak scan — checking rendered prompts for training-set artifacts...")
@@ -543,24 +610,37 @@ def run_pipeline(
     # ── Write output ────────────────────────────────────────────────────────
     elapsed = time.time() - t0
     manifest = stage_write(
-        rendered, outdir, filter_counts, splits, raw_count,
-        pass_rate, attackers_blockers_total, elapsed,
+        rendered,
+        outdir,
+        filter_counts,
+        splits,
+        raw_count,
+        pass_rate,
+        attackers_blockers_total,
+        elapsed,
     )
 
     # ── Report ──────────────────────────────────────────────────────────────
     stage_report(
-        manifest, filter_counts, rendered, raw_decisions, filtered,
-        pass_rate, attackers_blockers_total, outdir, log_paths,
+        manifest,
+        filter_counts,
+        rendered,
+        raw_decisions,
+        filtered,
+        pass_rate,
+        attackers_blockers_total,
+        outdir,
+        log_paths,
     )
 
     # Summary
     total_records = sum(len(v) for v in rendered.values())
-    print(f"\n=== PIPELINE COMPLETE ===")
+    print("\n=== PIPELINE COMPLETE ===")
     print(f"  Input decisions:   {raw_count}")
     print(f"  Post-filter:       {filtered_count}")
     print(f"  Training records:  {total_records}")
     print(f"  Attackers/blockers excluded: {attackers_blockers_total}")
-    print(f"  Pass rate:         {pass_rate:.4f} ({pass_rate*100:.1f}%)")
+    print(f"  Pass rate:         {pass_rate:.4f} ({pass_rate * 100:.1f}%)")
     print(f"  Elapsed:           {elapsed:.1f}s")
     print(f"  Output:            {outdir}")
 
@@ -571,47 +651,81 @@ def run_pipeline(
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="WP-3 end-to-end pipeline: MageZero logs → training records",
     )
     parser.add_argument(
-        "--log", dest="log_paths", type=str, action="append", required=True,
+        "--log",
+        dest="log_paths",
+        type=str,
+        action="append",
+        required=True,
         help="Path to MageZero XMage log file (can be specified multiple times or as glob)",
     )
     parser.add_argument(
-        "--outdir", type=str, default=str(DEFAULT_OUTDIR),
+        "--outdir",
+        type=str,
+        default=str(DEFAULT_OUTDIR),
         help="Output directory (default: tools/training/data/wp3/)",
     )
     parser.add_argument(
-        "--max-pass-frac", type=float, default=0.40,
+        "--max-pass-frac",
+        type=float,
+        default=0.40,
         help="Maximum allowed Pass fraction (default: 0.40). Trips pipeline if exceeded.",
     )
     parser.add_argument(
-        "--seed", type=int, default=7,
+        "--seed",
+        type=int,
+        default=7,
         help="PRNG seed for deterministic splitting (default: 7).",
+    )
+    parser.add_argument(
+        "--balance",
+        choices=("downsample-pass",),
+        default=None,
+        help="Drop surplus PRIORITY passes to meet --max-pass-frac before the "
+        "tripwire (see magezero_filters.downsample_passes). Combat declines are "
+        "never dropped. Off by default so the raw corpus shape is not altered.",
     )
     return parser
 
 
-def expand_globs(paths: list[str]) -> list[Path]:
-    """Expand glob patterns and deduplicate, preserving order."""
+def expand_globs(paths: list[str]) -> tuple[list[Path], list[str]]:
+    """Expand globs and deduplicate, preserving order.
+
+    Returns ``(resolved_paths, unmatched_patterns)``. Unmatched patterns are
+    RETURNED rather than swallowed: a typo'd --log used to be discarded here, and
+    the pipeline then printed "=== PIPELINE COMPLETE ===" with 0 decisions and
+    wrote empty split files. A run that silently produces an empty corpus is
+    indistinguishable from a run that succeeded, which is the worst possible
+    failure for a training pipeline.
+    """
     import glob as _glob
+
     seen: set[str] = set()
     result: list[Path] = []
+    unmatched: list[str] = []
     for p in paths:
-        for match in sorted(_glob.glob(os.path.expanduser(p), recursive=False)):
-            resolved = os.path.realpath(match)
+        expanded = os.path.expanduser(p)
+        matches = sorted(_glob.glob(expanded, recursive=False))
+        if matches:
+            for match in matches:
+                resolved = os.path.realpath(match)
+                if resolved not in seen:
+                    seen.add(resolved)
+                    result.append(Path(resolved))
+            continue
+        resolved = os.path.realpath(expanded)
+        if os.path.exists(resolved):
             if resolved not in seen:
                 seen.add(resolved)
                 result.append(Path(resolved))
-        # If no glob matches, treat as literal path
-        if not _glob.glob(os.path.expanduser(p)):
-            resolved = os.path.realpath(os.path.expanduser(p))
-            if resolved not in seen and os.path.exists(resolved):
-                seen.add(resolved)
-                result.append(Path(resolved))
-    return result
+        else:
+            unmatched.append(p)
+    return result, unmatched
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -619,7 +733,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # Expand globs in log paths
-    log_paths = expand_globs(args.log_paths)
+    log_paths, unmatched = expand_globs(args.log_paths)
+
+    if unmatched:
+        for pat in unmatched:
+            print(f"ERROR: --log matched nothing: {pat}", file=sys.stderr)
+        print(
+            "\nRefusing to run: every --log must resolve to at least one file. "
+            "Silently skipping a typo'd path yields an empty corpus that looks "
+            "like a successful run.",
+            file=sys.stderr,
+        )
+        return 2
+    if not log_paths:
+        print("ERROR: no input logs resolved.", file=sys.stderr)
+        return 2
 
     print(f"WP-3 Pipeline — {len(log_paths)} log file(s)")
     for lp in log_paths:
@@ -634,10 +762,12 @@ def main(argv: list[str] | None = None) -> int:
             log_paths=log_paths,
             outdir=outdir,
             max_pass_frac=args.max_pass_frac,
+            seed=args.seed,
+            balance=args.balance,
         )
     except SystemExit as e:
         if e.code == 42:
-            print(f"\nPipeline aborted: pass rate tripwire or leak scan failed.", file=sys.stderr)
+            print("\nPipeline aborted: pass rate tripwire or leak scan failed.", file=sys.stderr)
             return 42
         raise
 
