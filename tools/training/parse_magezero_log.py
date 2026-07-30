@@ -255,8 +255,8 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
                 "active_life": state.life_a,
                 "opp_life": state.life_b,
                 "hand": [],
-                "battlefield_self": [],
-                "battlefield_opp": [],
+                "battlefield_self": None,
+                "battlefield_opp": None,
                 "menu": list(menu),
                 "chosen": chosen,
                 "mcts_counts": mcts_counts,
@@ -283,6 +283,11 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
         if hm:
             cards = parse_card_list(hm.group(1))
             state.latest_hand = cards
+            # Reset permanents buffer at start of every Hand-block.
+            # In the 1-line case the second Permanents line (opponent board)
+            # is OMITTED by XMage; clearing both here prevents stale carry-over.
+            state._perm_buffer = []
+            state.latest_perms_opp = []
             _backfill_hand(state, cards)
             continue
 
@@ -347,14 +352,22 @@ class _ThreadState:
 
     def _accumulate_permanents(self, permanents: list[dict]):
         if not self._perm_buffer:
+            # First Permanents line in this Hand-block = acting player's board
             self._perm_buffer = [permanents]
+            self.latest_perms_self = list(permanents)
+            self.latest_perms_opp = []
+            _backfill_battlefield(self)
         elif len(self._perm_buffer) == 1:
+            # Second Permanents line = opponent's board
             self._perm_buffer.append(permanents)
-            self.latest_perms_self = list(self._perm_buffer[0])
-            self.latest_perms_opp = list(self._perm_buffer[1])
+            self.latest_perms_opp = list(permanents)
             _backfill_battlefield(self)
         else:
+            # Overflow (shouldn't happen with Hand-block reset), start fresh
             self._perm_buffer = [permanents]
+            self.latest_perms_self = list(permanents)
+            self.latest_perms_opp = []
+            _backfill_battlefield(self)
 
     def infer_outcome(self) -> str:
         """Infer outcome from life values at the last known state."""
@@ -382,9 +395,19 @@ def _backfill_hand(state: _ThreadState, cards: list[str]):
 
 def _backfill_battlefield(state: _ThreadState):
     for d in reversed(state.game_decisions):
-        if not d.get("battlefield_self") and not d.get("battlefield_opp"):
+        if d.get("battlefield_self") is None and d.get("battlefield_opp") is None:
             d["battlefield_self"] = list(state.latest_perms_self)
             d["battlefield_opp"] = list(state.latest_perms_opp)
+            return
+        # One of the fields may have been set already (1-line case)
+        changed = False
+        if d.get("battlefield_self") is None:
+            d["battlefield_self"] = list(state.latest_perms_self)
+            changed = True
+        if d.get("battlefield_opp") is None:
+            d["battlefield_opp"] = list(state.latest_perms_opp)
+            changed = True
+        if changed:
             return
 
 
@@ -396,9 +419,9 @@ def _finalize_game(state: _ThreadState, all_decisions: list[dict]):
         d["outcome"] = outcome
         if not d.get("hand"):
             d["hand"] = list(state.latest_hand)
-        if not d.get("battlefield_self"):
+        if d.get("battlefield_self") is None:
             d["battlefield_self"] = list(state.latest_perms_self)
-        if not d.get("battlefield_opp"):
+        if d.get("battlefield_opp") is None:
             d["battlefield_opp"] = list(state.latest_perms_opp)
 
 
