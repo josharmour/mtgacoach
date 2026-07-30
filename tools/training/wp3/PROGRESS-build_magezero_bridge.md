@@ -1,13 +1,13 @@
 # PROGRESS: build_magezero_bridge
 
-Built: 2026-07-29 19:34:21
+Built: 2026-07-29 21:09:35
 
 ## Stats
 
 - Input: /Users/joshu/wp3/wt-cifix/tools/training/wp3/fixture_decisions.jsonl (20 rows)
 - Output: /Users/joshu/wp3/wt-cifix/tools/training/wp3/fixture_bridge_out.jsonl (14 records)
 - Drops: {'decision_kind_attackers': 2, 'decision_kind_blockers': 1, 'outcome_unknown': 3}
-- Elapsed: 0.00s
+- Elapsed: 0.01s
 
 ## Drops
 
