@@ -22,13 +22,14 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-INPUT_JSONL = Path("/tmp/combat_in.jsonl")
-OUTPUT_JSONL = Path("/tmp/combat_out.jsonl")
+FIXTURE_DECISIONS = REPO / "tools" / "training" / "wp3" / "fixture_combat_decisions.jsonl"
+COMBAT_JSONL = REPO / "tools" / "training" / "wp3" / "fixture_combat_out.jsonl"
 
 LEAK_WORDS = frozenset({"score:", "count:"})
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
+
 
 def _read_jsonl(path: Path) -> list[dict]:
     out: list[dict] = []
@@ -60,26 +61,26 @@ def _extract_menu_names(prompt: str, prefix: str) -> list[str]:
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
+
 @pytest.fixture(scope="session")
-def input_rows() -> list[dict]:
-    assert INPUT_JSONL.exists(), f"input not found: {INPUT_JSONL}"
-    return _read_jsonl(INPUT_JSONL)
+def fixture_rows() -> list[dict]:
+    assert FIXTURE_DECISIONS.exists(), f"fixture not found: {FIXTURE_DECISIONS}"
+    return _read_jsonl(FIXTURE_DECISIONS)
 
 
 @pytest.fixture(scope="session")
-def output_records() -> list[dict]:
-    assert OUTPUT_JSONL.exists(), (
-        f"output not found: {OUTPUT_JSONL} — "
-        f"run build_magezero_combat.py first"
+def combat_records() -> list[dict]:
+    assert COMBAT_JSONL.exists(), (
+        f"combat output not found: {COMBAT_JSONL} — run build_magezero_combat.py against the fixture first"
     )
-    return _read_jsonl(OUTPUT_JSONL)
+    return _read_jsonl(COMBAT_JSONL)
 
 
 @pytest.fixture(scope="session")
-def mcts_by_game_id(input_rows) -> dict[str, dict]:
+def mcts_by_game_id(fixture_rows) -> dict[str, dict]:
     """Map game_id -> mcts_counts dict from the input."""
     out: dict[str, dict] = {}
-    for r in input_rows:
+    for r in fixture_rows:
         if r.get("decision_kind") in ("attackers", "blockers"):
             gid = r.get("game_id", "")
             if gid:
@@ -89,26 +90,24 @@ def mcts_by_game_id(input_rows) -> dict[str, dict]:
 
 # ── Counts ─────────────────────────────────────────────────────────────────
 
-def test_all_combat_rows_consumed(output_records: list[dict], input_rows: list[dict]) -> None:
+
+def test_all_combat_rows_consumed(combat_records: list[dict], fixture_rows: list[dict]) -> None:
     """All attackers/blockers rows produce a record or are explicitly dropped."""
-    n_att_blocks = sum(
-        1 for r in input_rows if r.get("decision_kind") in ("attackers", "blockers")
+    n_combat = sum(1 for r in fixture_rows if r.get("decision_kind") in ("attackers", "blockers"))
+    assert len(combat_records) == n_combat, (
+        f"expected {n_combat} records from {len(fixture_rows)} fixture rows, got {len(combat_records)}"
     )
-    n_skip = sum(
-        1 for r in input_rows if r.get("decision_kind") not in ("attackers", "blockers")
-    )
-    report(output_records, n_att_blocks, n_skip)
 
 
-def test_counts_match_expectation(output_records: list[dict], input_rows: list[dict]) -> None:
-    """Specific count expectations from the smoke log."""
-    attack_recs = [r for r in output_records if r.get("kind") == "combat_attack"]
-    block_recs = [r for r in output_records if r.get("kind") == "combat_block"]
-    n_attackers_in = sum(1 for r in input_rows if r.get("decision_kind") == "attackers")
-    n_blockers_in = sum(1 for r in input_rows if r.get("decision_kind") == "blockers")
+def test_counts_match_expectation(combat_records: list[dict], fixture_rows: list[dict]) -> None:
+    """Specific count expectations from the combat fixture."""
+    attack_recs = [r for r in combat_records if r.get("kind") == "combat_attack"]
+    block_recs = [r for r in combat_records if r.get("kind") == "combat_block"]
+    n_attackers_in = sum(1 for r in fixture_rows if r.get("decision_kind") == "attackers")
+    n_blockers_in = sum(1 for r in fixture_rows if r.get("decision_kind") == "blockers")
 
-    assert n_attackers_in == 379, f"expected 379 attackers, got {n_attackers_in}"
-    assert n_blockers_in == 199, f"expected 199 blockers, got {n_blockers_in}"
+    assert n_attackers_in == 2, f"expected 2 attackers, got {n_attackers_in}"
+    assert n_blockers_in == 1, f"expected 1 blocker, got {n_blockers_in}"
     # We should have SOME attack records (those with ,attacking markers)
     assert len(attack_recs) > 0, "no attack records produced"
     assert len(block_recs) > 0, "no block records produced"
@@ -119,26 +118,26 @@ def test_counts_match_expectation(output_records: list[dict], input_rows: list[d
 
 # ── A1: No solver line leak ───────────────────────────────────────────────
 
-def test_no_solver_line(output_records: list[dict]) -> None:
+
+def test_no_solver_line(combat_records: list[dict]) -> None:
     """A1: No 'Computed optimal' may appear in the prompt (solver is OFF)."""
     failures: list[str] = []
-    for r in output_records:
+    for r in combat_records:
         if "Computed optimal" in r.get("user", ""):
-            failures.append(
-                f"{r.get('id', '?')}: solver line found in prompt"
-            )
+            failures.append(f"{r.get('id', '?')}: solver line found in prompt")
     assert not failures, "\n".join(failures)
 
 
 # ── A2: No MCTS count leak ────────────────────────────────────────────────
 
+
 def test_no_mcts_count_leak(
-    output_records: list[dict],
+    combat_records: list[dict],
     mcts_by_game_id: dict[str, dict],
 ) -> None:
     """A2: No MCTS count value > 20 may appear bare in the prompt."""
     failures: list[str] = []
-    for r in output_records:
+    for r in combat_records:
         gid = r.get("meta", {}).get("game_id", "")
         mcts = mcts_by_game_id.get(gid, {})
         leaky = {v for v in mcts.values() if v > 20}
@@ -147,33 +146,31 @@ def test_no_mcts_count_leak(
         prompt_numbers = _numbers_in_prompt(r.get("user", ""))
         found = leaky & prompt_numbers
         if found:
-            failures.append(
-                f"{r.get('id', '?')}: MCTS values {sorted(found)} appear in prompt"
-            )
+            failures.append(f"{r.get('id', '?')}: MCTS values {sorted(found)} appear in prompt")
     assert not failures, "\n".join(failures)
 
 
 # ── A3: No score/count keywords ───────────────────────────────────────────
 
-def test_no_score_count_words(output_records: list[dict]) -> None:
+
+def test_no_score_count_words(combat_records: list[dict]) -> None:
     """A3: 'score:' or 'count:' must not appear (case-insensitive) in prompt."""
     failures: list[str] = []
-    for r in output_records:
+    for r in combat_records:
         prompt_lower = r.get("user", "").lower()
         for word in LEAK_WORDS:
             if word in prompt_lower:
-                failures.append(
-                    f"{r.get('id', '?')}: forbidden word '{word}' in prompt"
-                )
+                failures.append(f"{r.get('id', '?')}: forbidden word '{word}' in prompt")
     assert not failures, "\n".join(failures)
 
 
 # ── A4: Response JSON validity ────────────────────────────────────────────
 
-def test_response_is_valid_combat_json(output_records: list[dict]) -> None:
+
+def test_response_is_valid_combat_json(combat_records: list[dict]) -> None:
     """A4: Response must be valid declare_attackers or declare_blockers JSON."""
     failures: list[str] = []
-    for r in output_records:
+    for r in combat_records:
         kind = r.get("kind", "")
         try:
             resp = json.loads(r["response"])
@@ -188,35 +185,26 @@ def test_response_is_valid_combat_json(output_records: list[dict]) -> None:
         if kind == "combat_attack":
             if action.get("action_type") != "declare_attackers":
                 failures.append(
-                    f"{r.get('id', '?')}: expected declare_attackers, "
-                    f"got {action.get('action_type')}"
+                    f"{r.get('id', '?')}: expected declare_attackers, got {action.get('action_type')}"
                 )
             names = action.get("attacker_names")
             if not isinstance(names, list):
-                failures.append(
-                    f"{r.get('id', '?')}: attacker_names is not a list: {names}"
-                )
+                failures.append(f"{r.get('id', '?')}: attacker_names is not a list: {names}")
             for n in names:
                 if not isinstance(n, str):
-                    failures.append(
-                        f"{r.get('id', '?')}: attacker_name not a string: {n}"
-                    )
+                    failures.append(f"{r.get('id', '?')}: attacker_name not a string: {n}")
         elif kind == "combat_block":
             if action.get("action_type") != "declare_blockers":
                 failures.append(
-                    f"{r.get('id', '?')}: expected declare_blockers, "
-                    f"got {action.get('action_type')}"
+                    f"{r.get('id', '?')}: expected declare_blockers, got {action.get('action_type')}"
                 )
             assigns = action.get("blocker_assignments", {})
             if not isinstance(assigns, dict):
-                failures.append(
-                    f"{r.get('id', '?')}: blocker_assignments is not a dict: {assigns}"
-                )
+                failures.append(f"{r.get('id', '?')}: blocker_assignments is not a dict: {assigns}")
             for b_name, a_name in assigns.items():
                 if not isinstance(b_name, str) or not isinstance(a_name, str):
                     failures.append(
-                        f"{r.get('id', '?')}: non-string in assignments: "
-                        f"{b_name!r} -> {a_name!r}"
+                        f"{r.get('id', '?')}: non-string in assignments: {b_name!r} -> {a_name!r}"
                     )
         else:
             failures.append(f"{r.get('id', '?')}: unknown kind: {kind}")
@@ -225,10 +213,11 @@ def test_response_is_valid_combat_json(output_records: list[dict]) -> None:
 
 # ── A5: Response names exist in the prompt's menu ─────────────────────────
 
-def test_response_names_in_prompt_menu(output_records: list[dict]) -> None:
+
+def test_response_names_in_prompt_menu(combat_records: list[dict]) -> None:
     """A5: Every name in the response must appear in the prompt's menu."""
     failures: list[str] = []
-    for r in output_records:
+    for r in combat_records:
         kind = r.get("kind", "")
         user = r.get("user", "")
         rid = r.get("id", "?")
@@ -246,9 +235,7 @@ def test_response_names_in_prompt_menu(output_records: list[dict]) -> None:
                 continue
             for n in declared:
                 if n not in menu_names:
-                    failures.append(
-                        f"{rid}: declared attacker '{n}' not in menu: {menu_names}"
-                    )
+                    failures.append(f"{rid}: declared attacker '{n}' not in menu: {menu_names}")
 
         elif kind == "combat_block":
             menu_names = _extract_menu_names(user, "Block with:")
@@ -260,18 +247,17 @@ def test_response_names_in_prompt_menu(output_records: list[dict]) -> None:
                 continue
             for b_name in assigns:
                 if b_name not in menu_names:
-                    failures.append(
-                        f"{rid}: declared blocker '{b_name}' not in menu: {menu_names}"
-                    )
+                    failures.append(f"{rid}: declared blocker '{b_name}' not in menu: {menu_names}")
     assert not failures, "\n".join(failures)
 
 
 # ── Verification record dump (for PR body) ────────────────────────────────
 
-def test_verbatim_records(output_records: list[dict]) -> None:
+
+def test_verbatim_records(combat_records: list[dict]) -> None:
     """Capture one attackers + one blockers record verbatim for the PR."""
-    attack_recs = [r for r in output_records if r.get("kind") == "combat_attack"]
-    block_recs = [r for r in output_records if r.get("kind") == "combat_block"]
+    attack_recs = [r for r in combat_records if r.get("kind") == "combat_attack"]
+    block_recs = [r for r in combat_records if r.get("kind") == "combat_block"]
 
     assert attack_recs, "no attack records to show"
     assert block_recs, "no block records to show"
@@ -283,23 +269,24 @@ def test_verbatim_records(output_records: list[dict]) -> None:
     print()
 
 
-def test_summary_stats(output_records: list[dict]) -> None:
+def test_summary_stats(combat_records: list[dict]) -> None:
     """Print summary stats for the PR body."""
-    attack_recs = [r for r in output_records if r.get("kind") == "combat_attack"]
-    block_recs = [r for r in output_records if r.get("kind") == "combat_block"]
+    attack_recs = [r for r in combat_records if r.get("kind") == "combat_attack"]
+    block_recs = [r for r in combat_records if r.get("kind") == "combat_block"]
 
     from collections import Counter
+
     attack_classes = Counter(r["meta"].get("attack_class", "?") for r in attack_recs)
     block_classes = Counter(r["meta"].get("block_class", "?") for r in block_recs)
 
-    print(f"\n\n=== SUMMARY ===")
-    print(f"  Total records: {len(output_records)}")
+    print("\n\n=== SUMMARY ===")
+    print(f"  Total records: {len(combat_records)}")
     print(f"  Attack records: {len(attack_recs)}")
     print(f"  Block records: {len(block_recs)}")
     print(f"  Attack classes: {dict(attack_classes)}")
     print(f"  Block classes: {dict(block_classes)}")
-    print(f"  Solver line leaks: 0 (verified by test_no_solver_line)")
-    print(f"  MCTS count leaks: 0 (verified by test_no_mcts_count_leak)")
+    print("  Solver line leaks: 0 (verified by test_no_solver_line)")
+    print("  MCTS count leaks: 0 (verified by test_no_mcts_count_leak)")
     print()
 
 
@@ -314,14 +301,3 @@ def _print_compact(rec: dict) -> None:
     print(f"  user prompt ({len(user)} chars):")
     for line in user.split("\n"):
         print(f"    {line}")
-
-
-# ── Report helper (called by test_all_combat_rows_consumed) ────────────────
-
-def report(records: list[dict], n_combat: int, n_skip: int) -> None:
-    attack_recs = [r for r in records if r.get("kind") == "combat_attack"]
-    block_recs = [r for r in records if r.get("kind") == "combat_block"]
-    print(f"\n  Input combat rows: {n_combat} (379 attackers + 199 blockers)")
-    print(f"  Skipped non-combat: {n_skip} (8887 priority + 324 binary)")
-    print(f"  Output attack recs: {len(attack_recs)}")
-    print(f"  Output block recs: {len(block_recs)}")
