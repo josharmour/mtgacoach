@@ -920,6 +920,33 @@ class GREBridge:
             logger.warning(f"GRE bridge submit_numeric error: {e}")
         return False
 
+    def submit_x(self, value: int) -> bool:
+        """Submit an X-cost value via the CastingTimeOption_NumericInputRequest.
+
+        Sends the submit_x pipe command which finds the
+        CastingTimeOption_NumericInputRequest child in the pending
+        CastingTimeOptionRequest and calls SubmitX(value) on it.
+
+        Also accepts standalone NumericInputRequest as a fallback
+        (older plugin paths).
+
+        Fail-closed: returns False if the plugin responds with an
+        error (e.g. no numeric child present), or on communication
+        failure.
+        """
+        try:
+            resp = self._send_safe({"action": "submit_x", "value": value})
+            if resp.get("ok"):
+                logger.info(
+                    f"GRE bridge submitted X value: {value} "
+                    f"(type={resp.get('submitted_type', '?')})"
+                )
+                return True
+            logger.warning(f"GRE bridge submit_x failed: {resp.get('error')}")
+        except GREBridgeError as e:
+            logger.warning(f"GRE bridge submit_x error: {e}")
+        return False
+
     def submit_targets(self, target_instance_id: int | list[int]) -> bool:
         """Submit target selection by instance ID(s).
 
