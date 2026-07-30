@@ -13,10 +13,33 @@ are skipped and counted.
 Solver lines: OFF (the equivalent of --solver-line off).  Every record carries
 NO_SOLVER_ADDENDUM and no mcts_counts leak into the prompt.
 
+Class-histogram guard
+---------------------
+The report now prints per-class shares *with percentages* so a build skew
+-- the original 71.8 % no_block that went undetected — is visible at a
+glance.  If any single class exceeds ``--max-class-share`` (default 0.50)
+the build ABORTS with the histogram, unless ``--allow-skewed`` is passed.
+Modeled on the solver-line fail-closed guard in build_combat_decisions.py.
+
+Rebalance mode
+--------------
+``--balance downsample`` deterministically (seed=7) downsamples the
+majority class toward the threshold, reporting what was dropped.
+No upsampling or duplication.
+
 Usage
 -----
-    python3 tools/training/build_magezero_combat.py \\
+    python3 tools/training/build_magezero_combat.py \
         --in <decisions.jsonl> --out <combat_records.jsonl> [--report]
+
+    # guard will abort on the real corpus; pass --allow-skewed to force:
+    python3 tools/training/build_magezero_combat.py \
+        --in <decisions.jsonl> --out <combat_records.jsonl> --report --allow-skewed
+
+    # downsample the majority class toward 0.50:
+    python3 tools/training/build_magezero_combat.py \
+        --in <decisions.jsonl> --out <combat_records.jsonl> --report \
+        --balance downsample --allow-skewed
 """
 
 from __future__ import annotations
@@ -538,6 +561,126 @@ def build_block_record(row: dict) -> tuple[dict | None, str]:
 
 # ── IO and CLI ─────────────────────────────────────────────────────────────
 
+from typing import Callable
+
+
+def _class_histogram(
+    records: list[dict], field: str, predicate: Callable[[dict], bool]
+) -> list[tuple[str, int, float]]:
+    """Return sorted [(class, count, share)] for matching records.
+
+    ``predicate`` selects the subset (attack vs block).  Sorted by share
+    descending so the dominant class appears first — exactly what the
+    fail-closed guard needs to catch a 71.8 % skew.
+    """
+    subset = [r for r in records if predicate(r)]
+    total = len(subset)
+    if total == 0:
+        return []
+    counts = Counter(r["meta"].get(field, "?") for r in subset)
+    items = [(cls, n, round(n / total, 4)) for cls, n in counts.items()]
+    items.sort(key=lambda x: (-x[2], x[0]))
+    return items
+
+
+def _check_class_share(
+    hist: list[tuple[str, int, float]], max_share: float, label: str
+) -> None:
+    """Raise SystemExit if any class in *hist* exceeds *max_share*."""
+    if not hist:
+        return
+    max_item = hist[0]  # sorted descending
+    cls, n, share = max_item
+    if share > max_share:
+        lines = [
+            f"\nFAIL-CLOSED: {label} class '{cls}' is "
+            f"{share:.1%} ({n}/{sum(h[1] for h in hist)}) — "
+            f"exceeds --max-class-share={max_share:.0%}",
+            f"  Full histogram:",
+        ]
+        for c, nn, s in hist:
+            lines.append(f"    {c}: {nn} ({s:.1%})")
+        lines.append(
+            "  Pass --allow-skewed to build anyway, or use "
+            "--balance downsample."
+        )
+        raise SystemExit("\n".join(lines))
+
+
+def _downsample(
+    records: list[dict],
+    attack_hist: list[tuple[str, int, float]],
+    block_hist: list[tuple[str, int, float]],
+    threshold: float,
+) -> list[dict]:
+    """Deterministically (seed=7) downsample majority classes to *threshold*.
+
+    Only the block side is typically the problem, but we run the same
+    check on both.  Returns a NEW list; original *records* is unchanged.
+    """
+    import random
+
+    rng = random.Random(7)
+    kept: list[dict] = []
+
+    # Process attack and block subsets independently
+    for hist, kind_val, meta_class_field in [
+        (attack_hist, "combat_attack", "attack_class"),
+        (block_hist, "combat_block", "block_class"),
+    ]:
+        subset = [r for r in records if r.get("kind") == kind_val]
+        if not hist or len(subset) == 0:
+            kept.extend(subset)
+            continue
+
+        total = sum(h[1] for h in hist)
+        max_class, max_count, max_share = hist[0]
+
+        if max_share <= threshold:
+            kept.extend(subset)
+            print(
+                f"  [{kind_val}] no class exceeds {threshold:.0%}, "
+                f"keeping all {len(subset)}",
+                file=sys.stderr,
+            )
+            continue
+
+        # Target count for the majority class
+        other_total = total - max_count
+        target_max = int(other_total * threshold / (1 - threshold))
+        # Clamp: never go below the next-largest class or below 1
+        next_largest = hist[1][1] if len(hist) > 1 else 0
+        target_max = max(target_max, next_largest, 1)
+
+        to_drop = max_count - target_max
+        if to_drop <= 0:
+            kept.extend(subset)
+            continue
+
+        majority_recs = [
+            r for r in subset
+            if r["meta"].get(meta_class_field, "") == max_class
+        ]
+        non_majority = [
+            r for r in subset
+            if r["meta"].get(meta_class_field, "") != max_class
+        ]
+
+        rng.shuffle(majority_recs)
+        keep_count = len(majority_recs) - to_drop
+        keep_majority = majority_recs[:keep_count]
+
+        print(
+            f"  [{kind_val}] downsampled '{max_class}': "
+            f"{len(majority_recs)} -> {keep_count} "
+            f"(dropped {to_drop})",
+            file=sys.stderr,
+        )
+        kept.extend(non_majority)
+        kept.extend(keep_majority)
+
+    return kept
+
 def _read_jsonl(path: Path) -> list[dict]:
     out: list[dict] = []
     with open(path, encoding="utf-8") as f:
@@ -567,6 +710,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="Path to write training records JSONL")
     parser.add_argument("--report", action="store_true",
                         help="Print build report to stderr on completion")
+    parser.add_argument("--max-class-share", type=float, default=0.50,
+                        help="Maximum allowed share of any single class "
+                             "(default: 0.50).  Build aborts if exceeded.")
+    parser.add_argument("--allow-skewed", action="store_true",
+                        help="Skip the fail-closed class-share guard")
+    parser.add_argument("--balance", choices=("downsample",), default=None,
+                        help="Downsample the majority class toward the "
+                             "threshold (deterministic, seed=7)")
     args = parser.parse_args(argv)
 
     t0 = time.time()
@@ -604,13 +755,44 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("no usable records — fail closed")
         return 2
 
+    # ── Class-histogram guard -------------------------------------------------
+
+    attack_hist = _class_histogram(
+        records, "attack_class",
+        lambda r: r.get("kind") == "combat_attack",
+    )
+    block_hist = _class_histogram(
+        records, "block_class",
+        lambda r: r.get("kind") == "combat_block",
+    )
+
+    if not args.allow_skewed:
+        _check_class_share(attack_hist, args.max_class_share, "attack")
+        _check_class_share(block_hist, args.max_class_share, "block")
+
+    # ── Rebalance -------------------------------------------------------------
+
+    if args.balance == "downsample":
+        records = _downsample(records, attack_hist, block_hist,
+                              args.max_class_share)
+        # Recompute histograms after downsample for accurate report
+        attack_hist = _class_histogram(
+            records, "attack_class",
+            lambda r: r.get("kind") == "combat_attack",
+        )
+        block_hist = _class_histogram(
+            records, "block_class",
+            lambda r: r.get("kind") == "combat_block",
+        )
+
     elapsed = time.time() - t0
     written = _write_jsonl(args.output, records)
     logger.info(f"wrote {written} records -> {args.output}")
 
     if args.report:
         _print_report(records, drops, skip_counts, read_count,
-                      args.input, args.output, elapsed)
+                      args.input, args.output, elapsed,
+                      attack_hist=attack_hist, block_hist=block_hist)
 
     return 0
 
@@ -623,6 +805,8 @@ def _print_report(
     input_path: Path,
     output_path: Path,
     elapsed: float,
+    attack_hist: list[tuple[str, int, float]] | None = None,
+    block_hist: list[tuple[str, int, float]] | None = None,
 ) -> None:
     attack_recs = [r for r in records if r.get("kind") == "combat_attack"]
     block_recs = [r for r in records if r.get("kind") == "combat_block"]
@@ -646,17 +830,15 @@ def _print_report(
     leak_solver = sum(1 for r in records if "Computed optimal" in r.get("user", ""))
     print(f"  Solver line leaks: {leak_solver} (should be 0)", file=sys.stderr)
 
-    if attack_recs:
-        print(f"\n  Attack class mix:", file=sys.stderr)
-        classes = Counter(r["meta"]["attack_class"] for r in attack_recs)
-        for cls, n in sorted(classes.items()):
-            print(f"    {cls}: {n}", file=sys.stderr)
+    if attack_hist:
+        print(f"\n  Attack class histogram:", file=sys.stderr)
+        for cls, n, share in attack_hist:
+            print(f"    {cls}: {n:>4d} ({share:.1%})", file=sys.stderr)
 
-    if block_recs:
-        print(f"\n  Block class mix:", file=sys.stderr)
-        classes = Counter(r["meta"]["block_class"] for r in block_recs)
-        for cls, n in sorted(classes.items()):
-            print(f"    {cls}: {n}", file=sys.stderr)
+    if block_hist:
+        print(f"\n  Block class histogram:", file=sys.stderr)
+        for cls, n, share in block_hist:
+            print(f"    {cls}: {n:>4d} ({share:.1%})", file=sys.stderr)
 
     # Show one example of each
     if attack_recs:
