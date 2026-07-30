@@ -48,6 +48,7 @@ import argparse
 import hashlib
 import json
 import logging
+import re
 import sys
 import time
 from collections import Counter
@@ -341,6 +342,16 @@ def _match_declared_to_pool(
                 out.append(pool_disambiguated[i])
                 break
     return out
+
+
+# Anchored so an oracle text that merely mentions blocking ("can't be blocked
+# by creatures of that color") is never mistaken for a declaration.
+RE_COMBAT_DECLARATION = re.compile(r"^\s*(block|attack)\b", re.IGNORECASE)
+
+
+def is_combat_declaration(chosen: str) -> bool:
+    """True when this chosen action actually declares attackers or blockers."""
+    return bool(RE_COMBAT_DECLARATION.match(chosen or ""))
 
 
 def build_attack_record(row: dict) -> tuple[dict | None, str]:
@@ -738,6 +749,22 @@ def main(argv: list[str] | None = None) -> int:
         if kind not in ("attackers", "blockers"):
             skip_counts[kind] += 1
             drops[f"skip_kind_{kind}"] += 1
+            continue
+
+        # FAIL CLOSED on a fabricated label. The record's answer is derived from
+        # ,attacking/,blocking markers on the board, but those markers can be
+        # left over from an EARLIER declaration in the same turn. If the row's
+        # own decision was not itself a combat declaration, the answer we would
+        # emit is not the decision the search made, and the mcts_counts attached
+        # to it belong to a different (priority) decision.
+        #
+        # Measured before this guard: 89 of 90 emitted records had a source
+        # `chosen` of "Pass" or a mana ability while the record answered
+        # declare_attackers with specific creatures. That is invented
+        # supervision — strictly worse than an empty corpus, because it looks
+        # like data.
+        if not is_combat_declaration(row.get("chosen", "")):
+            drops["chosen_is_not_a_combat_declaration"] += 1
             continue
 
         if kind == "attackers":

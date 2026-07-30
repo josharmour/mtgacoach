@@ -536,7 +536,17 @@ INFO  Player A win rate: 100.00% (1/1) =>[main]
 
         kinds = {d["phase"]: d["decision_kind"] for d in decisions}
         assert kinds.get("PRECOMBAT_MAIN") == "priority"
-        assert kinds.get("DECLARE_ATTACKERS") == "attackers"
+        # This fixture's DECLARE_ATTACKERS menu is [Pass, "{T}: Draw a card."] —
+        # an ordinary PRIORITY window that merely sits inside the combat step,
+        # which XMage grants so instants can be cast there. It was asserted as
+        # "attackers" purely because of the phase code, and that assumption let
+        # build_magezero_combat.py reverse-engineer attackers from stale board
+        # markers: 89 of 90 emitted records answered declare_attackers while
+        # their source decision was Pass or a mana ability. Classification now
+        # follows the MENU, so this is correctly "priority".
+        assert kinds.get("DECLARE_ATTACKERS") == "priority"
+        # The blockers menu here IS a declaration — a multi-select of creature
+        # names terminated by "Stop Choosing" — so it stays "blockers".
         assert kinds.get("DECLARE_BLOCKERS") == "blockers"
 
     def test_binary_decision_kind(self):
