@@ -81,6 +81,7 @@ dev = [
     "ruff>=0.6.0",
     "mypy>=1.10.0",
     "pre-commit>=3.5.0",
+    "prometheus_client>=0.20.0",
 ]
 
 [project.scripts]
