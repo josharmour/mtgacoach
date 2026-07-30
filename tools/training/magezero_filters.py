@@ -20,6 +20,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
+import random
 import subprocess
 import sys
 from pathlib import Path
@@ -100,6 +102,92 @@ def dedupe(rows: list[dict]) -> tuple[list[dict], int]:
 # ---------------------------------------------------------------------------
 # Tripwire
 # ---------------------------------------------------------------------------
+
+
+def is_pass_action(name: str) -> bool:
+    """True when this chosen action means "do nothing".
+
+    The tripwire below keys on the literal ``"Pass"`` because that is the
+    pre-registered wording, but binary CHOOSE_USE windows decline with
+    ``"false"`` — also a do-nothing decision. Both are reported so the literal
+    gate cannot quietly under-measure the reflex it exists to catch.
+    """
+    return (name or "").strip().lower() in {"pass", "false", "no", "done"}
+
+
+def pass_rate_report(rows: list[dict]) -> dict[str, dict[str, float]]:
+    """Pass rate overall and per ``decision_kind``, literal and pass-like."""
+    out: dict[str, dict[str, float]] = {}
+    kinds = ["__all__"] + sorted({r.get("decision_kind", "?") for r in rows})
+    for kind in kinds:
+        group = rows if kind == "__all__" else [r for r in rows if r.get("decision_kind") == kind]
+        n = len(group)
+        if not n:
+            continue
+        literal = sum(1 for r in group if r.get("chosen") == "Pass")
+        like = sum(1 for r in group if is_pass_action(r.get("chosen", "")))
+        out[kind] = {
+            "rows": n,
+            "literal_pass": literal,
+            "literal_frac": literal / n,
+            "pass_like": like,
+            "pass_like_frac": like / n,
+        }
+    return out
+
+
+def downsample_passes(
+    rows: list[dict],
+    max_frac: float = 0.40,
+    seed: int = 7,
+) -> tuple[list[dict], dict[str, int]]:
+    """Drop surplus PRIORITY passes until the literal-Pass fraction is ``max_frac``.
+
+    Owner decision 2026-07-30: honour the pre-registered 40% ceiling rather than
+    revise it, because the pass-reflex failure is expensive and the threshold was
+    fixed in advance.
+
+    Only ``priority`` passes are eligible for dropping, and that is the whole
+    design. Priority windows hold the overwhelming majority of passes (18,150 of
+    21,609 rows), which is where a reflex actually lives. Combat declines are the
+    opposite problem: 562 declined-block and 895 declined-attack rows were
+    recovered from a corpus that had almost none, and they are exactly the
+    restraint examples the ``always_no_block`` floor tests for. Trimming those to
+    hit a global ratio would trade a pass-bias for an over-block bias — a
+    different wrong model, not a fixed one.
+
+    Deterministic under ``seed``: the surplus is chosen by a seeded shuffle, so
+    the same corpus and seed always yield the same drop set.
+    """
+    total = len(rows)
+    if total == 0:
+        return rows, {"dropped": 0, "eligible": 0}
+
+    n_pass = sum(1 for r in rows if r.get("chosen") == "Pass")
+    if total == 0 or n_pass / total <= max_frac:
+        return rows, {"dropped": 0, "eligible": 0}
+
+    # Solve for how many passes to drop: (n_pass - d) / (total - d) == max_frac
+    #   => d = (n_pass - max_frac * total) / (1 - max_frac)
+    d_needed = math.ceil((n_pass - max_frac * total) / (1.0 - max_frac))
+
+    eligible_idx = [
+        i
+        for i, r in enumerate(rows)
+        if r.get("chosen") == "Pass" and r.get("decision_kind") == "priority"
+    ]
+    rng = random.Random(seed)
+    order = list(eligible_idx)
+    rng.shuffle(order)
+    drop = set(order[:d_needed])
+
+    kept = [r for i, r in enumerate(rows) if i not in drop]
+    return kept, {
+        "dropped": len(drop),
+        "eligible": len(eligible_idx),
+        "needed": d_needed,
+        "shortfall": max(0, d_needed - len(eligible_idx)),
+    }
 
 
 def pass_rate_tripwire(rows: list[dict], max_frac: float = 0.40) -> None:
@@ -377,6 +465,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=0.40,
         help="Maximum allowed Pass fraction (default: 0.40).",
     )
+    parser.add_argument(
+        "--balance",
+        choices=("downsample-pass",),
+        default=None,
+        help="Drop surplus PRIORITY passes until the literal-Pass fraction meets "
+        "--max-pass-frac. Combat declines are never dropped: they are the scarce "
+        "restraint examples the always_no_block floor tests for, and trimming them "
+        "would trade a pass-bias for an over-block bias. Off by default so the raw "
+        "corpus shape is never silently altered.",
+    )
     return parser
 
 
@@ -405,6 +503,39 @@ def main(argv: list[str] | None = None) -> None:
     rows, n = dedupe(rows)
     filter_counts["dedupe"] = n
     print(f"  dedupe: {n} dropped ({len(rows)} kept)")
+
+    # Pass-rate visibility BEFORE any balancing, so the raw corpus shape is on
+    # the record even when balancing then hides it.
+    pre = pass_rate_report(rows)
+    print("  pass rate (pre-balance):")
+    for kind, st in pre.items():
+        print(
+            f"    {kind:<12s} rows={int(st['rows']):6d}  "
+            f"literal Pass={st['literal_frac'] * 100:5.1f}%  "
+            f"pass-like={st['pass_like_frac'] * 100:5.1f}%"
+        )
+
+    if args.balance == "downsample-pass":
+        rows, bstats = downsample_passes(rows, max_frac=args.max_pass_frac, seed=args.seed)
+        filter_counts["downsample_pass"] = bstats["dropped"]
+        print(
+            f"  downsample_pass: {bstats['dropped']} dropped "
+            f"({len(rows)} kept; {bstats['eligible']} priority passes were eligible)"
+        )
+        if bstats.get("shortfall"):
+            print(
+                f"  ** WARNING: {bstats['shortfall']} more drops were needed than there were\n"
+                f"     eligible PRIORITY passes. Combat declines are deliberately not\n"
+                f"     eligible; the tripwire below will still reject this corpus. **"
+            )
+        post = pass_rate_report(rows)
+        print("  pass rate (post-balance):")
+        for kind, st in post.items():
+            print(
+                f"    {kind:<12s} rows={int(st['rows']):6d}  "
+                f"literal Pass={st['literal_frac'] * 100:5.1f}%  "
+                f"pass-like={st['pass_like_frac'] * 100:5.1f}%"
+            )
 
     # Tripwire
     pass_rate_tripwire(rows, max_frac=args.max_pass_frac)
