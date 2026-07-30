@@ -2173,7 +2173,53 @@ the GPUs are free.
 `timeout_ms: 4000`; log shows both regimes working — "290 evaluations in 2.04 s"
 (budget-bound) and "191 evaluations in 4.00 s" (cap-bound on harder positions).
 
-### §26 addendum 16 — ds4 VRAM incident: 0.95 is a FLOOR, not slack (2026-07-30) ← CURRENT
+### §26 addendum 17 — CUTOVER: coach now Qwen3.6-27B-FP8 on ONE card; ds4-v9 retired to standby (2026-07-30 ~16:00) ← CURRENT
+
+**Recorded on blackwell; every number below measured here.** Owner order: "ds4
+stays stopped, single-card smart models are the option" — card 0 is now
+permanently free for MageZero + gemma QLoRA.
+
+**Probe results (card 1, util 0.55, `max-model-len` 32768):**
+- VRAM **52.4 GiB on card 1, card 0 at 23 MiB** — survey's ~49 GiB prediction
+  confirmed. KV pool 605k tokens.
+- Decode **48 tok/s bare → 85–90 tok/s with MTP** (the FP8 checkpoint ships a
+  0.44 GiB MTP head; `num_speculative_tokens: 3`). MTP ON in prod.
+- Real-shaped call (5,716-token prompt, 44-token answer): **cold 1.50 s, warm
+  0.66–0.90 s** via prefix caching. No reasoning leak.
+- Weights breakdown (safetensors headers): 27.44 GiB language + 0.86 GiB vision
+  + 0.44 GiB MTP. Served `--language-model-only`; vision re-enableable for
+  ~3 GiB if `vision_mapper.py` ever wants a self-hosted VLM.
+
+**Deployment:**
+- Container `qwen36-coach`, host net :8002, `~/recreate-qwen36-coach.sh`
+  (env knobs `QWEN_MTP`/`QWEN_GPU_UTIL`/`QWEN_MAX_LEN`). Serves `qwen3.6-fp8`
+  + `qwen36-27b`.
+- **Thinking kill-switch is server-side**:
+  `--default-chat-template-kwargs.enable_thinking=false`. The coach client
+  sends `{"thinking": false}` (DeepSeek dialect) which Qwen's template
+  ignores — without the server default every call would think (template
+  default TRUE) and reproduce the 6.1 s failure from #451. Verified with a
+  no-kwargs call.
+- LiteLLM: new canonical `qwen3.6-fp8` + legacy `deepseek-v4-flash` alias both
+  → `10.0.0.10:8002/v1`. Old config at
+  `~/docker-stack/litellm/config.yaml.bak-20260730-ds4`; tracked copy
+  `gateway/config.yaml` synced in this PR. End-to-end verified through :8444
+  on both names (0.5–0.7 s).
+- **Rollback**: `docker stop qwen36-coach && docker start ds4-v9` + restore
+  config backup + `docker restart litellm`. ds4-v9 is stopped-not-removed.
+
+**Context window regression to know about:** endpoint now serves **32,768**
+(model native 262,144; raise via `QWEN_MAX_LEN`) vs ds4's 1,048,576. Nothing
+on the coach path needs more than ~7k today.
+
+**Validation debt (deliberate):** cutover ran on latency/VRAM only — no
+captured prompt corpus existed, so the pre-registered quality gate (legality
+≥ 4.5, correctness within 0.5 of DeepSeek on ≥30 real prompts) is now owed
+POST-cutover. The DeepSeek baseline arm remains recordable via the rollback
+path. One smell already logged: a gateway smoke answer mis-stated turn-1
+tapped-land mechanics — run the real eval before trusting close-game advice.
+
+### §26 addendum 16 — ds4 VRAM incident: 0.95 is a FLOOR, not slack (2026-07-30)
 
 **Recorded by an agent running in an ephemeral cloud container, NOT on blackwell.**
 Every number below is owner-reported from the incident; none was re-measured here.
@@ -2232,11 +2278,9 @@ MageZero on gen-1's final arm; bump watcher armed for the 550 games/gen restart;
       Fallback if p95 > ~1.2 s: Qwen3.6-35B-A3B-FP8 (170–208 tok/s measured on
       this card). Cutover gate: legality ≥ 4.5, correctness within 0.5, on real
       captured prompts via tools/eval.
-- [ ] Run the Qwen3.6-27B-FP8 out-of-band probe under one of the three options
-      above. *(in progress: weights downloading to the host HF cache; blocked
-      on the owner picking a ds4 service window — and note
-      `~/.arenamcp/eval_prompts.jsonl` does not exist yet, so the DeepSeek
-      baseline arm must be captured before any cutover judgement.)*
+- [x] Run the Qwen3.6-27B-FP8 out-of-band probe. *(2026-07-30 ~15:30–16:00,
+      on-box; owner picked option 2 — stop ds4 — then upgraded the probe to a
+      full cutover. See §26 addendum 17.)*
 - [x] Confirm `~/mz_bump_watcher.log` shows the 550 games/gen restart actually
       fired. *(2026-07-30 15:20, on-box)* Arm 5/5 (Mono-U) landed 10:29 at
       24.62% (49/199); watcher stopped mz train 11:29:29, relaunched with
