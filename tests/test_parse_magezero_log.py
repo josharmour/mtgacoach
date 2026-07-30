@@ -719,3 +719,116 @@ class TestIssue430BlockAttribution:
         d = decisions[0]
         assert d["battlefield_self"] == [], f"turn-1 empty board was refilled: {d['battlefield_self']}"
         assert d["battlefield_opp"] == []
+
+
+class TestPassDecisionRecovery:
+    """XMage logs `chose action:` ONLY for non-pass actions.
+
+    Measured on mz_train_smoke.log before this fix: 21,723 pool lines where MCTS
+    deliberated, 9,111 (41.9%) with Pass as the argmax, but only 516 followed by
+    a `chose action` line — so ~8.6k decisions where the search concluded "do
+    nothing" were dropped. `chosen` contained a pass in 0 of 9,789 emitted rows
+    while 100% of menus offered one, which also made B2's >40%-Pass tripwire
+    unable to ever fire.
+    """
+
+    @staticmethod
+    def _parse(log_body: str):
+        import tempfile
+        from pathlib import Path
+
+        log = (
+            "INFO  Simulating 1 games. =>[main]\n"
+            + log_body
+            + "INFO  Player A win rate: 100.00% (1/1) =>[main]\n"
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+            f.write(log.replace("=>[T]", "=>[pool-3-thread-1]"))
+            path = f.name
+        try:
+            return parse_log(path)[0]
+        finally:
+            Path(path).unlink()
+
+    LIFE = "INFO  [3:Precombat Main:PRECOMBAT_MAIN][player PlayerA:20][player PlayerB:18] =>[T]\n"
+
+    def test_unconsumed_pass_pool_becomes_a_decision(self):
+        """A pool whose argmax is Pass and which no chose-action consumed."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            + self.LIFE
+            # MCTS deliberates and prefers Pass — XMage logs no chose action.
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] [Cast Bounce Off score: 0.1 count: 90] =>[T]\n"
+            # A later window forces the previous pool to resolve.
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 20] [Play Island score: 0.3 count: 400] =>[T]\n"
+            + "INFO  [4:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.3 =>[T]\n"
+        )
+        assert len(decisions) == 2, f"expected the pass row + the play row, got {len(decisions)}"
+        pass_row = decisions[0]
+        assert pass_row["chosen"] == "Pass"
+        assert pass_row["turn"] == 3, "turn comes from the last logLife line"
+        assert pass_row["phase"] == "PRECOMBAT_MAIN"
+        assert pass_row["mcts_counts"] == {"Pass": 700, "Cast Bounce Off": 90}
+        assert pass_row["menu"] == ["Pass", "Cast Bounce Off"]
+        assert decisions[1]["chosen"] == "Play Island"
+
+    def test_ambiguous_unconsumed_pool_is_not_labelled(self):
+        """An un-consumed pool whose argmax is NOT a pass must not be guessed."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            + self.LIFE
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.2 count: 30] [Cast Bounce Off score: 0.5 count: 900] =>[T]\n"
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 20] [Play Island score: 0.3 count: 400] =>[T]\n"
+            + "INFO  [4:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.3 =>[T]\n"
+        )
+        assert len(decisions) == 1, (
+            f"an unexplained non-pass pool must be skipped, not labelled; got {[d['chosen'] for d in decisions]}"
+        )
+        assert decisions[0]["chosen"] == "Play Island"
+
+    def test_pass_pool_pending_at_game_boundary_is_flushed(self):
+        """The last window of a game still belongs to that game."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            + self.LIFE
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] [Cast Bounce Off score: 0.1 count: 90] =>[T]\n"
+            + "INFO  Player A won the die roll =>[T]\n"  # next game starts
+            + self.LIFE
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 20] [Play Island score: 0.3 count: 400] =>[T]\n"
+            + "INFO  [4:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.3 =>[T]\n"
+        )
+        assert len(decisions) == 2
+        assert decisions[0]["chosen"] == "Pass"
+        assert decisions[0]["game_id"] != decisions[1]["game_id"], (
+            "the flushed pass belongs to the OUTGOING game, not the new one"
+        )
+
+    def test_pass_pool_pending_at_eof_is_flushed(self):
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            + self.LIFE
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] [Cast Bounce Off score: 0.1 count: 90] =>[T]\n"
+        )
+        assert len(decisions) == 1
+        assert decisions[0]["chosen"] == "Pass"
+
+    def test_binary_decline_counts_as_a_pass(self):
+        """CHOOSE_USE windows decline with `false`, not `Pass`."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            + self.LIFE
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [true score: 0.1 count: 40] [false score: 0.4 count: 500] =>[T]\n"
+        )
+        assert len(decisions) == 1
+        assert decisions[0]["chosen"] == "false"
+        assert decisions[0]["decision_kind"] == "binary"
+
+    def test_recovered_rows_are_marked_internally_only(self):
+        """`_recovered_pass` is a leading-underscore field, stripped on write."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            + self.LIFE
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] [Cast Bounce Off score: 0.1 count: 90] =>[T]\n"
+        )
+        assert decisions[0]["_recovered_pass"] is True
+        assert not any(k.startswith("_") for k in ("chosen", "menu", "mcts_counts"))

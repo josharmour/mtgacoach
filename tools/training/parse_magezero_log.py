@@ -62,6 +62,12 @@ RE_TIMESTAMP = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
 RE_ACTION_TUPLE = re.compile(r"\[([^\]]+?) score: (-?[\d.eE+-]+) count: (\d+)\]")
 
+# Recovery accounting from the most recent parse_log() call. Kept module-level
+# rather than returned, because parse_log's 2-tuple signature has several
+# callers; the report reads this to surface the pass rate, which the B2
+# tripwire depends on being visible.
+LAST_PARSE_STATS: dict[str, int] = {"recovered_pass": 0, "ambiguous_unconsumed": 0}
+
 
 # ── Phase → decision_kind mapping ───────────────────────────────────────
 
@@ -81,6 +87,79 @@ DECISION_KIND_MAP = {
 # Known opponent order for the smoke run (gen0: Standard-MonoR/G/B/W/U, gen1: same order)
 SMOKE_OPPONENTS_GEN0 = ["Standard-MonoR", "Standard-MonoG", "Standard-MonoB",
                          "Standard-MonoW", "Standard-MonoU"]
+
+
+class _PendingPool:
+    """An MCTS visit distribution awaiting its outcome line."""
+
+    __slots__ = ("actions", "phase_code", "turn")
+
+    def __init__(self, actions: list[tuple], phase_code: str, turn: int):
+        self.actions = actions
+        self.phase_code = phase_code
+        self.turn = turn
+
+
+def is_pass_action(name: str) -> bool:
+    """True when this action name is XMage's pass/decline option."""
+    return name.strip().lower() in {"pass", "false", "no", "done"}
+
+
+def _emit_pass_decision(
+    state: _ThreadState,
+    pending: _PendingPool,
+    menu: list[str],
+    decisions: list[dict],
+    stats: dict[str, int],
+) -> None:
+    """Emit the decision for a pool line no `chose action` ever consumed.
+
+    XMage logs `chose action:` ONLY for non-pass actions — 0 of 9,789 emitted
+    rows had a pass in `chosen`, while 100% of menus offered one. Those windows
+    were dropped, discarding 8,595 of 18,384 deliberated decisions on
+    mz_train_smoke.log: precisely the cases where the search concluded that the
+    correct play was to DO NOTHING. Training on the remainder teaches a model
+    that never holds priority, never keeps an instant up, and never declines to
+    overextend — the mirror image of the pass-reflex that cost a prior week.
+
+    The label is recoverable without guessing: the MCTS argmax of the
+    un-consumed pool IS the search's conclusion. When that argmax is not a pass
+    action the window is genuinely ambiguous, so it is counted and skipped
+    rather than labelled — never fabricate a decision.
+    """
+    actions = pending.actions
+    top_name, _, _ = max(actions, key=lambda a: a[2])
+    if not is_pass_action(top_name):
+        stats["ambiguous_unconsumed"] += 1
+        return
+
+    kind = classify_kind(pending.phase_code, actions)
+    decision = {
+        "game_id": state.game_id,
+        "turn": pending.turn,
+        "phase": pending.phase_code,
+        "active_life": state.life_a,
+        "opp_life": state.life_b,
+        "hand": [],
+        "battlefield_self": [],
+        "battlefield_opp": [],
+        # The pool's own action names ARE the options the search weighed, so
+        # they are the faithful menu when no `playable abilities:` line landed.
+        "menu": list(menu) if menu else [name for name, _, _ in actions],
+        "chosen": top_name,
+        "mcts_counts": {name: count for name, _, count in actions},
+        "actor": "PlayerA",
+        "outcome": "unknown",
+        "decision_kind": kind,
+        "_thread": state.thread_id,
+        "_game_seq": state.game_seq,
+        "_log": state.log_name,
+        "session": "",
+        "_recovered_pass": True,
+    }
+    state.game_decisions.append(decision)
+    decisions.append(decision)
+    stats["recovered_pass"] += 1
 
 
 def classify_kind(phase_code: str, pool_actions: list[tuple]) -> str:
@@ -197,8 +276,10 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
     thread_game_seq: dict[str, int] = {}
 
     decisions: list[dict] = []
-    pending_pool: dict[str, list[tuple]] = {}
+    pending_pool: dict[str, _PendingPool] = {}
     pending_menu: dict[str, list[str]] = {}
+    # Recovery accounting, reported by --report so the pass rate is visible.
+    pass_stats: dict[str, int] = {"recovered_pass": 0, "ambiguous_unconsumed": 0}
 
     for line in all_lines:
         line = line.rstrip("\n\r")
@@ -216,10 +297,14 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
         # ── Die roll: game boundary ──────────────────────────────
         dm = RE_DIE_ROLL.search(line)
         if dm:
+            # Flush before finalizing: a pool still pending at the game
+            # boundary is the last window of the OUTGOING game.
+            prev = pending_pool.pop(thread_id, None)
+            if prev is not None:
+                _emit_pass_decision(state, prev, pending_menu.get(thread_id, []), decisions, pass_stats)
             _finalize_game(state, decisions)
             thread_game_seq[thread_id] += 1
             state.start_new_game(thread_game_seq[thread_id])
-            pending_pool.pop(thread_id, None)
             pending_menu.pop(thread_id, None)
             continue
 
@@ -235,7 +320,22 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
         if pool_match:
             actions = parse_pool_actions(pool_match.group(3))
             if actions:
-                pending_pool[thread_id] = actions
+                # A pool still pending when the NEXT one arrives was never
+                # consumed by a `chose action` line — because XMage does not log
+                # a chosen Pass. Recover it (see _emit_pass_decision) instead of
+                # dropping it, which silently discarded 8,595 of 18,384
+                # deliberated decisions on mz_train_smoke.log — every one of
+                # them a case where the search concluded "do nothing".
+                prev = pending_pool.pop(thread_id, None)
+                if prev is not None:
+                    _emit_pass_decision(
+                        state, prev, pending_menu.pop(thread_id, []), decisions, pass_stats
+                    )
+                pending_pool[thread_id] = _PendingPool(
+                    actions=actions,
+                    phase_code=pool_match.group(1),
+                    turn=state.last_turn,
+                )
             continue
 
         # ── Playable abilities (legal menu) ──────────────────────
@@ -252,11 +352,12 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
             phase_code = cm.group(3)
             chosen = cm.group(4).strip()
 
-            pool_actions = pending_pool.pop(thread_id, None)
+            pending = pending_pool.pop(thread_id, None)
             menu = pending_menu.pop(thread_id, [])
 
-            if pool_actions is None:
+            if pending is None:
                 continue  # Minimax decision, skip
+            pool_actions = pending.actions
 
             kind = classify_kind(phase_code, pool_actions)
             mcts_counts = {name: count for name, _, count in pool_actions}
@@ -312,12 +413,21 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
             )
             continue
 
+    # Flush any pool still pending at EOF, then finalize remaining games.
+    for tid, prev in list(pending_pool.items()):
+        st = threads.get(tid)
+        if st is not None:
+            _emit_pass_decision(st, prev, pending_menu.get(tid, []), decisions, pass_stats)
+    pending_pool.clear()
+
     # Finalize remaining games
     for state in threads.values():
         _finalize_game(state, decisions)
 
     # Enrich with sessions using per-thread game counts
     _enrich_sessions(decisions, sessions)
+
+    LAST_PARSE_STATS.update(pass_stats)
 
     return decisions, sessions
 
@@ -338,6 +448,9 @@ class _ThreadState:
         self.boards: dict[str, list[dict]] = {"PlayerA": [], "PlayerB": []}
         self.last_log_life_a: int | None = None
         self.last_log_life_b: int | None = None
+        # Last turn seen on a logLife line. A recovered pass row has no
+        # `chose action` line to read the turn from, so it uses this.
+        self.last_turn = 0
         # Open battlefield block: which player's header we are inside, which
         # emitter printed it, and how many Permanents lines it has produced.
         self._block_player: str | None = None
@@ -355,6 +468,7 @@ class _ThreadState:
         self.boards = {"PlayerA": [], "PlayerB": []}
         self.last_log_life_a = None
         self.last_log_life_b = None
+        self.last_turn = 0
         self._block_player = None
         self._block_emitter = None
         self._block_perm_lines = 0
@@ -362,6 +476,7 @@ class _ThreadState:
 
     def on_log_life(self, turn: int, phase_name: str, phase_code: str,
                     life_a: int, life_b: int):
+        self.last_turn = turn
         self.life_a = life_a
         self.life_b = life_b
         self.last_log_life_a = life_a
@@ -636,6 +751,16 @@ def _print_report(decisions: list[dict],
     print("=" * 60)
     print("MAGEZERO LOG PARSE REPORT")
     print("=" * 60)
+
+    n_recovered = sum(1 for d in decisions if d.get("_recovered_pass"))
+    n_pass = sum(1 for d in decisions if is_pass_action(d.get("chosen", "")))
+    total = len(decisions) or 1
+    print("\n  Pass-decision recovery (XMage logs no chosen Pass):")
+    print(f"    Recovered pass rows:        {n_recovered}")
+    print(f"    Ambiguous, NOT labelled:    {LAST_PARSE_STATS.get('ambiguous_unconsumed', 0)}")
+    print(f"    Pass fraction of `chosen`:  {n_pass}/{total} = {100 * n_pass / total:.1f}%")
+    if n_pass / total > 0.40:
+        print("    ** EXCEEDS the 40% B2 pass-reflex tripwire — corpus needs rebalancing **")
 
     total_games: set[str] = set()
     total_by_kind: dict[str, int] = {}
