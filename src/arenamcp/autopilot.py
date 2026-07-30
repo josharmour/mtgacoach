@@ -1108,7 +1108,7 @@ class AutopilotEngine(_BridgeSubmitMixin, _ActionExecMixin):
         if recorder is None:
             return
         try:
-            from arenamcp.action_planner import AUTOPILOT_SYSTEM_PROMPT
+            from arenamcp.action_planner import AUTOPILOT_SYSTEM_PROMPT, plan_fallback_reason
 
             prompt_user = self._planner._build_action_prompt(
                 game_state, trigger, legal_actions, decision_context
@@ -1124,6 +1124,13 @@ class AutopilotEngine(_BridgeSubmitMixin, _ActionExecMixin):
                 planned_action=planned,
                 request_type=request_type,
                 latency_ms=latency_ms,
+                # WP-0.4: real-match records were previously untagged, and an
+                # untagged record read as "the model chose this" downstream.
+                fallback_reason=plan_fallback_reason(plan),
+                # submitted_action is deliberately NOT passed: this runs right
+                # after plan_actions() and before execution, so what actually
+                # reached the GRE is unknowable here. It stays JSON null
+                # ("not observed") rather than being guessed from the plan.
             )
         except Exception as e:
             logger.debug(f"_maybe_record_trajectory failed (ignored): {e}")

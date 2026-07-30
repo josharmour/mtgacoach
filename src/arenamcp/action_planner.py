@@ -101,6 +101,41 @@ class GameAction:
         return " | ".join(parts)
 
 
+# WP-0.4 fallback reason codes. A non-empty reason means a DEFAULT PATH, not the
+# model, chose the action — so the resulting trajectory record must be excluded
+# from positive training credit. Note "[pick-salvage]" is deliberately absent:
+# that is the model's own pick index recovered from malformed JSON, so the
+# decision is still the model's and the record is legitimate training data.
+FALLBACK_AUTO_PICK = "planner_auto_pick"
+FALLBACK_PREFLIGHT_LAND_DROP = "planner_preflight_land_drop"
+FALLBACK_NO_ACTIONS = "planner_no_actions"
+
+# Strategy prefixes that used to be the ONLY fallback signal. Retained solely to
+# classify plan objects built before ActionPlan.fallback_reason existed.
+_LEGACY_FALLBACK_STRATEGY_TAGS = {
+    "[auto-pick]": FALLBACK_AUTO_PICK,
+    "[land-drop-first]": FALLBACK_PREFLIGHT_LAND_DROP,
+}
+
+
+def plan_fallback_reason(plan: Any) -> str:
+    """Return why this plan is a fallback, or "" when the model decided it.
+
+    Prefers the structured ``ActionPlan.fallback_reason`` and falls back to the
+    legacy strategy-prefix sniff so older plan objects still classify correctly.
+    """
+    if plan is None or not getattr(plan, "actions", None):
+        return FALLBACK_NO_ACTIONS
+    reason = (getattr(plan, "fallback_reason", "") or "").strip()
+    if reason:
+        return reason
+    strategy = (getattr(plan, "overall_strategy", "") or "").strip()
+    for tag, legacy_reason in _LEGACY_FALLBACK_STRATEGY_TAGS.items():
+        if strategy.startswith(tag):
+            return legacy_reason
+    return ""
+
+
 @dataclass
 class ActionPlan:
     """A complete plan of actions to execute."""
@@ -110,6 +145,18 @@ class ActionPlan:
     voice_advice: str = ""
     trigger: str = ""
     turn_number: int = 0
+    # WP-0.4: why this plan did NOT come from the model ("" = the model decided).
+    # Until now the only signal was an "[auto-pick]" / "[land-drop-first]" prefix
+    # sniffed out of overall_strategy by self_play.plan_fallback_reason(). That
+    # coupling fails silently: reword a strategy string and every fallback stops
+    # being tagged, and untagged fallbacks are trained on as if the model had
+    # chosen them — teaching the model to imitate its own deterministic crutch.
+    fallback_reason: str = ""
+
+    @property
+    def fallback(self) -> bool:
+        """True when a default path, not the model, chose these actions."""
+        return bool(self.fallback_reason)
 
     def __str__(self) -> str:
         lines = [f"Plan ({self.trigger}, turn {self.turn_number}): {self.overall_strategy}"]
@@ -482,6 +529,7 @@ class ActionPlanner:
                 trigger=trigger,
                 turn_number=current_turn,
                 tag="land-drop-first",
+                fallback_reason=FALLBACK_PREFLIGHT_LAND_DROP,
             )
             if preflight_plan.actions:
                 raw = self._resolve_raw_actions_for_matching(game_state, legal_actions_raw)
@@ -1383,8 +1431,14 @@ class ActionPlanner:
         trigger: str,
         turn_number: int,
         tag: str,
+        fallback_reason: str,
     ) -> ActionPlan:
-        """Build a single-action ActionPlan from a legal-action string."""
+        """Build a single-action ActionPlan from a legal-action string.
+
+        ``fallback_reason`` is required, not defaulted: a preflight plan is by
+        definition not a model decision, and defaulting it to "" would let a new
+        preflight path silently produce untagged training records (WP-0.4).
+        """
         plan = ActionPlan(trigger=trigger, turn_number=turn_number)
         action = self._legal_action_to_action(legal_action)
         if not action:
@@ -1392,6 +1446,7 @@ class ActionPlanner:
         plan.actions = [action]
         plan.overall_strategy = f"[{tag}] {legal_action}"
         plan.voice_advice = self._humanize_legal_action(legal_action)
+        plan.fallback_reason = fallback_reason
         return plan
 
     # Oracle phrases that mark a spell as removal / hurts-its-target.
@@ -1831,6 +1886,9 @@ class ActionPlanner:
         # still distinguish fallback cases, but the user-facing advice is clean.
         plan.overall_strategy = f"[auto-pick] {selected}"
         plan.voice_advice = self._humanize_legal_action(selected)
+        # WP-0.4: the authoritative tag. The "[auto-pick]" prefix above stays for
+        # humans reading bug reports; downstream tagging must not depend on it.
+        plan.fallback_reason = FALLBACK_AUTO_PICK
         return plan
 
     # ------------------------------------------------------------------

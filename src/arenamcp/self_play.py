@@ -41,10 +41,12 @@ import contextlib
 from tools.eval.run import BackendSpec
 
 from arenamcp.action_planner import (
+    _LEGACY_FALLBACK_STRATEGY_TAGS,
     AUTOPILOT_SYSTEM_PROMPT,
     ActionPlanner,
     ActionType,
     GameAction,
+    plan_fallback_reason,
 )
 from arenamcp.gre_action_matcher import match_action_to_gre
 from arenamcp.gre_bridge import (
@@ -272,28 +274,16 @@ def find_instance_id_by_name(name: str, battlefield: list[dict]) -> int | None:
     return None
 
 
-# Strategy tags stamped by ActionPlanner when a decision did NOT come from the
-# model: `[auto-pick]` is the deterministic legal-action picker (_fallback_plan,
-# also used for trivial windows) and `[land-drop-first]` is the pre-LLM land-drop
-# preflight. Both are default paths, so per plan constraint 4 the resulting
-# trajectory record must be tagged and excluded from positive training credit.
-# `[pick-salvage]` is deliberately NOT here: that is the model's own pick index
-# recovered from malformed JSON, so the decision is still the model's.
-_FALLBACK_STRATEGY_TAGS = {
-    "[auto-pick]": "planner_auto_pick",
-    "[land-drop-first]": "planner_preflight_land_drop",
-}
-
-
-def plan_fallback_reason(plan) -> str:
-    """Return why this plan is a fallback, or "" when the model decided it."""
-    if plan is None or not getattr(plan, "actions", None):
-        return "planner_no_actions"
-    strategy = (getattr(plan, "overall_strategy", "") or "").strip()
-    for tag, reason in _FALLBACK_STRATEGY_TAGS.items():
-        if strategy.startswith(tag):
-            return reason
-    return ""
+# WP-0.4: `plan_fallback_reason` now lives in action_planner.py beside ActionPlan,
+# because the real-match capture path (autopilot -> TrajectoryRecorder) needs the
+# same classification and must not import self_play to get it. It is re-exported
+# here so existing callers and tests keep working.
+#
+# It reads the structured `ActionPlan.fallback_reason` set at the source, instead
+# of sniffing an "[auto-pick]" prefix out of overall_strategy — that prefix is a
+# human-facing debug string, and tying contamination filtering to its exact
+# wording meant a harmless copy edit could silently stop tagging fallbacks.
+_FALLBACK_STRATEGY_TAGS = _LEGACY_FALLBACK_STRATEGY_TAGS
 
 
 def describe_raw_action(raw: dict) -> str:

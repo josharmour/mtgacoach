@@ -20,8 +20,17 @@ Record shape (matches ``SelfPlayOrchestrator`` ``decision_rec``)::
       "prompt_system", "prompt_user",
       "planned_action", "alt_planned_action",
       "submit_command", "latency_ms",
+      "fallback", "fallback_reason",   # WP-0.4 contamination tags
+      "submitted_action",              # None = not observed at record time
       "winner"            # added at flush time
     }
+
+WP-0.4 note: this module previously claimed to match ``decision_rec`` while
+omitting ``fallback``/``fallback_reason``/``submitted_action``. Because
+``build_dataset.py`` filters with ``rec.get("fallback") is True``, an untagged
+record read as clean — so every real-match fallback was eligible for positive
+training credit. The tags are now recorded here too, and the consumer refuses
+untagged records outright rather than assuming they are clean.
 """
 
 from __future__ import annotations
@@ -70,6 +79,23 @@ def _stringify_action(action: Any) -> str:
         return str(action)
     except Exception:
         return "pass"
+
+
+class _Unobserved:
+    """Sentinel: the caller does not know what was submitted.
+
+    Distinct from ``None``/"pass" on purpose. ``_stringify_action(None)`` returns
+    ``"pass"``, so routing an unknown submission through it would record that a
+    pass was submitted — a fabricated observation. Callers that record before
+    execution (autopilot plans, then submits) leave this unset and the field is
+    written as JSON ``null`` meaning "not observed".
+    """
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<unobserved>"
+
+
+UNOBSERVED = _Unobserved()
 
 
 class TrajectoryRecorder:
@@ -131,8 +157,17 @@ class TrajectoryRecorder:
         request_type: str | None = None,
         latency_ms: float | None = None,
         submit_command: dict[str, Any] | None = None,
+        fallback_reason: str = "",
+        submitted_action: Any = UNOBSERVED,
     ) -> None:
-        """Buffer one decision record. Never raises into the caller."""
+        """Buffer one decision record. Never raises into the caller.
+
+        ``fallback_reason`` must be the output of
+        ``action_planner.plan_fallback_reason(plan)`` — non-empty means a default
+        path chose the action, so the record is excluded from training credit.
+        Callers that cannot know it should not pass "" (that asserts "the model
+        decided"); they should not be producing training records at all.
+        """
         try:
             gs = game_state or {}
             turn = gs.get("turn", {}) or {}
@@ -151,6 +186,13 @@ class TrajectoryRecorder:
                 "prompt_user": prompt_user or "",
                 "planned_action": _stringify_action(planned_action),
                 "alt_planned_action": _stringify_action(alt_action),
+                # WP-0.4 contamination tags. Always present, so a downstream
+                # consumer can tell "tagged clean" from "never tagged".
+                "fallback": bool(fallback_reason),
+                "fallback_reason": fallback_reason or "",
+                "submitted_action": (
+                    None if isinstance(submitted_action, _Unobserved) else _stringify_action(submitted_action)
+                ),
                 "submit_command": submit_command,
                 "latency_ms": round(float(latency_ms), 1) if latency_ms is not None else None,
             }

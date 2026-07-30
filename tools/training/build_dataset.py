@@ -245,6 +245,14 @@ def main():
     p.add_argument("--out-sft", type=Path, default=Path("tools/training/data/sft_dataset.json"))
     p.add_argument("--out-dpo", type=Path, default=Path("tools/training/data/dpo_dataset.json"))
     p.add_argument(
+        "--allow-untagged",
+        action="store_true",
+        help="Build even when trajectory records carry no `fallback` field. OFF by default: "
+        "an untagged record cannot be known to be free of fallback contamination, and "
+        "training on a fallback teaches the model to imitate its own deterministic crutch. "
+        "Use for debugging only — never to build a dataset for a gated candidate.",
+    )
+    p.add_argument(
         "--judge-backend",
         type=str,
         default=None,
@@ -299,6 +307,8 @@ def main():
         # processed in original file order, identical to the legacy behavior.
         records = []
         unresolved_winner_count = 0
+        untagged_examples: list[int] = []
+        fallback_excluded = 0
         with open(args.trajectories, encoding="utf-8") as f:
             for idx, line in enumerate(f):
                 try:
@@ -307,7 +317,18 @@ def main():
                     logger.warning(f"Skipping malformed self-play line {idx + 1}: {e}")
                     continue
 
+                # WP-0.4 fail-closed: `fallback` MISSING is not the same as
+                # `fallback: false`. The old `rec.get("fallback") is True` test
+                # silently accepted untagged records as clean, so any producer
+                # that forgot to tag (the real-match TrajectoryRecorder did, for
+                # its whole existence) fed its fallbacks straight into SFT
+                # positives and DPO `chosen`. Refuse instead of assuming.
+                if "fallback" not in rec:
+                    untagged_examples.append(idx + 1)
+                    continue
+
                 if rec.get("fallback") is True:
+                    fallback_excluded += 1
                     continue
 
                 winner = rec.get("winner")
@@ -319,6 +340,32 @@ def main():
                     continue
 
                 records.append(rec)
+
+        # WP-0.4 fail-closed gate. Untagged records are REFUSED, not assumed
+        # clean: the Accept criterion ("the built dataset contains zero
+        # fallback:true records") is only meaningful if every record was
+        # actually classified. Silently keeping untagged rows is how a
+        # forgetful producer reintroduces contamination invisibly.
+        if untagged_examples:
+            shown = ", ".join(str(n) for n in untagged_examples[:10])
+            more = f" (+{len(untagged_examples) - 10} more)" if len(untagged_examples) > 10 else ""
+            if not args.allow_untagged:
+                raise SystemExit(
+                    f"FAIL-CLOSED: {len(untagged_examples)} record(s) in {args.trajectories} carry no "
+                    f"`fallback` field, so it cannot be known whether the model or a deterministic "
+                    f"fallback chose the action. Lines: {shown}{more}\n"
+                    f"Fix the PRODUCER so it tags records (see "
+                    f"arenamcp.action_planner.plan_fallback_reason and "
+                    f"TrajectoryRecorder.record_decision(fallback_reason=...)). "
+                    f"Re-run with --allow-untagged only to build a knowingly-contaminated "
+                    f"dataset for debugging; never to train a candidate for gating."
+                )
+            logger.warning(
+                f"--allow-untagged: {len(untagged_examples)} untagged record(s) treated as clean. "
+                f"This dataset MAY contain fallback contamination. Lines: {shown}{more}"
+            )
+        if fallback_excluded:
+            logger.info(f"Excluded {fallback_excluded} fallback-tagged record(s) from training credit.")
 
         original_count = len(records)
         if unresolved_winner_count:
