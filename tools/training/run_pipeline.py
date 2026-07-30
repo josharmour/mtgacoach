@@ -10,15 +10,16 @@ Automates the iterative loop:
        * Hard minimums on Legality and Reasoning (from the eval harness).
        * Win-rate as a secondary driver.
        * A normalized composite score is logged for visibility.
-     If the eval harness can't run, the pipeline falls back to the legacy
-     binary win-rate gate so it still functions.
+     Fail-closed (WP-0.6): every gate dependency must be available and
+     produce usable scores, or the gate BLOCKS promotion. There is no
+     degraded fallback gate.
 
 Usage:
-    python -m tools.training.run_pipeline \\
-        --champion-backend ollama:gemma4:latest \\
-        --challenger-backend ollama:gemma4:challenger \\
-        --iterations 3 \\
-        --matches-per-iter 10 \\
+    python -m tools.training.run_pipeline \
+        --champion-backend ollama:gemma4:latest \
+        --challenger-backend ollama:gemma4:challenger \
+        --iterations 3 \
+        --matches-per-iter 10 \
         --gate-matches 6
 """
 
@@ -40,6 +41,11 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 logger = logging.getLogger("tools.training.run_pipeline")
+
+# Fail-closed gate constants (WP-0.6)
+# A gate run with fewer matches than this BLOCKS promotion — the win-rate
+# signal is too noisy below this many games.
+MIN_GATE_MATCHES = 6
 
 
 def _run_cmd(cmd: list[str]) -> bool:
@@ -73,7 +79,6 @@ class PipelineRunner:
         legality_min: float = 4.0,
         reasoning_min: float = 3.5,
         win_rate_min: float = 0.45,
-        fallback_win_rate: float = 0.55,
     ):
         self.champion_backend = champion_backend
         self.challenger_backend = challenger_backend
@@ -89,8 +94,8 @@ class PipelineRunner:
         self.legality_min = legality_min
         self.reasoning_min = reasoning_min
         self.win_rate_min = win_rate_min
-        # Legacy binary gate used only when the eval harness can't run.
-        self.fallback_win_rate = fallback_win_rate
+        # Fail-closed: every gate dependency must produce usable scores
+        # or the gate BLOCKS promotion. No fallback gate exists.
 
         self.trajectories_path = REPO / "tools/eval/data/self_play_trajectories.jsonl"
         self.sft_path = REPO / "tools/training/data/sft_dataset.json"
@@ -154,12 +159,12 @@ class PipelineRunner:
         Returns a dict of per-dimension mean scores (legality / reasoning /
         correctness) or None if the harness can't be run (missing corpus,
         unreachable backend, judge failure, or no usable scores). A None
-        return signals the caller to fall back to the legacy win-rate gate.
+        return causes the gate to BLOCK promotion (fail-closed).
         """
         if not self.eval_corpus.exists():
-            logger.warning(
-                f"Eval corpus not found at {self.eval_corpus}; "
-                f"skipping quality gate (falling back to win-rate)."
+            logger.error(
+                f"GATE BLOCKED: Eval corpus not found at {self.eval_corpus}; "
+                f"cannot evaluate challenger quality."
             )
             return None
 
@@ -196,7 +201,7 @@ class PipelineRunner:
             ]
         )
         if not ok:
-            logger.warning("eval.run failed; skipping quality gate (falling back to win-rate).")
+            logger.error("GATE BLOCKED: eval.run failed; cannot evaluate challenger quality.")
             return None
 
         logger.info(f"Step 4.5b: Judging Challenger responses with {self.judge_backend}...")
@@ -217,13 +222,14 @@ class PipelineRunner:
             ]
         )
         if not ok:
-            logger.warning("eval.judge failed; skipping quality gate (falling back to win-rate).")
+            logger.error("GATE BLOCKED: eval.judge failed; gate dependency (judge backend) unavailable.")
             return None
 
         metrics = self._aggregate_eval_scores(self.gating_scores_path)
         if metrics is None:
-            logger.warning(
-                "No usable judge scores produced; skipping quality gate (falling back to win-rate)."
+            logger.error(
+                "GATE BLOCKED: No usable judge scores produced; gate dependency (judge backend) "
+                "returned no scorable results."
             )
         return metrics
 
@@ -350,6 +356,7 @@ class PipelineRunner:
             logger.info("Step 5: Gating promotion scoring...")
             challenger_wins = 0
             total_matches = 0
+            skip_count = 0
             if eval_trajectories.exists():
                 with open(eval_trajectories, encoding="utf-8") as f:
                     for line in f:
@@ -363,16 +370,30 @@ class PipelineRunner:
                                 if winner == "local":  # Challenger won (since Challenger was local)
                                     challenger_wins += 1
                         except Exception:
+                            skip_count += 1
                             continue
 
-            win_rate = (challenger_wins / total_matches) if total_matches > 0 else 0.0
-            logger.info(
-                f"Gating outcomes: Challenger won {challenger_wins} of {total_matches} matches ({win_rate * 100:.1f}% win rate)"
-            )
+            if skip_count:
+                logger.warning(f"Skipped {skip_count} malformed trajectory line(s) in {eval_trajectories.name}")
 
-            # Step 4.5: Quality evaluation via the eval harness (run + judge).
-            logger.info("Step 4.5: Evaluating Challenger advice quality (eval harness)...")
-            quality = self._evaluate_challenger_quality(challenger_spec)
+            # Fail-closed: a gate run below the minimum sample size BLOCKS
+            if total_matches < MIN_GATE_MATCHES:
+                logger.error(
+                    f"GATE BLOCKED: Insufficient gate matches ({total_matches} < {MIN_GATE_MATCHES}). "
+                    f"Cannot produce a statistically meaningful win rate."
+                )
+                win_rate = 0.0
+                quality = None
+            else:
+                win_rate = challenger_wins / total_matches
+                logger.info(
+                    f"Gating outcomes: Challenger won {challenger_wins} of {total_matches} matches "
+                    f"({win_rate * 100:.1f}% win rate)"
+                )
+
+                # Step 4.5: Quality evaluation via the eval harness (run + judge).
+                logger.info("Step 4.5: Evaluating Challenger advice quality (eval harness)...")
+                quality = self._evaluate_challenger_quality(challenger_spec)
 
             # Step 5: Multi-dimensional promotion gate.
             logger.info("Step 5: Multi-dimensional promotion gate...")
@@ -402,13 +423,14 @@ class PipelineRunner:
         logger.info("\nSelf-improvement pipeline execution complete!")
 
     def _gate_decision(self, win_rate: float, quality: dict | None) -> bool:
-        """Decide whether to promote the Challenger.
+        """Decide whether to promote the Challenger (fail-closed, WP-0.6).
 
         When eval-harness quality metrics are available, enforce hard
         minimums on Legality and Reasoning plus a secondary win-rate floor,
-        and log a normalized composite score for visibility. When metrics
-        are unavailable, fall back to the legacy binary win-rate gate so the
-        pipeline still functions.
+        and log a normalized composite score for visibility.
+
+        When metrics are unavailable (quality is None), the gate BLOCKS
+        promotion — never degrades to a weaker gate.
         """
         if quality is None:
             # Fail-closed gate (WP-0.6): Quality metrics unavailable -> BLOCK promotion
@@ -499,12 +521,6 @@ def main():
     p.add_argument(
         "--win-rate-min", type=float, default=0.45, help="Secondary win-rate floor to promote (default: 0.45)"
     )
-    p.add_argument(
-        "--fallback-win-rate",
-        type=float,
-        default=0.55,
-        help="Legacy binary win-rate gate used only when the eval harness can't run (default: 0.55)",
-    )
     args = p.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s | %(message)s")
@@ -522,7 +538,6 @@ def main():
         legality_min=args.legality_min,
         reasoning_min=args.reasoning_min,
         win_rate_min=args.win_rate_min,
-        fallback_win_rate=args.fallback_win_rate,
     )
     runner.run()
 
