@@ -26,7 +26,7 @@ def extract_card_names():
 
     for fname in DECK_FILES:
         path = os.path.join(DECK_DIR, fname)
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip().rstrip("\r")
                 if not line or line.startswith("LAYOUT"):
@@ -41,7 +41,7 @@ def extract_card_names():
     layout_only = set()
     for fname in DECK_FILES:
         path = os.path.join(DECK_DIR, fname)
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip().rstrip("\r")
                 if line.startswith("LAYOUT"):
@@ -89,7 +89,7 @@ def scryfall_setnum(set_code, set_num):
 
 def load_cache():
     try:
-        with open(CACHE_PATH, "r") as f:
+        with open(CACHE_PATH) as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}

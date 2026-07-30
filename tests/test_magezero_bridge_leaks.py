@@ -42,6 +42,7 @@ LEAK_WORDS = frozenset({"score:", "count:"})
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _read_jsonl(path: Path) -> list[dict]:
     out: list[dict] = []
     with open(path, encoding="utf-8") as f:
@@ -53,7 +54,9 @@ def _read_jsonl(path: Path) -> list[dict]:
 
 
 def _make_leak_message(
-    game_id: str, label: str, details: str,
+    game_id: str,
+    label: str,
+    details: str,
 ) -> str:
     return f"[L{label}] {game_id}: {details}"
 
@@ -61,12 +64,14 @@ def _make_leak_message(
 def _numbers_in_prompt(prompt: str) -> set[int]:
     """Return every integer token appearing in the prompt text."""
     import re
+
     return {int(m) for m in re.findall(r"\b\d+\b", prompt)}
 
 
 # ---------------------------------------------------------------------------
 # Load fixture data once per session
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def fixture_rows() -> list[dict]:
@@ -77,8 +82,7 @@ def fixture_rows() -> list[dict]:
 @pytest.fixture(scope="session")
 def bridge_records() -> list[dict]:
     assert BRIDGE_JSONL.exists(), (
-        f"bridge output not found: {BRIDGE_JSONL} — "
-        f"run build_magezero_bridge.py against the fixture first"
+        f"bridge output not found: {BRIDGE_JSONL} — run build_magezero_bridge.py against the fixture first"
     )
     return _read_jsonl(BRIDGE_JSONL)
 
@@ -99,13 +103,10 @@ def test_all_fixture_rows_processed(
 ) -> None:
     """Every priority, non-unknown-outcome fixture row should produce a record."""
     expected_count = sum(
-        1 for r in fixture_rows
-        if r.get("decision_kind") == "priority"
-        and r.get("outcome") != "unknown"
+        1 for r in fixture_rows if r.get("decision_kind") == "priority" and r.get("outcome") != "unknown"
     )
     assert len(bridge_records) == expected_count, (
-        f"expected {expected_count} records (priority + known outcome), "
-        f"got {len(bridge_records)}"
+        f"expected {expected_count} records (priority + known outcome), got {len(bridge_records)}"
     )
 
 
@@ -122,9 +123,7 @@ def test_no_skip_of_usable_record(
         seen.add(gid)
     for gid, row in row_by_game_id.items():
         if row.get("decision_kind") == "priority" and row.get("outcome") != "unknown":
-            assert gid in seen, (
-                f"missing record for valid fixture row: {gid}"
-            )
+            assert gid in seen, f"missing record for valid fixture row: {gid}"
 
 
 # L1 — answer index — cannot be tested without false positives
@@ -206,9 +205,7 @@ def test_leak_l4_opponent_hand_cards(
         gid = r["meta"]["game_id"]
         for name in OPP_HAND_CARD_NAMES:
             if name in prompt:
-                failures.append(
-                    _make_leak_message(gid, "L4", f"opponent hand card '{name}' found")
-                )
+                failures.append(_make_leak_message(gid, "L4", f"opponent hand card '{name}' found"))
     assert not failures, "\n".join(failures)
 
 
@@ -244,9 +241,7 @@ def test_response_is_pick(
                 continue
             pick = actions[0].get("pick")
             if not isinstance(pick, int):
-                failures.append(
-                    f"{r['meta']['game_id']}: response pick is not an int: {pick}"
-                )
+                failures.append(f"{r['meta']['game_id']}: response pick is not an int: {pick}")
         except (json.JSONDecodeError, TypeError) as e:
             failures.append(f"{r['meta']['game_id']}: invalid response JSON: {e}")
     assert not failures, "\n".join(failures)

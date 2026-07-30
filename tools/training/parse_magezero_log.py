@@ -15,8 +15,7 @@ import argparse
 import json
 import os
 import re
-import sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -174,7 +173,7 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
     log_name = os.path.basename(log_path)
     is_smoke = "smoke" in log_name
 
-    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+    with open(log_path, encoding="utf-8", errors="replace") as f:
         all_lines = f.readlines()
 
     sessions = detect_sessions(all_lines, is_smoke_log=is_smoke)
@@ -530,7 +529,7 @@ def main():
         all_decisions.extend(decisions)
 
         wr_lines = []
-        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(log_path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 m = RE_WIN_RATE.search(line)
                 if m:
@@ -557,7 +556,6 @@ def _print_report(decisions: list[dict],
                   win_rates_by_log: dict[str, list[dict]],
                   log_paths: list[str],
                   out_path: Path):
-    import textwrap
 
     print("=" * 60)
     print("MAGEZERO LOG PARSE REPORT")
@@ -624,7 +622,7 @@ def _print_report(decisions: list[dict],
             total_logged_wins = sum(w["n_wins"] for w in wr_lines)
             total_logged_games = sum(w["n_total"] for w in wr_lines)
 
-            print(f"\n    SESSION BREAKDOWN:")
+            print("\n    SESSION BREAKDOWN:")
             for si, wr in enumerate(wr_lines):
                 sess = f"session{si}"
                 out_data = next((o for s, o in session_outcomes.items() if s.startswith(sess)), None)

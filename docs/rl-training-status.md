@@ -2954,3 +2954,8 @@ unproven pipeline.
 - [WP:wp06-fail-closed-gating] 07-29 20:03 — STARTED|DONE wp0-audit — classified all 12 WPs, PR #442
 
 - [WP-0.6] wp06-fail-closed-gating — 07-29 20:03 DONE: run_pipeline.py fail-closed, removed fallback_win_rate, MIN_GATE_MATCHES=6, 11 tests (3 sims)
+- [WP12] 07-29 20:15 — STARTED
+
+- [WP12] 07-29 20:15 — DONE: validators.py +4 checks, build_tripwires.py 55 fixtures (7 unique states), test_validators.py 40 tests, PR #443
+
+- [WP05] wp05-registry — 07-29 21:36 — DONE: 28 tests (promote/rollback/promote cycle, crash safety parametrized before/after SQLite, retention at 11th-gen boundary, champion spared beyond limit, gate enforcement exhaustive), ruff clean commit, PR #444

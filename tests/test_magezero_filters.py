@@ -20,7 +20,6 @@ if str(REPO) not in sys.path:
 
 from tools.training import magezero_filters as mf
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -184,18 +183,22 @@ class TestDedupe:
         assert len(kept) == 2
 
     def test_battlefield_order_independent(self):
-        r1 = _make_row({
-            "battlefield_self": [
-                {"name": "Elf", "tapped": False},
-                {"name": "Goblin", "tapped": True},
-            ],
-        })
-        r2 = _make_row({
-            "battlefield_self": [
-                {"name": "Goblin", "tapped": True},
-                {"name": "Elf", "tapped": False},
-            ],
-        })
+        r1 = _make_row(
+            {
+                "battlefield_self": [
+                    {"name": "Elf", "tapped": False},
+                    {"name": "Goblin", "tapped": True},
+                ],
+            }
+        )
+        r2 = _make_row(
+            {
+                "battlefield_self": [
+                    {"name": "Goblin", "tapped": True},
+                    {"name": "Elf", "tapped": False},
+                ],
+            }
+        )
         kept, dropped = mf.dedupe([r1, r2])
         assert dropped == 1
         assert len(kept) == 1
@@ -303,9 +306,7 @@ class TestSplitByGame:
         for name in ("train", "val", "test"):
             assert len(a.get(name, [])) == len(b.get(name, []))
             # Contents should be identical in order
-            assert [r["game_id"] for r in a.get(name, [])] == [
-                r["game_id"] for r in b.get(name, [])
-            ]
+            assert [r["game_id"] for r in a.get(name, [])] == [r["game_id"] for r in b.get(name, [])]
 
     def test_different_seed_different_splits(self):
         rows = [_make_row({"game_id": f"g{i}:1:1"}) for i in range(100)]
@@ -317,6 +318,7 @@ class TestSplitByGame:
         # (the chance two seeds give the exact same sizes for 100 games is negligible)
         a_counts = tuple(len(a.get(n, [])) for n in ("train", "val", "test"))
         b_counts = tuple(len(b.get(n, [])) for n in ("train", "val", "test"))
+
         # These COULD coincidentally match (rare), so we just check the overall
         # game->split mapping differs for at least one game
         def _game_to_split(splits):
@@ -356,9 +358,7 @@ class TestSplitByGame:
             for r in group:
                 gid = mf._game_id(r)
                 if gid in seen_games:
-                    assert seen_games[gid] == name, (
-                        f"Game {gid} leaked from {seen_games[gid]} to {name}"
-                    )
+                    assert seen_games[gid] == name, f"Game {gid} leaked from {seen_games[gid]} to {name}"
                 seen_games[gid] = name
 
 
@@ -456,13 +456,15 @@ class TestCLI:
             outcome = "won" if i < 40 else "lost"
             chosen = "Play Forest"  # never Pass so tripwire doesn't fire
             rows.append(
-                _make_row({
-                    "game_id": f"game{i:03d}:1:1",
-                    "outcome": outcome,
-                    "chosen": chosen,
-                    "menu": ["Play Forest", "Attack", "Pass"],
-                    "hand": [f"Card_{i}"],  # unique hand to avoid dedupe collapse
-                })
+                _make_row(
+                    {
+                        "game_id": f"game{i:03d}:1:1",
+                        "outcome": outcome,
+                        "chosen": chosen,
+                        "menu": ["Play Forest", "Attack", "Pass"],
+                        "hand": [f"Card_{i}"],  # unique hand to avoid dedupe collapse
+                    }
+                )
             )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -476,17 +478,18 @@ class TestCLI:
                 [
                     sys.executable,
                     str(REPO / "tools/training/magezero_filters.py"),
-                    "--in", str(input_path),
-                    "--outdir", str(outdir),
-                    "--mode", "won_only",
+                    "--in",
+                    str(input_path),
+                    "--outdir",
+                    str(outdir),
+                    "--mode",
+                    "won_only",
                 ],
                 capture_output=True,
                 text=True,
             )
 
-            assert result.returncode == 0, (
-                f"CLI failed:\nstdout:{result.stdout}\nstderr:{result.stderr}"
-            )
+            assert result.returncode == 0, f"CLI failed:\nstdout:{result.stdout}\nstderr:{result.stderr}"
 
             # Check outputs
             assert (outdir / "manifest.json").exists()
@@ -504,12 +507,14 @@ class TestCLI:
         rows = []
         for i in range(20):
             rows.append(
-                _make_row({
-                    "game_id": f"game{i:03d}:1:1",
-                    "chosen": "Play Forest" if i < 7 else "Pass",
-                    "menu": ["Play Forest", "Attack", "Pass"],
-                    "outcome": "won",
-                })
+                _make_row(
+                    {
+                        "game_id": f"game{i:03d}:1:1",
+                        "chosen": "Play Forest" if i < 7 else "Pass",
+                        "menu": ["Play Forest", "Attack", "Pass"],
+                        "outcome": "won",
+                    }
+                )
             )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -523,9 +528,12 @@ class TestCLI:
                 [
                     sys.executable,
                     str(REPO / "tools/training/magezero_filters.py"),
-                    "--in", str(input_path),
-                    "--outdir", str(outdir),
-                    "--mode", "won_only",
+                    "--in",
+                    str(input_path),
+                    "--outdir",
+                    str(outdir),
+                    "--mode",
+                    "won_only",
                 ],
                 capture_output=True,
                 text=True,
@@ -544,10 +552,21 @@ class TestInvariants:
     """Contract tests for the shared decisions JSONL schema."""
 
     REQUIRED_FIELDS = [
-        "game_id", "turn", "phase", "active_life", "opp_life",
-        "hand", "battlefield_self", "battlefield_opp",
-        "menu", "chosen", "mcts_counts", "actor",
-        "outcome", "session", "decision_kind",
+        "game_id",
+        "turn",
+        "phase",
+        "active_life",
+        "opp_life",
+        "hand",
+        "battlefield_self",
+        "battlefield_opp",
+        "menu",
+        "chosen",
+        "mcts_counts",
+        "actor",
+        "outcome",
+        "session",
+        "decision_kind",
     ]
 
     def test_make_row_has_all_required_fields(self):
@@ -578,13 +597,15 @@ class TestInvariants:
             outcome = "won" if i < 24 else "lost"
             menu = ["Only"] if i == 29 else [f"A{i}", f"B{i}", f"C{i}"]
             rows.append(
-                _make_row({
-                    "game_id": f"game_{i % 10:03d}:1:1",
-                    "outcome": outcome,
-                    "menu": menu,
-                    "chosen": f"A{i}",
-                    "hand": [f"Card_{i}"],  # unique hand avoids dedupe collapse
-                })
+                _make_row(
+                    {
+                        "game_id": f"game_{i % 10:03d}:1:1",
+                        "outcome": outcome,
+                        "menu": menu,
+                        "chosen": f"A{i}",
+                        "hand": [f"Card_{i}"],  # unique hand avoids dedupe collapse
+                    }
+                )
             )
 
         # Run full pipeline

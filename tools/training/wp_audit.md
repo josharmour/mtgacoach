@@ -65,12 +65,14 @@ Each WP assessed against its checkboxes and Accept criteria in `rl-pipeline-fix.
 
 | Checkbox | Evidence |
 |----------|----------|
-| Content-addressed store (`models/gen-NNNN-<sha8>/` with `metadata.json`) | **tools/training/registry.py:60-76** — `_atomic_write_json()` for metadata; **registry.py:89-109** — `hash_directory()` for content-addressed naming; **registry.py:264-291** — store dir creation and metadata.json write in `register_generation()` |
+| Content-addressed store (`models/gen-NNNN-<sha8>/` with `metadata.json`) | **tools/training/registry.py:60-76** — `_atomic_write_json()` for metadata; **registry.py:89-109** — `hash_directory()` for content-addressed naming; **registry.py:237-261** — store dir creation and metadata.json write in `register_generation()` |
 | Atomic pointer flip in `registry.sqlite` | **tools/training/registry.py:323-374** — `promote_champion()`: writes temp file → fsync → SQLite transaction → `os.replace()`, with rollback on failure. **registry.py:128-156** — SQLite schema with `models` table |
 | Retain last 10 generations | **tools/training/registry.py:50** — `RETENTION_LIMIT = 10`; **registry.py:412-445** — `prune_old_generations()` prunes beyond limit, keeps champion always |
-| Accept: Promote → rollback → promote cycle leaves artifacts intact and pointers clean | Partial: the atomic write logic (temp+sync+replace) in `_atomic_write_json()` and `promote_champion()` does guarantee this, but no explicit test cycles promotion→rollback→promote. A manual test or test_promote_rollback test would complete this |
+| Accept: Promote → rollback → promote cycle leaves artifacts intact and pointers clean | **tests/test_model_registry.py:174-225** — `test_promote_rollback_promote_cycle()` verifies promote A → promote B (rollback A) → promote C, all artifacts intact at every step. **tests/test_registry_promotion.py:93-135** — same cycle with `_assert_artifacts_intact()` + `_assert_pointers_clean()` at each phase. Both suites pass (28 tests, 0.21s). |
 
-**Note:** No explicit test file for `registry.py` — add `tests/test_registry.py` for the accept criteria.
+**Tests:**
+- **tests/test_model_registry.py** (387 lines, 17 tests) — content-addressing, PASS-only, non-clobber, promote/rollback cycle, crash safety (simulated os.replace failure), retention (keeps last 10, never prunes champion), migration of legacy registries.
+- **tests/test_registry_promotion.py** (418 lines, 9 tests) — acceptance: promote/rollback/promote cycle, crash-safety parametrized (before_sqlite / after_sqlite), orphan temp cleanup, retention at exact boundary (11th gen prunes oldest), champion-spared-beyond-limit, gate-enforcement exhaustive (all non-PASS verdicts rejected).
 
 ### WP-0.6: Fail-closed gating
 **Status: DONE**

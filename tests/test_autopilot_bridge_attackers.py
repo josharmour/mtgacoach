@@ -76,16 +76,18 @@ def _make_attacker_state(legal_attackers: list[str], *, no_blockers: bool = Fals
         },
     ]
     if not no_blockers:
-        battlefield.append({
-            "name": "Opponent's Wall",
-            "type_line": "Creature -- Wall",
-            "owner_seat_id": 2,
-            "controller_seat_id": 2,
-            "is_tapped": False,
-            "power": 0,
-            "toughness": 4,
-            "instance_id": 200,
-        })
+        battlefield.append(
+            {
+                "name": "Opponent's Wall",
+                "type_line": "Creature -- Wall",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "power": 0,
+                "toughness": 4,
+                "instance_id": 200,
+            }
+        )
     return {
         "players": [
             {"seat_id": 1, "is_local": True, "life_total": 20, "lands_played": 0},
@@ -134,9 +136,7 @@ def engine():
     eng._gre_bridge = _DummyBridge()
     eng._gre_bridge.submit_attackers = MagicMock(return_value=True)
     eng._gre_bridge.submit_blockers = MagicMock(return_value=True)
-    eng._gre_bridge.submit_attackers_raw = MagicMock(
-        return_value={"ok": True, "needs_finalize": False}
-    )
+    eng._gre_bridge.submit_attackers_raw = MagicMock(return_value={"ok": True, "needs_finalize": False})
 
     return eng
 
@@ -151,9 +151,7 @@ class TestBridgeDeclareAttackersClickButton:
         names = engine._solver_attack_names(gs)
         # With no blockers, the solver should find profitable attackers
         assert isinstance(names, list)
-        assert len(names) > 0, (
-            "Expected solver to recommend attacking with no blockers present"
-        )
+        assert len(names) > 0, "Expected solver to recommend attacking with no blockers present"
 
     def test_solver_gives_reasonable_results(self, engine):
         """_solver_attack_names returns a list and the solver's
@@ -183,16 +181,13 @@ class TestBridgeDeclareAttackersClickButton:
         )
 
         # Spy on _try_bridge_declare_attackers
-        engine._try_bridge_declare_attackers = MagicMock(
-            return_value=MagicMock(success=True)
-        )
+        engine._try_bridge_declare_attackers = MagicMock(return_value=MagicMock(success=True))
 
         result = engine._try_gre_bridge(action, gs)
 
         # _try_bridge_declare_attackers should be called
         assert engine._try_bridge_declare_attackers.called, (
-            "Expected _try_bridge_declare_attackers to be called "
-            "instead of submit_attackers([])"
+            "Expected _try_bridge_declare_attackers to be called instead of submit_attackers([])"
         )
         # The passed action should be DECLARE_ATTACKERS with attacker names
         called_action = engine._try_bridge_declare_attackers.call_args[0][0]
@@ -253,9 +248,7 @@ class TestBridgeDeclareAttackersClickButton:
             reasoning="declare attackers",
         )
 
-        engine._try_bridge_declare_attackers = MagicMock(
-            return_value=MagicMock(success=True)
-        )
+        engine._try_bridge_declare_attackers = MagicMock(return_value=MagicMock(success=True))
 
         result = engine._try_gre_bridge(action, gs)
         engine._try_bridge_declare_attackers.assert_called_once()

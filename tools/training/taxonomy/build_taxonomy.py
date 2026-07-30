@@ -338,7 +338,7 @@ def extract_deck_card_names():
     for fname in DECK_FILES:
         path = os.path.join(DECK_DIR, fname)
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            with open(path, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     line = line.strip().rstrip("\r")
                     if not line or line.startswith("LAYOUT"):
@@ -376,7 +376,7 @@ def main():
 
     for path in scripts:
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            with open(path, encoding="utf-8", errors="replace") as f:
                 text = f.read()
         except Exception:
             parse_errors += 1
@@ -433,7 +433,7 @@ def main():
     pct_no_roles = 100 * num_no_roles / max(len(output), 1)
     pct_api = 100 * cards_with_ability_api / max(total_scripts, 1)
 
-    print(f"\n  === TAXONOMY REPORT ===")
+    print("\n  === TAXONOMY REPORT ===")
     print(f"  Total scripts scanned:       {total_scripts}")
     print(f"  Successfully parsed:         {len(parsed_cards)}")
     print(f"  Parse errors:                {parse_errors}")
@@ -442,7 +442,7 @@ def main():
     print(f"  Cards with no role:          {num_no_roles} ({pct_no_roles:.1f}%)")
     print(f"  DFC aliases registered:      {len(name_aliases)}")
 
-    print(f"\n  Role histogram:")
+    print("\n  Role histogram:")
     for role in ["REMOVAL", "COUNTER", "TUTOR", "RECURSION", "RAMP",
                  "DRAW", "COMBAT_TRICK", "TOKEN"]:
         count = role_counter.get(role, 0)
@@ -460,7 +460,7 @@ def main():
             elif isinstance(pm, str):
                 mapped_primitive_names.add(pm)
 
-    print(f"\n  Top 20 most common UNMAPPED primitives:")
+    print("\n  Top 20 most common UNMAPPED primitives:")
     shown = 0
     for pname, count in all_unmatched.most_common(60):
         if pname in mapped_primitive_names:

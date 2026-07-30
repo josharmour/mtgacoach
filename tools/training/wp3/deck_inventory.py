@@ -15,7 +15,6 @@ Outputs:
 import json
 import os
 import re
-import sys
 from collections import OrderedDict
 from pathlib import Path
 
@@ -76,7 +75,7 @@ def parse_deck(filepath: str) -> dict:
     name = os.path.splitext(filename)[0]
 
     cards = []
-    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+    with open(filepath, encoding="utf-8", errors="replace") as f:
         for line in f:
             raw = line.rstrip("\n").rstrip("\r")
 
@@ -120,7 +119,7 @@ def parse_deck(filepath: str) -> dict:
 def load_card_map() -> dict:
     """Load the resolved card map (mana_cost, type_line), or empty dict."""
     if CARD_MAP_PATH.exists():
-        with open(CARD_MAP_PATH, "r") as f:
+        with open(CARD_MAP_PATH) as f:
             return json.load(f)
     return {}
 
@@ -390,7 +389,7 @@ def main():
 
     # Coverage rank for remaining decks
     remaining = [d for d in sorted(all_decks) if d != primary_name and d not in current_opponents]
-    md_lines.append(f"\n## Remaining Decks (25) — Coverage Rank\n")
+    md_lines.append("\n## Remaining Decks (25) — Coverage Rank\n")
     md_lines.append("| Rank | Deck | New Cards | Colours | Cumulative New | Cumulative Pool |")
     md_lines.append("|------|------|-----------|---------|---------------|----------------|")
     coverage = []
@@ -434,7 +433,7 @@ def main():
     # Summary to stdout
     # -----------------------------------------------------------------------
     print(f"\n{'='*60}")
-    print(f"DECK INVENTORY SUMMARY")
+    print("DECK INVENTORY SUMMARY")
     print(f"{'='*60}")
     print(f"  Decks parsed:     {len(all_decks)}")
     print(f"  Union (distinct): {len(union_all)}")
