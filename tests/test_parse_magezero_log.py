@@ -588,3 +588,247 @@ INFO  Player A win rate: 100.00% (1/1) =>[main]
         assert len(decisions) == 1
         assert decisions[0]["hand"] == ["Island", "Adarkar Wastes", "Bounce Off"]
         assert decisions[0]["battlefield_self"] == [{"name": "Island", "tapped": False}]
+
+
+class TestIssue430BlockAttribution:
+    """#430: boards must be attributed via the block header, not anonymous pairing.
+
+    Real-log grammar (both emitters ALWAYS carry the header):
+      ComputerPlayerMCTS.printBattlefieldScore: [PlayerX] -> Hand -> Perms(X) -> Perms(other)
+      GameStateEvaluator2.printBattlefield:     [PlayerX] -> Hand -> Perms(X) -> Graveyard
+    The old parser paired every Permanents line on the thread into an anonymous
+    [self, opp] buffer, so each one-line evaluator block shifted the frame and
+    swapped boards for the rest of the game (744 rows with off-color lands on
+    the self board, 1,717 with UW lands on the opp board, per the issue).
+    """
+
+    @staticmethod
+    def _parse(log_body: str):
+        import tempfile
+        from pathlib import Path
+
+        log = (
+            "INFO  Simulating 1 games. =>[main]\n"
+            + log_body
+            + "INFO  Player A win rate: 100.00% (1/1) =>[main]\n"
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+            f.write(log.replace("=>[T]", "=>[pool-3-thread-1]"))
+            path = f.name
+        try:
+            decisions, _ = parse_log(path)
+        finally:
+            Path(path).unlink()
+        return decisions
+
+    def test_evaluator_playerb_block_goes_to_opp_board(self):
+        """A PlayerB-headed one-line evaluator block is the OPPONENT's board."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] [Play Island score: 0.1 count: 200] =>[T]\n"
+            "INFO  [1:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.1 =>[T]\n"
+            "INFO  [PlayerB], life = 20, score = 670 (Life:10000, Hand:25, Perm:280) =>[T] GameStateEvaluator2.printBattlefield \n"
+            "INFO  -> Hand: [Lightning Strike:5; Hired Claw:5] =>[T] GameStateEvaluator2.printBattlefield \n"
+            "INFO  -> Permanents: [Mountain,tapped:280; Hired Claw:906] =>[T] GameStateEvaluator2.printBattlefield \n"
+            "INFO  -> Graveyard: [] =>[T] GameStateEvaluator2.printBattlefield \n"
+        )
+        assert len(decisions) == 1
+        d = decisions[0]
+        # Old parser: Mountain+Hired Claw landed in buffer slot 0 = SELF. Wrong.
+        assert d["battlefield_opp"] == [
+            {"name": "Mountain", "tapped": True},
+            {"name": "Hired Claw", "tapped": False},
+        ], f"PlayerB's board must be battlefield_opp, got opp={d['battlefield_opp']}"
+        assert d["battlefield_self"] == []
+
+    def test_evaluator_playerb_hand_never_enters_the_row(self):
+        """PlayerB's hand is the opponent's HIDDEN hand — an L4 leak if kept."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] [Play Island score: 0.1 count: 200] =>[T]\n"
+            "INFO  [1:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.1 =>[T]\n"
+            "INFO  [PlayerB], life = 20, score = 670 (Life:10000, Hand:25, Perm:280) =>[T] GameStateEvaluator2.printBattlefield \n"
+            "INFO  -> Hand: [Lightning Strike:5; Nova Hellkite:5] =>[T] GameStateEvaluator2.printBattlefield \n"
+            "INFO  -> Permanents: [Mountain:280] =>[T] GameStateEvaluator2.printBattlefield \n"
+            "INFO  [PlayerA], life = 20 =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+            "INFO  -> Hand: [Island; Combat Research] =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+            "INFO  -> Permanents: [Island] =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+            "INFO  -> Permanents: [Mountain] =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+        )
+        assert len(decisions) == 1
+        d = decisions[0]
+        assert d["hand"] == ["Island", "Combat Research"], (
+            f"the opponent's hand must never backfill the row; got {d['hand']}"
+        )
+
+    def test_one_line_block_does_not_shift_the_frame(self):
+        """THE frame-shift regression.
+
+        An evaluator one-line block followed by an MCTS two-line block: the old
+        anonymous pairing put [evaluator-line, mcts-line-1] into [self, opp] —
+        assigning PlayerA's OWN board (mcts line 1) to the OPPONENT slot. After
+        the fix, each block attributes independently and the boards match the
+        MCTS block exactly.
+        """
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] [Play Island score: 0.1 count: 200] =>[T]\n"
+            "INFO  [1:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.1 =>[T]\n"
+            # one-line evaluator block (PlayerA's own board)
+            "INFO  [PlayerA], life = 20, score = 295 (Life:10000, Hand:30, Perm:300) =>[T] GameStateEvaluator2.printBattlefield \n"
+            "INFO  -> Hand: [Island:5] =>[T] GameStateEvaluator2.printBattlefield \n"
+            "INFO  -> Permanents: [Island:300] =>[T] GameStateEvaluator2.printBattlefield \n"
+            "INFO  -> Graveyard: [] =>[T] GameStateEvaluator2.printBattlefield \n"
+            # second decision, then a full MCTS block
+            "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 30] [Cast Combat Research score: 0.2 count: 170] =>[T]\n"
+            "INFO  [2:Precombat Main:PRECOMBAT_MAIN]chose action:Cast Combat Research success ratio: 0.2 =>[T]\n"
+            "INFO  [PlayerA], life = 20 =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+            "INFO  -> Hand: [Combat Research; Island] =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+            "INFO  -> Permanents: [Island,tapped; Combat Research] =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+            "INFO  -> Permanents: [Mountain,tapped; Hired Claw] =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+        )
+        assert len(decisions) == 2
+        d2 = decisions[1]
+        assert d2["battlefield_self"] == [
+            {"name": "Island", "tapped": True},
+            {"name": "Combat Research", "tapped": False},
+        ], f"frame shifted: self={d2['battlefield_self']}"
+        assert d2["battlefield_opp"] == [
+            {"name": "Mountain", "tapped": True},
+            {"name": "Hired Claw", "tapped": False},
+        ], f"frame shifted: opp={d2['battlefield_opp']}"
+
+    def test_legitimately_empty_boards_do_not_get_refilled_later(self):
+        """A turn-1 decision with genuinely empty boards must keep them."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] [Play Island score: 0.1 count: 200] =>[T]\n"
+            "INFO  [1:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.1 =>[T]\n"
+            # turn-1 block: both boards empty
+            "INFO  [PlayerA], life = 20 =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+            "INFO  -> Hand: [Island; Combat Research] =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+            "INFO  -> Permanents: [] =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+            "INFO  -> Permanents: [] =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+            # later, boards fill up
+            "INFO  [PlayerA], life = 20 =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+            "INFO  -> Hand: [Combat Research] =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+            "INFO  -> Permanents: [Island] =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+            "INFO  -> Permanents: [Mountain] =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+        )
+        assert len(decisions) == 1
+        d = decisions[0]
+        assert d["battlefield_self"] == [], f"turn-1 empty board was refilled: {d['battlefield_self']}"
+        assert d["battlefield_opp"] == []
+
+
+class TestPassDecisionRecovery:
+    """XMage logs `chose action:` ONLY for non-pass actions.
+
+    Measured on mz_train_smoke.log before this fix: 21,723 pool lines where MCTS
+    deliberated, 9,111 (41.9%) with Pass as the argmax, but only 516 followed by
+    a `chose action` line — so ~8.6k decisions where the search concluded "do
+    nothing" were dropped. `chosen` contained a pass in 0 of 9,789 emitted rows
+    while 100% of menus offered one, which also made B2's >40%-Pass tripwire
+    unable to ever fire.
+    """
+
+    @staticmethod
+    def _parse(log_body: str):
+        import tempfile
+        from pathlib import Path
+
+        log = (
+            "INFO  Simulating 1 games. =>[main]\n"
+            + log_body
+            + "INFO  Player A win rate: 100.00% (1/1) =>[main]\n"
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+            f.write(log.replace("=>[T]", "=>[pool-3-thread-1]"))
+            path = f.name
+        try:
+            return parse_log(path)[0]
+        finally:
+            Path(path).unlink()
+
+    LIFE = "INFO  [3:Precombat Main:PRECOMBAT_MAIN][player PlayerA:20][player PlayerB:18] =>[T]\n"
+
+    def test_unconsumed_pass_pool_becomes_a_decision(self):
+        """A pool whose argmax is Pass and which no chose-action consumed."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            + self.LIFE
+            # MCTS deliberates and prefers Pass — XMage logs no chose action.
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] [Cast Bounce Off score: 0.1 count: 90] =>[T]\n"
+            # A later window forces the previous pool to resolve.
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 20] [Play Island score: 0.3 count: 400] =>[T]\n"
+            + "INFO  [4:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.3 =>[T]\n"
+        )
+        assert len(decisions) == 2, f"expected the pass row + the play row, got {len(decisions)}"
+        pass_row = decisions[0]
+        assert pass_row["chosen"] == "Pass"
+        assert pass_row["turn"] == 3, "turn comes from the last logLife line"
+        assert pass_row["phase"] == "PRECOMBAT_MAIN"
+        assert pass_row["mcts_counts"] == {"Pass": 700, "Cast Bounce Off": 90}
+        assert pass_row["menu"] == ["Pass", "Cast Bounce Off"]
+        assert decisions[1]["chosen"] == "Play Island"
+
+    def test_ambiguous_unconsumed_pool_is_not_labelled(self):
+        """An un-consumed pool whose argmax is NOT a pass must not be guessed."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            + self.LIFE
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.2 count: 30] [Cast Bounce Off score: 0.5 count: 900] =>[T]\n"
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 20] [Play Island score: 0.3 count: 400] =>[T]\n"
+            + "INFO  [4:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.3 =>[T]\n"
+        )
+        assert len(decisions) == 1, (
+            f"an unexplained non-pass pool must be skipped, not labelled; got {[d['chosen'] for d in decisions]}"
+        )
+        assert decisions[0]["chosen"] == "Play Island"
+
+    def test_pass_pool_pending_at_game_boundary_is_flushed(self):
+        """The last window of a game still belongs to that game."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            + self.LIFE
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] [Cast Bounce Off score: 0.1 count: 90] =>[T]\n"
+            + "INFO  Player A won the die roll =>[T]\n"  # next game starts
+            + self.LIFE
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 20] [Play Island score: 0.3 count: 400] =>[T]\n"
+            + "INFO  [4:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.3 =>[T]\n"
+        )
+        assert len(decisions) == 2
+        assert decisions[0]["chosen"] == "Pass"
+        assert decisions[0]["game_id"] != decisions[1]["game_id"], (
+            "the flushed pass belongs to the OUTGOING game, not the new one"
+        )
+
+    def test_pass_pool_pending_at_eof_is_flushed(self):
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            + self.LIFE
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] [Cast Bounce Off score: 0.1 count: 90] =>[T]\n"
+        )
+        assert len(decisions) == 1
+        assert decisions[0]["chosen"] == "Pass"
+
+    def test_binary_decline_counts_as_a_pass(self):
+        """CHOOSE_USE windows decline with `false`, not `Pass`."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            + self.LIFE
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [true score: 0.1 count: 40] [false score: 0.4 count: 500] =>[T]\n"
+        )
+        assert len(decisions) == 1
+        assert decisions[0]["chosen"] == "false"
+        assert decisions[0]["decision_kind"] == "binary"
+
+    def test_recovered_rows_are_marked_internally_only(self):
+        """`_recovered_pass` is a leading-underscore field, stripped on write."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            + self.LIFE
+            + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] [Cast Bounce Off score: 0.1 count: 90] =>[T]\n"
+        )
+        assert decisions[0]["_recovered_pass"] is True
+        assert not any(k.startswith("_") for k in ("chosen", "menu", "mcts_counts"))

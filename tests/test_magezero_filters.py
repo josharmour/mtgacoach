@@ -621,3 +621,79 @@ class TestInvariants:
         assert n2 >= 0
         assert n3 >= 0
         assert set(splits.keys()).issubset({"train", "val", "test"})
+
+
+class TestDownsamplePasses:
+    """Owner decision 2026-07-30: honour the pre-registered 40% Pass ceiling.
+
+    The recovered corpus (see parse_magezero_log's pass recovery) sits at 43.8%
+    literal Pass after won-only filtering and trips the B2 tripwire. Balancing
+    drops surplus PRIORITY passes only — combat declines are the scarce restraint
+    examples recovered from a corpus that had almost none, and trimming them to
+    hit a global ratio would trade a pass-bias for an over-block bias.
+    """
+
+    @staticmethod
+    def _corpus(n_priority_pass: int, n_priority_act: int, n_block_decline: int = 0) -> list[dict]:
+        rows = []
+        for i in range(n_priority_pass):
+            rows.append(_make_row({"chosen": "Pass", "decision_kind": "priority", "game_id": f"g:{i}:1"}))
+        for i in range(n_priority_act):
+            rows.append(
+                _make_row({"chosen": "Play Forest", "decision_kind": "priority", "game_id": f"g:{i}:2"})
+            )
+        for i in range(n_block_decline):
+            rows.append(_make_row({"chosen": "Pass", "decision_kind": "blockers", "game_id": f"g:{i}:3"}))
+        return rows
+
+    def test_reaches_the_ceiling(self):
+        rows = self._corpus(n_priority_pass=60, n_priority_act=40)  # 60%
+        kept, stats = mf.downsample_passes(rows, max_frac=0.40, seed=7)
+        frac = sum(1 for r in kept if r["chosen"] == "Pass") / len(kept)
+        assert frac <= 0.40 + 1e-9, f"expected <=40%, got {frac:.4f}"
+        assert stats["dropped"] > 0
+
+    def test_no_op_when_already_under_ceiling(self):
+        rows = self._corpus(n_priority_pass=20, n_priority_act=80)  # 20%
+        kept, stats = mf.downsample_passes(rows, max_frac=0.40, seed=7)
+        assert stats["dropped"] == 0
+        assert len(kept) == len(rows)
+
+    def test_deterministic_under_seed(self):
+        rows = self._corpus(n_priority_pass=60, n_priority_act=40)
+        a, _ = mf.downsample_passes(rows, max_frac=0.40, seed=7)
+        b, _ = mf.downsample_passes(rows, max_frac=0.40, seed=7)
+        assert [r["game_id"] for r in a] == [r["game_id"] for r in b]
+        c, _ = mf.downsample_passes(rows, max_frac=0.40, seed=99)
+        assert len(c) == len(a), "a different seed must drop the same COUNT"
+
+    def test_combat_declines_are_never_dropped(self):
+        """THE guard: blocker declines must survive balancing untouched."""
+        rows = self._corpus(n_priority_pass=50, n_priority_act=20, n_block_decline=30)
+        kept, _ = mf.downsample_passes(rows, max_frac=0.40, seed=7)
+        blockers_before = sum(1 for r in rows if r["decision_kind"] == "blockers")
+        blockers_after = sum(1 for r in kept if r["decision_kind"] == "blockers")
+        assert blockers_after == blockers_before == 30, (
+            f"combat declines were dropped: {blockers_before} -> {blockers_after}"
+        )
+
+    def test_shortfall_is_reported_not_hidden(self):
+        """When priority passes cannot cover the drop, say so and stay over."""
+        # Almost all passes are combat declines, which are ineligible.
+        rows = self._corpus(n_priority_pass=2, n_priority_act=10, n_block_decline=40)
+        kept, stats = mf.downsample_passes(rows, max_frac=0.40, seed=7)
+        assert stats["shortfall"] > 0, "an unmeetable target must be reported"
+        frac = sum(1 for r in kept if r["chosen"] == "Pass") / len(kept)
+        assert frac > 0.40, "still over the ceiling — the tripwire must reject it"
+
+    def test_pass_rate_report_separates_literal_from_pass_like(self):
+        """Binary windows decline with `false`, which literal-Pass misses."""
+        rows = [
+            _make_row({"chosen": "false", "decision_kind": "binary", "game_id": "g:1:1"}),
+            _make_row({"chosen": "Pass", "decision_kind": "priority", "game_id": "g:2:1"}),
+        ]
+        rep = mf.pass_rate_report(rows)
+        assert rep["__all__"]["literal_pass"] == 1
+        assert rep["__all__"]["pass_like"] == 2, "a binary `false` is also a do-nothing decision"
+        assert rep["binary"]["literal_frac"] == 0.0
+        assert rep["binary"]["pass_like_frac"] == 1.0
