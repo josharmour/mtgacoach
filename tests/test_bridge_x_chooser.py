@@ -134,7 +134,9 @@ def _casting_option_response(
     numeric_min: int = 0,
     numeric_max: int = 10,
     numeric_step: int = 1,
+    numeric_input_type: str | None = "ChooseX",
     numeric_disallowed: list[int] | None = None,
+    numeric_suggested: list[int] | None = None,
     numeric_disallow_even: bool = False,
     numeric_disallow_odd: bool = False,
     grp_id: int = 0,
@@ -164,8 +166,12 @@ def _casting_option_response(
         "numeric_step": numeric_step,
         "can_pass": True,
     }
+    if numeric_input_type is not None:
+        resp["numeric_input_type"] = numeric_input_type
     if numeric_disallowed:
         resp["numeric_disallowed"] = numeric_disallowed
+    if numeric_suggested:
+        resp["numeric_suggested"] = numeric_suggested
     if numeric_disallow_even:
         resp["numeric_disallow_even"] = True
     if numeric_disallow_odd:
@@ -225,6 +231,8 @@ def test_get_pending_actions_numeric_fields_absent_older_plugin():
     assert "numeric_min" not in pending
     assert "numeric_max" not in pending
     assert "numeric_step" not in pending
+    assert "numeric_input_type" not in pending
+    assert "numeric_suggested" not in pending
 
 
 def test_get_pending_actions_disallow_even():
@@ -289,3 +297,43 @@ def test_get_pending_actions_casting_option_has_actions():
     # Each action should have the CastingTimeOption actionType
     for action in pending["actions"]:
         assert action.get("actionType") == "CastingTimeOption"
+
+
+def test_get_pending_actions_numeric_input_type():
+    """The plugin surfaces the child's InputType (e.g. 'ChooseX') as a string."""
+    response = _casting_option_response(numeric_input_type="ChooseX")
+    pipe = _MockPipe([response])
+    bridge = _bridge_with_pipe(pipe)
+
+    pending = bridge.get_pending_actions()
+    assert pending is not None
+    assert pending["numeric_input_type"] == "ChooseX"
+
+
+def test_get_pending_actions_numeric_suggested():
+    """SuggestedValues from the plugin must pass through as numeric_suggested."""
+    response = _casting_option_response(
+        numeric_min=0, numeric_max=12, numeric_suggested=[4, 6],
+    )
+    pipe = _MockPipe([response])
+    bridge = _bridge_with_pipe(pipe)
+
+    pending = bridge.get_pending_actions()
+    assert pending is not None
+    assert pending["numeric_suggested"] == [4, 6]
+
+
+def test_submit_x_clamped_response_still_ok():
+    """Plugin may clamp an out-of-range value and report clamped=True.
+
+    submit_x must treat a clamped-but-ok response as success — the cast
+    went through with a sane X rather than wedging the client (#390).
+    """
+    pipe = _MockPipe([{
+        "ok": True,
+        "submitted_type": "CastingTimeOption_X",
+        "value": 10,
+        "clamped": True,
+    }])
+    bridge = _bridge_with_pipe(pipe)
+    assert bridge.submit_x(999) is True
