@@ -162,6 +162,27 @@ class _BridgeSubmitMixin:
             )
             if action.action_type == ActionType.CLICK_BUTTON and request_type:
                 if "DeclareAttacker" in request_type:
+                    # "Done (confirm attackers)" — MTGA may have auto-selected
+                    # attackers. Submitting empty clears those selections and
+                    # can silently fizzle the attack step. Check the combat
+                    # solver first for beneficial attackers, matching the
+                    # preflight pattern in autopilot.py:2295-2331.
+                    # Cluster: issues #398-#402 (5x bridge_submit_failed).
+                    if game_state.get("_bridge_connected"):
+                        solver_names = self._solver_attack_names(game_state)
+                        if solver_names:
+                            logger.info(
+                                "click_button(done) on DeclareAttacker with "
+                                f"solver-picked attackers: {solver_names}; "
+                                "routing through declare_attackers instead of empty submit"
+                            )
+                            dec_action = GameAction(
+                                action_type=ActionType.DECLARE_ATTACKERS,
+                                attacker_names=solver_names,
+                                card_name=solver_names[0] if solver_names else "done",
+                                reasoning="click_button(done) → solver-picked attackers",
+                            )
+                            return self._try_bridge_declare_attackers(dec_action)
                     if self._gre_bridge.submit_attackers([]):
                         self._log_execution_path(
                             ExecutionPath.GRE_AWARE,
