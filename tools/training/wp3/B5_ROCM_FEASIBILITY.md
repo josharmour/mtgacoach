@@ -152,3 +152,32 @@ The blocker is **not VRAM** (~11.6 GB needed vs ~18.6 GB free) but the
 **quantisation software stack**: bitsandbytes lacks gfx1201 kernels, and
 torchao/HQQ are broken on Python 3.14. A Python 3.12 venv + source build
 against torch's bundled ROCm 6.4 would unblock this machine.
+
+## Independent verification (2026-07-30)
+
+Every load-bearing claim above was re-checked on blackwell before merge. All hold.
+
+| Claim | Verified |
+|---|---|
+| torch bundles ROCm 6.4 | `torch 2.9.1+rocm6.4`, `torch.version.hip = 6.4.43484-123eb5128` |
+| System ROCm is newer → ABI mismatch is real | `/opt/rocm/.info/version` = **7.2.4** |
+| Python 3.14 blocks torchao / HQQ | system **and** `venv-mz-rocm` are both Python **3.14.4** |
+| bitsandbytes imports | `bnb 0.50.0` imports cleanly |
+| No gfx1201 kernels in the wheel | `strings` over all 15 shipped `.so` files (incl. `libbitsandbytes_rocm64.so`, the one torch's ROCm 6.4 would load) finds **zero** `gfx1201` references |
+| bf16 weights do not fit | model dir is **23,951,773,509 B = 22.31 GiB**; R9700 has ~18.1 GB free (34.2 GB total, 16.1 GB held by MageZero) |
+
+One caveat on the kernel check: absence of the string `gfx1201` is strong but not
+proof, since device code need not embed the arch name in plain text. It agrees
+with the probe's runtime result, so the conclusion stands on two independent
+observations rather than one.
+
+### Note for whoever picks up the retry
+
+`~/.cache/huggingface/hub/` already holds `models--r0b0tlab--gemma-4-12B-it-nvfp4`,
+a pre-quantised 4-bit variant. It does **not** rescue this path — nvfp4 is an
+NVIDIA format with no AMD runtime — but it is worth knowing it is there before
+someone spends time re-downloading or re-quantising.
+
+The recommendation in this document (Python 3.12 venv, rebuild bitsandbytes
+against torch's bundled ROCm 6.4 headers rather than the 7.2.4 system headers) is
+the right next step, and the ABI diagnosis above is exactly why.
