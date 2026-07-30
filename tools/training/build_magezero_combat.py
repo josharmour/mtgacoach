@@ -52,7 +52,6 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger("tools.training.build_magezero_combat")
 
@@ -103,12 +102,12 @@ AUTOPILOT_SYSTEM_PROMPT = _load_autopilot_system_prompt()
 from tools.training.build_combat_decisions import (  # noqa: E402
     ATTACK_ADDENDUM,
     BLOCK_ADDENDUM,
+    DONE_ATTACK_ROW,
+    DONE_BLOCK_ROW,
     NO_SOLVER_ADDENDUM,
     RECONSTRUCTED_ADDENDUM,
     TRIGGER_ATTACK,
     TRIGGER_BLOCK,
-    DONE_ATTACK_ROW,
-    DONE_BLOCK_ROW,
 )
 
 # ── Card-detection helpers (MZ only has card names) ───────────────────────
@@ -336,7 +335,7 @@ def _match_declared_to_pool(
     used: list[bool] = [False] * len(pool_raw)
     out: list[str] = []
     for d in declared_raw:
-        for i, (raw_name, is_used) in enumerate(zip(pool_raw, used)):
+        for i, (raw_name, is_used) in enumerate(zip(pool_raw, used, strict=False)):
             if not is_used and raw_name == d:
                 used[i] = True
                 out.append(pool_disambiguated[i])
@@ -561,7 +560,7 @@ def build_block_record(row: dict) -> tuple[dict | None, str]:
 
 # ── IO and CLI ─────────────────────────────────────────────────────────────
 
-from typing import Callable
+from collections.abc import Callable
 
 
 def _class_histogram(
@@ -596,7 +595,7 @@ def _check_class_share(
             f"\nFAIL-CLOSED: {label} class '{cls}' is "
             f"{share:.1%} ({n}/{sum(h[1] for h in hist)}) — "
             f"exceeds --max-class-share={max_share:.0%}",
-            f"  Full histogram:",
+            "  Full histogram:",
         ]
         for c, nn, s in hist:
             lines.append(f"    {c}: {nn} ({s:.1%})")
@@ -815,7 +814,7 @@ def _print_report(
         if isinstance(r.get("meta"), dict) and r["meta"].get("mcts_chosen")
     )
 
-    print(f"\n=== BUILD REPORT ===", file=sys.stderr)
+    print("\n=== BUILD REPORT ===", file=sys.stderr)
     print(f"  Input:      {input_path} ({read_count} rows)", file=sys.stderr)
     print(f"  Output:     {output_path} ({len(records)} records)", file=sys.stderr)
     print(f"  Elapsed:    {elapsed:.2f}s", file=sys.stderr)
@@ -831,24 +830,24 @@ def _print_report(
     print(f"  Solver line leaks: {leak_solver} (should be 0)", file=sys.stderr)
 
     if attack_hist:
-        print(f"\n  Attack class histogram:", file=sys.stderr)
+        print("\n  Attack class histogram:", file=sys.stderr)
         for cls, n, share in attack_hist:
             print(f"    {cls}: {n:>4d} ({share:.1%})", file=sys.stderr)
 
     if block_hist:
-        print(f"\n  Block class histogram:", file=sys.stderr)
+        print("\n  Block class histogram:", file=sys.stderr)
         for cls, n, share in block_hist:
             print(f"    {cls}: {n:>4d} ({share:.1%})", file=sys.stderr)
 
     # Show one example of each
     if attack_recs:
-        print(f"\n  Sample attack response:", file=sys.stderr)
+        print("\n  Sample attack response:", file=sys.stderr)
         sample = attack_recs[0]
         print(f"    id: {sample['id']}", file=sys.stderr)
         print(f"    response: {sample['response']}", file=sys.stderr)
         print(f"    meta: {json.dumps({k: sample['meta'][k] for k in ('pool_size','chosen_size','chosen_names','attack_class')})}", file=sys.stderr)
     if block_recs:
-        print(f"\n  Sample block response:", file=sys.stderr)
+        print("\n  Sample block response:", file=sys.stderr)
         sample = block_recs[0]
         print(f"    id: {sample['id']}", file=sys.stderr)
         print(f"    response: {sample['response']}", file=sys.stderr)

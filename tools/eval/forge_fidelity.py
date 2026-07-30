@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
-import hashlib
 import json
 import re
 import sys
@@ -614,7 +613,7 @@ def build_game_state_from_shim(
                 "mapping": mp["mapping"],
                 "affordable": bool(mp.get("affordable")),
             }
-            for i, (t, mp) in enumerate(zip(menu_rows, mappings))
+            for i, (t, mp) in enumerate(zip(menu_rows, mappings, strict=False))
         ]
         + [{"index": len(menu_rows), "text": "Pass", "kind": "pass", "host": None, "mapping": "implicit_pass"}],
         "menu_size": len(menu_rows),

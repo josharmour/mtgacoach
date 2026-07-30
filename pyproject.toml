@@ -22,7 +22,11 @@ classifiers = [
 ]
 
 dependencies = [
-    "mcp>=1.0.0",
+    # mcp 2.0.0 REMOVED mcp.server.fastmcp (src/arenamcp/server.py:15 imports
+    # FastMCP from it), which turned CI red on 2026-07-27 with no code change.
+    # Verified: the 2.0.0 wheel contains zero fastmcp modules. Pinned until the
+    # server is migrated to the 2.x API — that is separate, non-trivial work.
+    "mcp>=1.0.0,<2",
     "watchdog>=3.0.0",
     "requests>=2.28.0",
     "sounddevice>=0.4.6",

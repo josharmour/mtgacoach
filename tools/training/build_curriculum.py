@@ -117,8 +117,9 @@ import statistics
 import sys
 import time
 from collections import Counter, defaultdict
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import Optional
 
 logger = logging.getLogger("build_curriculum")
 
@@ -567,7 +568,7 @@ def assign_stages(rows: list[dict], cuts: tuple[float, float]) -> tuple[float, f
 
 def auc(scores: list[float], labels: list[int]) -> float:
     """Rank AUC of ``scores`` against binary ``labels`` (ties averaged)."""
-    pairs = sorted(zip(scores, labels))
+    pairs = sorted(zip(scores, labels, strict=False))
     n_pos = sum(labels)
     n_neg = len(labels) - n_pos
     if not n_pos or not n_neg:

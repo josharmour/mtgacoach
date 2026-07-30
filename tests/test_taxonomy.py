@@ -1,20 +1,17 @@
 """Tests for wp3-taxonomy: Forge card script parsing and role classification."""
 
-import json
 import os
 import sys
 
 # Ensure tools/training/taxonomy is on the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "training", "taxonomy"))
 
+from annotate import annotate_menu_row
 from build_taxonomy import (
+    classify_card,
     parse_card_script,
     resolve_primitives,
-    classify_card,
-    ROLE_MAP,
 )
-from annotate import annotate_menu_row
-
 
 # ── Fixture: known Forge card scripts ──────────────────────────────────
 
@@ -117,6 +114,7 @@ SVar:TrigToken:DB$ Token | TokenScript$ b_6_6_demon_flying | TokenOwner$ You
 
 # ── Tests ──────────────────────────────────────────────────────────────
 
+
 def _classify(text):
     """Helper: parse + classify a card script."""
     card = parse_card_script(text)
@@ -135,7 +133,14 @@ class TestDoomBlade:
         assert len(roles) == 1, f"Doom Blade should have 1 role, got {roles}"
 
     def test_annotate(self):
-        taxonomy = {"Doom Blade": {"roles": ["REMOVAL"], "primitives": ["Destroy"], "types": "Instant", "mana_cost": "1 B"}}
+        taxonomy = {
+            "Doom Blade": {
+                "roles": ["REMOVAL"],
+                "primitives": ["Destroy"],
+                "types": "Instant",
+                "mana_cost": "1 B",
+            }
+        }
         result = annotate_menu_row("Doom Blade", taxonomy)
         assert "Doom Blade" in result
         assert "REMOVAL" in result
@@ -157,7 +162,14 @@ class TestCounterspell:
         assert card["mana_cost"] == "U U"
 
     def test_annotate(self):
-        taxonomy = {"Counterspell": {"roles": ["COUNTER"], "primitives": ["Counter"], "types": "Instant", "mana_cost": "U U"}}
+        taxonomy = {
+            "Counterspell": {
+                "roles": ["COUNTER"],
+                "primitives": ["Counter"],
+                "types": "Instant",
+                "mana_cost": "U U",
+            }
+        }
         result = annotate_menu_row("Counterspell", taxonomy)
         assert "COUNTER" in result
         assert "counter target spell" in result.lower()
@@ -226,7 +238,14 @@ class TestUnmapped:
 
 class TestAnnotate:
     def test_known_card(self):
-        taxonomy = {"Doom Blade": {"roles": ["REMOVAL"], "primitives": ["Destroy"], "types": "Instant", "mana_cost": "1 B"}}
+        taxonomy = {
+            "Doom Blade": {
+                "roles": ["REMOVAL"],
+                "primitives": ["Destroy"],
+                "types": "Instant",
+                "mana_cost": "1 B",
+            }
+        }
         result = annotate_menu_row("Doom Blade", taxonomy)
         assert "Cast" in result
         assert "Doom Blade" in result
@@ -236,12 +255,21 @@ class TestAnnotate:
         assert result == "Fake Card Name"
 
     def test_no_role_card(self):
-        taxonomy = {"Runeclaw Bear": {"roles": [], "primitives": [], "types": "Creature Bear", "mana_cost": "1 G"}}
+        taxonomy = {
+            "Runeclaw Bear": {"roles": [], "primitives": [], "types": "Creature Bear", "mana_cost": "1 G"}
+        }
         result = annotate_menu_row("Runeclaw Bear", taxonomy)
         assert result == "Runeclaw Bear"
 
     def test_multi_role_annotate(self):
-        taxonomy = {"Abzan Charm": {"roles": ["DRAW", "REMOVAL"], "primitives": ["ChangeZone", "Draw", "LoseLife", "PutCounter"], "types": "Instant", "mana_cost": "W B G"}}
+        taxonomy = {
+            "Abzan Charm": {
+                "roles": ["DRAW", "REMOVAL"],
+                "primitives": ["ChangeZone", "Draw", "LoseLife", "PutCounter"],
+                "types": "Instant",
+                "mana_cost": "W B G",
+            }
+        }
         result = annotate_menu_row("Abzan Charm", taxonomy)
         assert "DRAW" in result or "REMOVAL" in result
         assert "Abzan Charm" in result
@@ -304,7 +332,9 @@ class TestParseEdgeCases:
         assert card["types"] == "Instant"
 
     def test_comments_ignored(self):
-        card = parse_card_script("Name:Test\n# This is a comment\nManaCost:G\n# Another comment\nTypes:Sorcery")
+        card = parse_card_script(
+            "Name:Test\n# This is a comment\nManaCost:G\n# Another comment\nTypes:Sorcery"
+        )
         assert card["name"] == "Test"
         assert card["mana_cost"] == "G"
         assert card["types"] == "Sorcery"
@@ -322,7 +352,9 @@ class TestManaLeakAnnotation:
             card, roles, _ = _classify(script)
             taxonomy[name] = {
                 "roles": sorted(roles),
-                "primitives": sorted(set(p.get("primitive", "") for p in resolve_primitives(card) if p.get("primitive"))),
+                "primitives": sorted(
+                    set(p.get("primitive", "") for p in resolve_primitives(card) if p.get("primitive"))
+                ),
                 "types": card["types"],
                 "mana_cost": card["mana_cost"],
             }

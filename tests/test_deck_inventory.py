@@ -3,7 +3,6 @@
 import json
 import os
 import re
-import tempfile
 
 import pytest
 
@@ -166,10 +165,7 @@ def test_distinct_counts():
 
 def test_sideboard_not_counted_in_main():
     """Sideboard cards are tagged separately."""
-    content = (
-        "4 [WAR:221] Teferi, Time Raveler\n"
-        "SB: 1 [WAR:221] Teferi, Time Raveler\n"
-    )
+    content = "4 [WAR:221] Teferi, Time Raveler\nSB: 1 [WAR:221] Teferi, Time Raveler\n"
     lines = content.split("\n")
     main_cards = []
     sb_cards = []
