@@ -1,0 +1,50 @@
+# run_baseline.yml — Offline / no-net baseline arm
+#
+# Produces a no-net baseline by using a fresh version (ver2) with
+# start_from_version: null so no checkpoint is seeded.  The runner
+# detects has_checkpoint(deck="UWTempo", version=2) == False, which
+# drives bootstrap=True → primary_offline=True → servers are skipped
+# and the MCTS agent uses a heuristic value function with uniform
+# priors (the "offline" / bootstrap mode).
+#
+# ═══════════════════════════════════════════════════════════════
+#  CRITICAL: DO NOT use version: 1 here.
+#  A checkpoint already exists at models/UWTempo/ver1/model.pt.gz
+#  (3.9 GB).  Using version: 1 would cause has_checkpoint() to
+#  return True, bootstrap=False, and the run would NOT go offline —
+#  it would start servers and use the neural net, overwriting the
+#  trained model.
+#
+#  By using version: 2, has_checkpoint("UWTempo", 2) returns False,
+#  so bootstrap=True, primary_offline=True, no servers are launched,
+#  and the existing ver1 model is untouched.
+# ═══════════════════════════════════════════════════════════════
+
+deck: UWTempo
+version: 2                     # ⚠ DISTINCT from ver1 (which has trained checkpoint)
+start_from_version: null        # null = no seed checkpoint → offline bootstrap
+
+generations: 1
+games_per_gen: 1000            # yields ~1,000 baseline games
+replay_buffer_gens: 1          # single-gen run, no windowing needed
+
+opponents:
+  - deck: Standard-MonoR
+    mode: minimax              # minimax = no checkpoint needed, no server started
+  - deck: Standard-MonoG
+    mode: minimax
+  - deck: Standard-MonoB
+    mode: minimax
+  - deck: Standard-MonoW
+    mode: minimax
+  - deck: Standard-MonoU
+    mode: minimax
+
+training:
+  analyze_dataset: false       # skip analysis — baseline data has no target labels
+  generate_plots: false
+  eval_previous_model: false   # no previous model to evaluate
+
+log_level: ERROR
+
+curriculum: configs/curriculum.yml
