@@ -22,6 +22,7 @@ for _p in (str(SRC), str(REPO)):
         sys.path.insert(0, _p)
 
 from tools.training.build_magezero_combat import (
+    CONSTANT_POLICY_CLASSES,
     _class_histogram,
     _check_class_share,
     _downsample,
@@ -42,13 +43,15 @@ def skewed_block_records() -> list[dict]:
             cls = "partial_block"
         else:
             cls = "block_all"
-        recs.append({
-            "id": f"mzc-skewed-{i:04d}",
-            "kind": "combat_block",
-            "meta": {"block_class": cls},
-            "user": "",
-            "response": "{}",
-        })
+        recs.append(
+            {
+                "id": f"mzc-skewed-{i:04d}",
+                "kind": "combat_block",
+                "meta": {"block_class": cls},
+                "user": "",
+                "response": "{}",
+            }
+        )
     return recs
 
 
@@ -63,39 +66,54 @@ def balanced_block_records() -> list[dict]:
             cls = "partial_block"
         else:
             cls = "block_all"
-        recs.append({
-            "id": f"mzc-balanced-{i:04d}",
-            "kind": "combat_block",
-            "meta": {"block_class": cls},
-            "user": "",
-            "response": "{}",
-        })
+        recs.append(
+            {
+                "id": f"mzc-balanced-{i:04d}",
+                "kind": "combat_block",
+                "meta": {"block_class": cls},
+                "user": "",
+                "response": "{}",
+            }
+        )
     return recs
 
 
 @pytest.fixture
-def mixed_records(skewed_block_records) -> list[dict]:
-    """Add 104 attack records (98 proper_subset + 6 all_in) to the block fixture."""
-    recs = list(skewed_block_records)
+def skewed_attack_records() -> list[dict]:
+    """104 attack records: 98 proper_subset (94.2%), 6 all_in (5.8%).
+
+    No constant-policy attack class (no_attack, all_in) is dominant —
+    this simulates the real corpus where guard should NOT fire.
+    """
+    recs: list[dict] = []
     for i in range(104):
         cls = "proper_subset" if i < 98 else "all_in"
-        recs.append({
-            "id": f"mzc-mix-atk-{i:04d}",
-            "kind": "combat_attack",
-            "meta": {"attack_class": cls},
-            "user": "",
-            "response": "{}",
-        })
+        recs.append(
+            {
+                "id": f"mzc-skewed-atk-{i:04d}",
+                "kind": "combat_attack",
+                "meta": {"attack_class": cls},
+                "user": "",
+                "response": "{}",
+            }
+        )
     return recs
 
 
-# ── Guard fires on skewed fixture ──────────────────────────────────────────
+@pytest.fixture
+def mixed_records(skewed_block_records, skewed_attack_records) -> list[dict]:
+    """Combine block + attack skew fixtures for integration tests."""
+    return list(skewed_block_records) + list(skewed_attack_records)
+
+
+# ── Guard fires on skewed block (constant-policy class) ─────────────────────
 
 
 def test_guard_fires_on_skewed_block(skewed_block_records) -> None:
     """_check_class_share raises SystemExit for block class > 0.50."""
     hist = _class_histogram(
-        skewed_block_records, "block_class",
+        skewed_block_records,
+        "block_class",
         lambda r: r.get("kind") == "combat_block",
     )
     with pytest.raises(SystemExit) as exc:
@@ -105,23 +123,49 @@ def test_guard_fires_on_skewed_block(skewed_block_records) -> None:
     assert "71.8%" in msg or "71.79%" in msg or "71.8" in msg
 
 
-def test_guard_fires_on_skewed_attack(mixed_records) -> None:
-    """_check_class_share raises SystemExit for attack class > 0.50."""
+def test_guard_ignores_proper_subset_skew(skewed_attack_records) -> None:
+    """_check_class_share does NOT raise for 94.2 % proper_subset.
+
+    proper_subset is NOT a constant-policy class — the model must still
+    choose WHICH creatures, so high share there is harmless.  The guard
+    only fires on constant-policy classes.
+    """
     hist = _class_histogram(
-        mixed_records, "attack_class",
+        skewed_attack_records,
+        "attack_class",
         lambda r: r.get("kind") == "combat_attack",
     )
+    assert hist[0][0] == "proper_subset"
+    assert hist[0][2] > 0.50  # 94.2% — well over threshold
+    # Should NOT raise — proper_subset is not guard-eligible
+    _check_class_share(hist, 0.50, "attack")
+
+
+def test_guard_fires_on_no_block_skew(skewed_block_records) -> None:
+    """_check_class_share raises SystemExit for 71.8 % no_block.
+
+    no_block IS a constant-policy class — this is the exact skew that
+    blocked the previous combat candidate.  71.8 % exceeds the 69 %
+    always_no_block floor, proving the model can answer without reading
+    the board.
+    """
+    hist = _class_histogram(
+        skewed_block_records,
+        "block_class",
+        lambda r: r.get("kind") == "combat_block",
+    )
     with pytest.raises(SystemExit) as exc:
-        _check_class_share(hist, 0.50, "attack")
+        _check_class_share(hist, 0.50, "block")
     msg = str(exc.value)
-    assert "proper_subset" in msg
-    assert "FAIL-CLOSED" in msg
+    assert "no_block" in msg
+    assert "71.8%" in msg or "71.79%" in msg or "71.8" in msg
 
 
 def test_guard_passes_on_balanced(balanced_block_records) -> None:
     """_check_class_share does NOT raise for balanced distributions."""
     hist = _class_histogram(
-        balanced_block_records, "block_class",
+        balanced_block_records,
+        "block_class",
         lambda r: r.get("kind") == "combat_block",
     )
     # Each class is 33.3% — well under 0.50, so no SystemExit
@@ -135,7 +179,8 @@ def test_guard_passes_on_balanced(balanced_block_records) -> None:
 def test_histogram_shares_sum_to_one(skewed_block_records) -> None:
     """Shares in the histogram should sum to 1.0 (within rounding)."""
     hist = _class_histogram(
-        skewed_block_records, "block_class",
+        skewed_block_records,
+        "block_class",
         lambda r: r.get("kind") == "combat_block",
     )
     total_share = sum(share for _, _, share in hist)
@@ -145,13 +190,12 @@ def test_histogram_shares_sum_to_one(skewed_block_records) -> None:
 def test_histogram_sorted_descending(skewed_block_records) -> None:
     """Histogram items sorted by share descending."""
     hist = _class_histogram(
-        skewed_block_records, "block_class",
+        skewed_block_records,
+        "block_class",
         lambda r: r.get("kind") == "combat_block",
     )
     shares = [s for _, _, s in hist]
-    assert shares == sorted(shares, reverse=True), (
-        f"histogram not sorted descending: {shares}"
-    )
+    assert shares == sorted(shares, reverse=True), f"histogram not sorted descending: {shares}"
 
 
 # ── Downsample determinism and correctness ─────────────────────────────────
@@ -160,11 +204,13 @@ def test_histogram_sorted_descending(skewed_block_records) -> None:
 def test_downsample_deterministic(mixed_records) -> None:
     """Two downsample runs with the same seed produce the same kept record ids."""
     hist_a = _class_histogram(
-        mixed_records, "attack_class",
+        mixed_records,
+        "attack_class",
         lambda r: r.get("kind") == "combat_attack",
     )
     hist_b = _class_histogram(
-        mixed_records, "block_class",
+        mixed_records,
+        "block_class",
         lambda r: r.get("kind") == "combat_block",
     )
 
@@ -179,17 +225,17 @@ def test_downsample_deterministic(mixed_records) -> None:
 def test_downsample_reduces_majority(mixed_records) -> None:
     """After downsampling, no class exceeds 0.50 share."""
     hist_a = _class_histogram(
-        mixed_records, "attack_class",
+        mixed_records,
+        "attack_class",
         lambda r: r.get("kind") == "combat_attack",
     )
     hist_b = _class_histogram(
-        mixed_records, "block_class",
+        mixed_records,
+        "block_class",
         lambda r: r.get("kind") == "combat_block",
     )
 
-    balanced = _downsample(
-        copy.deepcopy(mixed_records), hist_a, hist_b, 0.50
-    )
+    balanced = _downsample(copy.deepcopy(mixed_records), hist_a, hist_b, 0.50)
 
     for kind_field, meta_field in [
         ("combat_attack", "attack_class"),
@@ -201,9 +247,7 @@ def test_downsample_reduces_majority(mixed_records) -> None:
         counts = Counter(r["meta"][meta_field] for r in subset)
         for cls, n in counts.items():
             share = n / total
-            assert share <= 0.50 + 0.01, (
-                f"{cls} in {kind_field} is {share:.1%} after downsample"
-            )
+            assert share <= 0.50 + 0.01, f"{cls} in {kind_field} is {share:.1%} after downsample"
 
 
 def test_downsample_clamps_below_one() -> None:
@@ -211,28 +255,25 @@ def test_downsample_clamps_below_one() -> None:
     recs: list[dict] = []
     for i in range(10):
         cls = "no_block" if i < 9 else "partial_block"
-        recs.append({
-            "id": f"mzc-clamp-{i:04d}",
-            "kind": "combat_block",
-            "meta": {"block_class": cls},
-            "user": "",
-            "response": "{}",
-        })
+        recs.append(
+            {
+                "id": f"mzc-clamp-{i:04d}",
+                "kind": "combat_block",
+                "meta": {"block_class": cls},
+                "user": "",
+                "response": "{}",
+            }
+        )
     hist = _class_histogram(
-        recs, "block_class",
+        recs,
+        "block_class",
         lambda r: r.get("kind") == "combat_block",
     )
     result = _downsample(recs, [], hist, 0.50)
     # partial_block has 1 record — must still be present
-    partial_ids = [
-        r["id"] for r in result
-        if r["meta"].get("block_class") == "partial_block"
-    ]
+    partial_ids = [r["id"] for r in result if r["meta"].get("block_class") == "partial_block"]
     assert len(partial_ids) == 1, "minority class was lost"
-    no_block_ids = [
-        r["id"] for r in result
-        if r["meta"].get("block_class") == "no_block"
-    ]
+    no_block_ids = [r["id"] for r in result if r["meta"].get("block_class") == "no_block"]
     # no_block should be downsampled from 9 toward 1 (can't go below 1)
     assert len(no_block_ids) >= 1
     assert len(no_block_ids) < 9, "majority class was not reduced"
