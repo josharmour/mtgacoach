@@ -79,6 +79,47 @@ _COT_MARKERS = (
     "looking at",
 )
 
+# Phrases that make text a CONTINUATION of something the listener never heard.
+#
+# A different category from _COT_MARKERS above, and the reason bug
+# 20260729_225652 spoke "Alternatively, we could just pass. But we have a land
+# drop available and a shell we can cast." — 93 chars salvaged from 286 chars of
+# chain-of-thought at 22:56:33. Nothing in _COT_MARKERS starts with
+# "alternatively", so a deliberation fragment passed the guard and was spoken at
+# the start of a turn, referring to an option the user was never told about.
+#
+# The rule is principled rather than a list of observed failures: advice whose
+# first word presupposes a preceding alternative is broken by construction,
+# because the user hears only the final answer. Weighing two lines out loud is
+# what the reasoning channel is for and exactly what must not reach the speaker.
+#
+# Rejecting costs a fallback-advice turn, which is the cheaper failure — see the
+# docstring below.
+_ORPHAN_REFERENCE_MARKERS = (
+    "alternatively",
+    "conversely",
+    "on the other hand",
+    "then again",
+    "that said",
+    "that being said",
+    "instead,",
+    "otherwise,",
+    "either way",
+    "in that case",
+    "however",
+    "although",
+    "though ",
+    "but ",
+    "or ",
+    "and ",
+    "also,",
+    "besides,",
+    "plus,",
+    "actually,",
+    "which means",
+    "that means",
+)
+
 
 def _salvage_reasoning_answer(reasoning: str) -> str:
     """Extract a clean final answer from reasoning text, or return "".
@@ -90,6 +131,11 @@ def _salvage_reasoning_answer(reasoning: str) -> str:
     answer), reject truncated/unclosed thinking, and for tag-free text keep
     only a trailing paragraph that doesn't read like deliberation. An empty
     return sends the caller down the existing empty-advice fallback path.
+
+    The asymmetry is deliberate: rejecting a salvageable answer costs one turn
+    of deterministic fallback advice, while accepting deliberation speaks
+    incoherent advice the user cannot act on and cannot see the premise for.
+    When in doubt, return "".
     """
     text = (reasoning or "").strip()
     if not text:
@@ -104,12 +150,31 @@ def _salvage_reasoning_answer(reasoning: str) -> str:
     if not paragraphs:
         return ""
     candidate = paragraphs[-1]
-    if any(candidate.lower().startswith(m) for m in _COT_MARKERS):
+    if _reads_like_deliberation(candidate):
         return ""
     if len(paragraphs) == 1 and len(candidate) > 1200:
         # One giant undifferentiated block reads as chain-of-thought.
         return ""
     return candidate
+
+
+def _reads_like_deliberation(candidate: str) -> bool:
+    """True when this text is thinking-out-loud rather than a final answer.
+
+    Two independent signals, both keyed on the OPENING of the text, because that
+    is where both failure modes are visible:
+
+    * ``_COT_MARKERS`` — the text announces deliberation ("Let me check...").
+    * ``_ORPHAN_REFERENCE_MARKERS`` — the text continues a comparison the user
+      never heard ("Alternatively, we could just pass."). Advice cannot open by
+      referring to an unstated alternative.
+    """
+    head = candidate.strip().lower()
+    if not head:
+        return True
+    if any(head.startswith(m) for m in _COT_MARKERS):
+        return True
+    return any(head.startswith(m) for m in _ORPHAN_REFERENCE_MARKERS)
 
 
 # Online mode: hardcoded API endpoint
@@ -349,6 +414,22 @@ class ProxyBackend:
                 params["max_tokens"] = max_tokens
 
             extra = {}
+            # vLLM / DeepSeek dialect. The gateway's ds4-v9 server is launched
+            # with `--default-chat-template-kwargs.thinking=true` and
+            # `.reasoning_effort=high`, so a request that says nothing about
+            # thinking gets EXTENDED reasoning on the real-time coaching path.
+            # Measured cost on the live gateway (2026-07-29, standalone.log,
+            # n=29 advice calls): p50 6134ms, 52% over 5s, and 79 calls whose
+            # visible content came back EMPTY because every token went to
+            # reasoning — which is how chain-of-thought reached the TTS in bug
+            # 20260729_225652. Same prompt A/B'd against the gateway:
+            #   default (thinking=high): 0.82s, 120 completion tokens, content EMPTY
+            #   chat_template_kwargs.thinking=false: 0.20s, 15 tokens, real advice
+            # `think` below is the Ollama spelling; neither it nor
+            # reasoning_effort overrides a vLLM chat-template default, so this
+            # key is required — without it enable_thinking=False is silently a
+            # no-op against this server.
+            extra["chat_template_kwargs"] = {"thinking": bool(self.enable_thinking)}
             if self.enable_thinking:
                 if "claude" in model_lower:
                     extra["thinking"] = {"type": "enabled", "budget_tokens": 8000}
