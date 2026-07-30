@@ -5,6 +5,7 @@ tmpclaude-*
 __pycache__/
 .venv/
 tools/training/wp3/scryfall_cache.json
+tools/training/data/wp3/
 *.pyc
 debug_log.txt
 log_tail.txt
