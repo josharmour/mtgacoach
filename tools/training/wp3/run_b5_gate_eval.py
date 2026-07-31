@@ -514,7 +514,12 @@ def main(argv: list[str] | None = None) -> int:
         # `ninja`, which lives there — invoking the venv python directly does
         # not bring it in, and the engine dies with FileNotFoundError('ninja')
         # during memory profiling (hit live 2026-07-30).
-        serve_bin = str(Path(args.serve_python).resolve().parent)
+        # absolute(), NOT resolve(): uv venvs symlink bin/python3 out to
+        # ~/.local/share/uv/python/.../bin, and resolve() follows it there —
+        # a bin dir with no ninja. The venv's own bin dir is what must lead
+        # PATH. (Hit live 2026-07-31: FileNotFoundError('ninja') with the
+        # resolve() form, while ninja sat in venv-serve/bin the whole time.)
+        serve_bin = str(Path(args.serve_python).absolute().parent)
         env = dict(
             os.environ,
             CUDA_VISIBLE_DEVICES=str(args.gpu),
