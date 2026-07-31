@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -186,6 +187,18 @@ def main():
     p.add_argument("--max_length", type=int, default=4096, help="Max token sequence length")
     p.add_argument("--val_split", type=float, default=0.05, help="Validation set split ratio (e.g. 0.05)")
     p.add_argument(
+        "--val_file",
+        type=Path,
+        default=None,
+        help=(
+            "Explicit validation set (JSON/JSONL). Takes precedence over --val_split. "
+            "Use the WP-3 pipeline's game-disjoint val.jsonl: a random --val_split over "
+            "records leaks near-duplicate states from the same games into eval, which "
+            "saturates eval metrics (eval_token_accuracy=1.0, gate v1 postmortem) and "
+            "blinds early stopping."
+        ),
+    )
+    p.add_argument(
         "--save_steps", type=int, default=25, help="Checkpoint every N optimizer steps (0 = per-epoch only)"
     )
     p.add_argument("--save_total_limit", type=int, default=3, help="Max checkpoints to retain")
@@ -248,7 +261,21 @@ def main():
     # Load dataset from JSON
     full_dataset = load_dataset("json", data_files=str(args.dataset))
 
-    if args.val_split > 0.0 and "train" in full_dataset:
+    if args.val_file is not None:
+        if not args.val_file.exists():
+            sys.exit(f"--val_file not found: {args.val_file}")
+        train_ds = full_dataset["train"]
+        eval_ds = load_dataset("json", data_files=str(args.val_file))["train"]
+        logger.info(
+            f"Using explicit val set {args.val_file} ({len(eval_ds)} records); "
+            "--val_split ignored"
+        )
+    elif args.val_split > 0.0 and "train" in full_dataset:
+        logger.warning(
+            "--val_split holds out a RANDOM record subset; for WP-3 corpora this "
+            "leaks near-duplicate states across the split — prefer --val_file "
+            "with the pipeline's game-disjoint val.jsonl"
+        )
         split_data = full_dataset["train"].train_test_split(test_size=args.val_split, seed=42)
         train_ds = split_data["train"]
         eval_ds = split_data["test"]
