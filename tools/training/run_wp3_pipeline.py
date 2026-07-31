@@ -52,6 +52,7 @@ for p in [str(SRC), str(REPO)]:
 from tools.training import build_magezero_bridge as BRIDGE
 from tools.training import magezero_combat_micro as COMBAT
 from tools.training import magezero_filters as FILTERS
+from tools.training import oracle_coverage as ORACLE
 from tools.training import parse_magezero_log as PARSER
 
 # ---------------------------------------------------------------------------
@@ -271,6 +272,70 @@ def stage_render(
 
 
 # ---------------------------------------------------------------------------
+# Stage 5b: Oracle-text coverage (fail-closed metric)
+# ---------------------------------------------------------------------------
+
+
+def stage_oracle_coverage(
+    rendered: dict[str, list[dict]],
+    min_coverage: float | None,
+) -> dict[str, Any]:
+    """Measure oracle-text coverage over every rendered prompt.
+
+    The transfer medium for card generalization is TEXT (a bare card name
+    teaches name->action; oracle text teaches role->action), so the fraction
+    of card-name mentions carrying oracle text is a first-class corpus
+    metric. ``unresolved`` names (no LOCAL oracle source) count AGAINST
+    coverage — a card we cannot ground is a gap, not an excuse.
+
+    With ``min_coverage`` set, a corpus below the floor aborts the pipeline
+    (exit 43). Default is off so existing invocations are unchanged.
+    """
+    lookup = ORACLE.build_lookup()
+    stats = ORACLE.new_stats()
+    for records in rendered.values():
+        ORACLE.audit_records(records, lookup, stats)
+    summary = ORACLE.summarize(stats)
+    summary["mention_accounting"] = {
+        k: BRIDGE.ORACLE_STATS.get(k, 0)
+        for k in ("oracle_attached", "oracle_no_text", "oracle_unresolved", "no_targets_stripped")
+    }
+
+    print(f"  records audited: {summary['records_audited']}")
+    for ctx, row in summary["contexts"].items():
+        cov = row["coverage"]
+        cov_s = f"{cov * 100:5.1f}%" if cov is not None else "  n/a"
+        print(
+            f"  {ctx:<11s} coverage={cov_s}  covered={row['covered']} "
+            f"uncovered={row['uncovered']} unresolved={row['unresolved']} "
+            f"keyword_only={row['keyword_only']} no_text={row['no_text']}"
+        )
+    overall = summary["overall_coverage"]
+    print(f"  overall oracle_text_coverage: "
+          f"{overall if overall is not None else 'n/a (no mentions)'}")
+    if summary["unparsed_lines"]:
+        print(f"  unparsed lines (counted, fail-closed): {summary['unparsed_lines']}")
+
+    if min_coverage is not None:
+        if overall is None:
+            print(
+                f"\nORACLE COVERAGE FLOOR FAILED: no card mentions found to measure "
+                f"(floor {min_coverage}). Corpus REJECTED.",
+                file=sys.stderr,
+            )
+            raise SystemExit(43)
+        if overall < min_coverage:
+            print(
+                f"\nORACLE COVERAGE FLOOR FAILED: {overall:.4f} < {min_coverage} "
+                f"(--min-oracle-coverage). Corpus REJECTED.",
+                file=sys.stderr,
+            )
+            raise SystemExit(43)
+        print(f"  floor check: {overall:.4f} >= {min_coverage} PASS")
+    return summary
+
+
+# ---------------------------------------------------------------------------
 # Stage 6: Leak scan
 # ---------------------------------------------------------------------------
 
@@ -387,6 +452,7 @@ def stage_write(
     attackers_blockers_total: int,
     elapsed: float,
     combat_info: dict[str, Any] | None = None,
+    oracle_summary: dict[str, Any] | None = None,
 ) -> dict:
     """Write per-split JSONL files and manifest. Returns manifest dict."""
     outdir.mkdir(parents=True, exist_ok=True)
@@ -403,6 +469,9 @@ def stage_write(
         "filter_counts": dict(filter_counts),
         "splits": {},
     }
+
+    if oracle_summary is not None:
+        manifest["oracle_text_coverage"] = oracle_summary
 
     if combat_info is not None:
         hist = combat_info.get("histograms_filtered", {})
@@ -572,6 +641,38 @@ def stage_report(
         lines.append(json.dumps(combat.get("accounting", {}), indent=2, sort_keys=True))
         lines.append("```")
         lines.append("")
+    oracle = manifest.get("oracle_text_coverage")
+    if oracle:
+        lines.append("## Oracle-Text Coverage")
+        lines.append("")
+        lines.append(
+            "Fraction of card-name mentions whose oracle text appears in the same "
+            "prompt (denominator excludes cards with keyword-only or no oracle "
+            "text; `unresolved` = no LOCAL oracle source, counted AGAINST coverage)."
+        )
+        lines.append("")
+        lines.append("| Context | Coverage | Covered | Uncovered | Unresolved | Keyword-only | No-text |")
+        lines.append("|---------|----------|---------|-----------|------------|--------------|---------|")
+        for ctx, row in oracle.get("contexts", {}).items():
+            cov = row.get("coverage")
+            cov_s = f"{cov * 100:.1f}%" if cov is not None else "n/a"
+            lines.append(
+                f"| {ctx} | {cov_s} | {row['covered']} | {row['uncovered']} | "
+                f"{row['unresolved']} | {row['keyword_only']} | {row['no_text']} |"
+            )
+        oc = oracle.get("overall_coverage")
+        lines.append("")
+        lines.append(f"**Overall: {oc * 100:.1f}%**" if oc is not None else "**Overall: n/a**")
+        if oracle.get("unparsed_lines"):
+            lines.append("")
+            lines.append(f"Unparsed lines (counted, fail-closed): `{oracle['unparsed_lines']}`")
+        if oracle.get("examples"):
+            lines.append("")
+            lines.append("Example gaps per context:")
+            for ctx, ex in oracle["examples"].items():
+                for cls, names in ex.items():
+                    lines.append(f"- {ctx}/{cls}: {', '.join(names)}")
+        lines.append("")
     lines.append("## Split Sizes")
     lines.append("")
     lines.append("| Split | Records |")
@@ -679,6 +780,7 @@ def run_pipeline(
     include_combat: bool = False,
     primary_deck: str | None = None,
     decks_dir: str | None = None,
+    min_oracle_coverage: float | None = None,
 ) -> dict[str, Any]:
     """Run the full WP-3 pipeline.
 
@@ -686,6 +788,7 @@ def run_pipeline(
     """
     t0 = time.time()
     outdir.mkdir(parents=True, exist_ok=True)
+    BRIDGE.ORACLE_STATS.clear()  # per-run mention accounting
 
     # ── Stage 1: Parse ────────────────────────────────────────────────────
     print("Stage 1/5 — Parse logs")
@@ -794,6 +897,10 @@ def run_pipeline(
     print("Leak scan — checking rendered prompts for training-set artifacts...")
     stage_leak_scan(rendered, raw_decisions + combat_rows)
 
+    # ── Oracle-text coverage ───────────────────────────────────────────────
+    print("Oracle-text coverage — measuring card-mention text coverage...")
+    oracle_summary = stage_oracle_coverage(rendered, min_oracle_coverage)
+
     # ── Write output ────────────────────────────────────────────────────────
     elapsed = time.time() - t0
     manifest = stage_write(
@@ -806,6 +913,7 @@ def run_pipeline(
         attackers_blockers_total,
         elapsed,
         combat_info=combat_info,
+        oracle_summary=oracle_summary,
     )
 
     # ── Report ──────────────────────────────────────────────────────────────
@@ -829,6 +937,8 @@ def run_pipeline(
     print(f"  Training records:  {total_records}")
     print(f"  Attackers/blockers excluded: {attackers_blockers_total}")
     print(f"  Pass rate:         {pass_rate:.4f} ({pass_rate * 100:.1f}%)")
+    _oc = oracle_summary.get("overall_coverage")
+    print(f"  Oracle coverage:   {_oc:.4f}" if _oc is not None else "  Oracle coverage:   n/a")
     if include_combat and combat_info is not None:
         print(
             f"  Combat rows:       {len(combat_rows)} scanned, "
@@ -909,6 +1019,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="XMage deck directory holding the .dck lists "
         "(default: parse_magezero_log.DEFAULT_DECKS_DIR)",
     )
+    parser.add_argument(
+        "--min-oracle-coverage",
+        type=float,
+        default=None,
+        metavar="FRAC",
+        help="Fail-closed floor on overall oracle-text coverage (0..1). When "
+        "set, a corpus whose fraction of card mentions with attached oracle "
+        "text falls below FRAC aborts the pipeline (exit 43). Coverage is "
+        "always measured and reported; the floor is OFF by default.",
+    )
     return parser
 
 
@@ -986,6 +1106,7 @@ def main(argv: list[str] | None = None) -> int:
             include_combat=args.include_combat,
             primary_deck=args.primary_deck,
             decks_dir=args.decks_dir,
+            min_oracle_coverage=args.min_oracle_coverage,
         )
     except PARSER.DeckSignatureError as e:
         print(f"\nPipeline aborted (fail closed): {e}", file=sys.stderr)
@@ -994,6 +1115,9 @@ def main(argv: list[str] | None = None) -> int:
         if e.code == 42:
             print("\nPipeline aborted: pass rate tripwire or leak scan failed.", file=sys.stderr)
             return 42
+        if e.code == 43:
+            print("\nPipeline aborted: oracle-text coverage below --min-oracle-coverage.", file=sys.stderr)
+            return 43
         raise
 
     return 0

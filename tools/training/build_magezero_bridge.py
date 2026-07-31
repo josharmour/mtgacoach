@@ -179,6 +179,91 @@ _LAND_SUFFIXES = (
 _LAND_NAME_CONTAINS = ("Cavern of", "Field of", "Urza's", "Mishra's", "Corrupted", "Darksteel")
 
 
+# ---------------------------------------------------------------------------
+# Oracle text lookup (magezero_card_map.json, enriched from the LOCAL
+# Scryfall bulk by tools/training/wp3/enrich_card_map.py)
+# ---------------------------------------------------------------------------
+#
+# The transfer medium for card generalization is TEXT: a bare card name in a
+# prompt teaches name->action; oracle text teaches role->action. Every card
+# dict below therefore carries the card's real oracle text when a LOCAL
+# source has it. Names with no local source are counted in ORACLE_STATS
+# ("unresolved") and rendered bare — never fabricated.
+#
+# Deliberately NOT attached, and why:
+#   type_line / power / toughness — typing MZ cards as creatures makes the
+#     production formatter print P/T (0/0 when absent — fabricated stats) and
+#     run the combat solver, whose "Computed optimal ..." lines are computed
+#     from those stats and are fail-closed-rejected by the combat adapter.
+#     Keyword flags (FLY/DTH/...) derive from the attached oracle text alone.
+
+_CARD_MAP_PATH = REPO / "tools" / "training" / "magezero_card_map.json"
+
+# Mention-level accounting, reset per build by main(); keys:
+#   oracle_attached / oracle_no_text / oracle_unresolved / no_targets_stripped
+ORACLE_STATS: Counter = Counter()
+
+
+def _load_card_oracle() -> dict[str, str]:
+    """name(lower) -> oracle_text for every locally-resolved map entry.
+
+    An entry WITHOUT an ``oracle_text`` key is unresolved (no local source),
+    distinct from a resolved card whose oracle text is genuinely empty
+    (vanilla creature) — the two are counted separately.
+    """
+    try:
+        with open(_CARD_MAP_PATH, encoding="utf-8") as f:
+            card_map = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    idx: dict[str, str] = {}
+    for name, entry in card_map.items():
+        if "oracle_text" not in entry:
+            continue
+        idx[name.lower()] = entry["oracle_text"]
+        canon = entry.get("scryfall") or ""
+        if canon:
+            idx.setdefault(canon.lower(), entry["oracle_text"])
+        if " // " in canon:
+            for face in canon.split(" // "):
+                idx.setdefault(face.lower(), entry["oracle_text"])
+    return idx
+
+
+_ORACLE_BY_NAME: dict[str, str] = _load_card_oracle()
+
+
+def _lookup_oracle(name: str) -> str:
+    """Oracle text for *name*, with mention-level accounting."""
+    got = _ORACLE_BY_NAME.get(name.lower())
+    if got is None:
+        ORACLE_STATS["oracle_unresolved"] += 1
+        return ""
+    if got:
+        ORACLE_STATS["oracle_attached"] += 1
+    else:
+        ORACLE_STATS["oracle_no_text"] += 1
+    return got
+
+
+def sanitize_user(user: str) -> str:
+    """Remove the ``[NO TARGETS]`` tag from a rendered MZ prompt, counted.
+
+    The tag is computed by the production formatter from the opponent's TYPED
+    board (opp_creatures etc.). MZ boards are untyped, so the input to that
+    computation is systematically missing and the tag comes out false for any
+    removal spell whenever the opponent has creatures — while the gold answer
+    (MageZero) frequently casts exactly that spell. A derived claim whose
+    inputs are known-absent is dropped and counted, per fail-closed rules.
+    The [RM:...] tags are kept: they derive from the card's own oracle text.
+    """
+    n = user.count(" [NO TARGETS]")
+    if n:
+        ORACLE_STATS["no_targets_stripped"] += n
+        user = user.replace(" [NO TARGETS]", "")
+    return user
+
+
 def _resolve_type_line(name: str) -> str:
     """Return a type_line for a card given only its name.
 
@@ -216,20 +301,48 @@ LOCAL_SEAT = 1
 OPP_SEAT = 2
 
 
-def _build_card(name: str, seat: int, tapped: bool, instance_id: int) -> dict:
-    """One battlefield card entry from MageZero data."""
+def _build_card(
+    name: str,
+    seat: int,
+    tapped: bool,
+    instance_id: int,
+    turn: int = -1,
+    attacking: bool = False,
+    blocking: bool = False,
+) -> dict:
+    """One battlefield card entry from MageZero data.
+
+    ``turn_entered_battlefield`` is set to the CURRENT turn: the entry turn is
+    not recoverable from MZ logs, and with untyped cards the field's only
+    prompt-visible effect is the planner formatter's recent-ETB gate on
+    rendering oracle text (long-resident cards render flags only). Current
+    turn makes the attached oracle text actually reach the prompt; no SS flag
+    or summoning-sickness inference can fire because those need a creature
+    type line, which MZ cards never carry.
+
+    ``attacking``/``blocking`` markers are honoured for the LOCAL seat only,
+    exactly like magezero_combat_micro.build_combat_record: an
+    is_attacking-marked OPPONENT card makes the production formatter run its
+    block analysis on fabricated 0/0 stats ("No blocks -> take 0 dmg").
+    """
     tl = _resolve_type_line(name)
-    return {
+    card = {
         "instance_id": instance_id,
         "name": name,
         "type_line": tl,
-        "oracle_text": "",
+        "oracle_text": _lookup_oracle(name),
         "mana_cost": "",
         "owner_seat_id": seat,
         "controller_seat_id": seat,
         "is_tapped": tapped,
-        "turn_entered_battlefield": -1,
+        "turn_entered_battlefield": turn,
     }
+    if seat == LOCAL_SEAT:
+        if attacking:
+            card["is_attacking"] = True
+        if blocking:
+            card["is_blocking"] = True
+    return card
 
 
 def _build_hand_card(name: str) -> dict:
@@ -241,7 +354,7 @@ def _build_hand_card(name: str) -> dict:
         "type_line": tl,
         "mana_cost": "",
         "cmc": 0.0,
-        "oracle_text": "",
+        "oracle_text": _lookup_oracle(name),
     }
 
 
@@ -252,13 +365,32 @@ def build_game_state(row: dict) -> dict:
     →_format_game_context) expects: players, turn, battlefield, hand, stack,
     graveyard, legal_actions.
     """
+    turn_num = row.get("turn", 0)
     battlefield: list[dict] = []
     next_id = 1
     for card in row.get("battlefield_self", []):
-        battlefield.append(_build_card(card["name"], LOCAL_SEAT, card.get("tapped", False), next_id))
+        battlefield.append(
+            _build_card(
+                card["name"],
+                LOCAL_SEAT,
+                card.get("tapped", False),
+                next_id,
+                turn=turn_num,
+                attacking=bool(card.get("attacking")),
+                blocking=bool(card.get("blocking")),
+            )
+        )
         next_id += 1
     for card in row.get("battlefield_opp", []):
-        battlefield.append(_build_card(card["name"], OPP_SEAT, card.get("tapped", False), 1000 + next_id))
+        battlefield.append(
+            _build_card(
+                card["name"],
+                OPP_SEAT,
+                card.get("tapped", False),
+                1000 + next_id,
+                turn=turn_num,
+            )
+        )
         next_id += 1
 
     hand = [_build_hand_card(n) for n in row.get("hand", [])]
@@ -354,7 +486,7 @@ def build_record(row: dict) -> tuple[dict | None, str]:
 
     # Build user message via production formatter (build_user_message calls
     # ActionPlanner._build_action_prompt → CoachEngine._format_game_context).
-    user = G.build_user_message(game_state, menu)
+    user = sanitize_user(G.build_user_message(game_state, menu))
 
     # R1: the guard that killed prior runs — assert every record.
     if user.count("Legal: (pick by number)") != 1:

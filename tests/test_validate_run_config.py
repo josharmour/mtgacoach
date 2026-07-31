@@ -47,7 +47,7 @@ def _write(tmp_path: Path, text: str, name: str = "cfg.yml") -> Path:
 def test_holdout_set_is_exactly_the_three_pinned_decks():
     # Growing this set is an owner decision; shrinking it invalidates every
     # unseen-deck gate number measured while the deck was held out.
-    assert V.HOLDOUT_DECKS == {"HighNoonControl", "BGRoots", "BWBats"}
+    assert {"HighNoonControl", "BGRoots", "BWBats"} == V.HOLDOUT_DECKS
 
 
 def test_clean_config_passes(tmp_path):
