@@ -2200,6 +2200,18 @@ a parser combat adapter for the three line shapes (pair by thread tag +
 adjacency). B5 smoke LoRA (priority-only) unaffected — combat joins the corpus
 at the next pipeline regeneration after the adapter lands.
 
+**External-reading postscript (same evening):** two publications reviewed
+(T. Quinn's MCTS-goldfish post; Godlewski & Sawicki arXiv:2109.12112 on
+per-stage agent mixing + playout-budget saturation). Adopted: a
+search-budget saturation sweep harness for MageZero
+(`tools/training/wp3/mz_budget_sweep.py`, this PR) — mirror-match arms vs the
+300-budget control, timeout unbound so budget is the measured axis, refuses to
+run while `mz train` lives; run between curriculum runs, adopt findings in the
+next run's config only. Also recorded: per-decision-kind policy mixing is a
+sanctioned deployment shape (priority-LoRA + combat solver), and td_discount
+is a metagame assumption to audit if the curriculum plateaus. Full notes in
+rl-pipeline-fix.md "External reading incorporated".
+
 ### §26 addendum 17 — CUTOVER: coach now Qwen3.6-27B-FP8 on ONE card; ds4-v9 retired to standby (2026-07-30 ~16:00)
 
 **Recorded on blackwell; every number below measured here.** Owner order: "ds4
