@@ -1,6 +1,6 @@
 # PROGRESS: cuda-serving (MageZero speed program, lever 2)
 
-Date: 2026-07-31. Machine: blackwell. Agent key: cuda-serving.
+Date: 2026-07-31. Machine: the-training-host. Agent key: cuda-serving.
 
 ## What was done
 
@@ -9,18 +9,18 @@ Flask+waitress, POST /evaluate, NOT gRPC despite the task brief) brought up on
 CUDA card 1 alongside the Qwen coach, and benchmarked against the live R9700
 server on 50052.
 
-- Venv: /home/joshu/venv-mz-cuda — fresh venv from venv-train's python 3.12.13,
+- Venv: ~/venv-mz-cuda — fresh venv from venv-train's python 3.12.13,
   with a .pth link to venv-train's site-packages (reuses torch 2.11.0+cu130
   without modifying venv-train, which has no pip). Added: waitress, flask,
   msgpack, pyroaring.
-- Launcher: /home/joshu/launch_mz_server_cuda.sh (also committed to the
+- Launcher: ~/launch_mz_server_cuda.sh (also committed to the
   magezero repo as tools/launch_mz_server_cuda.sh on local branch
   speed/cuda-serving-50060). Env-tunable: MZ_CUDA_GPU (default 1), MZ_PORT
   (default 50060), MZ_VRAM_GB (default 6, maps to MZ_SERVER_VRAM_GB), MZ_DECK
   (default UWTempo), MZ_VERSION (default: latest verN under models/<deck>),
   MZ_PYTHON, MZ_REPO. Sets HIP_VISIBLE_DEVICES="" so device.py can never pick
   the R9700.
-- Running server: UWTempo ver1 (only version present), port 50060, PID 432987,
+- Running server: UWTempo ver1 (only version present), port 50060, PID <redacted>,
   4482 MiB on card 1 (cap 6 GB, honored). Left RUNNING for the smoke stage.
 - Bench client: magezero repo tools/bench_eval_http.py (local branch
   speed/cuda-serving-50060, NOT pushed — origin is upstream WillWroble).
@@ -78,7 +78,7 @@ server processes itself per arm (start_server) and stops them at arm end —
 so cutover is NOT "edit game.yml to point at :50060". The sanctioned path is
 the runner's own env hooks:
 
-    export MZ_SERVER_PYTHON=/home/joshu/venv-mz-cuda/bin/python3
+    export MZ_SERVER_PYTHON=~/venv-mz-cuda/bin/python3
     export MZ_SERVER_ENV="CUDA_VISIBLE_DEVICES=1 HIP_VISIBLE_DEVICES= MZ_SERVER_VRAM_GB=6"
 
 added to the `mz train` launch environment (i.e. launch_mz_train.sh, which
@@ -100,12 +100,12 @@ respects.
 
 ## Artifacts
 
-- /home/joshu/launch_mz_server_cuda.sh (launcher, env-tunable)
-- /home/joshu/venv-mz-cuda (serving venv; venv-train untouched)
+- ~/launch_mz_server_cuda.sh (launcher, env-tunable)
+- ~/venv-mz-cuda (serving venv; venv-train untouched)
 - magezero local branch speed/cuda-serving-50060: tools/bench_eval_http.py,
   tools/launch_mz_server_cuda.sh (never pushed; origin is upstream)
-- Running: PID 432987, port 50060, card 1, UWTempo ver1
-- Server logs: /home/joshu/mz_server_cuda_50060.log, .run2.log
+- Running: PID <redacted>, port 50060, card 1, UWTempo ver1
+- Server logs: ~/mz_server_cuda_50060.log, .run2.log
 
 ## Concerns
 
