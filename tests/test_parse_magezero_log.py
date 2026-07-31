@@ -842,3 +842,141 @@ class TestPassDecisionRecovery:
         )
         assert decisions[0]["_recovered_pass"] is True
         assert not any(k.startswith("_") for k in ("chosen", "menu", "mcts_counts"))
+
+
+class TestSegmentMenu:
+    """Menu segmentation with pool-name anchors (menu-parity fix).
+
+    XMage prints `playable abilities` as List.toString() — entries joined with
+    ", " and no quoting — while card names ("Cast Malcolm, Alluring Scoundrel")
+    and ability text ("{T}: Draw a card, then discard a card.") contain ", "
+    themselves. A plain comma split shattered those entries and every chose
+    action with a comma-named card was then dropped as chosen_not_in_menu:
+    816 of 5,835 post-filter rows (14.0%) on mz_train_smoke.log.
+    """
+
+    def test_comma_card_name_merged_when_pool_confirms(self):
+        from parse_magezero_log import segment_menu
+
+        raw = "Cast Malcolm, Alluring Scoundrel, Pass"
+        vocab = ["Cast Malcolm, Alluring Scoundrel", "Pass"]
+        assert segment_menu(raw, vocab) == ["Cast Malcolm, Alluring Scoundrel", "Pass"]
+
+    def test_ability_text_with_comma_merged(self):
+        from parse_magezero_log import segment_menu
+
+        raw = "{T}: Draw a card, then discard a card., Pass"
+        vocab = ["{T}: Draw a card, then discard a card.", "Pass"]
+        assert segment_menu(raw, vocab) == [
+            "{T}: Draw a card, then discard a card.",
+            "Pass",
+        ]
+
+    def test_real_log_window_line_3369(self):
+        """The exact raw payload from mz_train_smoke.log line 3369."""
+        from parse_magezero_log import segment_menu
+
+        raw = (
+            "Cast Bounce Off, Cast Combat Research, Cast Kitsa, Otterball Elite, "
+            "Cast Skrelv, Defector Mite, {1}{U}: Untap {this}., Pass"
+        )
+        vocab = ["Cast Combat Research", "Cast Kitsa, Otterball Elite", "Cast Skrelv, Defector Mite", "Pass"]
+        assert segment_menu(raw, vocab) == [
+            "Cast Bounce Off",
+            "Cast Combat Research",
+            "Cast Kitsa, Otterball Elite",
+            "Cast Skrelv, Defector Mite",
+            "{1}{U}: Untap {this}.",
+            "Pass",
+        ]
+
+    def test_unconfirmed_comma_entry_stays_split(self):
+        """Fail closed: no pool-confirmed name, no merge."""
+        from parse_magezero_log import segment_menu
+
+        raw = "Cast Malcolm, Alluring Scoundrel, Pass"
+        vocab = ["Pass"]  # pool never confirmed the comma name
+        assert segment_menu(raw, vocab) == ["Cast Malcolm", "Alluring Scoundrel", "Pass"]
+
+    def test_duplicate_entries_preserved(self):
+        from parse_magezero_log import segment_menu
+
+        raw = "Play Island, Play Island, Pass"
+        vocab = ["Play Island", "Pass"]
+        assert segment_menu(raw, vocab) == ["Play Island", "Play Island", "Pass"]
+
+    def test_empty_raw(self):
+        from parse_magezero_log import segment_menu
+
+        assert segment_menu("", ["Pass"]) == []
+
+    def test_longest_match_wins(self):
+        """A vocab name that is a prefix of another must not steal the match."""
+        from parse_magezero_log import segment_menu
+
+        raw = "Cast Combat Research, Cast Combat Research II, Pass"
+        vocab = ["Cast Combat Research", "Cast Combat Research II", "Pass"]
+        assert segment_menu(raw, vocab) == [
+            "Cast Combat Research",
+            "Cast Combat Research II",
+            "Pass",
+        ]
+
+
+class TestCommaMenuEndToEnd:
+    """A chose action with a comma-named card must survive to the decision row
+    with its menu entry intact (this was the chosen_not_in_menu drop class)."""
+
+    @staticmethod
+    def _parse(log_body: str):
+        log = (
+            "INFO  Simulating 1 games. =>[main]\n"
+            + log_body
+            + "INFO  Player A win rate: 100.00% (1/1) =>[main]\n"
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+            f.write(log.replace("=>[T]", "=>[pool-3-thread-1]"))
+            path = f.name
+        try:
+            return parse_log(path)[0]
+        finally:
+            Path(path).unlink()
+
+    def test_comma_named_cast_matches_menu(self):
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [2:Precombat Main:PRECOMBAT_MAIN][player PlayerA:20][player PlayerB:20] =>[T]\n"
+            "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] "
+            "[Cast Skrelv, Defector Mite score: 0.2 count: 500] =>[T]\n"
+            "INFO  playable abilities: [Cast Skrelv, Defector Mite, Pass] =>[T]\n"
+            "INFO  [2:Precombat Main:PRECOMBAT_MAIN]chose action:Cast Skrelv, Defector Mite "
+            "success ratio: 0.2 =>[T]\n"
+        )
+        assert len(decisions) == 1
+        d = decisions[0]
+        assert d["chosen"] == "Cast Skrelv, Defector Mite"
+        assert d["menu"] == ["Cast Skrelv, Defector Mite", "Pass"]
+        assert d["chosen"] in d["menu"]
+        assert d["mcts_counts"]["Cast Skrelv, Defector Mite"] == 500
+
+    def test_recovered_pass_window_menu_segmented(self):
+        """An unconsumed pass pool whose playable-abilities line landed."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [3:Precombat Main:PRECOMBAT_MAIN][player PlayerA:20][player PlayerB:18] =>[T]\n"
+            # Window 1: menu + comma-named cast.
+            "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] "
+            "[Cast Kitsa, Otterball Elite score: 0.2 count: 500] =>[T]\n"
+            "INFO  playable abilities: [Cast Kitsa, Otterball Elite, Pass] =>[T]\n"
+            "INFO  [3:Precombat Main:PRECOMBAT_MAIN]chose action:Cast Kitsa, Otterball Elite "
+            "success ratio: 0.2 =>[T]\n"
+            # Window 2: search prefers Pass; no playable/chose lines follow (EOF flush).
+            "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] "
+            "[Cast Kitsa, Otterball Elite score: 0.1 count: 90] =>[T]\n"
+        )
+        assert len(decisions) == 2
+        assert decisions[0]["menu"] == ["Cast Kitsa, Otterball Elite", "Pass"]
+        pass_row = decisions[1]
+        assert pass_row["chosen"] == "Pass"
+        # No playable line landed for window 2 -> pool names are the menu.
+        assert pass_row["menu"] == ["Pass", "Cast Kitsa, Otterball Elite"]
