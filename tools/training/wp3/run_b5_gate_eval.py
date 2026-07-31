@@ -367,6 +367,151 @@ def assert_arm_complete(responses: Path, label: str, expected_n: int) -> None:
 
 
 # --------------------------------------------------------------------------
+# Generalization (seen vs unseen-deck slice) — only runs with --unseen-corpus
+# --------------------------------------------------------------------------
+
+
+def _bootstrap_generalization(
+    seen_pairs: list[tuple[int, int]],
+    unseen_pairs: list[tuple[int, int]],
+    bootstraps: int,
+    seed: int = 20260731,
+) -> tuple[list[float], list[float]]:
+    """95% bootstrap CIs on the seen-minus-unseen accuracy gap.
+
+    Each pair is (candidate_correct, baseline_correct) for ONE prompt. The two
+    slices are DIFFERENT prompt populations, so the raw gap resamples them
+    independently; the baseline-adjusted gap — (cand-base on seen) minus
+    (cand-base on unseen) — preserves the per-prompt candidate/baseline
+    pairing inside each slice so shared prompt difficulty cancels. That is
+    the paired estimator: read it, not the raw gap, when deciding whether the
+    candidate generalizes worse than its own base model.
+    """
+    import random
+
+    rng = random.Random(seed)
+    ns, nu = len(seen_pairs), len(unseen_pairs)
+
+    def acc(pairs: list[tuple[int, int]], idx: int) -> float:
+        return sum(p[idx] for p in pairs) / len(pairs)
+
+    raw: list[float] = []
+    adj: list[float] = []
+    for _ in range(bootstraps):
+        s = [seen_pairs[rng.randrange(ns)] for _ in range(ns)]
+        u = [unseen_pairs[rng.randrange(nu)] for _ in range(nu)]
+        raw.append(acc(s, 0) - acc(u, 0))
+        adj.append((acc(s, 0) - acc(s, 1)) - (acc(u, 0) - acc(u, 1)))
+
+    def ci(values: list[float]) -> list[float]:
+        v = sorted(values)
+        lo = v[int(0.025 * len(v))]
+        hi = v[min(len(v) - 1, int(0.975 * len(v)))]
+        return [round(lo, 4), round(hi, 4)]
+
+    return ci(raw), ci(adj)
+
+
+def compute_generalization(
+    seen_corpus_path: Path,
+    seen_cand_resp: Path,
+    seen_base_resp: Path,
+    unseen_corpus_path: Path,
+    unseen_cand_resp: Path,
+    unseen_base_resp: Path,
+    unseen_perm_corpus_path: Path,
+    unseen_perm_resp: Path,
+    cand_label: str,
+    base_label: str,
+    bootstraps: int,
+) -> dict:
+    """Score candidate+baseline on both slices; return the summary section.
+
+    Scoring reuses gate_play_decisions.evaluate VERBATIM (same pick
+    extraction, same gold-equivalence rules) so the seen and unseen numbers
+    are produced by one scorer, not two implementations.
+    """
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from tools.training import gate_play_decisions as G
+
+    seen_corpus = list(G._read_jsonl(seen_corpus_path))
+    unseen_corpus = list(G._read_jsonl(unseen_corpus_path))
+    perm_corpus = list(G._read_jsonl(unseen_perm_corpus_path))
+
+    cand_seen = G.evaluate(seen_corpus, seen_cand_resp, cand_label)
+    base_seen = G.evaluate(seen_corpus, seen_base_resp, base_label)
+    cand_unseen = G.evaluate(unseen_corpus, unseen_cand_resp, cand_label)
+    base_unseen = G.evaluate(unseen_corpus, unseen_base_resp, base_label)
+    cand_unseen_perm = G.evaluate(perm_corpus, unseen_perm_resp, cand_label)
+
+    def pairs(cand: dict, base: dict) -> list[tuple[int, int]]:
+        out = []
+        for pid, c in cand.get("per_id", {}).items():
+            b = base.get("per_id", {}).get(pid)
+            if b is not None:
+                out.append((1 if c["correct"] else 0, 1 if b["correct"] else 0))
+        return out
+
+    seen_pairs = pairs(cand_seen, base_seen)
+    unseen_pairs = pairs(cand_unseen, base_unseen)
+    if not seen_pairs or not unseen_pairs:
+        die(
+            f"generalization scoring produced empty pair sets "
+            f"(seen={len(seen_pairs)}, unseen={len(unseen_pairs)}) — response "
+            "files do not match the corpora; refusing to report a gap"
+        )
+
+    raw_ci, adj_ci = _bootstrap_generalization(seen_pairs, unseen_pairs, bootstraps)
+    c_seen = cand_seen["overall"]["accuracy"]
+    c_unseen = cand_unseen["overall"]["accuracy"]
+    b_seen = base_seen["overall"]["accuracy"]
+    b_unseen = base_unseen["overall"]["accuracy"]
+    perm_acc = cand_unseen_perm["overall"]["accuracy"]
+
+    return {
+        "seen": {
+            "corpus": str(seen_corpus_path),
+            "n_paired": len(seen_pairs),
+            "candidate_overall": c_seen,
+            "candidate_95ci": cand_seen["overall"]["accuracy_95ci"],
+            "baseline_overall": b_seen,
+            "provenance": "real MTGA replay menus, human picks",
+        },
+        "unseen": {
+            "corpus": str(unseen_corpus_path),
+            "n_paired": len(unseen_pairs),
+            "candidate_overall": c_unseen,
+            "candidate_95ci": cand_unseen["overall"]["accuracy_95ci"],
+            "baseline_overall": b_unseen,
+            "candidate_permuted_overall": perm_acc,
+            "permutation_gap_candidate": (
+                round(c_unseen - perm_acc, 4) if c_unseen is not None and perm_acc is not None else None
+            ),
+            "provenance": "MageZero MCTS teacher picks on permanent-holdout decks "
+            "(name-only prompts, same shape as WP-3 training records)",
+        },
+        "gap_candidate_seen_minus_unseen": (
+            round(c_seen - c_unseen, 4) if c_seen is not None and c_unseen is not None else None
+        ),
+        "gap_bootstrap_95ci": raw_ci,
+        "baseline_adjusted_gap": (
+            round((c_seen - b_seen) - (c_unseen - b_unseen), 4)
+            if None not in (c_seen, b_seen, c_unseen, b_unseen)
+            else None
+        ),
+        "baseline_adjusted_gap_95ci": adj_ci,
+        "bootstraps": bootstraps,
+        "notes": [
+            "reporting only — NOT a pre-registered leg; never affects the exit code",
+            "the two slices differ in prompt provenance AND label provenance; "
+            "read the baseline-adjusted gap (difficulty cancels via the shared "
+            "base model), not the raw gap alone",
+        ],
+    }
+
+
+# --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
 
@@ -431,6 +576,25 @@ def build_parser() -> argparse.ArgumentParser:
         "loudly (never silently) and the exit code ignores L3",
     )
     p.add_argument(
+        "--unseen-corpus",
+        type=Path,
+        default=None,
+        help="OPTIONAL unseen-deck gate slice (built by tools/training/wp3/"
+        "build_unseen_gate_corpus.py from permanent-holdout-deck MageZero "
+        "logs). When given, candidate AND baseline are also scored on it and "
+        "the summary json gains a 'generalization' section: seen score, "
+        "unseen score, gap, and paired-bootstrap CIs on the gap. Reporting "
+        "only — never a pre-registered leg, never changes the exit code. "
+        "Without this flag, behavior is identical to before the option existed.",
+    )
+    p.add_argument(
+        "--unseen-permuted-corpus",
+        type=Path,
+        default=None,
+        help="permuted twin of --unseen-corpus "
+        "(default: <unseen-corpus stem>_permuted.jsonl next to it)",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="CPU-only preflight: resolve adapter, validate corpora/CLIs, "
@@ -451,7 +615,15 @@ def main(argv: list[str] | None = None) -> int:
     combat_corpus = args.combat_corpus or (data / "combat_gate_test.jsonl")
     combat_permuted = args.combat_permuted_corpus or (data / "combat_gate_test_permuted.jsonl")
 
+    unseen_corpus = args.unseen_corpus
+    unseen_permuted = args.unseen_permuted_corpus
+    if unseen_corpus is not None and unseen_permuted is None:
+        unseen_permuted = unseen_corpus.with_name(unseen_corpus.stem + "_permuted" + unseen_corpus.suffix)
+
     out = {
+        "unseen_cand": data / f"gate_{args.run_id}_unseen_candidate_test.jsonl",
+        "unseen_cand_perm": data / f"gate_{args.run_id}_unseen_candidate_test_permuted.jsonl",
+        "unseen_base": data / f"gate_{args.run_id}_unseen_baseline_test.jsonl",
         "combat_cand": data / f"gate_{args.run_id}_combat_candidate_test.jsonl",
         "combat_cand_perm": data / f"gate_{args.run_id}_combat_candidate_test_permuted.jsonl",
         "combat_base": data / f"gate_{args.run_id}_combat_baseline_test.jsonl",
@@ -479,6 +651,10 @@ def main(argv: list[str] | None = None) -> int:
         check_cli_importable(sys.executable, "tools.training.gate_combat_decisions")
         combat_n = check_corpora(combat_corpus, combat_permuted, perm_suffix="-perm", require_menu_size=False)
         log(f"combat gate corpus: {combat_n} records ({combat_corpus.name})")
+    unseen_n = 0
+    if unseen_corpus is not None:
+        unseen_n = check_corpora(unseen_corpus, unseen_permuted)
+        log(f"unseen-deck gate corpus: {unseen_n} records ({unseen_corpus.name})")
     r = subprocess.run(
         [args.serve_python, "-c", "import vllm; print(vllm.__version__)"],
         capture_output=True,
@@ -551,6 +727,14 @@ def main(argv: list[str] | None = None) -> int:
             assert_arm_complete(out["combat_cand"], cand_label, combat_n)
             assert_arm_complete(out["combat_cand_perm"], cand_label, combat_n)
             assert_arm_complete(out["combat_base"], base_label, combat_n)
+
+        if unseen_corpus is not None:
+            run_arm(args, unseen_corpus, out["unseen_cand"], LORA_NAME)
+            run_arm(args, unseen_permuted, out["unseen_cand_perm"], LORA_NAME)
+            run_arm(args, unseen_corpus, out["unseen_base"], args.base_model)
+            assert_arm_complete(out["unseen_cand"], cand_label, unseen_n)
+            assert_arm_complete(out["unseen_cand_perm"], cand_label, unseen_n)
+            assert_arm_complete(out["unseen_base"], base_label, unseen_n)
 
         tripwire_scores = {}
         if not args.skip_tripwires:
@@ -684,6 +868,23 @@ def main(argv: list[str] | None = None) -> int:
             "combat_report": str(out["combat_report"]),
         }
 
+    # ---- generalization: seen vs unseen-deck slice (CPU, optional) -------
+    generalization = None
+    if unseen_corpus is not None:
+        generalization = compute_generalization(
+            seen_corpus_path=corpus,
+            seen_cand_resp=out["cand_test"],
+            seen_base_resp=out["base_test"],
+            unseen_corpus_path=unseen_corpus,
+            unseen_cand_resp=out["unseen_cand"],
+            unseen_base_resp=out["unseen_base"],
+            unseen_perm_corpus_path=unseen_permuted,
+            unseen_perm_resp=out["unseen_cand_perm"],
+            cand_label=cand_label,
+            base_label=base_label,
+            bootstraps=args.bootstraps,
+        )
+
     summary = {
         "run_id": args.run_id,
         "adapter": str(adapter),
@@ -717,6 +918,8 @@ def main(argv: list[str] | None = None) -> int:
         "gate_report": str(out["report"]),
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
+    if generalization is not None:
+        summary["generalization"] = generalization
     out["summary"].write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
     log("=" * 72)
@@ -744,6 +947,16 @@ def main(argv: list[str] | None = None) -> int:
         f"same-base (12B) comparison: base overall {base_overall}, "
         f"paired delta CI {report.get('paired_bootstrap')}"
     )
+    if generalization is not None:
+        log(
+            "generalization (ADVISORY, not a leg): "
+            f"seen {generalization['seen']['candidate_overall']} vs "
+            f"unseen {generalization['unseen']['candidate_overall']} — "
+            f"gap {generalization['gap_candidate_seen_minus_unseen']} "
+            f"CI {generalization['gap_bootstrap_95ci']}, "
+            f"baseline-adjusted {generalization['baseline_adjusted_gap']} "
+            f"CI {generalization['baseline_adjusted_gap_95ci']}"
+        )
     log(f"full G1-G7 gate verdict: {report.get('verdict')} (exit {gate_rc})")
     log(f"summary: {out['summary']}")
     log("=" * 72)
