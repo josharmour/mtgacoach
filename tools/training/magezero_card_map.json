@@ -3,6 +3,8 @@
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "{T}: Add {C}.\n{T}: Add {W} or {U}. This land deals 1 damage to you.",
     "scryfall": "Adarkar Wastes",
     "type_line": "Land"
   },
@@ -10,41 +12,63 @@
     "exact": true,
     "found": true,
     "mana_cost": "{1}{W}{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Vigilance\nAdeline's power is equal to the number of creatures you control.\nWhenever you attack, for each opponent, create a 1/1 white Human creature token that's tapped and attacking that player or a planeswalker they control.",
+    "power": "*",
     "scryfall": "Adeline, Resplendent Cathar",
-    "type_line": "Legendary Creature \u2014 Human Knight"
+    "toughness": "4",
+    "type_line": "Legendary Creature — Human Knight"
   },
   "Aloe Alchemist": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{G}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Trample\nWhen this card becomes plotted, target creature gets +3/+2 and gains trample until end of turn.\nPlot {1}{G} (You may pay {1}{G} and exile this card from your hand. Cast it as a sorcery on a later turn without paying its mana cost. Plot only as a sorcery.)",
+    "power": "3",
     "scryfall": "Aloe Alchemist",
-    "type_line": "Creature \u2014 Plant Warlock"
+    "toughness": "2",
+    "type_line": "Creature — Plant Warlock"
   },
   "Ascendant Packleader": {
     "exact": true,
     "found": true,
     "mana_cost": "{G}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "This creature enters with a +1/+1 counter on it if you control a permanent with mana value 4 or greater.\nWhenever you cast a spell with mana value 4 or greater, put a +1/+1 counter on this creature.",
+    "power": "2",
     "scryfall": "Ascendant Packleader",
-    "type_line": "Creature \u2014 Wolf"
+    "toughness": "1",
+    "type_line": "Creature — Wolf"
   },
   "Axebane Ferox": {
     "exact": true,
     "found": true,
     "mana_cost": "{2}{G}{G}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Deathtouch, haste\nWard—Collect evidence 4. (Whenever this creature becomes the target of a spell or ability an opponent controls, counter it unless that player exiles cards with total mana value 4 or greater from their graveyard.)",
+    "power": "4",
     "scryfall": "Axebane Ferox",
-    "type_line": "Creature \u2014 Beast"
+    "toughness": "4",
+    "type_line": "Creature — Beast"
   },
   "Bloodletter of Aclazotz": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{B}{B}{B}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Flying\nIf an opponent would lose life during your turn, they lose twice that much life instead. (Damage causes loss of life.)",
+    "power": "2",
     "scryfall": "Bloodletter of Aclazotz",
-    "type_line": "Creature \u2014 Vampire Demon"
+    "toughness": "4",
+    "type_line": "Creature — Vampire Demon"
   },
   "Blue Sun's Twilight": {
     "exact": true,
     "found": true,
     "mana_cost": "{X}{U}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Gain control of target creature with mana value X or less. If X is 5 or more, create a token that's a copy of that creature.",
     "scryfall": "Blue Sun's Twilight",
     "type_line": "Sorcery"
   },
@@ -52,6 +76,8 @@
     "exact": true,
     "found": true,
     "mana_cost": "{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Return target creature or Vehicle to its owner's hand.",
     "scryfall": "Bounce Off",
     "type_line": "Instant"
   },
@@ -59,20 +85,30 @@
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Whenever this creature enters or transforms into Brutal Cathar, exile target creature an opponent controls until this creature leaves the battlefield.\nDaybound (If a player casts no spells during their own turn, it becomes night next turn.) // First strike\nWard—Pay 3 life.\nNightbound (If a player casts at least two spells during their own turn, it becomes day next turn.)",
+    "power": "2",
     "scryfall": "Brutal Cathar // Moonrage Brute",
-    "type_line": "Creature \u2014 Human Soldier Werewolf // Creature \u2014 Werewolf"
+    "toughness": "2",
+    "type_line": "Creature — Human Soldier Werewolf // Creature — Werewolf"
   },
   "Burnout Bashtronaut": {
     "exact": true,
     "found": true,
     "mana_cost": "{R}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Menace\nStart your engines! (If you have no speed, it starts at 1. It increases once on each of your turns when an opponent loses life. Max speed is 4.)\n{2}: This creature gets +1/+0 until end of turn.\nMax speed — This creature has double strike.",
+    "power": "1",
     "scryfall": "Burnout Bashtronaut",
-    "type_line": "Creature \u2014 Goblin Warrior"
+    "toughness": "1",
+    "type_line": "Creature — Goblin Warrior"
   },
   "Burst Lightning": {
     "exact": true,
     "found": true,
     "mana_cost": "{R}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Kicker {4} (You may pay an additional {4} as you cast this spell.)\nBurst Lightning deals 2 damage to any target. If this spell was kicked, it deals 4 damage instead.",
     "scryfall": "Burst Lightning",
     "type_line": "Instant"
   },
@@ -80,34 +116,70 @@
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Deathtouch\nDarkness — Whenever Cecil deals damage, you lose that much life. Then if your life total is less than or equal to half your starting life total, untap Cecil and transform it. // Lifelink\nProtect — Whenever Cecil attacks, other attacking creatures gain indestructible until end of turn.",
+    "power": "2",
     "scryfall": "Cecil, Dark Knight // Cecil, Redeemed Paladin",
-    "type_line": "Legendary Creature \u2014 Human Knight // Legendary Creature \u2014 Human Knight"
+    "toughness": "3",
+    "type_line": "Legendary Creature — Human Knight // Legendary Creature — Human Knight"
+  },
+  "Cecil, Redeemed Paladin": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "",
+    "oracle_source": "local_bulk:face",
+    "oracle_text": "Deathtouch\nDarkness — Whenever Cecil deals damage, you lose that much life. Then if your life total is less than or equal to half your starting life total, untap Cecil and transform it. // Lifelink\nProtect — Whenever Cecil attacks, other attacking creatures gain indestructible until end of turn.",
+    "power": "2",
+    "scryfall": "Cecil, Dark Knight // Cecil, Redeemed Paladin",
+    "toughness": "3",
+    "type_line": "Legendary Creature — Human Knight // Legendary Creature — Human Knight"
   },
   "Cenote Scout": {
     "exact": true,
     "found": true,
     "mana_cost": "{G}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "When this creature enters, it explores. (Reveal the top card of your library. Put that card into your hand if it's a land. Otherwise, put a +1/+1 counter on this creature, then put the card back or put it into your graveyard.)",
+    "power": "1",
     "scryfall": "Cenote Scout",
-    "type_line": "Creature \u2014 Merfolk Scout"
+    "toughness": "1",
+    "type_line": "Creature — Merfolk Scout"
   },
   "Chrome Host Seedshark": {
     "exact": true,
     "found": true,
     "mana_cost": "{2}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Flying\nWhenever you cast a noncreature spell, incubate X, where X is that spell's mana value. (Create an Incubator token with X +1/+1 counters on it and \"{2}: Transform this token.\" It transforms into a 0/0 Phyrexian artifact creature.)",
+    "power": "2",
     "scryfall": "Chrome Host Seedshark",
-    "type_line": "Creature \u2014 Phyrexian Shark"
+    "toughness": "4",
+    "type_line": "Creature — Phyrexian Shark"
+  },
+  "Clue Token": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "",
+    "oracle_source": "local_bulk:token",
+    "oracle_text": "{2}, Sacrifice this token: Draw a card.",
+    "scryfall": "Clue",
+    "type_line": "Token Artifact — Clue"
   },
   "Combat Research": {
     "exact": true,
     "found": true,
     "mana_cost": "{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Enchant creature\nEnchanted creature has \"Whenever this creature deals combat damage to a player, draw a card.\"\nAs long as enchanted creature is legendary, it gets +1/+1 and has ward {1}. (Whenever enchanted creature becomes the target of a spell or ability an opponent controls, counter it unless that player pays {1}.)",
     "scryfall": "Combat Research",
-    "type_line": "Enchantment \u2014 Aura"
+    "type_line": "Enchantment — Aura"
   },
   "Consider": {
     "exact": true,
     "found": true,
     "mana_cost": "{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Surveil 1. (Look at the top card of your library. You may put it into your graveyard.)\nDraw a card.",
     "scryfall": "Consider",
     "type_line": "Instant"
   },
@@ -115,20 +187,41 @@
     "exact": true,
     "found": true,
     "mana_cost": "{1}{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Each other Human you control gets +1/+0 and has ward {1}. (Whenever it becomes the target of a spell or ability an opponent controls, counter it unless that player pays {1}.)",
+    "power": "2",
     "scryfall": "Coppercoat Vanguard",
-    "type_line": "Creature \u2014 Human Soldier"
+    "toughness": "2",
+    "type_line": "Creature — Human Soldier"
   },
   "Deep-Cavern Bat": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{B}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Flying, lifelink\nWhen this creature enters, look at target opponent's hand. You may exile a nonland card from it until this creature leaves the battlefield.",
+    "power": "1",
     "scryfall": "Deep-Cavern Bat",
-    "type_line": "Creature \u2014 Bat"
+    "toughness": "1",
+    "type_line": "Creature — Bat"
+  },
+  "Demon Token": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "",
+    "oracle_source": "local_bulk:token",
+    "oracle_text": "Flying",
+    "power": "*",
+    "scryfall": "Demon",
+    "toughness": "*",
+    "type_line": "Token Creature — Demon"
   },
   "Destroy Evil": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Choose one —\n• Destroy target creature with toughness 4 or greater.\n• Destroy target enchantment.",
     "scryfall": "Destroy Evil",
     "type_line": "Instant"
   },
@@ -136,6 +229,8 @@
     "exact": true,
     "found": true,
     "mana_cost": "{1}{U}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Counter target spell. If that spell is countered this way, exile it instead of putting it into its owner's graveyard.",
     "scryfall": "Dissipate",
     "type_line": "Instant"
   },
@@ -143,6 +238,8 @@
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "{T}: Add {W}.\nChannel — {2}{W}, Discard this card: It deals 4 damage to target attacking or blocking creature. This ability costs {1} less to activate for each legendary creature you control.",
     "scryfall": "Eiganjo, Seat of the Empire",
     "type_line": "Legendary Land"
   },
@@ -150,13 +247,19 @@
     "exact": true,
     "found": true,
     "mana_cost": "{1}{R}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Haste\nProwess (Whenever you cast a noncreature spell, this creature gets +1/+1 until end of turn.)\nValiant — Whenever this creature becomes the target of a spell or ability you control for the first time each turn, exile the top card of your library. Until end of turn, you may play that card.",
+    "power": "2",
     "scryfall": "Emberheart Challenger",
-    "type_line": "Creature \u2014 Mouse Warrior"
+    "toughness": "2",
+    "type_line": "Creature — Mouse Warrior"
   },
   "Essence Scatter": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Counter target creature spell.",
     "scryfall": "Essence Scatter",
     "type_line": "Instant"
   },
@@ -164,20 +267,30 @@
     "exact": true,
     "found": true,
     "mana_cost": "{G}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "This creature enters with an oil counter on it.\nThis creature gets +1/+1 for each oil counter on it.\nWhenever another creature you control enters, if that creature has greater power or toughness than this creature, put an oil counter on this creature.",
+    "power": "0",
     "scryfall": "Evolving Adaptive",
-    "type_line": "Creature \u2014 Phyrexian Warrior"
+    "toughness": "0",
+    "type_line": "Creature — Phyrexian Warrior"
   },
   "Extraction Specialist": {
     "exact": true,
     "found": true,
     "mana_cost": "{2}{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Lifelink\nWhen this creature enters, return target creature card with mana value 2 or less from your graveyard to the battlefield. That creature can't attack or block for as long as you control this creature.",
+    "power": "3",
     "scryfall": "Extraction Specialist",
-    "type_line": "Creature \u2014 Human Rogue"
+    "toughness": "2",
+    "type_line": "Creature — Human Rogue"
   },
   "Fading Hope": {
     "exact": true,
     "found": true,
     "mana_cost": "{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Return target creature to its owner's hand. If its mana value was 3 or less, scry 1. (Look at the top card of your library. You may put that card on the bottom.)",
     "scryfall": "Fading Hope",
     "type_line": "Instant"
   },
@@ -185,6 +298,8 @@
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "{T}: Add {W}.\n{T}: Add {U}. Activate only if you control a Plains or an Island.",
     "scryfall": "Floodfarm Verge",
     "type_line": "Land"
   },
@@ -192,13 +307,19 @@
     "exact": true,
     "found": true,
     "mana_cost": "{1}{G}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "This creature gets +1/+1 for each Forest you control.\nDisguise {4}{G}\nWhen this creature is turned face up, search your library for up to two Forest cards and reveal them. Put one of them onto the battlefield tapped and the other into your hand, then shuffle.",
+    "power": "0",
     "scryfall": "Flourishing Bloom-Kin",
-    "type_line": "Creature \u2014 Plant Elemental"
+    "toughness": "0",
+    "type_line": "Creature — Plant Elemental"
   },
   "Flow of Knowledge": {
     "exact": true,
     "found": true,
     "mana_cost": "{4}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Draw a card for each Island you control, then discard two cards.",
     "scryfall": "Flow of Knowledge",
     "type_line": "Instant"
   },
@@ -206,20 +327,28 @@
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "({T}: Add {G}.)",
     "scryfall": "Forest",
-    "type_line": "Basic Land \u2014 Forest"
+    "type_line": "Basic Land — Forest"
   },
   "Forsaken Miner": {
     "exact": true,
     "found": true,
     "mana_cost": "{B}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "This creature can't block.\nWhenever you commit a crime, you may pay {B}. If you do, return this card from your graveyard to the battlefield. (Targeting opponents, anything they control, and/or cards in their graveyards is a crime.)",
+    "power": "2",
     "scryfall": "Forsaken Miner",
-    "type_line": "Creature \u2014 Skeleton Rogue"
+    "toughness": "2",
+    "type_line": "Creature — Skeleton Rogue"
   },
   "Full Bore": {
     "exact": true,
     "found": true,
     "mana_cost": "{R}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Target creature you control gets +3/+2 until end of turn. If that creature was cast for its warp cost, it also gains trample and haste until end of turn.",
     "scryfall": "Full Bore",
     "type_line": "Instant"
   },
@@ -227,13 +356,19 @@
     "exact": true,
     "found": true,
     "mana_cost": "{B}{B}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Kicker {B} (You may pay an additional {B} as you cast this spell.)\nWhen this creature enters, if it was kicked, target player sacrifices a creature of their choice.",
+    "power": "2",
     "scryfall": "Gatekeeper of Malakir",
-    "type_line": "Creature \u2014 Vampire Warrior"
+    "toughness": "2",
+    "type_line": "Creature — Vampire Warrior"
   },
   "Get Lost": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Destroy target creature, enchantment, or planeswalker. Its controller creates two Map tokens. (They're artifacts with \"{1}, {T}, Sacrifice this token: Target creature you control explores. Activate only as a sorcery.\")",
     "scryfall": "Get Lost",
     "type_line": "Instant"
   },
@@ -241,6 +376,8 @@
     "exact": true,
     "found": true,
     "mana_cost": "{G}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Target creature you control deals damage equal to its power to target creature or planeswalker you don't control.",
     "scryfall": "Hard-Hitting Question",
     "type_line": "Sorcery"
   },
@@ -248,76 +385,136 @@
     "exact": true,
     "found": true,
     "mana_cost": "{1}{U}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Flying\nHaughty Djinn's power is equal to the number of instant and sorcery cards in your graveyard.\nInstant and sorcery spells you cast cost {1} less to cast.",
+    "power": "*",
     "scryfall": "Haughty Djinn",
-    "type_line": "Creature \u2014 Djinn"
+    "toughness": "4",
+    "type_line": "Creature — Djinn"
   },
   "Hired Claw": {
     "exact": true,
     "found": true,
     "mana_cost": "{R}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Whenever you attack with one or more Lizards, this creature deals 1 damage to target opponent.\n{1}{R}: Put a +1/+1 counter on this creature. Activate only if an opponent lost life this turn and only once each turn.",
+    "power": "1",
     "scryfall": "Hired Claw",
-    "type_line": "Creature \u2014 Lizard Mercenary"
+    "toughness": "2",
+    "type_line": "Creature — Lizard Mercenary"
   },
   "Hopeful Initiate": {
     "exact": true,
     "found": true,
     "mana_cost": "{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Training (Whenever this creature attacks with another creature with greater power, put a +1/+1 counter on this creature.)\n{2}{W}, Remove two +1/+1 counters from among creatures you control: Destroy target artifact or enchantment.",
+    "power": "1",
     "scryfall": "Hopeful Initiate",
-    "type_line": "Creature \u2014 Human Warlock"
+    "toughness": "2",
+    "type_line": "Creature — Human Warlock"
   },
   "Hullbreaker Horror": {
     "exact": true,
     "found": true,
     "mana_cost": "{5}{U}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Flash\nThis spell can't be countered.\nWhenever you cast a spell, choose up to one —\n• Return target spell you don't control to its owner's hand.\n• Return target nonland permanent to its owner's hand.",
+    "power": "7",
     "scryfall": "Hullbreaker Horror",
-    "type_line": "Creature \u2014 Kraken Horror"
+    "toughness": "8",
+    "type_line": "Creature — Kraken Horror"
+  },
+  "Human Token": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "",
+    "oracle_source": "local_bulk:token",
+    "oracle_text": "",
+    "power": "1",
+    "scryfall": "Human",
+    "toughness": "1",
+    "type_line": "Token Creature — Human"
   },
   "Impulse": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Look at the top four cards of your library. Put one of them into your hand and the rest on the bottom of your library in any order.",
     "scryfall": "Impulse",
     "type_line": "Instant"
+  },
+  "Incubator Token": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "",
+    "oracle_source": "local_bulk:token",
+    "oracle_text": "{2}: Transform this artifact.",
+    "power": "0",
+    "scryfall": "Incubator // Phyrexian",
+    "toughness": "0",
+    "type_line": "Token Artifact — Incubator // Token Artifact Creature — Phyrexian"
   },
   "Iridescent Vinelasher": {
     "exact": true,
     "found": true,
     "mana_cost": "{B}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Offspring {2} (You may pay an additional {2} as you cast this spell. If you do, when this creature enters, create a 1/1 token copy of it.)\nLandfall — Whenever a land you control enters, this creature deals 1 damage to target opponent.",
+    "power": "1",
     "scryfall": "Iridescent Vinelasher",
-    "type_line": "Creature \u2014 Lizard Assassin"
+    "toughness": "2",
+    "type_line": "Creature — Lizard Assassin"
   },
   "Island": {
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "({T}: Add {U}.)",
     "scryfall": "Island",
-    "type_line": "Basic Land \u2014 Island"
+    "type_line": "Basic Land — Island"
   },
   "Kellan, Planar Trailblazer": {
     "exact": true,
     "found": true,
     "mana_cost": "{R}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "{1}{R}: If Kellan is a Scout, it becomes a Human Faerie Detective and gains \"Whenever Kellan deals combat damage to a player, exile the top card of your library. You may play that card this turn.\"\n{2}{R}: If Kellan is a Detective, it becomes a 3/2 Human Faerie Rogue and gains double strike.",
+    "power": "2",
     "scryfall": "Kellan, Planar Trailblazer",
-    "type_line": "Legendary Creature \u2014 Human Faerie Scout"
+    "toughness": "1",
+    "type_line": "Legendary Creature — Human Faerie Scout"
   },
   "Kitsa, Otterball Elite": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Vigilance\nProwess (Whenever you cast a noncreature spell, this creature gets +1/+1 until end of turn.)\n{T}: Draw a card, then discard a card.\n{2}, {T}: Copy target instant or sorcery spell you control. You may choose new targets for the copy. Activate only if Kitsa's power is 3 or greater.",
+    "power": "1",
     "scryfall": "Kitsa, Otterball Elite",
-    "type_line": "Legendary Creature \u2014 Otter Wizard"
+    "toughness": "3",
+    "type_line": "Legendary Creature — Otter Wizard"
   },
   "Knight-Errant of Eos": {
     "exact": true,
     "found": true,
     "mana_cost": "{4}{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Convoke\nWhen this creature enters, look at the top six cards of your library. You may reveal up to two creature cards with mana value X or less from among them, where X is the number of creatures that convoked this creature. Put the revealed cards into your hand, then shuffle.",
+    "power": "4",
     "scryfall": "Knight-Errant of Eos",
-    "type_line": "Creature \u2014 Human Knight"
+    "toughness": "4",
+    "type_line": "Creature — Human Knight"
   },
   "Lightning Strike": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{R}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Lightning Strike deals 3 damage to any target.",
     "scryfall": "Lightning Strike",
     "type_line": "Instant"
   },
@@ -325,20 +522,37 @@
     "exact": false,
     "found": true,
     "mana_cost": "{1}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Whenever equipped creature deals combat damage, put a charge counter on Lost Jitte.\nRemove a charge counter from Lost Jitte: Choose one —\n• Untap target land.\n• Target creature can't block this turn.\n• Put a +1/+1 counter on equipped creature.\nEquip {1}",
     "scryfall": "Lost Jitte",
-    "type_line": "Legendary Artifact \u2014 Equipment"
+    "type_line": "Legendary Artifact — Equipment"
   },
   "Malcolm, Alluring Scoundrel": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Flash\nFlying\nWhenever Malcolm deals combat damage to a player, put a chorus counter on it. Draw a card, then discard a card. If there are four or more chorus counters on Malcolm, you may cast the discarded card without paying its mana cost.",
+    "power": "2",
     "scryfall": "Malcolm, Alluring Scoundrel",
-    "type_line": "Legendary Creature \u2014 Siren Pirate"
+    "toughness": "1",
+    "type_line": "Legendary Creature — Siren Pirate"
+  },
+  "Map Token": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "",
+    "oracle_source": "local_bulk:token",
+    "oracle_text": "{1}, {T}, Sacrifice this artifact: Target creature you control explores. Activate only as a sorcery. (Reveal the top card of your library. Put that card into your hand if it's a land. Otherwise, put a +1/+1 counter on that creature, then put the card back or put it into your graveyard.)",
+    "scryfall": "Map",
+    "type_line": "Token Artifact — Map"
   },
   "Memory Deluge": {
     "exact": true,
     "found": true,
     "mana_cost": "{2}{U}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Look at the top X cards of your library, where X is the amount of mana spent to cast this spell. Put two of them into your hand and the rest on the bottom of your library in a random order.\nFlashback {5}{U}{U} (You may cast this card from your graveyard for its flashback cost. Then exile it.)",
     "scryfall": "Memory Deluge",
     "type_line": "Instant"
   },
@@ -346,34 +560,55 @@
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "({T}: Add {W} or {U}.)\nThis land enters tapped.\nWhen this land enters, surveil 1. (Look at the top card of your library. You may put it into your graveyard.)",
     "scryfall": "Meticulous Archive",
-    "type_line": "Land \u2014 Plains Island"
+    "type_line": "Land — Plains Island"
   },
   "Mirrex": {
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "{T}: Add {C}.\n{T}: Add one mana of any color. Activate only if this land entered this turn.\n{3}, {T}: Create a 1/1 colorless Phyrexian Mite artifact creature token with toxic 1 and \"This token can't block.\" (Players dealt combat damage by it also get a poison counter.)",
     "scryfall": "Mirrex",
-    "type_line": "Land \u2014 Sphere"
+    "type_line": "Land — Sphere"
   },
   "Mishra's Foundry": {
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "{T}: Add {C}.\n{2}: This land becomes a 2/2 Assembly-Worker artifact creature until end of turn. It's still a land.\n{1}, {T}: Target attacking Assembly-Worker gets +2/+2 until end of turn.",
     "scryfall": "Mishra's Foundry",
     "type_line": "Land"
+  },
+  "Moonrage Brute": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "",
+    "oracle_source": "local_bulk:face",
+    "oracle_text": "Whenever this creature enters or transforms into Brutal Cathar, exile target creature an opponent controls until this creature leaves the battlefield.\nDaybound (If a player casts no spells during their own turn, it becomes night next turn.) // First strike\nWard—Pay 3 life.\nNightbound (If a player casts at least two spells during their own turn, it becomes day next turn.)",
+    "power": "2",
+    "scryfall": "Brutal Cathar // Moonrage Brute",
+    "toughness": "2",
+    "type_line": "Creature — Human Soldier Werewolf // Creature — Werewolf"
   },
   "Mountain": {
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "({T}: Add {R}.)",
     "scryfall": "Mountain",
-    "type_line": "Basic Land \u2014 Mountain"
+    "type_line": "Basic Land — Mountain"
   },
   "Negate": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Counter target noncreature spell.",
     "scryfall": "Negate",
     "type_line": "Instant"
   },
@@ -381,6 +616,8 @@
     "exact": true,
     "found": true,
     "mana_cost": "{W}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Counter target spell unless its controller pays {3}. If that spell is countered this way, exile it instead of putting it into its owner's graveyard.",
     "scryfall": "No More Lies",
     "type_line": "Instant"
   },
@@ -388,34 +625,72 @@
     "exact": true,
     "found": true,
     "mana_cost": "{3}{R}{R}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Flying, haste\nWhen this creature enters, it deals 1 damage to target creature an opponent controls.\nWarp {2}{R} (You may cast this card from your hand for its warp cost. Exile this creature at the beginning of the next end step, then you may cast it from exile on a later turn.)",
+    "power": "4",
     "scryfall": "Nova Hellkite",
-    "type_line": "Creature \u2014 Dragon"
+    "toughness": "5",
+    "type_line": "Creature — Dragon"
   },
   "Novice Inspector": {
     "exact": true,
     "found": true,
     "mana_cost": "{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "When this creature enters, investigate. (Create a Clue token. It's an artifact with \"{2}, Sacrifice this token: Draw a card.\")",
+    "power": "1",
     "scryfall": "Novice Inspector",
-    "type_line": "Creature \u2014 Human Detective"
+    "toughness": "2",
+    "type_line": "Creature — Human Detective"
   },
   "Ojer Axonil, Deepest Might": {
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Trample\nIf a red source you control would deal an amount of noncombat damage less than Ojer Axonil's power to an opponent, that source deals damage equal to Ojer Axonil's power instead.\nWhen Ojer Axonil dies, return it to the battlefield tapped and transformed under its owner's control. // (Transforms from Ojer Axonil, Deepest Might.)\n{T}: Add {R}.\n{2}{R}, {T}: Transform this land. Activate only if red sources you controlled dealt 4 or more noncombat damage this turn and only as a sorcery.",
+    "power": "4",
     "scryfall": "Ojer Axonil, Deepest Might // Temple of Power",
-    "type_line": "Legendary Creature \u2014 God // Land"
+    "toughness": "4",
+    "type_line": "Legendary Creature — God // Land"
+  },
+  "Phyrexian Mite Token": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "",
+    "oracle_source": "local_bulk:token",
+    "oracle_text": "Toxic 1 (Players dealt combat damage by this creature also get a poison counter.)\nThis creature can't block.",
+    "power": "1",
+    "scryfall": "Phyrexian Mite",
+    "toughness": "1",
+    "type_line": "Token Artifact Creature — Phyrexian Mite"
+  },
+  "Phyrexian Token": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "",
+    "oracle_source": "local_bulk:token",
+    "oracle_text": "{2}: Transform this artifact.",
+    "power": "0",
+    "scryfall": "Incubator // Phyrexian",
+    "toughness": "0",
+    "type_line": "Token Artifact — Incubator // Token Artifact Creature — Phyrexian"
   },
   "Plains": {
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "({T}: Add {W}.)",
     "scryfall": "Plains",
-    "type_line": "Basic Land \u2014 Plains"
+    "type_line": "Basic Land — Plains"
   },
   "Plaza of Heroes": {
     "exact": false,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "{T}: Add {C}.\n{T}: Add one mana of any color. Spend this mana only to cast a legendary spell.\n{T}: Add one mana of any color among legendary permanents you control.\n{3}, {T}, Exile this land: Target legendary creature gains hexproof and indestructible until end of turn.",
     "scryfall": "Plaza of Heroes",
     "type_line": "Land"
   },
@@ -423,34 +698,61 @@
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Reach\n{6}{W/P}: Transform Polukranos Reborn. Activate only as a sorcery. ({W/P} can be paid with either {W} or 2 life.) // Reach, lifelink\nWhenever Polukranos or another nontoken Hydra you control dies, create a 3/3 green and white Phyrexian Hydra creature token with reach and a 3/3 green and white Phyrexian Hydra creature token with lifelink.",
+    "power": "4",
     "scryfall": "Polukranos Reborn // Polukranos, Engine of Ruin",
-    "type_line": "Legendary Creature \u2014 Hydra // Legendary Creature \u2014 Phyrexian Hydra"
+    "toughness": "5",
+    "type_line": "Legendary Creature — Hydra // Legendary Creature — Phyrexian Hydra"
   },
   "Quirion Beastcaller": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{G}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Whenever you cast a creature spell, put a +1/+1 counter on this creature.\nWhen this creature dies, distribute X +1/+1 counters among any number of target creatures you control, where X is the number of +1/+1 counters on this creature.",
+    "power": "2",
     "scryfall": "Quirion Beastcaller",
-    "type_line": "Creature \u2014 Dryad Warrior"
+    "toughness": "2",
+    "type_line": "Creature — Dryad Warrior"
   },
   "Razorkin Needlehead": {
     "exact": true,
     "found": true,
     "mana_cost": "{R}{R}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "This creature has first strike during your turn.\nWhenever an opponent draws a card, this creature deals 1 damage to them.",
+    "power": "2",
     "scryfall": "Razorkin Needlehead",
-    "type_line": "Creature \u2014 Human Assassin"
+    "toughness": "2",
+    "type_line": "Creature — Human Assassin"
   },
   "Recruitment Officer": {
     "exact": true,
     "found": true,
     "mana_cost": "{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "{3}{W}: Look at the top four cards of your library. You may reveal a creature card with mana value 3 or less from among them and put it into your hand. Put the rest on the bottom of your library in a random order.",
+    "power": "2",
     "scryfall": "Recruitment Officer",
-    "type_line": "Creature \u2014 Human Soldier"
+    "toughness": "1",
+    "type_line": "Creature — Human Soldier"
+  },
+  "Ritual Chamber": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "{2}{B} // {3}{B}{B}",
+    "oracle_source": "local_bulk:face",
+    "oracle_text": "At the beginning of your end step, draw a card. If you control a Demon, each opponent loses 2 life and you gain 2 life. Otherwise, you lose 2 life.\n(You may cast either half. That door unlocks on the battlefield. As a sorcery, you may pay the mana cost of a locked door to unlock it.) // When you unlock this door, create a 6/6 black Demon creature token with flying.\n(You may cast either half. That door unlocks on the battlefield. As a sorcery, you may pay the mana cost of a locked door to unlock it.)",
+    "scryfall": "Unholy Annex // Ritual Chamber",
+    "type_line": "Enchantment — Room // Enchantment — Room"
   },
   "Rockface Village": {
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "{T}: Add {C}.\n{T}: Add {R}. Spend this mana only to cast a creature spell.\n{R}, {T}: Target Lizard, Mouse, Otter, or Raccoon you control gets +1/+0 and gains haste until end of turn. Activate only as a sorcery.",
     "scryfall": "Rockface Village",
     "type_line": "Land"
   },
@@ -458,6 +760,8 @@
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "This land enters tapped unless you control two or fewer other lands.\n{T}: Add {W} or {U}.",
     "scryfall": "Seachrome Coast",
     "type_line": "Land"
   },
@@ -465,34 +769,48 @@
     "exact": true,
     "found": true,
     "mana_cost": "{2}{G}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Vigilance\nWhenever this creature enters or attacks, create a Map token. (It's an artifact with \"{1}, {T}, Sacrifice this token: Target creature you control explores. Activate only as a sorcery.\")",
+    "power": "3",
     "scryfall": "Sentinel of the Nameless City",
-    "type_line": "Creature \u2014 Merfolk Warrior Scout"
+    "toughness": "4",
+    "type_line": "Creature — Merfolk Warrior Scout"
   },
   "Shardmage's Rescue": {
     "exact": true,
     "found": true,
     "mana_cost": "{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Flash\nEnchant creature you control\nAs long as this Aura entered this turn, enchanted creature has hexproof.\nEnchanted creature gets +1/+1.",
     "scryfall": "Shardmage's Rescue",
-    "type_line": "Enchantment \u2014 Aura"
+    "type_line": "Enchantment — Aura"
   },
   "Sharp-Eyed Rookie": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{G}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Vigilance\nWhenever a creature you control enters, if its power is greater than this creature's power or its toughness is greater than this creature's toughness, put a +1/+1 counter on this creature and investigate. (Create a Clue token. It's an artifact with \"{2}, Sacrifice this token: Draw a card.\")",
+    "power": "2",
     "scryfall": "Sharp-Eyed Rookie",
-    "type_line": "Creature \u2014 Human Detective"
+    "toughness": "2",
+    "type_line": "Creature — Human Detective"
   },
   "Sheltered by Ghosts": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Enchant creature you control\nWhen this Aura enters, exile target nonland permanent an opponent controls until this Aura leaves the battlefield.\nEnchanted creature gets +1/+0 and has lifelink and ward {2}.",
     "scryfall": "Sheltered by Ghosts",
-    "type_line": "Enchantment \u2014 Aura"
+    "type_line": "Enchantment — Aura"
   },
   "Shock": {
     "exact": true,
     "found": true,
     "mana_cost": "{R}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Shock deals 2 damage to any target.",
     "scryfall": "Shock",
     "type_line": "Instant"
   },
@@ -500,6 +818,8 @@
     "exact": true,
     "found": true,
     "mana_cost": "{1}{B}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Destroy target non-outlaw creature. (Assassins, Mercenaries, Pirates, Rogues, and Warlocks are outlaws. Everyone else is fair game.)",
     "scryfall": "Shoot the Sheriff",
     "type_line": "Instant"
   },
@@ -507,20 +827,30 @@
     "exact": true,
     "found": true,
     "mana_cost": "{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Toxic 1 (Players dealt combat damage by this creature also get a poison counter.)\nSkrelv can't block.\n{W/P}, {T}: Choose a color. Another target creature you control gains toxic 1 and hexproof from that color until end of turn. It can't be blocked by creatures of that color this turn. ({W/P} can be paid with either {W} or 2 life.)",
+    "power": "1",
     "scryfall": "Skrelv, Defector Mite",
-    "type_line": "Legendary Artifact Creature \u2014 Phyrexian Mite"
+    "toughness": "1",
+    "type_line": "Legendary Artifact Creature — Phyrexian Mite"
   },
   "Sleep-Cursed Faerie": {
     "exact": true,
     "found": true,
     "mana_cost": "{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Flying, ward {2}\nThis creature enters tapped with three stun counters on it. (If it would become untapped, remove a stun counter from it instead.)\n{1}{U}: Untap this creature.",
+    "power": "3",
     "scryfall": "Sleep-Cursed Faerie",
-    "type_line": "Creature \u2014 Faerie Wizard"
+    "toughness": "3",
+    "type_line": "Creature — Faerie Wizard"
   },
   "Soul Partition": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Exile target nonland permanent. For as long as that card remains exiled, its owner may play it. A spell cast by an opponent this way costs {2} more to cast.",
     "scryfall": "Soul Partition",
     "type_line": "Instant"
   },
@@ -528,6 +858,8 @@
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "{T}: Add {C}.\n{4}: This land becomes a 3/3 creature with vigilance and all creature types. It's still a land.",
     "scryfall": "Soulstone Sanctuary",
     "type_line": "Land"
   },
@@ -535,34 +867,68 @@
     "exact": true,
     "found": true,
     "mana_cost": "{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Counter target noncreature spell unless its controller pays {2}.",
     "scryfall": "Spell Pierce",
     "type_line": "Instant"
+  },
+  "Spirit Token": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "",
+    "oracle_source": "local_bulk:token",
+    "oracle_text": "Flying",
+    "power": "1",
+    "scryfall": "Spirit",
+    "toughness": "1",
+    "type_line": "Token Creature — Spirit"
   },
   "Swamp": {
     "exact": true,
     "found": true,
     "mana_cost": "",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "({T}: Add {B}.)",
     "scryfall": "Swamp",
-    "type_line": "Basic Land \u2014 Swamp"
+    "type_line": "Basic Land — Swamp"
   },
   "Teferi, Temporal Pilgrim": {
     "exact": true,
     "found": true,
     "mana_cost": "{3}{U}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Whenever you draw a card, put a loyalty counter on Teferi.\n0: Draw a card.\n−2: Create a 2/2 blue Spirit creature token with vigilance and \"Whenever you draw a card, put a +1/+1 counter on this token.\"\n−12: Target opponent chooses a permanent they control and returns it to its owner's hand. Then they shuffle each nonland permanent they control into its owner's library.",
     "scryfall": "Teferi, Temporal Pilgrim",
-    "type_line": "Legendary Planeswalker \u2014 Teferi"
+    "type_line": "Legendary Planeswalker — Teferi"
+  },
+  "Temple of Power": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "",
+    "oracle_source": "local_bulk:face",
+    "oracle_text": "Trample\nIf a red source you control would deal an amount of noncombat damage less than Ojer Axonil's power to an opponent, that source deals damage equal to Ojer Axonil's power instead.\nWhen Ojer Axonil dies, return it to the battlefield tapped and transformed under its owner's control. // (Transforms from Ojer Axonil, Deepest Might.)\n{T}: Add {R}.\n{2}{R}, {T}: Transform this land. Activate only if red sources you controlled dealt 4 or more noncombat damage this turn and only as a sorcery.",
+    "power": "4",
+    "scryfall": "Ojer Axonil, Deepest Might // Temple of Power",
+    "toughness": "4",
+    "type_line": "Legendary Creature — God // Land"
   },
   "Thalia, Guardian of Thraben": {
     "exact": true,
     "found": true,
     "mana_cost": "{1}{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "First strike\nNoncreature spells cost {1} more to cast.",
+    "power": "2",
     "scryfall": "Thalia, Guardian of Thraben",
-    "type_line": "Legendary Creature \u2014 Human Soldier"
+    "toughness": "1",
+    "type_line": "Legendary Creature — Human Soldier"
   },
   "Thirst for Discovery": {
     "exact": true,
     "found": true,
     "mana_cost": "{2}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Draw three cards. Then discard two cards unless you discard a basic land card.",
     "scryfall": "Thirst for Discovery",
     "type_line": "Instant"
   },
@@ -570,28 +936,51 @@
     "exact": true,
     "found": true,
     "mana_cost": "{6}{U}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "This spell costs {1} less to cast for each instant and sorcery card in your graveyard.\nWard {2} (Whenever this creature becomes the target of a spell or ability an opponent controls, counter it unless that player pays {2}.)",
+    "power": "5",
     "scryfall": "Tolarian Terror",
-    "type_line": "Creature \u2014 Serpent"
+    "toughness": "5",
+    "type_line": "Creature — Serpent"
+  },
+  "Unholy Annex": {
+    "exact": false,
+    "found": true,
+    "mana_cost": "{2}{B} // {3}{B}{B}",
+    "oracle_source": "local_bulk:face",
+    "oracle_text": "At the beginning of your end step, draw a card. If you control a Demon, each opponent loses 2 life and you gain 2 life. Otherwise, you lose 2 life.\n(You may cast either half. That door unlocks on the battlefield. As a sorcery, you may pay the mana cost of a locked door to unlock it.) // When you unlock this door, create a 6/6 black Demon creature token with flying.\n(You may cast either half. That door unlocks on the battlefield. As a sorcery, you may pay the mana cost of a locked door to unlock it.)",
+    "scryfall": "Unholy Annex // Ritual Chamber",
+    "type_line": "Enchantment — Room // Enchantment — Room"
   },
   "Unholy Annex // Ritual Chamber": {
     "exact": true,
     "found": true,
     "mana_cost": "{2}{B} // {3}{B}{B}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "At the beginning of your end step, draw a card. If you control a Demon, each opponent loses 2 life and you gain 2 life. Otherwise, you lose 2 life.\n(You may cast either half. That door unlocks on the battlefield. As a sorcery, you may pay the mana cost of a locked door to unlock it.) // When you unlock this door, create a 6/6 black Demon creature token with flying.\n(You may cast either half. That door unlocks on the battlefield. As a sorcery, you may pay the mana cost of a locked door to unlock it.)",
     "scryfall": "Unholy Annex // Ritual Chamber",
-    "type_line": "Enchantment \u2014 Room // Enchantment \u2014 Room"
+    "type_line": "Enchantment — Room // Enchantment — Room"
   },
   "Unstoppable Slasher": {
     "exact": true,
     "found": true,
     "mana_cost": "{2}{B}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "Deathtouch\nWhenever this creature deals combat damage to a player, they lose half their life, rounded up.\nWhen this creature dies, if it had no counters on it, return it to the battlefield tapped under its owner's control with two stun counters on it.",
+    "power": "2",
     "scryfall": "Unstoppable Slasher",
-    "type_line": "Creature \u2014 Zombie Assassin"
+    "toughness": "3",
+    "type_line": "Creature — Zombie Assassin"
   },
   "Warden of the Inner Sky": {
     "exact": true,
     "found": true,
     "mana_cost": "{W}",
+    "oracle_source": "local_bulk:canonical",
+    "oracle_text": "As long as this creature has three or more counters on it, it has flying and vigilance.\nTap three untapped artifacts and/or creatures you control: Put a +1/+1 counter on this creature. Scry 1. Activate only as a sorcery.",
+    "power": "1",
     "scryfall": "Warden of the Inner Sky",
-    "type_line": "Creature \u2014 Human Soldier"
+    "toughness": "2",
+    "type_line": "Creature — Human Soldier"
   }
 }

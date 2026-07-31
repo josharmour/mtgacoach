@@ -423,8 +423,20 @@ def parse_pool_actions(text: str) -> list[tuple[str, float, int]]:
 
 
 def parse_card_list(text: str) -> list[str]:
+    """Split a ``-> Hand: [...]`` payload into card names.
+
+    The GameStateEvaluator2 emitter appends an evaluator score to every hand
+    entry ("Adarkar Wastes:5"); other emitters of the same line shape do not
+    (8,185 of 18,943 hand lines on mz_train_smoke.log carry it). The suffix is
+    log noise, not part of the card name — strip it the same way
+    parse_permanents already does, or a quarter of combat-row hand mentions
+    render as nonexistent card names ("Negate:5") that no card lookup can
+    resolve.
+    """
     text = text.strip()
-    return [c.strip() for c in text.split(";")] if text else []
+    if not text:
+        return []
+    return [re.sub(r":\d+$", "", c.strip()).strip() for c in text.split(";")]
 
 
 # Separator commas in logList output are NOT followed by a space; commas
@@ -445,6 +457,15 @@ def parse_named_hand_cards(text: str) -> list[str]:
 
 
 def parse_permanents(text: str) -> list[dict[str, Any]]:
+    """Split a ``-> Permanents: [...]`` payload into board entries.
+
+    XMage appends state markers to the name ("Kitsa, Otterball Elite,tapped,
+    attacking"). ``,tapped`` was always extracted; ``,attacking``/``,blocking``
+    were not, so priority-row prompts rendered nonexistent card names like
+    "Skrelv, Defector Mite,attacking" that no card lookup can resolve. All
+    three markers are extracted into flags; flag keys are only present when
+    True (matches the combat scanner's row shape).
+    """
     text = text.strip()
     if not text:
         return []
@@ -453,10 +474,14 @@ def parse_permanents(text: str) -> list[dict[str, Any]]:
         entry = entry.strip()
         if not entry:
             continue
-        tapped = ",tapped" in entry
-        name = entry.replace(",tapped", "").strip()
-        name = re.sub(r":\d+$", "", name).strip()
-        result.append({"name": name, "tapped": tapped})
+        flags = {}
+        for marker in ("tapped", "attacking", "blocking"):
+            token = f",{marker}"
+            if token in entry:
+                flags[marker] = True
+                entry = entry.replace(token, "")
+        name = re.sub(r":\d+$", "", entry.strip()).strip()
+        result.append({"name": name, "tapped": flags.pop("tapped", False), **flags})
     return result
 
 

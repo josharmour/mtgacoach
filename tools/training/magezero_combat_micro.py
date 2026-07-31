@@ -502,8 +502,13 @@ def _context_ok(
 
 
 def _board_entry(p: dict) -> dict:
+    """parse_permanents now extracts ,attacking/,blocking into flags itself;
+    the suffix strip is kept as a fail-safe for rows parsed by older code."""
     name, marker = _strip_combat_suffix(p["name"])
     out = {"name": name, "tapped": bool(p.get("tapped", False))}
+    for key in ("attacking", "blocking"):
+        if p.get(key):
+            out[key] = True
     if marker:
         out[marker] = True
     return out
@@ -943,7 +948,7 @@ def build_combat_record(row: dict) -> tuple[dict | None, str]:
         # Blocking happens on the opponent's turn.
         game_state["turn"]["active_player"] = BRIDGE.OPP_SEAT
 
-    user = G.build_user_message(game_state, menu, trigger=trigger)
+    user = BRIDGE.sanitize_user(G.build_user_message(game_state, menu, trigger=trigger))
     if "Computed optimal" in user:
         # A solver line would be combat math computed from fabricated card
         # stats, and can restate the gold answer. Fail closed.

@@ -82,14 +82,44 @@ class TestCardMapCompleteness:
         assert not bad, f"Entries without scryfall name: {bad}"
 
     def test_all_names_found(self, card_map):
-        """Every card was found (exact or fuzzy) on Scryfall."""
-        missing = [k for k, v in card_map.items() if not v.get("found")]
+        """Every card was found (exact or fuzzy) on Scryfall, except entries
+        the local-bulk enricher explicitly recorded as having no local source
+        (oracle_source == "none_local") — those are counted, not guessed."""
+        missing = [
+            k
+            for k, v in card_map.items()
+            if not v.get("found") and v.get("oracle_source") != "none_local"
+        ]
         assert not missing, f"{len(missing)} cards not found on Scryfall: {missing}"
 
     def test_exact_count(self, card_map):
-        """At most 2 entries may be fuzzy (the layout-only refs)."""
-        fuzzy = [k for k, v in card_map.items() if v.get("found") and not v.get("exact")]
+        """At most 2 non-enricher entries may be fuzzy (the layout-only refs).
+
+        Entries added by enrich_card_map.py (tokens, DFC faces — tagged with
+        an oracle_source) are name-normalized by construction ("Map Token" ->
+        token "Map") and are exempt from the exactness invariant.
+        """
+        fuzzy = [
+            k
+            for k, v in card_map.items()
+            if v.get("found") and not v.get("exact") and not str(v.get("oracle_source", "")).startswith("local_bulk:")
+        ]
         assert len(fuzzy) <= 2, f"Expected ≤2 fuzzy matches, got {len(fuzzy)}: {fuzzy}"
+
+    def test_oracle_text_enrichment(self, card_map):
+        """The map carries oracle text for the training decks: every found
+        entry either has an oracle_text field or is explicitly marked
+        none_local. Guards against re-running resolve_cards.py without the
+        enrichment step (which would silently strip oracle coverage)."""
+        unenriched = [
+            k
+            for k, v in card_map.items()
+            if v.get("found") and "oracle_text" not in v and v.get("oracle_source") != "none_local"
+        ]
+        assert not unenriched, (
+            f"{len(unenriched)} found entries lack oracle_text (run "
+            f"tools/training/wp3/enrich_card_map.py): {unenriched[:10]}"
+        )
 
     def test_at_least_83_entries(self, card_map):
         """At least 83 entries in the map (the number of deck card names)."""
