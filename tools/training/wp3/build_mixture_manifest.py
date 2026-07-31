@@ -51,7 +51,6 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from pathlib import Path
 
 DEFAULT_VOCAB = os.path.expanduser("~/.arenamcp/mtgjson/name_index.json")
 
