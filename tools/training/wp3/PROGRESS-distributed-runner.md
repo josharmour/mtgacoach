@@ -3,7 +3,7 @@
 Date: 2026-07-31. Swarm task key: `distributed-runner`.
 MageZero branch: `distributed-runner` (LOCAL only, never pushed — origin is
 upstream WillWroble/MageZero). Worktree used for development:
-`/home/joshu/repos/magezero-wt-distributed` (live tree untouched; the running
+`~/repos/magezero-wt-distributed` (live tree untouched; the running
 `mz train` + boundary watcher were never disturbed).
 
 ## What was built
@@ -25,7 +25,7 @@ New/changed files in the magezero branch:
 - `src/magezero/cli.py` — `mz train --hosts configs/hosts.yml` (opt-in).
 - `src/magezero/server.py` — `MZ_SERVER_BIND` env (default still 127.0.0.1);
   remote JVMs need a server bound to 0.0.0.0.
-- `configs/hosts.yml.example` — blackwell entry + fully documented
+- `configs/hosts.yml.example` — the-training-host entry + fully documented
   commented-out Mac entry.
 - `scripts/check_remote_host.sh` — remote-host preflight (ssh BatchMode,
   java >= 17, tree visibility, NFS/CIFS write round-trip, server healthz from
@@ -36,8 +36,8 @@ New/changed files in the magezero branch:
 
 ## Isolation design (what the shared tree actually allows — measured)
 
-- The repo tree is a CIFS/SMB share (`//10.0.0.2/repos`, mounted
-  /home/joshu/repos and /mnt/repos; the Mac sees the same tree). **Symlink
+- The repo tree is a CIFS/SMB share (`//<LAN-IP>/repos`, mounted
+  ~/repos and /mnt/repos; the Mac sees the same tree). **Symlink
   creation fails with "Operation not supported"** — measured 2026-07-31 when
   the first integration attempt died on `ln -sfn`. The design uses real
   copies only.
@@ -50,7 +50,7 @@ New/changed files in the magezero branch:
   supported AUTO_SERVER case — measured working: two arms shared one host db
   copy, first JVM served, second attached. The shared `xmage/db` is never
   opened by arms: the live curriculum JVM holds it under a different
-  canonical path (/mnt/repos vs /home/joshu/repos) and H2's lock check
+  canonical path (/mnt/repos vs ~/repos) and H2's lock check
   rejects that; cross-host locking over the share is worse.
 - Per ARM: own `game.yml`, launch script, captured stdout, and slug-suffixed
   JVM logs. Stock `log4j.properties` HARDCODES `magezero.log` /
@@ -78,10 +78,10 @@ New/changed files in the magezero branch:
   `test_record_gen_contract` (legacy gen key set preserved),
   `test_is_trivial`.
 
-## Integration test (REAL concurrent JVMs, run on blackwell)
+## Integration test (REAL concurrent JVMs, run on the-training-host)
 
 Gates at launch: load 12.9 (< 17 required), no `mz_budget_sweep`/`mz batch`
-running. Live workloads (curriculum JVM pid 276069, R9700 server :50052, LoRA
+running. Live workloads (curriculum JVM PID <redacted>, R9700 server :50052, LoRA
 on CUDA0, Qwen on CUDA1) untouched — verified live JVM still running after.
 
 Run 1 (pre-fix): FAILED in <1 s — `ln: Operation not supported` (CIFS
@@ -110,12 +110,12 @@ Run 3 (with per-arm log4j fix): PASSED.
 - per-arm win rates: MonoR 0.25 (4 games), MonoG 0.00 (3 counted games — one
   of 4 appears excluded by the max_turns=30 smoke override).
 - both primary hdf5 outputs written at distinct paths (5,107,696 bytes each).
-- live curriculum JVM (pid 276069) confirmed alive and untouched afterward;
+- live curriculum JVM (PID <redacted>) confirmed alive and untouched afterward;
   test tmp dirs under .mz_tmp/hosts/it-* removed after each run.
 
 ## Mac enrollment status
 
-- SSH to the Mac is DOWN (10.0.0.26 timeout, 10.0.0.24 refused — Remote
+- SSH to the Mac is DOWN (<LAN-IP> timeout, <LAN-IP> refused — Remote
   Login likely off). Everything Mac-side is designed-for but unverified.
 - `configs/hosts.yml.example` documents the preconditions: Remote Login on,
   passwordless key auth, java 17+ on the non-interactive PATH, the repos
@@ -123,7 +123,7 @@ Run 3 (with per-arm log4j fix): PASSED.
   today), server reachable from the Mac (requires `MZ_SERVER_BIND=0.0.0.0`
   on the serving box; the live :50052 server is loopback-only and must NOT be
   pointed at from remote hosts).
-- `scripts/check_remote_host.sh joshu@<MAC_IP> /Volumes/repos/magezero
+- `scripts/check_remote_host.sh <user>@<MAC_IP> /Volumes/repos/magezero
   <SERVER_IP> 50060` runs the whole preflight in one shot.
 
 ## Concerns / follow-ups
