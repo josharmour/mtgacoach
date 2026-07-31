@@ -477,9 +477,7 @@ def main(argv: list[str] | None = None) -> int:
     combat_n = 0
     if not args.skip_combat:
         check_cli_importable(sys.executable, "tools.training.gate_combat_decisions")
-        combat_n = check_corpora(
-            combat_corpus, combat_permuted, perm_suffix="-perm", require_menu_size=False
-        )
+        combat_n = check_corpora(combat_corpus, combat_permuted, perm_suffix="-perm", require_menu_size=False)
         log(f"combat gate corpus: {combat_n} records ({combat_corpus.name})")
     r = subprocess.run(
         [args.serve_python, "-c", "import vllm; print(vllm.__version__)"],
@@ -512,7 +510,16 @@ def main(argv: list[str] | None = None) -> int:
     # ---- serve -----------------------------------------------------------
     server = None
     if not args.skip_serve:
-        env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(args.gpu))
+        # The serve venv's bin dir must lead PATH: vLLM's JIT shells out to
+        # `ninja`, which lives there — invoking the venv python directly does
+        # not bring it in, and the engine dies with FileNotFoundError('ninja')
+        # during memory profiling (hit live 2026-07-30).
+        serve_bin = str(Path(args.serve_python).resolve().parent)
+        env = dict(
+            os.environ,
+            CUDA_VISIBLE_DEVICES=str(args.gpu),
+            PATH=serve_bin + os.pathsep + os.environ.get("PATH", ""),
+        )
         log(f"starting vLLM (log: {out['serve_log']})")
         server = subprocess.Popen(
             gpu_cmd,
