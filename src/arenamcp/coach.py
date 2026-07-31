@@ -832,6 +832,37 @@ class CoachEngine(_AdvicePostprocessMixin):
         return re.sub(r"\(.*?\)", "", text)
 
     @staticmethod
+    def _land_has_abilities(oracle_text: str, type_line: str) -> bool:
+        """Return True if a land card has any non-trivial abilities.
+
+        Covers activated abilities (``{T}:``, ability costs), triggered
+        abilities ("Whenever", "When"), static abilities, and keyword
+        abilities like "Landfall" or "Matter."  Basic land reminder text
+        (e.g. ``({T}: Add {G}.)``) is ignored.
+        """
+        # Basic land subtypes have no meaningful abilities beyond the
+        # reminder text already stripped by _remove_reminder_text.
+        basic_subtypes = {"plains", "island", "swamp", "mountain", "forest"}
+        line_lower = type_line.lower()
+        if all(sub not in line_lower for sub in basic_subtypes):
+            # Non-basic land — it has abilities worth showing
+            return True
+        # Even a basic land might have been granted extra abilities
+        # (e.g. by a spell), so check the oracle for anything beyond
+        # simple mana production.
+        oracle = oracle_text.lower()
+        if "{t}:" not in oracle and "add " not in oracle:
+            return False
+        # Has some mana ability — check if there's anything beyond
+        # the basic "{T}: Add {X}" pattern
+        stripped = re.sub(r"\(.*?\)", "", oracle).strip().lower()
+        # If after stripping parens there's still non-empty content,
+        # the land has abilities beyond the basic reminder.
+        tokens = set(stripped.split())
+        basic_tokens = {"{t}", ":", "add", "{g}", "{w}", "{u}", "{b}", "{r}", "{c}", "{p}", "{s}"}
+        return bool(tokens - basic_tokens)
+
+    @staticmethod
     def _is_impending(card: dict) -> bool:
         """Check if a creature is in impending state (enchantment with time counters).
 
@@ -1598,7 +1629,9 @@ class CoachEngine(_AdvicePostprocessMixin):
         lines.append(f"  {display_name}{pt}{counter_str}{flag_str}")
 
         raw_oracle = card.get("oracle_text", "")
-        if raw_oracle and not is_land:
+        is_basic_land = is_land and not self._land_has_abilities(raw_oracle, type_line)
+
+        if raw_oracle and not is_basic_land:
             stripped = self._remove_reminder_text(raw_oracle).strip()
             keyword_only = all(
                 w
@@ -1629,6 +1662,12 @@ class CoachEngine(_AdvicePostprocessMixin):
             if for_planner and not entered_recently:
                 pass
             elif not keyword_only and len(stripped) > 0:
+                # Cap land oracle text to avoid token bloat — non-basic lands
+                # with activated abilities (e.g. Evendo, Waking Haven) need
+                # their ability conditions visible, but the full text can be
+                # verbose after reminder-text removal.
+                if is_land and len(stripped) > 300:
+                    stripped = stripped[:300] + "..."
                 lines.append(f"    {stripped}")
 
         if attached:
