@@ -876,10 +876,11 @@ class TestSegmentMenu:
         """The exact raw payload from mz_train_smoke.log line 3369."""
         from parse_magezero_log import segment_menu
 
-        raw = ("Cast Bounce Off, Cast Combat Research, Cast Kitsa, Otterball Elite, "
-               "Cast Skrelv, Defector Mite, {1}{U}: Untap {this}., Pass")
-        vocab = ["Cast Combat Research", "Cast Kitsa, Otterball Elite",
-                 "Cast Skrelv, Defector Mite", "Pass"]
+        raw = (
+            "Cast Bounce Off, Cast Combat Research, Cast Kitsa, Otterball Elite, "
+            "Cast Skrelv, Defector Mite, {1}{U}: Untap {this}., Pass"
+        )
+        vocab = ["Cast Combat Research", "Cast Kitsa, Otterball Elite", "Cast Skrelv, Defector Mite", "Pass"]
         assert segment_menu(raw, vocab) == [
             "Cast Bounce Off",
             "Cast Combat Research",
