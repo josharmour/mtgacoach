@@ -92,17 +92,30 @@ def _git_sha() -> str:
 # ---------------------------------------------------------------------------
 
 
-def stage_parse(log_paths: list[Path]) -> list[dict]:
-    """Parse log files, returning combined decisions list."""
+def stage_parse(
+    log_paths: list[Path],
+    primary_deck: str | None = None,
+    decks_dir: str | None = None,
+) -> list[dict]:
+    """Parse log files, returning combined decisions list.
+
+    ``primary_deck``/``decks_dir`` feed the parser's fail-closed deck-signature
+    guardrail (parse_magezero_log.resolve_primary_deck): with neither set,
+    behavior on legacy logs (no ``_<Primary>_vs_<Opponent>`` filename) is
+    unchanged; deck-named logs are checked against their .dck automatically.
+    A DeckSignatureError aborts the pipeline — never builds an unchecked corpus.
+    """
     all_decisions: list[dict] = []
     per_log_counts: dict[str, int] = {}
 
     for lp in log_paths:
         print(f"  Parsing {lp} ...", end=" ", flush=True)
-        decisions, sessions = PARSER.parse_log(str(lp))
+        decisions, sessions = PARSER.parse_log(str(lp), primary_deck=primary_deck, decks_dir=decks_dir)
         all_decisions.extend(decisions)
         per_log_counts[str(lp)] = len(decisions)
-        print(f"{len(decisions)} decisions, {len(sessions)} sessions")
+        checked = PARSER.LAST_PARSE_STATS.get("deck_signature_checked_rows", 0)
+        sig = f", deck-signature OK on {checked} rows" if checked else ""
+        print(f"{len(decisions)} decisions, {len(sessions)} sessions{sig}")
 
     return all_decisions
 
@@ -664,6 +677,8 @@ def run_pipeline(
     seed: int = 7,
     balance: str | None = None,
     include_combat: bool = False,
+    primary_deck: str | None = None,
+    decks_dir: str | None = None,
 ) -> dict[str, Any]:
     """Run the full WP-3 pipeline.
 
@@ -674,7 +689,7 @@ def run_pipeline(
 
     # ── Stage 1: Parse ────────────────────────────────────────────────────
     print("Stage 1/5 — Parse logs")
-    raw_decisions = stage_parse(log_paths)
+    raw_decisions = stage_parse(log_paths, primary_deck=primary_deck, decks_dir=decks_dir)
     raw_count = len(raw_decisions)
 
     # Save intermediate: decisions
@@ -880,6 +895,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "via magezero_combat_micro and render them into the same splits. "
         "OFF by default: without this flag the pipeline output is unchanged.",
     )
+    parser.add_argument(
+        "--primary-deck",
+        default=None,
+        help="Primary (MCTS) deck name for the parser's fail-closed hand "
+        "deck-signature guardrail (e.g. HighNoonControl). Default: inferred "
+        "from a _<Primary>_vs_<Opponent>.log filename; legacy logs run "
+        "unchecked exactly as before.",
+    )
+    parser.add_argument(
+        "--decks-dir",
+        default=None,
+        help="XMage deck directory holding the .dck lists "
+        "(default: parse_magezero_log.DEFAULT_DECKS_DIR)",
+    )
     return parser
 
 
@@ -955,7 +984,12 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             balance=args.balance,
             include_combat=args.include_combat,
+            primary_deck=args.primary_deck,
+            decks_dir=args.decks_dir,
         )
+    except PARSER.DeckSignatureError as e:
+        print(f"\nPipeline aborted (fail closed): {e}", file=sys.stderr)
+        return 43
     except SystemExit as e:
         if e.code == 42:
             print("\nPipeline aborted: pass rate tripwire or leak scan failed.", file=sys.stderr)

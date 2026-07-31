@@ -58,6 +58,127 @@ RE_NAMED_HAND = re.compile(r"\[(\d+):([^:\]]+):(\w+)\](\w+) hand: : (.*?)\s*(?:=
 # player's name-attributed hand lines may reach a training row.
 PRIMARY_PLAYER = "PlayerA"
 
+# ── Primary-deck resolution + hand deck-signature guardrail ─────────────
+#
+# The #452/#457-family guardrail ("the primary player must not 'hold' cards
+# outside the primary player's deck") was previously pinned to UWTempo in
+# tests only. It is now a runtime, fail-closed check parameterized by the
+# actual .dck list, so logs whose primary deck is NOT UWTempo (e.g. the
+# permanent-holdout unseen-deck logs mz_unseen_<Primary>_vs_<Opponent>.log)
+# get the SAME protection instead of silently none.
+#
+# Resolution order (never guess):
+#   1. an explicit primary_deck argument (CLI --primary-deck) — the named
+#      .dck MUST exist, else DeckSignatureError;
+#   2. filename inference from the `..._<Primary>_vs_<Opponent>.log`
+#      convention — an inferred deck whose .dck is missing is AMBIGUOUS and
+#      raises rather than being skipped (a deck-named log with no list to
+#      check against must not build unchecked);
+#   3. neither → None: legacy logs (mz_train_smoke.log) keep their existing
+#      behavior (test-level UWTempo guardrail, no runtime check).
+
+DEFAULT_DECKS_DIR = "/home/joshu/repos/magezero/xmage/decks"
+
+# `..._<Primary>_vs_<Opponent>.log` — deck names as used in .dck filenames
+# (letters/digits plus the separators that appear in the deck directory).
+RE_LOG_DECK_NAMES = re.compile(r"_([A-Za-z0-9][A-Za-z0-9 .()-]*)_vs_([A-Za-z0-9][A-Za-z0-9 .()-]*)\.log$")
+
+# One .dck card line: `4 [LCI:63] Malcolm, Alluring Scoundrel` (optionally
+# `SB:`-prefixed for sideboard lines). LAYOUT lines are skipped by the caller.
+RE_DCK_CARD = re.compile(r"^\s*(?:SB:\s*)?(\d+)\s+\[[^\]]+\]\s+(.+?)\s*$")
+
+
+class DeckSignatureError(ValueError):
+    """Primary-deck attribution is ambiguous or the hand signature is broken."""
+
+
+def parse_dck_names(path: str | Path) -> frozenset[str]:
+    """Distinct card names in an XMage .dck file (main + sideboard lines)."""
+    names: set[str] = set()
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("LAYOUT"):
+                continue
+            m = RE_DCK_CARD.match(line)
+            if m:
+                names.add(m.group(2))
+    if not names:
+        raise DeckSignatureError(f"no card lines parsed from deck list: {path}")
+    return frozenset(names)
+
+
+def infer_decks_from_log_name(log_name: str) -> tuple[str, str] | None:
+    """(primary, opponent) deck names from `..._<Primary>_vs_<Opponent>.log`."""
+    m = RE_LOG_DECK_NAMES.search(os.path.basename(log_name))
+    return (m.group(1), m.group(2)) if m else None
+
+
+def resolve_primary_deck(
+    log_path: str | Path,
+    primary_deck: str | None = None,
+    decks_dir: str | Path | None = None,
+) -> tuple[str, frozenset[str]] | None:
+    """Resolve (deck_name, card_name_set) for the primary player, or None.
+
+    Fail-closed: an explicit or filename-inferred deck whose .dck cannot be
+    loaded raises DeckSignatureError instead of degrading to "no check".
+    Returns None only when there is NO signature source at all (legacy logs
+    whose filename carries no `_vs_` deck names and no --primary-deck given).
+    """
+    d = Path(decks_dir) if decks_dir is not None else Path(DEFAULT_DECKS_DIR)
+    if primary_deck:
+        name = primary_deck.removesuffix(".dck")
+        dck = d / f"{name}.dck"
+        if not dck.is_file():
+            raise DeckSignatureError(
+                f"--primary-deck {name!r} has no deck list at {dck} — refusing to "
+                "attribute hands against an unknown deck (fail closed)"
+            )
+        return name, parse_dck_names(dck)
+    inferred = infer_decks_from_log_name(str(log_path))
+    if inferred is None:
+        return None
+    name = inferred[0]
+    dck = d / f"{name}.dck"
+    if not dck.is_file():
+        raise DeckSignatureError(
+            f"log name {os.path.basename(str(log_path))!r} names primary deck {name!r} "
+            f"but no deck list exists at {dck} — pass --primary-deck/--decks-dir "
+            "(fail closed: a deck-named log must not parse unchecked)"
+        )
+    return name, parse_dck_names(dck)
+
+
+def verify_hand_signature(decisions: list[dict], deck_name: str, deck_names: frozenset[str]) -> int:
+    """Every emitted hand card must be in the primary deck — else raise.
+
+    This is the runtime form of tests' TestHandDeckSignature: a hand card
+    outside the primary player's deck list means hand attribution broke
+    (#452 family: positional pollution, swapped players, score suffixes).
+    The whole parse is rejected with a class histogram — never a silent drop.
+    Returns the number of rows checked.
+    """
+    from collections import Counter
+
+    offenders: Counter[str] = Counter()
+    rows_hit = 0
+    for d in decisions:
+        bad = [c for c in d.get("hand", []) if c not in deck_names]
+        if bad:
+            rows_hit += 1
+            offenders.update(bad)
+    if offenders:
+        hist = dict(offenders.most_common(15))
+        raise DeckSignatureError(
+            f"hand deck-signature check FAILED against {deck_name}.dck: "
+            f"{sum(offenders.values())} off-deck hand entries in {rows_hit} rows "
+            f"(of {len(decisions)}). Offender histogram (top 15): {hist}. "
+            "Either the primary-deck attribution is wrong (pass --primary-deck) "
+            "or hand attribution regressed — refusing to emit."
+        )
+    return len(decisions)
+
 # The emitter tag at end of line disambiguates the two battlefield-block
 # grammars (#430). `ComputerPlayerMCTS.printBattlefieldScore` blocks are
 #   [PlayerX] header -> Hand -> Permanents (SELF) -> Permanents (OPPONENT)
@@ -87,6 +208,7 @@ LAST_PARSE_STATS: dict[str, int] = {
     "ambiguous_unconsumed": 0,
     "hand_named_attributed": 0,
     "hand_dropped_unattributed": 0,
+    "deck_signature_checked_rows": 0,
 }
 
 
@@ -342,11 +464,15 @@ def parse_permanents(text: str) -> list[dict[str, Any]]:
 
 
 class SessionInfo:
-    def __init__(self, seq: int, start_ts: str, opponent: str, n_games: int):
+    def __init__(self, seq: int, start_ts: str, opponent: str, n_games: int, *, primary: str = "UWTempo"):
         self.seq = seq
         self.start_ts = start_ts
         self.opponent = opponent
         self.n_games = n_games
+        # Primary (MCTS) deck name for the session label. "UWTempo" is the
+        # legacy default (every smoke/curriculum log to date); unseen-deck
+        # logs carry their resolved deck name instead.
+        self.primary = primary
         self.win_rate: float | None = None
         self.n_wins: int | None = None
         self.n_total: int | None = None
@@ -365,10 +491,16 @@ class SessionInfo:
 
     @property
     def label(self) -> str:
-        return f"session{self.seq}_UWTempo_vs_{self.opponent}"
+        return f"session{self.seq}_{self.primary}_vs_{self.opponent}"
 
 
-def detect_sessions(lines: list[str], is_smoke_log: bool = False) -> list[SessionInfo]:
+def detect_sessions(
+    lines: list[str],
+    is_smoke_log: bool = False,
+    *,
+    primary: str = "UWTempo",
+    opponent_name: str | None = None,
+) -> list[SessionInfo]:
     opponents = list(SMOKE_OPPONENTS_GEN0)
     sessions: list[SessionInfo] = []
     seq = 0
@@ -379,8 +511,13 @@ def detect_sessions(lines: list[str], is_smoke_log: bool = False) -> list[Sessio
         if sm:
             ts = _extract_ts(line, "unknown")
             n_games = int(sm.group(1))
-            opponent = opponents[opp_idx % len(opponents)] if is_smoke_log else f"session{seq}"
-            sess = SessionInfo(seq, ts, opponent, n_games)
+            if is_smoke_log:
+                opponent = opponents[opp_idx % len(opponents)]
+            elif opponent_name:
+                opponent = opponent_name
+            else:
+                opponent = f"session{seq}"
+            sess = SessionInfo(seq, ts, opponent, n_games, primary=primary)
             sessions.append(sess)
             seq += 1
             opp_idx += 1
@@ -405,14 +542,28 @@ def _extract_ts(line: str, default: str) -> str:
 # ── Main parser ─────────────────────────────────────────────────────────
 
 
-def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
+def parse_log(
+    log_path: str,
+    *,
+    primary_deck: str | None = None,
+    decks_dir: str | Path | None = None,
+) -> tuple[list[dict], list[SessionInfo]]:
     log_name = os.path.basename(log_path)
     is_smoke = "smoke" in log_name
+
+    # Primary-deck resolution (fail-closed; see resolve_primary_deck). None
+    # means "no signature source" — legacy behavior, no runtime check.
+    resolved = resolve_primary_deck(log_path, primary_deck=primary_deck, decks_dir=decks_dir)
+    inferred = infer_decks_from_log_name(log_name)
+    primary_label = resolved[0] if resolved else "UWTempo"
+    opponent_label = inferred[1] if inferred else None
 
     with open(log_path, encoding="utf-8", errors="replace") as f:
         all_lines = f.readlines()
 
-    sessions = detect_sessions(all_lines, is_smoke_log=is_smoke)
+    sessions = detect_sessions(
+        all_lines, is_smoke_log=is_smoke, primary=primary_label, opponent_name=opponent_label
+    )
 
     # Per-thread state
     threads: dict[str, _ThreadState] = {}
@@ -590,6 +741,13 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
 
     # Enrich with sessions using per-thread game counts
     _enrich_sessions(decisions, sessions)
+
+    # Runtime deck-signature guardrail (raises DeckSignatureError on any
+    # off-deck hand card; see verify_hand_signature).
+    if resolved is not None:
+        stats["deck_signature_checked_rows"] = verify_hand_signature(decisions, resolved[0], resolved[1])
+    else:
+        stats["deck_signature_checked_rows"] = 0
 
     LAST_PARSE_STATS.update(stats)
 
@@ -895,6 +1053,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--out", required=True, help="Output JSONL path")
     parser.add_argument("--report", action="store_true", help="Print reconciliation report")
+    parser.add_argument(
+        "--primary-deck",
+        default=None,
+        help="Primary (MCTS) deck name, e.g. HighNoonControl. Overrides filename "
+        "inference; the .dck must exist under --decks-dir (fail closed). "
+        "Enables the runtime hand deck-signature guardrail.",
+    )
+    parser.add_argument(
+        "--decks-dir",
+        default=None,
+        help=f"XMage deck directory (default: {DEFAULT_DECKS_DIR})",
+    )
     return parser
 
 
@@ -907,7 +1077,9 @@ def main():
 
     for log_path in args.logs:
         log_name = os.path.basename(log_path)
-        decisions, sessions = parse_log(log_path)
+        decisions, sessions = parse_log(
+            log_path, primary_deck=args.primary_deck, decks_dir=args.decks_dir
+        )
         all_decisions.extend(decisions)
 
         wr_lines = []
@@ -959,6 +1131,11 @@ def _print_report(
     print("\n  Hand attribution (name-attributed ComputerPlayer.logList only):")
     print(f"    Rows with named hand:        {n_named}")
     print(f"    Rows DROPPED (no named hand line for the row's turn): {n_dropped}")
+    n_sig = LAST_PARSE_STATS.get("deck_signature_checked_rows", 0)
+    if n_sig:
+        print(f"    Deck-signature guardrail:    PASSED on {n_sig} rows (0 off-deck hand cards)")
+    else:
+        print("    Deck-signature guardrail:    NOT RUN (no primary deck resolved; legacy log)")
     # Reconciliation against the pre-switch positional source (diagnostic;
     # `:N` evaluator score suffixes are stripped before comparing so only
     # CONTENT differences count, not format pollution).
