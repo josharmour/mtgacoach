@@ -2173,7 +2173,45 @@ the GPUs are free.
 `timeout_ms: 4000`; log shows both regimes working — "290 evaluations in 2.04 s"
 (budget-bound) and "191 evaluations in 4.00 s" (cap-bound on harder positions).
 
-### §26 addendum 20 — OVERNIGHT: first positive training effect (combat +7.8pp); thread bump null; sweep pending (2026-07-31 07:30) ← CURRENT
+### §26 addendum 21 — v2 MATRIX COMPLETE: combat gain was corpus-quality, not combat records; v3 (oracle) launched (2026-07-31 09:30) ← CURRENT
+
+**v2_priority gate (run b5_v2_priority, PATH fix #466 validated in prod):**
+L1 0.2491 FAIL / L2 1.0 PASS / L3 combat non-degenerate **0.3524** vs base
+0.2468 (FAIL vs 0.393 floor). Full matrix:
+
+| arm | strategic | combat non-degen |
+|---|---|---|
+| v1 priority (4,660) | 0.240 | 0.002 |
+| v2_combat (priority+combat, 6,082) | 0.262 | 0.328 |
+| v2_priority (priority-only, doubled) | 0.249 | **0.352** |
+| 12B base | 0.383-0.391 | 0.247-0.249 |
+
+**The 07-30 combat-effect interpretation is REVISED: the arm trained WITHOUT
+combat records beat the arm trained with them on combat.** The +8pp celebrated
+in addendum 20 was mostly corpus-quality (the #452 parser fixes + volume
+killing v1's format collapse), and the floor-breached combat slice (74.5%
+all-in) is plausibly net-negative — corroborated by v2_combat's fine-grained
+failures: G9 below `always_attack_biggest` on proper_subset (the class
+degenerate answers cannot reach), G7 blocks below the no-block floor, and a
+7.3% combat-declaration illegality rate (creatures not on the board).
+Strategic stays below base in every arm — teacher-limited, unchanged.
+
+**v3 launched (09:20, card 0, pid-tracked, ~2h/epoch):** corpus
+`wp3_v3` regenerated from master 6e720e8 — 21,557 decisions -> 6,921 records,
+**oracle coverage 0.9872** (floor 0.95 engaged; was 0.0 for every prior arm,
+#469), combat included (deliberately: isolates the oracle effect against
+v2_combat as anchor), trained with `--val_file` game-disjoint validation
+(#464) for the first time. Changes vs v2_combat: oracle text + honest val.
+Everything else identical. Gate it with the always-attack baseline in mind.
+
+Morning infra also landed: #467 (next-run diversity config + holdout-deck
+validator: HighNoonControl/BGRoots/BWBats are permanent eval holdouts), #468
+(unseen-deck slice wiring, parser generalized beyond UWTempo, guardrail
+parameterized not weakened), #466 (gate PATH symlink fix), #464, #469.
+Boundary watcher v2 queues: budget sweep + unseen-deck generation at the
+gen-2 boundary (gen 1 arm 30 landed; boundary imminent).
+
+### §26 addendum 20 — OVERNIGHT: first positive training effect (combat +7.8pp); thread bump null; sweep pending (2026-07-31 07:30)
 
 **Gate v2-combat (b5_v2_combat, adapter sha 60e2a537): FAIL overall, but the
 first CI-clean positive training effect in the project.** L3 combat
