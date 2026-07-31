@@ -170,9 +170,7 @@ class TestDeckResolution:
         assert infer_decks_from_log_name("mz_train.log") is None
 
     def test_resolve_by_inference(self, decks_dir: Path):
-        name, cards = resolve_primary_deck(
-            "mz_unseen_BGRoots_vs_HighNoonControl.log", decks_dir=decks_dir
-        )
+        name, cards = resolve_primary_deck("mz_unseen_BGRoots_vs_HighNoonControl.log", decks_dir=decks_dir)
         assert name == "BGRoots"
         assert cards == frozenset(BGROOTS_NAMES)
 
@@ -389,9 +387,7 @@ class TestUnseenCorpusBuilder:
         from tools.training.wp3 import build_unseen_gate_corpus as B
 
         with pytest.raises(SystemExit) as exc:
-            B.main(
-                ["--log", str(p), "--decks-dir", str(decks_dir), "--out-dir", str(tmp_path / "o")]
-            )
+            B.main(["--log", str(p), "--decks-dir", str(decks_dir), "--out-dir", str(tmp_path / "o")])
         assert exc.value.code == 2
 
     def test_unresolvable_deck_fails_closed(self, tmp_path: Path, decks_dir: Path):
@@ -400,14 +396,10 @@ class TestUnseenCorpusBuilder:
         from tools.training.wp3 import build_unseen_gate_corpus as B
 
         with pytest.raises(SystemExit) as exc:
-            B.main(
-                ["--log", str(p), "--decks-dir", str(decks_dir), "--out-dir", str(tmp_path / "o")]
-            )
+            B.main(["--log", str(p), "--decks-dir", str(decks_dir), "--out-dir", str(tmp_path / "o")])
         assert exc.value.code == 2
 
-    def test_training_prompt_overlap_fails_closed(
-        self, tmp_path: Path, fixture_log: Path, decks_dir: Path
-    ):
+    def test_training_prompt_overlap_fails_closed(self, tmp_path: Path, fixture_log: Path, decks_dir: Path):
         """A rendered prompt found in a training corpus must abort the build."""
         from tools.training.wp3 import build_unseen_gate_corpus as B
 
@@ -467,9 +459,7 @@ class TestGeneralizationWiring:
         assert raw_ci[0] <= 0.0 <= raw_ci[1]
         assert adj_ci[0] <= 0.0 <= adj_ci[1]
 
-    def test_compute_generalization_end_to_end(
-        self, tmp_path: Path, fixture_log: Path, decks_dir: Path
-    ):
+    def test_compute_generalization_end_to_end(self, tmp_path: Path, fixture_log: Path, decks_dir: Path):
         """Score the builder's real output through the same scorer the gate
         uses (gate_play_decisions.evaluate) via compute_generalization."""
         from tools.training.wp3 import run_b5_gate_eval as R

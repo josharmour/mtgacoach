@@ -24,7 +24,10 @@ VOCAB = {
     "plains": {"name": "Plains", "type_line": "Basic Land — Plains"},
     "seachrome coast": {"name": "Seachrome Coast", "type_line": "Land"},
     "no more lies": {"name": "No More Lies", "type_line": "Instant"},
-    "skrelv, defector mite": {"name": "Skrelv, Defector Mite", "type_line": "Legendary Creature — Phyrexian Mite"},
+    "skrelv, defector mite": {
+        "name": "Skrelv, Defector Mite",
+        "type_line": "Legendary Creature — Phyrexian Mite",
+    },
     "veteran survivor": {"name": "Veteran Survivor", "type_line": "Creature — Human Survivor"},
 }
 
@@ -189,8 +192,20 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
 
 def test_scan_corpus_fixture(tmp_path):
     recs = [
-        {"system": "You are an MTG Arena autopilot. ...", "user": MZ_USER, "response": '{"actions": [{"pick": 1}]}', "source": "magezero_bridge", "meta": {}},
-        {"system": "You are an MTG Arena autopilot. ...", "user": CANDIDATE_USER, "response": '{"actions": [{"pick": 2}]}', "source": "17lands-replay_data", "meta": {}},
+        {
+            "system": "You are an MTG Arena autopilot. ...",
+            "user": MZ_USER,
+            "response": '{"actions": [{"pick": 1}]}',
+            "source": "magezero_bridge",
+            "meta": {},
+        },
+        {
+            "system": "You are an MTG Arena autopilot. ...",
+            "user": CANDIDATE_USER,
+            "response": '{"actions": [{"pick": 2}]}',
+            "source": "17lands-replay_data",
+            "meta": {},
+        },
         {"system": "x", "user": "no menu at all", "response": '{"actions": [{"pick": 1}]}', "source": "junk"},
     ]
     p = tmp_path / "corpus.jsonl"
