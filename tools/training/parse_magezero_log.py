@@ -105,10 +105,62 @@ def is_pass_action(name: str) -> bool:
     return name.strip().lower() in {"pass", "false", "no", "done"}
 
 
+def segment_menu(raw: str, vocab: list[str]) -> list[str]:
+    """Split a raw `playable abilities: [...]` payload into menu entries.
+
+    XMage prints the menu as List.toString() — entries joined with ", " and no
+    quoting — so the split points are ambiguous from the menu line alone: card
+    names ("Cast Malcolm, Alluring Scoundrel") and ability text ("{T}: Draw a
+    card, then discard a card.") contain ", " themselves. A plain comma split
+    shattered those entries, and every `chose action` whose name contains a
+    comma then failed the exact-match against the menu — 816 of 5,835
+    post-filter rows (14.0%) dropped as chosen_not_in_menu on
+    mz_train_smoke.log, all of them casts of comma-named cards.
+
+    The MCTS pool line of the SAME thread-paired window is bracket-delimited
+    ([<name> score: X count: N]) and therefore comma-safe: its action names are
+    verbatim ground truth for what the entries can be. Segmentation anchors on
+    those names (longest first) at ", " boundaries. Any stretch that matches no
+    vocab name falls back to the plain comma split — the old behavior — so a
+    merge is only ever produced when the pool confirms the merged form
+    verbatim. Never guess.
+    """
+    raw = raw.strip()
+    if not raw:
+        return []
+    names = sorted({v for v in vocab if v}, key=len, reverse=True)
+    segs: list[str] = []
+    i, n = 0, len(raw)
+    while i < n:
+        matched = False
+        for v in names:
+            end = i + len(v)
+            if raw.startswith(v, i) and (end == n or raw.startswith(", ", end)):
+                segs.append(v)
+                i = end + 2 if end < n else end
+                matched = True
+                break
+        if matched:
+            continue
+        # Unknown stretch: consume up to the next ", " exactly like the old
+        # comma split did. Fail closed — no pool-confirmed name, no merge.
+        j = raw.find(", ", i)
+        if j == -1:
+            seg = raw[i:].strip()
+            if seg:
+                segs.append(seg)
+            break
+        seg = raw[i:j].strip()
+        if seg:
+            segs.append(seg)
+        i = j + 2
+    return segs
+
+
 def _emit_pass_decision(
     state: _ThreadState,
     pending: _PendingPool,
-    menu: list[str],
+    menu_raw: str,
     decisions: list[dict],
     stats: dict[str, int],
 ) -> None:
@@ -134,6 +186,8 @@ def _emit_pass_decision(
         return
 
     kind = classify_kind(pending.phase_code, actions)
+    pool_names = [name for name, _, _ in actions]
+    menu = segment_menu(menu_raw, pool_names)
     decision = {
         "game_id": state.game_id,
         "turn": pending.turn,
@@ -145,7 +199,7 @@ def _emit_pass_decision(
         "battlefield_opp": [],
         # The pool's own action names ARE the options the search weighed, so
         # they are the faithful menu when no `playable abilities:` line landed.
-        "menu": list(menu) if menu else [name for name, _, _ in actions],
+        "menu": menu if menu else list(pool_names),
         "chosen": top_name,
         "mcts_counts": {name: count for name, _, count in actions},
         "actor": "PlayerA",
@@ -321,7 +375,10 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
 
     decisions: list[dict] = []
     pending_pool: dict[str, _PendingPool] = {}
-    pending_menu: dict[str, list[str]] = {}
+    # Raw `playable abilities` payloads, one per thread. Kept UNSPLIT: the
+    # entries are comma-joined and comma-containing, so the split needs the
+    # paired pool's action names as anchors (see segment_menu).
+    pending_menu: dict[str, str] = {}
     # Recovery accounting, reported by --report so the pass rate is visible.
     pass_stats: dict[str, int] = {"recovered_pass": 0, "ambiguous_unconsumed": 0}
 
@@ -345,7 +402,7 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
             # boundary is the last window of the OUTGOING game.
             prev = pending_pool.pop(thread_id, None)
             if prev is not None:
-                _emit_pass_decision(state, prev, pending_menu.get(thread_id, []), decisions, pass_stats)
+                _emit_pass_decision(state, prev, pending_menu.get(thread_id, ""), decisions, pass_stats)
             _finalize_game(state, decisions)
             thread_game_seq[thread_id] += 1
             state.start_new_game(thread_game_seq[thread_id])
@@ -373,7 +430,7 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
                 prev = pending_pool.pop(thread_id, None)
                 if prev is not None:
                     _emit_pass_decision(
-                        state, prev, pending_menu.pop(thread_id, []), decisions, pass_stats
+                        state, prev, pending_menu.pop(thread_id, ""), decisions, pass_stats
                     )
                 pending_pool[thread_id] = _PendingPool(
                     actions=actions,
@@ -385,8 +442,7 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
         # ── Playable abilities (legal menu) ──────────────────────
         pm = RE_PLAYABLE.search(line)
         if pm:
-            menu = [m.strip() for m in pm.group(1).split(",")]
-            pending_menu[thread_id] = menu
+            pending_menu[thread_id] = pm.group(1)
             continue
 
         # ── Chose action (the decision label) ────────────────────
@@ -397,11 +453,18 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
             chosen = cm.group(4).strip()
 
             pending = pending_pool.pop(thread_id, None)
-            menu = pending_menu.pop(thread_id, [])
+            menu_raw = pending_menu.pop(thread_id, "")
 
             if pending is None:
                 continue  # Minimax decision, skip
             pool_actions = pending.actions
+
+            # The chosen name comes from the (comma-safe) `chose action` line;
+            # add it to the anchors in case the paired pool is a sub-decision
+            # pool ("(top: X)pool=") whose names are not the menu's entries.
+            menu = segment_menu(
+                menu_raw, [name for name, _, _ in pool_actions] + [chosen]
+            )
 
             kind = classify_kind(phase_code, pool_actions)
             mcts_counts = {name: count for name, _, count in pool_actions}
@@ -461,7 +524,7 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
     for tid, prev in list(pending_pool.items()):
         st = threads.get(tid)
         if st is not None:
-            _emit_pass_decision(st, prev, pending_menu.get(tid, []), decisions, pass_stats)
+            _emit_pass_decision(st, prev, pending_menu.get(tid, ""), decisions, pass_stats)
     pending_pool.clear()
 
     # Finalize remaining games
