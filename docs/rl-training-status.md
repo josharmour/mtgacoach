@@ -2173,7 +2173,199 @@ the GPUs are free.
 `timeout_ms: 4000`; log shows both regimes working — "290 evaluations in 2.04 s"
 (budget-bound) and "191 evaluations in 4.00 s" (cap-bound on harder positions).
 
-### §26 addendum 15 — WP-3 FLEET DONE: 4 PRs REVIEWED + MERGED (16:45) ← CURRENT
+### §26 addendum 19 — GATE V1: bridge transmits, teacher too weak; format collapse diagnosed (2026-07-30 21:40) ← CURRENT
+
+First measured distillation verdict (LoRA v1, priority-only, 4,660 records):
+**L1 FAIL** 0.240 vs floor 0.4727 AND vs own 12B base 0.389 (paired delta
+-0.149, CI [-0.204, -0.093]); **L2 PASS** legality 1.000 vs 0.998; **L3 FAIL**
+combat 0.0016 vs base 0.247. Model collapsed onto the output format (perfect
+legality, 26-char answers; train `eval_token_accuracy=1.0` was the tell).
+
+Causes: (1) `train.py --val_split` re-splits randomly over records — leaks
+near-duplicate states between train/val, so memorization scores perfect;
+should consume the pipeline's game-disjoint val.jsonl. (2) The teacher is
+gen-1 MageZero (~30% vs minimax) — the bridge faithfully transmitted a weak
+policy. Reference numbers now exist: 12B base 0.389 strategic / 0.247 combat
+non-degenerate. Ops fixes landed on master: gate runner PATH fix (vLLM JIT
+needs ninja from the serve venv), util 0.40 for card-1 co-tenancy with Qwen.
+
+v2 arms (combat-inclusive, then priority-only on the doubled corpus) train
+overnight for the corpus-effect and combat-effect comparisons; a gate-passing
+candidate most plausibly waits for gen 3-6 teacher data.
+
+**Floor-breach postscript for the v2 gate (added before merge):** the
+`wp3_v2_combat` manifest the overnight combat arm trains on carries
+`floor_breach_all_in: true` — filtered all-in attack share is **74.5% vs the
+38.6% pre-registered floor** (blocks are fine: 50.9% vs 69%). The adapter
+flagged it loudly rather than silently rebalancing, per design. Consequence
+for the v2 combat-effect comparison: score the combat slice against a trivial
+**always-attack-with-everything baseline**, not just against base gemma —
+with 3/4 of attack chains being all-in, a model that learned nothing but
+"attack all" will otherwise look like it learned combat. This is the same
+trap class as the 69% no-block floor that blocked a candidate in §25.
+
+### §26 addendum 18 — COMBAT RETRACTION: the data was in the log all along (2026-07-30 ~17:00)
+
+Addendum 15/16-era conclusion "combat is blocked upstream, the data does not
+exist" is **retracted**. While enriching upstream issue #1 with code refs, the
+actual mechanism surfaced: XMage runs combat as per-creature micro-decisions
+(`ComputerPlayer.selectAttackersOneAtATime`/`selectBlockersOneAtATime`), each
+MCTS-deliberated via `ComputerPlayerMCTS.chooseUse`/`makeChoice`, and each
+**logged at INFO with visit counts and Q-values** on the adjacent
+`MCTSNode.bestChild` `pool=` line:
+
+```
+DECLARE_ATTACKERS0pool= actions: [false 0.013/104] [true 0.147/867]
+use attack with: Skrelv, Defector Mite?: true
+```
+
+Smoke log yield: **6,705 attack + 1,088 block decisions** (~36% corpus expansion,
+the whole missing modality). #453's fail-closed kill of the fabricated records
+remains correct — those were reverse-engineered from stale board markers; these
+are the real emitters nobody grepped for. The miss happened because every search
+targeted declaration-style lines and emitters named like "attack".
+
+Consequences: upstream issue #1 corrected and narrowed
+(issues/1#issuecomment-5137514593); no XMage fork needed; next concrete task is
+a parser combat adapter for the three line shapes (pair by thread tag +
+adjacency). B5 smoke LoRA (priority-only) unaffected — combat joins the corpus
+at the next pipeline regeneration after the adapter lands.
+
+**External-reading postscript (same evening):** two publications reviewed
+(T. Quinn's MCTS-goldfish post; Godlewski & Sawicki arXiv:2109.12112 on
+per-stage agent mixing + playout-budget saturation). Adopted: a
+search-budget saturation sweep harness for MageZero
+(`tools/training/wp3/mz_budget_sweep.py`, this PR) — mirror-match arms vs the
+300-budget control, timeout unbound so budget is the measured axis, refuses to
+run while `mz train` lives; run between curriculum runs, adopt findings in the
+next run's config only. Also recorded: per-decision-kind policy mixing is a
+sanctioned deployment shape (priority-LoRA + combat solver), and td_discount
+is a metagame assumption to audit if the curriculum plateaus. Full notes in
+rl-pipeline-fix.md "External reading incorporated".
+
+### §26 addendum 17 — CUTOVER: coach now Qwen3.6-27B-FP8 on ONE card; ds4-v9 retired to standby (2026-07-30 ~16:00)
+
+**Recorded on blackwell; every number below measured here.** Owner order: "ds4
+stays stopped, single-card smart models are the option" — card 0 is now
+permanently free for MageZero + gemma QLoRA.
+
+**Probe results (card 1, util 0.55, `max-model-len` 32768):**
+- VRAM **52.4 GiB on card 1, card 0 at 23 MiB** — survey's ~49 GiB prediction
+  confirmed. KV pool 605k tokens.
+- Decode **48 tok/s bare → 85–90 tok/s with MTP** (the FP8 checkpoint ships a
+  0.44 GiB MTP head; `num_speculative_tokens: 3`). MTP ON in prod.
+- Real-shaped call (5,716-token prompt, 44-token answer): **cold 1.50 s, warm
+  0.66–0.90 s** via prefix caching. No reasoning leak.
+- Weights breakdown (safetensors headers): 27.44 GiB language + 0.86 GiB vision
+  + 0.44 GiB MTP. Served `--language-model-only`; vision re-enableable for
+  ~3 GiB if `vision_mapper.py` ever wants a self-hosted VLM.
+
+**Deployment:**
+- Container `qwen36-coach`, host net :8002, `~/recreate-qwen36-coach.sh`
+  (env knobs `QWEN_MTP`/`QWEN_GPU_UTIL`/`QWEN_MAX_LEN`). Serves `qwen3.6-fp8`
+  + `qwen36-27b`.
+- **Thinking kill-switch is server-side**:
+  `--default-chat-template-kwargs.enable_thinking=false`. The coach client
+  sends `{"thinking": false}` (DeepSeek dialect) which Qwen's template
+  ignores — without the server default every call would think (template
+  default TRUE) and reproduce the 6.1 s failure from #451. Verified with a
+  no-kwargs call.
+- LiteLLM: new canonical `qwen3.6-fp8` + legacy `deepseek-v4-flash` alias both
+  → `10.0.0.10:8002/v1`. Old config at
+  `~/docker-stack/litellm/config.yaml.bak-20260730-ds4`; tracked copy
+  `gateway/config.yaml` synced in this PR. End-to-end verified through :8444
+  on both names (0.5–0.7 s).
+- **Rollback**: `docker stop qwen36-coach && docker start ds4-v9` + restore
+  config backup + `docker restart litellm`. ds4-v9 is stopped-not-removed.
+
+**Context window:** initially capped at 32,768, raised same day to
+**262,144 (model native max, now the script default)** per owner — hermes uses
+this endpoint for agentic coding. KV pool 605k tokens at util 0.55, so ~2
+concurrent full-256k sequences; `QWEN_GPU_UTIL` can rise to ~0.70 if parallel
+long-context sessions start queueing. Still down from ds4's 1,048,576.
+
+**Validation debt (deliberate):** cutover ran on latency/VRAM only — no
+captured prompt corpus existed, so the pre-registered quality gate (legality
+≥ 4.5, correctness within 0.5 of DeepSeek on ≥30 real prompts) is now owed
+POST-cutover. The DeepSeek baseline arm remains recordable via the rollback
+path. One smell already logged: a gateway smoke answer mis-stated turn-1
+tapped-land mechanics — run the real eval before trusting close-game advice.
+
+### §26 addendum 16 — ds4 VRAM incident: 0.95 is a FLOOR, not slack (2026-07-30)
+
+**Recorded by an agent running in an ephemeral cloud container, NOT on blackwell.**
+Every number below is owner-reported from the incident; none was re-measured here.
+The instrumented follow-ups (Qwen probe, watcher-log check) are still owed — see
+"Still owed" at the end.
+
+**Corrected finding.** `--gpu-memory-utilization 0.95` on ds4-v9 had been read as
+"5% headroom is spare". It is not. Measured during today's incident:
+
+| component | per card |
+|---|---|
+| weights (DeepSeek-V4-Flash FP8, TP=2) | **~79.7 GB** |
+| KV cache @ 1M context | **~14.8 GB** |
+| **total** | **~94.5 GB** |
+
+Against the **97,190 MiB/card** the two TP workers were observed holding
+(§26 addendum 12), the 0.95 pool is **consumed, not reserved**. vLLM sizes the KV
+cache to fill whatever the utilisation flag grants, so the flag does not describe
+spare capacity — it describes a floor the process will grow into and hold. The
+practical consequence: **there is no co-tenant headroom on either RTX card while
+ds4-v9 serves at 0.95/1M.** Anyone reading 0.95 as "5% free" will schedule a
+second workload onto a card that has nothing left to give.
+
+This is the same failure shape as §26 addendum 12's `_dev()` trap — a resource
+number that looks like slack, is not, and fails silently downstream.
+
+**Model-survey decision (owner, 2026-07-30):** move the coach's serving model to
+**Qwen3.6-27B-FP8** to free VRAM for MageZero and gemma training. Rationale and
+comparison live in `model-survey-2026-07-30.md` (dev-only, not in this repo).
+
+**⚠ Scheduling contradiction, flagged not resolved.** The plan of record was to
+probe Qwen3.6-27B-FP8 out-of-band **on card 1 while ds4-v9 keeps serving on both
+cards**. The finding above says that cannot work: 27B at FP8 is ~27 GB of weights
+before any KV cache, and the measured per-card figures leave nothing free. The
+probe therefore requires one of:
+1. restart ds4-v9 at a lower `--gpu-memory-utilization` (and accept the shorter
+   KV / smaller effective context that follows), or
+2. stop ds4-v9 for the duration of the probe, or
+3. run the probe on the R9700 — but note B5 (§#448) found the ROCm quantisation
+   stack broken on that box, so an FP8 path there is unproven.
+
+Do not start the probe without picking one explicitly. Silently launching onto a
+"free" card 1 is exactly the mistake this addendum exists to prevent.
+
+**Owner-reported state at handoff (unverified here):** coach serving at 0.95/1M;
+MageZero on gen-1's final arm; bump watcher armed for the 550 games/gen restart;
+**10 PRs merged to master today**. CI green on master `48a47ac`.
+
+**Still owed — requires a shell on blackwell:**
+- [x] Read `model-survey-2026-07-30.md` and record the Qwen selection criteria here.
+      *(2026-07-30 15:25, on-box)* Qwen3.6-27B-FP8 is the survey's #1: dense
+      (routes around every sm_120 FP4/FP8 MoE kernel bug), smallest Tier-A
+      quality gap (AA 37 vs DeepSeek's 40 — and the 40 is Max-Effort reasoning,
+      a mode the coach deliberately does not run), TP=1 on one card (~49 GiB at
+      util 0.55), Apache-2.0, published dual-RTX-6000-Blackwell config exists.
+      Fallback if p95 > ~1.2 s: Qwen3.6-35B-A3B-FP8 (170–208 tok/s measured on
+      this card). Cutover gate: legality ≥ 4.5, correctness within 0.5, on real
+      captured prompts via tools/eval.
+- [x] Run the Qwen3.6-27B-FP8 out-of-band probe. *(2026-07-30 ~15:30–16:00,
+      on-box; owner picked option 2 — stop ds4 — then upgraded the probe to a
+      full cutover. See §26 addendum 17.)*
+- [x] Confirm `~/mz_bump_watcher.log` shows the 550 games/gen restart actually
+      fired. *(2026-07-30 15:20, on-box)* Arm 5/5 (Mono-U) landed 10:29 at
+      24.62% (49/199); watcher stopped mz train 11:29:29, relaunched with
+      `games_per_gen=550`, `RESTARTED ok (pid 3082421)`; pid verified alive at
+      3h49m uptime. On-box `nvidia-smi` also corroborates this addendum's VRAM
+      numbers: 94,484 / 94,466 MiB held by the two TP workers on 97,887 MiB
+      cards.
+- [x] Port this addendum's finding into `rl-pipeline-fix.md`. *(2026-07-30
+      15:30, on-box)* Added to the STATUS SNAPSHOT as "ds4 incident — 0.95 is a
+      FLOOR, not slack", plus the Qwen decision row in the owner-decisions
+      table and a probe entry in next-actions.
+
+### §26 addendum 15 — WP-3 FLEET DONE: 4 PRs REVIEWED + MERGED (16:45)
 The 4-agent Hermes fleet finished in ~14 min wall clock. All PRs independently
 verified by the orchestrator (re-ran every suite + the parser acceptance battery
 on the real smoke log) and **squash-merged to master**: #421 filters/splits,
