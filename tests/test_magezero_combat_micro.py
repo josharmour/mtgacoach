@@ -42,10 +42,7 @@ EM = "ComputerPlayerMCTS.printBattlefieldScore"
 
 
 def L(text: str, thread: int, method: str) -> str:
-    return (
-        f"INFO  2026-07-28 21:34:00,000 {text}"
-        f"  =>[pool-3-thread-{thread}] {method} \n"
-    )
+    return f"INFO  2026-07-28 21:34:00,000 {text}  =>[pool-3-thread-{thread}] {method} \n"
 
 
 def bf_block(thread: int, hand: str, self_perms: str, opp_perms: str) -> list[str]:
@@ -61,8 +58,7 @@ def attack_seq(thread: int, name: str, verdict: str) -> list[str]:
     return [
         L(f"base choose use attack with: {name}?", thread, "ComputerPlayerMCTS.chooseUse"),
         L(
-            "DECLARE_ATTACKERS0pool= actions: [false score: 0.013 count: 104] "
-            "[true score: 0.147 count: 867]",
+            "DECLARE_ATTACKERS0pool= actions: [false score: 0.013 count: 104] [true score: 0.147 count: 867]",
             thread,
             "MCTSNode.bestChild",
         ),
@@ -114,7 +110,10 @@ def test_real_attack_record_matches_raw_log(real):
     assert opp_names == ["Mountain", "Mountain"]
     assert atk["provenance"]["creature_on_board"] is True
     assert atk["hand"] == [
-        "Negate", "Soul Partition", "Skrelv, Defector Mite", "Meticulous Archive",
+        "Negate",
+        "Soul Partition",
+        "Skrelv, Defector Mite",
+        "Meticulous Archive",
     ]
     assert atk["turn"] == 4
     assert atk["active_life"] == 20 and atk["opp_life"] == 20
@@ -136,7 +135,9 @@ def test_real_block_record_matches_raw_log(real):
     assert blk["candidates"] == ["Razorkin Needlehead", "Emberheart Challenger"]
     assert blk["chosen"] == "Do not block with Malcolm, Alluring Scoundrel"
     assert blk["mcts_counts"] == {
-        "Stop Choosing": 498, "Razorkin Needlehead": 35, "Emberheart Challenger": 189,
+        "Stop Choosing": 498,
+        "Razorkin Needlehead": 35,
+        "Emberheart Challenger": 189,
     }
     assert blk["possible_targets"] == 2
     assert blk["possible_targets_matches_pool"] is True
@@ -144,7 +145,9 @@ def test_real_block_record_matches_raw_log(real):
     # Mountains + Razorkin. A swap here is exactly the #452 defect class.
     assert [e["name"] for e in blk["battlefield_self"]] == ["Island", "Island"]
     assert [e["name"] for e in blk["battlefield_opp"]] == [
-        "Mountain", "Mountain", "Razorkin Needlehead",
+        "Mountain",
+        "Mountain",
+        "Razorkin Needlehead",
     ]
     assert blk["turn"] == 5
     assert blk["active_life"] == 17 and blk["opp_life"] == 20
@@ -188,8 +191,7 @@ def test_opener_name_mismatch_drops(tmp_path):
     lines = CTX1 + [
         L("base choose use attack with: Other Creature?", 1, "ComputerPlayerMCTS.chooseUse"),
         L(
-            "DECLARE_ATTACKERS0pool= actions: [false score: 0.1 count: 10] "
-            "[true score: 0.2 count: 20]",
+            "DECLARE_ATTACKERS0pool= actions: [false score: 0.1 count: 10] [true score: 0.2 count: 20]",
             1,
             "MCTSNode.bestChild",
         ),
@@ -223,8 +225,7 @@ def test_cross_thread_pool_is_never_paired(tmp_path):
     lines = CTX1 + [
         L("base choose use attack with: Grizzly Bears?", 1, "ComputerPlayerMCTS.chooseUse"),
         L(
-            "DECLARE_ATTACKERS0pool= actions: [false score: 0.1 count: 10] "
-            "[true score: 0.2 count: 20]",
+            "DECLARE_ATTACKERS0pool= actions: [false score: 0.1 count: 10] [true score: 0.2 count: 20]",
             2,
             "MCTSNode.bestChild",
         ),
@@ -239,8 +240,7 @@ def test_intervening_priority_decision_invalidates_pool(tmp_path):
     lines = CTX1 + [
         L("base choose use attack with: Grizzly Bears?", 1, "ComputerPlayerMCTS.chooseUse"),
         L(
-            "DECLARE_ATTACKERS0pool= actions: [false score: 0.1 count: 10] "
-            "[true score: 0.2 count: 20]",
+            "DECLARE_ATTACKERS0pool= actions: [false score: 0.1 count: 10] [true score: 0.2 count: 20]",
             1,
             "MCTSNode.bestChild",
         ),
@@ -428,7 +428,8 @@ def test_no_block_floor_breach():
 
 def test_floors_pass_when_balanced():
     rows = [_atk("c1", True), _atk("c2", False), _atk("c3", False)] + [
-        _blk(None), _blk("Goblin"),
+        _blk(None),
+        _blk("Goblin"),
     ]
     hist = C.combat_histograms(rows)
     assert hist["floor_breach"] is False
