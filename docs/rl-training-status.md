@@ -2173,7 +2173,27 @@ the GPUs are free.
 `timeout_ms: 4000`; log shows both regimes working — "290 evaluations in 2.04 s"
 (budget-bound) and "191 evaluations in 4.00 s" (cap-bound on harder positions).
 
-### §26 addendum 18 — COMBAT RETRACTION: the data was in the log all along (2026-07-30 ~17:00) ← CURRENT
+### §26 addendum 19 — GATE V1: bridge transmits, teacher too weak; format collapse diagnosed (2026-07-30 21:40) ← CURRENT
+
+First measured distillation verdict (LoRA v1, priority-only, 4,660 records):
+**L1 FAIL** 0.240 vs floor 0.4727 AND vs own 12B base 0.389 (paired delta
+-0.149, CI [-0.204, -0.093]); **L2 PASS** legality 1.000 vs 0.998; **L3 FAIL**
+combat 0.0016 vs base 0.247. Model collapsed onto the output format (perfect
+legality, 26-char answers; train `eval_token_accuracy=1.0` was the tell).
+
+Causes: (1) `train.py --val_split` re-splits randomly over records — leaks
+near-duplicate states between train/val, so memorization scores perfect;
+should consume the pipeline's game-disjoint val.jsonl. (2) The teacher is
+gen-1 MageZero (~30% vs minimax) — the bridge faithfully transmitted a weak
+policy. Reference numbers now exist: 12B base 0.389 strategic / 0.247 combat
+non-degenerate. Ops fixes landed on master: gate runner PATH fix (vLLM JIT
+needs ninja from the serve venv), util 0.40 for card-1 co-tenancy with Qwen.
+
+v2 arms (combat-inclusive, then priority-only on the doubled corpus) train
+overnight for the corpus-effect and combat-effect comparisons; a gate-passing
+candidate most plausibly waits for gen 3-6 teacher data.
+
+### §26 addendum 18 — COMBAT RETRACTION: the data was in the log all along (2026-07-30 ~17:00)
 
 Addendum 15/16-era conclusion "combat is blocked upstream, the data does not
 exist" is **retracted**. While enriching upstream issue #1 with code refs, the
