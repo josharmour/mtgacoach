@@ -172,9 +172,7 @@ def downsample_passes(
     d_needed = math.ceil((n_pass - max_frac * total) / (1.0 - max_frac))
 
     eligible_idx = [
-        i
-        for i, r in enumerate(rows)
-        if r.get("chosen") == "Pass" and r.get("decision_kind") == "priority"
+        i for i, r in enumerate(rows) if r.get("chosen") == "Pass" and r.get("decision_kind") == "priority"
     ]
     rng = random.Random(seed)
     order = list(eligible_idx)
@@ -214,12 +212,12 @@ def pass_rate_tripwire(rows: list[dict], max_frac: float = 0.40) -> None:
             f"  Total rows (post-filter): {total}\n"
             f"  Pass choices:             {n_pass}\n"
             f"  Non-Pass choices:         {n_nonpass}\n"
-            f"  Pass fraction:            {frac:.4f}  ({frac*100:.1f}%)\n"
-            f"  Max allowed fraction:     {max_frac}  ({max_frac*100:.0f}%)\n"
+            f"  Pass fraction:            {frac:.4f}  ({frac * 100:.1f}%)\n"
+            f"  Max allowed fraction:     {max_frac}  ({max_frac * 100:.0f}%)\n"
             f"\n"
             f"A prior corpus with a 56 % Pass rate trained a pass-reflex\n"
             f"into the model, wasting a week of training.  This corpus\n"
-            f"has a {frac*100:.1f} % Pass rate and is being rejected.\n",
+            f"has a {frac * 100:.1f} % Pass rate and is being rejected.\n",
             file=sys.stderr,
         )
         raise SystemExit(42)
@@ -336,9 +334,7 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _counts_by_field(
-    rows: list[dict], field: str
-) -> dict[str, int]:
+def _counts_by_field(rows: list[dict], field: str) -> dict[str, int]:
     """Count occurrences of each distinct value of *field* in *rows*."""
     counts: dict[str, int] = {}
     for r in rows:

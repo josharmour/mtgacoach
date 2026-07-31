@@ -46,7 +46,11 @@ SKIP_PREFIXES = ("LAYOUT", "NAME:", "#")
 
 # Mana-symbol-to-colour map (for colour extraction from mana_cost)
 MANA_COLOUR_MAP = {
-    "W": "W", "U": "U", "B": "B", "R": "R", "G": "G",
+    "W": "W",
+    "U": "U",
+    "B": "B",
+    "R": "R",
+    "G": "G",
 }
 
 # Basic lands from type_line
@@ -61,6 +65,7 @@ BASIC_LAND_COLOURS = {
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def parse_deck(filepath: str) -> dict:
     """Parse a .dck file, returning structured card data.
@@ -89,27 +94,31 @@ def parse_deck(filepath: str) -> dict:
             # Try sideboard line first (it starts with SB:)
             m = SB_RE.match(raw)
             if m:
-                cards.append({
-                    "count": int(m.group(1)),
-                    "set": m.group(2),
-                    "num": m.group(3),
-                    "star": bool(m.group(4)),
-                    "name": m.group(5).strip(),
-                    "sideboard": True,
-                })
+                cards.append(
+                    {
+                        "count": int(m.group(1)),
+                        "set": m.group(2),
+                        "num": m.group(3),
+                        "star": bool(m.group(4)),
+                        "name": m.group(5).strip(),
+                        "sideboard": True,
+                    }
+                )
                 continue
 
             # Try normal card line
             m = CARD_RE.match(raw)
             if m:
-                cards.append({
-                    "count": int(m.group(1)),
-                    "set": m.group(2).strip(),
-                    "num": m.group(3).strip(),
-                    "star": bool(m.group(4)),
-                    "name": m.group(5).strip(),
-                    "sideboard": False,
-                })
+                cards.append(
+                    {
+                        "count": int(m.group(1)),
+                        "set": m.group(2).strip(),
+                        "num": m.group(3).strip(),
+                        "star": bool(m.group(4)),
+                        "name": m.group(5).strip(),
+                        "sideboard": False,
+                    }
+                )
                 continue
 
             # If we get here, it's an unrecognized line — skip silently
@@ -234,15 +243,14 @@ def compute_overlap(deck1_cards: list, deck2_cards: list) -> dict:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     # Load card map
     card_map = load_card_map()
     print(f"Loaded card map: {len(card_map)} entries")
 
     # Find all .dck files
-    deck_files = sorted([
-        f for f in os.listdir(DECK_DIR) if f.endswith(".dck")
-    ])
+    deck_files = sorted([f for f in os.listdir(DECK_DIR) if f.endswith(".dck")])
     print(f"Found {len(deck_files)} deck files")
 
     # Parse all decks
@@ -325,11 +333,17 @@ def main():
     md_lines.append(f"**Primary deck**: `{primary_name}`  ")
     md_lines.append(f"**Total distinct cards (union)**: {len(union_all)}  ")
     md_lines.append(f"**Expected**: {EXPECTED_UNION}  ")
-    md_lines.append(f"**Reconciliation**: {'✓ matches' if len(union_all) == EXPECTED_UNION else f'Δ {len(union_all) - EXPECTED_UNION:+d}'}\n")
+    md_lines.append(
+        f"**Reconciliation**: {'✓ matches' if len(union_all) == EXPECTED_UNION else f'Δ {len(union_all) - EXPECTED_UNION:+d}'}\n"
+    )
 
     md_lines.append("## Per-Deck Summary\n")
-    md_lines.append("| Deck | Distinct Cards | Total Cards | Main | SB | Colours | New vs Primary | Overlap% | Unknown Colours |")
-    md_lines.append("|------|---------------|-------------|------|----|---------|---------------|----------|----------------|")
+    md_lines.append(
+        "| Deck | Distinct Cards | Total Cards | Main | SB | Colours | New vs Primary | Overlap% | Unknown Colours |"
+    )
+    md_lines.append(
+        "|------|---------------|-------------|------|----|---------|---------------|----------|----------------|"
+    )
 
     rows = []
     for dname, stats in stats_by_deck.items():
@@ -342,17 +356,19 @@ def main():
             ov = overlaps.get(dname, {})
             new_str = str(ov.get("deck2_only", "?"))
             ovpct_str = f"{ov.get('overlap_pct', 0):.1f}%"
-        rows.append((
-            dname,
-            stats["distinct_total"],
-            stats["total_cards"],
-            stats["main_total"],
-            stats["sb_total"],
-            stats["colours"],
-            new_str,
-            ovpct_str,
-            unknown_str,
-        ))
+        rows.append(
+            (
+                dname,
+                stats["distinct_total"],
+                stats["total_cards"],
+                stats["main_total"],
+                stats["sb_total"],
+                stats["colours"],
+                new_str,
+                ovpct_str,
+                unknown_str,
+            )
+        )
         # Print unknown cards for diagnosis
         if unknown_count:
             uc = stats["unknown_colour_cards"]
@@ -364,7 +380,13 @@ def main():
 
     # Current opponents section
     md_lines.append("\n## Current Opponents (in `configs/run.yml`)\n")
-    current_opponents = ["Standard-MonoR", "Standard-MonoG", "Standard-MonoB", "Standard-MonoW", "Standard-MonoU"]
+    current_opponents = [
+        "Standard-MonoR",
+        "Standard-MonoG",
+        "Standard-MonoB",
+        "Standard-MonoW",
+        "Standard-MonoU",
+    ]
     md_lines.append("| Deck | Distinct Cards | Colours | New vs Primary |")
     md_lines.append("|------|---------------|---------|---------------|")
     cur_distinct = set()
@@ -373,7 +395,9 @@ def main():
         if not stats:
             continue
         ov = overlaps.get(dname, {})
-        md_lines.append(f"| {dname} | {stats['distinct_total']} | {stats['colours']} | {ov.get('deck2_only', '?')} |")
+        md_lines.append(
+            f"| {dname} | {stats['distinct_total']} | {stats['colours']} | {ov.get('deck2_only', '?')} |"
+        )
         for c in all_decks[dname]["cards"]:
             cur_distinct.add(c["name"])
 
@@ -423,7 +447,9 @@ def main():
         md_lines.append("- Some cards counted here are not in the 471 (e.g., basic lands counted per-set)  ")
         md_lines.append("- The 471 may exclude certain cards (sideboard-only, etc.)  ")
     else:
-        md_lines.append(f"Union is **{diff} cards lower** than expected ({len(union_all)} vs {EXPECTED_UNION}).  ")
+        md_lines.append(
+            f"Union is **{diff} cards lower** than expected ({len(union_all)} vs {EXPECTED_UNION}).  "
+        )
 
     with open(OUTPUT_MD, "w") as f:
         f.write("\n".join(md_lines) + "\n")
@@ -432,9 +458,9 @@ def main():
     # -----------------------------------------------------------------------
     # Summary to stdout
     # -----------------------------------------------------------------------
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("DECK INVENTORY SUMMARY")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  Decks parsed:     {len(all_decks)}")
     print(f"  Union (distinct): {len(union_all)}")
     print(f"  Expected:         {EXPECTED_UNION}")

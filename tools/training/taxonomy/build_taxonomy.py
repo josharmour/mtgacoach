@@ -201,8 +201,9 @@ ROLE_MAP = {
         # Give hexproof/indestructible/ward via pump
         {
             "primitive": "Pump",
-            "check": lambda p: any(kw in p.get("KW", "")
-                                   for kw in ("Hexproof", "Indestructible", "Ward", "Protection")),
+            "check": lambda p: any(
+                kw in p.get("KW", "") for kw in ("Hexproof", "Indestructible", "Ward", "Protection")
+            ),
         },
     ],
 }
@@ -224,16 +225,16 @@ def parse_card_script(text):
     """
     result = {
         "name": "",
-        "all_names": [],   # all Name: lines (for DFC lookup)
+        "all_names": [],  # all Name: lines (for DFC lookup)
         "mana_cost": "",
         "types": "",
-        "power": "",       # Power from PT: line (may be "*" for CDA)
-        "toughness": "",   # Toughness from PT: line
-        "keywords": [],    # Keywords from K: lines on front face
+        "power": "",  # Power from PT: line (may be "*" for CDA)
+        "toughness": "",  # Toughness from PT: line
+        "keywords": [],  # Keywords from K: lines on front face
         "primitives": [],  # list of {"primitive": str, "sp_ab": str, **params}
-        "svars": {},       # SVar definitions for sub-ability traversal
+        "svars": {},  # SVar definitions for sub-ability traversal
         "trigger_svars": [],  # SVar names referenced by T: line Execute$ fields
-        "static_lines": [],   # S: line dicts for static ability classification
+        "static_lines": [],  # S: line dicts for static ability classification
         "_alternate": False,  # internal: have we hit the ALTERNATE marker?
     }
 
@@ -248,7 +249,7 @@ def parse_card_script(text):
 
         # Name (collect ALL Name lines for DFC support)
         elif line.startswith("Name:"):
-            name_val = line[len("Name:"):].strip()
+            name_val = line[len("Name:") :].strip()
             result["all_names"].append(name_val)
             if not result["name"]:
                 result["name"] = name_val
@@ -293,11 +294,13 @@ def parse_card_script(text):
             if t_info and t_info.get("execute_svar") and not result["_alternate"]:
                 result["trigger_svars"].append(t_info["execute_svar"])
             if t_info and t_info.get("mode") and not result["_alternate"]:
-                result["static_lines"].append({
-                    "mode": "TRIGGER",
-                    "trigger_mode": t_info["mode"],
-                    "original": t_info,
-                })
+                result["static_lines"].append(
+                    {
+                        "mode": "TRIGGER",
+                        "trigger_mode": t_info["mode"],
+                        "original": t_info,
+                    }
+                )
 
         # S: lines — static/continuous ability definitions
         elif line.startswith("S:") and "Mode$" in line:
@@ -493,22 +496,26 @@ def resolve_primitives(card):
             # Lord pump effects: S:Mode$ Continuous | Affected$ ... | AddPower$ ...
             # This is functionally similar to PumpAll
             if s_info.get("add_power") or s_info.get("add_toughness") or s_info.get("add_keyword"):
-                all_primitives.append({
-                    "sp_ab": "ST",
-                    "primitive": "PumpAll",
-                    "affected": s_info.get("affected", ""),
-                    "is_present": s_info.get("is_present", ""),
-                    "_source": "static",
-                })
+                all_primitives.append(
+                    {
+                        "sp_ab": "ST",
+                        "primitive": "PumpAll",
+                        "affected": s_info.get("affected", ""),
+                        "is_present": s_info.get("is_present", ""),
+                        "_source": "static",
+                    }
+                )
         elif s_info.get("mode") == "RaiseCost":
             # Tax effects: S:Mode$ RaiseCost | ValidCard$ ... | Amount$ ...
-            all_primitives.append({
-                "sp_ab": "ST",
-                "primitive": "RaiseCost",
-                "valid_card": s_info.get("raised_cards", ""),
-                "amount": s_info.get("amount", ""),
-                "_source": "static",
-            })
+            all_primitives.append(
+                {
+                    "sp_ab": "ST",
+                    "primitive": "RaiseCost",
+                    "valid_card": s_info.get("raised_cards", ""),
+                    "amount": s_info.get("amount", ""),
+                    "_source": "static",
+                }
+            )
         elif s_info.get("mode") == "TRIGGER":
             # Some T: lines that don't reference SVars may still grant ability
             add_trigger = s_info.get("original", {}).get("add_trigger", "")

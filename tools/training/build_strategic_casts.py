@@ -462,9 +462,7 @@ def render_user_message(
     else:
         lines.append("Land: no land played this turn — land actions are excluded from this decision")
     if step.already_cast:
-        cast_names = ", ".join(
-            resolver.get(g).name or f"grpId {g}" for g in step.already_cast
-        )
+        cast_names = ", ".join(resolver.get(g).name or f"grpId {g}" for g in step.already_cast)
         lines.append(f"Already cast this turn: {cast_names}")
     lines.append(f"On the {'play' if pos.on_play else 'draw'}.")
     if pos.opp_hand_count is not None:
@@ -787,9 +785,7 @@ def _pct(n: int, d: int) -> float:
     return round(100.0 * n / d, 3) if d else 0.0
 
 
-def summarize(
-    st: BuildStats, audit: dict[str, Counter], args: argparse.Namespace, elapsed: float
-) -> dict:
+def summarize(st: BuildStats, audit: dict[str, Counter], args: argparse.Namespace, elapsed: float) -> dict:
     per_turn = []
     for t in sorted(set(st.turns_with_cast_by_turn) | set(st.emitted_by_turn)):
         casts = st.casts_by_turn.get(t, 0)
@@ -872,16 +868,12 @@ def summarize(
         "menu": {
             "mean_menu_size": round(statistics.mean(st.menu_sizes), 2) if st.menu_sizes else 0,
             "median_menu_size": statistics.median(st.menu_sizes) if st.menu_sizes else 0,
-            "mean_cast_entries": round(
-                statistics.mean(st.menu_sizes) - (1 if args.include_pass else 0), 2
-            )
+            "mean_cast_entries": round(statistics.mean(st.menu_sizes) - (1 if args.include_pass else 0), 2)
             if st.menu_sizes
             else 0,
             "pick_index_distribution": dict(sorted(st.pick_indices.items())),
             "pick_index_1_observed_pct": _pct(st.pick_indices.get(1, 0), st.emitted),
-            "pick_index_1_expected_pct_if_uniform": round(
-                100.0 * st.expected_index1 / st.emitted, 3
-            )
+            "pick_index_1_expected_pct_if_uniform": round(100.0 * st.expected_index1 / st.emitted, 3)
             if st.emitted
             else 0.0,
             "mean_prompt_chars": round(statistics.mean(st.prompt_chars), 1) if st.prompt_chars else 0,
@@ -896,8 +888,11 @@ def summarize(
             p: {
                 "records": c.get("emitted", 0),
                 "turns_emitting": c.get("turns_emitting", 0),
-                "dropped": {k: v for k, v in c.items() if not k.startswith("turn_") and k not in
-                            ("emitted", "turns_emitting")},
+                "dropped": {
+                    k: v
+                    for k, v in c.items()
+                    if not k.startswith("turn_") and k not in ("emitted", "turns_emitting")
+                },
             }
             for p, c in audit.items()
         }
@@ -910,9 +905,7 @@ def summarize(
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--replay-csv", type=Path, action="append", required=True)
     ap.add_argument("--min-rank", default="diamond", choices=[*RANK_ORDER, ""])
     ap.add_argument("--max-rows-per-file", type=int, default=20000)

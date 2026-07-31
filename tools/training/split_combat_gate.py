@@ -551,6 +551,7 @@ def main() -> int:
     print("[4/4] manifest ...", flush=True)
     dists = {s: distributions(rows) for s, rows in by_split.items()}
     dists["source_all"] = distributions(index)
+
     def _slice_n(split: str, label: str) -> int:
         return dists[split]["answer_class"].get(label, {}).get("n", 0)
 

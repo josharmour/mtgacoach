@@ -434,9 +434,7 @@ def parse_menu(user: str) -> tuple[list[tuple[str, int | None, int | None]], str
     _prefix, rows, _done, _suffix = menu_rows(user)
     if not rows:
         raise ValueError("menu has no creature rows")
-    kinds = {
-        ATTACK_ROW_PREFIX if r.startswith(ATTACK_ROW_PREFIX) else BLOCK_ROW_PREFIX for r in rows
-    }
+    kinds = {ATTACK_ROW_PREFIX if r.startswith(ATTACK_ROW_PREFIX) else BLOCK_ROW_PREFIX for r in rows}
     if len(kinds) != 1:
         raise ValueError(f"menu mixes attack and block rows: {rows[:3]}")
     kind = "attack" if kinds == {ATTACK_ROW_PREFIX} else "block"
@@ -950,9 +948,7 @@ def random_expectation(rec: ScoreRecord) -> float:
         if counts[-1] < 0:
             return 0.0
         equiv *= _multinomial(m, counts)
-    for tcls, n_used in Counter(
-        attacker_class[t] for t in rec.gold_map.values() if t is not None
-    ).items():
+    for tcls, n_used in Counter(attacker_class[t] for t in rec.gold_map.values() if t is not None).items():
         equiv *= attacker_sizes[tcls] ** n_used
 
     total = (len(rec.dec.attackers) + 1) ** len(rec.dec.blockers)
@@ -1015,9 +1011,7 @@ def reference_policies(corpus: list[ScoreRecord], *, seed: int = DEFAULT_SEED) -
 
     best_a_name, best_a = _argmax(attack_slice)
     best_b_name, best_b = _argmax(block_slice)
-    best_combined = (
-        round(((best_a or 0.0) * n_a + (best_b or 0.0) * n_b) / n, 4) if n else None
-    )
+    best_combined = round(((best_a or 0.0) * n_a + (best_b or 0.0) * n_b) / n, 4) if n else None
     return {
         "n": n,
         "n_attack": n_a,
@@ -1052,9 +1046,7 @@ def _argmax(scores: dict[str, float | None]) -> tuple[str | None, float | None]:
     return best_name, best_val
 
 
-def slice_reference_policies(
-    corpus: list[ScoreRecord], predicate, *, seed: int = DEFAULT_SEED
-) -> dict:
+def slice_reference_policies(corpus: list[ScoreRecord], predicate, *, seed: int = DEFAULT_SEED) -> dict:
     """Best reflex measured ON A SLICE (G9/G10/G11 floors).
 
     A reflex that is useless overall can still be strong inside one class —
@@ -1128,9 +1120,7 @@ def corpus_composition(corpus: list[ScoreRecord]) -> dict:
             "mean": round(sum(pool_sizes) / n, 2),
         },
         "blocks_with_duplicate_named_blockers": dup_blockers,
-        "blocks_with_duplicate_named_blockers_share": round(dup_blockers / block_n, 4)
-        if block_n
-        else 0.0,
+        "blocks_with_duplicate_named_blockers_share": round(dup_blockers / block_n, 4) if block_n else 0.0,
         "non_gated_answer_classes": sorted(NON_GATED_ANSWER_CLASSES),
     }
 
@@ -1309,9 +1299,7 @@ def permutation_metrics(identity: dict, permuted: dict, permuted_corpus: list[Sc
     # unparseable or illegal answers are not evidence that the model read the
     # board the same way twice.
     agree = sum(
-        1
-        for b, p in pairs
-        if b.get("answer_key") is not None and b.get("answer_key") == p.get("answer_key")
+        1 for b, p in pairs if b.get("answer_key") is not None and b.get("answer_key") == p.get("answer_key")
     )
     both_right = sum(1 for b, p in pairs if b["exact"] and p["exact"])
     return {
@@ -1375,9 +1363,7 @@ def _slice_floors(corpus: list[ScoreRecord], *, seed: int) -> dict:
     for cls in sorted({r.answer_class for r in corpus}):
         if cls in floors:
             continue
-        floors[cls] = slice_reference_policies(
-            corpus, lambda r, _c=cls: r.answer_class == _c, seed=seed
-        )
+        floors[cls] = slice_reference_policies(corpus, lambda r, _c=cls: r.answer_class == _c, seed=seed)
     return floors
 
 
@@ -1426,11 +1412,7 @@ def simulate_response(
             )
         target = rec.attacker_names[0] if rec.attacker_names else ILLEGAL_NAME
         return json.dumps(
-            {
-                "actions": [
-                    {"action_type": "declare_blockers", "blocker_assignments": {ILLEGAL_NAME: target}}
-                ]
-            }
+            {"actions": [{"action_type": "declare_blockers", "blocker_assignments": {ILLEGAL_NAME: target}}]}
         )
     if policy == "memorise":
         # The identity record's gold POSITIONS, replayed against whatever now
@@ -1444,26 +1426,18 @@ def simulate_response(
             names = [
                 rec.pool_names[i] for i in positions if isinstance(i, int) and 0 <= i < len(rec.pool_names)
             ]
-            return json.dumps(
-                {"actions": [{"action_type": "declare_attackers", "attacker_names": names}]}
-            )
+            return json.dumps({"actions": [{"action_type": "declare_attackers", "attacker_names": names}]})
         mapping = {}
         for pair in positions:
             b_i, a_i = pair
             if 0 <= b_i < len(rec.pool_names) and 0 <= a_i < len(rec.attacker_names):
                 mapping[rec.pool_names[b_i]] = rec.attacker_names[a_i]
-        return json.dumps(
-            {"actions": [{"action_type": "declare_blockers", "blocker_assignments": mapping}]}
-        )
+        return json.dumps({"actions": [{"action_type": "declare_blockers", "blocker_assignments": mapping}]})
 
     kind, answer = policy_declaration(policy, rec, rng)
     if kind == "attack":
-        return json.dumps(
-            {"actions": [{"action_type": "declare_attackers", "attacker_names": list(answer)}]}
-        )
-    return json.dumps(
-        {"actions": [{"action_type": "declare_blockers", "blocker_assignments": dict(answer)}]}
-    )
+        return json.dumps({"actions": [{"action_type": "declare_attackers", "attacker_names": list(answer)}]})
+    return json.dumps({"actions": [{"action_type": "declare_blockers", "blocker_assignments": dict(answer)}]})
 
 
 def _gold_positions(rec: ScoreRecord) -> list:
@@ -1530,9 +1504,7 @@ def cmd_simulate(args: argparse.Namespace) -> int:
         identity_gold=identity_gold,
     )
     n = _write_jsonl(args.out, rows)
-    logger.info(
-        f"simulated attack={args.attack_policy} block={args.block_policy} n={n} -> {args.out}"
-    )
+    logger.info(f"simulated attack={args.attack_policy} block={args.block_policy} n={n} -> {args.out}")
     return 0
 
 
@@ -1675,8 +1647,7 @@ def cmd_gate(args: argparse.Namespace) -> int:  # noqa: C901 — one linear crit
                     )
                 if metrics["duplicate_response_rows"]:
                     failures.append(
-                        f"{label} responses contain {metrics['duplicate_response_rows']} "
-                        "duplicate prompt_ids"
+                        f"{label} responses contain {metrics['duplicate_response_rows']} duplicate prompt_ids"
                     )
 
             # ---- G4 slice coverage -----------------------------------------
@@ -1690,9 +1661,7 @@ def cmd_gate(args: argparse.Namespace) -> int:  # noqa: C901 — one linear crit
                 failures.append(f"G4 insufficient attack samples: {atk_n} < {args.min_attack_samples}")
             if blk_n < args.min_block_samples:
                 failures.append(f"G4 insufficient block samples: {blk_n} < {args.min_block_samples}")
-            gated_classes = sorted(
-                set(composition.get("by_answer_class", {})) - NON_GATED_ANSWER_CLASSES
-            )
+            gated_classes = sorted(set(composition.get("by_answer_class", {})) - NON_GATED_ANSWER_CLASSES)
             for cls in gated_classes:
                 got = candidate["by_answer_class"].get(cls, {}).get("n", 0)
                 if got < args.min_slice_samples:
@@ -1703,9 +1672,7 @@ def cmd_gate(args: argparse.Namespace) -> int:  # noqa: C901 — one linear crit
             for rank in ("diamond", "mythic"):
                 got = candidate["by_rank"].get(rank, {}).get("n", 0)
                 if got < args.min_rank_slice_samples:
-                    failures.append(
-                        f"G4 rank slice {rank} has {got} < {args.min_rank_slice_samples} samples"
-                    )
+                    failures.append(f"G4 rank slice {rank} has {got} < {args.min_rank_slice_samples} samples")
             for cls in sorted(NON_GATED_ANSWER_CLASSES & set(candidate["by_answer_class"])):
                 stats = candidate["by_answer_class"][cls]
                 advisories.append(
@@ -2063,9 +2030,7 @@ def cmd_dryrun(args: argparse.Namespace) -> int:
         )
         _write_jsonl(
             perm_path,
-            simulate_rows(
-                permuted, atk, blk, label="candidate", seed=args.seed, identity_gold=identity_gold
-            ),
+            simulate_rows(permuted, atk, blk, label="candidate", seed=args.seed, identity_gold=identity_gold),
         )
         scratch.extend([cand_path, perm_path])
         report_path = out_dir / f"{DRYRUN_STEM}_{policy}.json"
@@ -2116,9 +2081,7 @@ def cmd_dryrun(args: argparse.Namespace) -> int:
         "corpus": str(args.corpus),
         "baseline_policy": args.baseline_policy,
         "reference_policies": references,
-        "slice_reflex_floors": {
-            k: v.get("best") for k, v in sorted(floors.items()) if v.get("n")
-        },
+        "slice_reflex_floors": {k: v.get("best") for k, v in sorted(floors.items()) if v.get("n")},
         "verdicts": verdicts,
     }
     summary_path = out_dir / f"{DRYRUN_STEM}_summary.json"
@@ -2204,15 +2167,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-nondegenerate-delta-ci-lower",
         type=float,
         default=MIN_NONDEGENERATE_DELTA_CI_LOWER,
-        help="G12: floor for the non-degenerate paired-bootstrap delta CI lower bound "
-        "(may only be raised)",
+        help="G12: floor for the non-degenerate paired-bootstrap delta CI lower bound (may only be raised)",
     )
     g.add_argument(
         "--min-accuracy",
         type=float,
         default=None,
-        help="optional EXTRA floor on exact-set accuracy (tightens the gate; there is no "
-        "loosening flag)",
+        help="optional EXTRA floor on exact-set accuracy (tightens the gate; there is no loosening flag)",
     )
     g.add_argument("--bootstraps", type=int, default=DEFAULT_BOOTSTRAPS)
     g.add_argument("--seed", type=int, default=DEFAULT_SEED)

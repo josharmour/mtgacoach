@@ -61,6 +61,7 @@ if str(REPO) not in sys.path:
 # so that downstream lazy imports (e.g. _new_planner in gate_play_decisions)
 # find it.
 
+
 def _load_autopilot_system_prompt() -> str:
     """Load AUTOPILOT_SYSTEM_PROMPT via importlib, bypassing __init__.py."""
     import types
@@ -76,9 +77,7 @@ def _load_autopilot_system_prompt() -> str:
     # Load backend_health (stdlib-only)
     bh_path = SRC / "arenamcp" / "backend_health.py"
     if "arenamcp.backend_health" not in sys.modules:
-        spec_h = importlib.util.spec_from_file_location(
-            "arenamcp.backend_health", str(bh_path)
-        )
+        spec_h = importlib.util.spec_from_file_location("arenamcp.backend_health", str(bh_path))
         assert spec_h is not None, f"cannot find backend_health.py at {bh_path}"
         mod_h = importlib.util.module_from_spec(spec_h)
         mod_h.__package__ = "arenamcp"
@@ -88,9 +87,7 @@ def _load_autopilot_system_prompt() -> str:
     # Load action_planner
     ap_path = SRC / "arenamcp" / "action_planner.py"
     if "arenamcp.action_planner" not in sys.modules:
-        spec_a = importlib.util.spec_from_file_location(
-            "arenamcp.action_planner", str(ap_path)
-        )
+        spec_a = importlib.util.spec_from_file_location("arenamcp.action_planner", str(ap_path))
         assert spec_a is not None, f"cannot find action_planner.py at {ap_path}"
         mod_a = importlib.util.module_from_spec(spec_a)
         mod_a.__package__ = "arenamcp"
@@ -130,18 +127,56 @@ _BASIC_LAND_TYPES: dict[str, str] = {
 
 # Suffix-based land detection: any card whose name ends with one of these
 # tokens is treated as a Land for mana-source counting.
-_LAND_SUFFIXES = ("Land", "lands", "Verge", "Heath", "Foothills", "Delta",
-                  "Strand", "Mire", "Catacombs", "Meadow", "Pool", "Grove",
-                  "Garden", "Tomb", "Node", "Spire", "Cavern", "Passage",
-                  "Factory", "Opal", "Citadel", "Sanctum", "Archive",
-                  "Crossroads", "Hideout", "Shrine", "Village", "Mine",
-                  "Foundry", "Den", "Expanse", "Reach", "Canopy", "Vista",
-                  "Basin", "Fortress", "Cave", "Crater", "Bridge", "Vale",
-                  "Confluence", "Borough", "Hub", "Borderpost", "Column")
+_LAND_SUFFIXES = (
+    "Land",
+    "lands",
+    "Verge",
+    "Heath",
+    "Foothills",
+    "Delta",
+    "Strand",
+    "Mire",
+    "Catacombs",
+    "Meadow",
+    "Pool",
+    "Grove",
+    "Garden",
+    "Tomb",
+    "Node",
+    "Spire",
+    "Cavern",
+    "Passage",
+    "Factory",
+    "Opal",
+    "Citadel",
+    "Sanctum",
+    "Archive",
+    "Crossroads",
+    "Hideout",
+    "Shrine",
+    "Village",
+    "Mine",
+    "Foundry",
+    "Den",
+    "Expanse",
+    "Reach",
+    "Canopy",
+    "Vista",
+    "Basin",
+    "Fortress",
+    "Cave",
+    "Crater",
+    "Bridge",
+    "Vale",
+    "Confluence",
+    "Borough",
+    "Hub",
+    "Borderpost",
+    "Column",
+)
 
 # Lands whose names have no suffix-based signal but contain a basic-land word
-_LAND_NAME_CONTAINS = ("Cavern of", "Field of", "Urza's", "Mishra's",
-                       "Corrupted", "Darksteel")
+_LAND_NAME_CONTAINS = ("Cavern of", "Field of", "Urza's", "Mishra's", "Corrupted", "Darksteel")
 
 
 def _resolve_type_line(name: str) -> str:
@@ -156,9 +191,13 @@ def _resolve_type_line(name: str) -> str:
         return hit
     name_lower = name.lower()
     # Check for basic-land-name-in-name (e.g. "Temple of Silence")
-    for basic, tl in (("plains", "Land — Plains"), ("island", "Land — Island"),
-                      ("swamp", "Land — Swamp"), ("mountain", "Land — Mountain"),
-                      ("forest", "Land — Forest")):
+    for basic, tl in (
+        ("plains", "Land — Plains"),
+        ("island", "Land — Island"),
+        ("swamp", "Land — Swamp"),
+        ("mountain", "Land — Mountain"),
+        ("forest", "Land — Forest"),
+    ):
         if basic in name_lower:
             return tl
     # Suffix detection
@@ -216,27 +255,25 @@ def build_game_state(row: dict) -> dict:
     battlefield: list[dict] = []
     next_id = 1
     for card in row.get("battlefield_self", []):
-        battlefield.append(_build_card(card["name"], LOCAL_SEAT,
-                                        card.get("tapped", False), next_id))
+        battlefield.append(_build_card(card["name"], LOCAL_SEAT, card.get("tapped", False), next_id))
         next_id += 1
     for card in row.get("battlefield_opp", []):
-        battlefield.append(_build_card(card["name"], OPP_SEAT,
-                                        card.get("tapped", False),
-                                        1000 + next_id))
+        battlefield.append(_build_card(card["name"], OPP_SEAT, card.get("tapped", False), 1000 + next_id))
         next_id += 1
 
     hand = [_build_hand_card(n) for n in row.get("hand", [])]
 
     # Determine phase string. MageZero uses MTGA-style phase names.
     phase_raw = row.get("phase", "PRECOMBAT_MAIN")
-    phase = {"PRECOMBAT_MAIN": "Phase_Main1",
-             "MAIN1": "Phase_Main1",
-             "MAIN2": "Phase_Main2",
-             "COMBAT_BEFORE_BLOCKERS": "Phase_Combat",
-             "COMBAT_DECLARE_BLOCKERS": "Phase_Combat",
-             "COMBAT_DECLARE_ATTACKERS": "Phase_Combat",
-             "END_COMBAT": "Phase_Combat",
-             }.get(phase_raw, f"Phase_{phase_raw}")
+    phase = {
+        "PRECOMBAT_MAIN": "Phase_Main1",
+        "MAIN1": "Phase_Main1",
+        "MAIN2": "Phase_Main2",
+        "COMBAT_BEFORE_BLOCKERS": "Phase_Combat",
+        "COMBAT_DECLARE_BLOCKERS": "Phase_Combat",
+        "COMBAT_DECLARE_ATTACKERS": "Phase_Combat",
+        "END_COMBAT": "Phase_Combat",
+    }.get(phase_raw, f"Phase_{phase_raw}")
 
     return {
         "players": [
@@ -274,6 +311,7 @@ def build_game_state(row: dict) -> dict:
 # Answer index resolution
 # ---------------------------------------------------------------------------
 
+
 def _resolve_answer(menu: list[str], chosen: str) -> int | None:
     """Return 1-based index of ``chosen`` in ``menu``, or None if not found."""
     try:
@@ -285,6 +323,7 @@ def _resolve_answer(menu: list[str], chosen: str) -> int | None:
 # ---------------------------------------------------------------------------
 # Record construction
 # ---------------------------------------------------------------------------
+
 
 def build_record(row: dict) -> tuple[dict | None, str]:
     """Single MageZero row → training record, or (None, drop_reason)."""
@@ -355,6 +394,7 @@ def build_record(row: dict) -> tuple[dict | None, str]:
 # ---------------------------------------------------------------------------
 # IO
 # ---------------------------------------------------------------------------
+
 
 def _read_jsonl(path: Path) -> list[dict]:
     out: list[dict] = []
@@ -429,6 +469,7 @@ def _report_stats(
 
 def _sha256_text(text: str) -> str:
     import hashlib
+
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -436,17 +477,19 @@ def _sha256_text(text: str) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Build production-shaped training records from MageZero decisions JSONL.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--in", dest="input", type=Path, required=True,
-                        help="Path to decisions JSONL (MageZero schema)")
-    parser.add_argument("--out", dest="output", type=Path, required=True,
-                        help="Path to write training records JSONL")
-    parser.add_argument("--report", action="store_true",
-                        help="Print build report to stderr on completion")
+    parser.add_argument(
+        "--in", dest="input", type=Path, required=True, help="Path to decisions JSONL (MageZero schema)"
+    )
+    parser.add_argument(
+        "--out", dest="output", type=Path, required=True, help="Path to write training records JSONL"
+    )
+    parser.add_argument("--report", action="store_true", help="Print build report to stderr on completion")
     args = parser.parse_args(argv)
 
     t0 = time.time()
@@ -489,12 +532,12 @@ def main(argv: list[str] | None = None) -> int:
     written = _write_jsonl(args.output, records)
     logger.info(f"wrote {written} records -> {args.output}")
 
-    stats = _report_stats(records, drops, read_count, args.input,
-                          args.output, elapsed)
+    stats = _report_stats(records, drops, read_count, args.input, args.output, elapsed)
 
     # Write report to stderr if --report
     if args.report:
         import pprint
+
         print("\n=== BUILD REPORT ===", file=sys.stderr)
         pprint.pprint(stats, stream=sys.stderr, width=100, sort_dicts=False)
         print("", file=sys.stderr)

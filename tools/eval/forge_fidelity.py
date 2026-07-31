@@ -373,9 +373,7 @@ def _board_card(
         # permanents; a live creature cannot be 0/0 without counters. Net
         # toughness > 0 (or a 0/0 carrying counters) ⇒ creature. Recorded as
         # derived, not shim-native.
-        is_creature = toughness > 0 or (
-            power == 0 and toughness == 0 and bool(counters) and not type_line
-        )
+        is_creature = toughness > 0 or (power == 0 and toughness == 0 and bool(counters) and not type_line)
         if is_creature and not type_line:
             type_line = "Creature"
             derived.add("creature_from_net_pt")
@@ -456,9 +454,7 @@ def build_game_state_from_shim(
 
     battlefield: list[dict] = []
     for i, obj in enumerate(local_in.get("board") or []):
-        battlefield.append(
-            _board_card(obj, local_seat, turn_num, 100000 + i, derived, gaps, fabrications)
-        )
+        battlefield.append(_board_card(obj, local_seat, turn_num, 100000 + i, derived, gaps, fabrications))
     for i, obj in enumerate(opp_in.get("board") or []):
         battlefield.append(_board_card(obj, opp_seat, turn_num, 900000 + i, derived, gaps, fabrications))
 
@@ -615,7 +611,15 @@ def build_game_state_from_shim(
             }
             for i, (t, mp) in enumerate(zip(menu_rows, mappings, strict=False))
         ]
-        + [{"index": len(menu_rows), "text": "Pass", "kind": "pass", "host": None, "mapping": "implicit_pass"}],
+        + [
+            {
+                "index": len(menu_rows),
+                "text": "Pass",
+                "kind": "pass",
+                "host": None,
+                "mapping": "implicit_pass",
+            }
+        ],
         "menu_size": len(menu_rows),
         "shim_mana_available": req.get("mana_available"),
         "derived": sorted(derived),
@@ -700,8 +704,7 @@ SECTION_ANCHORS: dict[str, tuple[str, str | None]] = {
 #   empty           — legitimately empty for these decisions (matches reference)
 #   unconstructible — the real corpus populates it, the shim JSON cannot
 SECTION_VERDICT_NOTES = {
-    "trigger": "mapped from phase + own-turn (v2: engine-native is_own_turn); new_turn only on "
-    "own Main-1",
+    "trigger": "mapped from phase + own-turn (v2: engine-native is_own_turn); new_turn only on own Main-1",
     "header": "constant",
     "legal_menu": "options[] + implicit Pass, worded by the gate's menu_line; v2 rows carry "
     "native kind/host/affordable (incl. unaffordable Cast rows, like real MTGA menus)",
@@ -936,9 +939,7 @@ def ranked_gaps(real: list[dict], rendered: list[dict], real_counts: dict, n_rea
             "effects and games with no land drop. Closed by protocol v2: "
             "PhaseHandler.isPlayerTurn ships as is_own_turn",
             "affected_decisions": sum(
-                1
-                for r in rendered
-                if r["meta"]["own_turn_source"] not in ("shim_native", "land_drop_direct")
+                1 for r in rendered if r["meta"]["own_turn_source"] not in ("shim_native", "land_drop_direct")
             ),
         },
         {
@@ -1157,8 +1158,7 @@ def write_md(report: dict, path: Path) -> None:
         "# Forge → mtgacoach prompt fidelity report (WP-2.1 Days 3-4)",
         "",
         f"Generated: {report['generated_at']}",
-        f"Shim decisions: {report['inputs']['decisions_used']} "
-        f"(from {report['inputs']['decisions_path']})",
+        f"Shim decisions: {report['inputs']['decisions_used']} (from {report['inputs']['decisions_path']})",
         f"Reference corpus: {report['inputs']['real_corpus_n']} real MTGA gate prompts "
         f"({report['inputs']['real_corpus_path']})",
         "",
@@ -1214,8 +1214,7 @@ def write_md(report: dict, path: Path) -> None:
         f"({m['real']['cast_with_ok']}/{m['real']['cast_entries']} Cast rows tagged [OK])",
         f"- Forge entry heads: `{m['forge']['entry_heads']}` "
         f"({m['forge']['cast_with_ok']}/{m['forge']['cast_entries']} Cast rows tagged [OK])",
-        f"- Unmapped option rows rendered verbatim: {m['unmapped_rows']} "
-        f"({m['unmapped_share']} of all rows)",
+        f"- Unmapped option rows rendered verbatim: {m['unmapped_rows']} ({m['unmapped_share']} of all rows)",
         f"- Mapping breakdown: `{m['forge']['mapping_breakdown']}`",
     ]
     lines += [f"- {n}" for n in m["diff_notes"]]

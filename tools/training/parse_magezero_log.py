@@ -106,8 +106,13 @@ DECISION_KIND_MAP = {
 }
 
 # Known opponent order for the smoke run (gen0: Standard-MonoR/G/B/W/U, gen1: same order)
-SMOKE_OPPONENTS_GEN0 = ["Standard-MonoR", "Standard-MonoG", "Standard-MonoB",
-                         "Standard-MonoW", "Standard-MonoU"]
+SMOKE_OPPONENTS_GEN0 = [
+    "Standard-MonoR",
+    "Standard-MonoG",
+    "Standard-MonoB",
+    "Standard-MonoW",
+    "Standard-MonoU",
+]
 
 
 class _PendingPool:
@@ -290,6 +295,7 @@ def classify_kind(phase_code: str, pool_actions: list[tuple]) -> str:
 
 # ── Parsing helpers ─────────────────────────────────────────────────────
 
+
 def parse_pool_actions(text: str) -> list[tuple[str, float, int]]:
     return [(m[0], float(m[1]), int(m[2])) for m in RE_ACTION_TUPLE.findall(text)]
 
@@ -333,6 +339,7 @@ def parse_permanents(text: str) -> list[dict[str, Any]]:
 
 
 # ── Session detection ───────────────────────────────────────────────────
+
 
 class SessionInfo:
     def __init__(self, seq: int, start_ts: str, opponent: str, n_games: int):
@@ -397,6 +404,7 @@ def _extract_ts(line: str, default: str) -> str:
 
 # ── Main parser ─────────────────────────────────────────────────────────
 
+
 def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
     log_name = os.path.basename(log_path)
     is_smoke = "smoke" in log_name
@@ -454,8 +462,7 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
         # ── logLife (turn/phase/life totals) ─────────────────────
         lm = RE_LOG_LIFE.search(line)
         if lm:
-            state.on_log_life(int(lm.group(1)), lm.group(2), lm.group(3),
-                              int(lm.group(4)), int(lm.group(5)))
+            state.on_log_life(int(lm.group(1)), lm.group(2), lm.group(3), int(lm.group(4)), int(lm.group(5)))
             continue
 
         # ── MCTS pool distribution ───────────────────────────────
@@ -471,9 +478,7 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
                 # them a case where the search concluded "do nothing".
                 prev = pending_pool.pop(thread_id, None)
                 if prev is not None:
-                    _emit_pass_decision(
-                        state, prev, pending_menu.pop(thread_id, ""), stats
-                    )
+                    _emit_pass_decision(state, prev, pending_menu.pop(thread_id, ""), stats)
                 pending_pool[thread_id] = _PendingPool(
                     actions=actions,
                     phase_code=pool_match.group(1),
@@ -504,9 +509,7 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
             # The chosen name comes from the (comma-safe) `chose action` line;
             # add it to the anchors in case the paired pool is a sub-decision
             # pool ("(top: X)pool=") whose names are not the menu's entries.
-            menu = segment_menu(
-                menu_raw, [name for name, _, _ in pool_actions] + [chosen]
-            )
+            menu = segment_menu(menu_raw, [name for name, _, _ in pool_actions] + [chosen])
 
             kind = classify_kind(phase_code, pool_actions)
             mcts_counts = {name: count for name, _, count in pool_actions}
@@ -641,8 +644,7 @@ class _ThreadState:
         self._block_perm_lines = 0
         self._block_flushed = False
 
-    def on_log_life(self, turn: int, phase_name: str, phase_code: str,
-                    life_a: int, life_b: int):
+    def on_log_life(self, turn: int, phase_name: str, phase_code: str, life_a: int, life_b: int):
         self.last_turn = turn
         self.life_a = life_a
         self.life_b = life_b
@@ -753,8 +755,7 @@ def _backfill_battlefield(state: _ThreadState):
             return
 
 
-def _finalize_game(state: _ThreadState, all_decisions: list[dict],
-                   stats: dict[str, int]):
+def _finalize_game(state: _ThreadState, all_decisions: list[dict], stats: dict[str, int]):
     """Close out a game: assign hands, outcomes, boards; emit surviving rows.
 
     Hand attribution is by NAME + THREAD + TURN: a row's hand comes from the
@@ -790,6 +791,7 @@ def _finalize_game(state: _ThreadState, all_decisions: list[dict],
 
 
 # ── Session enrichment ──────────────────────────────────────────────────
+
 
 def _enrich_sessions(decisions: list[dict], sessions: list[SessionInfo]):
     """Assign sessions and calibrate outcomes.
@@ -885,22 +887,14 @@ def _enrich_sessions(decisions: list[dict], sessions: list[SessionInfo]):
 
 # ── CLI ─────────────────────────────────────────────────────────────────
 
+
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Parse MageZero XMage logs into decisions JSONL."
-    )
+    parser = argparse.ArgumentParser(description="Parse MageZero XMage logs into decisions JSONL.")
     parser.add_argument(
-        "--log", required=True, action="append", dest="logs",
-        help="Path(s) to mz_train.log file(s)"
+        "--log", required=True, action="append", dest="logs", help="Path(s) to mz_train.log file(s)"
     )
-    parser.add_argument(
-        "--out", required=True,
-        help="Output JSONL path"
-    )
-    parser.add_argument(
-        "--report", action="store_true",
-        help="Print reconciliation report"
-    )
+    parser.add_argument("--out", required=True, help="Output JSONL path")
+    parser.add_argument("--report", action="store_true", help="Print reconciliation report")
     return parser
 
 
@@ -921,11 +915,13 @@ def main():
             for line in f:
                 m = RE_WIN_RATE.search(line)
                 if m:
-                    wr_lines.append({
-                        "win_rate": float(m.group(1)),
-                        "n_wins": int(m.group(2)),
-                        "n_total": int(m.group(3)),
-                    })
+                    wr_lines.append(
+                        {
+                            "win_rate": float(m.group(1)),
+                            "n_wins": int(m.group(2)),
+                            "n_total": int(m.group(3)),
+                        }
+                    )
         win_rates_by_log[log_name] = wr_lines
 
     # Write output
@@ -940,10 +936,9 @@ def main():
         _print_report(all_decisions, win_rates_by_log, args.logs, out_path)
 
 
-def _print_report(decisions: list[dict],
-                  win_rates_by_log: dict[str, list[dict]],
-                  log_paths: list[str],
-                  out_path: Path):
+def _print_report(
+    decisions: list[dict], win_rates_by_log: dict[str, list[dict]], log_paths: list[str], out_path: Path
+):
 
     print("=" * 60)
     print("MAGEZERO LOG PARSE REPORT")
@@ -979,8 +974,9 @@ def _print_report(decisions: list[dict],
         if pos_norm != sorted(d.get("hand", [])):
             differ += 1
     if both:
-        print(f"    Positional-source disagreement (diagnostic): "
-              f"{differ}/{both} = {100 * differ / both:.1f}%")
+        print(
+            f"    Positional-source disagreement (diagnostic): {differ}/{both} = {100 * differ / both:.1f}%"
+        )
 
     total_games: set[str] = set()
     total_by_kind: dict[str, int] = {}
@@ -1030,10 +1026,16 @@ def _print_report(decisions: list[dict],
 
         # Aggregate per-session: count unique game outcomes
         for sess, out_data in session_outcomes.items():
-            games_won = {d.get("game_id", "") for d in log_decisions
-                         if d.get("session") == sess and d.get("outcome") == "won"}
-            games_lost = {d.get("game_id", "") for d in log_decisions
-                          if d.get("session") == sess and d.get("outcome") == "lost"}
+            games_won = {
+                d.get("game_id", "")
+                for d in log_decisions
+                if d.get("session") == sess and d.get("outcome") == "won"
+            }
+            games_lost = {
+                d.get("game_id", "")
+                for d in log_decisions
+                if d.get("session") == sess and d.get("outcome") == "lost"
+            }
             out_data["won"] = len(games_won)
             out_data["lost"] = len(games_lost)
             out_data["unknown"] = len(session_games[sess]) - len(games_won) - len(games_lost)
@@ -1049,20 +1051,24 @@ def _print_report(decisions: list[dict],
                 out_data = next((o for s, o in session_outcomes.items() if s.startswith(sess)), None)
                 inferred_wins = out_data["won"] if out_data else 0
                 inferred_games = out_data["won"] + out_data["lost"] + out_data["unknown"] if out_data else 0
-                expected_wins = round(wr["n_wins"] / wr["n_total"] * inferred_games) if wr["n_total"] > 0 else 0
+                expected_wins = (
+                    round(wr["n_wins"] / wr["n_total"] * inferred_games) if wr["n_total"] > 0 else 0
+                )
                 diff = abs(inferred_wins - expected_wins)
                 mark = "✅" if diff <= 2 else "⚠️"
-                print(f"      {mark} {sess}: logged {wr['n_wins']}/{wr['n_total']} "
-                      f"→ inferred {inferred_wins}/{inferred_games} (expected {expected_wins}, diff={diff})")
+                print(
+                    f"      {mark} {sess}: logged {wr['n_wins']}/{wr['n_total']} "
+                    f"→ inferred {inferred_wins}/{inferred_games} (expected {expected_wins}, diff={diff})"
+                )
 
             # Overall reconciliation (proportional)
-            total_inferred_wins = sum(
-                o["won"] for o in session_outcomes.values()
-            )
+            total_inferred_wins = sum(o["won"] for o in session_outcomes.values())
             total_inferred_games = len(log_games)
-            total_expected_wins = round(
-                total_logged_wins / total_logged_games * total_inferred_games
-            ) if total_logged_games > 0 else 0
+            total_expected_wins = (
+                round(total_logged_wins / total_logged_games * total_inferred_games)
+                if total_logged_games > 0
+                else 0
+            )
             diff = abs(total_inferred_wins - total_expected_wins)
             mark = "✅" if diff <= 2 else "⚠️"
             print(f"\n    RECONCILIATION ({mark}):")

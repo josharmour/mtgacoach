@@ -686,9 +686,7 @@ def _own_board_block(facts: CombatFacts, dec: Any, oracle_chars: int) -> list[st
     lines.extend(_board_lines(facts.resolver, facts.detail, dec.own_board, oracle_chars))
     extra_groups = Counter(dec.own_board_extra)
     for gid, note in dict.fromkeys(dec.own_board_extra):
-        for ln in _board_lines(
-            facts.resolver, facts.detail, [gid] * extra_groups[(gid, note)], oracle_chars
-        ):
+        for ln in _board_lines(facts.resolver, facts.detail, [gid] * extra_groups[(gid, note)], oracle_chars):
             lines.append(f"{ln} {note}")
     return lines
 
@@ -839,11 +837,14 @@ def _canonical_block_explanation(dec: BlockDecision, solved: dict) -> str:
         # Mirrors Emitter._state_key — the identity agreement was judged on.
         return (gids.get(int(iid)), dec.live.get(int(iid)))
 
-    desc = ", ".join(
-        f"{b_name[b]} blocks {a_name[dec.assignments[b]]}"
-        for (_n, _g, b) in dec.blockers
-        if b in dec.assignments
-    ) or "no blocks"
+    desc = (
+        ", ".join(
+            f"{b_name[b]} blocks {a_name[dec.assignments[b]]}"
+            for (_n, _g, b) in dec.blockers
+            if b in dec.assignments
+        )
+        or "no blocks"
+    )
 
     # Gang structure must match before the tail's kill/loss claims can be
     # renamed: per attacker copy, the multiset of blocker states ganged onto
@@ -994,9 +995,7 @@ class Emitter:
         # the human's names before the line can render.
         explanation: Optional[str] = None
         if solved is not None:
-            explanation = (
-                _canonical_attack_explanation(solved, names) if agrees else solved["explanation"]
-            )
+            explanation = _canonical_attack_explanation(solved, names) if agrees else solved["explanation"]
         line = self._solver_line("attack", agrees, explanation)
 
         user, menu = render_attack_user(self.facts, dec, self.args.oracle_chars, line)
@@ -1066,9 +1065,7 @@ class Emitter:
         # not render solver copy names the response contradicts.
         explanation: Optional[str] = None
         if solved is not None:
-            explanation = (
-                _canonical_block_explanation(dec, solved) if agrees else solved["explanation"]
-            )
+            explanation = _canonical_block_explanation(dec, solved) if agrees else solved["explanation"]
         line = self._solver_line("block", agrees, explanation)
 
         user, menu = render_block_user(self.facts, dec, self.args.oracle_chars, line)
@@ -1351,8 +1348,7 @@ def iter_17lands_attacks(
                 life=_num(rv.get(row, pre + "eot_user_life")) if pre else None,
                 opp_life=_num(rv.get(row, pre + "eot_oppo_life")) if pre else None,
                 opp_hand=_num(rv.get(row, pre + "eot_oppo_cards_in_hand")) if pre else None,
-                own_board=pool_gids
-                + (rv.ids(row, pre + "eot_user_non_creatures_in_play") if pre else []),
+                own_board=pool_gids + (rv.ids(row, pre + "eot_user_non_creatures_in_play") if pre else []),
                 # The land played THIS turn is on the battlefield at declare
                 # attackers; the prior-eot list understated mana by one on
                 # nearly every attack record.
@@ -1872,9 +1868,7 @@ def _gre_attack(
     rem_names = disambiguate([_obj_name(snap, i)[1] for (_g, i) in rem_raw])
     remaining = [(n, g, i) for n, (g, i) in zip(rem_names, rem_raw, strict=True)]
     opp_names = disambiguate([_obj_name(snap, i)[1] for (i, _g, _p, _t, _tp) in opp_objs])
-    opp_creature_entries = [
-        (n, g, i) for n, (i, g, _p, _t, _tp) in zip(opp_names, opp_objs, strict=True)
-    ]
+    opp_creature_entries = [(n, g, i) for n, (i, g, _p, _t, _tp) in zip(opp_names, opp_objs, strict=True)]
     opp_blockers = [
         e for e, (_i, _g, _p, _t, tapped) in zip(opp_creature_entries, opp_objs, strict=True) if not tapped
     ]
@@ -2070,9 +2064,7 @@ def iter_gre_logs(facts: CombatFacts, root: Path, args, stats: Counter) -> Itera
                 stats["gre_seat_undetermined"] += 1
                 continue
             key = f"{fp.name}|m{mi}|{lm.match_id}"
-            yield from iter_gre_combat(
-                facts, lm.messages, seat, SOURCE_GRE_LOG, key, args, stats
-            )
+            yield from iter_gre_combat(facts, lm.messages, seat, SOURCE_GRE_LOG, key, args, stats)
 
 
 def iter_rply(facts: CombatFacts, root: Path, args, stats: Counter) -> Iterable[Any]:

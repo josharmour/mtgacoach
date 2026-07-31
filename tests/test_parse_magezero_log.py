@@ -788,7 +788,8 @@ class TestPassDecisionRecovery:
         """A pool whose argmax is Pass and which no chose-action consumed."""
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
-            + self.HAND3 + self.HAND4
+            + self.HAND3
+            + self.HAND4
             + self.LIFE
             # MCTS deliberates and prefers Pass — XMage logs no chose action.
             + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] [Cast Bounce Off score: 0.1 count: 90] =>[T]\n"
@@ -809,7 +810,8 @@ class TestPassDecisionRecovery:
         """An un-consumed pool whose argmax is NOT a pass must not be guessed."""
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
-            + self.HAND3 + self.HAND4
+            + self.HAND3
+            + self.HAND4
             + self.LIFE
             + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.2 count: 30] [Cast Bounce Off score: 0.5 count: 900] =>[T]\n"
             + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 20] [Play Island score: 0.3 count: 400] =>[T]\n"
@@ -903,15 +905,18 @@ class TestNamedHandAttribution:
         assert m.group(4) == "PlayerA"
         cards = parse_named_hand_cards(m.group(5))
         assert cards == [
-            "Island", "Negate", "Soul Partition", "Bounce Off",
-            "Combat Research", "Skrelv, Defector Mite", "Skrelv, Defector Mite",
+            "Island",
+            "Negate",
+            "Soul Partition",
+            "Bounce Off",
+            "Combat Research",
+            "Skrelv, Defector Mite",
+            "Skrelv, Defector Mite",
         ]
 
     def test_parse_named_hand_cards_comma_names(self):
         """Separator commas have no trailing space; in-name commas do."""
-        cards = parse_named_hand_cards(
-            "Kitsa, Otterball Elite,Malcolm, Alluring Scoundrel,Island,"
-        )
+        cards = parse_named_hand_cards("Kitsa, Otterball Elite,Malcolm, Alluring Scoundrel,Island,")
         assert cards == ["Kitsa, Otterball Elite", "Malcolm, Alluring Scoundrel", "Island"]
 
     def test_parse_named_hand_cards_empty(self):
@@ -944,9 +949,7 @@ class TestNamedHandAttribution:
 
     def test_row_without_named_hand_for_its_turn_is_dropped_and_counted(self):
         """FAIL CLOSED: no named hand line in the game for the row's turn."""
-        decisions = self._parse(
-            "INFO  Player A won the die roll =>[T]\n" + self.DECISION
-        )
+        decisions = self._parse("INFO  Player A won the die roll =>[T]\n" + self.DECISION)
         assert decisions == [], "an unattributable-hand row must be dropped, not guessed"
         assert LAST_PARSE_STATS["hand_dropped_unattributed"] == 1
         assert LAST_PARSE_STATS["hand_named_attributed"] == 0
@@ -958,9 +961,7 @@ class TestNamedHandAttribution:
             "INFO  [1:Beginning:UPKEEP]PlayerB hand: : Mountain,Hired Claw, =>[T] ComputerPlayer.logList \n"
             + self.DECISION
         )
-        assert decisions == [], (
-            "a PlayerB hand line must neither fill the row nor count as attribution"
-        )
+        assert decisions == [], "a PlayerB hand line must neither fill the row nor count as attribution"
         assert LAST_PARSE_STATS["hand_dropped_unattributed"] == 1
 
     def test_named_hands_reset_at_game_boundary(self):
@@ -972,17 +973,14 @@ class TestNamedHandAttribution:
             + "INFO  Player A won the die roll =>[T]\n"  # game 2, no hand line
             + self.DECISION
         )
-        assert len(decisions) == 1, (
-            "game 2's row has no hand line IN ITS OWN GAME and must be dropped"
-        )
+        assert len(decisions) == 1, "game 2's row has no hand line IN ITS OWN GAME and must be dropped"
         assert decisions[0]["hand"] == ["Island", "Negate"]
 
     def test_empty_named_hand_is_valid_attribution(self):
         """An empty logList hand means the hand IS empty — the row is kept."""
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
-            "INFO  [1:Beginning:UPKEEP]PlayerA hand: :  =>[T] ComputerPlayer.logList \n"
-            + self.DECISION
+            "INFO  [1:Beginning:UPKEEP]PlayerA hand: :  =>[T] ComputerPlayer.logList \n" + self.DECISION
         )
         assert len(decisions) == 1
         assert decisions[0]["hand"] == []
@@ -1015,14 +1013,27 @@ class TestNamedHandAttribution:
 # UWTempo.dck (magezero/xmage/decks/UWTempo.dck) — the primary player's deck
 # in every smoke-log game. 17 distinct names; any other name in a `hand`
 # field means hand attribution broke.
-UWTEMPO_DECK = frozenset({
-    "Malcolm, Alluring Scoundrel", "Island", "Sheltered by Ghosts",
-    "Skrelv, Defector Mite", "Combat Research", "No More Lies",
-    "Adarkar Wastes", "Seachrome Coast", "Meticulous Archive",
-    "Shardmage's Rescue", "Floodfarm Verge", "Soul Partition", "Negate",
-    "Kitsa, Otterball Elite", "Bounce Off", "Spell Pierce",
-    "Sleep-Cursed Faerie",
-})
+UWTEMPO_DECK = frozenset(
+    {
+        "Malcolm, Alluring Scoundrel",
+        "Island",
+        "Sheltered by Ghosts",
+        "Skrelv, Defector Mite",
+        "Combat Research",
+        "No More Lies",
+        "Adarkar Wastes",
+        "Seachrome Coast",
+        "Meticulous Archive",
+        "Shardmage's Rescue",
+        "Floodfarm Verge",
+        "Soul Partition",
+        "Negate",
+        "Kitsa, Otterball Elite",
+        "Bounce Off",
+        "Spell Pierce",
+        "Sleep-Cursed Faerie",
+    }
+)
 
 
 class TestHandDeckSignature:
@@ -1075,10 +1086,7 @@ class TestHandDeckSignature:
             for c in d.get("hand", [])
             if c not in UWTEMPO_DECK
         ]
-        assert not violations, (
-            f"{len(violations)} non-deck hand entries, first 10: {violations[:10]}"
-        )
-
+        assert not violations, f"{len(violations)} non-deck hand entries, first 10: {violations[:10]}"
 
 
 class TestSegmentMenu:

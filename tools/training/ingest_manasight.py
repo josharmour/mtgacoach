@@ -542,7 +542,9 @@ CAST_ACTION_TYPES = frozenset(
 # Playing a permanent from hand that is NOT a land (MDFC creature side, etc.).
 PLAY_ACTION_TYPES = frozenset({"ActionType_Play", "ActionType_PlayMDFC"})
 
-ACTIVATE_ACTION_TYPES = frozenset({"ActionType_Activate", "ActionType_Special", "ActionType_Special_TurnFaceUp"})
+ACTIVATE_ACTION_TYPES = frozenset(
+    {"ActionType_Activate", "ActionType_Special", "ActionType_Special_TurnFaceUp"}
+)
 
 COMBAT_ACTION_TYPES = frozenset({AT_DECLARE_ATTACKER, AT_DECLARE_BLOCKER})
 
@@ -558,7 +560,9 @@ STRATEGIC_ACTION_TYPES = (
 # toward "could have chosen differently" but never satisfy the "at least one
 # strategic action" test by themselves — otherwise "attack with nobody" alone
 # would qualify a menu with no creatures.
-NEUTRAL_OPTION_TYPES = frozenset({AT_NO_ATTACKS, AT_NO_BLOCKS, AT_SEARCH_FAIL, AT_OPTIONAL_NO, AT_OPTIONAL_YES})
+NEUTRAL_OPTION_TYPES = frozenset(
+    {AT_NO_ATTACKS, AT_NO_BLOCKS, AT_SEARCH_FAIL, AT_OPTIONAL_NO, AT_OPTIONAL_YES}
+)
 
 # Decision types that are mana/plumbing by construction.
 NON_STRATEGIC_DECISION_TYPES = frozenset({"pay_costs"})
@@ -1043,8 +1047,7 @@ def _write_attribution(path: Path, n: int) -> Path:
     """Every derived file must carry the upstream licence notice."""
     p = path.with_suffix(".ATTRIBUTION.txt")
     p.write_text(
-        f"{ATTRIBUTION}\n\nSource: {SOURCE_REPO}\nLicense: {SOURCE_LICENSE}\n"
-        f"Records: {n} in {path.name}\n",
+        f"{ATTRIBUTION}\n\nSource: {SOURCE_REPO}\nLicense: {SOURCE_LICENSE}\nRecords: {n} in {path.name}\n",
         encoding="utf-8",
     )
     return p
