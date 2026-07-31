@@ -2193,6 +2193,17 @@ v2 arms (combat-inclusive, then priority-only on the doubled corpus) train
 overnight for the corpus-effect and combat-effect comparisons; a gate-passing
 candidate most plausibly waits for gen 3-6 teacher data.
 
+**Floor-breach postscript for the v2 gate (added before merge):** the
+`wp3_v2_combat` manifest the overnight combat arm trains on carries
+`floor_breach_all_in: true` — filtered all-in attack share is **74.5% vs the
+38.6% pre-registered floor** (blocks are fine: 50.9% vs 69%). The adapter
+flagged it loudly rather than silently rebalancing, per design. Consequence
+for the v2 combat-effect comparison: score the combat slice against a trivial
+**always-attack-with-everything baseline**, not just against base gemma —
+with 3/4 of attack chains being all-in, a model that learned nothing but
+"attack all" will otherwise look like it learned combat. This is the same
+trap class as the 69% no-block floor that blocked a candidate in §25.
+
 ### §26 addendum 18 — COMBAT RETRACTION: the data was in the log all along (2026-07-30 ~17:00)
 
 Addendum 15/16-era conclusion "combat is blocked upstream, the data does not
