@@ -65,9 +65,11 @@ for _p in (str(SRC), str(REPO)):
 
 # ── Import AUTOPILOT_SYSTEM_PROMPT via importlib (avoids PySide6 cascade) ──
 
+
 def _load_autopilot_system_prompt() -> str:
     import importlib.util
     import types
+
     if "arenamcp" not in sys.modules:
         pkg = types.ModuleType("arenamcp")
         pkg.__path__ = [str(SRC / "arenamcp")]
@@ -76,9 +78,7 @@ def _load_autopilot_system_prompt() -> str:
         sys.modules["arenamcp"] = pkg
     bh_path = SRC / "arenamcp" / "backend_health.py"
     if "arenamcp.backend_health" not in sys.modules:
-        spec_h = importlib.util.spec_from_file_location(
-            "arenamcp.backend_health", str(bh_path)
-        )
+        spec_h = importlib.util.spec_from_file_location("arenamcp.backend_health", str(bh_path))
         assert spec_h is not None, f"cannot find backend_health.py at {bh_path}"
         mod_h = importlib.util.module_from_spec(spec_h)
         mod_h.__package__ = "arenamcp"
@@ -86,15 +86,14 @@ def _load_autopilot_system_prompt() -> str:
         spec_h.loader.exec_module(mod_h)
     ap_path = SRC / "arenamcp" / "action_planner.py"
     if "arenamcp.action_planner" not in sys.modules:
-        spec_a = importlib.util.spec_from_file_location(
-            "arenamcp.action_planner", str(ap_path)
-        )
+        spec_a = importlib.util.spec_from_file_location("arenamcp.action_planner", str(ap_path))
         assert spec_a is not None, f"cannot find action_planner.py at {ap_path}"
         mod_a = importlib.util.module_from_spec(spec_a)
         mod_a.__package__ = "arenamcp"
         sys.modules["arenamcp.action_planner"] = mod_a
         spec_a.loader.exec_module(mod_a)
     return sys.modules["arenamcp.action_planner"].AUTOPILOT_SYSTEM_PROMPT
+
 
 AUTOPILOT_SYSTEM_PROMPT = _load_autopilot_system_prompt()
 
@@ -115,21 +114,69 @@ from tools.training.build_combat_decisions import (  # noqa: E402
 
 # Best-effort land detection — only needed to exclude lands from the
 # attack/block pool (MZ data has no grp_ids or type lines).
-_BASIC_LANDS = frozenset({
-    "Plains", "Island", "Swamp", "Mountain", "Forest",
-    "Snow-Covered Plains", "Snow-Covered Island", "Snow-Covered Swamp",
-    "Snow-Covered Mountain", "Snow-Covered Forest", "Wastes",
-})
-_LAND_SUFFIXES = ("Land", "lands", "Verge", "Heath", "Foothills", "Delta",
-                  "Strand", "Mire", "Catacombs", "Meadow", "Pool", "Grove",
-                  "Garden", "Tomb", "Node", "Spire", "Cavern", "Passage",
-                  "Factory", "Opal", "Citadel", "Sanctum", "Archive",
-                  "Crossroads", "Hideout", "Shrine", "Village", "Mine",
-                  "Foundry", "Den", "Expanse", "Reach", "Canopy", "Vista",
-                  "Basin", "Fortress", "Cave", "Crater", "Bridge", "Vale",
-                  "Confluence", "Borough", "Hub", "Borderpost", "Column")
-_LAND_NAME_CONTAINS = ("Cavern of", "Field of", "Urza's", "Mishra's",
-                       "Corrupted", "Darksteel")
+_BASIC_LANDS = frozenset(
+    {
+        "Plains",
+        "Island",
+        "Swamp",
+        "Mountain",
+        "Forest",
+        "Snow-Covered Plains",
+        "Snow-Covered Island",
+        "Snow-Covered Swamp",
+        "Snow-Covered Mountain",
+        "Snow-Covered Forest",
+        "Wastes",
+    }
+)
+_LAND_SUFFIXES = (
+    "Land",
+    "lands",
+    "Verge",
+    "Heath",
+    "Foothills",
+    "Delta",
+    "Strand",
+    "Mire",
+    "Catacombs",
+    "Meadow",
+    "Pool",
+    "Grove",
+    "Garden",
+    "Tomb",
+    "Node",
+    "Spire",
+    "Cavern",
+    "Passage",
+    "Factory",
+    "Opal",
+    "Citadel",
+    "Sanctum",
+    "Archive",
+    "Crossroads",
+    "Hideout",
+    "Shrine",
+    "Village",
+    "Mine",
+    "Foundry",
+    "Den",
+    "Expanse",
+    "Reach",
+    "Canopy",
+    "Vista",
+    "Basin",
+    "Fortress",
+    "Cave",
+    "Crater",
+    "Bridge",
+    "Vale",
+    "Confluence",
+    "Borough",
+    "Hub",
+    "Borderpost",
+    "Column",
+)
+_LAND_NAME_CONTAINS = ("Cavern of", "Field of", "Urza's", "Mishra's", "Corrupted", "Darksteel")
 
 
 def _is_land(name: str) -> bool:
@@ -169,6 +216,7 @@ def _known_combat_state(name: str) -> bool:
 
 # ── Name disambiguation (matches build_combat_decisions.disambiguate) ──────
 
+
 def _disambiguate(names: list[str]) -> list[str]:
     """Byte-identical to build_combat_decisions.disambiguate."""
     counts = Counter(names)
@@ -184,6 +232,7 @@ def _disambiguate(names: list[str]) -> list[str]:
 
 
 # ── Response formatters (thin wrappers matching build_combat_decisions) ────
+
 
 def _attack_response(names: list[str]) -> str:
     return json.dumps(
@@ -201,6 +250,7 @@ def _block_response(assignments: dict[str, str]) -> str:
 
 # ── System prompt builder (matches build_combat_decisions.build_system) ────
 
+
 def _build_system(kind: str) -> str:
     addendum = ATTACK_ADDENDUM if kind == "attack" else BLOCK_ADDENDUM
     addendum += NO_SOLVER_ADDENDUM
@@ -209,6 +259,7 @@ def _build_system(kind: str) -> str:
 
 
 # ── User prompt builders ───────────────────────────────────────────────────
+
 
 def _user_prompt_attack(
     row: dict,
@@ -301,6 +352,7 @@ def _board_lines(row: dict, side: str) -> list[str]:
 
 # ── Record construction ────────────────────────────────────────────────────
 
+
 def _rid(key: str) -> str:
     return f"mzc-{hashlib.sha1(key.encode()).hexdigest()[:16]}"
 
@@ -385,9 +437,7 @@ def build_attack_record(row: dict) -> tuple[dict | None, str]:
         # a priority action during combat, not a combat decision.
         return None, "attack_no_declared"
 
-    declared = _match_declared_to_pool(
-        [n for n, _ in self_raw], pool, declared_raw
-    )
+    declared = _match_declared_to_pool([n for n, _ in self_raw], pool, declared_raw)
 
     user = _user_prompt_attack(row, pool, declared)
     rec = {
@@ -421,8 +471,9 @@ def build_attack_record(row: dict) -> tuple[dict | None, str]:
     }
     # Prove no solver line and no mcts_counts in the prompt
     assert "Computed optimal" not in rec["user"], "solver line leaked into prompt"
-    assert "count" not in rec["user"].lower() or "discard" not in rec["user"].lower(), \
+    assert "count" not in rec["user"].lower() or "discard" not in rec["user"].lower(), (
         "mcts_counts may have leaked"
+    )
     return rec, ""
 
 
@@ -477,12 +528,8 @@ def build_block_record(row: dict) -> tuple[dict | None, str]:
     # attackers for THIS blockers decision are the opp creatures with
     # ,attacking — but in this pattern, no opp creature has ,attacking.
     # We cannot determine the blocking assignment from ambiguous markers.
-    self_attacking = any(
-        _is_attacking(p["name"]) for p in row.get("battlefield_self", [])
-    )
-    opp_blocking = any(
-        _is_blocking(p["name"]) for p in row.get("battlefield_opp", [])
-    )
+    self_attacking = any(_is_attacking(p["name"]) for p in row.get("battlefield_self", []))
+    opp_blocking = any(_is_blocking(p["name"]) for p in row.get("battlefield_opp", []))
     if self_attacking and opp_blocking:
         return None, "block_reversed_markers_ambiguous"
 
@@ -490,8 +537,7 @@ def build_block_record(row: dict) -> tuple[dict | None, str]:
         # No blockers declared — opponent's attackers are known
         if not opp_attackers:
             return None, "block_no_attackers_either"
-        user = _user_prompt_block(row, blocker_pool,
-                                   opp_attackers, {})
+        user = _user_prompt_block(row, blocker_pool, opp_attackers, {})
         rec = {
             "id": _rid(row.get("game_id", "") + ":blk:" + str(row.get("turn", 0))),
             "system": _build_system("block"),
@@ -528,14 +574,11 @@ def build_block_record(row: dict) -> tuple[dict | None, str]:
         return None, f"block_{len(opp_attackers)}_attackers_cannot_pair"
 
     # Match declared blockers against the pool for correct disambiguation
-    declared_blockers = _match_declared_to_pool(
-        blocker_pool_raw, blocker_pool, self_blockers_raw
-    )
+    declared_blockers = _match_declared_to_pool(blocker_pool_raw, blocker_pool, self_blockers_raw)
     target_name = opp_attackers[0]
     assignments = {b: target_name for b in declared_blockers}
 
-    user = _user_prompt_block(row, blocker_pool,
-                               opp_attackers, assignments)
+    user = _user_prompt_block(row, blocker_pool, opp_attackers, assignments)
     rec = {
         "id": _rid(row.get("game_id", "") + ":blk:" + str(row.get("turn", 0))),
         "system": _build_system("block"),
@@ -593,9 +636,7 @@ def _class_histogram(
     return items
 
 
-def _check_class_share(
-    hist: list[tuple[str, int, float]], max_share: float, label: str
-) -> None:
+def _check_class_share(hist: list[tuple[str, int, float]], max_share: float, label: str) -> None:
     """Raise SystemExit if any class in *hist* exceeds *max_share*."""
     if not hist:
         return
@@ -610,10 +651,7 @@ def _check_class_share(
         ]
         for c, nn, s in hist:
             lines.append(f"    {c}: {nn} ({s:.1%})")
-        lines.append(
-            "  Pass --allow-skewed to build anyway, or use "
-            "--balance downsample."
-        )
+        lines.append("  Pass --allow-skewed to build anyway, or use --balance downsample.")
         raise SystemExit("\n".join(lines))
 
 
@@ -649,8 +687,7 @@ def _downsample(
         if max_share <= threshold:
             kept.extend(subset)
             print(
-                f"  [{kind_val}] no class exceeds {threshold:.0%}, "
-                f"keeping all {len(subset)}",
+                f"  [{kind_val}] no class exceeds {threshold:.0%}, keeping all {len(subset)}",
                 file=sys.stderr,
             )
             continue
@@ -667,14 +704,8 @@ def _downsample(
             kept.extend(subset)
             continue
 
-        majority_recs = [
-            r for r in subset
-            if r["meta"].get(meta_class_field, "") == max_class
-        ]
-        non_majority = [
-            r for r in subset
-            if r["meta"].get(meta_class_field, "") != max_class
-        ]
+        majority_recs = [r for r in subset if r["meta"].get(meta_class_field, "") == max_class]
+        non_majority = [r for r in subset if r["meta"].get(meta_class_field, "") != max_class]
 
         rng.shuffle(majority_recs)
         keep_count = len(majority_recs) - to_drop
@@ -690,6 +721,7 @@ def _downsample(
         kept.extend(keep_majority)
 
     return kept
+
 
 def _read_jsonl(path: Path) -> list[dict]:
     out: list[dict] = []
@@ -714,20 +746,26 @@ def main(argv: list[str] | None = None) -> int:
         description="Build combat-gate-shaped records from MageZero decisions JSONL.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--in", dest="input", type=Path, required=True,
-                        help="Path to decisions JSONL (MageZero schema)")
-    parser.add_argument("--out", dest="output", type=Path, required=True,
-                        help="Path to write training records JSONL")
-    parser.add_argument("--report", action="store_true",
-                        help="Print build report to stderr on completion")
-    parser.add_argument("--max-class-share", type=float, default=0.50,
-                        help="Maximum allowed share of any single class "
-                             "(default: 0.50).  Build aborts if exceeded.")
-    parser.add_argument("--allow-skewed", action="store_true",
-                        help="Skip the fail-closed class-share guard")
-    parser.add_argument("--balance", choices=("downsample",), default=None,
-                        help="Downsample the majority class toward the "
-                             "threshold (deterministic, seed=7)")
+    parser.add_argument(
+        "--in", dest="input", type=Path, required=True, help="Path to decisions JSONL (MageZero schema)"
+    )
+    parser.add_argument(
+        "--out", dest="output", type=Path, required=True, help="Path to write training records JSONL"
+    )
+    parser.add_argument("--report", action="store_true", help="Print build report to stderr on completion")
+    parser.add_argument(
+        "--max-class-share",
+        type=float,
+        default=0.50,
+        help="Maximum allowed share of any single class (default: 0.50).  Build aborts if exceeded.",
+    )
+    parser.add_argument("--allow-skewed", action="store_true", help="Skip the fail-closed class-share guard")
+    parser.add_argument(
+        "--balance",
+        choices=("downsample",),
+        default=None,
+        help="Downsample the majority class toward the threshold (deterministic, seed=7)",
+    )
     args = parser.parse_args(argv)
 
     t0 = time.time()
@@ -784,11 +822,13 @@ def main(argv: list[str] | None = None) -> int:
     # ── Class-histogram guard -------------------------------------------------
 
     attack_hist = _class_histogram(
-        records, "attack_class",
+        records,
+        "attack_class",
         lambda r: r.get("kind") == "combat_attack",
     )
     block_hist = _class_histogram(
-        records, "block_class",
+        records,
+        "block_class",
         lambda r: r.get("kind") == "combat_block",
     )
 
@@ -799,15 +839,16 @@ def main(argv: list[str] | None = None) -> int:
     # ── Rebalance -------------------------------------------------------------
 
     if args.balance == "downsample":
-        records = _downsample(records, attack_hist, block_hist,
-                              args.max_class_share)
+        records = _downsample(records, attack_hist, block_hist, args.max_class_share)
         # Recompute histograms after downsample for accurate report
         attack_hist = _class_histogram(
-            records, "attack_class",
+            records,
+            "attack_class",
             lambda r: r.get("kind") == "combat_attack",
         )
         block_hist = _class_histogram(
-            records, "block_class",
+            records,
+            "block_class",
             lambda r: r.get("kind") == "combat_block",
         )
 
@@ -816,9 +857,17 @@ def main(argv: list[str] | None = None) -> int:
     logger.info(f"wrote {written} records -> {args.output}")
 
     if args.report:
-        _print_report(records, drops, skip_counts, read_count,
-                      args.input, args.output, elapsed,
-                      attack_hist=attack_hist, block_hist=block_hist)
+        _print_report(
+            records,
+            drops,
+            skip_counts,
+            read_count,
+            args.input,
+            args.output,
+            elapsed,
+            attack_hist=attack_hist,
+            block_hist=block_hist,
+        )
 
     return 0
 
@@ -836,10 +885,7 @@ def _print_report(
 ) -> None:
     attack_recs = [r for r in records if r.get("kind") == "combat_attack"]
     block_recs = [r for r in records if r.get("kind") == "combat_block"]
-    any_mcts = sum(
-        1 for r in records
-        if isinstance(r.get("meta"), dict) and r["meta"].get("mcts_chosen")
-    )
+    any_mcts = sum(1 for r in records if isinstance(r.get("meta"), dict) and r["meta"].get("mcts_chosen"))
 
     print("\n=== BUILD REPORT ===", file=sys.stderr)
     print(f"  Input:      {input_path} ({read_count} rows)", file=sys.stderr)
@@ -872,15 +918,21 @@ def _print_report(
         sample = attack_recs[0]
         print(f"    id: {sample['id']}", file=sys.stderr)
         print(f"    response: {sample['response']}", file=sys.stderr)
-        print(f"    meta: {json.dumps({k: sample['meta'][k] for k in ('pool_size','chosen_size','chosen_names','attack_class')})}", file=sys.stderr)
+        print(
+            f"    meta: {json.dumps({k: sample['meta'][k] for k in ('pool_size', 'chosen_size', 'chosen_names', 'attack_class')})}",
+            file=sys.stderr,
+        )
     if block_recs:
         print("\n  Sample block response:", file=sys.stderr)
         sample = block_recs[0]
         print(f"    id: {sample['id']}", file=sys.stderr)
         print(f"    response: {sample['response']}", file=sys.stderr)
-        print(f"    meta: {json.dumps({k: sample['meta'][k] for k in ('blocker_pool_size','n_attackers','n_blocks','block_class')})}", file=sys.stderr)
+        print(
+            f"    meta: {json.dumps({k: sample['meta'][k] for k in ('blocker_pool_size', 'n_attackers', 'n_blocks', 'block_class')})}",
+            file=sys.stderr,
+        )
 
-    print(f"  {'='*40}", file=sys.stderr)
+    print(f"  {'=' * 40}", file=sys.stderr)
 
 
 if __name__ == "__main__":

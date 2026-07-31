@@ -931,8 +931,12 @@ def _norm_optional(req: dict, snap, response: Optional[ReplayMessage]) -> tuple[
     return (
         active,
         [],
-        dict(extra, _pick=_pick_from_indices([idx] if idx is not None else [], active, status,
-                                             optional_response=resp)),
+        dict(
+            extra,
+            _pick=_pick_from_indices(
+                [idx] if idx is not None else [], active, status, optional_response=resp
+            ),
+        ),
     )
 
 

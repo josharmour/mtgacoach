@@ -296,9 +296,7 @@ def stage_leak_scan(
     re_menu_line = re.compile(r"^\s*\d+\.\s", re.MULTILINE)
 
     def _strip_menu_lines(text: str) -> str:
-        return "\n".join(
-            "" if re_menu_line.match(line) else line for line in text.splitlines()
-        )
+        return "\n".join("" if re_menu_line.match(line) else line for line in text.splitlines())
 
     for split_name, records in rendered.items():
         for i, rec in enumerate(records):

@@ -692,9 +692,7 @@ def build_decision(rec: dict, facts: _CardFacts) -> dict | None:
     # (one per attacker it could block), and (action_type, grpId, instanceId)
     # cannot tell them apart — identity matching silently labelled the wrong
     # attacker on 3 of 996 held-out block decisions.
-    kept = [
-        (i, e) for i, e in enumerate(full_menu) if e.get("action_type") not in MANA_LEVEL_ACTION_TYPES
-    ]
+    kept = [(i, e) for i, e in enumerate(full_menu) if e.get("action_type") not in MANA_LEVEL_ACTION_TYPES]
     menu = [e for _, e in kept]
     if gold_entry.get("action_type") in MANA_LEVEL_ACTION_TYPES:
         return {"drop_reason": "gold_pick_is_mana_action"}
@@ -2008,9 +2006,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
             composition = corpus_composition(corpus) if corpus else {}
             references = reference_policies(corpus) if corpus else {}
             references_strategic = (
-                reference_policies([r for r in corpus if not r["meta"]["is_land_drop"]])
-                if corpus
-                else {}
+                reference_policies([r for r in corpus if not r["meta"]["is_land_drop"]]) if corpus else {}
             )
 
         if not failures:
@@ -2443,8 +2439,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-strategic-delta-ci-lower",
         type=float,
         default=MIN_STRATEGIC_DELTA_CI_LOWER,
-        help="G7: floor for the strategic-subset paired-bootstrap delta CI lower bound "
-        "(may only be raised)",
+        help="G7: floor for the strategic-subset paired-bootstrap delta CI lower bound (may only be raised)",
     )
     g.add_argument(
         "--min-accuracy",

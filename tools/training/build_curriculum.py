@@ -135,9 +135,9 @@ SCRYFALL_BULK = Path.home() / ".arenamcp" / "cache" / "scryfall" / "default_card
 WEIGHTS = {"branch": 0.45, "board": 0.30, "cre_amb": 0.20, "rules": 0.05}
 
 STAGE_NAMES = {
-    1: "curve",     # near-forced, creature-centric, small board
-    2: "contest",   # real branching, mixed types, developed board
-    3: "tangle",    # wide branching, dense board, spell-vs-creature judgment
+    1: "curve",  # near-forced, creature-centric, small board
+    2: "contest",  # real branching, mixed types, developed board
+    3: "tangle",  # wide branching, dense board, spell-vs-creature judgment
 }
 
 PRIMARY_TYPES = (
@@ -385,9 +385,16 @@ def option_features(name: str, card: Optional[dict], mana: int, sources: list[se
         # Unresolved name: neutral, non-affordable, flagged. Measured rate on
         # the full corpus is reported as unresolved_option_names.
         return {
-            "name": name, "types": [], "cmc": None, "affordable": False,
-            "instant": False, "targets": False, "modal": False,
-            "triggers": 0, "text_len": 0, "resolved": False,
+            "name": name,
+            "types": [],
+            "cmc": None,
+            "affordable": False,
+            "instant": False,
+            "targets": False,
+            "modal": False,
+            "triggers": 0,
+            "text_len": 0,
+            "resolved": False,
         }
     type_line = (card.get("tl") or "").lower()
     text = card.get("t") or ""
@@ -410,8 +417,7 @@ def decision_features(record: dict, cards: dict[str, dict]) -> dict:
     parsed = parse_prompt(record["user"])
     sources = parse_sources(parsed["sources"])
     options = [
-        option_features(name, cards.get(name.lower()), parsed["mana"], sources)
-        for name in parsed["menu"]
+        option_features(name, cards.get(name.lower()), parsed["mana"], sources) for name in parsed["menu"]
     ]
     own_nonland, own_lands = permanent_counts(parsed["board_you"])
     opp_nonland, opp_lands = permanent_counts(parsed["board_opp"])
@@ -481,7 +487,7 @@ def complexity_score(components: dict[str, float]) -> float:
 
 
 def reflex_pick(f: dict) -> int:
-    """"Cast the biggest affordable creature, else the biggest affordable spell."
+    """ "Cast the biggest affordable creature, else the biggest affordable spell."
 
     The strongest trivial policy measured on this corpus (61.1%). Ties break
     toward the earlier menu entry. Returns a 1-based menu index.
@@ -580,7 +586,7 @@ def auc(scores: list[float], labels: list[int]) -> float:
         while j + 1 < len(pairs) and pairs[j + 1][0] == pairs[i][0]:
             j += 1
         avg_rank = (i + j) / 2.0 + 1.0
-        rank_sum += avg_rank * sum(lbl for _, lbl in pairs[i:j + 1])
+        rank_sum += avg_rank * sum(lbl for _, lbl in pairs[i : j + 1])
         i = j + 1
     return (rank_sum - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
 
@@ -642,9 +648,7 @@ def validation_block(rows: list[dict]) -> dict:
         "proxy_error_rate_pct": round(100.0 * sum(wrong) / len(rows), 1),
         "auc_full_score": round(auc([r["score"] for r in rows], wrong), 4),
         "auc_menu_size_only": round(auc([float(r["menu_size"]) for r in rows], wrong), 4),
-        "auc_by_component": {
-            k: round(auc([c[k] for c in comps], wrong), 4) for k in WEIGHTS
-        },
+        "auc_by_component": {k: round(auc([c[k] for c in comps], wrong), 4) for k in WEIGHTS},
         "weights": WEIGHTS,
     }
     return out
@@ -688,8 +692,7 @@ def check_staleness() -> dict:
             "current_chars": len(SYSTEM_PROMPT),
             "identical": stored == SYSTEM_PROMPT,
             "missing_from_corpus": [
-                line for line in SYSTEM_PROMPT.split("\n")
-                if line.startswith("- ") and line not in stored
+                line for line in SYSTEM_PROMPT.split("\n") if line.startswith("- ") and line not in stored
             ],
         }
     except Exception as exc:  # noqa: BLE001
@@ -703,21 +706,27 @@ def check_staleness() -> dict:
 def write_index(rows: list[dict], path: Path) -> None:
     with path.open("w", encoding="utf-8") as fh:
         for r in rows:
-            fh.write(json.dumps({
-                "id": r["id"],
-                "record_key": r["record_key"],
-                "stage": r["stage"],
-                "stage_name": STAGE_NAMES[r["stage"]],
-                "score": round(r["score"], 4),
-                "components": {k: round(v, 4) for k, v in r["components"].items()},
-                "n_affordable": r["n_affordable"],
-                "menu_size": r["menu_size"],
-                "n_creature_options": r["n_creature_options"],
-                "board_nonland": r["board_nonland"],
-                "max_triggers": r["max_triggers"],
-                "turn": r["turn"],
-                "pick_affordable": r["pick_affordable"],
-            }, ensure_ascii=False) + "\n")
+            fh.write(
+                json.dumps(
+                    {
+                        "id": r["id"],
+                        "record_key": r["record_key"],
+                        "stage": r["stage"],
+                        "stage_name": STAGE_NAMES[r["stage"]],
+                        "score": round(r["score"], 4),
+                        "components": {k: round(v, 4) for k, v in r["components"].items()},
+                        "n_affordable": r["n_affordable"],
+                        "menu_size": r["menu_size"],
+                        "n_creature_options": r["n_creature_options"],
+                        "board_nonland": r["board_nonland"],
+                        "max_triggers": r["max_triggers"],
+                        "turn": r["turn"],
+                        "pick_affordable": r["pick_affordable"],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
 
 
 def materialize(corpus: Path, rows: list[dict], out_dir: Path, prefix: str) -> dict[int, int]:
@@ -749,7 +758,9 @@ def materialize(corpus: Path, rows: list[dict], out_dir: Path, prefix: str) -> d
     return dict(counts)
 
 
-def dump_examples(corpus: Path, rows: list[dict], n: int, stages: tuple[int, ...], out: Path, seed: int) -> None:
+def dump_examples(
+    corpus: Path, rows: list[dict], n: int, stages: tuple[int, ...], out: Path, seed: int
+) -> None:
     """Sample ``n`` decisions per stage and write their full prompts out for
     human inspection. This is the sanity check the metric does not get to
     self-certify."""
@@ -776,7 +787,7 @@ def dump_examples(corpus: Path, rows: list[dict], n: int, stages: tuple[int, ...
                 fh.write("=" * 100 + "\n")
                 fh.write(
                     f"STAGE {st} ({STAGE_NAMES[st]})  score={row['score']:.3f}  "
-                    f"components={ {k: round(v,2) for k,v in row['components'].items()} }\n"
+                    f"components={ {k: round(v, 2) for k, v in row['components'].items()} }\n"
                     f"n_affordable={row['n_affordable']}/{row['menu_size']}  "
                     f"creature_options={row['n_creature_options']}  "
                     f"board_nonland={row['board_nonland']}  turn={row['turn']}\n"
@@ -796,17 +807,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--prefix", default="strategic_casts_stage")
     ap.add_argument("--stride", type=int, default=1, help="read every Nth record")
     ap.add_argument("--limit", type=int, default=None)
-    ap.add_argument("--cuts", default="0.3333,0.6667",
-                    help="score quantiles separating stage 1|2 and 2|3")
-    ap.add_argument("--materialize", action="store_true",
-                    help="write full per-stage corpora (~2.4 GB) as well as the index")
+    ap.add_argument("--cuts", default="0.3333,0.6667", help="score quantiles separating stage 1|2 and 2|3")
+    ap.add_argument(
+        "--materialize",
+        action="store_true",
+        help="write full per-stage corpora (~2.4 GB) as well as the index",
+    )
     ap.add_argument("--no-index", action="store_true")
-    ap.add_argument("--validate", action="store_true",
-                    help="recompute the AUC table and the stratified honesty check")
-    ap.add_argument("--no-staleness-check", dest="check_staleness", action="store_false",
-                    help="skip the system-prompt staleness comparison (it imports the builder)")
-    ap.add_argument("--dump-examples", type=int, default=0,
-                    help="sample N decisions per stage into a human-readable file")
+    ap.add_argument(
+        "--validate", action="store_true", help="recompute the AUC table and the stratified honesty check"
+    )
+    ap.add_argument(
+        "--no-staleness-check",
+        dest="check_staleness",
+        action="store_false",
+        help="skip the system-prompt staleness comparison (it imports the builder)",
+    )
+    ap.add_argument(
+        "--dump-examples", type=int, default=0, help="sample N decisions per stage into a human-readable file"
+    )
     ap.add_argument("--example-stages", default="1,3")
     ap.add_argument("--rebuild-card-index", action="store_true")
     ap.add_argument("--seed", type=int, default=20260726)
@@ -855,9 +874,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "max": round(max(scores), 4),
             "histogram": dict(sorted(Counter(round(s, 1) for s in scores).items())),
         },
-        "component_means": {
-            k: round(statistics.mean(r["components"][k] for r in rows), 4) for k in WEIGHTS
-        },
+        "component_means": {k: round(statistics.mean(r["components"][k] for r in rows), 4) for k in WEIGHTS},
         "data_quality": dict(problems),
         "stages": {
             f"{st}_{STAGE_NAMES[st]}": stage_summary([r for r in rows if r["stage"] == st])
@@ -895,10 +912,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.info(
             "stage %d (%-7s) n=%-7d score<=%.3f  n_aff=%.2f board=%.1f creat=%.2f  "
             "reflex=%.1f%% (random %.1f%%)",
-            st, STAGE_NAMES[st], s["n"],
-            s["score_max"], s["n_affordable_mean"], s["board_nonland_mean"],
+            st,
+            STAGE_NAMES[st],
+            s["n"],
+            s["score_max"],
+            s["n_affordable_mean"],
+            s["board_nonland_mean"],
             statistics.mean(r["n_creature_options"] for r in rows if r["stage"] == st),
-            s["reflex_accuracy_pct"], s["random_baseline_pct"],
+            s["reflex_accuracy_pct"],
+            s["random_baseline_pct"],
         )
     return 0
 

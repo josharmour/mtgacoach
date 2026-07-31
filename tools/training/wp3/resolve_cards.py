@@ -13,8 +13,12 @@ import urllib.request
 
 DECK_DIR = "/home/joshu/repos/magezero/xmage/decks"
 DECK_FILES = [
-    "UWTempo.dck", "Standard-MonoR.dck", "Standard-MonoG.dck",
-    "Standard-MonoB.dck", "Standard-MonoW.dck", "Standard-MonoU.dck",
+    "UWTempo.dck",
+    "Standard-MonoR.dck",
+    "Standard-MonoG.dck",
+    "Standard-MonoB.dck",
+    "Standard-MonoW.dck",
+    "Standard-MonoU.dck",
 ]
 CACHE_PATH = "tools/training/wp3/scryfall_cache.json"
 OUTPUT_PATH = "tools/training/magezero_card_map.json"
@@ -130,8 +134,7 @@ def resolve_card(name, cache):
 def main():
     names, layout_only = extract_card_names()
     print(f"Card names from lines: {len(names)}")
-    print(f"Layout-only refs: {len(layout_only)} items: "
-          f"{[f'{s}:{n}' for s, n in sorted(layout_only)]}")
+    print(f"Layout-only refs: {len(layout_only)} items: {[f'{s}:{n}' for s, n in sorted(layout_only)]}")
 
     cache = load_cache()
     card_map = {}

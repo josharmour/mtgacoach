@@ -26,8 +26,8 @@ References
 import math
 
 # ── standard normal quantiles ─────────────────────────────────
-Z_ALPHA_2 = 1.959964   # α = 0.05, two-sided
-Z_BETA = 0.841621       # β = 0.20 (power = 0.80)
+Z_ALPHA_2 = 1.959964  # α = 0.05, two-sided
+Z_BETA = 0.841621  # β = 0.20 (power = 0.80)
 
 
 def mde(p_baseline: float, n_baseline: int, n_net: int) -> float:
@@ -57,10 +57,9 @@ def mde(p_baseline: float, n_baseline: int, n_net: int) -> float:
     return (Z_ALPHA_2 + Z_BETA) * se * 100  # convert to pp
 
 
-def baseline_games_needed(p_baseline: float, n_net: int,
-                          target_mde_pp: float,
-                          min_games: int = 10,
-                          max_games: int = 50_000) -> int:
+def baseline_games_needed(
+    p_baseline: float, n_net: int, target_mde_pp: float, min_games: int = 10, max_games: int = 50_000
+) -> int:
     """Binary-search for the smallest n_baseline meeting target MDE.
 
     Parameters
@@ -119,10 +118,11 @@ def main():
     print("=" * 72)
     print()
     print("  Current observations")
-    print(f"    No-net (baseline): {cur['baseline_wins']}/{cur['baseline_games']}"
-          f"  = {p_bl:.4f}  ({p_bl*100:.2f}%)")
-    print(f"    Net-guided:        {cur['net_wins']}/{cur['net_games']}"
-          f"  = {p_net:.4f}  ({p_net*100:.2f}%)")
+    print(
+        f"    No-net (baseline): {cur['baseline_wins']}/{cur['baseline_games']}"
+        f"  = {p_bl:.4f}  ({p_bl * 100:.2f}%)"
+    )
+    print(f"    Net-guided:        {cur['net_wins']}/{cur['net_games']}  = {p_net:.4f}  ({p_net * 100:.2f}%)")
     print(f"    Observed gap:      {(p_net - p_bl) * 100:.2f} pp")
     print()
 
@@ -159,18 +159,24 @@ def main():
     for target in [3, 4, 5]:
         needed = baseline_games_needed(p_bl, n_net, target)
         if needed > 0:
-            print(f"     Target {target} pp  →  n_baseline ≥ {needed:,}  "
-                  f"(+{needed - n_bl:,} from current {n_bl})")
+            print(
+                f"     Target {target} pp  →  n_baseline ≥ {needed:,}  "
+                f"(+{needed - n_bl:,} from current {n_bl})"
+            )
         else:
             print(f"     Target {target} pp  →  impossible within 50,000 games")
     print()
 
     # ── Single-gen cost estimate ──────────────────────────────
     print("  ── Cost: single-generation config")
-    print("     games_per_gen: 1000  →  ~1,000 baseline games"
-          f"  (MDE ≈ {mde(p_bl, 1000, n_net):.2f} pp, net arm at current 1299)")
-    print("     games_per_gen: 1000  →  ~1,000 baseline games"
-          f"  (MDE ≈ {mde(p_bl, 1000, 1000):.2f} pp, symmetric n_net=1000)")
+    print(
+        "     games_per_gen: 1000  →  ~1,000 baseline games"
+        f"  (MDE ≈ {mde(p_bl, 1000, n_net):.2f} pp, net arm at current 1299)"
+    )
+    print(
+        "     games_per_gen: 1000  →  ~1,000 baseline games"
+        f"  (MDE ≈ {mde(p_bl, 1000, 1000):.2f} pp, symmetric n_net=1000)"
+    )
     print()
 
     # ── Key takeaway ──────────────────────────────────────────

@@ -446,7 +446,7 @@ def _pick_record(
 def build_attack_decision(
     request: ReplayMessage, response: Optional[ReplayMessage], snap: GameStateSnapshot
 ) -> Optional[dict]:
-    """"Which creature attacks?" — only when the answer is a single creature.
+    """ "Which creature attacks?" — only when the answer is a single creature.
 
     ``autoDeclare`` (attack with everything) and multi-creature declarations
     have several equally-correct picks, so they are reported as ambiguous
@@ -561,7 +561,7 @@ def build_block_decision(
     pair_keys: dict[tuple[int, int], str],
     episode: list[tuple[ReplayMessage, Optional[ReplayMessage]]],
 ) -> dict:
-    """"Which blocker goes in front of which attacker?" for one combat.
+    """ "Which blocker goes in front of which attacker?" for one combat.
 
     ``episode`` is every ``DeclareBlockersReq`` of one combat, in order, each
     with its paired response — MTGA re-issues the request after each
@@ -604,7 +604,7 @@ def build_block_decision(
 def build_target_decision(
     request: ReplayMessage, response: Optional[ReplayMessage], snap: GameStateSnapshot
 ) -> Optional[dict]:
-    """"What does this spell or ability point at?" — single slot, one target."""
+    """ "What does this spell or ability point at?" — single slot, one target."""
     st = request.payload.get("selectTargetsReq") or {}
     slots = st.get("targets") or []
     if len(slots) != 1:
@@ -664,7 +664,7 @@ def build_target_decision(
 def build_select_n_decision(
     request: ReplayMessage, response: Optional[ReplayMessage], snap: GameStateSnapshot
 ) -> Optional[dict]:
-    """"Choose one of these." — the GRE's general single-selection request."""
+    """ "Choose one of these." — the GRE's general single-selection request."""
     sn = request.payload.get("selectNReq") or {}
     ids = sn.get("ids") or []
     if not ids:
@@ -719,7 +719,7 @@ def build_select_n_decision(
 def build_search_decision(
     request: ReplayMessage, response: Optional[ReplayMessage], snap: GameStateSnapshot
 ) -> Optional[dict]:
-    """"What do you fetch?" — a tutor's target, the purest strategic choice."""
+    """ "What do you fetch?" — a tutor's target, the purest strategic choice."""
     sr = request.payload.get("searchReq") or {}
     sought = sr.get("itemsSought") or []
     if not sought:
@@ -770,7 +770,8 @@ def build_search_decision(
             "source_name": source_name,
             "zones_to_search": sr.get("zonesToSearch"),
             "n_candidates": len(sought),
-            "n_distinct_candidates": len(menu) - (1 if allow_fail and allow_fail != "AllowFailToFind_No" else 0),
+            "n_distinct_candidates": len(menu)
+            - (1 if allow_fail and allow_fail != "AllowFailToFind_No" else 0),
             "menu_rows_collapsed": collapsed,
             "library_size_searched": len(sr.get("itemsToSearch") or []),
             "allow_fail_to_find": allow_fail,
@@ -781,7 +782,7 @@ def build_search_decision(
 def build_pay_costs_decision(
     request: ReplayMessage, response: Optional[ReplayMessage], snap: GameStateSnapshot
 ) -> Optional[dict]:
-    """"Which permanents pay for this?" — extracted so the funnel can say it.
+    """ "Which permanents pay for this?" — extracted so the funnel can say it.
 
     Every row is ``ActionType_Activate_Mana``, so ``strategic_verdict`` drops
     the whole request as ``single_option_menu``/``land_or_pass_only``. That is
@@ -1188,7 +1189,7 @@ def extract_replay(path: Path, *, seat_override: Optional[int] = None) -> tuple[
     # from it (``pd-<stem>-<index>``) and a collision silently merges two
     # decisions. The AA path reuses menu_groundtruth's numbering, so everything
     # else is renumbered above it, in message order.
-    records.sort(key=lambda r: (r["msg_id"] if r["msg_id"] is not None else 0))
+    records.sort(key=lambda r: r["msg_id"] if r["msg_id"] is not None else 0)
     next_index = aa_index + 1
     for rec in records:
         if rec["request_type"] != "ActionsAvailable":
@@ -1235,9 +1236,7 @@ def summarize(all_stats: list[WalkStats], records: list[dict]) -> dict:
         out["dropped"] = {r: n for (t, r), n in sorted(drops.items()) if t == rtype}
         return out
 
-    land_picks = sum(
-        1 for r in records if r["real_pick"].get("action_type") in PLAY_ACTION_TYPES
-    )
+    land_picks = sum(1 for r in records if r["real_pick"].get("action_type") in PLAY_ACTION_TYPES)
     pass_picks = sum(1 for r in records if r["real_pick"].get("action_type") in PASS_LEVEL_ACTION_TYPES)
     n = len(records)
     menu_sizes = sorted(r["real_menu_size"] for r in records)

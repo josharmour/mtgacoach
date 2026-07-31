@@ -6,6 +6,7 @@ hand/perm parsing, outcome calibration, and edge cases.
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -16,10 +17,12 @@ sys.path.insert(0, str(_HERE.parent / "tools" / "training"))
 
 import pytest
 from parse_magezero_log import (
+    LAST_PARSE_STATS,
     RE_CHOSE_ACTION,
     RE_DIE_ROLL,
     RE_HAND,
     RE_LOG_LIFE,
+    RE_NAMED_HAND,
     RE_PERMANENTS,
     RE_PLAYABLE,
     RE_PLAYER_LIFE,
@@ -31,6 +34,7 @@ from parse_magezero_log import (
     detect_sessions,
     parse_card_list,
     parse_log,
+    parse_named_hand_cards,
     parse_permanents,
     parse_pool_actions,
 )
@@ -272,6 +276,8 @@ TEST_LOG_MULTI_THREAD = """\
 INFO  2026-07-28 21:33:40,710 Simulating 2 games. Using thread pool of size 2 on 16 available cores.                    =>[main] ParallelDataGenerator.runSimulations
 INFO  2026-07-28 21:33:40,712 Player A won the die roll                                                                  =>[pool-3-thread-1] ParallelDataGenerator.runSingleGame
 INFO  2026-07-28 21:33:40,712 Player B won the die roll                                                                  =>[pool-3-thread-2] ParallelDataGenerator.runSingleGame
+INFO  2026-07-28 21:33:44,900 [1:Beginning:UPKEEP]PlayerA hand: : Island,Adarkar Wastes,Bounce Off,Combat Research,Shardmage's Rescue,Sleep-Cursed Faerie, =>[pool-3-thread-1] ComputerPlayer.logList
+INFO  2026-07-28 21:33:44,950 [1:Beginning:UPKEEP]PlayerA hand: : Mountain,Mountain,Lightning Strike,Nova Hellkite,Mountain,Mountain, =>[pool-3-thread-2] ComputerPlayer.logList
 INFO  2026-07-28 21:33:45,071 PRECOMBAT_MAIN0pool= actions: [Pass score: -0.075 count: 57] [Play Island score: 0.059 count: 304]  =>[pool-3-thread-1] MCTSNode.bestChild
 INFO  2026-07-28 21:33:45,072 playable abilities: [Play Island, Pass]                                                    =>[pool-3-thread-1] ComputerPlayerMCTS.priority
 INFO  2026-07-28 21:33:45,072 [1:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.0589            =>[pool-3-thread-1] ComputerPlayerMCTS.priority
@@ -506,6 +512,9 @@ INFO  [1:Precombat Main:PRECOMBAT_MAIN]chose action:Pass success ratio: 0.0 =>[p
         log = """\
 INFO  Simulating 1 games. =>[main]
 INFO  Player A won the die roll =>[pool-3-thread-1]
+INFO  [1:Beginning:UPKEEP]PlayerA hand: : Island,Mountain, =>[t1] ComputerPlayer.logList
+INFO  [2:Beginning:UPKEEP]PlayerA hand: : Island,Mountain, =>[t1] ComputerPlayer.logList
+INFO  [3:Beginning:UPKEEP]PlayerA hand: : Island,Mountain, =>[t1] ComputerPlayer.logList
 INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] [Play Island score: 0.1 count: 200] =>[t1]
 INFO  playable abilities: [Play Island, Pass] =>[t1]
 INFO  [1:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.1 =>[t1]
@@ -554,6 +563,7 @@ INFO  Player A win rate: 100.00% (1/1) =>[main]
         log = """\
 INFO  Simulating 1 games. =>[main]
 INFO  Player A won the die roll =>[pool-3-thread-1]
+INFO  [2:Beginning:UPKEEP]PlayerA hand: : Island, =>[t1] ComputerPlayer.logList
 INFO  DECLARE_ATTACKERS0pool= actions: [false score: -0.106 count: 764] [true score: -0.153 count: 235] =>[t1]
 INFO  playable abilities: [false, true] =>[t1]
 INFO  [2:Combat:DECLARE_ATTACKERS]chose action:false success ratio: -0.1 =>[t1]
@@ -574,11 +584,16 @@ INFO  Player A win rate: 100.00% (1/1) =>[main]
             if d["phase"] == "DECLARE_ATTACKERS":
                 assert d["decision_kind"] == "binary"
 
-    def test_hand_backfill(self):
-        """Hand lines after chose action should backfill into the decision."""
+    def test_hand_comes_from_named_line_not_positional_block(self):
+        """`hand` is sourced from the name-attributed logList line.
+
+        The positional `-> Hand:` block line deliberately DIFFERS from the
+        named line here (missing Negate); the named line must win.
+        """
         log = """\
 INFO  Simulating 1 games. =>[main]
-INFO  Player A won the die roll =>[pool-3-thread-1]
+INFO  Player A won the die roll =>[t1]
+INFO  [1:Beginning:UPKEEP]PlayerA hand: : Island,Adarkar Wastes,Bounce Off,Negate, =>[t1] ComputerPlayer.logList
 INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] [Play Island score: 0.1 count: 200] =>[t1]
 INFO  playable abilities: [Play Island, Pass] =>[t1]
 INFO  [1:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.1 =>[t1]
@@ -596,7 +611,7 @@ INFO  Player A win rate: 100.00% (1/1) =>[main]
         Path(log_path).unlink()
 
         assert len(decisions) == 1
-        assert decisions[0]["hand"] == ["Island", "Adarkar Wastes", "Bounce Off"]
+        assert decisions[0]["hand"] == ["Island", "Adarkar Wastes", "Bounce Off", "Negate"]
         assert decisions[0]["battlefield_self"] == [{"name": "Island", "tapped": False}]
 
 
@@ -635,6 +650,7 @@ class TestIssue430BlockAttribution:
         """A PlayerB-headed one-line evaluator block is the OPPONENT's board."""
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [1:Beginning:UPKEEP]PlayerA hand: : Island,Combat Research, =>[T] ComputerPlayer.logList \n"
             "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] [Play Island score: 0.1 count: 200] =>[T]\n"
             "INFO  [1:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.1 =>[T]\n"
             "INFO  [PlayerB], life = 20, score = 670 (Life:10000, Hand:25, Perm:280) =>[T] GameStateEvaluator2.printBattlefield \n"
@@ -655,6 +671,7 @@ class TestIssue430BlockAttribution:
         """PlayerB's hand is the opponent's HIDDEN hand — an L4 leak if kept."""
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [1:Beginning:UPKEEP]PlayerA hand: : Island,Combat Research, =>[T] ComputerPlayer.logList \n"
             "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] [Play Island score: 0.1 count: 200] =>[T]\n"
             "INFO  [1:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.1 =>[T]\n"
             "INFO  [PlayerB], life = 20, score = 670 (Life:10000, Hand:25, Perm:280) =>[T] GameStateEvaluator2.printBattlefield \n"
@@ -682,6 +699,8 @@ class TestIssue430BlockAttribution:
         """
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [1:Beginning:UPKEEP]PlayerA hand: : Island,Combat Research, =>[T] ComputerPlayer.logList \n"
+            "INFO  [2:Beginning:UPKEEP]PlayerA hand: : Combat Research, =>[T] ComputerPlayer.logList \n"
             "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] [Play Island score: 0.1 count: 200] =>[T]\n"
             "INFO  [1:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.1 =>[T]\n"
             # one-line evaluator block (PlayerA's own board)
@@ -712,6 +731,7 @@ class TestIssue430BlockAttribution:
         """A turn-1 decision with genuinely empty boards must keep them."""
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [1:Beginning:UPKEEP]PlayerA hand: : Island,Combat Research, =>[T] ComputerPlayer.logList \n"
             "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] [Play Island score: 0.1 count: 200] =>[T]\n"
             "INFO  [1:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.1 =>[T]\n"
             # turn-1 block: both boards empty
@@ -761,11 +781,15 @@ class TestPassDecisionRecovery:
             Path(path).unlink()
 
     LIFE = "INFO  [3:Precombat Main:PRECOMBAT_MAIN][player PlayerA:20][player PlayerB:18] =>[T]\n"
+    HAND3 = "INFO  [3:Beginning:UPKEEP]PlayerA hand: : Island, =>[T] ComputerPlayer.logList \n"
+    HAND4 = "INFO  [4:Beginning:UPKEEP]PlayerA hand: : Island, =>[T] ComputerPlayer.logList \n"
 
     def test_unconsumed_pass_pool_becomes_a_decision(self):
         """A pool whose argmax is Pass and which no chose-action consumed."""
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
+            + self.HAND3
+            + self.HAND4
             + self.LIFE
             # MCTS deliberates and prefers Pass — XMage logs no chose action.
             + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] [Cast Bounce Off score: 0.1 count: 90] =>[T]\n"
@@ -786,6 +810,8 @@ class TestPassDecisionRecovery:
         """An un-consumed pool whose argmax is NOT a pass must not be guessed."""
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
+            + self.HAND3
+            + self.HAND4
             + self.LIFE
             + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.2 count: 30] [Cast Bounce Off score: 0.5 count: 900] =>[T]\n"
             + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 20] [Play Island score: 0.3 count: 400] =>[T]\n"
@@ -800,9 +826,11 @@ class TestPassDecisionRecovery:
         """The last window of a game still belongs to that game."""
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
+            + self.HAND3
             + self.LIFE
             + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] [Cast Bounce Off score: 0.1 count: 90] =>[T]\n"
             + "INFO  Player A won the die roll =>[T]\n"  # next game starts
+            + self.HAND4
             + self.LIFE
             + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 20] [Play Island score: 0.3 count: 400] =>[T]\n"
             + "INFO  [4:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.3 =>[T]\n"
@@ -816,6 +844,7 @@ class TestPassDecisionRecovery:
     def test_pass_pool_pending_at_eof_is_flushed(self):
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
+            + self.HAND3
             + self.LIFE
             + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] [Cast Bounce Off score: 0.1 count: 90] =>[T]\n"
         )
@@ -826,6 +855,7 @@ class TestPassDecisionRecovery:
         """CHOOSE_USE windows decline with `false`, not `Pass`."""
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
+            + self.HAND3
             + self.LIFE
             + "INFO  PRECOMBAT_MAIN0pool= actions: [true score: 0.1 count: 40] [false score: 0.4 count: 500] =>[T]\n"
         )
@@ -837,11 +867,226 @@ class TestPassDecisionRecovery:
         """`_recovered_pass` is a leading-underscore field, stripped on write."""
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
+            + self.HAND3
             + self.LIFE
             + "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] [Cast Bounce Off score: 0.1 count: 90] =>[T]\n"
         )
         assert decisions[0]["_recovered_pass"] is True
         assert not any(k.startswith("_") for k in ("chosen", "menu", "mcts_counts"))
+
+
+class TestNamedHandAttribution:
+    """Hand sourcing from name-attributed ComputerPlayer.logList lines.
+
+    The last positional assumption in the parser was the hand: `-> Hand:`
+    block lines are attributed by header adjacency (the #452 defect family,
+    which swapped boards for entire games). Hands now come ONLY from lines
+    that carry the player NAME, TURN, and PHASE on the line itself:
+
+        [1:Beginning:UPKEEP]PlayerA hand: : Island,Soul Partition, =>[pool-3-thread-4] ComputerPlayer.logList
+
+    A row whose (thread-game, turn) has no such line is DROPPED and counted —
+    an empty hand in a prompt is an observation ("you hold nothing"), so
+    fabricating one is not an acceptable fallback.
+    """
+
+    REAL_LINE = (
+        "INFO  2026-07-28 21:33:40,987 [1:Beginning:UPKEEP]PlayerA hand: : "
+        "Island,Negate,Soul Partition,Bounce Off,Combat Research,"
+        "Skrelv, Defector Mite,Skrelv, Defector Mite, "
+        "=>[pool-3-thread-1] ComputerPlayer.logList "
+    )
+
+    def test_named_hand_regex_real_shape(self):
+        m = RE_NAMED_HAND.search(self.REAL_LINE)
+        assert m is not None
+        assert m.group(1) == "1"
+        assert m.group(3) == "UPKEEP"
+        assert m.group(4) == "PlayerA"
+        cards = parse_named_hand_cards(m.group(5))
+        assert cards == [
+            "Island",
+            "Negate",
+            "Soul Partition",
+            "Bounce Off",
+            "Combat Research",
+            "Skrelv, Defector Mite",
+            "Skrelv, Defector Mite",
+        ]
+
+    def test_parse_named_hand_cards_comma_names(self):
+        """Separator commas have no trailing space; in-name commas do."""
+        cards = parse_named_hand_cards("Kitsa, Otterball Elite,Malcolm, Alluring Scoundrel,Island,")
+        assert cards == ["Kitsa, Otterball Elite", "Malcolm, Alluring Scoundrel", "Island"]
+
+    def test_parse_named_hand_cards_empty(self):
+        """624 of 9,063 real lines carry an empty list — a legit empty hand."""
+        assert parse_named_hand_cards("") == []
+        assert parse_named_hand_cards("   ") == []
+
+    @staticmethod
+    def _parse(log_body: str):
+        import tempfile
+        from pathlib import Path
+
+        log = (
+            "INFO  Simulating 1 games. =>[main]\n"
+            + log_body
+            + "INFO  Player A win rate: 100.00% (1/1) =>[main]\n"
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+            f.write(log.replace("=>[T]", "=>[pool-3-thread-1]"))
+            path = f.name
+        try:
+            return parse_log(path)[0]
+        finally:
+            Path(path).unlink()
+
+    DECISION = (
+        "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] [Play Island score: 0.1 count: 200] =>[T]\n"
+        "INFO  [1:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: 0.1 =>[T]\n"
+    )
+
+    def test_row_without_named_hand_for_its_turn_is_dropped_and_counted(self):
+        """FAIL CLOSED: no named hand line in the game for the row's turn."""
+        decisions = self._parse("INFO  Player A won the die roll =>[T]\n" + self.DECISION)
+        assert decisions == [], "an unattributable-hand row must be dropped, not guessed"
+        assert LAST_PARSE_STATS["hand_dropped_unattributed"] == 1
+        assert LAST_PARSE_STATS["hand_named_attributed"] == 0
+
+    def test_playerb_named_hand_is_ignored(self):
+        """A PlayerB logList hand is hidden information AND wrong attribution."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [1:Beginning:UPKEEP]PlayerB hand: : Mountain,Hired Claw, =>[T] ComputerPlayer.logList \n"
+            + self.DECISION
+        )
+        assert decisions == [], "a PlayerB hand line must neither fill the row nor count as attribution"
+        assert LAST_PARSE_STATS["hand_dropped_unattributed"] == 1
+
+    def test_named_hands_reset_at_game_boundary(self):
+        """Game 2's turn 1 must not inherit game 1's turn-1 hand."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [1:Beginning:UPKEEP]PlayerA hand: : Island,Negate, =>[T] ComputerPlayer.logList \n"
+            + self.DECISION
+            + "INFO  Player A won the die roll =>[T]\n"  # game 2, no hand line
+            + self.DECISION
+        )
+        assert len(decisions) == 1, "game 2's row has no hand line IN ITS OWN GAME and must be dropped"
+        assert decisions[0]["hand"] == ["Island", "Negate"]
+
+    def test_empty_named_hand_is_valid_attribution(self):
+        """An empty logList hand means the hand IS empty — the row is kept."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [1:Beginning:UPKEEP]PlayerA hand: :  =>[T] ComputerPlayer.logList \n" + self.DECISION
+        )
+        assert len(decisions) == 1
+        assert decisions[0]["hand"] == []
+        assert LAST_PARSE_STATS["hand_named_attributed"] == 1
+
+    def test_recovered_pass_row_uses_named_hand_for_its_turn(self):
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [3:Beginning:UPKEEP]PlayerA hand: : Negate,Bounce Off, =>[T] ComputerPlayer.logList \n"
+            "INFO  [3:Precombat Main:PRECOMBAT_MAIN][player PlayerA:20][player PlayerB:18] =>[T]\n"
+            "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: 0.4 count: 700] [Cast Bounce Off score: 0.1 count: 90] =>[T]\n"
+        )
+        assert len(decisions) == 1
+        assert decisions[0]["chosen"] == "Pass"
+        assert decisions[0]["hand"] == ["Negate", "Bounce Off"]
+
+    def test_hand_positional_shadow_is_internal_only(self):
+        """`_hand_positional` must be stripped by the writer's underscore rule."""
+        decisions = self._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [1:Beginning:UPKEEP]PlayerA hand: : Island, =>[T] ComputerPlayer.logList \n"
+            + self.DECISION
+        )
+        assert len(decisions) == 1
+        assert "_hand_positional" in decisions[0]  # available for --report
+        clean = {k for k in decisions[0] if not k.startswith("_")}
+        assert "hand" in clean
+
+
+# UWTempo.dck (magezero/xmage/decks/UWTempo.dck) — the primary player's deck
+# in every smoke-log game. 17 distinct names; any other name in a `hand`
+# field means hand attribution broke.
+UWTEMPO_DECK = frozenset(
+    {
+        "Malcolm, Alluring Scoundrel",
+        "Island",
+        "Sheltered by Ghosts",
+        "Skrelv, Defector Mite",
+        "Combat Research",
+        "No More Lies",
+        "Adarkar Wastes",
+        "Seachrome Coast",
+        "Meticulous Archive",
+        "Shardmage's Rescue",
+        "Floodfarm Verge",
+        "Soul Partition",
+        "Negate",
+        "Kitsa, Otterball Elite",
+        "Bounce Off",
+        "Spell Pierce",
+        "Sleep-Cursed Faerie",
+    }
+)
+
+
+class TestHandDeckSignature:
+    """#452-family guardrail for hands: the UWTempo player must not 'hold'
+    cards that are not in the UWTempo deck.
+
+    Before the switch, evaluator-block `-> Hand:` lines backfilled `hand`
+    positionally: on mz_train_smoke.log 5,422 of 18,644 non-empty-hand rows
+    carried `:N` score-suffixed names ("Negate:5") — format pollution that
+    would have shipped straight into training prompts.
+    """
+
+    def test_positional_evaluator_hand_cannot_pollute_hand(self):
+        """A score-suffixed evaluator hand block must never reach `hand`."""
+        decisions = TestNamedHandAttribution._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [1:Beginning:UPKEEP]PlayerA hand: : Island,Negate, =>[T] ComputerPlayer.logList \n"
+            + TestNamedHandAttribution.DECISION
+            + "INFO  [PlayerA], life = 20, score = 295 (Life:10000, Hand:30, Perm:300) =>[T] GameStateEvaluator2.printBattlefield \n"
+            + "INFO  -> Hand: [Island:5; Negate:5] =>[T] GameStateEvaluator2.printBattlefield \n"
+            + "INFO  -> Permanents: [Island:300] =>[T] GameStateEvaluator2.printBattlefield \n"
+        )
+        assert len(decisions) == 1
+        for card in decisions[0]["hand"]:
+            assert card in UWTEMPO_DECK, f"non-deck name in hand: {card!r}"
+
+    def test_off_deck_positional_hand_cannot_pollute_hand(self):
+        """Opponent-deck cards in a positional window must never reach `hand`."""
+        decisions = TestNamedHandAttribution._parse(
+            "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [1:Beginning:UPKEEP]PlayerA hand: : Combat Research, =>[T] ComputerPlayer.logList \n"
+            + TestNamedHandAttribution.DECISION
+            # A headerless -> Hand: line (unattributable window) with opponent cards
+            + "INFO  -> Hand: [Mountain; Lightning Strike] =>[T] ComputerPlayerMCTS.printBattlefieldScore \n"
+        )
+        assert len(decisions) == 1
+        assert decisions[0]["hand"] == ["Combat Research"]
+
+    @pytest.mark.skipif(
+        not os.environ.get("MZ_SMOKE_LOG"),
+        reason="set MZ_SMOKE_LOG=/path/to/mz_train_smoke.log to run (parses 210MB)",
+    )
+    def test_smoke_log_hands_match_deck_signature(self):
+        """Every hand card in every emitted row is a UWTempo deck card."""
+        decisions, _ = parse_log(os.environ["MZ_SMOKE_LOG"])
+        assert decisions, "smoke log parsed to zero rows"
+        violations = [
+            (d["game_id"], d["turn"], c)
+            for d in decisions
+            for c in d.get("hand", [])
+            if c not in UWTEMPO_DECK
+        ]
+        assert not violations, f"{len(violations)} non-deck hand entries, first 10: {violations[:10]}"
 
 
 class TestSegmentMenu:
@@ -945,6 +1190,9 @@ class TestCommaMenuEndToEnd:
     def test_comma_named_cast_matches_menu(self):
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [1:Beginning:UPKEEP]PlayerA hand: : Island,Combat Research, =>[T] ComputerPlayer.logList \n"
+            "INFO  [2:Beginning:UPKEEP]PlayerA hand: : Island,Combat Research, =>[T] ComputerPlayer.logList \n"
+            "INFO  [3:Beginning:UPKEEP]PlayerA hand: : Island,Combat Research, =>[T] ComputerPlayer.logList \n"
             "INFO  [2:Precombat Main:PRECOMBAT_MAIN][player PlayerA:20][player PlayerB:20] =>[T]\n"
             "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] "
             "[Cast Skrelv, Defector Mite score: 0.2 count: 500] =>[T]\n"
@@ -963,6 +1211,9 @@ class TestCommaMenuEndToEnd:
         """An unconsumed pass pool whose playable-abilities line landed."""
         decisions = self._parse(
             "INFO  Player A won the die roll =>[T]\n"
+            "INFO  [1:Beginning:UPKEEP]PlayerA hand: : Island,Combat Research, =>[T] ComputerPlayer.logList \n"
+            "INFO  [2:Beginning:UPKEEP]PlayerA hand: : Island,Combat Research, =>[T] ComputerPlayer.logList \n"
+            "INFO  [3:Beginning:UPKEEP]PlayerA hand: : Island,Combat Research, =>[T] ComputerPlayer.logList \n"
             "INFO  [3:Precombat Main:PRECOMBAT_MAIN][player PlayerA:20][player PlayerB:18] =>[T]\n"
             # Window 1: menu + comma-named cast.
             "INFO  PRECOMBAT_MAIN0pool= actions: [Pass score: -0.1 count: 50] "

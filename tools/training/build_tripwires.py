@@ -244,16 +244,16 @@ def run_tripwire_eval(
     }
 
     if verbose:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("TRIPWIRE EVALUATION")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         print(f"Total: {total} | Passed: {passed_total} | Failed: {total - passed_total}")
         print(f"Overall pass rate: {summary['pass_rate']}%")
         print("\nCategory breakdown:")
         for cat, s in sorted(cats.items()):
             pct = round(s["passed"] / s["total"] * 100, 1) if s["total"] else 0.0
             print(f"  {cat:25s} {s['passed']:3d}/{s['total']:<3d} ({pct:5.1f}%)")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
     return summary
 
@@ -263,7 +263,12 @@ def main():
 
     parser = argparse.ArgumentParser(description="Build tripwire puzzle fixtures")
     parser.add_argument("--check", action="store_true", help="Check fixture count and uniqueness")
-    parser.add_argument("--output", type=str, default=None, help="Output path (default: tools/training/data/tripwire_fixtures.jsonl)")
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output path (default: tools/training/data/tripwire_fixtures.jsonl)",
+    )
     args = parser.parse_args()
 
     out_path = Path(args.output) if args.output else REPO / "tools/training/data/tripwire_fixtures.jsonl"

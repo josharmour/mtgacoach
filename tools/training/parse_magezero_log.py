@@ -42,6 +42,22 @@ RE_HAND = re.compile(r"-> Hand: \[(.*?)\]")
 RE_PERMANENTS = re.compile(r"-> Permanents: \[(.*?)\]")
 RE_PLAYER_LIFE = re.compile(r"\[(Player[AB])\], life = (\d+)")
 
+# Name-attributed hand lines from ComputerPlayer.logList, e.g.
+#   [1:Beginning:UPKEEP]PlayerA hand: : Island,Soul Partition, =>[pool-3-thread-4] ComputerPlayer.logList
+# Unlike the positional `-> Hand:` block lines, these carry the PLAYER NAME,
+# the TURN, and the PHASE on the line itself, so attribution never depends on
+# which block header happened to precede them (the #452 defect family). All
+# 9,063 such lines on mz_train_smoke.log are `[N:Beginning:UPKEEP]PlayerA`.
+# The card list is comma-separated WITHOUT a space after separator commas,
+# while commas inside card names ("Kitsa, Otterball Elite") are followed by
+# one — see parse_named_hand_cards. 624 of the 9,063 lines carry an empty
+# list: a legitimately empty hand, distinct from "no line found".
+RE_NAMED_HAND = re.compile(r"\[(\d+):([^:\]]+):(\w+)\](\w+) hand: : (.*?)\s*(?:=>|$)")
+
+# The MCTS/primary player. Decisions carry actor="PlayerA"; only this
+# player's name-attributed hand lines may reach a training row.
+PRIMARY_PLAYER = "PlayerA"
+
 # The emitter tag at end of line disambiguates the two battlefield-block
 # grammars (#430). `ComputerPlayerMCTS.printBattlefieldScore` blocks are
 #   [PlayerX] header -> Hand -> Permanents (SELF) -> Permanents (OPPONENT)
@@ -66,7 +82,12 @@ RE_ACTION_TUPLE = re.compile(r"\[([^\]]+?) score: (-?[\d.eE+-]+) count: (\d+)\]"
 # rather than returned, because parse_log's 2-tuple signature has several
 # callers; the report reads this to surface the pass rate, which the B2
 # tripwire depends on being visible.
-LAST_PARSE_STATS: dict[str, int] = {"recovered_pass": 0, "ambiguous_unconsumed": 0}
+LAST_PARSE_STATS: dict[str, int] = {
+    "recovered_pass": 0,
+    "ambiguous_unconsumed": 0,
+    "hand_named_attributed": 0,
+    "hand_dropped_unattributed": 0,
+}
 
 
 # ── Phase → decision_kind mapping ───────────────────────────────────────
@@ -85,8 +106,13 @@ DECISION_KIND_MAP = {
 }
 
 # Known opponent order for the smoke run (gen0: Standard-MonoR/G/B/W/U, gen1: same order)
-SMOKE_OPPONENTS_GEN0 = ["Standard-MonoR", "Standard-MonoG", "Standard-MonoB",
-                         "Standard-MonoW", "Standard-MonoU"]
+SMOKE_OPPONENTS_GEN0 = [
+    "Standard-MonoR",
+    "Standard-MonoG",
+    "Standard-MonoB",
+    "Standard-MonoW",
+    "Standard-MonoU",
+]
 
 
 class _PendingPool:
@@ -161,7 +187,6 @@ def _emit_pass_decision(
     state: _ThreadState,
     pending: _PendingPool,
     menu_raw: str,
-    decisions: list[dict],
     stats: dict[str, int],
 ) -> None:
     """Emit the decision for a pool line no `chose action` ever consumed.
@@ -210,9 +235,9 @@ def _emit_pass_decision(
         "_log": state.log_name,
         "session": "",
         "_recovered_pass": True,
+        "_hand_positional": [],
     }
     state.game_decisions.append(decision)
-    decisions.append(decision)
     stats["recovered_pass"] += 1
 
 
@@ -270,6 +295,7 @@ def classify_kind(phase_code: str, pool_actions: list[tuple]) -> str:
 
 # ── Parsing helpers ─────────────────────────────────────────────────────
 
+
 def parse_pool_actions(text: str) -> list[tuple[str, float, int]]:
     return [(m[0], float(m[1]), int(m[2])) for m in RE_ACTION_TUPLE.findall(text)]
 
@@ -277,6 +303,23 @@ def parse_pool_actions(text: str) -> list[tuple[str, float, int]]:
 def parse_card_list(text: str) -> list[str]:
     text = text.strip()
     return [c.strip() for c in text.split(";")] if text else []
+
+
+# Separator commas in logList output are NOT followed by a space; commas
+# inside card names ("Kitsa, Otterball Elite") always are. Verified against
+# magezero_card_map.json: 10 names contain a comma, 0 contain a comma not
+# followed by a space.
+RE_NAMED_HAND_SEP = re.compile(r",(?!\s)")
+
+
+def parse_named_hand_cards(text: str) -> list[str]:
+    """Split a ComputerPlayer.logList card list (trailing comma, no-space seps)."""
+    text = text.strip()
+    if text.endswith(","):
+        text = text[:-1]
+    if not text:
+        return []
+    return [c.strip() for c in RE_NAMED_HAND_SEP.split(text) if c.strip()]
 
 
 def parse_permanents(text: str) -> list[dict[str, Any]]:
@@ -296,6 +339,7 @@ def parse_permanents(text: str) -> list[dict[str, Any]]:
 
 
 # ── Session detection ───────────────────────────────────────────────────
+
 
 class SessionInfo:
     def __init__(self, seq: int, start_ts: str, opponent: str, n_games: int):
@@ -360,6 +404,7 @@ def _extract_ts(line: str, default: str) -> str:
 
 # ── Main parser ─────────────────────────────────────────────────────────
 
+
 def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
     log_name = os.path.basename(log_path)
     is_smoke = "smoke" in log_name
@@ -379,8 +424,13 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
     # entries are comma-joined and comma-containing, so the split needs the
     # paired pool's action names as anchors (see segment_menu).
     pending_menu: dict[str, str] = {}
-    # Recovery accounting, reported by --report so the pass rate is visible.
-    pass_stats: dict[str, int] = {"recovered_pass": 0, "ambiguous_unconsumed": 0}
+    # Recovery + hand-attribution accounting, reported by --report.
+    stats: dict[str, int] = {
+        "recovered_pass": 0,
+        "ambiguous_unconsumed": 0,
+        "hand_named_attributed": 0,
+        "hand_dropped_unattributed": 0,
+    }
 
     for line in all_lines:
         line = line.rstrip("\n\r")
@@ -402,8 +452,8 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
             # boundary is the last window of the OUTGOING game.
             prev = pending_pool.pop(thread_id, None)
             if prev is not None:
-                _emit_pass_decision(state, prev, pending_menu.get(thread_id, ""), decisions, pass_stats)
-            _finalize_game(state, decisions)
+                _emit_pass_decision(state, prev, pending_menu.get(thread_id, ""), stats)
+            _finalize_game(state, decisions, stats)
             thread_game_seq[thread_id] += 1
             state.start_new_game(thread_game_seq[thread_id])
             pending_menu.pop(thread_id, None)
@@ -412,8 +462,7 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
         # ── logLife (turn/phase/life totals) ─────────────────────
         lm = RE_LOG_LIFE.search(line)
         if lm:
-            state.on_log_life(int(lm.group(1)), lm.group(2), lm.group(3),
-                              int(lm.group(4)), int(lm.group(5)))
+            state.on_log_life(int(lm.group(1)), lm.group(2), lm.group(3), int(lm.group(4)), int(lm.group(5)))
             continue
 
         # ── MCTS pool distribution ───────────────────────────────
@@ -429,9 +478,7 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
                 # them a case where the search concluded "do nothing".
                 prev = pending_pool.pop(thread_id, None)
                 if prev is not None:
-                    _emit_pass_decision(
-                        state, prev, pending_menu.pop(thread_id, ""), decisions, pass_stats
-                    )
+                    _emit_pass_decision(state, prev, pending_menu.pop(thread_id, ""), stats)
                 pending_pool[thread_id] = _PendingPool(
                     actions=actions,
                     phase_code=pool_match.group(1),
@@ -462,9 +509,7 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
             # The chosen name comes from the (comma-safe) `chose action` line;
             # add it to the anchors in case the paired pool is a sub-decision
             # pool ("(top: X)pool=") whose names are not the menu's entries.
-            menu = segment_menu(
-                menu_raw, [name for name, _, _ in pool_actions] + [chosen]
-            )
+            menu = segment_menu(menu_raw, [name for name, _, _ in pool_actions] + [chosen])
 
             kind = classify_kind(phase_code, pool_actions)
             mcts_counts = {name: count for name, _, count in pool_actions}
@@ -488,9 +533,9 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
                 "_game_seq": state.game_seq,
                 "_log": log_name,
                 "session": "",
+                "_hand_positional": [],
             }
             state.game_decisions.append(decision)
-            decisions.append(decision)
             continue
 
         # ── Player life: also opens a battlefield block (#430) ───
@@ -500,10 +545,22 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
             state.on_block_header(pl.group(1), int(pl.group(2)), em.group(1) if em else None)
             continue
 
-        # ── Hand: PlayerA's backfills the decision; PlayerB's is the
-        # OPPONENT'S HAND (GameStateEvaluator2 prints both players' views)
-        # and must never enter a training row — the old parser backfilled
-        # it blindly, which is both wrong data and an L4 leak. ──────────
+        # ── Name-attributed hand (ComputerPlayer.logList): the ONLY source
+        # that may fill a training row's `hand`. The line itself names the
+        # player, the turn, and the phase — no positional inference. Lines
+        # naming any other player are ignored (their hand is hidden
+        # information; leak class L4). ──────────────────────────────────
+        nh = RE_NAMED_HAND.search(line)
+        if nh:
+            if nh.group(4) == PRIMARY_PLAYER:
+                state.named_hands[int(nh.group(1))] = parse_named_hand_cards(nh.group(5))
+            continue
+
+        # ── Positional `-> Hand:` block lines: DIAGNOSTIC ONLY. They are
+        # attributed by block-header adjacency (the #452 defect family), so
+        # they feed the internal `_hand_positional` shadow used by --report
+        # reconciliation, never the `hand` field itself. PlayerB blocks are
+        # the opponent's hidden hand and are skipped entirely (leak L4). ─
         hm = RE_HAND.search(line)
         if hm:
             cards = parse_card_list(hm.group(1))
@@ -524,17 +581,17 @@ def parse_log(log_path: str) -> tuple[list[dict], list[SessionInfo]]:
     for tid, prev in list(pending_pool.items()):
         st = threads.get(tid)
         if st is not None:
-            _emit_pass_decision(st, prev, pending_menu.get(tid, ""), decisions, pass_stats)
+            _emit_pass_decision(st, prev, pending_menu.get(tid, ""), stats)
     pending_pool.clear()
 
     # Finalize remaining games
     for state in threads.values():
-        _finalize_game(state, decisions)
+        _finalize_game(state, decisions, stats)
 
     # Enrich with sessions using per-thread game counts
     _enrich_sessions(decisions, sessions)
 
-    LAST_PARSE_STATS.update(pass_stats)
+    LAST_PARSE_STATS.update(stats)
 
     return decisions, sessions
 
@@ -549,6 +606,11 @@ class _ThreadState:
         self.life_a = 20
         self.life_b = 20
         self.latest_hand: list[str] = []
+        # Name-attributed hands from ComputerPlayer.logList, keyed by TURN.
+        # Reset per game. The value may legitimately be [] (empty hand at
+        # upkeep) — presence of the key means "attributed", absence means
+        # the row's hand cannot be sourced and the row is dropped+counted.
+        self.named_hands: dict[int, list[str]] = {}
         # Last known board per player (#430). "Self" for a decision row is
         # always PlayerA — the MCTS/primary player; decisions carry
         # actor="PlayerA" — so battlefield_self is boards["PlayerA"].
@@ -572,6 +634,7 @@ class _ThreadState:
         self.life_a = 20
         self.life_b = 20
         self.latest_hand = []
+        self.named_hands = {}
         self.boards = {"PlayerA": [], "PlayerB": []}
         self.last_log_life_a = None
         self.last_log_life_b = None
@@ -581,8 +644,7 @@ class _ThreadState:
         self._block_perm_lines = 0
         self._block_flushed = False
 
-    def on_log_life(self, turn: int, phase_name: str, phase_code: str,
-                    life_a: int, life_b: int):
+    def on_log_life(self, turn: int, phase_name: str, phase_code: str, life_a: int, life_b: int):
         self.last_turn = turn
         self.life_a = life_a
         self.life_b = life_b
@@ -606,14 +668,14 @@ class _ThreadState:
         self._block_flushed = False
 
     def on_hand_line(self, cards: list[str]):
-        # Only the primary player's hand may reach a training row. A PlayerB
-        # hand line (GameStateEvaluator2 prints the opponent's view too) is
-        # the opponent's hidden hand: backfilling it poisons the `hand` field
-        # AND leaks information the model must never see (leak class L4).
+        # DIAGNOSTIC ONLY since the hand-attribution switch: positional
+        # `-> Hand:` block lines feed `_hand_positional` (reconciliation
+        # shadow), never the `hand` field. PlayerB blocks are the opponent's
+        # hidden hand (leak class L4) and are skipped entirely.
         if self._block_player == "PlayerB":
             return
         self.latest_hand = cards
-        _backfill_hand(self, cards)
+        _backfill_positional_hand(self, cards)
 
     def on_permanents_line(self, permanents: list[dict], emitter: str | None):
         # Attribution is positional WITHIN the current header block, which is
@@ -665,10 +727,17 @@ class _ThreadState:
         return "unknown"
 
 
-def _backfill_hand(state: _ThreadState, cards: list[str]):
+def _backfill_positional_hand(state: _ThreadState, cards: list[str]):
+    """Shadow of the PRE-switch hand flow, kept for --report reconciliation.
+
+    Fills the internal `_hand_positional` field exactly the way the old
+    parser filled `hand` (oldest-unfilled-first), so the report can measure
+    how often the positional source disagreed with the name-attributed one.
+    Stripped on write; never reaches a training row.
+    """
     for d in reversed(state.game_decisions):
-        if not d.get("hand"):
-            d["hand"] = list(cards)
+        if not d.get("_hand_positional"):
+            d["_hand_positional"] = list(cards)
             return
 
 
@@ -686,20 +755,43 @@ def _backfill_battlefield(state: _ThreadState):
             return
 
 
-def _finalize_game(state: _ThreadState, all_decisions: list[dict]):
+def _finalize_game(state: _ThreadState, all_decisions: list[dict], stats: dict[str, int]):
+    """Close out a game: assign hands, outcomes, boards; emit surviving rows.
+
+    Hand attribution is by NAME + THREAD + TURN: a row's hand comes from the
+    ComputerPlayer.logList line for the primary player on this thread-game
+    with the row's turn number. A row whose turn has no such line is DROPPED
+    and counted (`hand_dropped_unattributed`) — never guessed, never emitted
+    with a fabricated "empty hand" (an empty hand in a prompt asserts "you
+    hold nothing", which is an observation, not an absence of one).
+
+    Rows are appended to `all_decisions` here, not at creation, so a drop is
+    a real drop and not a mutation race.
+    """
     if not state.game_decisions:
         return
     outcome = state.infer_outcome()
     for d in state.game_decisions:
         d["outcome"] = outcome
-        if not d.get("hand"):
-            d["hand"] = list(state.latest_hand)
+        # Pre-switch shadow fallback, mirroring the old `hand` finalize path.
+        if not d.get("_hand_positional"):
+            d["_hand_positional"] = list(state.latest_hand)
         if not d.pop("_bf_filled", False):
             d["battlefield_self"] = list(state.boards["PlayerA"])
             d["battlefield_opp"] = list(state.boards["PlayerB"])
 
+        named = state.named_hands.get(d.get("turn", -1))
+        if named is None:
+            stats["hand_dropped_unattributed"] += 1
+            continue
+        d["hand"] = list(named)
+        stats["hand_named_attributed"] += 1
+        all_decisions.append(d)
+    state.game_decisions = []
+
 
 # ── Session enrichment ──────────────────────────────────────────────────
+
 
 def _enrich_sessions(decisions: list[dict], sessions: list[SessionInfo]):
     """Assign sessions and calibrate outcomes.
@@ -795,22 +887,14 @@ def _enrich_sessions(decisions: list[dict], sessions: list[SessionInfo]):
 
 # ── CLI ─────────────────────────────────────────────────────────────────
 
+
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Parse MageZero XMage logs into decisions JSONL."
-    )
+    parser = argparse.ArgumentParser(description="Parse MageZero XMage logs into decisions JSONL.")
     parser.add_argument(
-        "--log", required=True, action="append", dest="logs",
-        help="Path(s) to mz_train.log file(s)"
+        "--log", required=True, action="append", dest="logs", help="Path(s) to mz_train.log file(s)"
     )
-    parser.add_argument(
-        "--out", required=True,
-        help="Output JSONL path"
-    )
-    parser.add_argument(
-        "--report", action="store_true",
-        help="Print reconciliation report"
-    )
+    parser.add_argument("--out", required=True, help="Output JSONL path")
+    parser.add_argument("--report", action="store_true", help="Print reconciliation report")
     return parser
 
 
@@ -831,11 +915,13 @@ def main():
             for line in f:
                 m = RE_WIN_RATE.search(line)
                 if m:
-                    wr_lines.append({
-                        "win_rate": float(m.group(1)),
-                        "n_wins": int(m.group(2)),
-                        "n_total": int(m.group(3)),
-                    })
+                    wr_lines.append(
+                        {
+                            "win_rate": float(m.group(1)),
+                            "n_wins": int(m.group(2)),
+                            "n_total": int(m.group(3)),
+                        }
+                    )
         win_rates_by_log[log_name] = wr_lines
 
     # Write output
@@ -850,10 +936,9 @@ def main():
         _print_report(all_decisions, win_rates_by_log, args.logs, out_path)
 
 
-def _print_report(decisions: list[dict],
-                  win_rates_by_log: dict[str, list[dict]],
-                  log_paths: list[str],
-                  out_path: Path):
+def _print_report(
+    decisions: list[dict], win_rates_by_log: dict[str, list[dict]], log_paths: list[str], out_path: Path
+):
 
     print("=" * 60)
     print("MAGEZERO LOG PARSE REPORT")
@@ -868,6 +953,30 @@ def _print_report(decisions: list[dict],
     print(f"    Pass fraction of `chosen`:  {n_pass}/{total} = {100 * n_pass / total:.1f}%")
     if n_pass / total > 0.40:
         print("    ** EXCEEDS the 40% B2 pass-reflex tripwire — corpus needs rebalancing **")
+
+    n_named = LAST_PARSE_STATS.get("hand_named_attributed", 0)
+    n_dropped = LAST_PARSE_STATS.get("hand_dropped_unattributed", 0)
+    print("\n  Hand attribution (name-attributed ComputerPlayer.logList only):")
+    print(f"    Rows with named hand:        {n_named}")
+    print(f"    Rows DROPPED (no named hand line for the row's turn): {n_dropped}")
+    # Reconciliation against the pre-switch positional source (diagnostic;
+    # `:N` evaluator score suffixes are stripped before comparing so only
+    # CONTENT differences count, not format pollution).
+    both = 0
+    differ = 0
+    _score_suffix = re.compile(r":\d+$")
+    for d in decisions:
+        pos = d.get("_hand_positional")
+        if not pos:
+            continue
+        both += 1
+        pos_norm = sorted(_score_suffix.sub("", c).strip() for c in pos)
+        if pos_norm != sorted(d.get("hand", [])):
+            differ += 1
+    if both:
+        print(
+            f"    Positional-source disagreement (diagnostic): {differ}/{both} = {100 * differ / both:.1f}%"
+        )
 
     total_games: set[str] = set()
     total_by_kind: dict[str, int] = {}
@@ -917,10 +1026,16 @@ def _print_report(decisions: list[dict],
 
         # Aggregate per-session: count unique game outcomes
         for sess, out_data in session_outcomes.items():
-            games_won = {d.get("game_id", "") for d in log_decisions
-                         if d.get("session") == sess and d.get("outcome") == "won"}
-            games_lost = {d.get("game_id", "") for d in log_decisions
-                          if d.get("session") == sess and d.get("outcome") == "lost"}
+            games_won = {
+                d.get("game_id", "")
+                for d in log_decisions
+                if d.get("session") == sess and d.get("outcome") == "won"
+            }
+            games_lost = {
+                d.get("game_id", "")
+                for d in log_decisions
+                if d.get("session") == sess and d.get("outcome") == "lost"
+            }
             out_data["won"] = len(games_won)
             out_data["lost"] = len(games_lost)
             out_data["unknown"] = len(session_games[sess]) - len(games_won) - len(games_lost)
@@ -936,20 +1051,24 @@ def _print_report(decisions: list[dict],
                 out_data = next((o for s, o in session_outcomes.items() if s.startswith(sess)), None)
                 inferred_wins = out_data["won"] if out_data else 0
                 inferred_games = out_data["won"] + out_data["lost"] + out_data["unknown"] if out_data else 0
-                expected_wins = round(wr["n_wins"] / wr["n_total"] * inferred_games) if wr["n_total"] > 0 else 0
+                expected_wins = (
+                    round(wr["n_wins"] / wr["n_total"] * inferred_games) if wr["n_total"] > 0 else 0
+                )
                 diff = abs(inferred_wins - expected_wins)
                 mark = "✅" if diff <= 2 else "⚠️"
-                print(f"      {mark} {sess}: logged {wr['n_wins']}/{wr['n_total']} "
-                      f"→ inferred {inferred_wins}/{inferred_games} (expected {expected_wins}, diff={diff})")
+                print(
+                    f"      {mark} {sess}: logged {wr['n_wins']}/{wr['n_total']} "
+                    f"→ inferred {inferred_wins}/{inferred_games} (expected {expected_wins}, diff={diff})"
+                )
 
             # Overall reconciliation (proportional)
-            total_inferred_wins = sum(
-                o["won"] for o in session_outcomes.values()
-            )
+            total_inferred_wins = sum(o["won"] for o in session_outcomes.values())
             total_inferred_games = len(log_games)
-            total_expected_wins = round(
-                total_logged_wins / total_logged_games * total_inferred_games
-            ) if total_logged_games > 0 else 0
+            total_expected_wins = (
+                round(total_logged_wins / total_logged_games * total_inferred_games)
+                if total_logged_games > 0
+                else 0
+            )
             diff = abs(total_inferred_wins - total_expected_wins)
             mark = "✅" if diff <= 2 else "⚠️"
             print(f"\n    RECONCILIATION ({mark}):")
