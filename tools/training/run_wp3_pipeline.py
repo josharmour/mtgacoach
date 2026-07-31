@@ -50,6 +50,7 @@ for p in [str(SRC), str(REPO)]:
 
 # ── WP-3 module imports ───────────────────────────────────────────────────
 from tools.training import build_magezero_bridge as BRIDGE
+from tools.training import magezero_combat_micro as COMBAT
 from tools.training import magezero_filters as FILTERS
 from tools.training import parse_magezero_log as PARSER
 
@@ -209,10 +210,17 @@ def stage_render(
     splits: dict[str, list[dict]],
     split_filter_counts: dict[str, Counter],
     attackers_blockers_counts: dict[str, int],
+    include_combat: bool = False,
 ) -> dict[str, list[dict]]:
-    """Render priority rows in each split via build_record.
+    """Render rows in each split via the kind-appropriate builder.
 
-    Attackers/blockers rows are skipped and counted per split.
+    * ``priority`` rows -> build_magezero_bridge.build_record (unchanged).
+    * ``attack_commit`` / ``block_assign`` rows -> magezero_combat_micro.
+      build_combat_record, only when ``include_combat`` (they cannot appear
+      otherwise; if one does with the flag off, it is counted, not rendered).
+    * legacy ``attackers``/``blockers`` rows are skipped and counted per
+      split, exactly as before (#453: those labels were fabricated upstream).
+
     Returns {split_name: [training_records]}.
     """
     result: dict[str, list[dict]] = {}
@@ -225,7 +233,13 @@ def stage_render(
             if kind in ("attackers", "blockers"):
                 drops[f"dk_{kind}"] += 1
                 continue
-            record, reason = BRIDGE.build_record(row)
+            if kind in ("attack_commit", "block_assign"):
+                if not include_combat:
+                    drops[f"dk_{kind}_flag_off"] += 1
+                    continue
+                record, reason = COMBAT.build_combat_record(row)
+            else:
+                record, reason = BRIDGE.build_record(row)
             if record is None:
                 drops[reason] += 1
                 continue
@@ -359,6 +373,7 @@ def stage_write(
     pass_rate: float,
     attackers_blockers_total: int,
     elapsed: float,
+    combat_info: dict[str, Any] | None = None,
 ) -> dict:
     """Write per-split JSONL files and manifest. Returns manifest dict."""
     outdir.mkdir(parents=True, exist_ok=True)
@@ -375,6 +390,33 @@ def stage_write(
         "filter_counts": dict(filter_counts),
         "splits": {},
     }
+
+    if combat_info is not None:
+        hist = combat_info.get("histograms_filtered", {})
+        manifest["combat"] = {
+            "included": True,
+            "accounting": combat_info.get("accounting", {}),
+            "filter_counts": combat_info.get("filter_counts", {}),
+            "histograms_raw": combat_info.get("histograms_raw", {}),
+            "histograms_filtered": hist,
+            "floor_breach": bool(hist.get("floor_breach", False)),
+        }
+        # Rendered combat record counts per split (post-render truth).
+        by_split: dict[str, dict[str, int]] = {}
+        for split_name, records in rendered.items():
+            c: Counter = Counter(
+                rec.get("kind", "?")
+                for rec in records
+                if rec.get("kind") in ("attack_commit", "block_assign")
+            )
+            by_split[split_name] = dict(c)
+        manifest["combat"]["rendered_by_split"] = by_split
+        manifest["combat"]["rendered_attack"] = sum(
+            v.get("attack_commit", 0) for v in by_split.values()
+        )
+        manifest["combat"]["rendered_block"] = sum(
+            v.get("block_assign", 0) for v in by_split.values()
+        )
 
     for split_name in sorted(rendered.keys()):
         records = rendered[split_name]
@@ -483,6 +525,40 @@ def stage_report(
         pass
     lines.append("(Counted and excluded before split rendering — no attackers/blockers appear in any split.)")
     lines.append("")
+    combat = manifest.get("combat")
+    if combat:
+        lines.append("## Combat Micro-Decisions (--include-combat)")
+        lines.append("")
+        lines.append(
+            f"Rendered: {combat.get('rendered_attack', 0)} attack_commit + "
+            f"{combat.get('rendered_block', 0)} block_assign"
+        )
+        hist = combat.get("histograms_filtered", {})
+        lines.append("")
+        lines.append("Post-filter class histograms (pre-registered floors:")
+        lines.append(
+            f"no_block {COMBAT.NO_BLOCK_FLOOR:.0%}, all-in {COMBAT.ALL_IN_FLOOR:.1%}):"
+        )
+        lines.append("")
+        lines.append(f"- attack records: {hist.get('attack_records', 0)} — {hist.get('attack_hist', {})}")
+        lines.append(
+            f"- attack chains: {hist.get('attack_chains', 0)} — {hist.get('attack_chain_hist', {})}"
+            f" (all-in share {hist.get('all_in_share', 0.0):.1%})"
+        )
+        lines.append(
+            f"- block records: {hist.get('block_records', 0)} — {hist.get('block_hist', {})}"
+            f" (no-block share {hist.get('no_block_share', 0.0):.1%})"
+        )
+        if combat.get("floor_breach"):
+            lines.append("")
+            lines.append("**TRIVIAL-POLICY FLOOR BREACHED — not rebalanced; gate decision is the owner's.**")
+        lines.append("")
+        lines.append("Drop/accounting ledger (scanner):")
+        lines.append("")
+        lines.append("```json")
+        lines.append(json.dumps(combat.get("accounting", {}), indent=2, sort_keys=True))
+        lines.append("```")
+        lines.append("")
     lines.append("## Split Sizes")
     lines.append("")
     lines.append("| Split | Records |")
@@ -525,12 +601,69 @@ def stage_report(
 # ---------------------------------------------------------------------------
 
 
+def stage_combat(
+    log_paths: list[Path],
+    raw_decisions: list[dict],
+    outdir: Path,
+) -> tuple[list[dict], dict[str, Any]]:
+    """Scan the same logs for combat micro-decisions (--include-combat only).
+
+    Outcomes and sessions are JOINED from the priority parse by game_id —
+    game numbering is identical by construction (same die-roll boundaries,
+    same per-thread counters), so a combat row inherits the calibrated
+    outcome of its game. A game with no priority row keeps the scanner's
+    life-inferred outcome (usually "unknown", which the outcome filter then
+    drops and counts).
+    """
+    combat_rows: list[dict] = []
+    total_acct: Counter = Counter()
+    for lp in log_paths:
+        print(f"  Combat-scanning {lp} ...", end=" ", flush=True)
+        rows, acct = COMBAT.parse_combat_log(str(lp))
+        COMBAT.verify_accounting(acct)
+        combat_rows.extend(rows)
+        total_acct.update(acct)
+        print(f"{len(rows)} combat rows")
+
+    outcome_map: dict[str, str] = {}
+    session_map: dict[str, str] = {}
+    for d in raw_decisions:
+        gid = d.get("game_id", "")
+        if gid:
+            outcome_map[gid] = d.get("outcome", "unknown")
+            session_map[gid] = d.get("session", "")
+    joined = 0
+    for r in combat_rows:
+        gid = r.get("game_id", "")
+        if gid in outcome_map:
+            r["outcome"] = outcome_map[gid]
+            r["session"] = session_map[gid]
+            joined += 1
+        else:
+            total_acct["note_outcome_join_miss"] += 1
+    print(
+        f"  outcome join: {joined}/{len(combat_rows)} rows joined to the "
+        f"priority parse ({total_acct.get('note_outcome_join_miss', 0)} misses "
+        f"keep the scanner's life-inferred outcome)"
+    )
+
+    combat_path = outdir / "combat_decisions.jsonl"
+    with open(combat_path, "w", encoding="utf-8") as f:
+        for r in combat_rows:
+            f.write(json.dumps(r, sort_keys=True, ensure_ascii=False) + "\n")
+    print(f"  Wrote {len(combat_rows)} combat decisions -> {combat_path}")
+
+    info: dict[str, Any] = {"accounting": dict(total_acct)}
+    return combat_rows, info
+
+
 def run_pipeline(
     log_paths: list[Path],
     outdir: Path,
     max_pass_frac: float = 0.40,
     seed: int = 7,
     balance: str | None = None,
+    include_combat: bool = False,
 ) -> dict[str, Any]:
     """Run the full WP-3 pipeline.
 
@@ -551,6 +684,13 @@ def run_pipeline(
             f.write(json.dumps(d, sort_keys=True, ensure_ascii=False) + "\n")
     print(f"  Wrote {raw_count} decisions -> {decisions_path}")
 
+    # ── Stage 1b: Combat micro-decision scan (--include-combat only) ──────
+    combat_rows: list[dict] = []
+    combat_info: dict[str, Any] | None = None
+    if include_combat:
+        print("Stage 1b — Combat micro-decision scan (magezero_combat_micro)")
+        combat_rows, combat_info = stage_combat(log_paths, raw_decisions, outdir)
+
     # ── Stage 2: Filter ────────────────────────────────────────────────────
     print("Stage 2/5 — Filter decisions")
     filtered, filter_counts = stage_filter(
@@ -566,12 +706,44 @@ def run_pipeline(
     print(f"  Wrote {filtered_count} filtered -> {filtered_path}")
 
     # ── Stage 3: Tripwire ──────────────────────────────────────────────────
+    # The pass-rate tripwire is computed on the PRIORITY corpus only, exactly
+    # as pre-registered. Combat rows are filtered separately below and never
+    # dilute the pass fraction — a 56%-pass priority corpus must still trip
+    # even when thousands of combat rows are added.
     print("Stage 3/5 — Pass rate tripwire")
     pass_rate = stage_tripwire(filtered, max_pass_frac)
 
+    # ── Stage 2b: Filter combat rows (separately, counted separately) ─────
+    combat_filtered: list[dict] = []
+    if include_combat:
+        print("Stage 2b — Filter combat rows")
+        combat_filtered, cn1 = FILTERS.drop_single_option(combat_rows)
+        print(f"  drop_single_option: {cn1} dropped ({len(combat_filtered)} kept)")
+        combat_filtered, cn2 = FILTERS.outcome_filter(combat_filtered, "won_only")
+        print(f"  outcome_filter (won_only): {cn2} dropped ({len(combat_filtered)} kept)")
+        combat_filtered, cn3 = FILTERS.dedupe(combat_filtered)
+        print(f"  dedupe: {cn3} dropped ({len(combat_filtered)} kept)")
+        assert combat_info is not None
+        combat_info["filter_counts"] = {
+            "drop_single_option": cn1,
+            "outcome_filter": cn2,
+            "dedupe": cn3,
+        }
+        # Class histograms + pre-registered trivial-policy floors, on both the
+        # raw scan and the post-filter corpus (the one that trains).
+        combat_info["histograms_raw"] = COMBAT.combat_histograms(combat_rows)
+        combat_info["histograms_filtered"] = COMBAT.combat_histograms(combat_filtered)
+        print("  Combat histograms (raw scan):")
+        COMBAT.print_floor_check(combat_info["histograms_raw"], out=sys.stdout)
+        print("  Combat histograms (post-filter):")
+        COMBAT.print_floor_check(combat_info["histograms_filtered"], out=sys.stdout)
+
     # ── Stage 4: Split ─────────────────────────────────────────────────────
+    # Split on the UNION so that all rows of a game — priority and combat —
+    # land in the same split (game-level leak safety across kinds).
     print("Stage 4/5 — Split by game")
-    splits = FILTERS.split_by_game(filtered, seed=seed)
+    split_input = filtered + combat_filtered if include_combat else filtered
+    splits = FILTERS.split_by_game(split_input, seed=seed)
     for name, group in splits.items():
         unique_games = len(set(FILTERS._game_id(r) for r in group))
         print(f"  split '{name}': {len(group)} rows ({unique_games} games)")
@@ -583,7 +755,7 @@ def run_pipeline(
     # ── Stage 5: Render ────────────────────────────────────────────────────
     print("Stage 5/5 — Render training records via build_magezero_bridge")
     split_drops: dict[str, Counter] = {}
-    rendered = stage_render(splits, split_drops, {})
+    rendered = stage_render(splits, split_drops, {}, include_combat=include_combat)
 
     # Surface the per-reason drop tally. It was computed into split_drops and
     # then never read, so the PR body's claim about WHY rows were dropped could
@@ -602,8 +774,10 @@ def run_pipeline(
             print(f"    {reason}: {n}")
 
     # ── Leak scan ──────────────────────────────────────────────────────────
+    # Combat rows' MCTS counts join the scan set so a combat count leaking
+    # into ANY prompt (priority or combat) is caught.
     print("Leak scan — checking rendered prompts for training-set artifacts...")
-    stage_leak_scan(rendered, raw_decisions)
+    stage_leak_scan(rendered, raw_decisions + combat_rows)
 
     # ── Write output ────────────────────────────────────────────────────────
     elapsed = time.time() - t0
@@ -616,6 +790,7 @@ def run_pipeline(
         pass_rate,
         attackers_blockers_total,
         elapsed,
+        combat_info=combat_info,
     )
 
     # ── Report ──────────────────────────────────────────────────────────────
@@ -639,6 +814,15 @@ def run_pipeline(
     print(f"  Training records:  {total_records}")
     print(f"  Attackers/blockers excluded: {attackers_blockers_total}")
     print(f"  Pass rate:         {pass_rate:.4f} ({pass_rate * 100:.1f}%)")
+    if include_combat and combat_info is not None:
+        print(
+            f"  Combat rows:       {len(combat_rows)} scanned, "
+            f"{len(combat_filtered)} post-filter, "
+            f"{manifest.get('combat', {}).get('rendered_attack', 0)} attack + "
+            f"{manifest.get('combat', {}).get('rendered_block', 0)} block rendered"
+        )
+        if manifest.get("combat", {}).get("floor_breach"):
+            print("  ** COMBAT TRIVIAL-POLICY FLOOR BREACHED — see manifest **")
     print(f"  Elapsed:           {elapsed:.1f}s")
     print(f"  Output:            {outdir}")
 
@@ -687,6 +871,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Drop surplus PRIORITY passes to meet --max-pass-frac before the "
         "tripwire (see magezero_filters.downsample_passes). Combat declines are "
         "never dropped. Off by default so the raw corpus shape is not altered.",
+    )
+    parser.add_argument(
+        "--include-combat",
+        action="store_true",
+        default=False,
+        help="Also extract combat micro-decisions (attack_commit/block_assign) "
+        "via magezero_combat_micro and render them into the same splits. "
+        "OFF by default: without this flag the pipeline output is unchanged.",
     )
     return parser
 
@@ -762,6 +954,7 @@ def main(argv: list[str] | None = None) -> int:
             max_pass_frac=args.max_pass_frac,
             seed=args.seed,
             balance=args.balance,
+            include_combat=args.include_combat,
         )
     except SystemExit as e:
         if e.code == 42:
