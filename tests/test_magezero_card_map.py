@@ -86,9 +86,7 @@ class TestCardMapCompleteness:
         the local-bulk enricher explicitly recorded as having no local source
         (oracle_source == "none_local") — those are counted, not guessed."""
         missing = [
-            k
-            for k, v in card_map.items()
-            if not v.get("found") and v.get("oracle_source") != "none_local"
+            k for k, v in card_map.items() if not v.get("found") and v.get("oracle_source") != "none_local"
         ]
         assert not missing, f"{len(missing)} cards not found on Scryfall: {missing}"
 
@@ -102,7 +100,9 @@ class TestCardMapCompleteness:
         fuzzy = [
             k
             for k, v in card_map.items()
-            if v.get("found") and not v.get("exact") and not str(v.get("oracle_source", "")).startswith("local_bulk:")
+            if v.get("found")
+            and not v.get("exact")
+            and not str(v.get("oracle_source", "")).startswith("local_bulk:")
         ]
         assert len(fuzzy) <= 2, f"Expected ≤2 fuzzy matches, got {len(fuzzy)}: {fuzzy}"
 

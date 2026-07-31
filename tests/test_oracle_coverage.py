@@ -18,7 +18,6 @@ from tools.training import oracle_coverage as ORACLE  # noqa: E402
 from tools.training import parse_magezero_log as PARSER  # noqa: E402
 from tools.training import run_wp3_pipeline as PIPE  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Parser log-noise strips
 # ---------------------------------------------------------------------------
@@ -90,7 +89,9 @@ class TestBridgeOracleAttachment:
     def test_basic_land_oracle_suppressed(self):
         rec, _ = BRIDGE.build_record(_row())
         # Basic Island: reminder-only oracle must NOT render as text
-        assert "Add {U}.)" not in rec["user"].replace("Activate only if you control a Plains or an Island.", "")
+        assert "Add {U}.)" not in rec["user"].replace(
+            "Activate only if you control a Plains or an Island.", ""
+        )
 
     def test_no_targets_tag_stripped_and_counted(self):
         BRIDGE.ORACLE_STATS.clear()
@@ -149,7 +150,9 @@ def _lookup(name):
 
 class TestAuditClassification:
     def test_covered(self):
-        prompt = ORACLE.normalize("HAND:\n  Shockbolt {R} [S,OK]\n    Shockbolt deals 3 damage to any target.")
+        prompt = ORACLE.normalize(
+            "HAND:\n  Shockbolt {R} [S,OK]\n    Shockbolt deals 3 damage to any target."
+        )
         assert ORACLE.classify_mention("Shockbolt", prompt, _lookup) == "covered"
 
     def test_uncovered(self):
@@ -197,8 +200,8 @@ class TestAuditPromptParsing:
     def test_contexts_and_classes(self):
         stats = ORACLE.new_stats()
         ORACLE.audit_prompt(self.PROMPT, _lookup, stats)
-        assert stats["hand"]["covered"] == 1        # Shockbolt
-        assert stats["hand"]["uncovered"] == 1      # Verge Land (no text attached)
+        assert stats["hand"]["covered"] == 1  # Shockbolt
+        assert stats["hand"]["uncovered"] == 1  # Verge Land (no text attached)
         assert stats["your_board"]["no_text"] == 1  # Vanilla Bear
         assert stats["opp_board"]["keyword_only"] == 1  # Wind Drake
         # menu: Shockbolt covered (text present in prompt), Verge Land uncovered
@@ -237,8 +240,7 @@ def _fake_rendered(user: str):
 
 class TestPipelineFloor:
     BARE = (
-        "Legal: (pick by number)\n  1. Cast Lightning Strike\n  2. Pass\n"
-        "HAND:\n  Lightning Strike  [S,OK]\n"
+        "Legal: (pick by number)\n  1. Cast Lightning Strike\n  2. Pass\nHAND:\n  Lightning Strike  [S,OK]\n"
     )
     COVERED = (
         "Legal: (pick by number)\n  1. Cast Lightning Strike\n  2. Pass\n"
