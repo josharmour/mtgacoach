@@ -14,10 +14,17 @@ Pre-registered gate for the wp3_gemma12b_b5_smoke LoRA
       carries BOTH comparisons: the pre-registered absolute floor and the
       same-base paired delta.
   L2  legality >= base: candidate legality_rate >= baseline legality_rate.
-  L3  no combat-slice regression — VACUOUS tonight: the combat gate
-      corpus is stale/empty (docs/rl-training-status.md section 23.8:
-      combat_gate_*.jsonl were built from the old colliding-id corpus and
-      must be regenerated). This leg is printed as VACUOUS, never PASS.
+  L3  no combat-slice regression: candidate non-degenerate accuracy on
+      the combat gate test corpus >= 0.393 (the 07-28 baseline arm's
+      non_degenerate accuracy from
+      gate_combat_report_combat_v1_gemma31b_lora.json, n=2,557). The
+      combat gate corpus is CLEAN and current — rebuilt 2026-07-27
+      (combat_gate_manifest.json: 96,131/96,131 distinct ids, leak check
+      clean) and consumed 07-28; the earlier stale-corpus note in
+      rl-training-status section 23.8 was superseded by 23.9. As with L1
+      the floor arm was 31B-lora-era; the report also records the
+      same-base 12B paired delta so neither number is quoted alone.
+      --skip-combat marks the leg SKIPPED (loudly, never silently).
 
 The full G1-G7 verdict from tools/training/gate_play_decisions.py is run
 and reported alongside; it is a separate (stricter) verdict from the three
@@ -83,6 +90,12 @@ LORA_NAME = "b5"
 # (260/550) on gate_strategic_decisions_test.jsonl. Strictly greater-than.
 PREREG_STRATEGIC_FLOOR = 0.4727
 
+# Pre-registered combat floor (L3). Source:
+# gate_combat_report_combat_v1_gemma31b_lora.json baseline.non_degenerate
+# .accuracy = 0.393 (n=2,557 non-degenerate combat decisions). Candidate
+# must be >= (no regression against the recorded slice baseline).
+PREREG_COMBAT_FLOOR = 0.393
+
 REQUIRED_ADAPTER_FILES = ("adapter_config.json", "adapter_model.safetensors")
 MIN_ADAPTER_BYTES = 1_000_000  # a real r=8 12B adapter is tens of MB; refuse stubs
 
@@ -117,8 +130,10 @@ def _is_complete_adapter(d: Path, min_age_s: float) -> bool:
 def resolve_adapter(root: Path, explicit: Path | None, min_age_s: float, base_model: str) -> Path:
     if explicit is not None:
         if not _is_complete_adapter(explicit, min_age_s=0):
-            die(f"--adapter {explicit} is not a complete PEFT adapter dir "
-                f"(needs {REQUIRED_ADAPTER_FILES}, safetensors >= {MIN_ADAPTER_BYTES} B)")
+            die(
+                f"--adapter {explicit} is not a complete PEFT adapter dir "
+                f"(needs {REQUIRED_ADAPTER_FILES}, safetensors >= {MIN_ADAPTER_BYTES} B)"
+            )
         chosen = explicit
     else:
         if not root.is_dir():
@@ -163,7 +178,12 @@ def sha256_file(path: Path) -> str:
 # --------------------------------------------------------------------------
 
 
-def check_corpora(corpus: Path, permuted: Path) -> int:
+def check_corpora(
+    corpus: Path,
+    permuted: Path,
+    perm_suffix: str = "#perm",
+    require_menu_size: bool = True,
+) -> int:
     def load_ids(p: Path) -> list[str]:
         if not p.is_file():
             die(f"gate corpus missing: {p}")
@@ -180,7 +200,7 @@ def check_corpora(corpus: Path, permuted: Path) -> int:
                 for key in ("id", "system", "user", "meta"):
                     if key not in rec:
                         die(f"corpus record {p}:{i} missing key {key!r}")
-                if "menu_size" not in rec["meta"]:
+                if require_menu_size and "menu_size" not in rec["meta"]:
                     die(f"corpus record {p}:{i} meta missing menu_size")
                 ids.append(str(rec["id"]))
         return ids
@@ -188,12 +208,13 @@ def check_corpora(corpus: Path, permuted: Path) -> int:
     ids_a, ids_b = load_ids(corpus), load_ids(permuted)
     if len(ids_a) != len(set(ids_a)):
         die(f"duplicate ids in {corpus}")
-    # Permuted-twin ids carry a '#perm' suffix by design (prevents response
-    # files from cross-contaminating between the identity and permuted arms).
-    not_suffixed = [i for i in ids_b if not i.endswith("#perm")]
+    # Permuted-twin ids carry a suffix by design (prevents response files
+    # from cross-contaminating between the identity and permuted arms).
+    # Strategic corpora use '#perm'; the combat gate corpora use '-perm'.
+    not_suffixed = [i for i in ids_b if not i.endswith(perm_suffix)]
     if not_suffixed:
-        die(f"{len(not_suffixed)} permuted ids lack the '#perm' suffix in {permuted.name}")
-    if set(ids_a) != {i[: -len("#perm")] for i in ids_b}:
+        die(f"{len(not_suffixed)} permuted ids lack the {perm_suffix!r} suffix in {permuted.name}")
+    if set(ids_a) != {i[: -len(perm_suffix)] for i in ids_b}:
         die(f"id sets differ between {corpus.name} and {permuted.name} (modulo '#perm')")
     log(f"corpora OK: {len(ids_a)} decisions, identity/permuted id sets equal (modulo '#perm')")
     return len(ids_a)
@@ -202,7 +223,10 @@ def check_corpora(corpus: Path, permuted: Path) -> int:
 def check_cli_importable(python: str, module: str, *help_args: str) -> None:
     r = subprocess.run(
         [python, "-m", module, *help_args, "--help"],
-        cwd=REPO, capture_output=True, text=True, timeout=180,
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
     if r.returncode != 0:
         die(f"`{python} -m {module} --help` failed:\n{r.stderr[-2000:]}")
@@ -214,14 +238,19 @@ def check_port_free(port: int) -> None:
         try:
             s.bind(("127.0.0.1", port))
         except OSError:
-            die(f"port {port} is already in use — is another vLLM running? "
-                "Use --skip-serve to target it, or pick --port.")
+            die(
+                f"port {port} is already in use — is another vLLM running? "
+                "Use --skip-serve to target it, or pick --port."
+            )
 
 
 def regen_tripwires(python: str, out: Path) -> None:
     r = subprocess.run(
         [python, str(REPO / "tools" / "training" / "build_tripwires.py"), "--output", str(out)],
-        cwd=REPO, capture_output=True, text=True, timeout=300,
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        timeout=300,
     )
     if r.returncode != 0:
         die(f"tripwire fixture generation failed:\n{r.stderr[-2000:]}")
@@ -240,16 +269,26 @@ def serve_cmd(args: argparse.Namespace, adapter: Path) -> list[str]:
     cfg = json.loads((adapter / "adapter_config.json").read_text(encoding="utf-8"))
     max_lora_rank = max(8, int(cfg.get("r", 8)))
     cmd = [
-        args.serve_python, "-m", "vllm.entrypoints.openai.api_server",
-        "--model", args.base_model,
-        "--served-model-name", args.base_model,
-        "--port", str(args.port),
-        "--dtype", "bfloat16",
-        "--max-model-len", str(args.max_model_len),
-        "--gpu-memory-utilization", str(args.gpu_mem_util),
+        args.serve_python,
+        "-m",
+        "vllm.entrypoints.openai.api_server",
+        "--model",
+        args.base_model,
+        "--served-model-name",
+        args.base_model,
+        "--port",
+        str(args.port),
+        "--dtype",
+        "bfloat16",
+        "--max-model-len",
+        str(args.max_model_len),
+        "--gpu-memory-utilization",
+        str(args.gpu_mem_util),
         "--enable-lora",
-        "--max-lora-rank", str(max_lora_rank),
-        "--lora-modules", f"{LORA_NAME}={adapter}",
+        "--max-lora-rank",
+        str(max_lora_rank),
+        "--lora-modules",
+        f"{LORA_NAME}={adapter}",
     ]
     cmd += args.extra_serve_arg or []
     return cmd
@@ -282,12 +321,19 @@ def wait_for_server(port: int, timeout_s: float) -> None:
 def run_arm(args: argparse.Namespace, prompts: Path, responses: Path, model: str) -> None:
     backend = f"openai-compatible|http://127.0.0.1:{args.port}/v1|{model}"
     cmd = [
-        sys.executable, "-m", "tools.eval.run",
-        "--prompts", str(prompts),
-        "--responses", str(responses),
-        "--backend", backend,
-        "--timeout-s", str(args.request_timeout_s),
-        "--concurrency", str(args.concurrency),
+        sys.executable,
+        "-m",
+        "tools.eval.run",
+        "--prompts",
+        str(prompts),
+        "--responses",
+        str(responses),
+        "--backend",
+        backend,
+        "--timeout-s",
+        str(args.request_timeout_s),
+        "--concurrency",
+        str(args.concurrency),
     ]
     log("RUN " + shlex.join(cmd))
     r = subprocess.run(cmd, cwd=REPO)
@@ -326,39 +372,70 @@ def assert_arm_complete(responses: Path, label: str, expected_n: int) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--checkpoint-root", type=Path, default=DEFAULT_CHECKPOINT_ROOT)
-    p.add_argument("--adapter", type=Path, default=None,
-                   help="explicit PEFT adapter dir (skips last-checkpoint resolution)")
-    p.add_argument("--min-age-s", type=float, default=90.0,
-                   help="a checkpoint written more recently than this is treated as in-flight")
+    p.add_argument(
+        "--adapter",
+        type=Path,
+        default=None,
+        help="explicit PEFT adapter dir (skips last-checkpoint resolution)",
+    )
+    p.add_argument(
+        "--min-age-s",
+        type=float,
+        default=90.0,
+        help="a checkpoint written more recently than this is treated as in-flight",
+    )
     p.add_argument("--base-model", default=DEFAULT_BASE_MODEL)
     p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
-    p.add_argument("--corpus", type=Path, default=None,
-                   help="default: <data-dir>/gate_strategic_decisions_test.jsonl")
+    p.add_argument(
+        "--corpus", type=Path, default=None, help="default: <data-dir>/gate_strategic_decisions_test.jsonl"
+    )
     p.add_argument("--permuted-corpus", type=Path, default=None)
     p.add_argument("--run-id", default="b5_smoke")
     p.add_argument("--serve-python", default=DEFAULT_SERVE_PYTHON)
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
     p.add_argument("--gpu", default="0", help="CUDA_VISIBLE_DEVICES for the vLLM server")
-    p.add_argument("--max-model-len", type=int, default=49152,
-                   help="must cover the longest corpus prompt (~33k tokens observed) + output")
+    p.add_argument(
+        "--max-model-len",
+        type=int,
+        default=49152,
+        help="must cover the longest corpus prompt (~33k tokens observed) + output",
+    )
     p.add_argument("--gpu-mem-util", type=float, default=0.85)
     p.add_argument("--extra-serve-arg", action="append", default=None)
     p.add_argument("--serve-timeout-s", type=float, default=900.0)
     p.add_argument("--request-timeout-s", type=float, default=180.0)
     p.add_argument("--concurrency", type=int, default=8)
     p.add_argument("--bootstraps", type=int, default=10000)
-    p.add_argument("--skip-serve", action="store_true",
-                   help="assume a healthy server on --port already serves base + lora")
-    p.add_argument("--keep-server", action="store_true",
-                   help="do not stop the vLLM server on exit")
+    p.add_argument(
+        "--skip-serve",
+        action="store_true",
+        help="assume a healthy server on --port already serves base + lora",
+    )
+    p.add_argument("--keep-server", action="store_true", help="do not stop the vLLM server on exit")
     p.add_argument("--skip-tripwires", action="store_true")
-    p.add_argument("--dry-run", action="store_true",
-                   help="CPU-only preflight: resolve adapter, validate corpora/CLIs, "
-                        "print the exact GPU command, then exit")
+    p.add_argument(
+        "--combat-corpus", type=Path, default=None, help="default: <data-dir>/combat_gate_test.jsonl"
+    )
+    p.add_argument(
+        "--combat-permuted-corpus",
+        type=Path,
+        default=None,
+        help="default: <data-dir>/combat_gate_test_permuted.jsonl",
+    )
+    p.add_argument(
+        "--skip-combat",
+        action="store_true",
+        help="skip the L3 combat leg; the verdict records SKIPPED "
+        "loudly (never silently) and the exit code ignores L3",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="CPU-only preflight: resolve adapter, validate corpora/CLIs, "
+        "print the exact GPU command, then exit",
+    )
     return p
 
 
@@ -371,7 +448,14 @@ def main(argv: list[str] | None = None) -> int:
     cand_label = f"openai-compat:{LORA_NAME}"
     base_label = f"openai-compat:{args.base_model}"
 
+    combat_corpus = args.combat_corpus or (data / "combat_gate_test.jsonl")
+    combat_permuted = args.combat_permuted_corpus or (data / "combat_gate_test_permuted.jsonl")
+
     out = {
+        "combat_cand": data / f"gate_{args.run_id}_combat_candidate_test.jsonl",
+        "combat_cand_perm": data / f"gate_{args.run_id}_combat_candidate_test_permuted.jsonl",
+        "combat_base": data / f"gate_{args.run_id}_combat_baseline_test.jsonl",
+        "combat_report": data / f"gate_report_{args.run_id}_combat.json",
         "cand_test": data / f"gate_{args.run_id}_candidate_test.jsonl",
         "cand_perm": data / f"gate_{args.run_id}_candidate_test_permuted.jsonl",
         "base_test": data / f"gate_{args.run_id}_baseline_test.jsonl",
@@ -390,16 +474,26 @@ def main(argv: list[str] | None = None) -> int:
     check_cli_importable(sys.executable, "tools.eval.run")
     check_cli_importable(sys.executable, "tools.training.gate_play_decisions")
     check_cli_importable(sys.executable, "tools.training.wp3.score_tripwires")
-    r = subprocess.run([args.serve_python, "-c", "import vllm; print(vllm.__version__)"],
-                       capture_output=True, text=True, timeout=300)
+    combat_n = 0
+    if not args.skip_combat:
+        check_cli_importable(sys.executable, "tools.training.gate_combat_decisions")
+        combat_n = check_corpora(
+            combat_corpus, combat_permuted, perm_suffix="-perm", require_menu_size=False
+        )
+        log(f"combat gate corpus: {combat_n} records ({combat_corpus.name})")
+    r = subprocess.run(
+        [args.serve_python, "-c", "import vllm; print(vllm.__version__)"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
     if r.returncode != 0:
         die(f"vllm not importable from {args.serve_python}:\n{r.stderr[-1000:]}")
     log(f"vllm {r.stdout.strip()} available in {args.serve_python}")
     hub = Path.home() / ".cache" / "huggingface" / "hub"
     cache_name = "models--" + args.base_model.replace("/", "--")
     if not (hub / cache_name).exists():
-        log(f"WARNING: {args.base_model} not in HF cache ({hub / cache_name}); "
-            "vLLM will try to download it")
+        log(f"WARNING: {args.base_model} not in HF cache ({hub / cache_name}); vLLM will try to download it")
     if not args.skip_tripwires:
         regen_tripwires(sys.executable, out["tripwires_fixtures"])
     if not args.skip_serve and not args.dry_run:
@@ -421,8 +515,11 @@ def main(argv: list[str] | None = None) -> int:
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(args.gpu))
         log(f"starting vLLM (log: {out['serve_log']})")
         server = subprocess.Popen(
-            gpu_cmd, cwd=REPO, env=env,
-            stdout=open(out["serve_log"], "ab"), stderr=subprocess.STDOUT,
+            gpu_cmd,
+            cwd=REPO,
+            env=env,
+            stdout=open(out["serve_log"], "ab"),
+            stderr=subprocess.STDOUT,
         )
     try:
         wait_for_server(args.port, args.serve_timeout_s)
@@ -435,6 +532,14 @@ def main(argv: list[str] | None = None) -> int:
         assert_arm_complete(out["cand_perm"], cand_label, n)
         assert_arm_complete(out["base_test"], base_label, n)
 
+        if not args.skip_combat:
+            run_arm(args, combat_corpus, out["combat_cand"], LORA_NAME)
+            run_arm(args, combat_permuted, out["combat_cand_perm"], LORA_NAME)
+            run_arm(args, combat_corpus, out["combat_base"], args.base_model)
+            assert_arm_complete(out["combat_cand"], cand_label, combat_n)
+            assert_arm_complete(out["combat_cand_perm"], cand_label, combat_n)
+            assert_arm_complete(out["combat_base"], base_label, combat_n)
+
         tripwire_scores = {}
         if not args.skip_tripwires:
             run_arm(args, out["tripwires_fixtures"], out["tripwires_resp"], LORA_NAME)
@@ -444,11 +549,19 @@ def main(argv: list[str] | None = None) -> int:
                 (base_label, out["tripwires_base_score"]),
             ):
                 rr = subprocess.run(
-                    [sys.executable, "-m", "tools.training.wp3.score_tripwires",
-                     "--fixtures", str(out["tripwires_fixtures"]),
-                     "--responses", str(out["tripwires_resp"]),
-                     "--backend-label", label,
-                     "--out", str(score_path)],
+                    [
+                        sys.executable,
+                        "-m",
+                        "tools.training.wp3.score_tripwires",
+                        "--fixtures",
+                        str(out["tripwires_fixtures"]),
+                        "--responses",
+                        str(out["tripwires_resp"]),
+                        "--backend-label",
+                        label,
+                        "--out",
+                        str(score_path),
+                    ],
                     cwd=REPO,
                 )
                 if rr.returncode != 0:
@@ -471,16 +584,28 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- full G1-G7 gate (CPU) ------------------------------------------
     gate_cmd = [
-        sys.executable, "-m", "tools.training.gate_play_decisions", "gate",
-        "--corpus", str(corpus),
-        "--permuted-corpus", str(permuted),
-        "--responses", str(out["cand_test"]),
-        "--permuted-responses", str(out["cand_perm"]),
-        "--baseline-responses", str(out["base_test"]),
-        "--backend-label", cand_label,
-        "--baseline-label", base_label,
-        "--bootstraps", str(args.bootstraps),
-        "--report", str(out["report"]),
+        sys.executable,
+        "-m",
+        "tools.training.gate_play_decisions",
+        "gate",
+        "--corpus",
+        str(corpus),
+        "--permuted-corpus",
+        str(permuted),
+        "--responses",
+        str(out["cand_test"]),
+        "--permuted-responses",
+        str(out["cand_perm"]),
+        "--baseline-responses",
+        str(out["base_test"]),
+        "--backend-label",
+        cand_label,
+        "--baseline-label",
+        base_label,
+        "--bootstraps",
+        str(args.bootstraps),
+        "--report",
+        str(out["report"]),
     ]
     log("RUN " + shlex.join(gate_cmd))
     gate_rc = subprocess.run(gate_cmd, cwd=REPO).returncode
@@ -497,8 +622,55 @@ def main(argv: list[str] | None = None) -> int:
     base_legality = report["baseline"]["legality_rate"]
 
     l1 = cand_overall is not None and cand_overall > PREREG_STRATEGIC_FLOOR
-    l2 = (cand_legality is not None and base_legality is not None
-          and cand_legality >= base_legality)
+    l2 = cand_legality is not None and base_legality is not None and cand_legality >= base_legality
+
+    # ---- L3 combat slice (scored with the dedicated combat gate) ---------
+    l3 = None
+    l3_detail: dict = {"status": "SKIPPED", "reason": "--skip-combat passed"}
+    if not args.skip_combat:
+        combat_gate_cmd = [
+            sys.executable,
+            "-m",
+            "tools.training.gate_combat_decisions",
+            "gate",
+            "--corpus",
+            str(combat_corpus),
+            "--permuted-corpus",
+            str(combat_permuted),
+            "--responses",
+            str(out["combat_cand"]),
+            "--permuted-responses",
+            str(out["combat_cand_perm"]),
+            "--baseline-responses",
+            str(out["combat_base"]),
+            "--backend-label",
+            cand_label,
+            "--baseline-label",
+            base_label,
+            "--report",
+            str(out["combat_report"]),
+        ]
+        log("RUN " + shlex.join(combat_gate_cmd))
+        combat_rc = subprocess.run(combat_gate_cmd, cwd=REPO).returncode
+        if combat_rc not in (0, 2):
+            die(f"gate_combat_decisions crashed (exit {combat_rc})")
+        if not out["combat_report"].exists():
+            die("combat gate report was not written")
+        combat_report = json.loads(out["combat_report"].read_text(encoding="utf-8"))
+        cand_nd = combat_report["candidate"]["non_degenerate"]["accuracy"]
+        base_nd = combat_report["baseline"]["non_degenerate"]["accuracy"]
+        l3 = cand_nd is not None and cand_nd >= PREREG_COMBAT_FLOOR
+        l3_detail = {
+            "status": "PASS" if l3 else "FAIL",
+            "floor": PREREG_COMBAT_FLOOR,
+            "floor_provenance": "gate_combat_report_combat_v1_gemma31b_lora.json "
+            "baseline.non_degenerate.accuracy (n=2,557)",
+            "candidate_non_degenerate": cand_nd,
+            "baseline_12b_non_degenerate": base_nd,
+            "paired_bootstrap_non_degenerate": combat_report.get("paired_bootstrap_non_degenerate"),
+            "full_combat_gate_verdict": combat_report.get("verdict"),
+            "combat_report": str(out["combat_report"]),
+        }
 
     summary = {
         "run_id": args.run_id,
@@ -511,7 +683,7 @@ def main(argv: list[str] | None = None) -> int:
             "L1_strategic_gt_floor": {
                 "floor": PREREG_STRATEGIC_FLOOR,
                 "floor_provenance": "gate_report_strategic_v1.json baseline arm "
-                                    "(openai-compat:gemma-4-31b-it-base, 260/550)",
+                "(openai-compat:gemma-4-31b-it-base, 260/550)",
                 "candidate_overall": cand_overall,
                 "pass": l1,
             },
@@ -520,11 +692,7 @@ def main(argv: list[str] | None = None) -> int:
                 "baseline_legality": base_legality,
                 "pass": l2,
             },
-            "L3_combat_no_regression": {
-                "status": "VACUOUS",
-                "reason": "combat gate corpus stale/empty tonight "
-                          "(rl-training-status section 23.8); leg not evaluable",
-            },
+            "L3_combat_no_regression": l3_detail,
         },
         "same_base_comparison": {
             "baseline_overall_gemma12b": base_overall,
@@ -540,18 +708,36 @@ def main(argv: list[str] | None = None) -> int:
     out["summary"].write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
     log("=" * 72)
-    log(f"pre-registered L1 (overall > {PREREG_STRATEGIC_FLOOR}): "
-        f"candidate {cand_overall} -> {'PASS' if l1 else 'FAIL'}")
-    log(f"pre-registered L2 (legality >= base): "
-        f"{cand_legality} vs {base_legality} -> {'PASS' if l2 else 'FAIL'}")
-    log("pre-registered L3 (combat slice): VACUOUS tonight (empty/stale corpus)")
-    log(f"same-base (12B) comparison: base overall {base_overall}, "
-        f"paired delta CI {report.get('paired_bootstrap')}")
+    log(
+        f"pre-registered L1 (overall > {PREREG_STRATEGIC_FLOOR}): "
+        f"candidate {cand_overall} -> {'PASS' if l1 else 'FAIL'}"
+    )
+    log(
+        f"pre-registered L2 (legality >= base): "
+        f"{cand_legality} vs {base_legality} -> {'PASS' if l2 else 'FAIL'}"
+    )
+    if l3 is None:
+        log(
+            "pre-registered L3 (combat slice): SKIPPED (--skip-combat) — "
+            "exit code ignores L3; do not read this run as a 3-leg verdict"
+        )
+    else:
+        log(
+            f"pre-registered L3 (combat non-degenerate >= {PREREG_COMBAT_FLOOR}): "
+            f"candidate {l3_detail['candidate_non_degenerate']} "
+            f"(12B base: {l3_detail['baseline_12b_non_degenerate']}) "
+            f"-> {'PASS' if l3 else 'FAIL'}"
+        )
+    log(
+        f"same-base (12B) comparison: base overall {base_overall}, "
+        f"paired delta CI {report.get('paired_bootstrap')}"
+    )
     log(f"full G1-G7 gate verdict: {report.get('verdict')} (exit {gate_rc})")
     log(f"summary: {out['summary']}")
     log("=" * 72)
 
-    return 0 if (l1 and l2) else 2
+    legs = [l1, l2] + ([] if l3 is None else [l3])
+    return 0 if all(legs) else 2
 
 
 if __name__ == "__main__":
