@@ -2173,7 +2173,40 @@ the GPUs are free.
 `timeout_ms: 4000`; log shows both regimes working — "290 evaluations in 2.04 s"
 (budget-bound) and "191 evaluations in 4.00 s" (cap-bound on harder positions).
 
-### §26 addendum 19 — GATE V1: bridge transmits, teacher too weak; format collapse diagnosed (2026-07-30 21:40) ← CURRENT
+### §26 addendum 20 — OVERNIGHT: first positive training effect (combat +7.8pp); thread bump null; sweep pending (2026-07-31 07:30) ← CURRENT
+
+**Gate v2-combat (b5_v2_combat, adapter sha 60e2a537): FAIL overall, but the
+first CI-clean positive training effect in the project.** L3 combat
+non-degenerate: candidate **0.3277 vs own-12B-base 0.2495 — +7.8pp, 95% CI
+[+6.4, +9.3], paired n=2,557**. The combat micro-decision corpus (#458)
+measurably taught combat. Still below the pre-registered 0.393 floor (31B-era
+provenance) and L1 strategic still regresses (0.2618 vs 0.4727 floor; -12.2pp
+vs own base, CI [-17.3, -7.1]) — the gen-1 teacher remains the binding
+constraint. L2 legality 1.000 = 1.000 PASS. Tripwire fixtures scored for both
+arms (backlog item done in passing). v2-priority arm trained overnight;
+its gate launched 07:25 on card 0 (run-id b5_v2_priority) — that comparison
+isolates corpus-size effect from combat effect.
+
+**Thread bump 6→10: NULL RESULT, reverted.** The 10-thread arm took 4.37h vs
+~4.5h at 6 threads. Diagnosis: load 19.8 on 16 cores (oversubscribed) and
+60% of overnight decisions timeout-bound (48,520 `timed out` vs 32,748
+`required visits reached`, 00:00-07:00) — more concurrent decisions each got
+less of the already-83%-busy R9700, pushing more decisions into the 4s cap
+with fewer evals. No throughput gain, likely weaker per-decision search.
+Reverted to 6 (applies next arm). Consequence: **the inference server is the
+bottleneck, not XMage CPU** — the budget sweep (armed, fires at the gen-2
+boundary) and/or a faster serving path for the tiny net are the real levers;
+thread scaling is not.
+
+**Curriculum:** gen 1 still generating (arms running ~4.4h at 550 games;
+latest 02:50, 32.55%). Gen-2 boundary + sweep now projected late morning.
+Watcher `mz_boundary_sweep_watcher` armed since 22:07, correct behaviour.
+
+**Morning queue (per rl-pipeline-fix.md MORNING PRIORITY):** unseen-deck gate
+slice first, oracle-text audit, diversity prep for next run, mixture
+prototype. PR #464 (--val_file) still open — merge before any v3 training.
+
+### §26 addendum 19 — GATE V1: bridge transmits, teacher too weak; format collapse diagnosed (2026-07-30 21:40)
 
 First measured distillation verdict (LoRA v1, priority-only, 4,660 records):
 **L1 FAIL** 0.240 vs floor 0.4727 AND vs own 12B base 0.389 (paired delta
