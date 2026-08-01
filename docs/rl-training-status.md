@@ -2173,7 +2173,49 @@ the GPUs are free.
 `timeout_ms: 4000`; log shows both regimes working — "290 evaluations in 2.04 s"
 (budget-bound) and "191 evaluations in 4.00 s" (cap-bound on harder positions).
 
-### §26 addendum 22 — GATE V3: oracle text does not rescue a weak teacher; the teacher is now provably the only blocker (2026-07-31 23:30) ← CURRENT
+### §26 addendum 23 — TEACHER AUDITION: the yardstick saturates; dsv4 96.4% objective vs base 0% (2026-08-01 01:50) ← CURRENT
+
+Zero-training teacher audition (PR #477 + tripwire follow-up), three
+instruments on the same candidates:
+
+| model | strategic gate (Gold-agreement, n=550) | tripwires (objective, n=55) |
+|---|---|---|
+| dsv4 (DeepSeek-V4-Flash-0731, thinking off) | 0.3636 | **53/55 = 96.4%** |
+| base gemma-4-12B-it | 0.3909 | **0/55** |
+| v1-v3 LoRA band | 0.24-0.26 | 18/55 (v3) |
+| best no-knowledge reflex | **0.3964** | — |
+
+**Finding 1 — the strategic gate's reference saturates at ~0.40 and
+mis-ranks at the top.** A pass-happy reflex beats every model ever scored on
+it, and it called dsv4-vs-base a wash while the objective slice shows
+dsv4 >> base. Agreement-with-Gold-clicks measures conformity to the label
+source's rank, not strength — exactly the cap the plan warned about
+("scoring against the owner's Gold-rank picks caps measurable improvement").
+Consequence: gate L1 remains a fine BLUNDER/COLLAPSE detector (it caught
+v1-v3 honestly) but CANNOT adjudicate candidates at-or-above Gold. The
+teacher fork and any v4+ success claim need outcome-grounded or objective
+slices (tripwires, solver labels, head-to-head play), not Gold agreement.
+
+**Finding 2 — the frontier-teacher branch is now evidence-backed.** dsv4 is
+near-perfect on unambiguous positions (perfect keeps/mulligans/lethal/
+counterspells, 2 obvious_develop misses) with format-perfect output, while
+base 12B scores ZERO (format non-compliance untrained — tripwires conflate
+format+strategy for raw base) and the LoRAs are format-trained but
+strategically hollow. Distill-from-dsv4 (relabel the decision corpus with
+dsv4 picks, train v4, gate on objective slices) is now the leading branch
+for the PRODUCT path; the MageZero curriculum remains the no-ceiling
+research path, gated by the gen-3-vs-gen-2 stop-loss (addendum-22-era
+confound map: load contamination + cutover discontinuity; first clean pair
+is gen2-vs-gen3; head-to-head net-vs-net at the gen-3 boundary is the
+load-immune instrument).
+
+Caveats carried from the audition: reference labels are Gold-rank clicks
+(lower-bound proxy); dsv4 measured thinking-OFF (the serving config); 45%
+pick-flips under menu permutation (G3 gap 0.0509, marginally over 0.05);
+single greedy sample. Owner tripwire hand-verification still pending —
+these 55 golds are agent-authored (#443).
+
+### §26 addendum 22 — GATE V3: oracle text does not rescue a weak teacher; the teacher is now provably the only blocker (2026-07-31 23:30)
 
 **v3 (oracle-enriched 98.7%, game-disjoint val, early-stopped at epoch 0.53):
 FAIL.** L1 strategic 0.2636 (best of all four arms, but the spread across
