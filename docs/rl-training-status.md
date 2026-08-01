@@ -2173,7 +2173,34 @@ the GPUs are free.
 `timeout_ms: 4000`; log shows both regimes working — "290 evaluations in 2.04 s"
 (budget-bound) and "191 evaluations in 4.00 s" (cap-bound on harder positions).
 
-### §26 addendum 21 — v2 MATRIX COMPLETE: combat gain was corpus-quality, not combat records; v3 (oracle) launched (2026-07-31 09:30) ← CURRENT
+### §26 addendum 22 — GATE V3: oracle text does not rescue a weak teacher; the teacher is now provably the only blocker (2026-07-31 23:30) ← CURRENT
+
+**v3 (oracle-enriched 98.7%, game-disjoint val, early-stopped at epoch 0.53):
+FAIL.** L1 strategic 0.2636 (best of all four arms, but the spread across
+arms is noise-thin: 0.240/0.249/0.262/0.264) vs base 0.3909 — delta -12.7pp,
+CI [-17.3, -8.0]. L3 combat 0.226 — BELOW base (0.2476) and below both v2
+arms; oracle enrichment did not help combat and may have hurt it (suspects:
+early stop at half an epoch under-trained the small combat slice; longer
+oracle prompts shifted the distribution). L2 legality 1.0 PASS as always.
+
+**The causal picture after four controlled arms:** corpus volume, parser
+correctness, combat records, oracle text, honest validation — every corpus
+lever has now been pulled, and strategic sits at 0.24-0.26 regardless,
+always ~13pp BELOW the model's own base. Conclusion the arms force:
+**distilling a gen-1 teacher (~30% vs minimax) actively teaches
+worse-than-base play. No corpus engineering can fix that.** The student's
+ceiling is the teacher's quality — which is exactly the no-rank-ceiling
+thesis, seen from below. Everything now rides on gens 2-6.
+
+Also banked: early stopping fired correctly for the first time (best
+eval_loss 0.0237 at epoch 0.43; val at 0.988 token-acc, not the leaky 1.000)
+— the honest-validation machinery works. Upstream issue #1 closed by the
+maintainer (log-prefix normalization coming in next jar — adapter pattern
+pin recorded in the spec). Gen 1 still generating at 23:30 (arm ~1.7h in at
+6 threads); boundary sequence (sweep + holdout arms + SPEED CUTOVER) queued
+behind it.
+
+### §26 addendum 21 — v2 MATRIX COMPLETE: combat gain was corpus-quality, not combat records; v3 (oracle) launched (2026-07-31 09:30)
 
 **v2_priority gate (run b5_v2_priority, PATH fix #466 validated in prod):**
 L1 0.2491 FAIL / L2 1.0 PASS / L3 combat non-degenerate **0.3524** vs base
