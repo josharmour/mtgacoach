@@ -1,0 +1,185 @@
+{
+  "run_id": "teacher_audition_dsv4",
+  "purpose": "TEACHER AUDITION: score the DeepSeek-V4-Flash-0731 frontier candidate teacher on the strategic gate, against the base-student anchor and the LoRA arms",
+  "candidate_model": "deepseek-ai/DeepSeek-V4-Flash-0731 (served as deepseek-v4-flash at http://localhost:8002/v1, chat_template_kwargs.thinking=false via ProxyBackend default)",
+  "corpus": "tools/training/data/gate_strategic_decisions_test.jsonl",
+  "corpus_n": 550,
+  "decoding": {
+    "temperature": 0.0,
+    "max_tokens": 400
+  },
+  "concurrency": 4,
+  "candidate_overall": 0.3636,
+  "candidate_overall_95ci": [
+    0.3245,
+    0.4047
+  ],
+  "baseline_overall_gemma12b": 0.3909,
+  "baseline_responses_reused_from": "gate_b5_v3_oracle_baseline_test.jsonl (identical corpus, identical scorer)",
+  "lora_band_context": "0.24-0.26 (v1/v2_combat/v2_priority/v3_oracle arms, docs/rl-training-status.md section 26 addendum 22)",
+  "paired_bootstrap_vs_base": {
+    "raw_accuracy_delta_95ci": [
+      -0.0727,
+      0.0182
+    ],
+    "balanced_accuracy_delta_95ci": null,
+    "point_accuracy_delta": -0.0273
+  },
+  "permutation_invariance": {
+    "paired_n": 550,
+    "identity_accuracy": 0.3636,
+    "identity_accuracy_95ci": [
+      0.3245,
+      0.4047
+    ],
+    "permuted_accuracy": 0.3127,
+    "permuted_accuracy_95ci": [
+      0.2754,
+      0.3527
+    ],
+    "accuracy_gap": 0.0509,
+    "abs_accuracy_gap": 0.0509,
+    "action_agreement": 0.5473,
+    "same_index_rate": 0.2891
+  },
+  "trivial_policy_floor": {
+    "policy": "always_pass_else_first",
+    "policy_accuracy": 0.3964,
+    "candidate_accuracy": 0.3636,
+    "margin_required": 0.0,
+    "margin_observed": -0.0328
+  },
+  "slices": {
+    "decisive_resource_commit": {
+      "candidate": {
+        "n": 368,
+        "correct": 132,
+        "accuracy": 0.3587,
+        "accuracy_95ci": [
+          0.3114,
+          0.4089
+        ],
+        "accuracy_exact_index": 0.356
+      },
+      "baseline": {
+        "n": 368,
+        "correct": 127,
+        "accuracy": 0.3451,
+        "accuracy_95ci": [
+          0.2984,
+          0.3951
+        ],
+        "accuracy_exact_index": 0.3397
+      },
+      "paired_bootstrap": {
+        "raw_accuracy_delta_95ci": [
+          -0.038,
+          0.0652
+        ],
+        "balanced_accuracy_delta_95ci": null,
+        "paired_n": 368,
+        "point_accuracy_delta": 0.0136
+      }
+    },
+    "passive_pass_or_noblock": {
+      "candidate": {
+        "n": 182,
+        "correct": 68,
+        "accuracy": 0.3736,
+        "accuracy_95ci": [
+          0.3066,
+          0.4458
+        ],
+        "accuracy_exact_index": 0.3736
+      },
+      "baseline": {
+        "n": 182,
+        "correct": 88,
+        "accuracy": 0.4835,
+        "accuracy_95ci": [
+          0.412,
+          0.5557
+        ],
+        "accuracy_exact_index": 0.4835
+      }
+    },
+    "by_request_type_candidate": {
+      "ActionsAvailable": {
+        "n": 419,
+        "accuracy": 0.3365
+      },
+      "DeclareAttackers": {
+        "n": 19,
+        "accuracy": 0.4737
+      },
+      "DeclareBlockers": {
+        "n": 21,
+        "accuracy": 0.4286
+      },
+      "Search": {
+        "n": 20,
+        "accuracy": 0.4
+      },
+      "SelectN": {
+        "n": 11,
+        "accuracy": 0.0909
+      },
+      "SelectTargets": {
+        "n": 60,
+        "accuracy": 0.5333
+      }
+    },
+    "by_request_type_baseline": {
+      "ActionsAvailable": {
+        "n": 419,
+        "accuracy": 0.4153
+      },
+      "DeclareAttackers": {
+        "n": 19,
+        "accuracy": 0.4737
+      },
+      "DeclareBlockers": {
+        "n": 21,
+        "accuracy": 0.1429
+      },
+      "Search": {
+        "n": 20,
+        "accuracy": 0.35
+      },
+      "SelectN": {
+        "n": 11,
+        "accuracy": 0.3636
+      },
+      "SelectTargets": {
+        "n": 60,
+        "accuracy": 0.3
+      }
+    },
+    "by_format_bucket_candidate": {
+      "brawl": {
+        "n": 323,
+        "accuracy": 0.3498
+      },
+      "constructed": {
+        "n": 173,
+        "accuracy": 0.3468
+      },
+      "limited": {
+        "n": 54,
+        "accuracy": 0.5
+      }
+    }
+  },
+  "schema_valid_rate": 1.0,
+  "legality_rate": 1.0,
+  "pick_extraction_rate": 0.9982,
+  "full_gate_verdict_g1_g7": "BLOCKED",
+  "full_gate_failures": [
+    "G3 permutation invariance: |identity 0.3636 - permuted 0.3127| = 0.0509 > 0.05 \u2014 the model is reading menu positions, not the menu",
+    "G5 non-inferiority: accuracy delta 95% CI lower bound -0.0727 < -0.02 (point delta -0.0273) vs baseline 'openai-compat:google/gemma-4-12B-it'",
+    "G6 trivial-policy floor: candidate accuracy 0.3636 does not beat the best reflex policy 'always_pass_else_first' at 0.3964 (margin -0.0328 <= 0.0) \u2014 a model that cannot beat a policy with no knowledge of the board has learned nothing",
+    "G7 strategic movement: strategic-subset accuracy delta 95% CI [-0.0727, +0.0182] does not exclude 0.0 (point delta -0.0273 on n=550) vs baseline 'openai-compat:google/gemma-4-12B-it' \u2014 no demonstrated improvement on decisions that are not land drops"
+  ],
+  "gate_report": "tools/training/data/gate_report_teacher_audition_dsv4.json",
+  "ts": "2026-08-01T01:36:06-0700"
+}
