@@ -46,7 +46,7 @@ LITELLM_URL = os.environ.get("LITELLM_URL", "http://10.0.0.2:8444").rstrip("/")
 LITELLM_MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
 
 # What a patron key is allowed to do — mirrors the manually-migrated keys.
-PATRON_KEY_MODELS = ["deepseek-v4-flash", "gemma-4-12b-it"]
+PATRON_KEY_MODELS = ["deepseek-v4-flash", "gemma-4-12b-it", "dsv4"]
 PATRON_KEY_BUDGET = float(os.environ.get("MTGACOACH_PATRON_BUDGET", "25"))
 PATRON_KEY_BUDGET_DURATION = "30d"
 
