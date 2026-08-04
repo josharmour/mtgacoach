@@ -7,6 +7,10 @@ client (sk- key) → api.mtgacoach.com → Cloudflare tunnel → 10.0.0.100:8444
                  → LiteLLM (container `litellm`) → vLLM / Ollama backends
 ```
 
+> **Identity note (2026-08-03):** "plex" (`10.0.0.100`) is the **same machine**
+> as blackwell (`10.0.0.10`) — one box, hostname `blackwell`, both IPs on one
+> NIC. Instructions saying "on plex" run locally on blackwell.
+
 - `config.yaml` — tracked copy of the live config at
   `/home/joshu/docker-stack/litellm/config.yaml` on plex (`10.0.0.100`). Edit here, then
   copy to host and restart (below). No secrets — env refs only.
