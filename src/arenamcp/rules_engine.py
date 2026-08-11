@@ -348,7 +348,7 @@ class RulesEngine:
         for m in re.findall(r"mana value\s+(\d+)\s+or\s+less", text):
             req["mana_value_le"] = int(m)
 
-        if "you control" in text:
+        if "you control" in text or "equip" in text or "equipped" in text:
             req["must_control"] = "you"
         elif "opponent controls" in text or "an opponent controls" in text:
             req["must_control"] = "opponent"
@@ -636,7 +636,7 @@ class RulesEngine:
                 )
 
         if matches:
-            prefer_opponent = req["must_control"] in (None, "opponent")
+            prefer_opponent = req["must_control"] == "opponent"
             matches.sort(
                 key=lambda c: RulesEngine._score_target(c, prefer_opponent),
                 reverse=True,
