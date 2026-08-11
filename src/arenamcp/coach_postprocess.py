@@ -946,16 +946,67 @@ class _AdvicePostprocessMixin:
         if str(game_state.get("pending_decision", "") or "").lower() == "declare blockers":
             advice = re.sub(r"(?i)^Done \(confirm blockers\)$", "Don't block", advice)
 
+        # Sequence & Mana Budget validator:
+        # If advice recommends casting multiple non-land spells whose total CMC exceeds
+        # total available mana (current or post-land), strip the extra spells.
+        if isinstance(game_state, dict):
+            from arenamcp.rules_engine import RulesEngine
+
+            lp = next((p for p in game_state.get("players", []) if p.get("is_local")), None)
+            ls = lp.get("seat_id") if lp else 1
+            cur_mana = RulesEngine._count_available_mana(game_state, ls)
+
+            hand = game_state.get("hand", [])
+            land_in_advice = bool(
+                re.search(
+                    r"(?i)\bplay\s+([\w\s'—]+?\b(?:forest|plains|island|swamp|mountain|land))\b",
+                    advice,
+                )
+            )
+            avail_mana = cur_mana + 1 if land_in_advice else cur_mana
+
+            advice_low = advice.lower()
+            mentioned_spells = []
+            for c in hand:
+                if "land" in c.get("type_line", "").lower():
+                    continue
+                name = c.get("name", "")
+                if not name:
+                    continue
+                short_name = re.split(r"[,—/]", name)[0].strip().lower()
+                if len(short_name) >= 3 and short_name in advice_low:
+                    mentioned_spells.append(c)
+
+            if len(mentioned_spells) > 1:
+                total_cmc = sum(
+                    RulesEngine._parse_cmc(c.get("mana_cost", "")) for c in mentioned_spells
+                )
+                if total_cmc > avail_mana:
+                    first_spell_name = mentioned_spells[0].get("name", "")
+                    land_match = re.search(
+                        r"(?i)^(Play\s+[\w\s'—]+?)(?:\s+(?:then|and)\s+cast\b.*)?$",
+                        advice.strip(),
+                    )
+                    if land_in_advice and land_match:
+                        land_part = land_match.group(1).strip()
+                        advice = f"{land_part} then cast {first_spell_name}."
+                    else:
+                        advice = f"Cast {first_spell_name}."
+                    logger.info(
+                        f"Stripped impossible multi-spell advice (total CMC {total_cmc} > {avail_mana} mana) -> '{advice}'"
+                    )
+
         # Sequence validator: If advice says "Play [land] then cast [spell]" or "Play [land] and cast [spell]"
         # but [spell] is illegal and not in post-land THEN options, strip the illegal spell clause.
         if " then cast " in advice.lower() or " and cast " in advice.lower():
             match_seq = re.search(
-                r"(?i)^(Play\s+[\w\s'—]+?)(?:\s+(?:then|and)\s+cast\s+([\w\s'—]+))$", advice.strip()
+                r"(?i)^(Play\s+[\w\s'—]+?)(?:\s+(?:then|and)\s+cast\s+(.+))$", advice.strip()
             )
             if match_seq:
                 land_part = match_seq.group(1).strip()
                 spell_part = match_seq.group(2).strip()
-                spell_short = re.split(r"[,—/]", spell_part)[0].strip().lower()
+                spell_part_clean = re.sub(r"(?i)\s+(?:to|for|and)\s+.*$", "", spell_part).strip()
+                spell_short = re.split(r"[,—/]", spell_part_clean)[0].strip().lower()
 
                 spell_is_legal = any(
                     spell_short in act.lower() for act in legal_actions if act.lower().startswith("cast ")

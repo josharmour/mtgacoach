@@ -508,7 +508,7 @@ class CoachEngine(_AdvicePostprocessMixin):
         if loyalty not in (None, ""):
             parts.append(f"Loyalty {loyalty}")
 
-        oracle_text = str(card.get("oracle_text", "") or "").replace("\n", " ").strip()
+        oracle_text = self._clean_oracle_for_prompt(str(card.get("oracle_text", "") or "")).replace("\n", " ").strip()
         if oracle_text:
             parts.append(oracle_text[:220] + ("..." if len(oracle_text) > 220 else ""))
 
@@ -832,6 +832,33 @@ class CoachEngine(_AdvicePostprocessMixin):
         return re.sub(r"\(.*?\)", "", text)
 
     @staticmethod
+    def _clean_oracle_for_prompt(text: str) -> str:
+        """Make oracle text safe and compact for the model prompt.
+
+        MTGA-derived oracle text frequently ships raw HTML (``<nobr>``, ``<i>``,
+        ``<br>``) and can carry the same ability line repeated 3-4x (e.g. once
+        raw, once ``<nobr>``-wrapped, then raw again) because forged/local DB
+        rows concatenate multiple renderings into one field. Strip the tags and
+        drop consecutive duplicate lines so each ability appears exactly once
+        and no raw markup leaks into the model input.
+        """
+        import re
+
+        if not text:
+            return text
+        out: list[str] = []
+        prev: str | None = None
+        for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+            norm = " ".join(re.sub(r"<[^>]+>", "", line).split())
+            if not norm:
+                continue
+            if norm == prev:  # drop consecutive duplicate line
+                continue
+            out.append(norm)
+            prev = norm
+        return "\n".join(out)
+
+    @staticmethod
     def _land_has_abilities(oracle_text: str, type_line: str) -> bool:
         """Return True if a land card has any non-trivial abilities.
 
@@ -1025,7 +1052,7 @@ class CoachEngine(_AdvicePostprocessMixin):
                     from arenamcp import server
 
                     info = server.get_card_info(grp_id)
-                    oracle = info.get("oracle_text", "")
+                    oracle = self._clean_oracle_for_prompt(info.get("oracle_text", ""))
                     # Modal option oracle texts are typically short single-line effects
                     label = (
                         oracle.split("\n")[0].strip() if oracle else info.get("name", f"Mode {opt_idx + 1}")
@@ -1152,7 +1179,12 @@ class CoachEngine(_AdvicePostprocessMixin):
                             continue
                         new_casts.append(c.get("name", "?"))
             if new_casts:
-                post_land_parts.append(f"Play {land_name} \u2192 Cast {', '.join(new_casts)}")
+                if len(new_casts) == 1:
+                    post_land_parts.append(f"Play {land_name} \u2192 Cast {new_casts[0]}")
+                else:
+                    post_land_parts.append(
+                        f"Play {land_name} \u2192 Cast (choose one: {' or '.join(new_casts)})"
+                    )
         if post_land_parts:
             lines.append(f"THEN: {'; '.join(post_land_parts)}")
         return lines
@@ -1668,7 +1700,7 @@ class CoachEngine(_AdvicePostprocessMixin):
                 # verbose after reminder-text removal.
                 if is_land and len(stripped) > 300:
                     stripped = stripped[:300] + "..."
-                lines.append(f"    {stripped}")
+                lines.append(f"    {self._clean_oracle_for_prompt(stripped)}")
 
         if attached:
             for att in attached:
@@ -1680,7 +1712,7 @@ class CoachEngine(_AdvicePostprocessMixin):
                     att_owner = "YOUR" if att.get("owner_seat_id") == local_seat else "OPP"
                 lines.append(f"    >> {att_owner} AURA: {att_name}")
                 if att_oracle:
-                    lines.append(f"       {att_oracle}")
+                    lines.append(f"       {self._clean_oracle_for_prompt(att_oracle)}")
         return lines
 
     # Matches attack-tax permanents (Ghostly Prison, Propaganda, War Tax
@@ -2360,7 +2392,7 @@ class CoachEngine(_AdvicePostprocessMixin):
 
             lines.append(f"  {display_name}{type_tag} {cost} [{timing},{castable}]{removal_info}")
             if show_oracle:
-                lines.append(f"    {oracle_stripped}")
+                lines.append(f"    {self._clean_oracle_for_prompt(oracle_stripped)}")
         return lines, no_target_card_names, uncastable_card_names
 
     @staticmethod
@@ -2523,13 +2555,13 @@ class CoachEngine(_AdvicePostprocessMixin):
             for c in your_cmds:
                 cost_str = f" {c.get('mana_cost', '')}" if c.get("mana_cost") else ""
                 cmd_parts.append(f"  YOUR CMD: {c.get('name', 'Unknown')}{cost_str}")
-                oracle = (c.get("oracle_text", "") or "").replace("\n", " ").strip()
+                oracle = self._clean_oracle_for_prompt(c.get("oracle_text", "") or "").replace("\n", " ").strip()
                 if oracle:
                     cmd_parts.append(f"    {oracle}")
             for c in opp_cmds:
                 cost_str = f" {c.get('mana_cost', '')}" if c.get("mana_cost") else ""
                 cmd_parts.append(f"  OPP CMD: {c.get('name', 'Unknown')}{cost_str}")
-                oracle = (c.get("oracle_text", "") or "").replace("\n", " ").strip()
+                oracle = self._clean_oracle_for_prompt(c.get("oracle_text", "") or "").replace("\n", " ").strip()
                 if oracle:
                     cmd_parts.append(f"    {oracle}")
             lines.append("COMMAND ZONE:")

@@ -36,6 +36,7 @@ GAME_PLAN_PROMPT = """You are a Magic: The Gathering strategic planner forming a
 Given the current board, hand, mana, life totals and deck archetype, decide HOW THIS GAME IS WON and the concrete path to get there.
 
 Think a few turns ahead, not just this decision. Pick the realistic win condition for THIS board, then the steps to reach it, the biggest thing that can stop you, and the single most important thing to develop next.
+Each turn's planned play MUST be mana-legal. Do NOT list multiple spells for a single turn unless their COMBINED mana cost is <= total available mana for that turn.
 
 Respond with ONLY a JSON object, no prose, no markdown:
 {

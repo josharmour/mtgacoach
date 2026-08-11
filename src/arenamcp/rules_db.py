@@ -107,7 +107,7 @@ class RulesDB:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
         needs_build = not self._db_path.exists()
-        self._conn = sqlite3.connect(str(self._db_path))
+        self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
 
         if needs_build:
