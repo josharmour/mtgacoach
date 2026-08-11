@@ -146,3 +146,37 @@ def test_postprocess_strips_summoning_sick_attack_clause():
     assert "Hero in Training" in out
     assert "attack" not in out.lower()
 
+
+def test_postprocess_strips_summoning_sick_attack_clause_with_comma():
+    """Verify that card names with commas (e.g. Agent 13, Sharon Carter) are matched and stripped."""
+    coach = _make_coach()
+    state = {
+        "players": [
+            {"seat_id": 1, "is_local": True, "lands_played": 0},
+            {"seat_id": 2, "is_local": False},
+        ],
+        "turn": {
+            "active_player": 1,
+            "priority_player": 1,
+            "turn_number": 9,
+            "phase": "Phase_Main1",
+            "step": "Step_Main",
+        },
+        "hand": [
+            {
+                "name": "Agent 13, Sharon Carter",
+                "type_line": "Legendary Creature — Human Spy Hero",
+                "mana_cost": "{2}{W}",
+                "oracle_text": "Whenever a creature you control attacks alone, investigate.",
+            },
+        ],
+        "battlefield": [],
+        "stack": [],
+    }
+
+    advice = "Play Agent 13, Sharon Carter then attack alone for a clue."
+    out = coach._postprocess_advice(advice, state)
+
+    assert "Agent 13, Sharon Carter" in out
+    assert "attack" not in out.lower()
+

@@ -1029,7 +1029,7 @@ class _AdvicePostprocessMixin:
         # check if the creature lacks haste. If it lacks haste, strip the attack clause.
         if isinstance(game_state, dict):
             match_atk = re.search(
-                r"(?i)\b(?:cast|play)\s+([\w\s'—]+?)\s+(?:then|and)\s+attack\b", advice.strip()
+                r"(?i)\b(?:cast|play)\s+(.+?)\s+(?:then|and)\s+attack\b", advice.strip()
             )
             if match_atk:
                 c_name = match_atk.group(1).strip()
@@ -1041,13 +1041,14 @@ class _AdvicePostprocessMixin:
                 if card_obj and "creature" in (card_obj.get("type_line") or "").lower():
                     oracle = (card_obj.get("oracle_text") or "").lower()
                     if "haste" not in oracle:
-                        prefix_match = re.search(r"(?i)^(?:Cast|Play)\s+[\w\s'—]+", advice.strip())
-                        if prefix_match:
-                            clean_prefix = prefix_match.group(0).strip()
-                            logger.info(
-                                f"Stripped invalid attack clause for summoning-sick creature: '{advice}' -> '{clean_prefix}.'"
-                            )
-                            advice = f"{clean_prefix}."
+                        advice = re.sub(
+                            r"(?i)\s+(?:then|and)\s+attack\b.*$", "", advice.strip()
+                        ).strip()
+                        if not advice.endswith("."):
+                            advice += "."
+                        logger.info(
+                            f"Stripped invalid attack clause for summoning-sick creature -> '{advice}'"
+                        )
 
         # 6. Block advice must name the attacker. "Block with Veteran Survivor"
         # is useless with multiple attackers on board (issue #420) — repair it
