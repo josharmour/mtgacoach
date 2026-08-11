@@ -112,3 +112,37 @@ def test_rules_db_multi_threaded_query():
         results = [f.result() for f in concurrent.futures.as_completed(futures)]
 
     assert len(results) == 8
+
+
+def test_postprocess_strips_summoning_sick_attack_clause():
+    """Verify that advice advising 'Play Hero in Training then attack with it' strips the invalid attack clause."""
+    coach = _make_coach()
+    state = {
+        "players": [
+            {"seat_id": 1, "is_local": True, "lands_played": 0},
+            {"seat_id": 2, "is_local": False},
+        ],
+        "turn": {
+            "active_player": 1,
+            "priority_player": 1,
+            "turn_number": 5,
+            "phase": "Phase_Main1",
+            "step": "Step_Main",
+        },
+        "hand": [
+            {"name": "Hero in Training", "type_line": "Creature — Human Hero", "mana_cost": "{2}{W}", "oracle_text": "When this creature enters, draw a card."},
+        ],
+        "battlefield": [
+            {"name": "Plains", "type_line": "Basic Land — Plains", "owner_seat_id": 1, "is_tapped": False},
+            {"name": "Plains", "type_line": "Basic Land — Plains", "owner_seat_id": 1, "is_tapped": False},
+            {"name": "Plains", "type_line": "Basic Land — Plains", "owner_seat_id": 1, "is_tapped": False},
+        ],
+        "stack": [],
+    }
+
+    advice = "Play Hero in Training then attack with it."
+    out = coach._postprocess_advice(advice, state)
+
+    assert "Hero in Training" in out
+    assert "attack" not in out.lower()
+
