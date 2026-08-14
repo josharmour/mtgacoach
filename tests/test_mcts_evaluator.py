@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 from arenamcp.mcts_evaluator import MCTSEvaluator, MCTSTreePayload
+from arenamcp.opponent_model import OpponentModel, OpponentProfile
+from arenamcp.magezero_client import MageZeroClient
 
 
 def test_mcts_evaluator_basic():
@@ -226,6 +228,104 @@ def test_mcts_decision_packet_format_for_llm_prompt():
     assert "Root Win Expectancy:" in prompt_text
     assert "BEST LINE" in prompt_text
     assert "======================================" in prompt_text
+
+
+def test_opponent_model_classification():
+    # Opponent played Mountain, Monastery Swiftspear, Monstrous Rage
+    state: dict[str, Any] = {
+        "local_seat_id": 1,
+        "turn": {"turn_number": 2, "phase": "Phase_Main1"},
+        "players": [
+            {"seat_id": 1, "life_total": 20, "is_local": True},
+            {"seat_id": 2, "life_total": 20, "is_local": False},
+        ],
+        "battlefield": [
+            {
+                "name": "Mountain",
+                "type_line": "Basic Land — Mountain",
+                "controller_seat_id": 2,
+                "is_tapped": False,
+            },
+            {
+                "name": "Monastery Swiftspear",
+                "type_line": "Creature — Human Monk",
+                "controller_seat_id": 2,
+                "power": 1,
+                "toughness": 2,
+                "is_tapped": False,
+            },
+        ],
+        "graveyard": [
+            {
+                "name": "Monstrous Rage",
+                "type_line": "Instant",
+                "owner_seat_id": 2,
+            }
+        ],
+    }
+
+    profile: OpponentProfile = OpponentModel.classify(state)
+    assert profile.archetype == "Standard Mono-Red Aggro"
+    assert profile.confidence >= 0.80
+    assert "R" in profile.colors
+    assert any("Monstrous Rage" in t for t in profile.open_mana_threats)
+    summary = profile.format_summary()
+    assert "Standard Mono-Red Aggro" in summary
+
+
+def test_opponent_model_uw_control_sweeper():
+    state: dict[str, Any] = {
+        "local_seat_id": 1,
+        "turn": {"turn_number": 5, "phase": "Phase_Main1"},
+        "players": [
+            {"seat_id": 1, "life_total": 20, "is_local": True},
+            {"seat_id": 2, "life_total": 20, "is_local": False},
+        ],
+        "battlefield": [
+            {
+                "name": "Plains",
+                "type_line": "Basic Land — Plains",
+                "controller_seat_id": 2,
+                "is_tapped": False,
+            },
+            {
+                "name": "Island",
+                "type_line": "Basic Land — Island",
+                "controller_seat_id": 2,
+                "is_tapped": False,
+            },
+            {
+                "name": "Hallowed Fountain",
+                "type_line": "Land — Plains Island",
+                "controller_seat_id": 2,
+                "is_tapped": False,
+            },
+            {
+                "name": "Restless Anchorage",
+                "type_line": "Land",
+                "controller_seat_id": 2,
+                "is_tapped": False,
+            },
+        ],
+        "graveyard": [
+            {
+                "name": "No More Lies",
+                "type_line": "Instant",
+                "owner_seat_id": 2,
+            }
+        ],
+    }
+
+    profile = OpponentModel.classify(state)
+    assert profile.archetype == "Standard Azorius / UW Control"
+    assert profile.sweeper_risk > 0.0
+    assert "Sunfall" in profile.sweeper_warning or "sweeper" in profile.sweeper_warning.lower()
+
+
+def test_magezero_client_graceful():
+    # Should safely return a boolean or handle offline state without raising
+    is_avail = MageZeroClient.is_available()
+    assert isinstance(is_avail, bool)
 
 
 def test_mcts_evaluator_empty_state_graceful():

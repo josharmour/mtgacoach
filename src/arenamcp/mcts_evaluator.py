@@ -2,8 +2,8 @@
 
 Evaluates available game state decisions, simulates forward state rollouts
 (including combat permutations, mana curves, spell resolutions, and opponent
-counterplay reaction envelopes), and produces structured MCTS Decision Packets
-for LLM prompt synthesis and live UI tree rendering.
+counterplay reaction envelopes), integrates MageZero neural network position values,
+and leverages the OpponentModel for metagame-aware tactical synthesis.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from arenamcp.combat_solver import optimal_attacks, optimal_blocks
+from arenamcp.magezero_client import MageZeroClient
+from arenamcp.opponent_model import OpponentModel, OpponentProfile
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +46,7 @@ class MCTSBranch:
 
 @dataclass
 class MCTSTreePayload:
-    """Complete MCTS search tree and tactical decision packet."""
+    """Complete MCTS search tree, neural value evaluation, and tactical decision packet."""
 
     root_win_probability: float = 0.50
     total_simulations: int = 1000
@@ -54,7 +56,9 @@ class MCTSTreePayload:
     hero_life: int = 20
     opp_life: int = 20
     available_mana: int = 0
+    eval_source: str = "Heuristic Forward Lookahead"
     opponent_threat_summary: str = ""
+    opponent_profile: OpponentProfile = field(default_factory=OpponentProfile)
     branches: list[MCTSBranch] = field(default_factory=list)
     blunder_traps: list[MCTSBranch] = field(default_factory=list)
 
@@ -68,20 +72,24 @@ class MCTSTreePayload:
             "hero_life": self.hero_life,
             "opp_life": self.opp_life,
             "available_mana": self.available_mana,
+            "eval_source": self.eval_source,
             "opponent_threat_summary": self.opponent_threat_summary,
+            "opponent_profile": self.opponent_profile.to_dict(),
             "branches": [b.to_dict() for b in self.branches],
             "blunder_traps": [b.to_dict() for b in self.blunder_traps],
         }
 
     def format_for_llm_prompt(self) -> str:
-        """Format the search tree into a rich, structured context block for the LLM."""
+        """Format the search tree and opponent model into a rich context block for the LLM."""
         root_pct = int(round(self.root_win_probability * 100))
         lines = [
             "=== MCTS MULTI-PLY TACTICAL SEARCH ===",
-            f"• Root Win Expectancy: {root_pct}% ({self.total_simulations:,} forward rollouts · T{self.turn_number} {self.phase})",
+            f"• Root Win Expectancy: {root_pct}% ({self.total_simulations:,} rollouts · {self.eval_source} · T{self.turn_number} {self.phase})",
             f"• HERO: {self.hero_life} Life | OPP: {self.opp_life} Life | Mana Available: {self.available_mana}",
         ]
-        if self.opponent_threat_summary:
+        if self.opponent_profile and self.opponent_profile.revealed_cards:
+            lines.append(f"• Opponent Archetype: {self.opponent_profile.format_summary()}")
+        elif self.opponent_threat_summary:
             lines.append(f"• Opponent Threat / Interaction Envelope: {self.opponent_threat_summary}")
         lines.append("")
 
@@ -230,21 +238,30 @@ class MCTSEvaluator:
         card_delta = (len(hand) - int(opp_hand_count)) / 4.0
         hand_adv = max(-1.0, min(1.0, card_delta)) * 0.12
 
-        base_val = 0.50 + life_adv + board_adv + hand_adv
-        base_val = max(0.05, min(0.95, base_val))
+        heuristic_val = 0.50 + life_adv + board_adv + hand_adv
+        heuristic_val = max(0.05, min(0.95, heuristic_val))
 
-        # Opponent Threat Envelope
-        if opp_untapped_lands >= 2:
-            opp_threat = f"{opp_untapped_lands} untapped lands open (holds instant removal / counterspell window)"
-        elif opp_untapped_lands == 1:
-            opp_threat = "1 untapped land open (potential 1-mana trick or flash)"
-        else:
-            opp_threat = "Opponent is tapped out (no instant reaction permitted)"
+        # Phase 4: MageZero Neural Network Value Evaluation
+        eval_source = "Multi-Ply Heuristic Search"
+        base_val = heuristic_val
+        try:
+            mz_res = MageZeroClient.evaluate_game_state(game_state)
+            if mz_res and "win_probability" in mz_res:
+                nn_win_p = float(mz_res["win_probability"])
+                # Blend: 60% MageZero NN Value, 40% Heuristic Baseline
+                base_val = round(0.60 * nn_win_p + 0.40 * heuristic_val, 3)
+                eval_source = "MageZero RL Value Network + MCTS"
+        except Exception as e:
+            logger.debug("MageZero evaluation blend skipped: %s", e)
+
+        # Phase 5: Opponent Metagame Classifier & Hand Belief State
+        opp_profile = OpponentModel.classify(game_state)
+        opp_threat = opp_profile.format_summary()
 
         branches: list[MCTSBranch] = []
         blunder_traps: list[MCTSBranch] = []
 
-        # Find playable lands in hand
+        # Find playable lands and spells in hand
         playable_lands = [c for c in hand if isinstance(c, dict) and "land" in str(c.get("type_line") or "").lower()]
         playable_spells = []
         for card in hand:
@@ -366,6 +383,11 @@ class MCTSEvaluator:
                 seq_val = min(0.96, seq_val)
                 v_delta = seq_val - base_val
 
+                # Factor in Opponent archetype counterplay prediction
+                counterplay_note = "Opponent must respect development; priority passes to opponent."
+                if opp_profile and opp_profile.open_mana_threats:
+                    counterplay_note = f"Playing around {opp_profile.open_mana_threats[0]} with {rem_mana} mana up."
+
                 branches.append(
                     MCTSBranch(
                         action=f"Sequence: Play {land_name} -> Cast {spell_name}",
@@ -378,7 +400,7 @@ class MCTSEvaluator:
                         prior_probability=0.40,
                         tag="⭐ BEST LINE",
                         outcome_summary=f"Curves mana smoothly; develops {spell_name} while maintaining {rem_mana} open mana.",
-                        simulated_counterplay="Opponent must respect development; priority passes to opponent end step.",
+                        simulated_counterplay=counterplay_note,
                         projected_state={
                             "hero_life": hero_life,
                             "opp_life": opp_life,
@@ -528,7 +550,9 @@ class MCTSEvaluator:
             hero_life=hero_life,
             opp_life=opp_life,
             available_mana=available_mana,
+            eval_source=eval_source,
             opponent_threat_summary=opp_threat,
+            opponent_profile=opp_profile,
             branches=branches,
             blunder_traps=blunder_traps,
         )
