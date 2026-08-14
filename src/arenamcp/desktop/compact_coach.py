@@ -83,6 +83,31 @@ class CompactCoachPanel(CoachTab):
         self.status_dots.setAlignment(Qt.AlignCenter)
         root.addWidget(self.status_dots)
 
+        # MCTS Decision Tree & Win Expectancy Panel
+        self._mcts_expanded = True
+        self._mcts_latest_payload: dict[str, Any] | None = None
+        self.mcts_container = QWidget()
+        self.mcts_container.setObjectName("mctsContainer")
+        mcts_layout = QVBoxLayout(self.mcts_container)
+        mcts_layout.setContentsMargins(0, 0, 0, 0)
+        mcts_layout.setSpacing(4)
+
+        self.mcts_toggle_btn = QPushButton("▾  🌳 MCTS DECISION TREE")
+        self.mcts_toggle_btn.setObjectName("mctsToggle")
+        self.mcts_toggle_btn.setCursor(Qt.PointingHandCursor)
+        self.mcts_toggle_btn.setToolTip("Toggle real-time MCTS minimax outcome evaluation")
+        self.mcts_toggle_btn.clicked.connect(self._toggle_mcts_expanded)
+        mcts_layout.addWidget(self.mcts_toggle_btn)
+
+        self.mcts_view = QTextEdit()
+        self.mcts_view.setObjectName("mctsView")
+        self.mcts_view.setReadOnly(True)
+        self.mcts_view.setMinimumHeight(110)
+        self.mcts_view.setMaximumHeight(210)
+        mcts_layout.addWidget(self.mcts_view)
+
+        root.addWidget(self.mcts_container)
+
         # Spoken Advice Activity History (Subtitle Track)
         activity = QWidget()
         activity_layout = QVBoxLayout(activity)
@@ -495,6 +520,102 @@ class CompactCoachPanel(CoachTab):
                 button.setProperty("apOn", "true" if "ON" in value.upper() else "false")
                 self._repolish(button)
 
+    # -- MCTS Outcome Tree ---------------------------------------------------
+
+    def _toggle_mcts_expanded(self) -> None:
+        self._mcts_expanded = not self._mcts_expanded
+        self.mcts_view.setVisible(self._mcts_expanded)
+        self._refresh_mcts_toggle_text()
+
+    def _refresh_mcts_toggle_text(self, root_win_pct: int | None = None) -> None:
+        if hasattr(self, "mcts_toggle_btn"):
+            arrow = "▾" if self._mcts_expanded else "▸"
+            if root_win_pct is not None:
+                self.mcts_toggle_btn.setText(f"{arrow}  🌳 MCTS DECISION TREE ({root_win_pct}% WIN)")
+            else:
+                self.mcts_toggle_btn.setText(f"{arrow}  🌳 MCTS DECISION TREE")
+
+    def _update_mcts_tree(self, data: dict[str, Any]) -> None:
+        """Render MCTS decision tree and win expectancy in the compact view."""
+        if not isinstance(data, dict):
+            return
+
+        self._mcts_latest_payload = data
+        root_p = float(data.get("root_win_probability", 0.5))
+        sims = int(data.get("total_simulations") or 1000)
+        turn = data.get("turn_number") or 1
+        phase = str(data.get("phase") or "Main1")
+        branches = data.get("branches") or []
+
+        pct = int(root_p * 100)
+        self._refresh_mcts_toggle_text(pct)
+
+        b_color = "#a6e3a1" if pct >= 55 else ("#f9e2af" if pct >= 45 else "#f38ba8")
+        tokens = self._theme_tokens()
+
+        html_blocks = [
+            f"<div style='font-family: Consolas, \"Courier New\", monospace; padding: 2px 4px;'>",
+            "<table width='100%' style='border: none; margin-bottom: 3px;'><tr>",
+            f"<td align='left'><span style='color: {tokens.get('spell', '#89b4fa')}; font-weight: bold; font-size: 11px;'>WIN EXPECTANCY: <b style='color: {b_color}; font-size: 13px;'>{pct}%</b></span></td>",
+            f"<td align='right'><span style='color: {tokens.get('muted', '#a6adc8')}; font-size: 10px;'>{sims:,} sims · T{turn} {phase}</span></td>",
+            "</tr></table>",
+            f"<div style='background: #313244; width: 100%; border-radius: 3px; height: 5px; margin-bottom: 8px;'>",
+            f"<div style='background: {b_color}; width: {pct}%; height: 5px; border-radius: 3px;'></div>",
+            "</div>",
+        ]
+
+        if not branches:
+            html_blocks.append(
+                f"<div style='color: {tokens.get('muted', '#a6adc8')}; font-size: 11px;'>Awaiting legal branch simulation...</div>"
+            )
+        else:
+            for idx, b in enumerate(branches[:4], start=1):
+                if not isinstance(b, dict):
+                    continue
+                act = html.escape(str(b.get("action", "Pass Priority")))
+                cost = str(b.get("mana_cost", ""))
+                win_p = float(b.get("win_probability", 0.5))
+                v_delta = float(b.get("value_delta", 0.0))
+                tag = str(b.get("tag") or "NORMAL")
+                summary = html.escape(str(b.get("outcome_summary", "")))
+
+                b_pct = int(win_p * 100)
+                delta_str = f"+{v_delta * 100:.1f}%" if v_delta > 0 else f"{v_delta * 100:.1f}%"
+                delta_color = "#a6e3a1" if v_delta > 0 else ("#f38ba8" if v_delta < 0 else "#a6adc8")
+                br_color = "#a6e3a1" if b_pct >= 55 else ("#f9e2af" if b_pct >= 45 else "#f38ba8")
+
+                badge_bg = "#313244"
+                badge_fg = "#cdd6f4"
+                if "BEST" in tag:
+                    badge_bg = "#a6e3a1"
+                    badge_fg = "#11111b"
+                elif "TEMPO" in tag:
+                    badge_bg = "#89b4fa"
+                    badge_fg = "#11111b"
+                elif "SAFE" in tag:
+                    badge_bg = "#94e2d5"
+                    badge_fg = "#11111b"
+                elif "BLUNDER" in tag:
+                    badge_bg = "#f38ba8"
+                    badge_fg = "#11111b"
+
+                cost_display = f" [{cost}]" if cost else ""
+                html_blocks.extend([
+                    f"<div style='background: {tokens.get('panel2', '#181825')}; border: 1px solid {tokens.get('border', '#313244')}; border-radius: 5px; padding: 6px 8px; margin-bottom: 6px;'>",
+                    "<table width='100%' style='border: none; margin-bottom: 2px;'><tr>",
+                    f"<td align='left'><span style='font-weight: bold; color: {tokens.get('text', '#cdd6f4')}; font-size: 11px;'>#{idx}. {act}{cost_display}</span></td>",
+                    f"<td align='right'><span style='background: {badge_bg}; color: {badge_fg}; font-weight: bold; padding: 1px 5px; border-radius: 3px; font-size: 9px;'>{tag}</span></td>",
+                    "</tr></table>",
+                    f"<div style='margin-bottom: 3px; font-size: 11px; color: {tokens.get('muted', '#a6adc8')};'>",
+                    f"Win: <b style='color: {br_color};'>{b_pct}%</b> (<span style='color: {delta_color};'>{delta_str}</span>)",
+                    "</div>",
+                    f"<div style='color: {tokens.get('text', '#cdd6f4')}; font-size: 10px;'>↳ {summary}</div>" if summary else "",
+                    "</div>",
+                ])
+
+        html_blocks.append("</div>")
+        self.mcts_view.setHtml("".join(html_blocks))
+
     # -- hero advice ----------------------------------------------------------
 
     def _handle_event(self, payload: Any) -> None:
@@ -502,6 +623,11 @@ class CompactCoachPanel(CoachTab):
         if not isinstance(payload, dict):
             return
         event_type = payload.get("type")
+        if event_type == "mcts_tree":
+            data = payload.get("data")
+            if isinstance(data, dict):
+                self._update_mcts_tree(data)
+            return
         if event_type in ("speak_request", "speak_audio"):
             # Subtitle track: log exactly what the speech engine was given.
             spoken = str(payload.get("text", "")).strip()
@@ -605,6 +731,14 @@ class CompactCoachPanel(CoachTab):
         # classic renderer.
         self._last_game_state_payload = data
         self._refresh_turn_strip(data)
+        try:
+            from arenamcp.mcts_evaluator import MCTSEvaluator
+
+            mcts_payload = MCTSEvaluator.evaluate(data)
+            if mcts_payload:
+                self._update_mcts_tree(mcts_payload.to_dict())
+        except Exception as e:
+            logger.debug(f"MCTS update in compact view failed: {e}")
 
     def refresh_game_state_view(self) -> None:
         if self._last_game_state_payload:
@@ -927,7 +1061,19 @@ class CompactCoachPanel(CoachTab):
 #activityToggle:hover {{
     color: {t["text"]};
 }}
-QTextEdit#gameStateView, QTextEdit#logView {{
+#mctsToggle {{
+    border: none;
+    background: transparent;
+    color: {accent};
+    text-align: left;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 4px;
+}}
+#mctsToggle:hover {{
+    color: {t["text"]};
+}}
+QTextEdit#gameStateView, QTextEdit#logView, QTextEdit#mctsView {{
     border: 1px solid {t["border"]};
     border-radius: 8px;
     background: {t["bg"]};

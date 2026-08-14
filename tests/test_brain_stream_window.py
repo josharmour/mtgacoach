@@ -299,8 +299,9 @@ def test_latency_badge_has_no_fabricated_default(window):
 
 
 def test_draw_odds_placeholder_is_neutral(window):
-    window.update_game_state(make_snapshot())
-    assert window.draw_odds_view.toPlainText() == "—"
-
     window.update_game_state(make_snapshot(draw_odds={"Land": "42.5%"}))
     assert "Land: 42.5%" in window.draw_odds_view.toPlainText()
+
+    # When draw_odds is absent, MCTS decisions summary is shown
+    window.update_game_state(make_snapshot())
+    assert "Win Expectancy:" in window.draw_odds_view.toPlainText()

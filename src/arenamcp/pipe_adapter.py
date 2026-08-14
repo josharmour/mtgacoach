@@ -209,6 +209,10 @@ class PipeAdapter:
         """Emit a game state snapshot to the GUI."""
         self._emit({"type": "game_state", "data": snapshot})
 
+    def emit_mcts_tree(self, tree_data: dict[str, Any]) -> None:
+        """Emit a structured MCTS search tree evaluation to the GUI."""
+        self._emit({"type": "mcts_tree", "data": tree_data or {}})
+
     def emit_draft_state(self, snapshot: dict[str, Any]) -> None:
         """Emit a draft state snapshot to the GUI."""
         self._emit({"type": "draft_state", "data": snapshot})

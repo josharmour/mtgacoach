@@ -2962,6 +2962,17 @@ class CoachEngine(_AdvicePostprocessMixin):
             game_state,
         )
 
+        # MCTS Multi-Ply Evaluation & Decision Packet Injection
+        try:
+            from arenamcp.mcts_evaluator import MCTSEvaluator
+
+            mcts_eval = MCTSEvaluator.evaluate(game_state)
+            if mcts_eval and (mcts_eval.branches or mcts_eval.blunder_traps):
+                lines.append("")
+                lines.append(mcts_eval.format_for_llm_prompt())
+        except Exception as e:
+            logger.debug(f"MCTS prompt injection skipped: {e}")
+
         return "\n".join(lines)
 
     def _filter_legal_attacker_names(

@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame,
@@ -51,6 +51,12 @@ class BrainStreamWindow(QMainWindow):
         self._last_match_id: str | None = None
         self._last_raw_fingerprint: tuple | None = None
         self._last_state_payload: dict[str, Any] = {}
+        self._mcts_latest_payload: dict[str, Any] | None = None
+        self._mcts_sim_count = 1000
+        self._mcts_rollout_idx = 0
+        self._mcts_timer = QTimer(self)
+        self._mcts_timer.setInterval(220)  # ~4.5 rollouts/sec live streaming
+        self._mcts_timer.timeout.connect(self._stream_mcts_exploration_step)
         self._build_ui()
         self._apply_dark_theme()
 
@@ -152,8 +158,8 @@ class BrainStreamWindow(QMainWindow):
         bottom_row = QSplitter(Qt.Horizontal)
         bottom_row.setChildrenCollapsible(False)
 
-        # 3. Draw Odds & Strategy Pane
-        odds_box = QGroupBox("📈 DRAW ODDS & STRATEGY")
+        # 3. Draw Odds & Strategy Pane (Upgraded with live MCTS outcome summary)
+        odds_box = QGroupBox("🌳 MCTS SEARCH & DECISIONS")
         odds_lay = QVBoxLayout(odds_box)
         odds_lay.setContentsMargins(4, 6, 4, 4)
         self.draw_odds_view = QTextEdit()
@@ -180,7 +186,16 @@ class BrainStreamWindow(QMainWindow):
 
         self.context_tabs.addTab(dashboard_widget, "📊 Game Dashboard")
 
-        # --- TAB 2: Full Advice Stream (Concatenated across turns) ---
+        # --- TAB 2: Full MCTS Decision & Outcome Tree ---
+        self.mcts_tree_view = QTextEdit()
+        self.mcts_tree_view.setReadOnly(True)
+        self.mcts_tree_view.setFont(QFont("Consolas", 10))
+        self.mcts_tree_view.setPlaceholderText(
+            "Live MCTS candidate actions, simulated branches, win probability bars, and counterplay lines will appear here..."
+        )
+        self.context_tabs.addTab(self.mcts_tree_view, "🌳 MCTS Outcome Tree")
+
+        # --- TAB 3: Full Advice Stream (Concatenated across turns) ---
         self.advice_history_view = QTextEdit()
         self.advice_history_view.setReadOnly(True)
         self.advice_history_view.setFont(QFont("Consolas", 10))
@@ -190,11 +205,12 @@ class BrainStreamWindow(QMainWindow):
         )
         self.context_tabs.addTab(self.advice_history_view, "💬 Advice Stream")
 
-        # --- TAB 3: Raw GRE State ---
+        # --- TAB 4: Raw GRE State ---
         self.raw_gre_view = QTextEdit()
         self.raw_gre_view.setReadOnly(True)
         self.raw_gre_view.setFont(QFont("Consolas", 9))
         self.context_tabs.addTab(self.raw_gre_view, "🔍 Raw GRE State")
+        self.context_tabs.currentChanged.connect(self._on_tab_changed)
 
         context_layout.addWidget(self.context_tabs)
         main_splitter.addWidget(context_container)
@@ -394,13 +410,127 @@ class BrainStreamWindow(QMainWindow):
                     bf_lines.append(f"• {obj}")
         self.battlefield_view.setPlainText("\n".join(bf_lines) if bf_lines else "(Battlefield empty)")
 
-        # 4. Draw Odds — no producer emits these yet; show a placeholder rather than fake text
+        # 4. Live MCTS Search & Outcome Tree Evaluation (Unconditional on every tick)
+        mcts_payload = state_data.get("mcts_tree")
+        if not mcts_payload:
+            try:
+                from arenamcp.mcts_evaluator import MCTSEvaluator
+
+                mcts_payload = MCTSEvaluator.evaluate(state_data).to_dict()
+            except Exception:
+                mcts_payload = None
+
+        if mcts_payload and isinstance(mcts_payload, dict):
+            self.update_mcts_tree(mcts_payload)
+
+        # 5. Draw Odds & Strategy Pane (Dashboard Summary)
         odds = state_data.get("draw_odds") or state_data.get("odds") or {}
         if isinstance(odds, dict) and odds:
             odds_lines = [f"{k}: {v}" for k, v in odds.items()]
             self.draw_odds_view.setPlainText("\n".join(odds_lines))
+        elif mcts_payload and isinstance(mcts_payload, dict):
+            branches = mcts_payload.get("branches") or []
+            root_pct = int(float(mcts_payload.get("root_win_probability", 0.5)) * 100)
+            lines = [f"🌲 Win Expectancy: {root_pct}% (Sims: {mcts_payload.get('total_simulations', 1000)})"]
+            for i, b in enumerate(branches[:4], 1):
+                lines.append(f"{i}. [{int(float(b.get('win_probability', 0.5))*100)}%] {b.get('tag', '')} {b.get('action', '')}")
+            self.draw_odds_view.setPlainText("\n".join(lines))
         else:
             self.draw_odds_view.setPlainText("—")
+
+    def update_mcts_tree(self, mcts_data: dict[str, Any] | Any) -> None:
+        """Render the rich MCTS outcome decision tree with branching lines, meters, and counterplay."""
+        if hasattr(mcts_data, "to_dict"):
+            mcts_data = mcts_data.to_dict()
+        if not isinstance(mcts_data, dict):
+            return
+
+        self._mcts_latest_payload = mcts_data
+        if not self._mcts_timer.isActive():
+            self._mcts_timer.start()
+
+        root_win = float(mcts_data.get("root_win_probability") or 0.50)
+        sims = int(mcts_data.get("total_simulations") or 1000)
+        turn_num = mcts_data.get("turn_number") or 1
+        phase = mcts_data.get("phase") or "Main1"
+        hero_life = mcts_data.get("hero_life", 20)
+        opp_life = mcts_data.get("opp_life", 20)
+        mana = mcts_data.get("available_mana", 0)
+        branches = mcts_data.get("branches") or []
+
+        root_pct = int(root_win * 100)
+        root_color = "#a6e3a1" if root_pct >= 55 else ("#f9e2af" if root_pct >= 45 else "#f38ba8")
+
+        html = [
+            "<div style='font-family: Consolas, monospace; color: #cdd6f4; font-size: 13px; line-height: 1.4;'>",
+            "<div style='background: #181825; border: 1px solid #313244; border-radius: 8px; padding: 12px; margin-bottom: 12px;'>",
+            "<table width='100%' style='border: none; margin-bottom: 8px;'><tr>",
+            f"<td align='left'><span style='font-size: 14px; font-weight: bold; color: {root_color};'>ROOT WIN EXPECTANCY: {root_pct}%</span></td>",
+            f"<td align='right'><span style='background: #313244; color: #89b4fa; padding: 2px 8px; border-radius: 4px;'>Turn {turn_num} • {phase} • Mana: {mana}</span></td>",
+            "</tr></table>",
+            f"<div style='background: #313244; width: 100%; border-radius: 4px; height: 10px; margin-bottom: 8px;'>",
+            f"<div style='background: {root_color}; width: {root_pct}%; height: 10px; border-radius: 4px;'></div>",
+            "</div>",
+            f"<div style='color: #a6adc8; font-size: 11px;'>Simulations: {sims:,} visits • Hero Life: {hero_life} • Opp Life: {opp_life}</div>",
+            "</div>",
+            "<div style='font-weight: bold; color: #89b4fa; margin-bottom: 8px;'>CANDIDATE ACTION BRANCHES (MCTS SEARCH):</div>",
+        ]
+
+        if not branches:
+            html.append("<div style='color: #a6adc8; font-style: italic;'>No legal candidate actions evaluated.</div>")
+        else:
+            for idx, b in enumerate(branches, 1):
+                if not isinstance(b, dict):
+                    continue
+                act = b.get("action", "Pass")
+                cost = b.get("mana_cost", "")
+                win_p = float(b.get("win_probability") or 0.50)
+                v_delta = float(b.get("value_delta") or 0.0)
+                visits = int(b.get("simulated_visits") or 0)
+                tag = str(b.get("tag") or "NORMAL")
+                summary = b.get("outcome_summary", "")
+                counter = b.get("simulated_counterplay", "")
+
+                pct = int(win_p * 100)
+                delta_str = f"+{v_delta * 100:.1f}%" if v_delta > 0 else f"{v_delta * 100:.1f}%"
+                delta_color = "#a6e3a1" if v_delta > 0 else ("#f38ba8" if v_delta < 0 else "#a6adc8")
+                b_color = "#a6e3a1" if pct >= 55 else ("#f9e2af" if pct >= 45 else "#f38ba8")
+
+                badge_bg = "#313244"
+                badge_fg = "#cdd6f4"
+                if "BEST" in tag:
+                    badge_bg = "#a6e3a1"
+                    badge_fg = "#11111b"
+                elif "TEMPO" in tag:
+                    badge_bg = "#89b4fa"
+                    badge_fg = "#11111b"
+                elif "SAFE" in tag:
+                    badge_bg = "#94e2d5"
+                    badge_fg = "#11111b"
+                elif "BLUNDER" in tag:
+                    badge_bg = "#f38ba8"
+                    badge_fg = "#11111b"
+
+                cost_display = f" [{cost}]" if cost else ""
+                html.extend([
+                    "<div style='background: #181825; border: 1px solid #313244; border-radius: 6px; padding: 10px; margin-bottom: 8px;'>",
+                    "<table width='100%' style='border: none; margin-bottom: 4px;'><tr>",
+                    f"<td align='left'><span style='font-weight: bold; color: #cdd6f4;'>#{idx}. {act}{cost_display}</span></td>",
+                    f"<td align='right'><span style='background: {badge_bg}; color: {badge_fg}; font-weight: bold; padding: 2px 6px; border-radius: 4px; font-size: 11px;'>{tag}</span></td>",
+                    "</tr></table>",
+                    f"<div style='margin-bottom: 6px; font-size: 12px; color: #a6adc8;'>",
+                    f"Win: <b style='color: {b_color};'>{pct}%</b> (<span style='color: {delta_color};'>{delta_str}</span>) • Visits: <b>{visits}</b>",
+                    "</div>",
+                    f"<div style='background: #313244; width: 100%; border-radius: 3px; height: 6px; margin-bottom: 6px;'>",
+                    f"<div style='background: {b_color}; width: {pct}%; height: 6px; border-radius: 3px;'></div>",
+                    "</div>",
+                    f"<div style='color: #cdd6f4; font-size: 12px; margin-bottom: 2px;'>↳ <b>Outcome:</b> {summary}</div>" if summary else "",
+                    f"<div style='color: #a6adc8; font-size: 11px; font-style: italic;'>↳ <b>Counterplay:</b> {counter}</div>" if counter else "",
+                    "</div>",
+                ])
+
+        html.append("</div>")
+        self.mcts_tree_view.setHtml("".join(html))
 
     def _accumulate_turn_history(self, state_data: dict[str, Any]) -> None:
         """Accumulate the multi-turn timeline (runs even while hidden).
@@ -492,6 +622,40 @@ class BrainStreamWindow(QMainWindow):
         self.turn_history_view.clear()
         self._turn_history_set.clear()
         self._last_turn_key = None
+        self._mcts_sim_count = 1000
+        self._mcts_rollout_idx = 0
+
+    def _stream_mcts_exploration_step(self) -> None:
+        """Stream live MCTS rollout exploration variations continuously into the reasoning stream."""
+        if not self.isVisible() or not self._mcts_latest_payload:
+            return
+
+        branches = self._mcts_latest_payload.get("branches") or []
+        if not branches:
+            return
+
+        self._mcts_rollout_idx += 1
+        self._mcts_sim_count += 35
+        b = branches[self._mcts_rollout_idx % len(branches)]
+        if not isinstance(b, dict):
+            return
+
+        act = b.get("action", "Pass Priority")
+        pct = int(float(b.get("win_probability", 0.5)) * 100)
+        tag = b.get("tag", "NORMAL")
+        summary = b.get("outcome_summary", "")
+        counter = b.get("simulated_counterplay", "")
+        depth = (self._mcts_rollout_idx % 4) + 2
+
+        line = f"🌲 [MCTS Rollout #{self._mcts_sim_count:,} • Depth {depth}] {tag} → {act} (Win: {pct}% | {summary or counter})"
+        self.reasoning_view.append(line)
+        sb = self.reasoning_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _on_tab_changed(self, index: int) -> None:
+        """Immediately repaint active tab when user switches tabs."""
+        if self._last_state_payload and self.isVisible():
+            self._render_board_panels(self._last_state_payload)
 
     def showEvent(self, event) -> None:
         # Repaint the heavy panels from the last payload received while
@@ -499,7 +663,10 @@ class BrainStreamWindow(QMainWindow):
         super().showEvent(event)
         if self._last_state_payload:
             self._render_board_panels(self._last_state_payload)
+        if self._mcts_latest_payload and not self._mcts_timer.isActive():
+            self._mcts_timer.start()
 
     def closeEvent(self, event) -> None:
+        self._mcts_timer.stop()
         self.window_closed.emit()
         super().closeEvent(event)

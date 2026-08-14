@@ -906,6 +906,12 @@ class CoachTab(QWidget):
                         brain_stream.update_game_state(data)
                         turn_num = data.get("turn_number") or (data.get("turn") or {}).get("turn_number", 0)
                         brain_stream.log_trigger_event("GAME_STATE", f"Turn {turn_num}")
+                elif event_type == "mcts_tree":
+                    data = payload.get("data")
+                    if isinstance(data, dict):
+                        brain_stream.update_mcts_tree(data)
+                        root_p = int(float(data.get("root_win_probability", 0.5)) * 100)
+                        brain_stream.log_trigger_event("MCTS_TREE", f"Win {root_p}% ({len(data.get('branches', []))} branches)")
                 elif event_type == "advice":
                     text = str(payload.get("text", ""))
                     seat_info = str(payload.get("seat_info", ""))
