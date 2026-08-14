@@ -2,6 +2,7 @@
 
 Pure move: methods are unchanged and mixed back into CoachEngine."""
 
+import contextlib
 import logging
 from collections import Counter
 from typing import Any
@@ -1217,7 +1218,20 @@ class _AdvicePostprocessMixin:
 
                 spell_in_then = any(spell_short in tl.lower() for tl in then_lines)
 
-                if not spell_is_legal and not spell_in_then:
+                # Check if the spell is castable after the land drop using potential_mana_pool
+                can_cast_post_land = False
+                spell_card = next(
+                    (c for c in hand_cards if spell_short in (c.get("name") or "").lower()),
+                    None,
+                )
+                if spell_card:
+                    m_cost = spell_card.get("mana_cost", "")
+                    if not m_cost and spell_card.get("grp_id"):
+                        with contextlib.suppress(Exception):
+                            m_cost = RulesEngine._card_db.get(spell_card.get("grp_id"), {}).get("mana_cost", "")
+                    can_cast_post_land = RulesEngine._can_afford(m_cost, potential_mana_pool) if m_cost else True
+
+                if not spell_is_legal and not spell_in_then and not can_cast_post_land:
                     logger.info(
                         f"Stripped illegal post-land spell '{spell_part}' from advice '{advice}' -> '{land_part}'"
                     )
