@@ -2243,6 +2243,26 @@ class AutopilotEngine(_BridgeSubmitMixin, _ActionExecMixin):
                         auto_tap_ok = self._gre_bridge.submit_auto_tap()
                         if auto_tap_ok:
                             logger.info("Autopilot: AutoTap child arrived late — retry succeeded")
+                    if not auto_tap_ok and self._live_pending_request_is("PayCosts") is False:
+                        # The P1-5 guard above checks the window on entry, but
+                        # the window can also be consumed *while* we are here:
+                        # a concurrent trigger pays it, or the 0.4s retry sleep
+                        # gives another dispatch time to land. "Pending is null"
+                        # then means the cost was paid, not that payment failed
+                        # — escalating to MANUAL REQUIRED here is a false alarm
+                        # (issue #405, and the same 316KB bug report).
+                        logger.info(
+                            "Autopilot: PayCosts window consumed during auto-pay "
+                            "(paid by a concurrent trigger) — treating as done"
+                        )
+                        self._record_autopilot_decision(
+                            game_state,
+                            trigger,
+                            action_type="pay_costs",
+                            summary="PayCosts already paid by a concurrent trigger",
+                        )
+                        self._state = AutopilotState.IDLE
+                        return True
                     if auto_tap_ok:
                         self._log_execution_path(ExecutionPath.GRE_AWARE, "auto_pay via submit_auto_tap")
                         self._record_autopilot_decision(

@@ -886,7 +886,10 @@ def _handle_pay_costs(game_state: "GameState", msg: dict) -> bool:
             source_id = oid
             break
     source_obj = game_state.game_objects.get(source_id) if source_id else None
-    source_name = game_state._resolve_card_name(source_obj.grp_id) if source_obj else "Unknown"
+    # PayCosts for an activated ability names the *ability* object, whose
+    # grp_id is an ability id — resolve through it to the parent permanent
+    # rather than emitting "Pay costs for Card#136588" (#407, #483).
+    source_name = game_state._resolve_object_display_name(source_obj) if source_obj else "Unknown"
 
     _MANA_ABBREV = {
         "ManaColor_White": "W",

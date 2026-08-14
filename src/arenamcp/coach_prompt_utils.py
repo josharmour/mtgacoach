@@ -207,7 +207,37 @@ def _build_bridge_context_lines(
     if raw_gre_events and not for_planner:
         lines.append("GRE_Recent: " + _format_raw_gre_events_for_prompt(raw_gre_events))
 
+    # X-cost range. Small and decisive, so the planner gets it too — it is
+    # told to choose "within shown min/max" and otherwise sees no bounds.
+    numeric_line = _format_numeric_constraints(game_state)
+    if numeric_line:
+        lines.append(numeric_line)
+
     return lines
+
+
+def _format_numeric_constraints(game_state: dict[str, Any]) -> str:
+    """Render the pending X/numeric input's bounds as one prompt line."""
+    minimum = game_state.get("_bridge_numeric_min")
+    maximum = game_state.get("_bridge_numeric_max")
+    if minimum is None and maximum is None:
+        return ""
+
+    parts = [f"min={minimum if minimum is not None else '?'}", f"max={maximum if maximum is not None else '?'}"]
+    step = game_state.get("_bridge_numeric_step")
+    if step:
+        parts.append(f"step={step}")
+    suggested = game_state.get("_bridge_numeric_suggested")
+    if suggested:
+        parts.append("suggested=" + ",".join(str(v) for v in suggested))
+    disallowed = game_state.get("_bridge_numeric_disallowed")
+    if disallowed:
+        parts.append("disallowed=" + ",".join(str(v) for v in disallowed))
+    if game_state.get("_bridge_numeric_disallow_even"):
+        parts.append("odd values only")
+    if game_state.get("_bridge_numeric_disallow_odd"):
+        parts.append("even values only")
+    return "X_RANGE: " + ", ".join(parts)
 
 
 _NON_PASSABLE_REQUEST_CLASSES = {

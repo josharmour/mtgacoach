@@ -1960,6 +1960,30 @@ class GameState:
             logger.debug(f"Card name resolution failed for grp_id={grp_id}: {e}")
             return f"Card#{grp_id}"
 
+    def _resolve_object_display_name(self, obj: "GameObject") -> str:
+        """Name a game object for prompts, following abilities to their source.
+
+        An ability is its own GameObject whose ``grp_id`` is the *ability* id,
+        not a card id — no card DB can resolve it, so it rendered as
+        "Card#136588" and the model then invented properties for the
+        nonexistent card (issue #407's leaked grpIds; "Pay costs for
+        Card#136588" in issue #483). The parent permanent is the thing the
+        player actually recognises, so name it after that.
+        """
+        name = self._resolve_card_name(obj.grp_id)
+        if not name.startswith("Card#") and not name.startswith("Unknown"):
+            return name
+        parent_id = getattr(obj, "parent_instance_id", None)
+        if parent_id is None:
+            return name
+        parent = self.game_objects.get(int(parent_id))
+        if parent is None or parent.grp_id == obj.grp_id:
+            return name
+        parent_name = self._resolve_card_name(parent.grp_id)
+        if parent_name.startswith("Card#") or parent_name.startswith("Unknown"):
+            return name
+        return f"{parent_name}'s ability"
+
     def prewarm_card_cache(self, grp_ids: list[int]) -> int:
         """Pre-warm grp_id -> card name cache during match loading or state updates.
 

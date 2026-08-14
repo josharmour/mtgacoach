@@ -139,15 +139,23 @@ class _BridgeSubmitMixin:
                 self._gre_bridge_failed_methods.add(method)
                 return None
 
-        # NUMERIC_INPUT with a chosen value (X spells) — P3-1. The plugin's
-        # submit_numeric resolves the pending numeric/casting-time child and
-        # calls SubmitX(value).
+        # NUMERIC_INPUT with a chosen value (X spells) — P3-1.
+        #
+        # submit_x is the right command, not submit_numeric (issue #390): an
+        # X cost arrives as a CastingTimeOption_NumericInputRequest *child* of
+        # a CastingTimeOptionRequest, and the plugin's HandleSubmitNumeric only
+        # matches a standalone NumericInputRequest — so the parent-type
+        # mismatch failed and every X cast fell through to MANUAL REQUIRED.
+        # HandleSubmitX walks ChildRequests for the numeric child and also
+        # accepts a standalone NumericInputRequest, making it a superset;
+        # submit_numeric stays as a fallback for plugin builds predating the
+        # submit_x command.
         if action.action_type == ActionType.NUMERIC_INPUT and action.numeric_value:
             value = int(action.numeric_value)
-            if self._gre_bridge.submit_numeric(value):
+            if self._gre_bridge.submit_x(value) or self._gre_bridge.submit_numeric(value):
                 self._log_execution_path(ExecutionPath.GRE_AWARE, f"numeric_input: X={value} via GRE bridge")
                 return ClickResult(True, 0, 0, f"X={value}", "GRE bridge")
-            logger.info("GRE bridge submit_numeric failed; surfacing manual-required")
+            logger.info("GRE bridge submit_x/submit_numeric failed; surfacing manual-required")
             self._gre_bridge_failed_methods.add(method)
             return None
 

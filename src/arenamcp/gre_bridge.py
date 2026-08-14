@@ -1882,6 +1882,22 @@ def _stamp_bridge_fields(
     request_payload = normalized["request_payload"]
     snapshot["_bridge_request_payload"] = request_payload if has_pending and request_payload else None
 
+    # X-cost constraints from the CastingTimeOption numeric child. The planner
+    # prompt tells the model to pick a value "within shown min/max", but until
+    # these were stamped onto the snapshot nothing was ever shown (issue #390).
+    for field in (
+        "numeric_min",
+        "numeric_max",
+        "numeric_step",
+        "numeric_input_type",
+        "numeric_disallowed",
+        "numeric_suggested",
+        "numeric_disallow_even",
+        "numeric_disallow_odd",
+    ):
+        value = poll.get(field) if has_pending else None
+        snapshot[f"_bridge_{field}"] = value if value not in (None, [], {}) else None
+
 
 def _clear_snapshot_for_no_pending(snapshot: dict[str, Any], bridge_connected: bool | None) -> None:
     """No bridge decision pending — clear stale decision/legal-action hints.
