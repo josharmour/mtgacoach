@@ -562,3 +562,48 @@ class TestGeneralizationWiring:
                 bootstraps=50,
             )
         assert exc.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# assert_arm_complete: a lone malformed candidate-response row (embedded
+# control char) must be tolerated, not abort the whole nightly gate; real
+# server errors and missing rows still fail closed.
+# ---------------------------------------------------------------------------
+
+
+def test_assert_arm_complete_tolerates_malformed_row(tmp_path: Path):
+    from tools.training.wp3 import run_b5_gate_eval as R
+
+    responses = tmp_path / "responses.jsonl"
+    clean = [{"backend": "b5d", "id": i} for i in range(1, 10)]
+    lines = [json.dumps(r) for r in clean]
+    # RAW control char (0x01) inside a response — would raise JSONDecodeError
+    # on a bare json.loads, exactly the 2026-08-12 nightly-gate crash.
+    lines.insert(3, '{"backend":"b5d","id":99,"response":"bad' + "\x01" + 'control"}')
+    responses.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Completely full file (9 clean + 1 malformed = 10 rows): must NOT die.
+    R.assert_arm_complete(responses, "b5d", 10)
+
+
+def test_assert_arm_complete_fails_on_server_error(tmp_path: Path):
+    from tools.training.wp3 import run_b5_gate_eval as R
+
+    responses = tmp_path / "responses.jsonl"
+    responses.write_text(
+        '{"backend":"b5d","id":1}\n{"backend":"b5d","id":2,"error":"boom"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        R.assert_arm_complete(responses, "b5d", 2)
+
+
+def test_assert_arm_complete_fails_on_shortfall(tmp_path: Path):
+    from tools.training.wp3 import run_b5_gate_eval as R
+
+    responses = tmp_path / "responses.jsonl"
+    responses.write_text(
+        "\n".join(json.dumps({"backend": "b5d", "id": i}) for i in range(1, 4)) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        R.assert_arm_complete(responses, "b5d", 10)

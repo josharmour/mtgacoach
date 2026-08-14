@@ -80,6 +80,9 @@ class _AdvicePostprocessMixin:
 
         import re
 
+        # Initialize legal_actions early from game_state for early validation passes
+        legal_actions = game_state.get("legal_actions") or []
+
         # Set when this method substitutes locally generated advice for the
         # model's. The tag is applied at the very end (see
         # ``_normalize_health_tags``) so the spoken-form rewrites below —
@@ -189,6 +192,24 @@ class _AdvicePostprocessMixin:
             all_cards.extend(game_state.get(zone, []))
         all_card_names = {c.get("name", "") for c in all_cards if c.get("name")}
 
+        # 0. Resolve any raw Card<ID> or Card#<ID> patterns in advice using game_state and card_db
+        raw_card_pattern = re.compile(r"\bCard#?(\d+)\b", re.IGNORECASE)
+        if raw_card_pattern.search(advice):
+            def _replace_raw_card_id(m):
+                cid = int(m.group(1))
+                for card_obj in all_cards:
+                    if card_obj.get("instance_id") == cid or card_obj.get("grp_id") == cid:
+                        cname = card_obj.get("name")
+                        if cname and not cname.startswith("Card"):
+                            return cname
+                from arenamcp.rules_engine import RulesEngine
+                db_info = RulesEngine._card_db.get(cid)
+                if isinstance(db_info, dict) and db_info.get("name"):
+                    return db_info["name"]
+                return m.group(0)
+
+            advice = raw_card_pattern.sub(_replace_raw_card_id, advice)
+
         # Build the set of land card names known to this game. Anything with
         # "Land" in its type_line counts — covers basics, snow, Triomes,
         # shocks, fetch, Cavern of Souls, etc. The hardcoded basic-only list
@@ -264,80 +285,108 @@ class _AdvicePostprocessMixin:
                                 )
                                 advice = " ".join(original_words)
 
-        # 3. Remove Cast suggestions for cards that cost more mana than available
-        # Calculate available mana (lands on battlefield + land drop potential)
-        battlefield = game_state.get("battlefield", [])
-        # local_seat already resolved above when computing land state.
+        # 3. Remove Cast suggestions for cards that cost more mana than available or missing required colors
+        from arenamcp.rules_engine import RulesEngine
 
-        # Count untapped lands we control
-        untapped_lands = 0
-        for card in battlefield:
-            if card.get("controller_seat_id") == local_seat or card.get("owner_seat_id") == local_seat:
-                type_line = card.get("type_line", "").lower()
-                if "land" in type_line and not card.get("is_tapped"):
-                    untapped_lands += 1
+        current_mana_pool = RulesEngine._get_mana_pool(game_state, local_seat)
+        potential_mana_pool = dict(current_mana_pool)
+        potential_sources = list(current_mana_pool.get("_sources", []))
 
-        # Check if we have a land in hand (potential +1 mana)
-        has_land_in_hand = lands_in_hand  # already computed above
-        potential_mana = untapped_lands + (1 if has_land_in_hand else 0)
+        # Add potential land drop from hand to the potential mana pool
+        if lands_in_hand:
+            hand_land_colors: set[str] = set()
+            for c in hand_cards:
+                if "land" in c.get("type_line", "").lower():
+                    l_name = (c.get("name") or "").lower()
+                    l_type = (c.get("type_line") or "").lower()
+                    l_oracle = (c.get("oracle_text") or "").lower()
 
-        # Check each card in hand for mana cost violations
+                    if "any color" in l_oracle or "mana of any type" in l_oracle:
+                        hand_land_colors.update({"W", "U", "B", "R", "G"})
+                    else:
+                        for clr, bsc in [
+                            ("W", "plains"),
+                            ("U", "island"),
+                            ("B", "swamp"),
+                            ("R", "mountain"),
+                            ("G", "forest"),
+                        ]:
+                            if bsc in l_name or bsc in l_type or f"{{{clr.lower()}}}" in l_oracle:
+                                hand_land_colors.add(clr)
+                        if "{c}" in l_oracle:
+                            hand_land_colors.add("C")
+
+            if not hand_land_colors:
+                hand_land_colors = set("WUBRG")
+
+            potential_mana_pool["total"] += 1
+            potential_sources.append(frozenset(hand_land_colors))
+            for clr in hand_land_colors:
+                potential_mana_pool[clr] = potential_mana_pool.get(clr, 0) + 1
+
+        potential_mana_pool["_sources"] = potential_sources
+        potential_mana = potential_mana_pool["total"]
+
+        # Check each card in hand for mana cost / color violations
         seen_card_names = set()
         for card in hand_cards:
+            type_line = card.get("type_line", "").lower()
+            if "land" in type_line:
+                continue
+
             card_name = card.get("name", "")
             mana_cost = card.get("mana_cost", "")
-            if card_name in seen_card_names:
+            grp_id = card.get("grp_id")
+            if card_name in seen_card_names or not card_name:
                 continue
             seen_card_names.add(card_name)
-            if not card_name or not mana_cost:
-                continue
 
-            # Parse CMC from mana cost (simple heuristic)
-            cmc = 0
-            import re as re_inner
+            # If mana_cost is missing from hand card dict, try looking up in RulesEngine database
+            if not mana_cost and grp_id:
+                try:
+                    card_db_entry = RulesEngine._card_db.get(grp_id) or {}
+                    mana_cost = card_db_entry.get("mana_cost", "")
+                except Exception:
+                    pass
 
-            # Count {X} symbols
-            symbols = re_inner.findall(r"\{([^}]+)\}", mana_cost)
-            for sym in symbols:
-                if sym.isdigit():
-                    cmc += int(sym)
-                elif sym in ["W", "U", "B", "R", "G", "C"] or "/" in sym:
-                    cmc += 1
+            cmc = RulesEngine._parse_cmc(mana_cost) if mana_cost else 0
+            can_afford = (
+                RulesEngine._can_afford(mana_cost, potential_mana_pool)
+                if mana_cost
+                else (cmc <= potential_mana)
+            )
 
-            # If this card costs more than we can have, remove Cast suggestions for it
-            if cmc > potential_mana:
-                # Remove "then [cast] Card" sequences (e.g. "Play land then Earthbender Ascension")
+            # If this card costs more than we can have OR lacks required colors, remove Cast/Play suggestions for it
+            if not can_afford:
+                # Remove "then [cast|play] Card" sequences (e.g. "Play land then play Bothersome Noisemaker")
                 then_pattern = re.compile(
-                    rf",?\s*then\s+(?:cast\s+)?{re.escape(card_name)}[.,]?\s*",
+                    rf",?\s*(?:then|and)\s+(?:cast|play)\s+{re.escape(card_name)}[.,]?\s*",
                     re.IGNORECASE,
                 )
                 if then_pattern.search(advice):
                     advice = then_pattern.sub(". ", advice).strip()
                     logger.debug(
-                        f"Removed uncastable 'then' sequence: {card_name} (needs {cmc}, have {potential_mana})"
+                        f"Removed uncastable 'then' sequence: {card_name} (needs {mana_cost}, available total {potential_mana})"
                     )
                     continue
 
-                # Remove "Cast [Card Name]" as a standalone command (e.g. "Cast X." or "Cast X,")
-                # but NOT when the card name appears mid-sentence (e.g. "find mana to cast X or Y")
-                # to avoid leaving garbled text like "find mana to or Y"
+                # Remove "Cast/Play [Card Name]" as a standalone command (e.g. "Cast X." or "Play X.")
                 standalone_pattern = re.compile(
-                    rf"(?:^|(?<=\.\s)|(?<=\n))Cast\s+{re.escape(card_name)}[.,]?\s*",
+                    rf"(?:^|(?<=\.\s)|(?<=\n))(?:Cast|Play)\s+{re.escape(card_name)}[.,]?\s*",
                     re.IGNORECASE,
                 )
                 if standalone_pattern.search(advice):
                     advice = standalone_pattern.sub("", advice)
                     logger.debug(
-                        f"Removed uncastable suggestion: {card_name} (needs {cmc}, have {potential_mana})"
+                        f"Removed uncastable suggestion: {card_name} (needs {mana_cost}, available total {potential_mana})"
                     )
                 else:
                     # Card mentioned mid-sentence — replace name with "[uncastable]" hint
-                    # so the sentence stays grammatical
-                    mid_pattern = re.compile(rf"(?:cast\s+)?{re.escape(card_name)}", re.IGNORECASE)
+                    mid_pattern = re.compile(rf"(?:cast|play)\s+{re.escape(card_name)}", re.IGNORECASE)
                     if mid_pattern.search(advice):
                         advice = mid_pattern.sub(f"{card_name} (not enough mana)", advice, count=1)
                         logger.debug(
-                            f"Annotated uncastable mid-sentence: {card_name} (needs {cmc}, have {potential_mana})"
+                            f"Annotated uncastable mid-sentence: {card_name} (needs {mana_cost}, available total {potential_mana})"
                         )
 
         # 4. Remove incorrect lethal/win claims when math doesn't support it
@@ -393,6 +442,69 @@ class _AdvicePostprocessMixin:
                 and your_life <= 1
             ):
                 advice = f"Pass priority. Do not tap self-damage lands — taking 1 damage is fatal at {your_life} life!"
+
+        # Equip / Attach target validator:
+        # Prevent advising to equip an Equipment to a card in hand or off-battlefield.
+        equip_match = re.search(
+            r"(?i)\b(?:equip|attach)\s+([\w\s'—]+?)\s+(?:to|onto|on|with)\s+([\w\s'—]+)",
+            advice,
+        )
+        if equip_match:
+            g1, g2 = equip_match.group(1).strip(), equip_match.group(2).strip()
+            if " with " in equip_match.group(0).lower():
+                equip_name, target_name = g2, g1
+            else:
+                equip_name, target_name = g1, g2
+
+            target_name = re.sub(r"[.,;!?]+$", "", target_name).strip()
+
+            local_seat = None
+            for p in game_state.get("players", []):
+                if p.get("is_local"):
+                    local_seat = p.get("seat_id")
+                    break
+
+            hand_card_names = {
+                (c.get("name") or "").lower() for c in game_state.get("hand", []) if c.get("name")
+            }
+            bf_creatures = [
+                c.get("name")
+                for c in game_state.get("battlefield", [])
+                if (c.get("owner_seat_id") == local_seat or c.get("controller_seat_id") == local_seat)
+                and "creature" in (c.get("type_line") or "").lower()
+                and c.get("name")
+            ]
+
+            target_lower = target_name.lower()
+            target_in_hand = any(
+                target_lower in hn or hn in target_lower
+                for hn in hand_card_names
+                if len(target_lower) >= 3
+            )
+            target_on_bf = any(
+                target_lower in bn.lower() or bn.lower() in target_lower
+                for bn in bf_creatures
+                if len(target_lower) >= 3
+            )
+
+            if target_in_hand and not target_on_bf:
+                if bf_creatures:
+                    valid_target = bf_creatures[0]
+                    advice = re.sub(
+                        re.escape(target_name), valid_target, advice, flags=re.IGNORECASE
+                    )
+                    logger.info(
+                        f"Fixed invalid equip target '{target_name}' (card in hand) -> '{valid_target}' (on battlefield)"
+                    )
+                else:
+                    advice = re.sub(
+                        r"(?i)\b(?:equip|attach)\s+[\w\s'—]+?\s+(?:to|onto|on|with)\s+[\w\s'—]+[.,]?",
+                        "",
+                        advice,
+                    ).strip()
+                    logger.info(
+                        f"Removed impossible equip target '{target_name}' (card in hand, no creatures on battlefield)"
+                    )
 
         # Clean up double spaces
         advice = re.sub(r"\s+", " ", advice).strip()
@@ -500,16 +612,76 @@ class _AdvicePostprocessMixin:
                 if act == "pass" and "combat" in phase:
                     score += 10
 
-                # Penalize mana-only actions (not real decisions)
-                if act.startswith("action: "):
-                    score -= 10
+                # Target Selection scoring: prefer opponent targets for harmful spells/abilities, player targets for beneficial spells
+                if act.startswith("select target:"):
+                    is_yours = "(yours)" in act or "you" in act
+                    is_opp = "(opp)" in act or "opponent" in act
 
-                # If we can detect a legal "Play Land" and lands available, boost it
-                if "play land" in act and local_seat is not None:
-                    # If a land is in hand, it's likely valid to play
-                    hand = game_state.get("hand", [])
-                    if any("land" in c.get("type_line", "").lower() for c in hand):
-                        score += 15
+                    decision_ctx = game_state.get("decision_context") or {}
+                    source_oracle = str(
+                        decision_ctx.get("source_oracle_text")
+                        or decision_ctx.get("source_card_oracle_text")
+                        or ""
+                    ).lower()
+                    if not source_oracle and game_state.get("stack"):
+                        source_id = decision_ctx.get("source_id")
+                        for obj in game_state.get("stack", []):
+                            if obj.get("instance_id") == source_id:
+                                source_oracle = (obj.get("oracle_text") or "").lower()
+                                break
+                    if not source_oracle:
+                        source_card = str(decision_ctx.get("source_card") or "")
+                        if source_card:
+                            from arenamcp.rules_engine import RulesEngine
+                            for card_info in RulesEngine._card_db.values():
+                                if isinstance(card_info, dict) and (card_info.get("name") or "").lower() == source_card.lower():
+                                    source_oracle = (card_info.get("oracle_text") or "").lower()
+                                    if source_oracle:
+                                        break
+
+                    harmful_keywords = (
+                        "deal",
+                        "damage",
+                        "destroy",
+                        "exile",
+                        "loses",
+                        "fight",
+                        "sacrifice",
+                        "-1/",
+                        "-2/",
+                        "-3/",
+                        "-4/",
+                        "-5/",
+                    )
+                    beneficial_keywords = (
+                        "+1/+1",
+                        "draw a card",
+                        "draws",
+                        "gain life",
+                        "equip",
+                        "gains indestructible",
+                        "hexproof",
+                        "protection",
+                        "gets +",
+                    )
+                    is_harmful = any(kw in source_oracle for kw in harmful_keywords)
+                    is_beneficial = any(kw in source_oracle for kw in beneficial_keywords)
+
+                    if is_harmful and not is_beneficial:
+                        if is_opp:
+                            score += 150
+                        elif is_yours:
+                            score -= 200
+                    elif is_beneficial and not is_harmful:
+                        if is_yours:
+                            score += 150
+                        elif is_opp:
+                            score -= 200
+                    else:
+                        if is_opp:
+                            score += 100
+                        elif is_yours:
+                            score -= 100
 
                 return score
 
@@ -606,6 +778,7 @@ class _AdvicePostprocessMixin:
             if dec_type in (
                 "select_items",
                 "select_targets",
+                "target_selection",
                 "modal_choice",
                 "distribution",
                 "pay_costs",
@@ -660,8 +833,21 @@ class _AdvicePostprocessMixin:
                         card_name = act_clean[5:].strip()
                         short_name = re.split(r"[,—/]", card_name)[0].strip()
                         if short_name and short_name in advice_lower:
-                            matches = True
-                            break
+                            # Do not count as a cast match if short_name is only the target of an equip/attach action
+                            is_equip_target = bool(
+                                re.search(
+                                    rf"(?i)\b(?:equip|attach)\b.*\b{re.escape(short_name)}\b",
+                                    advice_lower,
+                                )
+                            ) and not bool(
+                                re.search(
+                                    rf"(?i)\b(?:cast|play)\b.*\b{re.escape(short_name)}\b",
+                                    advice_lower,
+                                )
+                            )
+                            if not is_equip_target:
+                                matches = True
+                                break
 
                     # 2. Play land actions (e.g., "play land: forest")
                     elif act_clean.startswith("play land:"):
@@ -675,11 +861,19 @@ class _AdvicePostprocessMixin:
                             matches = True
                             break
 
-                    # 3. Activate actions (e.g., "activate bristly bill, spine sower")
+                    # 3. Activate actions (e.g., "activate bristly bill, spine sower" or "activate ability: well-worn spatula")
                     elif act_clean.startswith("activate "):
-                        card_name = act_clean[9:].strip()
+                        card_name = re.sub(r"(?i)^ability:\s*", "", act_clean[9:]).strip()
                         short_name = re.split(r"[,—/]", card_name)[0].strip()
-                        if short_name and short_name in advice_lower:
+                        card_words = [
+                            w
+                            for w in re.split(r"[\s\-_,]", card_name)
+                            if len(w) >= 4 and w.lower() not in ("ability", "card")
+                        ]
+                        if short_name and (
+                            short_name in advice_lower
+                            or any(w in advice_lower for w in card_words)
+                        ):
                             matches = True
                             break
 
@@ -996,11 +1190,11 @@ class _AdvicePostprocessMixin:
                         f"Stripped impossible multi-spell advice (total CMC {total_cmc} > {avail_mana} mana) -> '{advice}'"
                     )
 
-        # Sequence validator: If advice says "Play [land] then cast [spell]" or "Play [land] and cast [spell]"
+        # Sequence validator: If advice says "Play [land] then cast/play [spell]" or "Play [land] and cast/play [spell]"
         # but [spell] is illegal and not in post-land THEN options, strip the illegal spell clause.
-        if " then cast " in advice.lower() or " and cast " in advice.lower():
+        if any(kw in advice.lower() for kw in (" then cast ", " and cast ", " then play ", " and play ")):
             match_seq = re.search(
-                r"(?i)^(Play\s+[\w\s'—]+?)(?:\s+(?:then|and)\s+cast\s+(.+))$", advice.strip()
+                r"(?i)^(Play\s+[\w\s'—]+?)(?:\s+(?:then|and)\s+(?:cast|play)\s+(.+))$", advice.strip()
             )
             if match_seq:
                 land_part = match_seq.group(1).strip()
@@ -1008,8 +1202,13 @@ class _AdvicePostprocessMixin:
                 spell_part_clean = re.sub(r"(?i)\s+(?:to|for|and)\s+.*$", "", spell_part).strip()
                 spell_short = re.split(r"[,—/]", spell_part_clean)[0].strip().lower()
 
+                ok_cast_actions_exist = any(
+                    "[ok]" in act.lower() for act in legal_actions if act.lower().startswith("cast ")
+                )
                 spell_is_legal = any(
-                    spell_short in act.lower() for act in legal_actions if act.lower().startswith("cast ")
+                    spell_short in act.lower() and (not ok_cast_actions_exist or "[ok]" in act.lower())
+                    for act in legal_actions
+                    if act.lower().startswith("cast ")
                 )
                 then_lines = [l for l in legal_actions if l.startswith("THEN:")]
                 if not then_lines and isinstance(game_state, dict):
@@ -1033,6 +1232,7 @@ class _AdvicePostprocessMixin:
             )
             if match_atk:
                 c_name = match_atk.group(1).strip()
+                c_name = re.sub(r"\s*\(.*?\)", "", c_name).strip()
                 hand = game_state.get("hand", [])
                 bf = game_state.get("battlefield", [])
                 card_obj = next(

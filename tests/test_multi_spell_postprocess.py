@@ -170,8 +170,13 @@ def test_postprocess_strips_summoning_sick_attack_clause_with_comma():
                 "oracle_text": "Whenever a creature you control attacks alone, investigate.",
             },
         ],
-        "battlefield": [],
+        "battlefield": [
+            {"name": "Plains", "type_line": "Basic Land — Plains", "owner_seat_id": 1, "is_tapped": False},
+            {"name": "Plains", "type_line": "Basic Land — Plains", "owner_seat_id": 1, "is_tapped": False},
+            {"name": "Plains", "type_line": "Basic Land — Plains", "owner_seat_id": 1, "is_tapped": False},
+        ],
         "stack": [],
+        "legal_actions": ["Cast Agent 13, Sharon Carter [OK]"],
     }
 
     advice = "Play Agent 13, Sharon Carter then attack alone for a clue."

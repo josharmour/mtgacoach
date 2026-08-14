@@ -390,10 +390,18 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
 
     elif msg_type == "GREMessageType_DistributionReq":
         req = msg.get("distributionReq", {})
-        total = req.get("amount", req.get("total", 0))
+        total = req.get("amount", req.get("total", req.get("max", 0)))
         source_id = req.get("sourceId", 0)
         source_obj = game_state.game_objects.get(source_id)
-        source_name = game_state._resolve_card_name(source_obj.grp_id) if source_obj else "Unknown"
+        source_name = "Unknown"
+        if source_obj:
+            source_name = game_state._resolve_card_name(source_obj.grp_id)
+        if not source_name or source_name.startswith("Card") or source_name == "Unknown":
+            for zone in ("battlefield", "hand", "stack", "graveyard"):
+                for c in getattr(game_state, zone, []):
+                    if c.get("instance_id") == source_id:
+                        source_name = c.get("name", source_name)
+                        break
         logger.info(f"Captured Decision: Distribute {total} (source: {source_name})")
         game_state.pending_decision = "Distribute"
         game_state.decision_timestamp = _time.time()
@@ -410,7 +418,15 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         req = msg.get("numericInputReq", {})
         source_id = req.get("sourceId", 0)
         source_obj = game_state.game_objects.get(source_id)
-        source_name = game_state._resolve_card_name(source_obj.grp_id) if source_obj else "Unknown"
+        source_name = "Unknown"
+        if source_obj:
+            source_name = game_state._resolve_card_name(source_obj.grp_id)
+        if not source_name or source_name.startswith("Card") or source_name == "Unknown":
+            for zone in ("battlefield", "hand", "stack", "graveyard"):
+                for c in getattr(game_state, zone, []):
+                    if c.get("instance_id") == source_id:
+                        source_name = c.get("name", source_name)
+                        break
         logger.info(
             f"Captured Decision: Numeric Input for {source_name} ({req.get('min', 0)}-{req.get('max', 0)})"
         )
@@ -600,6 +616,45 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
     return False
 
 
+_MANA_COLOR_SYMBOL = {
+    "ManaColor_White": "W",
+    "ManaColor_Blue": "U",
+    "ManaColor_Black": "B",
+    "ManaColor_Red": "R",
+    "ManaColor_Green": "G",
+    "ManaColor_Colorless": "C",
+}
+
+
+def _braced_mana_cost(mana_cost_entries: list[dict]) -> str:
+    """Render a GRE structured ``manaCost`` array as a Scryfall-style cost.
+
+    ``[{color: [Green], count: 1}, {count: 4}]`` becomes ``"{4}{G}"`` so it
+    can be fed to ``RulesEngine._can_afford``. Returns "" when the action
+    carries no mana cost at all (tap/sacrifice-only abilities), which callers
+    must treat as free rather than unaffordable.
+    """
+    generic = 0
+    colored: list[str] = []
+    for entry in mana_cost_entries:
+        colors = _coerce_str_list(entry.get("color", []))
+        count = _coerce_int(entry.get("count", 1), 1)
+        if count <= 0:
+            continue
+        symbols = [_MANA_COLOR_SYMBOL[c] for c in colors if c in _MANA_COLOR_SYMBOL]
+        if not symbols:
+            # Generic, ManaColor_Any, or an unmapped colour — payable by
+            # anything, so it only contributes to the generic portion.
+            generic += count
+            continue
+        if len(symbols) == 1:
+            colored.extend([f"{{{symbols[0]}}}"] * count)
+        else:
+            colored.extend([f"{{{'/'.join(symbols)}}}"] * count)
+    parts = ([f"{{{generic}}}"] if generic else []) + colored
+    return "".join(parts)
+
+
 def _build_rules_engine_snapshot(game_state: "GameState") -> dict:
     """Build the minimal snapshot dict shape RulesEngine mana helpers expect."""
     from arenamcp import server
@@ -623,9 +678,12 @@ def _build_rules_engine_snapshot(game_state: "GameState") -> dict:
             except Exception:
                 pass
         battlefield.append(entry)
+    local_player = game_state.players.get(game_state.local_seat_id)
+    floating = dict(local_player.mana_pool) if local_player and local_player.mana_pool else {}
     return {
         "battlefield": battlefield,
         "turn": {"turn_number": game_state.turn_info.turn_number},
+        "floating_mana": floating,
     }
 
 
@@ -692,7 +750,7 @@ def _handle_actions_available(game_state: "GameState", msg: dict) -> bool:
 
     legal_list = []
     rules_mana_pool = None
-    for action in raw_actions:
+    for action_idx, action in enumerate(raw_actions):
         atype = action.get("actionType", "")
         if atype == "ActionType_Pass":
             legal_list.append("Pass")
@@ -754,7 +812,31 @@ def _handle_actions_available(game_state: "GameState", msg: dict) -> bool:
                 or action.get("manaPaymentOptions") is not None
                 or action.get("manaPaymentOptionsCount", 0) > 0
             )
+            # The GRE offers an activation whenever the ability is legal to
+            # announce — it does not promise the cost is payable, and aborting
+            # a half-paid activation is a real tempo loss. When it hands us no
+            # payment solution, verify the ability's own mana cost ourselves.
+            # An ability with no mana cost (tap/sacrifice only, e.g. cracking a
+            # fetch land) stays unflagged: it is free, not unaffordable.
             suffix = " [OK]" if payable else ""
+            if not payable:
+                ability_cost = _braced_mana_cost(_ensure_dict_list(action.get("manaCost", [])))
+                if ability_cost:
+                    try:
+                        from arenamcp.rules_engine import RulesEngine
+
+                        if rules_mana_pool is None:
+                            rules_mana_pool = RulesEngine._get_mana_pool(
+                                _build_rules_engine_snapshot(game_state),
+                                game_state.local_seat_id,
+                            )
+                        if RulesEngine._can_afford(ability_cost, rules_mana_pool):
+                            suffix = " [OK]"
+                        else:
+                            suffix = f" [NEED:{ability_cost}]"
+                            enriched_actions[action_idx]["_unaffordable"] = True
+                    except Exception:
+                        logger.debug("Ability affordability check failed", exc_info=True)
             if name:
                 legal_list.append(f"Activate Ability: {name}{suffix}")
             else:

@@ -104,16 +104,16 @@ class ScryfallCache:
         manifest = response.json()
 
         # Find default_cards entry
-        default_cards_entry = None
-        for entry in manifest.get("data", []):
-            if entry.get("type") == "default_cards":
-                default_cards_entry = entry
-                break
+        download_uri = None
+        if isinstance(manifest, dict) and "data" in manifest:
+            for entry in manifest.get("data", []):
+                if isinstance(entry, dict) and entry.get("type") == "default_cards":
+                    download_uri = entry.get("download_uri")
+                    break
 
-        if not default_cards_entry:
-            raise ValueError("Could not find 'default_cards' in bulk data manifest")
+        if not download_uri:
+            raise ValueError("Could not find 'download_uri' in bulk data manifest")
 
-        download_uri = default_cards_entry["download_uri"]
         logger.info(f"Downloading bulk data from {download_uri}...")
 
         # Download the bulk data file
@@ -277,13 +277,6 @@ class ScryfallCache:
         if arena_id in self._not_found_cache:
             return None
 
-        # Skip API fallback if bulk data is not loaded yet to prevent blocking startup
-        if not self._bulk_data_ready:
-            logger.debug(
-                f"Skipping Scryfall API fallback for arena_id {arena_id} because bulk data is not ready yet"
-            )
-            return None
-
         # Fall back to API
         card_data = self._fetch_from_api(arena_id)
         if card_data:
@@ -315,11 +308,6 @@ class ScryfallCache:
             card_data = self._name_cache[name]
             if card_data:
                 return self._card_dict_to_scryfall_card(card_data)
-            return None
-
-        # Skip API lookup if bulk data is not loaded yet to prevent blocking startup
-        if not self._bulk_data_ready:
-            logger.debug(f"Skipping Scryfall API lookup for '{name}' because bulk data is not ready yet")
             return None
 
         self._rate_limit_api()

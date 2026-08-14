@@ -2621,15 +2621,18 @@ class CoachEngine(_AdvicePostprocessMixin):
         if not valid_moves:
             return
 
-        filtered_moves = [
-            m
-            for m in valid_moves
-            if not (
-                isinstance(m, str)
-                and m.lower().startswith("cast ")
-                and ("[ok]" not in m.lower() or any(f"Cast {nt}" in m for nt in cards_to_filter))
-            )
-        ]
+        def _is_unaffordable(move: str) -> bool:
+            if not isinstance(move, str):
+                return False
+            lowered = move.lower()
+            if lowered.startswith("cast "):
+                return "[ok]" not in lowered or any(f"Cast {nt}" in move for nt in cards_to_filter)
+            # Activated abilities the mana check proved unpayable — the GRE
+            # lists them as legal to announce, but the player would have to
+            # abort the half-paid activation.
+            return lowered.startswith("activate ability") and "[need:" in lowered
+
+        filtered_moves = [m for m in valid_moves if not _is_unaffordable(m)]
         if filtered_moves == valid_moves:
             return
 
@@ -2658,6 +2661,7 @@ class CoachEngine(_AdvicePostprocessMixin):
                 a.get("actionType") == "ActionType_Cast"
                 and (a.get("grpId") in filter_grp_ids or not a.get("autoTapSolution"))
             )
+            and not (a.get("actionType") == "ActionType_Activate" and a.get("_unaffordable"))
         ]
         for i, line in enumerate(lines):
             if isinstance(line, str) and line.startswith("LegalGRE:"):

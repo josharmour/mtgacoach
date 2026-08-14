@@ -815,6 +815,42 @@ class StandaloneCoach(_DeckAnalysisMixin, _PostMatchMixin, _DiagnosticsMixin):
             ("pass priority", "passing priority", "pass priority now", "passing priority now")
         )
 
+    @classmethod
+    def _is_mulligan_pending(cls, curr_state: dict) -> bool:
+        """Check if a mulligan decision is currently pending or in progress."""
+        if not curr_state or not isinstance(curr_state, dict):
+            return False
+
+        # 1. Check explicit pending_decision
+        pending = curr_state.get("pending_decision")
+        if pending:
+            pending_str = str(pending).lower()
+            if "mulligan" in pending_str:
+                return True
+
+        # 2. Check bridge trigger / request
+        bridge_trig = curr_state.get("_bridge_trigger") or {}
+        if isinstance(bridge_trig, dict):
+            req_type = str(
+                bridge_trig.get("_bridge_request_type")
+                or bridge_trig.get("request_type")
+                or ""
+            ).lower()
+            req_class = str(bridge_trig.get("_bridge_request_class") or "").lower()
+            if "mulligan" in req_type or "mulligan" in req_class:
+                return True
+
+        # 3. Check decision_context
+        dec_ctx = curr_state.get("decision_context") or {}
+        if isinstance(dec_ctx, dict):
+            dtype = str(dec_ctx.get("type") or dec_ctx.get("request_type") or "").lower()
+            dctx = str(dec_ctx.get("context") or dec_ctx.get("group_context") or "").lower()
+            if "mulligan" in dtype or "mulligan" in dctx:
+                return True
+
+        return False
+
+
     def speak_advice(self, text: str, blocking: bool = True) -> None:
         """Speak advice using local Kokoro TTS."""
         if not text:
@@ -2053,7 +2089,6 @@ class StandaloneCoach(_DeckAnalysisMixin, _PostMatchMixin, _DiagnosticsMixin):
                     seat_announced = False  # Re-announce seat for new game
                     # Clear advice history for new match
                     self._advice_history = []
-                    self._deck_analyzed = False
                     self._game_end_handled = False
                     # Note: _post_match_analysis_text is NOT cleared here —
                     # it persists until F7 is pressed or a new analysis replaces it.
@@ -2082,8 +2117,14 @@ class StandaloneCoach(_DeckAnalysisMixin, _PostMatchMixin, _DiagnosticsMixin):
                             self._enable_replay_recording()
                             break
 
-                # Deck strategy analysis (once per match, as soon as deck cards are known)
-                if self._auto_deck_strategy and not self._deck_analyzed and self._coach:
+                # Deck strategy analysis (once per match, after turn 1 starts and mulligan is complete)
+                if (
+                    self._auto_deck_strategy
+                    and not self._deck_analyzed
+                    and self._coach
+                    and turn_num >= 1
+                    and not self._is_mulligan_pending(curr_state)
+                ):
                     deck_cards = list(curr_state.get("deck_cards") or [])
 
                     # Fallback for mid-game join: ConnectResp was missed,
@@ -2105,7 +2146,8 @@ class StandaloneCoach(_DeckAnalysisMixin, _PostMatchMixin, _DiagnosticsMixin):
                                     f"Reconstructed deck from visible zones: {len(deck_cards)} unique cards"
                                 )
 
-                    if deck_cards:
+                    # Require at least 20 cards so deck strategy does not run on partial hands
+                    if len(deck_cards) >= 20:
                         self._deck_analyzed = True
                         logger.info(f"Starting deck analysis for {len(deck_cards)} cards")
 
@@ -2313,7 +2355,8 @@ class StandaloneCoach(_DeckAnalysisMixin, _PostMatchMixin, _DiagnosticsMixin):
                     # BUT: keep bridge-detected triggers — those are real
                     # (e.g. mulligan prompt in a new game).
                     _boundary_age = time.time() - getattr(self, "_match_boundary_ts", 0)
-                    if triggers and _boundary_age < 2.0 and not bridge_trigger:
+                    is_mulligan_pending = self._is_mulligan_pending(curr_state)
+                    if triggers and _boundary_age < 2.0 and not bridge_trigger and not is_mulligan_pending:
                         logger.info(
                             f"Suppressing {len(triggers)} stale triggers "
                             f"{triggers} ({_boundary_age:.1f}s after match boundary)"

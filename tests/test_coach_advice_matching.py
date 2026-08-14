@@ -123,3 +123,79 @@ def test_match_need_mana_tag_stripping_and_fallback():
     assert "Northern Air Temple" in out
     # Ensure it did NOT fall back to blind-casting Planar Incision
     assert "Planar Incision" not in out
+
+
+def test_equip_target_in_hand_fixed_to_battlefield_creature():
+    coach = _make_coach()
+    state = _make_state(
+        legal_actions=["Activate Ability: Well-Worn Spatula [OK]", "Cast Eagle of the Great Shelf", "Pass"],
+        hand=[{"name": "Eagle of the Great Shelf", "type_line": "Creature — Bird Soldier"}],
+    )
+    state["battlefield"] = [
+        {
+            "name": "Bothersome Noisemaker",
+            "type_line": "Creature — Goblin Bard",
+            "owner_seat_id": 1,
+            "controller_seat_id": 1,
+        },
+        {
+            "name": "Well-Worn Spatula",
+            "type_line": "Artifact — Equipment",
+            "owner_seat_id": 1,
+            "controller_seat_id": 1,
+        },
+    ]
+
+    out = coach._postprocess_advice("Equip Spatula to Eagle of the Great Shelf.", state)
+    # Target in hand (Eagle of the Great Shelf) should be corrected to battlefield creature (Bothersome Noisemaker)
+    assert "Bothersome Noisemaker" in out
+    assert "Eagle of the Great Shelf" not in out
+
+
+def test_equip_target_in_hand_no_battlefield_creature():
+    coach = _make_coach()
+    state = _make_state(
+        legal_actions=["Activate Ability: Well-Worn Spatula [OK]", "Cast Eagle of the Great Shelf", "Pass"],
+        hand=[{"name": "Eagle of the Great Shelf", "type_line": "Creature — Bird Soldier"}],
+    )
+    state["battlefield"] = [
+        {
+            "name": "Well-Worn Spatula",
+            "type_line": "Artifact — Equipment",
+            "owner_seat_id": 1,
+            "controller_seat_id": 1,
+        },
+    ]
+
+    out = coach._postprocess_advice("Equip Spatula to Eagle of the Great Shelf.", state)
+    # With no creatures on battlefield, Equip to hand card should be rejected and fall back to legal action
+    assert "Equip Spatula to Eagle of the Great Shelf" not in out
+
+
+def test_strip_uncastable_post_land_sequence():
+    coach = _make_coach()
+    state = _make_state(
+        legal_actions=[
+            "Cast Eagle of the Great Shelf",
+            "Cast Esgaroth Garrison",
+            "Activate Ability: Well-Worn Spatula [OK]",
+            "Play Land: Mountain",
+            "Pass",
+        ],
+        hand=[
+            {"name": "Mountain", "type_line": "Basic Land — Mountain"},
+            {"name": "Eagle of the Great Shelf", "type_line": "Creature — Bird Soldier", "mana_cost": "{4}{W}"},
+        ],
+    )
+    state["battlefield"] = [
+        {"name": "Mountain", "type_line": "Basic Land — Mountain", "owner_seat_id": 1, "controller_seat_id": 1, "is_tapped": False},
+        {"name": "Mountain", "type_line": "Basic Land — Mountain", "owner_seat_id": 1, "controller_seat_id": 1, "is_tapped": False},
+    ]
+
+    out = coach._postprocess_advice("Play Mountain then cast Eagle of the Great Shelf.", state)
+    # 2 lands on BF + 1 from hand = 3 total mana, which cannot cast 5-mana Eagle of the Great Shelf.
+    # Postprocess should strip the uncastable 'then cast Eagle...' clause and recommend 'Play Mountain.'
+    assert "Eagle of the Great Shelf" not in out
+    assert "Play Mountain" in out
+
+

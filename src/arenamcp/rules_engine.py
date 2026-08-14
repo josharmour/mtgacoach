@@ -4,6 +4,30 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# MTGA's own card DB renders mana symbols in an "o"-prefixed dialect and packs
+# a whole cost into one brace: {oT}, {oG}, {o4oG} (= {4}{G}), {oB/oR}. Scryfall
+# uses the plain per-symbol form. Oracle text reaches us from both sources, so
+# every symbol-matching pattern below must see the plain form or it silently
+# fails to recognise the ability — Talisman of Resilience and Paradise Druid
+# were both worth zero mana because of this.
+_MTGA_SYMBOL_BLOCK_RE = re.compile(r"\{((?:o[WUBRGCXTQSPE0-9]+/?)+)\}", re.IGNORECASE)
+
+
+def _expand_mtga_symbol_block(match: "re.Match[str]") -> str:
+    body = match.group(1)
+    if "/" in body:  # hybrid: {oB/oR} -> {B/R}
+        halves = [part.lstrip("oO") for part in body.split("/") if part]
+        return "{" + "/".join(halves) + "}"
+    # run of symbols in one brace: {o4oG} -> {4}{G}
+    return "".join("{" + part + "}" for part in re.split(r"[oO]", body) if part)
+
+
+def _normalize_mana_symbols(text: str) -> str:
+    """Rewrite MTGA-dialect mana symbols ({oT}, {o4oG}) to Scryfall form."""
+    if not text or "{o" not in text.lower():
+        return text or ""
+    return _MTGA_SYMBOL_BLOCK_RE.sub(_expand_mtga_symbol_block, text)
+
 
 class RulesEngine:
     """
@@ -25,6 +49,11 @@ class RulesEngine:
         of producible colors per source so ``_can_afford`` can match pips to
         sources exactly — a dual land bumps both its color counts but is still
         a single source that can only produce one mana.
+
+        Mana already floating in the pool (``game_state["floating_mana"]``,
+        e.g. ``{"G": 2}`` after tapping for a partially-paid cost) counts too:
+        those lands are already tapped, so without it the same mana would be
+        lost from the total twice over.
         """
         battlefield = game_state.get("battlefield", [])
         pool: dict[str, Any] = {"W": 0, "U": 0, "B": 0, "R": 0, "G": 0, "C": 0, "Any": 0, "total": 0}
@@ -36,7 +65,7 @@ class RulesEngine:
             if card.get("is_tapped"):
                 continue
             type_line = card.get("type_line", "").lower()
-            oracle = card.get("oracle_text", "")
+            oracle = _normalize_mana_symbols(card.get("oracle_text", ""))
             name = card.get("name", "")
             is_land = "land" in type_line
             is_creature = "creature" in type_line
@@ -50,7 +79,10 @@ class RulesEngine:
             entered = card.get("turn_entered_battlefield", -1)
             has_haste = "haste" in oracle.lower()
             is_sick = is_creature and (entered == turn_num) and not has_haste
-            if is_land or (is_creature and has_mana_ability and not is_sick):
+            # Any permanent with a tap-for-mana ability is a source, not just
+            # lands and mana creatures — Talismans, Signets, Sol Ring and the
+            # rest were previously invisible, undercounting available mana.
+            if is_land or (has_mana_ability and not is_sick):
                 pool["total"] += 1
                 if is_creature and has_mana_ability and not is_sick:
                     creature_mana_source_count += 1
@@ -81,7 +113,7 @@ class RulesEngine:
         # Detect bonus-mana effects: "whenever you tap a creature for mana, add"
         if creature_mana_source_count > 0:
             for card in your_cards:
-                oracle_lower = card.get("oracle_text", "").lower()
+                oracle_lower = _normalize_mana_symbols(card.get("oracle_text", "")).lower()
                 bonus_match = re.search(
                     r"whenever you tap a creature for mana,?\s*add an additional \{(\w)\}", oracle_lower
                 )
@@ -92,6 +124,26 @@ class RulesEngine:
                         pool[bonus_color] += creature_mana_source_count
                     bonus_set = frozenset({bonus_color}) if bonus_color in "WUBRGC" else frozenset()
                     sources.extend([bonus_set] * creature_mana_source_count)
+
+        # Mana already floating in the pool. Its sources are tapped (so the
+        # loop above skipped them) but the mana is still spendable.
+        floating = game_state.get("floating_mana") or {}
+        if isinstance(floating, dict):
+            for color, count in floating.items():
+                count = max(0, int(count or 0))
+                if not count:
+                    continue
+                key = str(color).strip().upper()
+                pool["total"] += count
+                if key == "ANY":
+                    pool["Any"] += count
+                    sources.extend([frozenset("WUBRGC")] * count)
+                elif key in ("W", "U", "B", "R", "G", "C"):
+                    pool[key] += count
+                    sources.extend([frozenset({key})] * count)
+                else:
+                    sources.extend([frozenset()] * count)
+
         pool["_sources"] = sources
         return pool
 
@@ -238,6 +290,47 @@ class RulesEngine:
         return result
 
     @staticmethod
+    def _infer_chained_target_types(text: str) -> set[str]:
+        """Return every card type named in a chained target clause.
+
+        "exile target artifact or creature" names two types; matching only
+        the leading phrase drops the rest. Types are collected only when the
+        clause really is a chain (two or more types), so single-type clauses
+        keep whatever the dedicated phrase checks decided.
+        """
+        type_words = {"artifact", "creature", "enchantment", "land", "planeswalker", "battle"}
+        # Words that may sit between chained types without ending the clause.
+        connectors = {
+            "or",
+            "and",
+            "another",
+            "other",
+            "attacking",
+            "blocking",
+            "tapped",
+            "untapped",
+            "legendary",
+            "nonland",
+            "nontoken",
+            "noncreature",
+            "nonlegendary",
+            "",
+        }
+        found: set[str] = set()
+        for match in re.finditer(r"\btarget\s+([a-z',\s-]+)", text):
+            chain: list[str] = []
+            for word in re.split(r"[,\s]+", match.group(1)):
+                if word in type_words:
+                    chain.append(word)
+                elif word in connectors:
+                    continue
+                else:
+                    break  # clause ended (e.g. "creature an opponent controls")
+            if len(chain) > 1:
+                found.update(chain)
+        return found
+
+    @staticmethod
     def _infer_target_requirements(oracle_text: str) -> dict[str, Any]:
         """Infer rough target constraints from oracle text."""
         text = (oracle_text or "").lower()
@@ -320,6 +413,13 @@ class RulesEngine:
             req["types"].add("enchantment")
         if "target land" in text:
             req["types"].add("land")
+
+        # Chained target clauses ("target artifact or creature") must yield
+        # every type in the chain. The phrase checks above only ever match the
+        # first one, which hid every creature from Planar Incision's target
+        # list and left the player choosing between two irrelevant artifacts
+        # (issue #482).
+        req["types"].update(RulesEngine._infer_chained_target_types(text))
 
         if "graveyard" in text:
             req["zones"].add("graveyard")
@@ -476,7 +576,12 @@ class RulesEngine:
         return matches
 
     @staticmethod
-    def _score_target(card: dict[str, Any], prefer_opponent: bool) -> int:
+    def _score_target(
+        card: dict[str, Any],
+        local_seat: int | None,
+        prefer_opponent: bool = False,
+        prefer_you: bool = False,
+    ) -> int:
         type_line = (card.get("type_line") or "").lower()
         power = card.get("power") or 0
         toughness = card.get("toughness") or 0
@@ -490,8 +595,20 @@ class RulesEngine:
         if "flying" in (card.get("oracle_text") or "").lower():
             score += 1
         score += int(power) + int(toughness)
+
+        controller = card.get("controller_seat_id") or card.get("owner_seat_id")
+        is_opp = (local_seat is not None) and (controller != local_seat)
+
         if prefer_opponent:
-            score += 1
+            if is_opp:
+                score += 100
+            else:
+                score -= 100
+        elif prefer_you:
+            if not is_opp:
+                score += 100
+            else:
+                score -= 100
         return score
 
     @staticmethod
@@ -595,14 +712,24 @@ class RulesEngine:
                 source_card = decision_context.get("source_card") or obj.get("name", source_card)
                 break
 
+        if not source_oracle and source_card and source_card != "spell":
+            for card_info in RulesEngine._card_db.values():
+                if isinstance(card_info, dict) and (card_info.get("name") or "").lower() == source_card.lower():
+                    source_oracle = card_info.get("oracle_text", "")
+                    if source_oracle:
+                        break
+
         req = RulesEngine._infer_target_requirements(source_oracle)
 
+        local_seat = game_state.get("local_seat_id")
         players = game_state.get("players", [])
         local_player = next((p for p in players if p.get("is_local")), None)
-        if not local_player:
+        if local_seat is None and local_player:
+            local_seat = local_player.get("seat_id")
+        if local_seat is None:
             return [f"Select target for {source_card}"]
-        local_seat = local_player.get("seat_id")
-        opponent_player = next((p for p in players if not p.get("is_local")), None)
+
+        opponent_player = next((p for p in players if p.get("seat_id") != local_seat), None)
         opponent_seat = opponent_player.get("seat_id") if opponent_player else None
 
         actions = []
@@ -636,9 +763,51 @@ class RulesEngine:
                 )
 
         if matches:
-            prefer_opponent = req["must_control"] == "opponent"
+            source_oracle_lower = source_oracle.lower()
+            harmful_keywords = (
+                "deal",
+                "damage",
+                "destroy",
+                "exile",
+                "loses",
+                "fight",
+                "sacrifice",
+                "-1/",
+                "-2/",
+                "-3/",
+                "-4/",
+                "-5/",
+            )
+            beneficial_keywords = (
+                "+1/+1",
+                "draw a card",
+                "draws",
+                "gain life",
+                "equip",
+                "gains indestructible",
+                "hexproof",
+                "protection",
+                "gets +",
+            )
+            # A blink ("exile ... then return it to the battlefield") is not
+            # removal: it re-triggers your own ETB abilities, and Planar
+            # Incision even hands the permanent back with a +1/+1 counter.
+            # Reading it as removal made the coach aim it at an opponent's
+            # creature, which just gives that creature a counter (issue #482).
+            is_blink = bool(
+                re.search(r"\bexile[^.]*?\breturn (it|them|that card|those cards)\b", source_oracle_lower)
+                and "to the battlefield" in source_oracle_lower
+            )
+            is_harmful = not is_blink and any(kw in source_oracle_lower for kw in harmful_keywords)
+            is_beneficial = is_blink or any(kw in source_oracle_lower for kw in beneficial_keywords)
+
+            prefer_opponent = req["must_control"] == "opponent" or (is_harmful and not is_beneficial)
+            prefer_you = req["must_control"] == "you" or (is_beneficial and not is_harmful)
+
             matches.sort(
-                key=lambda c: RulesEngine._score_target(c, prefer_opponent),
+                key=lambda c: RulesEngine._score_target(
+                    c, local_seat, prefer_opponent=prefer_opponent, prefer_you=prefer_you
+                ),
                 reverse=True,
             )
             # Owner tags are load-bearing: without them the LLM enchanted an
@@ -806,6 +975,8 @@ class RulesEngine:
         if dec_type == "distribution":
             source = decision_context.get("source_card", "effect")
             total = decision_context.get("total", "?")
+            if total in (0, "0", "?", None):
+                return [f"Distribute damage/counters from {source}", "Done"]
             return [f"Distribute {total} from {source}", "Done"]
 
         if dec_type == "numeric_input":

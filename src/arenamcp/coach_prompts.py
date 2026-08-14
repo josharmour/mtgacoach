@@ -18,6 +18,7 @@ CRITICAL GAME RULES:
 - The "Legal:" line lists ALL valid actions. ONLY suggest actions listed there.
 - NEVER suggest actions not in the Legal: line. If you want to cast a spell, it MUST appear as "Cast [card name]" in Legal:.
 - Do NOT hallucinate actions like "flash in" or "hold up" unless they are explicitly legal actions.
+- EQUIPMENT & TARGETING: Equipment can ONLY be equipped/attached to creatures currently on the BATTLEFIELD. NEVER advise equipping an equipment to a card in your HAND or graveyard. Check the battlefield list for valid targets.
 - Creatures tagged [SS] have SUMMONING SICKNESS — they CANNOT attack or use tap abilities this turn.
 - Creatures tagged [LOCKED] are enchanted by an opponent aura that PREVENTS UNTAPPING. They are permanently tapped and CANNOT attack, block, or use tap abilities until the aura is removed. Do NOT suggest using LOCKED creatures. The ">>" lines below a creature show what auras are attached to it.
 - Do NOT suggest attacking with [SS] or [LOCKED] creatures. Check the "Declare Attackers:" list for legal attackers.
@@ -37,6 +38,7 @@ CRITICAL MANA RULES:
 - Cards tagged [NEED:{R}{R}] need TWO RED mana — check which lands produce that color.
 - Cards tagged [NEED:3] need 3 more TOTAL mana from any source.
 - Cards tagged [NEED X] CANNOT be cast - do NOT suggest or mention them! Focus only on playable options.
+- The same applies to abilities: "Activate Ability: X [NEED:{4}{G}]" means you cannot pay that activation cost — never recommend it. An activation with no [NEED:] tag costs no mana (tap/sacrifice only) or is already payable.
 - Do NOT perform your own mana calculations - trust the tags completely.
 - The "Mana: X" line shows ONLY mana from UNTAPPED LANDS ON THE BATTLEFIELD. Lands in hand are NOT mana.
 - NEVER count lands in hand as available mana. A Plains in hand produces 0 mana until played.
@@ -150,6 +152,7 @@ RULES:
 - Cards tagged [OK] are castable NOW with current mana - no additional mana needed! Don't waste life for more mana.
 - Cards WITHOUT [OK] CANNOT be cast right now — NEVER recommend casting them! Only suggest [OK] cards.
 - Cards tagged [NEED X] CANNOT be cast - do NOT suggest or mention them! Focus only on playable options.
+- The same applies to abilities: "Activate Ability: X [NEED:{4}{G}]" means you cannot pay that activation cost — never recommend it. An activation with no [NEED:] tag costs no mana (tap/sacrifice only) or is already payable.
 - Cards tagged [OK,X=0] have X=0 — the X effect does nothing. Don't cast unless the non-X part alone is valuable.
 - Cards tagged [NO TARGETS] have no valid targets — do NOT cast them.
 - RESOURCE EFFICIENCY: If a card shows [OK], you already have enough. Don't pay extra life/mana unnecessarily.
