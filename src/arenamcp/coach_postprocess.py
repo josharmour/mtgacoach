@@ -1128,7 +1128,12 @@ class _AdvicePostprocessMixin:
                     if blocker_actions:
                         best = max(blocker_actions, key=_score_action)
                     else:
-                        best = max(_candidates, key=_score_action)
+                        # No verifiable block actions (log-only mode may not
+                        # surface legal blockers). NEVER emit an unrelated game
+                        # action — e.g. "Activate Ability: Wooded Foothills" —
+                        # as the block recommendation (observed in live play).
+                        # Give a neutral, truthful line instead.
+                        best = "Choose which creatures to block."
                 else:
                     if legal_pass_action and ("need:" in advice.lower() or "[need:" in advice.lower()):
                         best = legal_pass_action

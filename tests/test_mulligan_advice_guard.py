@@ -91,3 +91,28 @@ def test_normal_play_advice_is_unchanged():
     # The mulligan pin must be scoped to Mulligan decisions only — it must
     # never force a normal turn into a KEEP/MULLIGAN call.
     assert out not in ("KEEP", "MULLIGAN")
+
+
+# ---- fallback must not surface mechanical menu actions during combat -------
+
+
+def test_declare_blockers_fallback_never_emits_activation():
+    """Regression: during declare blockers with no verifiable block actions,
+    the fallback must NOT emit a random legal action (e.g. 'Activate Ability:
+    Wooded Foothills') — it should give neutral block guidance instead.
+    """
+    gs = {
+        "pending_decision": "Declare Blockers",
+        "legal_actions_raw": ["Activate Ability: Wooded Foothills", "Pass"],
+        "players": [{"is_local": True, "seat_id": 1, "life_total": 7}],
+        "turn": {"turn_number": 6, "phase": "combat", "step": "declareblockers"},
+        "land_drop": {},
+        "hand": [],
+        "battlefield": [],
+        "stack": [],
+    }
+    out = CoachEngine()._postprocess_advice(
+        "Block with Cityscape Leveler and Arboreal Grazer to survive.", dict(gs)
+    )
+    assert "wooded foothills" not in out.lower()
+    assert "block" in out.lower()
