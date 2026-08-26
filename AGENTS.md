@@ -14,6 +14,15 @@ Python package `arenamcp` under `src/arenamcp/`, desktop PySide6 GUI at `src/are
 - **`src/arenamcp/autopilot.py`** — AI autoplay engine
 - **`tests/`** — pytest test suite (600+ tests)
 
+## Sister Repository: MageZero RL Training (`~/repos/magezero`)
+`mtgacoach` is paired with **`magezero`**, an AlphaZero-style MCTS reinforcement learning engine running inside an instrumented XMage simulator on `blackwell` (`10.0.0.10`).
+- **Role Split**: `mtgacoach` handles live MTG Arena coaching, GRE state extraction, and HUD overlay. `magezero` trains deck-specific policy/value neural networks via distributed self-play.
+- **Canonical RL Docs**: For RL architecture, hardware topology (R9700 vs RTX 6000s), live training status, and strategy, refer directly to `~/repos/magezero/AGENTS.md` and `~/repos/magezero/docs/PLAN_OF_RECORD.md`.
+- **Telemetry Command**: Inspect the live training run on blackwell via:
+  ```bash
+  ssh joshu@10.0.0.10 'python3 -c "import json, pathlib; runs=sorted(pathlib.Path(\"/home/joshu/repos/magezero/runs\").glob(\"*/run.json\")); d=json.loads(runs[-1].read_text()); print(f\"Run {runs[-1].parent.name} | Gen {d.get(\"current_gen\")} | Stage: {d.get(\"stage\")}\")"'
+  ```
+
 ## Developer Commands
 ```bash
 # Install (editable, with all extras)

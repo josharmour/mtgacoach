@@ -224,12 +224,19 @@ def _classify_api_error(e: Exception) -> BackendError:
             retry_after = None
     retryable = status in _RETRYABLE_STATUS_CODES
     if status is None:
-        # Connection-level failures (reset, refused, DNS) — the SDK raises
-        # APIConnectionError without a status. Treat as retryable.
-        retryable = type(e).__name__ in (
-            "APIConnectionError",
-            "APITimeoutError",
-            "ConnectionError",
+        # Connection-level failures (reset, refused, DNS, timeout, socket drop)
+        err_type = type(e).__name__
+        retryable = any(
+            k in err_type
+            for k in (
+                "Connection",
+                "Connect",
+                "Timeout",
+                "Protocol",
+                "Network",
+                "RemoteDisconnected",
+                "Transport",
+            )
         )
     return BackendError(str(e), retryable=retryable, retry_after_s=retry_after, status_code=status)
 

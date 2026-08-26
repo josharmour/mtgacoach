@@ -126,7 +126,7 @@ def test_pledge_create_mints_scoped_sk_key(env):
 
     assert len(fake.minted) == 1
     payload = fake.minted[0]["payload"]
-    assert payload["models"] == ["deepseek-v4-flash", "gemma-4-12b-it"]
+    assert payload["models"] == patreon.PATRON_KEY_MODELS
     assert payload["metadata"]["patron_id"] == "12345"
     assert payload["max_budget"] == patreon.PATRON_KEY_BUDGET
 

@@ -286,6 +286,9 @@ def _python_responds(path: Path) -> bool:
 
 
 def find_python_executable() -> tuple[str | None, str]:
+    if getattr(sys, "frozen", False):
+        return (str(Path(sys.executable)), "frozen")
+
     runtime_root = Path(get_runtime_root())
     app_root = Path(get_app_root())
     scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
@@ -894,17 +897,21 @@ def install_bepinex(mtga_dir: str) -> str:
         with zipfile.ZipFile(bundle) as archive:
             archive.extractall(mtga_dir)
     elif bundle.is_dir():
-        _copy_directory(bundle, target_dir)
+        if (bundle / "BepInEx").is_dir():
+            _copy_directory(bundle / "BepInEx", target_dir)
+        else:
+            _copy_directory(bundle, target_dir)
 
     app_root = Path(get_app_root())
-    bundle_parent = bundle.parent if bundle.exists() else app_root
+    search_dirs = [bundle, bundle.parent, app_root / "assets", app_root / "third_party", app_root]
     for filename in ("winhttp.dll", "doorstop_config.ini"):
-        source = bundle_parent / filename
-        if not source.exists():
-            source = app_root / "assets" / filename
-        if not source.exists():
-            source = app_root / "third_party" / filename
-        if source.exists():
+        source = None
+        for d in search_dirs:
+            candidate = d / filename
+            if candidate.is_file():
+                source = candidate
+                break
+        if source is not None and source.exists():
             shutil.copy2(source, Path(mtga_dir) / filename)
 
     # Baseline the freshly-written configs so detect_runtime_state() doesn't

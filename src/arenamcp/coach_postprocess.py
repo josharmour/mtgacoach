@@ -4,6 +4,7 @@ Pure move: methods are unchanged and mixed back into CoachEngine."""
 
 import contextlib
 import logging
+import re
 from collections import Counter
 from typing import Any
 
@@ -58,6 +59,41 @@ def _normalize_health_tags(text: str, *, force_local_fallback: bool = False) -> 
     if not tag:
         return text
     return f"{tag} {text}".strip()
+
+
+def _mulligan_keep_or_mulligan(advice: str, game_state: dict[str, Any]) -> str:
+    """Force a Mulligan decision into a KEEP/MULLIGAN call.
+
+    The generic advice pipeline can otherwise speak a normal-play "Cast X"
+    line during a mulligan: the LLM (primed on the deck game-plan and turn-1
+    legal actions) answers with a casting plan, and the mana-budget stripper
+    collapses it to a bare legal action (bug_20260825_205102). A mulligan has
+    exactly two valid answers, so pin the output to one of them; if the model
+    didn't answer the question (e.g. it gave casting advice), fall back to a
+    simple hand-based call that never says "Cast"/"Play".
+    """
+    low = (advice or "").strip().lower()
+    has_keep = re.search(r"\bkeep\b", low) is not None or "keep this hand" in low
+    has_mull = re.search(r"\bmulligan\b", low) is not None
+    if has_mull and not has_keep:
+        return "MULLIGAN"
+    if has_keep:
+        return "KEEP"
+    return _mulligan_hand_call(game_state)
+
+
+def _mulligan_hand_call(game_state: dict[str, Any]) -> str:
+    """Minimal deterministic keep/mulligan from the opening hand (fallback)."""
+    hand = game_state.get("hand", []) or []
+    lands = [c for c in hand if "land" in str(c.get("type_line") or "").lower()]
+    creatures = [c for c in hand if "creature" in str(c.get("type_line") or "").lower()]
+    n_lands = len(lands)
+    # Bad keeps: 0-1 lands, 5+ lands, or 2 lands with no creature to develop.
+    if n_lands <= 1 or n_lands >= 5:
+        return "MULLIGAN"
+    if n_lands == 2 and not creatures:
+        return "MULLIGAN"
+    return "KEEP"
 
 
 class _AdvicePostprocessMixin:
@@ -413,7 +449,7 @@ class _AdvicePostprocessMixin:
             if "sunspine lynx" in advice_lower:
                 nonbasics = sum(
                     1
-                    for c in battlefield
+                    for c in game_state.get("battlefield", [])
                     if c.get("owner_seat_id") == local_seat
                     and "land" in c.get("type_line", "").lower()
                     and "basic" not in c.get("type_line", "").lower()
@@ -1269,6 +1305,15 @@ class _AdvicePostprocessMixin:
         # with the deterministic solver's assignment so the spoken line is
         # always actionable.
         advice = self._ensure_block_advice_names_attacker(advice, game_state)
+
+        # MULLIGAN PIN: a Mulligan decision has exactly two valid answers
+        # (KEEP / MULLIGAN). The generic pipeline can otherwise speak a
+        # normal-play "Cast X" line here (LLM priming on the deck plan/turn-1
+        # legal actions + the mana-budget stripper collapsing to a legal
+        # action). Force the output so casting advice can never leak out
+        # during a mulligan.
+        if str(game_state.get("pending_decision") or "") == "Mulligan":
+            advice = _mulligan_keep_or_mulligan(advice, game_state)
 
         # 7. Health-tag normalization — MUST be last. Tags locally generated
         # advice, and hoists any tag that a caller's prepended framing (the

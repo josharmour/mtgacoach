@@ -7,6 +7,7 @@ official game rules.
 
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -98,27 +99,29 @@ class RulesDB:
     def __init__(self, db_path: Path | None = None):
         self._db_path = db_path or DB_PATH
         self._conn: sqlite3.Connection | None = None
+        self._lock = threading.Lock()
 
     def _ensure_db(self) -> sqlite3.Connection:
         """Ensure the database exists and return a connection."""
-        if self._conn is not None:
-            return self._conn
+        with self._lock:
+            if self._conn is not None:
+                return self._conn
 
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        needs_build = not self._db_path.exists()
-        self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+            needs_build = not self._db_path.exists()
+            self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+            self._conn.row_factory = sqlite3.Row
 
-        if needs_build:
-            self._build_db()
-        else:
-            # Verify table exists (may have been corrupted/empty)
-            cursor = self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='rules'")
-            if cursor.fetchone() is None:
+            if needs_build:
                 self._build_db()
+            else:
+                # Verify table exists (may have been corrupted/empty)
+                cursor = self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='rules'")
+                if cursor.fetchone() is None:
+                    self._build_db()
 
-        return self._conn
+            return self._conn
 
     def _build_db(self) -> None:
         """Build the FTS5 database from the rules corpus."""
@@ -144,11 +147,12 @@ class RulesDB:
 
     def rebuild(self) -> None:
         """Force rebuild the database (e.g. after rules_data update)."""
-        if self._conn:
-            self._conn.close()
-            self._conn = None
-        if self._db_path.exists():
-            self._db_path.unlink()
+        with self._lock:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
+            if self._db_path.exists():
+                self._db_path.unlink()
         self._ensure_db()
 
     def query(
@@ -178,30 +182,31 @@ class RulesDB:
         fts_query = " OR ".join(words)
 
         try:
-            if category:
-                cursor = conn.execute(
-                    """SELECT number, section, text, rank
-                       FROM rules
-                       WHERE rules MATCH ? AND category = ?
-                       ORDER BY rank
-                       LIMIT ?""",
-                    (fts_query, category, limit),
-                )
-            else:
-                cursor = conn.execute(
-                    """SELECT number, section, text, rank
-                       FROM rules
-                       WHERE rules MATCH ?
-                       ORDER BY rank
-                       LIMIT ?""",
-                    (fts_query, limit),
-                )
+            with self._lock:
+                if category:
+                    cursor = conn.execute(
+                        """SELECT number, section, text, rank
+                           FROM rules
+                           WHERE rules MATCH ? AND category = ?
+                           ORDER BY rank
+                           LIMIT ?""",
+                        (fts_query, category, limit),
+                    )
+                else:
+                    cursor = conn.execute(
+                        """SELECT number, section, text, rank
+                           FROM rules
+                           WHERE rules MATCH ?
+                           ORDER BY rank
+                           LIMIT ?""",
+                        (fts_query, limit),
+                    )
 
-            return [
-                {"number": row["number"], "section": row["section"], "text": row["text"]}
-                for row in cursor.fetchall()
-            ]
-        except sqlite3.OperationalError as e:
+                return [
+                    {"number": row["number"], "section": row["section"], "text": row["text"]}
+                    for row in cursor.fetchall()
+                ]
+        except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
             logger.warning(f"FTS5 query error for '{search_terms}': {e}")
             return []
 

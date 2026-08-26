@@ -41,12 +41,21 @@ class _PostMatchMixin:
         except Exception as e:
             logger.debug(f"flush_fallback_bugs_for_match failed: {e}")
 
+        mid = str(match_id) if match_id is not None else f"match_{self._match_number}"
+
+        # Always record W/L + metadata at game end (even when there's no
+        # advice history to analyze) so the Performance tab reflects the
+        # last few matches. A numeric advice-quality score is computed
+        # automatically and backfilled in a background thread.
+        try:
+            self._write_performance_record(mid, match_result, final_state, replay_path)
+        except Exception as e:
+            logger.debug(f"performance record write failed: {e}")
+
         staged_history = list(self._advice_history if advice_history is None else advice_history)
         if not staged_history:
             logger.info(f"Skipping post-match staging ({reason}): no advice history")
             return False
-
-        mid = str(match_id) if match_id is not None else f"match_{self._match_number}"
         staged = {
             "advice_history": staged_history,
             "missed_decisions": list(
@@ -57,6 +66,14 @@ class _PostMatchMixin:
             "replay_path": replay_path,
         }
         self._staged_analyses[mid] = staged
+
+        # Automatic advice-quality score: independent of the larger opt-in
+        # prose analysis (auto_post_match_analysis defaults to OFF). One small
+        # LLM call per match, in a background thread so the loop isn't blocked.
+        try:
+            self._start_auto_advice_score(mid, match_result, staged_history)
+        except Exception as e:
+            logger.debug(f"auto advice score start failed: {e}")
 
         # Cap at last 3; evict oldest with log
         while len(self._staged_analyses) > 3:
@@ -409,6 +426,12 @@ class _PostMatchMixin:
                 self._post_match_snapshot = None
             self._post_match_analysis_text = display_analysis
             self._post_match_result = match_result
+
+            # Best-effort 1-10 coach rating for the performance history tab.
+            try:
+                self._record_performance_rating(match_id, match_result, analysis)
+            except Exception as e:
+                logger.debug(f"performance rating failed: {e}")
             emit_feedback_request = getattr(self.ui, "emit_post_match_feedback_request", None)
             if callable(emit_feedback_request):
                 emit_feedback_request(display_analysis, match_result)
@@ -727,3 +750,140 @@ class _PostMatchMixin:
             )
 
         self._start_post_match_analysis_worker(reason="manual")
+
+    def _write_performance_record(self, match_id, result, final_state, replay_path) -> None:
+        """Persist a match into performance history (W/L + metadata)."""
+        from arenamcp.match_history import MatchHistory, parse_replay_cosmetics, record_from_game_end
+
+        rec = record_from_game_end(
+            match_id=match_id or "",
+            result=str(result) if result else "unknown",
+            game_state_snapshot=final_state or {},
+            replay_path=replay_path or "",
+        )
+        if replay_path:
+            try:
+                cos = parse_replay_cosmetics(replay_path)
+                if cos and isinstance(cos.get("Opponent"), dict):
+                    rec.opponent_name = cos["Opponent"].get("ScreenName") or ""
+            except Exception:
+                pass
+        MatchHistory().add_record(rec)
+
+    def _record_performance_rating(self, match_id, match_result, analysis) -> None:
+        """Best-effort 1-10 rating; degrades silently to W/L-only."""
+        rating = self._coach_rating_from_analysis(analysis)
+        if rating is None and analysis and self._coach is not None:
+            rating = self._rate_match_with_llm(match_result, analysis)
+        if rating is not None:
+            from arenamcp.match_history import MatchHistory
+
+            MatchHistory().set_rating(match_id or "", rating)
+
+    @staticmethod
+    def _coach_rating_from_analysis(analysis) -> int | None:
+        """Deterministic 1-10 extraction from the analysis prose (no LLM)."""
+        import re
+
+        text = analysis or ""
+        patterns = [
+            r"(?:rating|score)[^0-9]{0,12}(\d{1,2})\s*/\s*10",
+            r"(?:rating|score)[^0-9]{0,12}(\d{1,2})\s*(?:/10|out\s*of\s*10)",
+        ]
+        for pat in patterns:
+            m = re.search(pat, text, re.IGNORECASE)
+            if m:
+                return max(1, min(10, int(m.group(1))))
+        return None
+
+    def _rate_match_with_llm(self, match_result, analysis) -> int | None:
+        """Small STRICT-JSON rating call when the prose carried no rating."""
+        try:
+            import json
+
+            be = getattr(self._coach, "_backend", None)
+            if be is None:
+                return None
+            snippet = (analysis or "")[:2500]
+            system = (
+                "You are an expert MTG coach grader. Given a match result and"
+                " the post-match analysis, rate how WELL THE PLAYER PLAYED"
+                " from 1 to 10 (5 = average, 10 = excellent). Output STRICT"
+                " JSON only, with a single field: {\"rating\": int}."
+            )
+            user = f"MATCH RESULT: {match_result}\n\nANALYSIS:\n{snippet}"
+            resp = be.complete(system, user, max_tokens=60, temperature=0.0, request_timeout_s=30)
+            if not isinstance(resp, str):
+                return None
+            start, end = resp.find("{"), resp.rfind("}")
+            if start == -1 or end == -1:
+                return None
+            data = json.loads(resp[start : end + 1])
+            val = int(data.get("rating") or 0)
+            return max(1, min(10, val)) if val else None
+        except Exception as e:
+            logger.debug(f"rating LLM call failed: {e}")
+            return None
+
+    def _start_auto_advice_score(self, match_id, match_result, advice_history) -> None:
+        """Kick a background thread to score advice quality for this match."""
+        import threading
+
+        thread = threading.Thread(
+            target=self._score_match_advice,
+            args=(match_id, match_result, advice_history),
+            daemon=True,
+            name="auto-advice-score",
+        )
+        thread.start()
+
+    def _score_match_advice(self, match_id, match_result, advice_history) -> None:
+        """One small STRICT-JSON LLM call rating the QUALITY OF THE ADVICE.
+
+        Independent of the larger opt-in prose analysis, so every match gets a
+        number automatically. Degrades silently (record stays W/L-only) on any
+        error.
+        """
+        try:
+            import json
+
+            be = getattr(self._coach, "_backend", None)
+            if be is None or not advice_history:
+                return
+            lines = []
+            for entry in (advice_history or [])[:60]:
+                snap = entry.get("game_snapshot") or {}
+                turn = snap.get("turn_number", "?")
+                phase = snap.get("phase", "?")
+                advice = str(entry.get("advice") or "").strip()
+                if advice:
+                    lines.append(f"Turn {turn} {phase}: {advice[:300]}")
+            if not lines:
+                return
+            user = (
+                f"MATCH RESULT: {match_result}\n\n"
+                f"COACHING ADVICE GIVEN ({len(lines)} decisions):\n" + "\n".join(lines)
+            )
+            system = (
+                "You are an expert MTG coach grader. Given the match result and the list"
+                " of coaching advice the assistant gave at each decision point, rate the"
+                " QUALITY OF THE ADVICE from 1 to 10 (5 = average, 10 = expert-equivalent)."
+                " Penalize illegal, unclear, or strategically wrong advice. Output STRICT"
+                " JSON only: " + '{"rating": int, "reason": "one short sentence"}'
+            )
+            resp = be.complete(system, user, max_tokens=120, temperature=0.0, request_timeout_s=30)
+            if not isinstance(resp, str):
+                return
+            start, end = resp.find("{"), resp.rfind("}")
+            if start == -1 or end == -1:
+                return
+            data = json.loads(resp[start : end + 1])
+            val = int(data.get("rating") or 0)
+            if not val:
+                return
+            reason = str(data.get("reason") or "").strip()
+            from arenamcp.match_history import MatchHistory
+
+            MatchHistory().set_rating(match_id or "", max(1, min(10, val)), reason or None)
+        except Exception as e:
+            logger.debug(f"auto advice score failed: {e}")

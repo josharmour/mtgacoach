@@ -4259,6 +4259,16 @@ class AutopilotEngine(_BridgeSubmitMixin, _ActionExecMixin):
         labels = [(decision.find(oid).label if decision.find(oid) else oid) for oid in option_ids]
         if submit_option(self._gre_bridge, decision, option_ids):
             self._request_tracker.note_submitted(fp)
+            for label in labels:
+                clean_name = str(label or "").strip().lower()
+                for prefix in ("cast ", "play land: ", "play ", "activate ability: ", "activate "):
+                    if clean_name.startswith(prefix):
+                        clean_name = clean_name[len(prefix):].strip()
+                        break
+                clean_name = clean_name.split("[")[0].strip()
+                if clean_name:
+                    self._recent_bot_submissions.append((time.monotonic(), clean_name))
+            del self._recent_bot_submissions[:-24]
             try:
                 from arenamcp.match_packets import get_current_packet
 

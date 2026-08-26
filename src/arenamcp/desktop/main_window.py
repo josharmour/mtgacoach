@@ -38,6 +38,7 @@ from .coach_process import CoachProcess
 from .coach_tab import CoachTab
 from .compact_coach import CompactCoachPanel
 from .hotkeys import HotkeyManager
+from .performance_tab import PerformanceTab
 from .repair_tab import RepairTab
 from .runtime import RuntimeState, open_url, read_version
 from .theme import THEME_LABELS, apply_theme, available_themes, load_saved_theme, save_theme
@@ -597,6 +598,8 @@ class MainWindow(QMainWindow):
             tabs = QTabWidget()
             self.coach_tab = CoachTab()
             tabs.addTab(self.coach_tab, "Coach")
+            self.performance_tab = PerformanceTab()
+            tabs.addTab(self.performance_tab, "Performance")
             tabs.addTab(self.repair_tab, "Repair")
             self.tabs = tabs
             self._stack = None

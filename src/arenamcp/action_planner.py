@@ -1275,18 +1275,30 @@ class ActionPlanner:
                     if card_hand_entry is not None:
                         break
 
-                # Commander tax is not in the printed cost, so even a correct
-                # local mana check lies about command-zone casts. MTGA's [OK]
-                # (autotap solution) is the only tax-aware payability signal —
-                # require it for command-zone casts.
+                # Local affordability: True/False when cost + pool are known,
+                # else None (couldn't determine).
+                local_affordable = None
+                if card_cost and mana_pool is not None and rules_engine_cls is not None:
+                    local_affordable = rules_engine_cls._can_afford(card_cost, mana_pool)
+
+                # Commander tax is not in the printed cost. If MTGA's [OK] tag is
+                # present, trust it. Otherwise, verify against our local mana pool
+                # including commander tax (2 generic per previous cast) rather than
+                # blindly dropping the commander.
                 if card_zone == "command" and "[OK]" not in legal_action:
-                    logger.info(
-                        "Dropping command-zone cast %s: no autotap [OK] "
-                        "(printed cost %s ignores commander tax)",
-                        card_name,
-                        card_cost or "?",
-                    )
-                    continue
+                    commander_casts = card_hand_entry.get("commander_casts", 0) if isinstance(card_hand_entry, dict) else 0
+                    tax_cost = card_cost
+                    if commander_casts > 0 and card_cost:
+                        tax_cost = f"{{{commander_casts * 2}}}{card_cost}"
+                    if local_affordable is False or (rules_engine_cls and mana_pool is not None and not rules_engine_cls._can_afford(tax_cost, mana_pool)):
+                        logger.info(
+                            "Dropping command-zone cast %s: no autotap [OK] and local check unaffordable "
+                            "(printed cost %s + tax %d)",
+                            card_name,
+                            card_cost or "?",
+                            commander_casts * 2,
+                        )
+                        continue
 
                 # X-cost spells (P3-1): allowed when the bridge is connected —
                 # the plugin now enumerates the X chooser as casting-time
@@ -1305,12 +1317,6 @@ class ActionPlanner:
                             card_cost,
                         )
                         continue
-
-                # Local affordability: True/False when cost + pool are known,
-                # else None (couldn't determine).
-                local_affordable = None
-                if card_cost and mana_pool and rules_engine_cls is not None:
-                    local_affordable = rules_engine_cls._can_afford(card_cost, mana_pool)
 
                 # Payability gate (#377). "[OK]" is appended only when MTGA
                 # found an autotap solution — a real mana-payment path. WITHOUT
@@ -2046,8 +2052,8 @@ class ActionPlanner:
         if decision.request_type == "SelectTargets":
             picked = self._targeting_fallback_pick(decision, game_state)
             if picked == [DECLINE_DECISION]:
-                # Harmful targeting forced onto own permanents — never let
-                # the blind deterministic pick submit it either.
+                # Harmful targeting forced onto own permanents OR beneficial
+                # targeting forced onto opponent — never let the blind pick submit it.
                 return picked
             if picked:
                 logger.info(f"plan_decision_options: controller-aware target fallback picked {picked}")
@@ -2073,17 +2079,19 @@ class ActionPlanner:
     def _decision_source_is_harmful(self, decision: Any, game_state: dict[str, Any]) -> bool | None:
         """Classify the targeting decision's source spell as harmful.
 
-        Source resolution: decision source_label matched on the stack, else
-        top of stack. Returns None when no oracle text resolves — callers
-        must treat that as "cannot judge", not "safe".
+        Source resolution: decision source_label matched on the stack/hand/command,
+        else top of stack. Returns None when no oracle text resolves.
         """
         stack = game_state.get("stack", []) or []
         source_label = str(getattr(decision, "source_label", "") or "").strip().lower()
         picked_entry = None
         if source_label:
-            for entry in stack:
-                if str(entry.get("name") or "").strip().lower() == source_label:
-                    picked_entry = entry
+            for zone in ("stack", "hand", "command", "battlefield"):
+                for entry in game_state.get(zone, []) or []:
+                    if str(entry.get("name") or "").strip().lower() == source_label:
+                        picked_entry = entry
+                        break
+                if picked_entry is not None:
                     break
         if picked_entry is None and stack:
             picked_entry = stack[-1]
@@ -2118,21 +2126,15 @@ class ActionPlanner:
         game_state: dict[str, Any],
         chosen: list[str],
     ) -> list[str]:
-        """Override harmful-source LLM picks that hit our own permanents.
-
-        Live 2026-07-06 00:58: the typed-decision LLM picked the user's own
-        Nessian Wanderer for Utter Insignificance despite planning "remove
-        opponent's key creature". When the source is harmful and the pick is
-        own-controlled while other candidates exist, defer to the
-        controller-aware fallback (opponent's biggest threat, or
-        DECLINE_DECISION when only own permanents are targetable).
-        """
-        if self._decision_source_is_harmful(decision, game_state) is not True:
+        """Override mis-targeted LLM picks (harmful spells on own board or beneficial on enemy)."""
+        is_harmful = self._decision_source_is_harmful(decision, game_state)
+        if is_harmful is None:
             return chosen
         local_seat, controllers = self._battlefield_controllers(game_state)
         if local_seat is None:
             return chosen
         picked_own = False
+        picked_opp = False
         for oid in chosen:
             if not str(oid).startswith("tgt:"):
                 continue
@@ -2140,27 +2142,32 @@ class ActionPlanner:
                 iid = int(str(oid)[4:])
             except ValueError:
                 continue
-            if controllers.get(iid) == local_seat:
+            ctrl = controllers.get(iid)
+            if ctrl == local_seat:
                 picked_own = True
-                break
-        if not picked_own:
-            return chosen
-        override = self._targeting_fallback_pick(decision, game_state)
-        if override:
-            logger.warning(f"Overriding harmful LLM target pick {chosen} (own permanent) with {override}")
-            return override
+            elif ctrl is not None:
+                picked_opp = True
+
+        if is_harmful and picked_own:
+            override = self._targeting_fallback_pick(decision, game_state)
+            if override:
+                logger.warning(f"Overriding harmful LLM target pick {chosen} (own permanent) with {override}")
+                return override
+
+        if not is_harmful and picked_opp:
+            override = self._targeting_fallback_pick(decision, game_state)
+            if override:
+                logger.warning(f"Overriding beneficial LLM target pick {chosen} (opponent permanent) with {override}")
+                return override
+
         return chosen
 
     def _targeting_fallback_pick(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         """Controller-aware fallback for SelectTargets when the LLM failed.
 
-        The blind ``opts[:n]`` pick targeted the user's OWN Shuri with
-        Depower (removal) live on 2026-07-01. When the source spell's
-        oracle reads as harmful, prefer the opponent's biggest threat;
-        when it reads as beneficial, prefer our own biggest creature.
-        Returns [] (defer to the blind pick) when the oracle text is
-        unknown — a wrong confident pick is worse than an arbitrary one
-        we can already see in bug reports.
+        When the source spell is harmful, prefer the opponent's biggest threat.
+        When it is beneficial (e.g. Feather of Flight), prefer our own biggest creature
+        and NEVER buff the opponent's creatures.
         """
         candidates: list[int] = []
         for o in decision.options:
@@ -2211,11 +2218,6 @@ class ActionPlanner:
         theirs = [iid for iid in candidates if iid in battlefield and iid not in own]
 
         if harmful:
-            # Opponent's biggest threat. When the spell can only hit our
-            # own permanents, DO NOT pick one — signal decline so the
-            # caller cancels or hands to the user (2026-07-05: this branch
-            # "threw away the least valuable one" and destroyed the user's
-            # own Spirit).
             if not theirs and own:
                 logger.warning(
                     "Targeting fallback: harmful source with only own "
@@ -2225,9 +2227,13 @@ class ActionPlanner:
                 return [DECLINE_DECISION]
             pool = sorted(theirs, key=_power, reverse=True)
         else:
-            # Beneficial: our biggest creature; never buff the opponent's
-            # board just because it's the first candidate.
-            pool = sorted(own, key=_power, reverse=True) or sorted(theirs, key=_power)
+            if not own and theirs:
+                logger.warning(
+                    "Targeting fallback: beneficial source with only opponent "
+                    "permanents as candidates — declining to avoid buffing enemy"
+                )
+                return [DECLINE_DECISION]
+            pool = sorted(own, key=_power, reverse=True)
         if not pool:
             return []
         n = max(1, int(decision.min_select or 1))
@@ -2718,7 +2724,12 @@ class ActionPlanner:
             plan_names = {n.strip().lower() for n in action.attacker_names if n and n.strip()}
         else:
             plan_names = {k.strip().lower() for k in action.blocker_assignments if k and k.strip()}
-        return plan_names.issubset(legal_names)
+
+        for name in plan_names:
+            base = re.sub(r"\s*#\d+\s*$", "", name).strip()
+            if name not in legal_names and base not in legal_names:
+                return False
+        return True
 
     def _collect_combat_legal_names(
         self, action_type: ActionType, legal_actions: list[str]
@@ -2750,6 +2761,9 @@ class ActionPlanner:
                     clean = self._normalize_action_text(tail).strip().lower()
                     if clean:
                         legal_names.add(clean)
+                        base = re.sub(r"\s*#\d+\s*$", "", clean).strip()
+                        if base:
+                            legal_names.add(base)
                     in_combat_context = True
                 elif low.startswith("declare attackers:"):
                     in_combat_context = True
@@ -2760,6 +2774,9 @@ class ActionPlanner:
                             clean = self._normalize_action_text(name).strip().lower()
                             if clean:
                                 legal_names.add(clean)
+                                base = re.sub(r"\s*#\d+\s*$", "", clean).strip()
+                                if base:
+                                    legal_names.add(base)
                 elif "confirm attackers" in low:
                     in_combat_context = True
             else:
@@ -2769,6 +2786,9 @@ class ActionPlanner:
                     clean = self._normalize_action_text(tail).strip().lower()
                     if clean:
                         legal_names.add(clean)
+                        base = re.sub(r"\s*#\d+\s*$", "", clean).strip()
+                        if base:
+                            legal_names.add(base)
                     in_combat_context = True
                 elif "confirm blockers" in low:
                     in_combat_context = True

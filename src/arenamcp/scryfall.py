@@ -108,11 +108,11 @@ class ScryfallCache:
         if isinstance(manifest, dict) and "data" in manifest:
             for entry in manifest.get("data", []):
                 if isinstance(entry, dict) and entry.get("type") == "default_cards":
-                    download_uri = entry.get("download_uri")
+                    download_uri = entry.get("download_uri") or entry.get("jsonl_download_uri")
                     break
 
         if not download_uri:
-            raise ValueError("Could not find 'download_uri' in bulk data manifest")
+            raise ValueError("Could not find 'download_uri' or 'jsonl_download_uri' in bulk data manifest")
 
         logger.info(f"Downloading bulk data from {download_uri}...")
 
@@ -123,8 +123,15 @@ class ScryfallCache:
         bulk_path = self._get_bulk_data_path()
         temp_path = bulk_path.with_suffix(".json.tmp")
         with open(temp_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+            if download_uri.endswith(".gz"):
+                import gzip
+                import shutil
+
+                with gzip.GzipFile(fileobj=response.raw) as gz:
+                    shutil.copyfileobj(gz, f)
+            else:
+                for chunk in response.iter_content(chunk_size=65536):
+                    f.write(chunk)
             f.flush()
             os.fsync(f.fileno())
 
@@ -134,18 +141,31 @@ class ScryfallCache:
         logger.info(f"Bulk data saved to {bulk_path}")
 
     def _load_bulk_data(self) -> None:
-        """Load bulk data JSON and build arena_id index."""
+        """Load bulk data JSON/JSONL and build arena_id index."""
         bulk_path = self._get_bulk_data_path()
         logger.debug(f"Loading bulk data from {bulk_path}...")
 
-        with open(bulk_path, encoding="utf-8") as f:
-            cards = json.load(f)
-
         temp_index = {}
-        for card in cards:
-            arena_id = card.get("arena_id")
-            if arena_id is not None:
-                temp_index[arena_id] = card
+        with open(bulk_path, "r", encoding="utf-8", errors="replace") as f:
+            first_char = f.read(1)
+            f.seek(0)
+            if first_char == "[":
+                cards = json.load(f)
+                for card in cards:
+                    arena_id = card.get("arena_id")
+                    if arena_id is not None:
+                        temp_index[arena_id] = card
+            else:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            card = json.loads(line)
+                            arena_id = card.get("arena_id")
+                            if arena_id is not None:
+                                temp_index[arena_id] = card
+                        except Exception:
+                            continue
 
         self._arena_index = temp_index
         logger.info(f"Indexed {len(self._arena_index)} cards with arena_id")

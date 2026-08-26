@@ -5,13 +5,6 @@
 ; AppVersion is supplied by the caller (/DAppVersion=X.Y.Z):
 ;   installer\build-installer.ps1   - local release builds
 ;   .github/workflows/installer.yml - CI release builds
-; Both read the single source of truth, src\arenamcp\__init__.py (pyproject.toml
-; uses hatch dynamic versioning and carries no literal version).
-;
-; There is deliberately NO hardcoded fallback here. There used to be one, and a
-; hardcoded literal silently stamps the PREVIOUS version onto every installer
-; built after a version bump: a wrong number in Add/Remove Programs and on the
-; release asset, with nothing failing to warn you. Fail loudly instead.
 #ifndef AppVersion
   #error AppVersion is not defined. Build with installer\build-installer.ps1, or pass /DAppVersion=X.Y.Z matching __version__ in src\arenamcp\__init__.py.
 #endif
@@ -31,7 +24,7 @@ AllowNoIcons=yes
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist\installer
-OutputBaseFilename=mtgacoach-Setup
+OutputBaseFilename=mtgacoach-Setup-v2
 SetupIconFile=..\mtga_coach.ico
 WizardStyle=modern
 Compression=lzma2/max
@@ -43,43 +36,160 @@ SetupLogging=yes
 Name: "desktopicon"; Description: "Create a desktop icon"; GroupDescription: "Additional icons:"
 
 [InstallDelete]
-; Remove obsolete launcher files from prior installs (v2.0.1 and earlier).
+; Remove obsolete files and unsigned wrappers from prior installs
+Type: files; Name: "{app}\mtgacoach.exe"
+Type: files; Name: "{app}\launch.bat"
+Type: files; Name: "{app}\launch.vbs"
+Type: files; Name: "{app}\setup_wizard.py"
 Type: filesandordirs; Name: "{app}\launcher"
-Type: filesandordirs; Name: "{app}\runtime"
+Type: filesandordirs; Name: "{app}\scripts"
 
 [Files]
-; PySide desktop app source
+; Standalone embedded Python runtime with all dependencies pre-installed (Smart App Control compliant)
+Source: "..\dist\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+; Application source and assets
 Source: "..\src\*"; DestDir: "{app}\src"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "__pycache__\*,*.pyc"
+Source: "..\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\pyproject.toml"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
-
-; Setup and installed-app launch helpers
-Source: "..\setup_wizard.py"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\scripts\launch_installed.py"; DestDir: "{app}\scripts"; Flags: ignoreversion
-Source: "..\launch.bat"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\launch.vbs"; DestDir: "{app}"; Flags: ignoreversion
-
-; Docs and icons
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\mtga_coach.ico"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\icon.ico"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 ; Bridge plugin build output
-; Repair-audit blocker #1: the DLL now ships INSIDE the Python package
-; (src/arenamcp/resources/) so pip installs always have it. The installer
-; copy is a hard requirement — no skipifsourcedoesntexist: a DLL-less
-; installer build must FAIL, not silently ship a broken bridge.
 Source: "..\src\arenamcp\resources\MtgaCoachBridge.dll"; DestDir: "{app}\src\arenamcp\resources"; Flags: ignoreversion
 
-; BepInEx bundles for repair/install
-Source: "..\assets\BepInEx\*"; DestDir: "{app}\assets\BepInEx"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\assets\winhttp.dll"; DestDir: "{app}\assets"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "..\assets\doorstop_config.ini"; DestDir: "{app}\assets"; Flags: ignoreversion skipifsourcedoesntexist
-
 [Icons]
-Name: "{autoprograms}\mtgacoach"; Filename: "{app}\launch.vbs"; WorkingDir: "{app}"; IconFilename: "{app}\mtga_coach.ico"
-Name: "{autodesktop}\mtgacoach"; Filename: "{app}\launch.vbs"; WorkingDir: "{app}"; IconFilename: "{app}\mtga_coach.ico"; Tasks: desktopicon
+Name: "{autoprograms}\mtgacoach"; Filename: "{app}\runtime\Scripts\pythonw.exe"; Parameters: "-m arenamcp.desktop"; WorkingDir: "{app}"; IconFilename: "{app}\mtga_coach.ico"
+Name: "{autodesktop}\mtgacoach"; Filename: "{app}\runtime\Scripts\pythonw.exe"; Parameters: "-m arenamcp.desktop"; WorkingDir: "{app}"; IconFilename: "{app}\mtga_coach.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\launch.bat"; Description: "Launch mtgacoach (first run installs the Python environment)"; Flags: postinstall skipifsilent runasoriginaluser shellexec
+Filename: "{app}\runtime\Scripts\pythonw.exe"; Parameters: "-m arenamcp.desktop"; WorkingDir: "{app}"; Description: "Launch mtgacoach"; Flags: postinstall skipifsilent nowait runasoriginaluser
+
+[Code]
+// Helper function to find MTGA install folder
+function FindMtgaInstallDir(): String;
+var
+  RegPath: String;
+  Candidate: String;
+begin
+  Result := '';
+
+  // 1. Check official standalone installer path
+  Candidate := ExpandConstant('{autopf}\Wizards of the Coast\MTGA');
+  if DirExists(Candidate) then
+  begin
+    Result := Candidate;
+    Exit;
+  end;
+
+  // 2. Check 32-bit Program Files
+  Candidate := ExpandConstant('{autopf32}\Wizards of the Coast\MTGA');
+  if DirExists(Candidate) then
+  begin
+    Result := Candidate;
+    Exit;
+  end;
+
+  // 3. Check Steam library path
+  Candidate := ExpandConstant('{autopf32}\Steam\steamapps\common\MTGA');
+  if DirExists(Candidate) then
+  begin
+    Result := Candidate;
+    Exit;
+  end;
+  Candidate := ExpandConstant('{autopf}\Steam\steamapps\common\MTGA');
+  if DirExists(Candidate) then
+  begin
+    Result := Candidate;
+    Exit;
+  end;
+
+  // 4. Check registry
+  if RegQueryStringValue(HKLM64, 'SOFTWARE\Wizards of the Coast\MTGA', 'InstallDir', RegPath) and DirExists(RegPath) then
+  begin
+    Result := RegPath;
+    Exit;
+  end;
+  if RegQueryStringValue(HKLM32, 'SOFTWARE\Wizards of the Coast\MTGA', 'InstallDir', RegPath) and DirExists(RegPath) then
+  begin
+    Result := RegPath;
+    Exit;
+  end;
+end;
+
+// Directory copy helper
+procedure CopyDirectory(SourceDir, DestDir: String);
+var
+  FindRec: TFindRec;
+  SrcPath, DstPath: String;
+begin
+  if not DirExists(DestDir) then
+    CreateDir(DestDir);
+
+  if FindFirst(SourceDir + '\*', FindRec) then
+  begin
+    try
+      repeat
+        if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+        begin
+          SrcPath := SourceDir + '\' + FindRec.Name;
+          DstPath := DestDir + '\' + FindRec.Name;
+          if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+            CopyDirectory(SrcPath, DstPath)
+          else
+            FileCopy(SrcPath, DstPath, False);
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  MtgaDir: String;
+  AppDir: String;
+  PluginSrc: String;
+  PluginDst: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    MtgaDir := FindMtgaInstallDir();
+    AppDir := ExpandConstant('{app}');
+
+    if MtgaDir <> '' then
+    begin
+      Log('Detected MTGA install directory: ' + MtgaDir);
+
+      // Copy BepInEx assets into MTGA
+      if DirExists(AppDir + '\assets\BepInEx') then
+      begin
+        Log('Deploying BepInEx core into MTGA...');
+        CopyDirectory(AppDir + '\assets\BepInEx', MtgaDir + '\BepInEx');
+      end;
+
+      if FileExists(AppDir + '\assets\winhttp.dll') then
+        FileCopy(AppDir + '\assets\winhttp.dll', MtgaDir + '\winhttp.dll', False);
+
+      if FileExists(AppDir + '\assets\doorstop_config.ini') then
+        FileCopy(AppDir + '\assets\doorstop_config.ini', MtgaDir + '\doorstop_config.ini', False);
+
+      // Deploy MtgaCoachBridge.dll
+      PluginSrc := AppDir + '\src\arenamcp\resources\MtgaCoachBridge.dll';
+      PluginDst := MtgaDir + '\BepInEx\plugins\MtgaCoachBridge.dll';
+      if FileExists(PluginSrc) then
+      begin
+        if not DirExists(MtgaDir + '\BepInEx\plugins') then
+          ForceDirectories(MtgaDir + '\BepInEx\plugins');
+        Log('Deploying bridge plugin from ' + PluginSrc + ' to ' + PluginDst);
+        FileCopy(PluginSrc, PluginDst, False);
+      end;
+    end
+    else
+    begin
+      Log('MTGA install directory not found automatically; bridge can be installed via Repair tab.');
+    end;
+  end;
+end;

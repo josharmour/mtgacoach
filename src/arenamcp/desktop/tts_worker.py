@@ -36,7 +36,7 @@ def main() -> int:
         voice = VoiceOutput()
         logger.info("warming Kokoro worker")
         voice.warmup()
-        probe = voice.render_to_wav_file(".")
+        probe = voice.render_to_wav_file("Ready")
         if probe is None:
             raise RuntimeError("Kokoro warmup probe produced no audio")
         probe_path, _ = probe

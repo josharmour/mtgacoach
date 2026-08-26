@@ -708,19 +708,21 @@ def step_update_code() -> bool:
     """
     print_header(3, "Update Code")
 
-    # Read local version from pyproject.toml (no package import needed)
-    pyproject = ROOT / "pyproject.toml"
-    if not pyproject.exists():
-        info("No pyproject.toml found -- skipping auto-update.")
-        return True
-
+    # Read local version from src/arenamcp/__init__.py or pyproject.toml
     local_ver = "0.0.0"
-    for line in pyproject.read_text().splitlines():
-        line = line.strip()
-        if line.startswith("version"):
-            # version = "x.y.z"
-            local_ver = line.split("=", 1)[1].strip().strip('"').strip("'")
-            break
+    init_py = ROOT / "src" / "arenamcp" / "__init__.py"
+    if init_py.exists():
+        for line in init_py.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line.startswith("__version__") and "=" in line:
+                local_ver = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+    elif (ROOT / "pyproject.toml").exists():
+        for line in (ROOT / "pyproject.toml").read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line.startswith("version") and "=" in line:
+                local_ver = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
 
     info("Checking for updates...")
     remote_ver = _fetch_latest_remote_version()

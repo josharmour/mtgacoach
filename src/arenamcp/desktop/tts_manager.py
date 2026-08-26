@@ -95,8 +95,8 @@ class TtsManager(QObject):
         self._last_text = text
         self._last_speed = float(speed)
 
-        if self._worker_failed and sys.platform == "darwin":
-            self._speak_via_say(text, speed)
+        if self._worker_failed:
+            self._speak_fallback(text, speed)
             return
 
         if not self.is_running:
@@ -105,9 +105,8 @@ class TtsManager(QObject):
             except Exception as exc:
                 self._worker_failed = True
                 self.error_line.emit(str(exc))
-                if sys.platform == "darwin":
-                    self.status_line.emit("Kokoro unavailable — using macOS voice.")
-                    self._speak_via_say(text, speed)
+                self.status_line.emit("Kokoro unavailable — using system voice fallback.")
+                self._speak_fallback(text, speed)
                 return
 
         self._generation += 1
@@ -127,6 +126,32 @@ class TtsManager(QObject):
         self._pending_request = None
         self._stop_playback()
         self._stop_say()
+
+    def _speak_fallback(self, text: str, speed: float) -> None:
+        if sys.platform == "darwin":
+            self._speak_via_say(text, speed)
+        elif sys.platform == "win32":
+            self._speak_via_windows(text, speed)
+
+    def _speak_via_windows(self, text: str, speed: float) -> None:
+        """Windows built-in SAPI speech fallback."""
+        self._stop_say()
+        try:
+            safe_text = text.replace("'", "''")
+            rate = max(-10, min(10, int((speed - 1.0) * 5)))
+            ps_script = (
+                f"Add-Type -AssemblyName System.Speech; "
+                f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                f"$s.Rate = {rate}; "
+                f"$s.Speak('{safe_text}')"
+            )
+            self._say_process = subprocess.Popen(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as exc:
+            self.error_line.emit(f"Windows speech fallback failed: {exc}")
 
     def _speak_via_say(self, text: str, speed: float) -> None:
         """macOS built-in voice fallback (darwin only)."""

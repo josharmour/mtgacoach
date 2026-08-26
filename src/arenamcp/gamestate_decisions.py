@@ -231,6 +231,8 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
             "type": "target_selection",
             "source_card": source_card,
             "source_id": source_id,
+            "targets": req.get("targets", []),
+            "raw": dict(req),
             **source_ctx,
         }
         return False

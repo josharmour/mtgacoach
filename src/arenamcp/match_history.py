@@ -46,6 +46,11 @@ class MatchRecord:
     local_rank_tier: int = 0
     opponent_rank_class: int = 0
     opponent_rank_tier: int = 0
+    # Best-effort 1-10 coach performance score from post-match analysis
+    # (None = no analysis ran; UI degrades to W/L-only for that row).
+    coach_rating: int | None = None
+    # One-sentence explanation behind coach_rating (why this score was given).
+    coach_score_reason: str = ""
 
     def to_review_prompt(
         self,
@@ -102,6 +107,26 @@ class MatchHistory:
             self._records = self._records[-500:]
         self._save()
         logger.info(f"Recorded match: {record.result} vs {record.opponent_name or 'unknown'}")
+    def set_rating(self, match_id: str, rating: int | None, reason: str | None = None) -> None:
+        """Backfill the best-effort coach rating for an already-recorded match.
+
+        Ratings arrive asynchronously (post-match analysis runs in a worker
+        after the match record is written at game end), so this updates in
+        place rather than appending a new record. ``reason`` explains the
+        score; an existing reason is only overwritten when non-empty.
+        """
+        if not match_id or rating is None:
+            return
+        rating = max(1, min(10, int(rating)))
+        for rec in self._records:
+            if rec.match_id == match_id:
+                rec.coach_rating = rating
+                if reason is not None and str(reason).strip():
+                    rec.coach_score_reason = str(reason).strip()
+                self._save()
+                logger.info(f"Attached coach rating {rating}/10 to match {match_id}")
+                return
+
 
     def get_recent(self, n: int = 20) -> list[MatchRecord]:
         """Get the N most recent matches."""

@@ -701,8 +701,14 @@ class _BridgeSubmitMixin:
             return None
 
         bridge_blockers = pending.get("blockers") or []
-        if not bridge_blockers:
-            logger.info("GRE bridge blockers: bridge reports empty blockers list, falling back")
+        if not bridge_blockers or not getattr(action, "blocker_assignments", None):
+            logger.info("GRE bridge blockers: submitting empty blockers (no blockers to assign)")
+            if self._gre_bridge.submit_blockers([]):
+                self._log_execution_path(
+                    ExecutionPath.GRE_AWARE,
+                    "declare_blockers: [No Blocks] submitted via GRE bridge",
+                )
+                return ClickResult(True, 0, 0, "declare_blockers", "GRE bridge")
             return None
 
         game_state = self._get_game_state()

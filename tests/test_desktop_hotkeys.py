@@ -36,6 +36,7 @@ def parent_widget(qapp):
 @pytest.fixture
 def manager(parent_widget, monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("os.name", "posix")
     mgr = HotkeyManager(parent=parent_widget)
     mgr._darwin_listener = None
     yield mgr

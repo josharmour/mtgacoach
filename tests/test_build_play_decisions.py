@@ -400,7 +400,7 @@ def _write_fixture_csv(path: Path, *, max_turn: int = 6) -> None:
 
     lines = [",".join(header)]
     lines += [",".join(row_for("mythic")), ",".join(row_for("diamond")), ",".join(row_for("bronze"))]
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def test_end_to_end_build(tmp_path, resolver, detail):
@@ -429,7 +429,7 @@ def test_end_to_end_build(tmp_path, resolver, detail):
         max_records=0,
     )
 
-    recs = [json.loads(line) for line in out.read_text().splitlines()]
+    recs = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     # bronze is filtered out; 2 qualifying games x 3 in-scope decisions each.
     assert st.games_read == 2
     assert {r["meta"]["rank"] for r in recs} == {"mythic", "diamond"}
@@ -437,9 +437,9 @@ def test_end_to_end_build(tmp_path, resolver, detail):
     assert max(r["meta"]["turn"] for r in recs) <= 5, "condition 4: turn cap"
     assert {r["meta"]["pick_kind"] for r in recs} == {"land_drop", "cast"}
 
-    casts = [json.loads(line) for line in cast.read_text().splitlines()]
+    casts = [json.loads(line) for line in cast.read_text(encoding="utf-8").splitlines()]
     assert len(casts) == 2 and all(c["meta"]["pick_kind"] == "cast" for c in casts)
-    assert len(nt.read_text().splitlines()) == st.nontrivial
+    assert len(nt.read_text(encoding="utf-8").splitlines()) == st.nontrivial
 
     for r in recs:
         assert r["system"].startswith(AUTOPILOT_SYSTEM_PROMPT)

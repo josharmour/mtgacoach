@@ -162,7 +162,7 @@ class RulesEngine:
         if not mana_cost:
             return False
         cmc = RulesEngine._parse_cmc(mana_cost)
-        if mana_pool["total"] < cmc:
+        if not isinstance(mana_pool, dict) or mana_pool.get("total", 0) < cmc:
             return False
         pips = {c: 0 for c in "WUBRGC"}
         hybrid_pips: list[list[str]] = []
@@ -492,8 +492,12 @@ class RulesEngine:
                 continue
             if req["must_be_untapped"] and card.get("is_tapped"):
                 continue
-            if req["must_have_flying"] and "flying" not in (card.get("oracle_text") or "").lower():
-                continue
+            if req["must_have_flying"]:
+                is_creature = "creature" in type_line
+                non_creature_types = req["types"] - {"creature"}
+                if is_creature or not non_creature_types:
+                    if "flying" not in (card.get("oracle_text") or "").lower():
+                        continue
 
             power = card.get("power")
             toughness = card.get("toughness")
@@ -649,6 +653,8 @@ class RulesEngine:
             "qualifiedTargets",
             "targetsToSelect",
             "options",
+            "targets",
+            "raw",
         ):
             _collect(decision_context.get(key))
 

@@ -199,11 +199,16 @@ class CompactCoachPanel(CoachTab):
         row1 = QHBoxLayout()
         row1.setSpacing(6)
         row1.addWidget(self.voice_combo, stretch=2)
-        row1.addWidget(_btn("Mute", "Mute / unmute spoken advice", command="toggle_mute"), stretch=1)
-        row1.addWidget(
-            _btn("Debug", "File a bug report", on_click=self._submit_debug_report),
-            stretch=1,
+        is_ap = bool(get_settings().get("autopilot_enabled", False))
+        ap_btn = _btn(
+            "AP: ON" if is_ap else "AP: OFF",
+            "Toggle autopilot — plays the game via GRE bridge",
+            command="toggle_autopilot",
+            object_name="apButton",
         )
+        ap_btn.setProperty("apOn", "true" if is_ap else "false")
+        row1.addWidget(ap_btn, stretch=1)
+        row1.addWidget(_btn("Mute", "Mute / unmute spoken advice", command="toggle_mute"), stretch=1)
         root.addLayout(row1)
 
         row2 = QHBoxLayout()

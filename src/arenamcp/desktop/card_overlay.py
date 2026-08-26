@@ -354,12 +354,35 @@ class CardOverlayWindow(QWidget):
                 except Exception:
                     left_px = None
 
-        if left_px is None:
-            # Cross-platform locator (pygetwindow / xwininfo / Quartz).
-            rect = get_mtga_window_rect()
-            if rect is None:
-                return None
-            left_px, top_px, width_px, height_px = rect
+        if left_px is None or width_px is None or height_px is None or width_px <= 0 or height_px <= 0:
+            return None
+
+        # Sanity check against virtual display drivers / high-DPI scaling artifacts (e.g. \\.\DISPLAY49)
+        from PySide6.QtGui import QGuiApplication
+
+        screen = QGuiApplication.screenAt(QPoint(int(left_px), int(top_px)))
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+
+        if screen is not None:
+            s_geom = screen.geometry()
+            dpr = screen.devicePixelRatio()
+            # If coordinates are physical device pixels on a high-DPI display
+            if dpr > 1.0 and width_px > s_geom.width() and abs(width_px / dpr - s_geom.width()) < 100:
+                left_px = left_px / dpr
+                top_px = top_px / dpr
+                width_px = width_px / dpr
+                height_px = height_px / dpr
+
+            # Guard against virtual display twip/super-res explosions (e.g. 51200x28800)
+            if width_px > s_geom.width() * 2 or height_px > s_geom.height() * 2:
+                left_px = max(s_geom.left(), int(left_px))
+                top_px = max(s_geom.top(), int(top_px))
+                width_px = min(int(width_px), s_geom.width())
+                height_px = min(int(height_px), s_geom.height())
+
+        if width_px <= 0 or height_px <= 0 or width_px > 7680 or height_px > 4320:
+            return None
 
         return QRect(
             int(left_px),

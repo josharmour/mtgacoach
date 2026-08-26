@@ -558,10 +558,10 @@ def build(
 ) -> BuildStats:
     st = BuildStats()
     out.parent.mkdir(parents=True, exist_ok=True)
-    fh_nt = nontrivial_out.open("w") if nontrivial_out else None
-    fh_cast = cast_out.open("w") if cast_out else None
+    fh_nt = nontrivial_out.open("w", encoding="utf-8") if nontrivial_out else None
+    fh_cast = cast_out.open("w", encoding="utf-8") if cast_out else None
     try:
-        with out.open("w") as fh:
+        with out.open("w", encoding="utf-8") as fh:
             for path in csv_paths:
                 logger.info("reading %s", path)
                 for rv, row in iter_rows(path, min_rank, max_rows_per_file):

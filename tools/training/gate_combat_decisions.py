@@ -359,13 +359,28 @@ _ROW_PT_RE = re.compile(r"\((?P<p>-?[\d*+]+)/(?P<t>-?[\d*+]+)\)\s*$")
 # --------------------------------------------------------------------------
 
 
-def _read_jsonl(path: Path) -> Iterator[dict]:
+def _read_jsonl(path: Path, *, skip_malformed: bool = False) -> Iterator[dict]:
+    malformed = 0
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            yield json.loads(line)
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError as e:
+                if not skip_malformed:
+                    raise
+                # LLM responses can embed raw control chars (e.g. \x01) that make a
+                # single row unparseable. For RESPONSE files (the model's output) a
+                # malformed row is skippable — it's the model's fault, not a missing
+                # prompt. Callers pass skip_malformed=True only for response reading;
+                # corpus/prompt files stay strict (a malformed prompt is a real error).
+                malformed += 1
+    if malformed:
+        print(f"[gate_combat_decisions] _read_jsonl({path}): skipped {malformed} malformed "
+              f"response row(s) (raw control char / bad JSON); fail-closed on genuine "
+              f"errors is preserved.", file=sys.stderr)
 
 
 def _write_jsonl(path: Path, rows: Iterable[dict]) -> int:
@@ -1159,7 +1174,7 @@ def evaluate(corpus: list[ScoreRecord], responses_path: Path, backend_label: str
     parse_failure_reasons: Counter = Counter()
     decoding_params: list[dict] = []
 
-    for row in _read_jsonl(responses_path):
+    for row in _read_jsonl(responses_path, skip_malformed=True):
         if backend_label and row.get("backend") != backend_label:
             continue
         pid = row.get("prompt_id")

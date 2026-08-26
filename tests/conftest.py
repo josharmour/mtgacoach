@@ -24,6 +24,7 @@ os.environ.setdefault(
 
 # Force Qt offscreen platform plugin for headless test environments
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM", "1")
 
 
 @pytest.fixture(scope="session")

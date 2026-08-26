@@ -153,6 +153,26 @@ def _release_single_instance_lock() -> None:
 
 
 def main() -> int:
+    # CLI routing for frozen executable / command-line invocations
+    if any(arg in sys.argv for arg in ("--pipe", "--standalone", "--autopilot", "--dry-run", "--afk", "--diagnose")):
+        from arenamcp.standalone import main as standalone_main
+
+        return standalone_main()
+
+    if "--repair" in sys.argv:
+        from arenamcp.repair_engine import RepairEngine
+
+        report = RepairEngine().run()
+        for r in report.results:
+            print(f"[{r.status}] {r.label}: {r.detail} {r.action_hint}".strip())
+        return 0 if report.healthy else 1
+
+    if "--version" in sys.argv or "-v" in sys.argv:
+        from .. import __version__
+
+        print(f"mtgacoach {__version__}")
+        return 0
+
     try:
         from PySide6.QtWidgets import QApplication, QMessageBox
     except ImportError as exc:  # pragma: no cover - runtime dependency
@@ -212,6 +232,8 @@ def _run_first_run_setup(app) -> bool:
     setup was needed but failed/cancelled (caller should exit). When no setup is
     needed this returns ``True`` immediately and shows nothing.
     """
+    if getattr(sys, "frozen", False):
+        return True
     # This function runs from main() AFTER QApplication was constructed, so
     # PySide6 (and the whole app environment) is already proven working. A
     # pip/uv install has a complete environment by definition; the
@@ -276,3 +298,7 @@ def _run_first_run_setup(app) -> bool:
         )
         return False
     return True
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

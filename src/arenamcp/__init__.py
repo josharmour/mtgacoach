@@ -1,6 +1,7 @@
-"""mtgacoach: Real-time AI coaching for MTGA via mtgacoach.com."""
-
+import warnings
 from typing import Optional
+
+warnings.filterwarnings("ignore", module="pydantic_settings")
 
 from arenamcp.card_db import (
     CardDatabase,

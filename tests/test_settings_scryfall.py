@@ -64,7 +64,7 @@ def test_scryfall_cache_async_load(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert card.oracle_text == "Add G"
 
 
-def test_scryfall_cache_skips_api_fallback_when_not_ready(
+def test_scryfall_cache_invokes_api_fallback_when_not_in_bulk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Setup mock file
@@ -75,7 +75,7 @@ def test_scryfall_cache_skips_api_fallback_when_not_ready(
     # Monkeypatch stale check to False
     monkeypatch.setattr(ScryfallCache, "_is_cache_stale", lambda self: False)
 
-    # Mock fetch_from_api to verify it is NOT called
+    # Mock fetch_from_api to verify it IS called
     api_called = False
 
     def mock_fetch(self, arena_id):
@@ -87,12 +87,9 @@ def test_scryfall_cache_skips_api_fallback_when_not_ready(
 
     # Initialize cache
     cache = ScryfallCache(cache_dir=tmp_path)
-
-    # Force _bulk_data_ready to False to test that API is skipped
-    cache._bulk_data_ready = False
     card = cache.get_card_by_arena_id(1234)
     assert card is None
-    assert not api_called
+    assert api_called
 
 
 def test_screen_capture_bbox_validation(monkeypatch: pytest.MonkeyPatch) -> None:

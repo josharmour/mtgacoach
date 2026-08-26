@@ -37,11 +37,19 @@ class CoachProcess(QObject):
 
             app_root = Path(get_app_root())
             runtime_root = get_runtime_root()
-            python_exe, python_source = find_python_executable()
-            if python_exe is None:
-                raise RuntimeError("Python executable not found")
 
-            args = ["-u", "-m", "arenamcp.standalone", "--pipe"]
+            import sys
+
+            if getattr(sys, "frozen", False):
+                python_exe = sys.executable
+                python_source = "frozen_app"
+                args = ["--pipe"]
+            else:
+                python_exe, python_source = find_python_executable()
+                if python_exe is None:
+                    raise RuntimeError("Python executable not found")
+                args = ["-u", "-m", "arenamcp.standalone", "--pipe"]
+
             if autopilot:
                 args.append("--autopilot")
             if dry_run:

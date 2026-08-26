@@ -342,20 +342,37 @@ def run_arm(args: argparse.Namespace, prompts: Path, responses: Path, model: str
 
 
 def assert_arm_complete(responses: Path, label: str, expected_n: int) -> None:
-    ok = errors = 0
+    ok = errors = malformed = 0
     with open(responses, encoding="utf-8") as f:
-        for line in f:
+        for i, line in enumerate(f, 1):
             line = line.strip()
             if not line:
                 continue
-            row = json.loads(line)
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as e:
+                # A single malformed candidate-response row (e.g. an embedded
+                # control character from the LLM) must not abort the whole
+                # nightly gate. Tolerate + count it so it is surfaced in the
+                # report (and the arm is flagged under-counted) rather than
+                # silently scored as a wrong answer.
+                log(f"arm {label!r} {responses.name}:{i}: skipped malformed "
+                    f"response row (not scored): {e}")
+                malformed += 1
+                continue
             if row.get("backend") != label:
                 continue
             if row.get("error"):
                 errors += 1
             else:
                 ok += 1
-    if errors or ok < expected_n:
+    if malformed:
+        log(f"arm complete: {label} {ok}/{expected_n}, {errors} errored, "
+            f"{malformed} malformed-skipped")
+    # errors = real server/serving failures (always fatal). malformed rows are
+    # tolerated (skipped, not scored) as long as the file is otherwise
+    # complete — a lone bad LLM output must not abort the whole nightly gate.
+    if errors or ok + malformed < expected_n:
         die(
             f"arm {label!r} in {responses.name}: {ok} ok / {errors} errored, "
             f"expected {expected_n} clean rows. tools.eval.run is idempotent — "

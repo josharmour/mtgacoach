@@ -246,29 +246,23 @@ class KokoroTTS:
             if self._kokoro is not None:
                 return
 
-            # Check model files exist
-            missing_files = []
-            if not self._model_path.exists():
-                missing_files.append(
-                    f"Model file not found: {self._model_path}\n  Download from: {MODEL_URL}"
-                )
-            if not self._voices_path.exists():
-                missing_files.append(
-                    f"Voices file not found: {self._voices_path}\n  Download from: {VOICES_URL}"
-                )
+            # Check model files exist, auto-download if missing
+            if not self._model_path.exists() or not self._voices_path.exists():
+                self._model_path.parent.mkdir(parents=True, exist_ok=True)
+                import urllib.request
 
-            if missing_files:
-                # Create cache directory hint
-                cache_hint = (
-                    f"\nCreate directory and download files:\n"
-                    f"  mkdir -p {DEFAULT_CACHE_DIR}\n"
-                    f"  cd {DEFAULT_CACHE_DIR}\n"
-                    f"  curl -LO {MODEL_URL}\n"
-                    f"  curl -LO {VOICES_URL}"
-                )
-                raise FileNotFoundError(
-                    "Kokoro TTS model files not found:\n\n" + "\n\n".join(missing_files) + cache_hint
-                )
+                try:
+                    if not self._voices_path.exists():
+                        logger.info("Downloading Kokoro voices from %s...", VOICES_URL)
+                        urllib.request.urlretrieve(VOICES_URL, str(self._voices_path))
+                    if not self._model_path.exists():
+                        logger.info("Downloading Kokoro ONNX model from %s...", MODEL_URL)
+                        urllib.request.urlretrieve(MODEL_URL, str(self._model_path))
+                except Exception as exc:
+                    logger.warning("Failed to auto-download Kokoro models: %s", exc)
+                    raise FileNotFoundError(
+                        f"Kokoro TTS model files could not be downloaded: {exc}"
+                    ) from exc
 
             # Import and load kokoro
             try:

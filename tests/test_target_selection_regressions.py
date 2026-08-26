@@ -250,3 +250,142 @@ def test_pick_single_target_candidate_accepts_opponent_harmful_spell() -> None:
     }
 
     assert engine._pick_single_target_candidate(game_state) == 20
+
+
+def test_rules_engine_compound_flying_target_selection_pure_log_state() -> None:
+    """Pure log-based state (no BepInEx bridge) for Mutant Chain Reaction.
+
+    Verifies that:
+    1. Opponent's non-flying Food token (artifact) is matched and ranked first.
+    2. Opponent's Wind Drake (creature with flying) is matched.
+    3. Opponent's Grizzly Bears (creature WITHOUT flying) is excluded.
+    4. Hero's Mutagen token (artifact) is matched but ranked behind opponent targets.
+    5. Hero's Michelangelo (creature WITHOUT flying) is excluded.
+    """
+    from arenamcp.rules_engine import RulesEngine
+
+    game_state = {
+        "local_seat_id": 1,
+        "players": [
+            {"seat_id": 1, "is_local": True},
+            {"seat_id": 2, "is_local": False},
+        ],
+        "battlefield": [
+            {
+                "instance_id": 101,
+                "name": "Michelangelo, Weirdness to 11",
+                "type_line": "Legendary Creature — Mutant Turtle",
+                "oracle_text": "Whenever Michelangelo attacks, create a Mutagen token.",
+                "owner_seat_id": 1,
+                "controller_seat_id": 1,
+            },
+            {
+                "instance_id": 102,
+                "name": "Mutagen",
+                "type_line": "Artifact — Mutagen",
+                "oracle_text": "{1}, {T}, Sacrifice this token: Put a +1/+1 counter on target creature.",
+                "owner_seat_id": 1,
+                "controller_seat_id": 1,
+            },
+            {
+                "instance_id": 201,
+                "name": "Food",
+                "type_line": "Artifact — Food",
+                "oracle_text": "{2}, {T}, Sacrifice this token: You gain 3 life.",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+            },
+            {
+                "instance_id": 202,
+                "name": "Grizzly Bears",
+                "type_line": "Creature — Bear",
+                "oracle_text": "",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+            },
+            {
+                "instance_id": 203,
+                "name": "Wind Drake",
+                "type_line": "Creature — Drake",
+                "oracle_text": "Flying",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+            },
+        ],
+        "stack": [
+            {
+                "instance_id": 500,
+                "name": "Mutant Chain Reaction",
+                "oracle_text": "Destroy up to one target artifact, enchantment, or creature with flying. Create a Mutagen token.",
+            }
+        ],
+        "decision_context": {
+            "type": "target_selection",
+            "source_id": 500,
+            "source_card": "Mutant Chain Reaction",
+            "source_oracle_text": "Destroy up to one target artifact, enchantment, or creature with flying. Create a Mutagen token.",
+        },
+    }
+
+    actions = RulesEngine._get_target_selection_actions(game_state)
+    assert len(actions) > 0
+    # Food (OPP) should be ranked first as opponent target
+    assert "Select target: Food (OPP)" in actions
+    assert "Select target: Wind Drake (OPP)" in actions
+    # Non-flying creatures must not be in legal target actions
+    assert not any("Grizzly Bears" in a for a in actions)
+    assert not any("Michelangelo" in a for a in actions)
+    # Opponent targets must come before friendly targets
+    food_idx = actions.index("Select target: Food (OPP)")
+    if "Select target: Mutagen (YOURS)" in actions:
+        mutagen_idx = actions.index("Select target: Mutagen (YOURS)")
+        assert food_idx < mutagen_idx
+
+
+def test_rules_engine_select_targets_req_with_gre_candidates() -> None:
+    """GRE-enriched SelectTargetsReq resolves target candidates from targets slot."""
+    from arenamcp.rules_engine import RulesEngine
+
+    game_state = {
+        "local_seat_id": 1,
+        "players": [
+            {"seat_id": 1, "is_local": True},
+            {"seat_id": 2, "is_local": False},
+        ],
+        "battlefield": [
+            {
+                "instance_id": 646,
+                "name": "Mutagen",
+                "type_line": "Artifact — Mutagen",
+                "owner_seat_id": 1,
+                "controller_seat_id": 1,
+            },
+            {
+                "instance_id": 638,
+                "name": "Food",
+                "type_line": "Artifact — Food",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+            },
+        ],
+        "decision_context": {
+            "type": "target_selection",
+            "source_id": 242,
+            "source_card": "Mutant Chain Reaction",
+            "source_oracle_text": "Destroy up to one target artifact, enchantment, or creature with flying. Create a Mutagen token.",
+            "targets": [
+                {
+                    "targetIdx": 1,
+                    "targets": [
+                        {"targetInstanceId": 638, "highlight": "HighlightType_Hot"},
+                        {"targetInstanceId": 646, "highlight": "HighlightType_Cold"},
+                    ],
+                }
+            ],
+        },
+    }
+
+    actions = RulesEngine._get_target_selection_actions(game_state)
+    assert actions[0] == "Select target: Food (OPP)"
+    assert "Select target: Mutagen (YOURS)" in actions
+

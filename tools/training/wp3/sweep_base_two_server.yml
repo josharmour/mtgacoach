@@ -1,0 +1,71 @@
+# Budget-sweep REDO base config — two-server variant (2026-08-11).
+# Derived from /home/joshu/repos/magezero/configs/game.yml; ONLY the server
+# block (free ports 50152/50153) and per-player output_file (scratch /tmp)
+# differ, so the sweep's arms never touch the fleet's :50052 server or its
+# live data dirs. Players both point at the SAME net (mirror match: swept
+# budget vs reference 300) served by two independent server.py instances on a
+# freed RTX PRO 6000 card (server.py --checkpoint/--ignore overrides).
+# Consumed by: mz_budget_sweep.py --base-config <this file> --force
+goes_first: random
+player_a:
+  deckPath: xmage/decks/UWTempo.dck
+  output_file: /tmp/mz_sweep_out/player_a/game.hdf5
+  type: mcts
+  priors:
+    priority: true
+    target: false
+    binary: true
+    opponent: false
+    prior_temperature: 1.5
+  noise:
+    enabled: false
+    dirichlet_noise: 0.15
+    selection_temperature: 2
+  mcts:
+    search_budget: 1000
+    timeout_ms: 4000
+    td_discount: 0.85
+    offline_mode: false
+  gameplay:
+    mulligans_enabled: false
+    manual_tapping: false
+  hidden_info:
+    see_opponent_hand: true
+player_b:
+  deckPath: xmage/decks/UWTempo.dck
+  output_file: /tmp/mz_sweep_out/player_b/game.hdf5
+  type: mcts
+  priors:
+    priority: false
+    target: false
+    binary: false
+    opponent: false
+    prior_temperature: 1.5
+  noise:
+    enabled: false
+    dirichlet_noise: 0.15
+    selection_temperature: 2
+  mcts:
+    search_budget: 1000
+    timeout_ms: 4000
+    td_discount: 0.85
+    offline_mode: false
+  gameplay:
+    mulligans_enabled: false
+    manual_tapping: false
+  hidden_info:
+    see_opponent_hand: true
+training:
+  games: 200
+  threads: 10
+  max_turns: 50
+server:
+  host: localhost
+  port: 50152
+  opponent_port: 50153
+logging:
+  sparse: false
+  all_threads: true
+  log_feature_hash: true
+  save_final_wr: true
+  show_mcts_info: true
