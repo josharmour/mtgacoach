@@ -43,6 +43,7 @@ class CompactCoachPanel(CoachTab):
 
     repair_requested = Signal()
     classic_requested = Signal()
+    performance_requested = Signal()
 
     # The activity feed is a TTS subtitle track, not an operations log: by
     # default it shows only the literal text handed to the speech engine
@@ -354,6 +355,9 @@ class CompactCoachPanel(CoachTab):
         reset_action.triggered.connect(lambda _checked=False: self._reset_advice_panel())
 
         menu.addSeparator()
+        perf_action = menu.addAction("Match History…")
+        perf_action.setToolTip("Open the recent-matches performance history")
+        perf_action.triggered.connect(lambda _checked=False: self.performance_requested.emit())
         repair_action = menu.addAction("Setup && Repair…")
         repair_action.setToolTip("Open the setup / repair tools")
         repair_action.triggered.connect(lambda _checked=False: self.repair_requested.emit())
@@ -559,12 +563,12 @@ class CompactCoachPanel(CoachTab):
         tokens = self._theme_tokens()
 
         html_blocks = [
-            f"<div style='font-family: Consolas, \"Courier New\", monospace; padding: 2px 4px;'>",
+            "<div style='font-family: Consolas, \"Courier New\", monospace; padding: 2px 4px;'>",
             "<table width='100%' style='border: none; margin-bottom: 3px;'><tr>",
             f"<td align='left'><span style='color: {tokens.get('spell', '#89b4fa')}; font-weight: bold; font-size: 11px;'>WIN EXPECTANCY: <b style='color: {b_color}; font-size: 13px;'>{pct}%</b></span></td>",
             f"<td align='right'><span style='color: {tokens.get('muted', '#a6adc8')}; font-size: 10px;'>{sims:,} sims · T{turn} {phase}</span></td>",
             "</tr></table>",
-            f"<div style='background: #313244; width: 100%; border-radius: 3px; height: 5px; margin-bottom: 8px;'>",
+            "<div style='background: #313244; width: 100%; border-radius: 3px; height: 5px; margin-bottom: 8px;'>",
             f"<div style='background: {b_color}; width: {pct}%; height: 5px; border-radius: 3px;'></div>",
             "</div>",
         ]

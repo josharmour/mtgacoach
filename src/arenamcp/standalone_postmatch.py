@@ -755,12 +755,24 @@ class _PostMatchMixin:
         """Persist a match into performance history (W/L + metadata)."""
         from arenamcp.match_history import MatchHistory, parse_replay_cosmetics, record_from_game_end
 
+        opponent_cards = []
+        if isinstance(final_state, dict):
+            opponent_cards = final_state.get("opponent_played_cards", []) or []
+
         rec = record_from_game_end(
             match_id=match_id or "",
             result=str(result) if result else "unknown",
             game_state_snapshot=final_state or {},
+            opponent_cards=opponent_cards,
             replay_path=replay_path or "",
         )
+        # Format is not yet captured by the game-state parser; pass it through
+        # when the snapshot exposes it (best-effort — commonly empty).
+        if isinstance(final_state, dict):
+            for key in ("format_name", "super_format", "match_format"):
+                if final_state.get(key):
+                    rec.format_name = str(final_state[key])
+                    break
         if replay_path:
             try:
                 cos = parse_replay_cosmetics(replay_path)

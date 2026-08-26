@@ -89,9 +89,17 @@ class PerformanceTab(QWidget):
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
         lay.addWidget(self._table, 1)
 
-        self._detail = QLabel("Click a row to see why its score was given.")
+        why = QLabel("WHY THIS SCORE")
+        why.setStyleSheet("font-size: 11px; font-weight: 700; color: #9aa;")
+        lay.addWidget(why)
+        self._detail = QLabel("Select a match to see why its score was given.")
         self._detail.setWordWrap(True)
-        self._detail.setStyleSheet("font-size: 12px; color: #999;")
+        self._detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._detail.setStyleSheet(
+            "font-size: 13px; color: #ddd;"
+            "background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.10);"
+            "padding: 8px; border-radius: 4px;"
+        )
         lay.addWidget(self._detail)
 
     def _on_selection_changed(self) -> None:
@@ -128,6 +136,17 @@ class PerformanceTab(QWidget):
         super().hideEvent(event)
         self._timer.stop()
 
+    def _selected_match_id(self):
+        """match_id of the currently selected row, or None (first-call safe)."""
+        rows = self._table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        row = rows[0].row()
+        records = getattr(self, "_row_records", [])
+        if 0 <= row < len(records):
+            return getattr(records[row], "match_id", None)
+        return None
+
     def refresh(self) -> None:
         try:
             # Fresh instance every time: re-reads match_history from disk so
@@ -136,6 +155,10 @@ class PerformanceTab(QWidget):
             records = list(reversed(history.get_recent(_MAX_ROWS)))
         except Exception:
             records = []
+
+        # Preserve the selected row's explanation across the 3s auto-refresh so
+        # the "why this score" stays visible instead of clearing every poll.
+        selected_match_id = self._selected_match_id()
 
         self._table.setRowCount(0)
         self._row_records: list = []
@@ -190,6 +213,12 @@ class PerformanceTab(QWidget):
                 if it is not None:
                     it.setToolTip(tip)
             self._row_records.append(rec)
+
+        if selected_match_id is not None:
+            for r in range(self._table.rowCount()):
+                if getattr(self._row_records[r], "match_id", None) == selected_match_id:
+                    self._table.selectRow(r)
+                    break
 
         total = wins + losses
         win_rate = (wins / total * 100) if total else 0.0

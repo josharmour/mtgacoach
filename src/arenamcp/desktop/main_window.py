@@ -566,6 +566,7 @@ class MainWindow(QMainWindow):
             panel = CompactCoachPanel()
             panel.repair_requested.connect(self._show_repair_view)
             panel.classic_requested.connect(lambda: self._set_ui_mode(UI_MODE_CLASSIC))
+            panel.performance_requested.connect(self._show_performance_view)
             self.coach_tab = panel
 
             repair_page = QWidget()
@@ -588,9 +589,29 @@ class MainWindow(QMainWindow):
             self._repair_scroll = scroll
             self._repair_back_btn = back_btn
 
+            # Performance history page (narrow layout, scrollable) so the
+            # compact sidebar can show the last few matches too.
+            performance_page = QWidget()
+            perf_layout = QVBoxLayout(performance_page)
+            perf_layout.setContentsMargins(8, 8, 8, 8)
+            perf_layout.setSpacing(6)
+            perf_header = QHBoxLayout()
+            perf_back = QPushButton("← Back to Coach")
+            perf_back.clicked.connect(self._show_coach_view)
+            perf_header.addWidget(perf_back)
+            perf_header.addStretch()
+            perf_layout.addLayout(perf_header)
+            perf_scroll = QScrollArea()
+            perf_scroll.setWidgetResizable(True)
+            perf_scroll.setFrameShape(QFrame.NoFrame)
+            perf_scroll.setWidget(PerformanceTab())
+            perf_layout.addWidget(perf_scroll)
+            self._performance_scroll = perf_scroll
+
             stack = QStackedWidget()
             stack.addWidget(panel)
             stack.addWidget(repair_page)
+            stack.addWidget(performance_page)
             self._stack = stack
             self.tabs = None
             self.setCentralWidget(stack)
@@ -654,15 +675,21 @@ class MainWindow(QMainWindow):
 
     def _show_repair_view(self) -> None:
         if self.tabs is not None:
-            self.tabs.setCurrentIndex(1)
+            self.tabs.setCurrentIndex(2)  # Coach=0, Performance=1, Repair=2
         elif self._stack is not None:
             self._stack.setCurrentIndex(1)
+
+    def _show_performance_view(self) -> None:
+        if self.tabs is not None:
+            self.tabs.setCurrentIndex(1)  # Performance tab (classic)
+        elif self._stack is not None:
+            self._stack.setCurrentIndex(2)  # compact performance page
 
     def _set_coach_view_enabled(self, ready: bool) -> None:
         if self.tabs is not None:
             self.tabs.setTabEnabled(0, ready)
             if not ready and self.tabs.currentIndex() == 0:
-                self.tabs.setCurrentIndex(1)
+                self.tabs.setCurrentIndex(2)  # Repair
         elif self._stack is not None:
             if self._repair_back_btn is not None:
                 self._repair_back_btn.setEnabled(ready)

@@ -197,3 +197,38 @@ def test_auto_score_noop_without_advice(tmp_path, monkeypatch, qapp):
     monkeypatch.setattr(mh, "HISTORY_FILE", tmp_path / "history.json")
     host = _Host('{"rating": 3}')
     host._score_match_advice("m_empty", "loss", [])  # must not raise
+
+
+# -----------------------------------------------
+# data capture (colors/format) + reason persistence
+
+
+def test_write_performance_record_captures_colors_and_format(tmp_path, monkeypatch):
+    import arenamcp.match_history as mh
+
+    monkeypatch.setattr(mh, "HISTORY_FILE", tmp_path / "h.json")
+    host = _Host('{"rating": 5}')
+    final_state = {
+        "opponent_played_cards": [
+            {"name": "Lightning Helix", "mana_cost": "{R}{W}"},
+            {"name": "Swiftwater Cliffs", "mana_cost": ""},
+        ],
+        "super_format": "Brawl",
+    }
+    host._write_performance_record("m_c", "loss", final_state, replay_path="")
+    rec = mh.MatchHistory().get_recent(10)[0]
+    assert "R" in rec.opponent_colors_seen and "W" in rec.opponent_colors_seen
+    assert rec.format_name == "Brawl"
+
+
+def test_selection_and_reason_persist_across_refresh(seeded_file, qapp):
+    """The 3s auto-refresh must not wipe the selected row's explanation."""
+    tab = PerformanceTab()
+    tab.refresh()
+    tab._table.selectRow(1)  # the L / 7/10 row
+    assert "over-extended" in tab._detail.text()
+
+    before = tab._detail.text()
+    tab.refresh()  # simulates a poll rebuilding the table
+    assert tab._detail.text() == before
+    assert "over-extended" in tab._detail.text()
