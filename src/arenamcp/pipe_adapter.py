@@ -203,7 +203,9 @@ class PipeAdapter:
     def subtask(self, status: str) -> None:
         self._emit({"type": "subtask", "status": strip_markup(status)})
 
-    # ── Game state emission ──────────────────────────────────────────
+    def emit_heartbeat(self, data: dict[str, Any] | None = None) -> None:
+        """Emit a periodic heartbeat to indicate backend liveness."""
+        self._emit({"type": "heartbeat", "data": data or {}})
 
     def emit_game_state(self, snapshot: dict[str, Any]) -> None:
         """Emit a game state snapshot to the GUI."""

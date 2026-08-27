@@ -103,8 +103,8 @@ class MatchOverlayWindow(QWidget):
         # bridge poll; paintEvent's calibration header reads these directly.
         self._screen_w: int = 0
         self._screen_h: int = 0
-        # Default overlay UI to False on macOS (sys.platform == 'darwin') per user preference
-        self._user_enabled = sys.platform != "darwin"
+        # Default overlay UI to False per user preference
+        self._user_enabled = False
         self._match_active = False
         self._calibration_mode = False
         # Affine post-transform applied on top of the auto-derived window
@@ -124,10 +124,9 @@ class MatchOverlayWindow(QWidget):
         # Advice display moved off the click-through overlay onto a separate
         # mouse-interactive top-level window (AdvicePanelWindow). The overlay
         # only forwards advice to it; all rendering, drag, resize, and
-        # persistence live there. Anchor field retained on disk for backward
-        # compatibility but ignored by the new panel.
+        # persistence live there. Disabled by default per user preference.
         self._advice_panel: AdvicePanelWindow = AdvicePanelWindow()
-        self._show_advice_panel: bool = True
+        self._show_advice_panel: bool = False
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
@@ -165,18 +164,26 @@ class MatchOverlayWindow(QWidget):
 
     def set_enabled(self, enabled: bool) -> None:
         """Toggle the entire overlay on/off without destroying it."""
-        self._user_enabled = enabled
-        if not enabled:
+        self._user_enabled = bool(enabled)
+        if not self._user_enabled:
             if self.isVisible():
                 self.hide()
             if self._advice_panel.isVisible():
                 self._advice_panel.hide()
+        with contextlib.suppress(Exception):
+            existing = self._read_calibration_file()
+            existing["enabled"] = self._user_enabled
+            self._write_calibration_file(existing)
 
     def set_advice_panel_visible(self, visible: bool) -> None:
         """Show or hide just the advice panel (keeps pill + highlights)."""
         self._show_advice_panel = bool(visible)
         if not visible:
             self._advice_panel.hide()
+        with contextlib.suppress(Exception):
+            existing = self._read_calibration_file()
+            existing["show_advice_panel"] = self._show_advice_panel
+            self._write_calibration_file(existing)
         # Showing is left to _tick, which additionally requires an active
         # match and actual advice content before parking a mouse-interactive
         # window over the game.
@@ -295,6 +302,9 @@ class MatchOverlayWindow(QWidget):
             self._calib_offset_y = float(data.get("offset_y", 0.0) or 0.0)
             self._calib_scale_x = float(data.get("scale_x", 1.0) or 1.0)
             self._calib_scale_y = float(data.get("scale_y", 1.0) or 1.0)
+            self._show_advice_panel = bool(data.get("show_advice_panel", False))
+            if "enabled" in data:
+                self._user_enabled = bool(data.get("enabled", False))
             if self._calib_scale_x <= 0:
                 self._calib_scale_x = 1.0
             if self._calib_scale_y <= 0:
@@ -325,10 +335,12 @@ class MatchOverlayWindow(QWidget):
             existing = self._read_calibration_file()
             data = {
                 **existing,
+                "enabled": self._user_enabled,
                 "offset_x": round(self._calib_offset_x, 3),
                 "offset_y": round(self._calib_offset_y, 3),
                 "scale_x": round(self._calib_scale_x, 5),
                 "scale_y": round(self._calib_scale_y, 5),
+                "show_advice_panel": self._show_advice_panel,
             }
             self._write_calibration_file(data)
             self._calib_saved_at = time.time()
@@ -599,19 +611,12 @@ class MatchOverlayWindow(QWidget):
         elif not panel_should_show and self._advice_panel.isVisible():
             self._advice_panel.hide()
 
-        # Force topmost on every tick. MTGA's borderless-fullscreen mode
-        # often pushes non-foreground windows behind it even when they have
-        # WindowStaysOnTopHint. SetWindowPos(HWND_TOPMOST, NOACTIVATE) forces
-        # us back above without stealing focus.
-        self._force_topmost()
+        if self.isVisible():
+            self._force_topmost()
 
     def _force_topmost(self) -> None:
         """Force the overlay to the top of the Windows z-order."""
-        if os.name != "nt" or win32gui is None or win32con is None:
-            # No per-tick raise off-Windows: WindowStaysOnTopHint already
-            # floats us above normal windows, and calling raise_() every
-            # 250ms fights the user for z-order — clicking into any other
-            # app pulled the overlay straight back over it (first Mac run).
+        if os.name != "nt" or win32gui is None or win32con is None or not self.isVisible():
             return
         try:
             hwnd = int(self.winId())
@@ -619,7 +624,8 @@ class MatchOverlayWindow(QWidget):
             SWP_NOSIZE = 0x0001
             SWP_NOMOVE = 0x0002
             SWP_NOACTIVATE = 0x0010
-            SWP_SHOWWINDOW = 0x0040
+            SWP_NOREDRAW = 0x0008
+            SWP_NOSENDCHANGING = 0x0400
             win32gui.SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,
@@ -627,7 +633,7 @@ class MatchOverlayWindow(QWidget):
                 0,
                 0,
                 0,
-                SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOSENDCHANGING,
             )
         except Exception:
             # Fallback: Qt-level raise

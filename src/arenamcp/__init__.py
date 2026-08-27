@@ -63,7 +63,7 @@ with contextlib.suppress(ImportError):
 
 from arenamcp.gamestate import load_match_state, mark_match_ended, save_match_state
 
-__version__ = "2.7.5"
+__version__ = "2.8.0"
 
 
 def create_log_pipeline(

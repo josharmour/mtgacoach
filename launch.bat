@@ -16,8 +16,22 @@ if not defined MTGACOACH_RUNTIME_ROOT (
 set "MTGACOACH_APP_ROOT=%~dp0"
 set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
 
-set "VENV_PYTHON=%MTGACOACH_RUNTIME_ROOT%\venv\Scripts\python.exe"
-set "VENV_PYTHONW=%MTGACOACH_RUNTIME_ROOT%\venv\Scripts\pythonw.exe"
+set "VENV_PYTHON="
+set "VENV_PYTHONW="
+
+if exist "%ProgramFiles%\mtgacoach\runtime\Scripts\python.exe" (
+    set "VENV_PYTHON=%ProgramFiles%\mtgacoach\runtime\Scripts\python.exe"
+    set "VENV_PYTHONW=%ProgramFiles%\mtgacoach\runtime\Scripts\pythonw.exe"
+) else if exist "%~dp0runtime\Scripts\python.exe" (
+    set "VENV_PYTHON=%~dp0runtime\Scripts\python.exe"
+    set "VENV_PYTHONW=%~dp0runtime\Scripts\pythonw.exe"
+) else if exist "%MTGACOACH_RUNTIME_ROOT%\venv\Scripts\python.exe" (
+    set "VENV_PYTHON=%MTGACOACH_RUNTIME_ROOT%\venv\Scripts\python.exe"
+    set "VENV_PYTHONW=%MTGACOACH_RUNTIME_ROOT%\venv\Scripts\pythonw.exe"
+) else if exist "%~dp0.venv\Scripts\python.exe" (
+    set "VENV_PYTHON=%~dp0.venv\Scripts\python.exe"
+    set "VENV_PYTHONW=%~dp0.venv\Scripts\pythonw.exe"
+)
 
 set "MODE=%~1"
 
@@ -26,6 +40,7 @@ if /I "%MODE%"=="--setup" goto :run_wizard
 if /I "%MODE%"=="--repair" goto :run_wizard
 if /I "%MODE%"=="--console" goto :launch_console
 
+if not defined VENV_PYTHON goto :run_wizard
 if not exist "%VENV_PYTHON%" goto :run_wizard
 
 rem Repair-audit blocker #2: a present-but-dead venv used to be launched

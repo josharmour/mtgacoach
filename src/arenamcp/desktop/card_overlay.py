@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from PySide6.QtCore import QRect, Qt, QTimer
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QLabel, QWidget
 
@@ -152,7 +152,7 @@ class CardOverlayWindow(QWidget):
         self._badges: list[CardBadge] = []
         self._last_cards_data: list[dict[str, Any]] = []
         self._should_show = False
-        self._user_enabled = True
+        self._user_enabled = False
         self._locked_color_pair: str | None = None
         # Calibration mode draws a red outline around the computed card grid
         # and cell boundaries, so we can see whether the hardcoded coords match

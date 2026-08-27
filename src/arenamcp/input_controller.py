@@ -42,16 +42,30 @@ else:
 _MTGA_TITLES = ["MTGA", "Magic: The Gathering Arena"]
 
 
+_cached_mtga_hwnd: int | None = None
+_cached_mtga_hwnd_ts: float = 0.0
+
+
 def find_mtga_hwnd() -> int | None:
     """Find the MTGA window handle using FindWindowW."""
+    global _cached_mtga_hwnd, _cached_mtga_hwnd_ts
     if not _IS_WINDOWS:
         return None
+    now = time.monotonic()
+    if _cached_mtga_hwnd and user32.IsWindow(_cached_mtga_hwnd):
+        return _cached_mtga_hwnd
+    if now - _cached_mtga_hwnd_ts < 1.0:
+        return _cached_mtga_hwnd
+
+    _cached_mtga_hwnd_ts = now
     for title in _MTGA_TITLES:
         hwnd = user32.FindWindowW(None, title)
-        if hwnd:
+        if hwnd and user32.IsWindow(hwnd):
+            _cached_mtga_hwnd = hwnd
             return hwnd
     # Fallback: enumerate windows looking for partial match
-    return _enum_find_mtga()
+    _cached_mtga_hwnd = _enum_find_mtga()
+    return _cached_mtga_hwnd
 
 
 def _enum_find_mtga() -> int | None:

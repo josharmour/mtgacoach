@@ -62,6 +62,8 @@ DEFAULTS = {
     "local_api_key": "vllm",  # vLLM/Ollama ignore this; LM Studio needs "lm-studio"
     # Subscription messages tracking
     "last_seen_message_id": None,
+    # Autopilot persistent toggle state
+    "autopilot_enabled": False,
 }
 
 # Keys from the old multi-provider settings that should be migrated/removed

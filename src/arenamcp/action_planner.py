@@ -332,6 +332,9 @@ RULES:
   nothing else to cast", "get the doubler down before next turn's counters") —
   a correct play that sounds random loses the user's trust.
 - VOICE CLARITY: voice_advice must state ONE concrete action in plain spoken language and name the specific creatures involved. For blocks: either name the block ("Block their <attacker> with your <blocker>") or, if not blocking, say "Don't block — take <N> from <attacker>". For attacks, name who swings. Never give self-contradictory advice (e.g. saying both "let it trade" and "take the hit"), and never reference a creature that is not on the board. When a "Computed optimal blocks:" line is present, your voice_advice must match it.
+- DESTRUCTIVE TARGETING (destroy, exile, deals damage, -N/-N): When choosing targets for a destructive spell or ability (e.g. Cityscape Leveler, removal, fight spells), you MUST target an OPPONENT permanent. NEVER target your own permanents (e.g. your own tokens or creatures) unless there are zero legal opponent targets on the board.
+- TUTORS & SEARCH LIBRARY: When searching your library for an X-cost tutor (e.g. Green Sun's Zenith, Finale of Devastation, Chord of Calling), you may ONLY select a card whose mana value (CMC) is less than or equal to X. Never propose a card whose mana value exceeds X.
+- LAND PLAY PRIORITY: On Precombat Main (Main1), if you have not played a land this turn and hold a land in hand, playing your land MUST be the FIRST step before casting spells that require that mana.
 - Output ONLY JSON matching the schema. No prose, no markdown, no commentary.
 
 ACTION_TYPE MAPPING (match Legal text → action_type):
@@ -367,6 +370,7 @@ TURN_PLAN_SYSTEM_PROMPT = """You are an MTG Arena turn planner. Given the game s
 
 RULES:
 - TRUST [OK] tags: MTGA's mana solver already verified those costs are payable.
+- LAND PLAY PRIORITY: On Precombat Main (Main1), if you hold an unplayed land in hand, playing your land MUST be Step 1 of your turn plan before casting spells.
 - Skip mana abilities, casting-time sub-decisions, and search prompts — list only user-visible plays (Play Land, Cast X, Activate X, Attack).
 - Output ONLY a JSON object of this exact shape (no prose, no markdown):
 {"turn_plan": {"steps": [{"action_type": "play_land|cast_spell|activate_ability|declare_attackers", "card_name": "string", "target_names": [], "rationale": "string (max 10 words)"}]}}
@@ -1414,17 +1418,8 @@ class ActionPlanner:
         if turn.get("active_player") != local_seat:
             return None
 
-        local_player = next(
-            (p for p in game_state.get("players", []) if p.get("seat_id") == local_seat),
-            None,
-        )
-        # If lands_played is missing, assume 1 (don't force a drop on
-        # incomplete state — the LLM path is safer than dropping the wrong
-        # land or double-tapping into an "already played" failure).
-        lands_played = (local_player or {}).get("lands_played", 1)
-        if lands_played != 0:
-            return None
-
+        # Whenever MTGA GRE offers "Play Land: <Card>" in legal_actions during our turn,
+        # prioritize playing the land.
         for legal in legal_actions:
             if legal.lower().startswith("play land:"):
                 return legal

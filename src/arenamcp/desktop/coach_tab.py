@@ -591,12 +591,19 @@ class CoachTab(QWidget):
 
         self._overlay_toggle_btn = QAction("In-Game Overlay", self)
         self._overlay_toggle_btn.setCheckable(True)
-        self._overlay_toggle_btn.setChecked(True)
-        self._overlay_toggle_btn.setToolTip("Show/hide the in-game overlay (pill + advice panel)")
+        self._overlay_toggle_btn.setChecked(False)
+        self._overlay_toggle_btn.setToolTip("Show/hide the in-game overlay (pill + card highlights)")
         self._overlay_toggle_btn.toggled.connect(lambda checked: self._match_overlay.set_enabled(checked))
         self._overflow_menu.addAction(self._overlay_toggle_btn)
 
-        reset_panel_act = self._overflow_menu.addAction("Reset Advice Panel")
+        self._advice_panel_toggle_btn = QAction("Show Advice Box", self)
+        self._advice_panel_toggle_btn.setCheckable(True)
+        self._advice_panel_toggle_btn.setChecked(False)
+        self._advice_panel_toggle_btn.setToolTip("Show/hide the floating in-match advice box over MTGA (off by default)")
+        self._advice_panel_toggle_btn.toggled.connect(lambda checked: self._match_overlay.set_advice_panel_visible(checked))
+        self._overflow_menu.addAction(self._advice_panel_toggle_btn)
+
+        reset_panel_act = self._overflow_menu.addAction("Reset Advice Panel Position")
         reset_panel_act.triggered.connect(self._reset_advice_panel)
 
         self._overflow_btn.setMenu(self._overflow_menu)
@@ -974,8 +981,11 @@ class CoachTab(QWidget):
             value = str(payload.get("value", ""))
             self._update_status(key, value)
             if key == "AUTOPILOT":
+                is_on = "ON" in value.upper()
                 with contextlib.suppress(Exception):
-                    self._draft_hud.update_autopilot("ON" in value)
+                    self._draft_hud.update_autopilot(is_on)
+                with contextlib.suppress(Exception):
+                    get_settings().set("autopilot_enabled", is_on)
         elif event_type == "error":
             self.append_log(f"ERROR: {payload.get('message', '')}", role="error")
         elif event_type == "subtask":

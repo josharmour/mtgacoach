@@ -9,7 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request as UrlRequest
 from urllib.request import urlopen
 
-from PySide6.QtCore import QEvent, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
@@ -42,6 +42,7 @@ from .performance_tab import PerformanceTab
 from .repair_tab import RepairTab
 from .runtime import RuntimeState, open_url, read_version
 from .theme import THEME_LABELS, apply_theme, available_themes, load_saved_theme, save_theme
+from .ui_watchdog import UiAnrWatchdog
 
 logger = logging.getLogger(__name__)
 
@@ -487,6 +488,19 @@ class MainWindow(QMainWindow):
         self._hotkeys.register("F5", self._on_force_advice)
         self._hotkeys.register("F10", self._on_replay_advice)
 
+        # Tier 1: UI Thread ANR Watchdog (checks Qt event loop responsiveness)
+        self._ui_watchdog = UiAnrWatchdog(
+            ping_fn=lambda cb: QTimer.singleShot(0, cb),
+            stall_threshold_s=1.5,
+        )
+        self._ui_watchdog.start()
+
+        # Tier 2: Subprocess Heartbeat & Auto-Recovery Monitor
+        self._last_subprocess_activity = time.time()
+        self._subprocess_watchdog_timer = QTimer(self)
+        self._subprocess_watchdog_timer.timeout.connect(self._check_subprocess_liveness)
+        self._subprocess_watchdog_timer.start(2000)
+
     def _on_toggle_frequency(self):
         self._hotkey_command.emit("toggle_frequency")
 
@@ -645,7 +659,21 @@ class MainWindow(QMainWindow):
             saved_mode = saved.get("ui_mode")
             if saved_mode == self._ui_mode and w and h:
                 if pos_x is not None and pos_y is not None:
-                    self.setGeometry(pos_x, pos_y, w, h)
+                    # Sanity check against screens to prevent title bar from being off-screen
+                    screen = (
+                        QGuiApplication.screenAt(QPoint(int(pos_x), max(0, int(pos_y))))
+                        or self.screen()
+                        or QGuiApplication.primaryScreen()
+                    )
+                    if screen is not None:
+                        avail = screen.availableGeometry()
+                        # Ensure the title bar and grab area are fully within the visible work area
+                        clamped_x = max(avail.left(), min(int(pos_x), avail.right() - 100))
+                        clamped_y = max(avail.top(), min(int(pos_y), avail.bottom() - 100))
+                    else:
+                        clamped_x = max(0, int(pos_x))
+                        clamped_y = max(0, int(pos_y))
+                    self.setGeometry(clamped_x, clamped_y, w, h)
                 else:
                     self.resize(w, h)
                 return
@@ -768,7 +796,8 @@ class MainWindow(QMainWindow):
         Triggered by the coach tab's Restart button — avoids sending a pipe
         command to a dying process (which wouldn't actually relaunch).
         """
-        flags = getattr(self, "_launch_flags", (False, False, False))
+        saved_ap = bool(self._settings.get("autopilot_enabled", False))
+        flags = getattr(self, "_launch_flags", (saved_ap, False, False))
         self.restart_coach(*flags)
 
     def _bump_theme_status(self) -> None:
@@ -784,22 +813,28 @@ class MainWindow(QMainWindow):
         self._current_theme = save_theme(self._current_theme)
 
         # Save window geometry so it reopens in the same spot.
-        geom = self.frameGeometry()
-        self._settings.set(
-            self._WINDOW_GEOMETRY_KEY,
-            {
-                "x": geom.x(),
-                "y": geom.y(),
-                "width": geom.width(),
-                "height": geom.height(),
-                "ui_mode": self._ui_mode,
-            },
-        )
+        if not self.isMaximized() and not self.isMinimized():
+            geom = self.frameGeometry()
+            self._settings.set(
+                self._WINDOW_GEOMETRY_KEY,
+                {
+                    "x": max(0, geom.x()),
+                    "y": max(0, geom.y()),
+                    "width": geom.width(),
+                    "height": geom.height(),
+                    "ui_mode": self._ui_mode,
+                },
+            )
 
         self._settings.set(
             "desktop_debug_logging",
             bool(self._debug_logging_action.isChecked()) if self._debug_logging_action else False,
         )
+        if hasattr(self, "_ui_watchdog") and self._ui_watchdog:
+            self._ui_watchdog.stop()
+        if hasattr(self, "_subprocess_watchdog_timer") and self._subprocess_watchdog_timer.isActive():
+            self._subprocess_watchdog_timer.stop()
+
         if self._process is not None:
             self.coach_tab.detach_process()
             self._process.stop()
@@ -808,6 +843,18 @@ class MainWindow(QMainWindow):
         self.coach_tab.shutdown()
         self._hotkeys.unregister_all()
         super().closeEvent(event)
+
+    def _on_subprocess_event(self, _payload: Any) -> None:
+        self._last_subprocess_activity = time.time()
+
+    def _check_subprocess_liveness(self) -> None:
+        if self._process is not None and self._process.is_running:
+            idle_s = time.time() - getattr(self, "_last_subprocess_activity", time.time())
+            if idle_s > 12.0:
+                logger.warning(f"Coach subprocess heartbeat timeout ({idle_s:.1f}s) — auto-recovering")
+                self._status_bar.showMessage("Coach subprocess stalled — auto-recovering...", 3000)
+                self._last_subprocess_activity = time.time()
+                self._restart_coach_keep_flags()
 
     def _auto_start(self) -> None:
         state = self.refresh_state()
@@ -819,7 +866,9 @@ class MainWindow(QMainWindow):
             self._show_repair_view()
             self._show_startup_prompt(state)
             return
-        self._start_coach(False, False, False)
+        saved_ap = bool(self._settings.get("autopilot_enabled", False))
+        self._launch_flags = (saved_ap, False, False)
+        self._start_coach(saved_ap, False, False)
 
     def _start_coach(self, autopilot: bool, dry_run: bool, afk: bool) -> None:
         if self._process is not None and self._process.is_running:
@@ -835,6 +884,8 @@ class MainWindow(QMainWindow):
 
         process = CoachProcess(self)
         process.exited.connect(self._on_process_exited)
+        process.event_received.connect(self._on_subprocess_event)
+        self._last_subprocess_activity = time.time()
         self._process = process
         self.coach_tab.attach_process(process)
 

@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
 from .audio import AudioPlayback
 from .runtime import find_python_executable, get_app_root, get_runtime_root
@@ -36,6 +36,12 @@ class TtsManager(QObject):
         self._say_process: subprocess.Popen | None = None
         self._last_text: str = ""
         self._last_speed: float = 1.0
+
+        # Tier 5: TTS Speech Worker Stall Watchdog (auto-restarts stuck worker)
+        self._busy_timer = QTimer(self)
+        self._busy_timer.setSingleShot(True)
+        self._busy_timer.setInterval(6000)
+        self._busy_timer.timeout.connect(self._on_busy_timeout)
 
     @property
     def is_running(self) -> bool:
@@ -207,6 +213,22 @@ class TtsManager(QObject):
         line = json.dumps(payload, ensure_ascii=False) + "\n"
         self._process.write(line.encode("utf-8", errors="replace"))
         self._busy = True
+        self._busy_timer.start()
+
+    def _on_busy_timeout(self) -> None:
+        if not self._busy:
+            return
+        self.error_line.emit("TTS worker stalled (>6.0s) — restarting worker...")
+        self._busy = False
+        last_text = self._last_text
+        last_speed = self._last_speed
+        self.shutdown()
+        try:
+            self.start()
+        except Exception as exc:
+            self.error_line.emit(f"Failed to restart TTS worker: {exc}")
+        if last_text:
+            self._speak_fallback(last_text, last_speed)
 
     def _on_stdout_ready(self) -> None:
         if self._process is None:
@@ -245,6 +267,7 @@ class TtsManager(QObject):
         if event_type == "ready":
             self._ready = True
             self._busy = False
+            self._busy_timer.stop()
             voice_name = str(payload.get("voice_name", "")).strip()
             speed = payload.get("speed")
             self.status_line.emit(
@@ -257,6 +280,7 @@ class TtsManager(QObject):
 
         if event_type == "rendered":
             self._busy = False
+            self._busy_timer.stop()
             generation = int(payload.get("generation", 0))
             path = str(payload.get("path", "")).strip()
             if generation == self._generation and path:

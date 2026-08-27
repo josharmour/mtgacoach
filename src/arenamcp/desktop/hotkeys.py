@@ -31,15 +31,7 @@ class HotkeyManager(QObject):
 
     def register(self, key: str, callback: Callable):
         self._callbacks[key] = callback
-        if os.name == "nt":
-            try:
-                import keyboard
-
-                keyboard.add_hotkey(key, callback)
-                return
-            except Exception as e:
-                logger.warning("Global hotkey '%s' failed (%s); using QShortcut fallback", key, e)
-        elif sys.platform == "darwin" and self._darwin_listener:
+        if sys.platform == "darwin" and self._darwin_listener:
             try:
                 if self._darwin_listener.register(key, callback):
                     return
@@ -61,13 +53,6 @@ class HotkeyManager(QObject):
             logger.warning("Hotkey '%s' not registered: parent is not a QWidget", key)
 
     def unregister_all(self):
-        if os.name == "nt":
-            try:
-                import keyboard
-
-                keyboard.unhook_all()
-            except Exception:
-                pass
         if self._darwin_listener:
             with contextlib.suppress(Exception):
                 self._darwin_listener.unregister_all()

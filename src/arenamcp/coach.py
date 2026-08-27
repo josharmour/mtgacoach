@@ -1277,8 +1277,8 @@ class CoachEngine(_AdvicePostprocessMixin):
                     "Order: prioritize killing the biggest threat",
                 ],
                 "search": lambda ctx: [
-                    "!!! DECISION: SEARCH LIBRARY !!!",
-                    "Choose: what you need most \u2014 land, removal, threat, or answer",
+                    f"!!! DECISION: SEARCH LIBRARY for {ctx.get('source_card', 'tutor')} !!!",
+                    "Choose: a valid legal card for this tutor. If this is an X-cost creature tutor (e.g. Green Sun's Zenith, Finale of Devastation, Chord of Calling), you may ONLY select a card with CMC <= X. Never propose a card whose CMC exceeds X.",
                 ],
                 "choose_starting_player": lambda ctx: [
                     "!!! DECISION: PLAY OR DRAW !!!",
@@ -1326,9 +1326,10 @@ class CoachEngine(_AdvicePostprocessMixin):
                     "pump, protection, value auras) or HARMS it (damage, "
                     "destroy, exile, debuff, tax). Helpful effects target "
                     "YOUR permanents (YOURS); harmful ones target the "
-                    "opponent's (OPP). Then pick the best candidate of that "
-                    "side. Never put a beneficial aura on an opponent's "
-                    "permanent."
+                    "opponent's (OPP). For destructive effects (e.g. Cityscape Leveler, "
+                    "removal spells, fight spells), ALWAYS target opponent permanents. "
+                    "NEVER target your own permanents unless there are zero opponent targets on the board. "
+                    "Never put a beneficial aura on an opponent's permanent."
                 )
             elif dec_type == "modal_choice":
                 lines.append(

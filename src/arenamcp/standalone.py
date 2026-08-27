@@ -1480,6 +1480,38 @@ class StandaloneCoach(_DeckAnalysisMixin, _PostMatchMixin, _DiagnosticsMixin):
         if callable(emit_draft_state) and isinstance(draft_state, dict):
             emit_draft_state(draft_state)
 
+        # Emit periodic heartbeat to desktop frontend
+        now_ts = time.time()
+        if now_ts - getattr(self, "_last_pipe_heartbeat_time", 0.0) >= 2.0:
+            self._last_pipe_heartbeat_time = now_ts
+            emit_hb = getattr(self.ui, "emit_heartbeat", None)
+            if callable(emit_hb):
+                emit_hb({"time": now_ts})
+
+        emit_mcts_tree = getattr(self.ui, "emit_mcts_tree", None)
+        if callable(emit_mcts_tree) and isinstance(game_state, dict) and game_state.get("turn"):
+            turn = game_state.get("turn", {})
+            sig = (
+                turn.get("turn_number"),
+                turn.get("phase"),
+                turn.get("step"),
+                turn.get("active_player"),
+                len(game_state.get("hand", [])),
+                len(game_state.get("battlefield", [])),
+                len(game_state.get("stack", [])),
+                game_state.get("pending_decision"),
+            )
+            if getattr(self, "_last_emitted_mcts_sig", None) != sig:
+                self._last_emitted_mcts_sig = sig
+                try:
+                    from arenamcp.mcts_evaluator import MCTSEvaluator
+
+                    mcts_eval = MCTSEvaluator.evaluate(game_state)
+                    if mcts_eval:
+                        emit_mcts_tree(mcts_eval.to_dict())
+                except Exception as exc:
+                    logger.debug(f"emit_mcts_tree failed: {exc}")
+
     def _reconcile_wedged_target(self, curr_state: dict[str, Any]) -> bool:
         """Reconcile a bridge-idle reading against a wedged target decision.
 
@@ -2904,35 +2936,18 @@ class StandaloneCoach(_DeckAnalysisMixin, _PostMatchMixin, _DiagnosticsMixin):
                                 if not advice and plan is not None and plan.actions:
                                     advice = str(plan.actions[0])
                                 if not advice:
-                                    advice = "No actionable play right now."
-
-                                # Emit structured actions for the match overlay
-                                # to highlight directly on MTGA cards.
-                                # Skip when autopilot is enabled — it will
-                                # execute the action itself, and leaving a
-                                # stale highlighted ring on the board after
-                                # the action fires is distracting.
-                                try:
-                                    if not self._autopilot_enabled and plan is not None:
-                                        emit = getattr(self.ui, "emit_suggested_actions", None)
-                                        if callable(emit):
-                                            emit(self._actions_to_event_payload(plan, curr_state))
-                                    else:
-                                        # Clear any residual highlights from
-                                        # an earlier advice-mode run.
-                                        clear = getattr(self.ui, "emit_suggested_actions", None)
-                                        if callable(clear):
-                                            clear([])
-                                except Exception as exc:
-                                    logger.debug(f"emit_suggested_actions failed: {exc}")
+                                    advice = self._coach.get_advice(
+                                        curr_state, trigger=trigger, style=self.advice_style
+                                    )
+                                if advice and advice.strip().lower().rstrip(".").startswith("no actionable play"):
+                                    advice = None
                             else:
                                 advice = self._coach.get_advice(
                                     curr_state, trigger=trigger, style=self.advice_style
                                 )
+                                if advice and advice.strip().lower().rstrip(".").startswith("no actionable play"):
+                                    advice = None
                             logger.info(f"ADVICE: {advice}")
-                            # Advice mode: surface the coach's (possibly just
-                            # reformed) strategic plan on the UI strategy card.
-                            self._emit_coach_game_plan()
 
                             # STALENESS CHECK: Re-poll game state after the LLM call.
                             # Only discard advice when the TURN changed (whole turn
@@ -3354,7 +3369,9 @@ class StandaloneCoach(_DeckAnalysisMixin, _PostMatchMixin, _DiagnosticsMixin):
             if self._thinking_model == "":
                 return  # Previously determined unavailable
 
-            logger.info(f"Win plan worker started (thinking model: {self._thinking_model})")
+            # Stagger background win plan by 3s to yield network/proxy priority
+            # to instant turn-opening tactical advice
+            time.sleep(3.0)
 
             from arenamcp.coach import ProxyBackend
 
@@ -3363,23 +3380,15 @@ class StandaloneCoach(_DeckAnalysisMixin, _PostMatchMixin, _DiagnosticsMixin):
             library_summary = self._compute_library_summary(game_state)
             turn_num = game_state.get("turn", {}).get("turn_number", 0)
 
-            # Submit win-in-2 and win-in-3 concurrently (no win-in-4)
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-            futures_ordered = []
+            # Process 2-turn plan first; if viable, skip 3-turn plan to conserve bandwidth
             for n in (2, 3):
-                f = executor.submit(
-                    self._coach.get_win_plan,
-                    game_state,
-                    n,
-                    library_summary,
-                    backend=thinking_backend,
-                )
-                futures_ordered.append((n, f))
-
-            # Process in order (prefer shortest viable plan: 2-turn over 3-turn)
-            for n, future in futures_ordered:
                 try:
-                    plan = future.result()
+                    plan = self._coach.get_win_plan(
+                        game_state,
+                        n,
+                        library_summary,
+                        backend=thinking_backend,
+                    )
                 except Exception as e:
                     logger.warning(f"Win-in-{n} future failed: {e}")
                     continue

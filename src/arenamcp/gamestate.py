@@ -2938,7 +2938,14 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
         parser.register_handler('GreToClientEvent', handler)
     """
 
-    def handler(payload: dict) -> None:
+    def handler(payload: Any) -> None:
+        if not isinstance(payload, dict):
+            if hasattr(payload, "to_dict") and callable(getattr(payload, "to_dict", None)):
+                payload = payload.to_dict()
+            elif isinstance(payload, GameState):
+                return
+            else:
+                return
         # GreToClientEvent contains greToClientMessages array
         gre_event = payload.get("greToClientEvent", {})
         if not isinstance(gre_event, dict):

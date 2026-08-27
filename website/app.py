@@ -1875,6 +1875,52 @@ async def admin_test_provider(request: Request, _=Depends(_require_admin)):
 
 
 # =========================================================================
+#  MageZero MCTS Neural Inference Proxy Endpoints
+# =========================================================================
+
+MAGEZERO_UPSTREAM_URL = os.environ.get("MAGEZERO_UPSTREAM_URL", "http://10.0.0.10:50052")
+
+
+@app.get("/magezero/healthz")
+async def magezero_health():
+    """Proxy health check to upstream MageZero neural inference engine."""
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        try:
+            resp = await client.get(f"{MAGEZERO_UPSTREAM_URL.rstrip('/')}/healthz")
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                media_type=resp.headers.get("content-type", "application/json"),
+            )
+        except Exception as e:
+            return JSONResponse({"status": "unavailable", "error": str(e)}, status_code=503)
+
+
+@app.post("/magezero/evaluate")
+async def magezero_evaluate(request: Request):
+    """Proxy neural tensor evaluation requests to upstream MageZero."""
+    # Check subscriber license or valid trial
+    _require_license(request)
+    body = await request.body()
+    content_type = request.headers.get("content-type", "application/x-msgpack")
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        try:
+            resp = await client.post(
+                f"{MAGEZERO_UPSTREAM_URL.rstrip('/')}/evaluate",
+                content=body,
+                headers={"Content-Type": content_type, "User-Agent": "MtgACoachGateway/2.7"},
+            )
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                media_type=resp.headers.get("content-type", "application/x-msgpack"),
+            )
+        except Exception as e:
+            logger.warning(f"MageZero upstream evaluate error: {e}")
+            raise HTTPException(502, f"MageZero upstream unavailable: {e}")
+
+
+# =========================================================================
 #  Health check
 # =========================================================================
 

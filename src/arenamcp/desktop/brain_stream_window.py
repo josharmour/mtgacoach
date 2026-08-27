@@ -410,16 +410,8 @@ class BrainStreamWindow(QMainWindow):
                     bf_lines.append(f"• {obj}")
         self.battlefield_view.setPlainText("\n".join(bf_lines) if bf_lines else "(Battlefield empty)")
 
-        # 4. Live MCTS Search & Outcome Tree Evaluation (Unconditional on every tick)
+        # 4. Live MCTS Search & Outcome Tree Evaluation (Pushed asynchronously via events)
         mcts_payload = state_data.get("mcts_tree")
-        if not mcts_payload:
-            try:
-                from arenamcp.mcts_evaluator import MCTSEvaluator
-
-                mcts_payload = MCTSEvaluator.evaluate(state_data).to_dict()
-            except Exception:
-                mcts_payload = None
-
         if mcts_payload and isinstance(mcts_payload, dict):
             self.update_mcts_tree(mcts_payload)
 

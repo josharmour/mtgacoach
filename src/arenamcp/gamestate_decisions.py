@@ -472,12 +472,21 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         return False
 
     elif msg_type == "GREMessageType_CastingTimeOptionsReq":
-        _set_simple_decision(
-            game_state,
-            "Choose Casting Option",
-            "casting_time_options",
-            dict(msg.get("castingTimeOptionsReq", {})),
-        )
+        req = dict(msg.get("castingTimeOptionsReq", {}))
+        source_id = _coerce_int(req.get("sourceId", 0), 0)
+        source_ctx = _resolve_request_source_context(game_state, source_id)
+        source_card = source_ctx.get("source_card") or ""
+        label = f"Choose Casting Option ({source_card})" if source_card else "Choose Casting Option"
+        game_state.pending_decision = label
+        game_state.decision_seat_id = game_state.local_seat_id
+        game_state.decision_timestamp = _time.time()
+        game_state.decision_context = {
+            "type": "casting_time_options",
+            "source_id": source_id,
+            "source_card": source_card,
+            "raw": req,
+            **source_ctx,
+        }
         return False
 
     elif msg_type == "GREMessageType_SelectCountersReq":
@@ -778,13 +787,14 @@ def _handle_actions_available(game_state: "GameState", msg: dict) -> bool:
                     name = info.get("name", "Spell")
                 except Exception:
                     pass
-            # Include castability from AutoTap, manaPaymentOptions, or RulesEngine affordability
-            castable = (
-                action.get("autoTapSolution") is not None
-                or action.get("manaPaymentOptions") is not None
+            # Include castability from AutoTap or manaPaymentOptions provided by the GRE
+            has_autotap = bool(
+                (isinstance(action.get("autoTapSolution"), dict) and action.get("autoTapSolution"))
+                or (isinstance(action.get("manaPaymentOptions"), list) and action.get("manaPaymentOptions"))
                 or action.get("manaPaymentOptionsCount", 0) > 0
             )
-            if not castable and info.get("mana_cost"):
+            castable = has_autotap
+            if not castable and not game_state.get("_bridge_connected", False) and info.get("mana_cost"):
                 try:
                     from arenamcp.rules_engine import RulesEngine
 
@@ -793,7 +803,8 @@ def _handle_actions_available(game_state: "GameState", msg: dict) -> bool:
                             _build_rules_engine_snapshot(game_state),
                             game_state.local_seat_id,
                         )
-                    castable = RulesEngine._can_afford(info.get("mana_cost", ""), rules_mana_pool)
+                    if RulesEngine._can_afford(info.get("mana_cost", ""), rules_mana_pool):
+                        castable = True
                 except Exception:
                     logger.debug("RulesEngine affordability fallback failed", exc_info=True)
 
@@ -809,9 +820,9 @@ def _handle_actions_available(game_state: "GameState", msg: dict) -> bool:
                     name = info.get("name", "")
                 except Exception:
                     pass
-            payable = (
-                action.get("autoTapSolution") is not None
-                or action.get("manaPaymentOptions") is not None
+            payable = bool(
+                (isinstance(action.get("autoTapSolution"), dict) and action.get("autoTapSolution"))
+                or (isinstance(action.get("manaPaymentOptions"), list) and action.get("manaPaymentOptions"))
                 or action.get("manaPaymentOptionsCount", 0) > 0
             )
             # The GRE offers an activation whenever the ability is legal to

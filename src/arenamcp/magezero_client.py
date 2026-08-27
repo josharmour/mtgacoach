@@ -17,9 +17,24 @@ logger = logging.getLogger(__name__)
 
 # Fallback hosts to check for live MageZero inference
 _DEFAULT_HOSTS = [
-    os.environ.get("MAGEZERO_SERVER_URL", "http://127.0.0.1:50052"),
+    os.environ.get("MAGEZERO_SERVER_URL", "").strip(),
+    "https://api.mtgacoach.com/magezero",
+    "http://127.0.0.1:50052",
     "http://10.0.0.10:50052",
 ]
+_DEFAULT_HOSTS = [h for h in _DEFAULT_HOSTS if h]
+
+
+def _get_auth_headers() -> dict[str, str]:
+    headers = {"User-Agent": "MtgACoach/2.7"}
+    try:
+        from arenamcp.settings import get_settings
+        key = get_settings().get("license_key") or os.environ.get("MTGACOACH_LICENSE_KEY", "")
+        if key:
+            headers["Authorization"] = f"Bearer {key.strip()}"
+    except Exception:
+        pass
+    return headers
 
 
 class MageZeroClient:
@@ -37,12 +52,13 @@ class MageZeroClient:
         if cls._is_healthy and (now - cls._last_health_check) < 5.0:
             return True
 
+        headers = _get_auth_headers()
         for host in _DEFAULT_HOSTS:
             try:
                 url = f"{host.rstrip('/')}/healthz"
-                req = urllib.request.Request(url, headers={"User-Agent": "MtgACoach/2.7"})
+                req = urllib.request.Request(url, headers=headers)
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    if resp.status == 200:
+                    if resp.status in (200, 204):
                         cls._active_host = host
                         cls._is_healthy = True
                         cls._last_health_check = now
@@ -83,10 +99,12 @@ class MageZeroClient:
                 return None
 
             payload = msgpack.packb({"indices": indices, "offsets": [0]}, use_bin_type=True)
+            headers = _get_auth_headers()
+            headers["Content-Type"] = "application/x-msgpack"
             req = urllib.request.Request(
                 url,
                 data=payload,
-                headers={"Content-Type": "application/x-msgpack", "User-Agent": "MtgACoach/2.7"},
+                headers=headers,
             )
 
             with urllib.request.urlopen(req, timeout=0.8) as resp:

@@ -173,18 +173,34 @@ def main() -> int:
         print(f"mtgacoach {__version__}")
         return 0
 
+    # Acquire singleton lock before initializing Qt or spawning background threads
+    if not _acquire_single_instance_lock():
+        _configure_logging()
+        _write_log("desktop start skipped: another instance is already running")
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                user32 = ctypes.windll.user32
+                SW_RESTORE = 9
+                for title in ("MTGA Coach", "mtgacoach", "mtgacoach (Compact)"):
+                    hwnd = user32.FindWindowW(None, title)
+                    if hwnd:
+                        user32.ShowWindow(hwnd, SW_RESTORE)
+                        user32.SetForegroundWindow(hwnd)
+                        break
+            except Exception:
+                pass
+        return 0
+
     try:
-        from PySide6.QtWidgets import QApplication, QMessageBox
+        from PySide6.QtWidgets import QApplication
     except ImportError as exc:  # pragma: no cover - runtime dependency
         raise SystemExit("PySide6 is not installed. Install it with `pip install -e .[desktop]`.") from exc
 
     _configure_logging()
 
     app = QApplication(sys.argv)
-    if not _acquire_single_instance_lock():
-        _write_log("desktop start skipped: another instance is already running")
-        QMessageBox.information(None, "mtgacoach", "mtgacoach is already running.")
-        return 0
     app.aboutToQuit.connect(_release_single_instance_lock)
 
     from .main_window import MainWindow

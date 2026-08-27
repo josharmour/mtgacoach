@@ -5,7 +5,7 @@ import logging
 import sys
 from typing import Any
 
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QEvent, QTimer, Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QPushButton,
+    QSplitter,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
@@ -65,6 +66,10 @@ class CompactCoachPanel(CoachTab):
         self._activity_expanded = True
         self._game_plan: dict[str, Any] = {}
         self._latest_advice: tuple[str, str] | None = None
+        self._subtitle_render_timer = QTimer(self)
+        self._subtitle_render_timer.setSingleShot(True)
+        self._subtitle_render_timer.setInterval(25)
+        self._subtitle_render_timer.timeout.connect(self._render_subtitle_feed_now)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -83,6 +88,11 @@ class CompactCoachPanel(CoachTab):
         self.status_dots.setTextFormat(Qt.RichText)
         self.status_dots.setAlignment(Qt.AlignCenter)
         root.addWidget(self.status_dots)
+
+        # Main content splitter: lets the user drag-resize between MCTS tree and Activity Log
+        self.main_splitter = QSplitter(Qt.Vertical)
+        self.main_splitter.setObjectName("compactSplitter")
+        self.main_splitter.setChildrenCollapsible(False)
 
         # MCTS Decision Tree & Win Expectancy Panel
         self._mcts_expanded = True
@@ -103,11 +113,10 @@ class CompactCoachPanel(CoachTab):
         self.mcts_view = QTextEdit()
         self.mcts_view.setObjectName("mctsView")
         self.mcts_view.setReadOnly(True)
-        self.mcts_view.setMinimumHeight(110)
-        self.mcts_view.setMaximumHeight(210)
-        mcts_layout.addWidget(self.mcts_view)
+        self.mcts_view.setMinimumHeight(60)
+        mcts_layout.addWidget(self.mcts_view, stretch=1)
 
-        root.addWidget(self.mcts_container)
+        self.main_splitter.addWidget(self.mcts_container)
 
         # Spoken Advice Activity History (Subtitle Track)
         activity = QWidget()
@@ -129,9 +138,15 @@ class CompactCoachPanel(CoachTab):
         self.log_view = QTextEdit()
         self.log_view.setObjectName("logView")
         self.log_view.setReadOnly(True)
-        activity_layout.addWidget(self.log_view)
+        self.log_view.setMinimumHeight(60)
+        activity_layout.addWidget(self.log_view, stretch=1)
 
-        root.addWidget(activity, stretch=1)
+        self.main_splitter.addWidget(activity)
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setSizes([200, 220])
+
+        root.addWidget(self.main_splitter, stretch=1)
 
         # Controls: Minimal Audio-Primary Buttons
         def _btn(label, tooltip, *, command=None, on_click=None, object_name=None):
@@ -342,7 +357,7 @@ class CompactCoachPanel(CoachTab):
         calib_action.toggled.connect(lambda checked: self._match_overlay.set_calibration(checked))
         overlay_action = menu.addAction("In-Game Overlay")
         overlay_action.setCheckable(True)
-        overlay_action.setChecked(True)
+        overlay_action.setChecked(False)
         overlay_tooltip = "Show/hide the in-game overlay (pill + advice panel)"
         if sys.platform.startswith("linux"):
             overlay_tooltip += (
@@ -418,9 +433,12 @@ class CompactCoachPanel(CoachTab):
 
     def _render_log_line(self, role: str, text: str) -> None:
         if not self._show_debug_logging:
-            # Subtitle mode renders the whole feed newest-first instead of
-            # appending chronologically.
-            self._render_subtitle_feed()
+            # Subtitle mode renders the whole feed newest-first; debounce with
+            # timer so rapid bursts of log lines don't block the Qt UI thread.
+            if hasattr(self, "_subtitle_render_timer"):
+                self._subtitle_render_timer.start()
+            else:
+                self._render_subtitle_feed_now()
             return
         if role == "spoken":
             # Debug mode: keep chronology, but make spoken lines stand out.
@@ -442,18 +460,24 @@ class CompactCoachPanel(CoachTab):
         if self._show_debug_logging:
             super()._rerender_log()
             return
-        self._render_subtitle_feed()
+        self._render_subtitle_feed_now()
 
     def _render_subtitle_feed(self) -> None:
+        if hasattr(self, "_subtitle_render_timer"):
+            self._subtitle_render_timer.start()
+        else:
+            self._render_subtitle_feed_now()
+
+    def _render_subtitle_feed_now(self) -> None:
         """Rebuild the subtitle view newest-first: the latest spoken line sits
         at the top and older ones flow down and off the bottom.
         """
         colors = self._LOG_COLORS
         muted = self._theme_tokens()["muted"]
         blocks: list[str] = []
-        for role, text in reversed(self._all_log_lines):
-            if not self._is_role_visible(role):
-                continue
+        visible_entries = [entry for entry in self._all_log_lines if self._is_role_visible(entry[0])]
+        # Limit to the most recent 25 visible items so setHtml executes in < 0.2ms
+        for role, text in reversed(visible_entries[-25:]):
             escaped = html.escape(text).replace("\n", "<br>")
             if role == "spoken":
                 blocks.append(
@@ -524,10 +548,13 @@ class CompactCoachPanel(CoachTab):
     def _update_status(self, key: str, value: str) -> None:
         super()._update_status(key, value)
         if key.upper() == "AUTOPILOT":
+            is_on = "ON" in value.upper()
             button = self._buttons.get("toggle_autopilot")
             if button is not None:
-                button.setProperty("apOn", "true" if "ON" in value.upper() else "false")
+                button.setProperty("apOn", "true" if is_on else "false")
                 self._repolish(button)
+            with contextlib.suppress(Exception):
+                get_settings().set("autopilot_enabled", is_on)
 
     # -- MCTS Outcome Tree ---------------------------------------------------
 
@@ -740,14 +767,6 @@ class CompactCoachPanel(CoachTab):
         # classic renderer.
         self._last_game_state_payload = data
         self._refresh_turn_strip(data)
-        try:
-            from arenamcp.mcts_evaluator import MCTSEvaluator
-
-            mcts_payload = MCTSEvaluator.evaluate(data)
-            if mcts_payload:
-                self._update_mcts_tree(mcts_payload.to_dict())
-        except Exception as e:
-            logger.debug(f"MCTS update in compact view failed: {e}")
 
     def refresh_game_state_view(self) -> None:
         if self._last_game_state_payload:
@@ -1086,6 +1105,15 @@ QTextEdit#gameStateView, QTextEdit#logView, QTextEdit#mctsView {{
     border: 1px solid {t["border"]};
     border-radius: 8px;
     background: {t["bg"]};
+}}
+QSplitter#compactSplitter::handle {{
+    background: {t["border"]};
+    height: 4px;
+    margin: 2px 0px;
+    border-radius: 2px;
+}}
+QSplitter#compactSplitter::handle:hover {{
+    background: {accent};
 }}
 QPushButton#apButton {{
     font-weight: 700;
