@@ -1,21 +1,23 @@
-"""``enable_thinking=False`` must actually reach a vLLM/DeepSeek server.
+"""The real-time coach path must control GLM-5.3's thinking explicitly.
 
-The gateway's ds4-v9 vLLM server is launched with
-``--default-chat-template-kwargs.thinking=true`` and ``.reasoning_effort=high``,
-so a request that says nothing about thinking gets extended reasoning. The
-real-time coach path constructs ``ProxyBackend`` with ``enable_thinking=False``
-(the default) and *intends* no reasoning, but the disable branch only ever spoke
-the Ollama (``think``), Gemini and GPT-5 (``reasoning_effort``) dialects — none of
-which override a vLLM chat-template default. So the intent was silently a no-op.
+The engine now behind the dsv4/deepseek-v4-flash aliases is GLM-5.3-Flash
+(serve-glm53-blackwell.sh), launched with
+``--default-chat-template-kwargs.thinking=true`` and
+``.reasoning_effort=high``. GLM ALWAYS deliberates: with ``thinking:false``
+the reasoning is NOT separated into ``reasoning_content`` and leaks inline
+into the spoken advice (observed live 2026-08-28/29 as the model echoing the
+QUICK-mode prompt instructions into the TTS text). With
+``thinking=true, reasoning_effort=low`` the glm45 reasoning parser separates
+the deliberation and the content is a clean short command.
 
-Measured on the live gateway with the real 21.5k-char coach prompt captured in
-``bug_reports/bug_20260729_225652.json`` (n=5 each):
+Interleaved bench through the gateway (2026-08-29, ~25k-char prompts):
+high-effort default 3-11s; thinking=false fragmented/junk content;
+thinking=true + effort=low ~0.2-0.9s clean (one in four calls returned empty
+content, which coach-side salvage covers).
 
-    OLD  mean 2772ms  median 2235ms  max 5749ms
-    NEW  mean  506ms  median  384ms  max 1095ms
-
-and in the field log, 79 calls returned EMPTY visible content because every token
-went to reasoning — which is how chain-of-thought reached the TTS.
+CAVEAT: if a real DeepSeek-dialect dsv4 container returns to :8002 the
+low-effort kwargs would slow it (thinking=true was the 2026-07-29 p50 6134ms
+bug — see test file history); re-gate on the served engine then.
 """
 
 from __future__ import annotations
@@ -50,16 +52,18 @@ def _run(thinking: bool, model: str = "deepseek-v4-flash") -> None:
     be.complete("sys", "user", max_tokens=256)
 
 
-def test_thinking_disabled_is_sent_as_chat_template_kwargs(captured):
-    """THE regression test: the disable must be expressed in vLLM's dialect."""
+def test_disabled_sends_thinking_true_with_low_effort(captured):
+    """THE regression test: coach's quick path must run GLM at low effort."""
     _run(thinking=False)
     extra = captured.get("extra_body") or {}
-    assert "chat_template_kwargs" in extra, (
-        "enable_thinking=False must send chat_template_kwargs; without it a vLLM "
-        "server launched with --default-chat-template-kwargs.thinking=true keeps "
-        "reasoning and the disable is a silent no-op"
+    ctk = extra.get("chat_template_kwargs") or {}
+    assert ctk.get("thinking") is True, (
+        "GLM deliberates regardless; thinking=true keeps the reasoning in "
+        "reasoning_content (separated) instead of leaking into spoken advice"
     )
-    assert extra["chat_template_kwargs"]["thinking"] is False
+    assert ctk.get("reasoning_effort") == "low", (
+        "the engine default is reasoning_effort=high — 3-11s coach latency"
+    )
 
 
 def test_thinking_enabled_is_sent_explicitly(captured):
@@ -69,11 +73,12 @@ def test_thinking_enabled_is_sent_explicitly(captured):
     assert extra.get("chat_template_kwargs", {}).get("thinking") is True
 
 
-def test_ollama_think_flag_still_sent_when_disabled(captured):
-    """Pre-existing Ollama control must not regress."""
+def test_ollama_think_flag_no_longer_sent(captured):
+    """No alias routes to Ollama anymore; `think:false` would contradict
+    chat_template_kwargs.thinking=true on GLM."""
     _run(thinking=False)
     extra = captured.get("extra_body") or {}
-    assert extra.get("think") is False
+    assert "think" not in extra
 
 
 @pytest.mark.parametrize("model", ["deepseek-v4-flash", "gemma-4-12b-it", "qwen-uncensored"])
@@ -81,7 +86,9 @@ def test_disable_applies_across_gateway_models(captured, model):
     """Every model served by the gateway goes through the same vLLM template."""
     _run(thinking=False, model=model)
     extra = captured.get("extra_body") or {}
-    assert extra["chat_template_kwargs"]["thinking"] is False
+    ctk = extra["chat_template_kwargs"]
+    assert ctk["thinking"] is True
+    assert ctk["reasoning_effort"] == "low"
 
 
 def test_claude_thinking_config_unaffected(captured):

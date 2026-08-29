@@ -421,22 +421,27 @@ class ProxyBackend:
                 params["max_tokens"] = max_tokens
 
             extra = {}
-            # vLLM / DeepSeek dialect. The gateway's ds4-v9 server is launched
-            # with `--default-chat-template-kwargs.thinking=true` and
-            # `.reasoning_effort=high`, so a request that says nothing about
-            # thinking gets EXTENDED reasoning on the real-time coaching path.
-            # Measured cost on the live gateway (2026-07-29, standalone.log,
-            # n=29 advice calls): p50 6134ms, 52% over 5s, and 79 calls whose
-            # visible content came back EMPTY because every token went to
-            # reasoning — which is how chain-of-thought reached the TTS in bug
-            # 20260729_225652. Same prompt A/B'd against the gateway:
-            #   default (thinking=high): 0.82s, 120 completion tokens, content EMPTY
-            #   chat_template_kwargs.thinking=false: 0.20s, 15 tokens, real advice
-            # `think` below is the Ollama spelling; neither it nor
-            # reasoning_effort overrides a vLLM chat-template default, so this
-            # key is required — without it enable_thinking=False is silently a
-            # no-op against this server.
-            extra["chat_template_kwargs"] = {"thinking": bool(self.enable_thinking)}
+            # GLM-5.3 (the engine now behind the dsv4/deepseek-v4-flash
+            # aliases via serve-glm53-blackwell.sh) ALWAYS deliberates: with
+            # `thinking:false` the reasoning is not separated into
+            # reasoning_content and leaks inline into the spoken advice —
+            # observed live 2026-08-28/29 as the model echoing the QUICK-mode
+            # prompt instructions ("One sentence under 15 words") into the
+            # TTS text, plus fragmented content. With thinking=true +
+            # reasoning_effort=low the glm45 reasoning parser separates the
+            # deliberation (the coach never reads reasoning_content) and the
+            # visible content is a clean short command; interleaved bench
+            # through the gateway (2026-08-29): ~0.2-0.4s warm, ~2.9s cold
+            # 25k-char prompt, vs 3-11s on high-effort defaults.
+            # enable_thinking=True keeps plain {"thinking": true} like before.
+            # CAVEAT: if a real DeepSeek-dialect dsv4 container returns to
+            # :8002, the low-effort kwargs hurt it (dsv4 slowed with
+            # thinking=true — the 2026-07-29 p50 6134ms bug); re-gate on the
+            # served engine then.
+            if self.enable_thinking:
+                extra["chat_template_kwargs"] = {"thinking": True}
+            else:
+                extra["chat_template_kwargs"] = {"thinking": True, "reasoning_effort": "low"}
             if self.enable_thinking:
                 if "claude" in model_lower:
                     extra["thinking"] = {"type": "enabled", "budget_tokens": 8000}
@@ -452,7 +457,9 @@ class ProxyBackend:
                     params["reasoning_effort"] = "medium"
                     params["verbosity"] = "medium"
             else:
-                extra["think"] = False
+                # (legacy `think: false` Ollama spelling removed — no alias
+                # routes to Ollama anymore, and `think: false` would
+                # contradict chat_template_kwargs.thinking=true on GLM)
                 if "claude" in model_lower:
                     extra["thinking"] = {"type": "disabled"}
                 if is_gemini:
