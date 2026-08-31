@@ -783,6 +783,15 @@ class CompactCoachPanel(CoachTab):
         # classic renderer.
         self._last_game_state_payload = data
         self._refresh_turn_strip(data)
+        mcts = data.get("mcts_tree")
+        if isinstance(mcts, dict):
+            self._update_mcts_tree(mcts)
+        else:
+            turn = data.get("turn") if isinstance(data.get("turn"), dict) else {}
+            self._update_mcts_tree({
+                "turn_number": turn.get("turn_number") or data.get("turn_number", 1),
+                "phase": turn.get("phase") or data.get("phase", "Main1"),
+            })
 
     def refresh_game_state_view(self) -> None:
         if self._last_game_state_payload:

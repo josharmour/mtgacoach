@@ -185,8 +185,8 @@ class CoachTab(QWidget):
         try:
             self._match_overlay.clear_actions()
             self._match_overlay.on_match_active(False)
-        except Exception:
-            pass
+        except (RuntimeError, AttributeError) as exc:
+            logger.debug("Failed to reset match overlay on detach: %s", exc)
         if self._process is None:
             return
 
@@ -212,8 +212,8 @@ class CoachTab(QWidget):
                     if not process.waitForFinished(2000):
                         process.kill()
                         process.waitForFinished(1000)
-            except Exception:
-                pass
+            except (RuntimeError, OSError) as exc:
+                logger.debug("Self-play process shutdown exception: %s", exc)
         self._tts.shutdown()
         self._draft_hud.close()
         self._card_overlay.close()
@@ -261,7 +261,7 @@ class CoachTab(QWidget):
             view = getattr(self, "log_view", None)
             pal = view.palette() if view is not None else self.palette()
             return pal.color(QPalette.Base).lightness() < 128
-        except Exception:
+        except (AttributeError, RuntimeError):
             return True
 
     @property
@@ -278,8 +278,8 @@ class CoachTab(QWidget):
                 self._apply_turn_plan_style()
                 if self._last_game_state_payload:
                     self.refresh_game_state_view()
-            except Exception:
-                pass
+            except (RuntimeError, AttributeError) as exc:
+                logger.debug("Failed to restyle on palette change: %s", exc)
 
     def append_log(self, text: str, role: str = "default") -> None:
         # Keep the full history (role + text) so we can re-render when the
@@ -1014,8 +1014,8 @@ class CoachTab(QWidget):
                         or has_players
                     )
                     self._match_overlay.on_match_active(in_match)
-                except Exception:
-                    pass
+                except (RuntimeError, AttributeError) as exc:
+                    logger.debug("Match overlay on_match_active failed: %s", exc)
         elif event_type == "suggested_actions":
             actions = payload.get("actions") or []
             try:
@@ -1145,8 +1145,8 @@ class CoachTab(QWidget):
             python_exe, _source = find_python_executable()
             if python_exe:
                 return python_exe
-        except Exception:
-            pass
+        except (ImportError, RuntimeError, OSError) as exc:
+            logger.debug("Failed to resolve python executable for self-play: %s", exc)
         return sys.executable
 
     def _launch_self_play_process(self) -> None:
@@ -2432,7 +2432,8 @@ class CoachTab(QWidget):
 
         try:
             mana_pool = RulesEngine._get_mana_pool(game_state, local_seat)
-        except Exception:
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            logger.debug("Mana pool calculation exception: %s", exc)
             return "neutral"
         return "castable" if RulesEngine._can_afford(mana_cost, mana_pool) else "uncastable"
 

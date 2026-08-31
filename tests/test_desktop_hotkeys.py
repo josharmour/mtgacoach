@@ -34,40 +34,39 @@ def parent_widget(qapp):
 
 
 @pytest.fixture
-def manager(parent_widget, monkeypatch):
-    monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr("os.name", "posix")
+def manager(parent_widget):
     mgr = HotkeyManager(parent=parent_widget)
     mgr._darwin_listener = None
     yield mgr
     mgr.unregister_all()
 
 
-def test_register_windows_uses_keyboard(manager, keyboard_stub):
+def test_register_creates_qshortcut(manager, parent_widget):
     callback = MagicMock()
-    with patch("os.name", "nt"):
-        manager.register("F3", callback)
-    assert keyboard_stub.add_hotkey.call_count == 1
-    assert keyboard_stub.add_hotkey.call_args[0][0] == "F3"
-
-
-def test_register_posix_creates_qshortcut(manager, parent_widget):
-    manager.register("F4", MagicMock())
+    manager.register("F4", callback)
     assert "F4" in manager._shortcuts
     keys = [s.key().toString() for s in parent_widget.findChildren(QShortcut)]
     assert "F4" in keys
 
 
-def test_unregister_all_windows_unhooks_keyboard(manager, keyboard_stub):
-    with patch("os.name", "nt"):
-        manager.unregister_all()
-    keyboard_stub.unhook_all.assert_called_once()
+def test_register_darwin_delegates_to_listener(parent_widget, monkeypatch):
+    monkeypatch.setattr("arenamcp.desktop.hotkeys.sys.platform", "darwin")
+    mgr = HotkeyManager(parent=parent_widget)
+    fake_listener = MagicMock()
+    fake_listener.register.return_value = True
+    mgr._darwin_listener = fake_listener
+
+    callback = MagicMock()
+    mgr.register("F3", callback)
+    fake_listener.register.assert_called_once_with("F3", callback)
+    assert "F3" not in mgr._shortcuts
 
 
-def test_unregister_all_posix_clears_shortcuts(manager, parent_widget):
+def test_unregister_all_clears_shortcuts(manager, parent_widget):
     manager.register("F5", MagicMock())
     assert manager._shortcuts
     manager.unregister_all()
     assert not manager._shortcuts
     for shortcut in parent_widget.findChildren(QShortcut):
         assert not shortcut.isEnabled()
+

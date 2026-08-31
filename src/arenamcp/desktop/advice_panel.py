@@ -157,9 +157,9 @@ class AdvicePanelWindow(QWidget):
             from arenamcp.desktop.runtime import get_runtime_root
 
             root = Path(get_runtime_root())
-        except Exception:
+        except (ImportError, RuntimeError, OSError):
             root = Path.home() / ".mtgacoach"
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(OSError):
             root.mkdir(parents=True, exist_ok=True)
         return root / "overlay_calibration.json"
 

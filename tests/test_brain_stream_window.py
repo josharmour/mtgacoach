@@ -302,6 +302,11 @@ def test_draw_odds_placeholder_is_neutral(window):
     window.update_game_state(make_snapshot(draw_odds={"Land": "42.5%"}))
     assert "Land: 42.5%" in window.draw_odds_view.toPlainText()
 
-    # When draw_odds is absent, MCTS decisions summary is shown
+    # When draw_odds and mcts are absent, neutral placeholder is shown
     window.update_game_state(make_snapshot())
+    assert window.draw_odds_view.toPlainText() in ("—", "-", "")
+
+    # When mcts_tree is provided without draw_odds, summary is shown
+    window.update_game_state(make_snapshot(mcts_tree={"root_win_probability": 0.65, "total_simulations": 500}))
     assert "Win Expectancy:" in window.draw_odds_view.toPlainText()
+

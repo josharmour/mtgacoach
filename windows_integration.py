@@ -294,6 +294,28 @@ def _venv_python_candidates() -> list[Path]:
     return candidates
 
 
+_PYTHON_PROBE_CACHE: dict[str, bool] = {}
+
+
+def _python_responds(path: Path) -> bool:
+    key = str(path)
+    cached = _PYTHON_PROBE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        result = subprocess.run(
+            [key, "--version"],
+            capture_output=True,
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        ok = result.returncode == 0
+    except Exception:
+        ok = False
+    _PYTHON_PROBE_CACHE[key] = ok
+    return ok
+
+
 def find_python_executable_details() -> tuple[Optional[Path], str]:
     runtime_root = get_runtime_root()
     runtime_scripts = runtime_root / "venv" / "Scripts"
@@ -309,16 +331,16 @@ def find_python_executable_details() -> tuple[Optional[Path], str]:
         (app_dotvenv_scripts / "pythonw.exe", "app_venv"),
     ]
     for candidate, source in candidate_sources:
-        if candidate.exists():
+        if candidate.exists() and _python_responds(candidate):
             return candidate, source
 
     exe = Path(sys.executable)
-    if exe.exists() and exe.name.lower().startswith("python"):
+    if exe.exists() and exe.name.lower().startswith("python") and _python_responds(exe):
         return exe, "current_process"
 
     for name in ("python.exe", "pythonw.exe", "python"):
         found = shutil.which(name)
-        if found:
+        if found and _python_responds(Path(found)):
             return Path(found), f"path:{name}"
 
     return None, "missing"

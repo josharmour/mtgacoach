@@ -1418,6 +1418,12 @@ class ActionPlanner:
         if turn.get("active_player") != local_seat:
             return None
 
+        # Only force the preflight land drop if 0 lands have been played this turn.
+        for player in game_state.get("players", []):
+            if player.get("seat_id") == local_seat or player.get("is_local"):
+                if (player.get("lands_played") or 0) > 0:
+                    return None
+
         # Whenever MTGA GRE offers "Play Land: <Card>" in legal_actions during our turn,
         # prioritize playing the land.
         for legal in legal_actions:

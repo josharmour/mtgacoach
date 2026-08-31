@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("fastapi")
+pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 WEBSITE_DIR = Path(__file__).resolve().parents[1] / "website"

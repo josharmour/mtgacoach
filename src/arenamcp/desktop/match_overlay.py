@@ -39,7 +39,7 @@ from arenamcp.desktop.window_tracking import (
 
 try:
     from arenamcp.input_controller import find_mtga_hwnd, get_client_rect
-except Exception:
+except ImportError:
     find_mtga_hwnd = None  # type: ignore[assignment]
     get_client_rect = None  # type: ignore[assignment]
 
