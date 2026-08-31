@@ -656,7 +656,7 @@ class CoachTab(QWidget):
 
         chat_row = QHBoxLayout()
         self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText("Ask the coach or use slash commands like /deck or /analyze")
+        self.chat_input.setPlaceholderText("Ask the coach or use slash commands like /deck, /analyze, /report")
         self.chat_input.returnPressed.connect(self.send_chat)
         chat_row.addWidget(self.chat_input, stretch=1)
         send_button = QPushButton("Send")
@@ -669,6 +669,9 @@ class CoachTab(QWidget):
         if not text:
             return
         self.chat_input.clear()
+        if text.lower() in ("/report", "/bug", "/debug", "/bugreport", "/debugreport"):
+            self._submit_debug_report()
+            return
         self.append_log(f"> {text}", role="status")
         if self._process is not None:
             self._process.send_command("chat", text)

@@ -573,6 +573,8 @@ class ProxyBackend:
 
             self._note_served_model(served_model)
             content = "".join(chunks)
+            if "</think>" in content:
+                content = content.split("</think>")[-1].strip()
             if not content and reasoning_chunks:
                 salvaged = _salvage_reasoning_answer("".join(reasoning_chunks))
                 if salvaged:
@@ -608,7 +610,9 @@ class ProxyBackend:
         request_time = (time.perf_counter() - request_start) * 1000
 
         message = response.choices[0].message
-        content = message.content
+        content = message.content or ""
+        if "</think>" in content:
+            content = content.split("</think>")[-1].strip()
 
         # Extract reasoning
         reasoning = None

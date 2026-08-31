@@ -105,3 +105,28 @@ def test_compact_coach_mcts_toggle_collapse(panel):
     panel._toggle_mcts_expanded()
     assert panel._mcts_expanded is False
     assert panel.mcts_view.isVisible() is False
+
+
+def test_compact_coach_debug_report_triggers(panel, monkeypatch):
+    called = []
+    monkeypatch.setattr(panel, "_submit_debug_report", lambda: called.append(True))
+
+    # Test slash commands
+    panel.chat_input.setText("/report")
+    panel.send_chat()
+    assert len(called) == 1
+
+    panel.chat_input.setText("/bug")
+    panel.send_chat()
+    assert len(called) == 2
+
+    panel.chat_input.setText("/debug")
+    panel.send_chat()
+    assert len(called) == 3
+
+
+def test_compact_coach_overflow_has_debug_report(panel):
+    more_btn = panel._build_overflow_button()
+    menu = more_btn.menu()
+    actions = [a.text() for a in menu.actions()]
+    assert "Debug Report" in actions

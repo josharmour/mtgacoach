@@ -250,6 +250,14 @@ class CompactCoachPanel(CoachTab):
             ),
             stretch=3,
         )
+        row3.addWidget(
+            _btn(
+                "🐞 Bug Report",
+                "Capture screenshots + logs into a debug report package (Shortcut: Ctrl+Shift+D / ⌘⇧D, or type /report)",
+                on_click=self._submit_debug_report,
+            ),
+            stretch=2,
+        )
         row3.addWidget(self._build_overflow_button(), stretch=1)
         root.addLayout(row3)
 
@@ -257,7 +265,7 @@ class CompactCoachPanel(CoachTab):
         chat_row.setSpacing(6)
         self.chat_input = QLineEdit()
         self.chat_input.setObjectName("chatInput")
-        self.chat_input.setPlaceholderText("Ask the coach…  (/deck, /analyze)")
+        self.chat_input.setPlaceholderText("Ask the coach…  (/deck, /analyze, /report)")
         self.chat_input.returnPressed.connect(self.send_chat)
         chat_row.addWidget(self.chat_input, stretch=1)
         send_button = QPushButton("Send")
@@ -350,6 +358,10 @@ class CompactCoachPanel(CoachTab):
         restart_action.setToolTip("Restart the coaching engine")
         restart_action.triggered.connect(lambda _checked=False: self._send_command("restart"))
 
+        debug_action = menu.addAction("Debug Report")
+        debug_action.setToolTip("Save screenshots and logs into a bug report package (Shortcut: Ctrl+Shift+D / ⌘⇧D)")
+        debug_action.triggered.connect(lambda _checked=False: self._submit_debug_report())
+
         # Overlay tools are available on every platform (Qt-native overlays).
         menu.addSeparator()
         calib_action = menu.addAction("Calibrate Cards")
@@ -399,6 +411,9 @@ class CompactCoachPanel(CoachTab):
             text = self.chat_input.text().strip()
             self.chat_input.clear()
         if not text:
+            return
+        if text.lower() in ("/report", "/bug", "/debug", "/bugreport", "/debugreport"):
+            self._submit_debug_report()
             return
         self.append_log(f"> {text}", role="status")
         self._send_command("chat", text)

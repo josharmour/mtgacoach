@@ -459,6 +459,7 @@ class MainWindow(QMainWindow):
         self.menuBar().addAction(refresh_action)
         self._build_theme_menu()
         self._build_view_menu()
+        self._build_help_menu()
         # The Model/endpoint dialog is dev-only tooling (it defaults the API
         # key to the local "vllm" value and probes for served models — it
         # shows customers a confusing "No models found"). The online product
@@ -488,6 +489,8 @@ class MainWindow(QMainWindow):
         self._hotkeys.register("F3", self._on_toggle_frequency)
         self._hotkeys.register("F5", self._on_force_advice)
         self._hotkeys.register("F10", self._on_replay_advice)
+        self._hotkeys.register("Ctrl+Shift+D", self._trigger_debug_report)
+        self._hotkeys.register("F12", self._trigger_debug_report)
 
         # Tier 1: UI Thread ANR Watchdog (checks Qt event loop responsiveness)
         self._ui_watchdog = UiAnrWatchdog(
@@ -510,6 +513,10 @@ class MainWindow(QMainWindow):
 
     def _on_force_advice(self):
         self._hotkey_command.emit("force_advice")
+
+    def _trigger_debug_report(self):
+        if self.coach_tab is not None:
+            self.coach_tab._submit_debug_report()
 
     def _send_hotkey_command(self, command: str) -> None:
         if self._process:
@@ -1089,3 +1096,11 @@ class MainWindow(QMainWindow):
             f"Endpoint updated ({mode_label}). Restart the coach to apply.",
             8000,
         )
+
+    def _build_help_menu(self) -> None:
+        help_menu = self.menuBar().addMenu("Help")
+        debug_report_action = QAction("Submit Debug Report…", self)
+        debug_report_action.setShortcut("Ctrl+Shift+D")
+        debug_report_action.setToolTip("Save screenshots and logs into a bug report package")
+        debug_report_action.triggered.connect(self._trigger_debug_report)
+        help_menu.addAction(debug_report_action)

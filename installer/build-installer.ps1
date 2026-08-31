@@ -69,14 +69,23 @@ if (-not (Test-Path $ResourceDll)) {
 $RuntimeDir = Join-Path $RepoRoot "dist\runtime"
 $PythonwExe = Join-Path $RuntimeDir "Scripts\pythonw.exe"
 
-if (-not (Test-Path $PythonwExe)) {
-    Write-Host "Creating standalone Python runtime in dist\runtime..."
+if (-not (Test-Path $PythonwExe) -or -not ((Get-AuthenticodeSignature $PythonwExe).Status -eq "Valid")) {
+    Write-Host "Creating standalone Python runtime in dist\runtime using signed Python..."
+    if (Test-Path $RuntimeDir) {
+        Remove-Item -Recurse -Force $RuntimeDir
+    }
     Push-Location $RepoRoot
     try {
-        & uv venv dist/runtime --python 3.11
-        if ($LASTEXITCODE -ne 0) { throw "uv venv failed" }
-        & uv pip install --python dist/runtime -e .[desktop,full]
-        if ($LASTEXITCODE -ne 0) { throw "uv pip install failed" }
+        if (Get-Command py -ErrorAction SilentlyContinue) {
+            & py -3.11 -m venv dist/runtime
+        }
+        if (-not (Test-Path $PythonwExe)) {
+            & python -m venv dist/runtime
+        }
+        if (-not (Test-Path $PythonwExe)) { throw "python -m venv failed to create dist/runtime" }
+        & (Join-Path $RuntimeDir "Scripts\python.exe") -m pip install --upgrade pip
+        & (Join-Path $RuntimeDir "Scripts\python.exe") -m pip install -e .[desktop,full]
+        if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
     }
     finally {
         Pop-Location

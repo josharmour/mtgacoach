@@ -616,12 +616,20 @@ def detect_runtime_state() -> RuntimeState:
     runtime_root = Path(get_runtime_root())
     app_runtime_dir = app_root / "runtime"
     runtime_venv_dir = runtime_root / "venv"
-
     scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
     py_exe = "python.exe" if sys.platform == "win32" else "python"
 
-    runtime_dir = app_runtime_dir if (app_runtime_dir / scripts_dir / py_exe).exists() else runtime_venv_dir
-    runtime_venv_exists = (runtime_dir / scripts_dir / py_exe).exists()
+    app_runtime_py = app_runtime_dir / scripts_dir / py_exe
+    runtime_venv_py = runtime_venv_dir / scripts_dir / py_exe
+    if app_runtime_py.exists() and _python_responds(app_runtime_py):
+        runtime_dir = app_runtime_dir
+        runtime_venv_exists = True
+    elif runtime_venv_py.exists() and _python_responds(runtime_venv_py):
+        runtime_dir = runtime_venv_dir
+        runtime_venv_exists = True
+    else:
+        runtime_dir = app_runtime_dir if app_runtime_py.exists() else runtime_venv_dir
+        runtime_venv_exists = False
     python_exe, python_source = find_python_executable()
     python_ready, python_ready_detail = _check_python_runtime(python_exe)
     mtga_dir, mtga_dir_source = find_mtga_install_dir()

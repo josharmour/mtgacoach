@@ -19,18 +19,18 @@ set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
 set "VENV_PYTHON="
 set "VENV_PYTHONW="
 
-if exist "%ProgramFiles%\mtgacoach\runtime\Scripts\python.exe" (
-    set "VENV_PYTHON=%ProgramFiles%\mtgacoach\runtime\Scripts\python.exe"
-    set "VENV_PYTHONW=%ProgramFiles%\mtgacoach\runtime\Scripts\pythonw.exe"
-) else if exist "%~dp0runtime\Scripts\python.exe" (
-    set "VENV_PYTHON=%~dp0runtime\Scripts\python.exe"
-    set "VENV_PYTHONW=%~dp0runtime\Scripts\pythonw.exe"
-) else if exist "%MTGACOACH_RUNTIME_ROOT%\venv\Scripts\python.exe" (
+if exist "%MTGACOACH_RUNTIME_ROOT%\venv\Scripts\python.exe" (
     set "VENV_PYTHON=%MTGACOACH_RUNTIME_ROOT%\venv\Scripts\python.exe"
     set "VENV_PYTHONW=%MTGACOACH_RUNTIME_ROOT%\venv\Scripts\pythonw.exe"
 ) else if exist "%~dp0.venv\Scripts\python.exe" (
     set "VENV_PYTHON=%~dp0.venv\Scripts\python.exe"
     set "VENV_PYTHONW=%~dp0.venv\Scripts\pythonw.exe"
+) else if exist "%ProgramFiles%\mtgacoach\runtime\Scripts\python.exe" (
+    set "VENV_PYTHON=%ProgramFiles%\mtgacoach\runtime\Scripts\python.exe"
+    set "VENV_PYTHONW=%ProgramFiles%\mtgacoach\runtime\Scripts\pythonw.exe"
+) else if exist "%~dp0runtime\Scripts\python.exe" (
+    set "VENV_PYTHON=%~dp0runtime\Scripts\python.exe"
+    set "VENV_PYTHONW=%~dp0runtime\Scripts\pythonw.exe"
 )
 
 set "MODE=%~1"
@@ -43,9 +43,7 @@ if /I "%MODE%"=="--console" goto :launch_console
 if not defined VENV_PYTHON goto :run_wizard
 if not exist "%VENV_PYTHON%" goto :run_wizard
 
-rem Repair-audit blocker #2: a present-but-dead venv used to be launched
-rem hidden and detached — double-click did nothing, forever. Probe the
-rem runtime before the silent GUI launch; fall back to the wizard.
+rem Probe the runtime before the silent GUI launch; fall back to the wizard.
 "%VENV_PYTHON%" -c "import PySide6" >nul 2>&1
 if errorlevel 1 (
     echo The app runtime is broken - running repair...
@@ -70,6 +68,10 @@ if errorlevel 1 (
     echo Setup did not complete successfully.
     pause
     exit /b 1
+)
+if exist "%MTGACOACH_RUNTIME_ROOT%\venv\Scripts\python.exe" (
+    set "VENV_PYTHON=%MTGACOACH_RUNTIME_ROOT%\venv\Scripts\python.exe"
+    set "VENV_PYTHONW=%MTGACOACH_RUNTIME_ROOT%\venv\Scripts\pythonw.exe"
 )
 if not exist "%VENV_PYTHON%" (
     echo.
