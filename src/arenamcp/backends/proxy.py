@@ -251,7 +251,7 @@ class ProxyBackend:
 
     def __init__(
         self,
-        model: str = "gemma-4-12b-it",
+        model: str = "glm-5.3-flash",
         enable_thinking: bool = False,
         base_url: str | None = None,
         api_key: str | None = None,
@@ -271,12 +271,15 @@ class ProxyBackend:
     @classmethod
     def create_online(cls, model: str | None = None, license_key: str = "") -> "ProxyBackend":
         """Create a backend configured for online mode (mtgacoach.com)."""
+        resolved_model = model or "glm-5.3-flash"
+        if resolved_model:
+            m_lower = resolved_model.lower().replace("_", "-")
+            if m_lower in ("glm53", "glm-5.3", "glm5.3", "glm-5.3-flash", "zai-org/glm-5.3-flash"):
+                resolved_model = "glm-5.3-flash"
+            elif m_lower in ("dsv4", "deepseek-v4", "deepseek-v4-flash"):
+                resolved_model = "deepseek-v4-flash"
         return cls(
-            # The api.mtgacoach.com gateway (LiteLLM on the NAS) owns model
-            # routing. Default to the REAL served model name, not the legacy
-            # 'nemotron-3-super' alias (which just routes to deepseek-v4-flash
-            # and confusingly implies a Nemotron model that isn't there).
-            model=model or "gemma-4-12b-it",
+            model=resolved_model,
             base_url=ONLINE_BASE_URL,
             api_key=license_key,
         )
