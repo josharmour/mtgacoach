@@ -1,14 +1,16 @@
+"""Compact, svelte sidebar HUD for MTGA Coach."""
+
 from __future__ import annotations
 
 import contextlib
 import html
 import logging
-import sys
 from typing import Any
 
 from PySide6.QtCore import QEvent, QTimer, Qt, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -23,1036 +25,379 @@ from PySide6.QtWidgets import (
 
 from arenamcp.settings import get_settings
 
-from .coach_tab import CoachTab, _int_value, _str_value
+from .brain_stream_window import BrainStreamWindow
+from .coach_session import CoachSession
 
 logger = logging.getLogger(__name__)
 
 
-class CompactCoachPanel(CoachTab):
-    """Single-column sidebar layout of the coach UI (~440px wide).
+def _str_value(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value).strip()
 
-    All process/event/TTS handling is inherited from CoachTab — only the
-    widget layout and game-state composition differ. Information is ordered
-    by glance priority for use during a match:
 
-        turn strip → status dots → turn plan → spoken advice log
-        → controls → chat
+def _int_value(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
-    Secondary tools (self-play, debug report, overlay calibration, repair)
-    live behind the ⋯ overflow menu so the always-visible surface stays
-    calm enough to parse at a glance.
-    """
+
+class CompactCoachPanel(QWidget):
+    """Svelte, single-column sidebar layout of the MTGA Coach HUD (~260-440px wide)."""
 
     repair_requested = Signal()
-    classic_requested = Signal()
     performance_requested = Signal()
+    restart_requested = Signal()
 
-    # The activity feed is a TTS subtitle track, not an operations log: by
-    # default it shows only the literal text handed to the speech engine
-    # (role "spoken", captured from speak_request/speak_audio events) plus
-    # errors. Everything else — advice events with their "PLAN:"/"COACH (...)"
-    # framing, autopilot chatter, status lines — is gated behind
-    # View → Show Debug Logging.
-    _PERTINENT_LOG_ROLES = frozenset({"spoken", "error"})
+    _PERTINENT_LOG_ROLES = frozenset({"spoken", "error", "status", "advice"})
 
-    # Spoken subtitles get their own color so they stand out from the
-    # (debug-only) advice/autopilot lines around them.
-    _LOG_COLORS_DARK = {**CoachTab._LOG_COLORS_DARK, "spoken": "#69d46c"}
-    _LOG_COLORS_LIGHT = {**CoachTab._LOG_COLORS_LIGHT, "spoken": "#1b7e2c"}
+    _LOG_COLORS_DARK = {
+        "spoken": "#69d46c",
+        "advice": "#89b4fa",
+        "error": "#f38ba8",
+        "status": "#cdd6f4",
+        "info": "#a6adc8",
+        "debug": "#6c7086",
+    }
 
-    # -- layout --------------------------------------------------------------
+    _LOG_COLORS_LIGHT = {
+        "spoken": "#1b7e2c",
+        "advice": "#1e66f5",
+        "error": "#d20f39",
+        "status": "#4c4f69",
+        "info": "#6c6f85",
+        "debug": "#9ca0b0",
+    }
 
-    def _build_ui(self) -> None:
+    def __init__(self, session: CoachSession | None = None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._settings = get_settings()
+        self._session = session or CoachSession(self)
         self._dot_values: dict[str, str] = {}
-        self._activity_expanded = True
+        self._buttons: dict[str, Any] = {}
         self._game_plan: dict[str, Any] = {}
         self._latest_advice: tuple[str, str] | None = None
-        self._subtitle_render_timer = QTimer(self)
-        self._subtitle_render_timer.setSingleShot(True)
-        self._subtitle_render_timer.setInterval(25)
-        self._subtitle_render_timer.timeout.connect(self._render_subtitle_feed_now)
+        self._debug_logging = bool(self._settings.get("desktop_debug_logging", False))
+        self._activity_history: list[tuple[str, str]] = []
 
+        self._brain_stream_window: BrainStreamWindow | None = None
+
+        self._build_ui()
+        self._wire_session()
+        self._apply_compact_style()
+
+    @property
+    def session(self) -> CoachSession:
+        return self._session
+
+    def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
 
-        # Turn strip: whose turn + phase, tinted green/orange by turn owner.
+        # 1. Turn strip: turn number + active player + phase
         self.turn_strip = QLabel("Waiting for MTGA…")
         self.turn_strip.setObjectName("turnStrip")
         self.turn_strip.setProperty("who", "none")
         self.turn_strip.setAlignment(Qt.AlignCenter)
         root.addWidget(self.turn_strip)
 
-        # Status dots: coach backend / bridge / seat as colored ● indicators.
+        # 2. Status dots: Model / Bridge / Seat indicators
         self.status_dots = QLabel()
         self.status_dots.setObjectName("statusDots")
         self.status_dots.setTextFormat(Qt.RichText)
         self.status_dots.setAlignment(Qt.AlignCenter)
         root.addWidget(self.status_dots)
 
-        # Main content splitter: lets the user drag-resize between MCTS tree and Activity Log
+        # 3. Main content splitter: Game State + Advice & Speech Feed
         self.main_splitter = QSplitter(Qt.Vertical)
         self.main_splitter.setObjectName("compactSplitter")
         self.main_splitter.setChildrenCollapsible(False)
 
-        # MCTS Decision Tree & Win Expectancy Panel
-        self._mcts_expanded = True
-        self._mcts_latest_payload: dict[str, Any] | None = None
-        self.mcts_container = QWidget()
-        self.mcts_container.setObjectName("mctsContainer")
-        mcts_layout = QVBoxLayout(self.mcts_container)
-        mcts_layout.setContentsMargins(0, 0, 0, 0)
-        mcts_layout.setSpacing(4)
+        # Game State View (HTML summary of Hero, Hand, and Battlefield lanes)
+        self.game_state_view = QTextEdit()
+        self.game_state_view.setObjectName("gameStateView")
+        self.game_state_view.setReadOnly(True)
+        self.game_state_view.setMinimumHeight(140)
+        self.main_splitter.addWidget(self.game_state_view)
 
-        self.mcts_toggle_btn = QPushButton("▾  🌳 MCTS DECISION TREE")
-        self.mcts_toggle_btn.setObjectName("mctsToggle")
-        self.mcts_toggle_btn.setCursor(Qt.PointingHandCursor)
-        self.mcts_toggle_btn.setToolTip("Toggle real-time MCTS minimax outcome evaluation")
-        self.mcts_toggle_btn.clicked.connect(self._toggle_mcts_expanded)
-        mcts_layout.addWidget(self.mcts_toggle_btn)
+        # Turn Plan & Activity Container
+        activity_container = QWidget()
+        act_layout = QVBoxLayout(activity_container)
+        act_layout.setContentsMargins(0, 0, 0, 0)
+        act_layout.setSpacing(4)
 
-        self.mcts_view = QTextEdit()
-        self.mcts_view.setObjectName("mctsView")
-        self.mcts_view.setReadOnly(True)
-        self.mcts_view.setMinimumHeight(60)
-        mcts_layout.addWidget(self.mcts_view, stretch=1)
-
-        self.main_splitter.addWidget(self.mcts_container)
-
-        # Spoken Advice Activity History (Subtitle Track)
-        activity = QWidget()
-        activity_layout = QVBoxLayout(activity)
-        activity_layout.setContentsMargins(0, 0, 0, 0)
-        activity_layout.setSpacing(4)
-
-        # Sticky autopilot turn-plan panel, same contract as the classic
-        # layout: wholesale-replaced on `turn_plan` events, hidden when empty.
+        # Turn Plan Header & Label
         self.turn_plan_label = QLabel()
-        self.turn_plan_label.setObjectName("turnPlanPanel")
+        self.turn_plan_label.setObjectName("turnPlanLabel")
         self.turn_plan_label.setWordWrap(True)
-        self.turn_plan_label.setTextFormat(Qt.PlainText)
-        self.turn_plan_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self._apply_turn_plan_style()
-        self.turn_plan_label.setVisible(False)
-        activity_layout.addWidget(self.turn_plan_label)
+        self.turn_plan_label.setTextFormat(Qt.RichText)
+        self.turn_plan_label.hide()
+        act_layout.addWidget(self.turn_plan_label)
 
+        # Speech & Advice Subtitle Log
         self.log_view = QTextEdit()
         self.log_view.setObjectName("logView")
         self.log_view.setReadOnly(True)
-        self.log_view.setMinimumHeight(60)
-        activity_layout.addWidget(self.log_view, stretch=1)
+        self.log_view.setMinimumHeight(120)
+        self.log_view.document().setMaximumBlockCount(500)
+        act_layout.addWidget(self.log_view)
 
-        self.main_splitter.addWidget(activity)
-        self.main_splitter.setStretchFactor(0, 1)
-        self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setSizes([200, 220])
-
+        self.main_splitter.addWidget(activity_container)
+        self.main_splitter.setSizes([260, 240])
         root.addWidget(self.main_splitter, stretch=1)
 
-        # Controls: Minimal Audio-Primary Buttons
-        def _btn(label, tooltip, *, command=None, on_click=None, object_name=None):
-            b = QPushButton(label)
-            b.setToolTip(tooltip)
-            b.setCursor(Qt.PointingHandCursor)
-            if object_name:
-                b.setObjectName(object_name)
-            if command is not None:
-                b.clicked.connect(lambda _checked=False, cmd=command: self._send_command(cmd))
-                self._buttons[command] = b
-            elif on_click is not None:
-                b.clicked.connect(on_click)
-            return b
+        # 4. Controls Bar (AP toggle, Brain Stream, Bug Report / Voice, Style, Mute)
+        ctrl_row1 = QHBoxLayout()
+        ctrl_row1.setSpacing(5)
 
-        # Full list of Kokoro Voices (US, UK, Male, Female) with speed presets
-        self._VOICE_PRESETS = [
-            ("af_sky", 1.4, "Sky (US Female) @ 1.4x"),
-            ("af_sky", 1.2, "Sky (US Female) @ 1.2x"),
-            ("af_nicole", 1.4, "Nicole (US Female) @ 1.4x"),
-            ("af_nicole", 1.2, "Nicole (US Female) @ 1.2x"),
-            ("af_heart", 1.4, "Heart (US Female) @ 1.4x"),
-            ("af_bella", 1.4, "Bella (US Female) @ 1.4x"),
-            ("af_aoede", 1.4, "Aoede (US Female) @ 1.4x"),
-            ("af_kore", 1.4, "Kore (US Female) @ 1.4x"),
-            ("af_sarah", 1.4, "Sarah (US Female) @ 1.4x"),
-            ("af_alloy", 1.4, "Alloy (US Female) @ 1.4x"),
-            ("af_river", 1.4, "River (US Female) @ 1.4x"),
-            ("am_adam", 1.4, "Adam (US Male) @ 1.4x"),
-            ("am_adam", 1.2, "Adam (US Male) @ 1.2x"),
-            ("am_echo", 1.4, "Echo (US Male) @ 1.4x"),
-            ("am_eric", 1.4, "Eric (US Male) @ 1.4x"),
-            ("am_fenrir", 1.4, "Fenrir (US Male) @ 1.4x"),
-            ("am_liam", 1.4, "Liam (US Male) @ 1.4x"),
-            ("am_michael", 1.4, "Michael (US Male) @ 1.4x"),
-            ("am_onyx", 1.4, "Onyx (US Male) @ 1.4x"),
-            ("am_puck", 1.4, "Puck (US Male) @ 1.4x"),
-            ("am_santa", 1.4, "Santa (US Male) @ 1.4x"),
-            ("bf_emma", 1.4, "Emma (UK Female) @ 1.4x"),
-            ("bf_isabella", 1.4, "Isabella (UK Female) @ 1.4x"),
-            ("bf_alice", 1.4, "Alice (UK Female) @ 1.4x"),
-            ("bf_lily", 1.4, "Lily (UK Female) @ 1.4x"),
-            ("bm_george", 1.4, "George (UK Male) @ 1.4x"),
-            ("bm_fable", 1.4, "Fable (UK Male) @ 1.4x"),
-            ("bm_lewis", 1.4, "Lewis (UK Male) @ 1.4x"),
-            ("bm_daniel", 1.4, "Daniel (UK Male) @ 1.4x"),
-        ]
+        self.ap_btn = QPushButton("AP: OFF")
+        self.ap_btn.setObjectName("apButton")
+        self.ap_btn.setProperty("apOn", "false")
+        self.ap_btn.setToolTip("Toggle autopilot — plays actions via GRE named pipe")
+        self.ap_btn.clicked.connect(self._session.toggle_autopilot)
+        ctrl_row1.addWidget(self.ap_btn)
+        self._buttons["toggle_autopilot"] = self.ap_btn
 
-        from PySide6.QtWidgets import QComboBox
+        self.brain_stream_btn = QPushButton("🧠 Brain Stream")
+        self.brain_stream_btn.setObjectName("brainStreamButton")
+        self.brain_stream_btn.setToolTip("Open/Toggle the live Brain Stream Inspector window (Ctrl+B)")
+        self.brain_stream_btn.clicked.connect(self.toggle_brain_stream)
+        ctrl_row1.addWidget(self.brain_stream_btn)
 
-        self.voice_combo = QComboBox()
-        self.voice_combo.setToolTip("Select Kokoro Voice & Speed combination")
-        self.voice_combo.setCursor(Qt.PointingHandCursor)
-        for _, _, label in self._VOICE_PRESETS:
-            self.voice_combo.addItem(label)
+        self.bug_report_btn = QPushButton("🐞 Report")
+        self.bug_report_btn.setObjectName("bugReportButton")
+        self.bug_report_btn.setToolTip("Capture and submit bug report snapshot package (Ctrl+Shift+D)")
+        self.bug_report_btn.clicked.connect(self._session.trigger_debug_report)
+        ctrl_row1.addWidget(self.bug_report_btn)
 
-        # Match current settings
-        cur_v = _str_value(get_settings().get("voice", "af_sky"))
-        cur_s = float(get_settings().get("voice_speed", 1.4))
-        for idx, (vid, spd, _) in enumerate(self._VOICE_PRESETS):
-            if vid == cur_v and abs(spd - cur_s) < 0.05:
-                self.voice_combo.setCurrentIndex(idx)
-                break
-        self.voice_combo.currentIndexChanged.connect(self._on_voice_preset_changed)
+        root.addLayout(ctrl_row1)
 
-        row1 = QHBoxLayout()
-        row1.setSpacing(6)
-        row1.addWidget(self.voice_combo, stretch=2)
-        is_ap = bool(get_settings().get("autopilot_enabled", False))
-        ap_btn = _btn(
-            "AP: ON" if is_ap else "AP: OFF",
-            "Toggle autopilot — plays the game via GRE bridge",
-            command="toggle_autopilot",
-            object_name="apButton",
-        )
-        ap_btn.setProperty("apOn", "true" if is_ap else "false")
-        row1.addWidget(ap_btn, stretch=1)
-        row1.addWidget(_btn("Mute", "Mute / unmute spoken advice", command="toggle_mute"), stretch=1)
-        root.addLayout(row1)
+        ctrl_row2 = QHBoxLayout()
+        ctrl_row2.setSpacing(5)
 
-        row2 = QHBoxLayout()
-        row2.setSpacing(6)
-        row2.addWidget(
-            _btn(
-                "📊 Game Assessment",
-                "Assess full game state: state win strategy & path to victory, or advise concede if no realistic outs remain",
-                on_click=self._ask_game_assessment,
-            ),
-            stretch=1,
-        )
-        root.addLayout(row2)
+        self.voice_btn = QPushButton("Voice: Auto")
+        self.voice_btn.setObjectName("voiceButton")
+        self.voice_btn.setToolTip("Cycle TTS voice (Sky / Alloy / Echo / Nova / etc.)")
+        self.voice_btn.clicked.connect(self._session.cycle_voice)
+        ctrl_row2.addWidget(self.voice_btn)
+        self._buttons["cycle_voice"] = self.voice_btn
 
-        row3 = QHBoxLayout()
-        row3.setSpacing(6)
-        row3.addWidget(
-            _btn(
-                "🧠 Brain Stream",
-                "Open full data inspector, reasoning traces, and concatenated turn history",
-                on_click=self.toggle_brain_stream,
-            ),
-            stretch=3,
-        )
-        row3.addWidget(
-            _btn(
-                "🐞 Bug Report",
-                "Capture screenshots + logs into a debug report package (Shortcut: Ctrl+Shift+D / ⌘⇧D, or type /report)",
-                on_click=self._submit_debug_report,
-            ),
-            stretch=2,
-        )
-        row3.addWidget(self._build_overflow_button(), stretch=1)
-        root.addLayout(row3)
+        self.style_btn = QPushButton("Quick")
+        self.style_btn.setToolTip("Cycle advice style (Quick / Concise / Chatty)")
+        self.style_btn.clicked.connect(self._session.toggle_style)
+        ctrl_row2.addWidget(self.style_btn)
+        self._buttons["toggle_style"] = self.style_btn
 
-        chat_row = QHBoxLayout()
-        chat_row.setSpacing(6)
+        self.mute_btn = QPushButton("Mute: Off")
+        self.mute_btn.setToolTip("Mute / unmute spoken advice")
+        self.mute_btn.clicked.connect(self._session.toggle_mute)
+        ctrl_row2.addWidget(self.mute_btn)
+        self._buttons["toggle_mute"] = self.mute_btn
+
+        root.addLayout(ctrl_row2)
+
+        # 5. Chat Input Bar
+        chat_layout = QHBoxLayout()
+        chat_layout.setSpacing(4)
         self.chat_input = QLineEdit()
-        self.chat_input.setObjectName("chatInput")
-        self.chat_input.setPlaceholderText("Ask the coach…  (/deck, /analyze, /report)")
+        self.chat_input.setPlaceholderText("Ask coach or /report…")
         self.chat_input.returnPressed.connect(self.send_chat)
-        chat_row.addWidget(self.chat_input, stretch=1)
-        send_button = QPushButton("Send")
-        send_button.setObjectName("sendButton")
-        send_button.setCursor(Qt.PointingHandCursor)
-        send_button.setToolTip("Send to the coach")
-        send_button.clicked.connect(self.send_chat)
-        chat_row.addWidget(send_button)
-        root.addLayout(chat_row)
+        chat_layout.addWidget(self.chat_input, stretch=1)
 
-        self._apply_compact_style()
-        self._refresh_status_dots()
-        self._apply_activity_expanded(bool(get_settings().get("compact_log_expanded", True)))
+        send_btn = QPushButton("Send")
+        send_btn.setObjectName("sendButton")
+        send_btn.clicked.connect(self.send_chat)
+        chat_layout.addWidget(send_btn)
 
-    def _on_voice_preset_changed(self, index: int) -> None:
-        """Apply combined voice and speed preset and speak audio sample confirmation."""
-        if index < 0 or index >= len(self._VOICE_PRESETS):
+        root.addLayout(chat_layout)
+
+    def _wire_session(self) -> None:
+        self._session.gameStateChanged.connect(self._on_game_state_changed)
+        self._session.turnPlanChanged.connect(self._on_turn_plan_changed)
+        self._session.gamePlanChanged.connect(self._on_game_plan_changed)
+        self._session.statusChanged.connect(self._on_status_changed)
+        self._session.spokenLine.connect(self._on_spoken_line)
+        self._session.adviceReceived.connect(self._on_advice_received)
+        self._session.logEmitted.connect(self._on_log_emitted)
+        self._session.errorOccurred.connect(self._on_error_occurred)
+        self._session.telemetryUpdated.connect(self._on_telemetry_updated)
+        self._session.reasoningChunk.connect(self._on_reasoning_chunk)
+
+    def _on_game_state_changed(self, state: dict[str, Any]) -> None:
+        self.update_turn_strip(state)
+        html_content = self._format_game_state_html(state)
+        self.game_state_view.setHtml(html_content)
+        if self._brain_stream_window and self._brain_stream_window.isVisible():
+            self._brain_stream_window.update_game_state(state)
+
+    def _on_turn_plan_changed(self, plan: Any) -> None:
+        if not plan:
+            self.turn_plan_label.hide()
             return
-        voice_id, speed_val, label = self._VOICE_PRESETS[index]
-        settings = get_settings()
-        settings.set("voice", voice_id)
-        settings.set("voice_speed", speed_val)
-        if self._process is not None:
-            # pipe_adapter reads voice/voice_speed at the top level of the
-            # command payload, so send_payload — not send_command's "text".
-            self._process.send_payload(
-                {
-                    "cmd": "sync_voice_preferences",
-                    "voice": voice_id,
-                    "voice_speed": speed_val,
-                }
-            )
-        # Deterministic local sample in the newly selected voice — no LLM
-        # round trip.
-        try:
-            self._tts.request_speech(
-                text=f"Voice set to {label}",
-                voice_id=voice_id,
-                voice_name=label,
-                speed=speed_val,
-            )
-        except Exception as e:
-            logger.debug("Voice sample playback failed: %s", e)
-        self.append_log(f"Voice preset: {label}", role="status")
-
-    def _build_overflow_button(self) -> QToolButton:
-        """The ⋯ menu holding secondary/system tools from both classic screens."""
-        more = QToolButton()
-        more.setObjectName("overflowButton")
-        more.setText("⋯")
-        more.setToolTip("More tools")
-        more.setCursor(Qt.PointingHandCursor)
-        more.setPopupMode(QToolButton.InstantPopup)
-        menu = QMenu(more)
-        menu.setToolTipsVisible(True)
-
-        bs_action = menu.addAction("Brain Stream Inspector")
-        bs_action.setToolTip("Open live streaming inspector for Prompt Context, Reasoning, and Telemetry")
-        bs_action.triggered.connect(lambda _checked=False: self.toggle_brain_stream())
-
-        deck_action = menu.addAction("Suggest Deck")
-        deck_action.setToolTip("Request deck recommendations & suggestions")
-        deck_action.triggered.connect(lambda _checked=False: self._suggest_deck())
-
-        if sys.platform == "win32":
-            screen_action = menu.addAction("Analyze Screen")
-            screen_action.setToolTip("Analyze a screenshot of the game with the vision model")
-            screen_action.triggered.connect(lambda _checked=False: self._send_command("analyze_screen"))
-
-        # QAction supports the same setText/setEnabled calls the inherited
-        # self-play lifecycle code makes against the classic QPushButton.
-        self._self_play_btn = QAction("Self-Play", self)
-        self._self_play_btn.setToolTip(
-            "Stop live coaching and run a headless bot-vs-bot self-play session.\n"
-            "This frees the GRE bridge (port 44222) for the self-play process.\n"
-            "Output streams into the activity log."
-        )
-        self._self_play_btn.triggered.connect(lambda _checked=False: self._toggle_self_play())
-        menu.addAction(self._self_play_btn)
-
-        speed_action = menu.addAction("Speed")
-        speed_action.setToolTip("Cycle the speaking speed")
-        speed_action.triggered.connect(lambda _checked=False: self._send_command("cycle_speed"))
-        # Registered under its command so status updates retitle it
-        # ("Speed: 1.4x") just like a toolbar button — QAction has the same
-        # setText interface.
-        self._buttons["cycle_speed"] = speed_action
-
-        restart_action = menu.addAction("Restart Coach")
-        restart_action.setToolTip("Restart the coaching engine")
-        restart_action.triggered.connect(lambda _checked=False: self._send_command("restart"))
-
-        debug_action = menu.addAction("Debug Report")
-        debug_action.setToolTip("Save screenshots and logs into a bug report package (Shortcut: Ctrl+Shift+D / ⌘⇧D)")
-        debug_action.triggered.connect(lambda _checked=False: self._submit_debug_report())
-
-        # Overlay tools are available on every platform (Qt-native overlays).
-        menu.addSeparator()
-        calib_action = menu.addAction("Calibrate Cards")
-        calib_action.setCheckable(True)
-        calib_action.setToolTip("Draw border around MTGA cards reported by bridge plugin to verify alignment")
-        calib_action.toggled.connect(lambda checked: self._match_overlay.set_calibration(checked))
-        overlay_action = menu.addAction("In-Game Overlay")
-        overlay_action.setCheckable(True)
-        overlay_action.setChecked(False)
-        overlay_tooltip = "Show/hide the in-game overlay (pill + advice panel)"
-        if sys.platform.startswith("linux"):
-            overlay_tooltip += (
-                "\nNote: under pure Wayland the overlay may not track the MTGA window (XWayland works)."
-            )
-        overlay_action.setToolTip(overlay_tooltip)
-        overlay_action.toggled.connect(lambda checked: self._match_overlay.set_enabled(checked))
-        reset_action = menu.addAction("Reset Advice Panel")
-        reset_action.setToolTip("Snap the advice panel back to its default position and size")
-        reset_action.triggered.connect(lambda _checked=False: self._reset_advice_panel())
-
-        menu.addSeparator()
-        perf_action = menu.addAction("Match History…")
-        perf_action.setToolTip("Open the recent-matches performance history")
-        perf_action.triggered.connect(lambda _checked=False: self.performance_requested.emit())
-        repair_action = menu.addAction("Setup && Repair…")
-        repair_action.setToolTip("Open the setup / repair tools")
-        repair_action.triggered.connect(lambda _checked=False: self.repair_requested.emit())
-        classic_action = menu.addAction("Switch to Classic Layout")
-        classic_action.triggered.connect(lambda _checked=False: self.classic_requested.emit())
-
-        more.setMenu(menu)
-        return more
-
-    # -- chat & command handlers ----------------------------------------------
-
-    def _suggest_deck(self) -> None:
-        """Trigger deck suggestions for active format."""
-        self.append_log("Evaluating MTGA inventory & wildcards for deck suggestions...", role="status")
-        if hasattr(self, "chat_input"):
-            self.chat_input.setText("/deck")
-        self.send_chat()
-
-    def send_chat(self) -> None:
-        """Process chat input or command from compact UI."""
-        text = ""
-        if hasattr(self, "chat_input"):
-            text = self.chat_input.text().strip()
-            self.chat_input.clear()
-        if not text:
-            return
-        if text.lower() in ("/report", "/bug", "/debug", "/bugreport", "/debugreport"):
-            self._submit_debug_report()
-            return
-        self.append_log(f"> {text}", role="status")
-        self._send_command("chat", text)
-
-    def _ask_game_assessment(self) -> None:
-        """Trigger comprehensive game assessment (win plan & concede evaluation)."""
-        self.append_log("Evaluating game assessment & win plan...", role="status")
-        if hasattr(self, "chat_input"):
-            self.chat_input.setText("/assess")
-        self.send_chat()
-
-    def _send_command(self, command: str, text: str = "") -> None:
-        """Send command over IPC pipe to coach process.
-
-        Plain commands delegate to the base class so restart routing and
-        voice/speed/mute settings persistence keep working; only commands
-        carrying a text payload (chat) are piped directly.
-        """
-        if not text:
-            super()._send_command(command)
-            return
-        if self._process is not None:
-            self._process.send_command(command, text)
+        if isinstance(plan, dict):
+            steps = plan.get("steps") or plan.get("actions") or []
+            goal = plan.get("goal") or plan.get("overall_strategy") or ""
+            items = []
+            if goal:
+                items.append(f"<b>Plan:</b> {html.escape(str(goal))}")
+            if steps:
+                step_strs = [html.escape(str(s)) for s in steps[:4]]
+                items.append(" → ".join(step_strs))
+            self.turn_plan_label.setText("<div style='font-size:11px; margin-bottom:4px;'>" + "<br>".join(items) + "</div>")
+            self.turn_plan_label.show()
+        elif isinstance(plan, str) and plan.strip():
+            self.turn_plan_label.setText(f"<div style='font-size:11px;'><b>Plan:</b> {html.escape(plan)}</div>")
+            self.turn_plan_label.show()
         else:
-            logger.warning("Coach process unavailable for command: %s", command)
+            self.turn_plan_label.hide()
 
-    # -- activity log collapse -------------------------------------------------
-
-    def _apply_activity_expanded(self, expanded: bool) -> None:
-        self._activity_expanded = expanded
-        self.log_view.setVisible(expanded)
-        self._refresh_activity_toggle_text()
-
-    def _render_log_line(self, role: str, text: str) -> None:
-        if not self._show_debug_logging:
-            # Subtitle mode renders the whole feed newest-first; debounce with
-            # timer so rapid bursts of log lines don't block the Qt UI thread.
-            if hasattr(self, "_subtitle_render_timer"):
-                self._subtitle_render_timer.start()
-            else:
-                self._render_subtitle_feed_now()
-            return
-        if role == "spoken":
-            # Debug mode: keep chronology, but make spoken lines stand out.
-            color = self._LOG_COLORS.get("spoken", self._LOG_COLORS["default"])
-            muted = self._theme_tokens()["muted"]
-            escaped = html.escape(text).replace("\n", "<br>")
-            self.log_view.append(
-                f"<div style='margin-top:6px;'>"
-                f"<span style='color:{muted}; font-family:Consolas;'>»&nbsp;</span>"
-                f"<span style='color:{color}; font-family:Consolas;'>{escaped}</span>"
-                f"</div>"
-            )
-            scroll_bar = self.log_view.verticalScrollBar()
-            scroll_bar.setValue(scroll_bar.maximum())
-            return
-        super()._render_log_line(role, text)
-
-    def _rerender_log(self) -> None:
-        if self._show_debug_logging:
-            super()._rerender_log()
-            return
-        self._render_subtitle_feed_now()
-
-    def _render_subtitle_feed(self) -> None:
-        if hasattr(self, "_subtitle_render_timer"):
-            self._subtitle_render_timer.start()
-        else:
-            self._render_subtitle_feed_now()
-
-    def _render_subtitle_feed_now(self) -> None:
-        """Rebuild the subtitle view newest-first: the latest spoken line sits
-        at the top and older ones flow down and off the bottom.
-        """
-        colors = self._LOG_COLORS
-        muted = self._theme_tokens()["muted"]
-        blocks: list[str] = []
-        visible_entries = [entry for entry in self._all_log_lines if self._is_role_visible(entry[0])]
-        # Limit to the most recent 25 visible items so setHtml executes in < 0.2ms
-        for role, text in reversed(visible_entries[-25:]):
-            escaped = html.escape(text).replace("\n", "<br>")
-            if role == "spoken":
-                blocks.append(
-                    f"<div style='margin-bottom:8px;'>"
-                    f"<span style='color:{muted};'>»&nbsp;</span>"
-                    f"<span style='color:{colors['spoken']};'>{escaped}</span>"
-                    f"</div>"
-                )
-            else:
-                color = colors.get(role, colors["default"])
-                blocks.append(f"<div style='margin-bottom:8px; color:{color};'>{escaped}</div>")
-        self.log_view.setHtml(
-            "<div style='font-family:Consolas,\"Courier New\",monospace;'>" + "".join(blocks) + "</div>"
-        )
-        self.log_view.verticalScrollBar().setValue(0)
-
-    def _refresh_activity_toggle_text(self) -> None:
-        if hasattr(self, "_log_toggle_btn"):
-            arrow = "▾" if self._activity_expanded else "▸"
-            label = "ACTIVITY (DEBUG)" if self._show_debug_logging else "SPOKEN ADVICE"
-            self._log_toggle_btn.setText(f"{arrow}  {label}")
-
-    def set_debug_logging(self, enabled: bool) -> None:
-        super().set_debug_logging(enabled)
-        self._refresh_activity_toggle_text()
-
-    # -- status indicators -------------------------------------------------------
-
-    def _set_status_label(self, key: str, value: str) -> None:
-        self._dot_values[key] = (value or "").strip() or "-"
-        self._refresh_status_dots()
-
-    def _refresh_status_dots(self) -> None:
-        tokens = self._theme_tokens()
-        ok = tokens["player"]
-        bad = tokens["planeswalker"]
-        muted = tokens["muted"]
-
-        def dot(color: str, label: str) -> str:
-            return (
-                f"<span style='color:{color};'>●</span>&nbsp;"
-                f"<span style='color:{tokens['text']};'>{html.escape(label)}</span>"
-            )
-
-        coach = self._dot_values.get("coach", "-")
-        bridge = self._dot_values.get("bridge", "-")
-        seat = self._dot_values.get("seat", "-")
-
-        parts = [dot(ok if coach != "-" else muted, coach if coach != "-" else "Coach")]
-        bridge_lower = bridge.lower()
-        if "connected" in bridge_lower and "disconnected" not in bridge_lower:
-            bridge_color = ok
-        elif "log mode" in bridge_lower:
-            # Native Mac client: log-only coaching is the designed state,
-            # not a failure — show it healthy, not red.
-            bridge_color = ok
-        elif bridge == "-":
-            bridge_color = muted
-        else:
-            bridge_color = bad
-        bridge_label = "Bridge" if bridge == "-" else f"Bridge {bridge}"
-        parts.append(dot(bridge_color, bridge_label))
-        if seat != "-":
-            parts.append(dot(tokens["spell"], seat))
-
-        self.status_dots.setText("&nbsp;&nbsp;&nbsp;".join(parts))
-
-    def _update_status(self, key: str, value: str) -> None:
-        super()._update_status(key, value)
-        if key.upper() == "AUTOPILOT":
-            is_on = "ON" in value.upper()
-            button = self._buttons.get("toggle_autopilot")
-            if button is not None:
-                button.setProperty("apOn", "true" if is_on else "false")
-                self._repolish(button)
-            with contextlib.suppress(Exception):
-                get_settings().set("autopilot_enabled", is_on)
-
-    # -- MCTS Outcome Tree ---------------------------------------------------
-
-    def _toggle_mcts_expanded(self) -> None:
-        self._mcts_expanded = not self._mcts_expanded
-        self.mcts_view.setVisible(self._mcts_expanded)
-        self._refresh_mcts_toggle_text()
-
-    def _refresh_mcts_toggle_text(self, root_win_pct: int | None = None) -> None:
-        if hasattr(self, "mcts_toggle_btn"):
-            arrow = "▾" if self._mcts_expanded else "▸"
-            if root_win_pct is not None:
-                self.mcts_toggle_btn.setText(f"{arrow}  🌳 MCTS DECISION TREE ({root_win_pct}% WIN)")
-            else:
-                self.mcts_toggle_btn.setText(f"{arrow}  🌳 MCTS DECISION TREE")
-
-    def _update_mcts_tree(self, data: dict[str, Any]) -> None:
-        """Render MCTS decision tree and win expectancy in the compact view."""
-        if not isinstance(data, dict):
-            return
-
-        self._mcts_latest_payload = data
-        root_p = float(data.get("root_win_probability", 0.5))
-        sims = int(data.get("total_simulations") or 1000)
-        turn = data.get("turn_number") or 1
-        phase = str(data.get("phase") or "Main1")
-        branches = data.get("branches") or []
-
-        pct = int(root_p * 100)
-        self._refresh_mcts_toggle_text(pct)
-
-        b_color = "#a6e3a1" if pct >= 55 else ("#f9e2af" if pct >= 45 else "#f38ba8")
-        tokens = self._theme_tokens()
-
-        html_blocks = [
-            "<div style='font-family: Consolas, \"Courier New\", monospace; padding: 2px 4px;'>",
-            "<table width='100%' style='border: none; margin-bottom: 3px;'><tr>",
-            f"<td align='left'><span style='color: {tokens.get('spell', '#89b4fa')}; font-weight: bold; font-size: 11px;'>WIN EXPECTANCY: <b style='color: {b_color}; font-size: 13px;'>{pct}%</b></span></td>",
-            f"<td align='right'><span style='color: {tokens.get('muted', '#a6adc8')}; font-size: 10px;'>{sims:,} sims · T{turn} {phase}</span></td>",
-            "</tr></table>",
-            "<div style='background: #313244; width: 100%; border-radius: 3px; height: 5px; margin-bottom: 8px;'>",
-            f"<div style='background: {b_color}; width: {pct}%; height: 5px; border-radius: 3px;'></div>",
-            "</div>",
-        ]
-
-        if not branches:
-            html_blocks.append(
-                f"<div style='color: {tokens.get('muted', '#a6adc8')}; font-size: 11px;'>Awaiting legal branch simulation...</div>"
-            )
-        else:
-            for idx, b in enumerate(branches[:4], start=1):
-                if not isinstance(b, dict):
-                    continue
-                act = html.escape(str(b.get("action", "Pass Priority")))
-                cost = str(b.get("mana_cost", ""))
-                win_p = float(b.get("win_probability", 0.5))
-                v_delta = float(b.get("value_delta", 0.0))
-                tag = str(b.get("tag") or "NORMAL")
-                summary = html.escape(str(b.get("outcome_summary", "")))
-
-                b_pct = int(win_p * 100)
-                delta_str = f"+{v_delta * 100:.1f}%" if v_delta > 0 else f"{v_delta * 100:.1f}%"
-                delta_color = "#a6e3a1" if v_delta > 0 else ("#f38ba8" if v_delta < 0 else "#a6adc8")
-                br_color = "#a6e3a1" if b_pct >= 55 else ("#f9e2af" if b_pct >= 45 else "#f38ba8")
-
-                badge_bg = "#313244"
-                badge_fg = "#cdd6f4"
-                if "BEST" in tag:
-                    badge_bg = "#a6e3a1"
-                    badge_fg = "#11111b"
-                elif "TEMPO" in tag:
-                    badge_bg = "#89b4fa"
-                    badge_fg = "#11111b"
-                elif "SAFE" in tag:
-                    badge_bg = "#94e2d5"
-                    badge_fg = "#11111b"
-                elif "BLUNDER" in tag:
-                    badge_bg = "#f38ba8"
-                    badge_fg = "#11111b"
-
-                cost_display = f" [{cost}]" if cost else ""
-                html_blocks.extend([
-                    f"<div style='background: {tokens.get('panel2', '#181825')}; border: 1px solid {tokens.get('border', '#313244')}; border-radius: 5px; padding: 6px 8px; margin-bottom: 6px;'>",
-                    "<table width='100%' style='border: none; margin-bottom: 2px;'><tr>",
-                    f"<td align='left'><span style='font-weight: bold; color: {tokens.get('text', '#cdd6f4')}; font-size: 11px;'>#{idx}. {act}{cost_display}</span></td>",
-                    f"<td align='right'><span style='background: {badge_bg}; color: {badge_fg}; font-weight: bold; padding: 1px 5px; border-radius: 3px; font-size: 9px;'>{tag}</span></td>",
-                    "</tr></table>",
-                    f"<div style='margin-bottom: 3px; font-size: 11px; color: {tokens.get('muted', '#a6adc8')};'>",
-                    f"Win: <b style='color: {br_color};'>{b_pct}%</b> (<span style='color: {delta_color};'>{delta_str}</span>)",
-                    "</div>",
-                    f"<div style='color: {tokens.get('text', '#cdd6f4')}; font-size: 10px;'>↳ {summary}</div>" if summary else "",
-                    "</div>",
-                ])
-
-        html_blocks.append("</div>")
-        self.mcts_view.setHtml("".join(html_blocks))
-
-    # -- hero advice ----------------------------------------------------------
-
-    def _handle_event(self, payload: Any) -> None:
-        super()._handle_event(payload)
-        if not isinstance(payload, dict):
-            return
-        event_type = payload.get("type")
-        if event_type == "mcts_tree":
-            data = payload.get("data")
-            if isinstance(data, dict):
-                self._update_mcts_tree(data)
-            return
-        if event_type in ("speak_request", "speak_audio"):
-            # Subtitle track: log exactly what the speech engine was given.
-            spoken = str(payload.get("text", "")).strip()
-            if spoken:
-                self.append_log(spoken, role="spoken")
-            return
-        if event_type == "game_plan":
-            data = payload.get("data")
-            plan = data if isinstance(data, dict) else {}
-            if not any(plan.get(k) for k in ("win_conditions", "path", "threat", "develop_next")):
-                plan = {}
+    def _on_game_plan_changed(self, plan: Any) -> None:
+        if isinstance(plan, dict):
             self._game_plan = plan
-            self._refresh_hero_card()
-            return
-        if event_type != "advice":
-            return
-        seat_info = str(payload.get("seat_info", ""))
-        text = str(payload.get("text", "")).strip()
-        if not text:
-            return
-        is_autopilot = seat_info.strip().upper() == "AUTOPILOT"
-        t_upper = text.upper()
-        is_strategic = t_upper.startswith("PLAN:") or "MANUAL REQUIRED" in t_upper[:80]
-        # Mirror the classic filter: the hero card shows coach advice and
-        # strategic plans, not per-decision autopilot chatter (which stays
-        # in the activity log).
-        if is_autopilot and not is_strategic:
-            return
-        if text.startswith("PLAN:"):
-            text = text[5:].strip()
-        self._set_hero_advice(text, seat_info)
 
-    def _set_hero_advice(self, text: str, seat_info: str) -> None:
-        display = text.strip()
-        if len(display) > 600:
-            display = display[:597].rstrip() + "…"
-        self._latest_advice = (display, seat_info.strip().upper())
-        self._refresh_hero_card()
+    def _on_status_changed(self, key: str, val: str) -> None:
+        self._dot_values[key] = val
+        self._refresh_status_dots()
 
-    def _refresh_hero_card(self) -> None:
-        """Top card = current strategy. While a structured game plan exists it
-        renders the WIN/PATH/THREAT/NEXT hierarchy (autopilot's plan when AP
-        drives, the coach's otherwise); without one it falls back to the
-        latest strategic/coach advice line.
+        if key == "AUTOPILOT":
+            ap_on = "ON" in val
+            self.ap_btn.setText("AP: ON" if ap_on else "AP: OFF")
+            self.ap_btn.setProperty("apOn", "true" if ap_on else "false")
+            self._repolish(self.ap_btn)
+        elif key == "STYLE":
+            self.style_btn.setText(val)
+        elif key == "MUTE":
+            self.mute_btn.setText(f"Mute: {val}")
+        elif key == "VOICE":
+            self.voice_btn.setText(f"Voice: {val}")
 
-        The current compact layout has no hero-card widgets — state is still
-        tracked so a layout that provides them renders immediately.
-        """
-        if not hasattr(self, "_card_title"):
-            return
-        if self._game_plan:
-            self._card_title.setText("STRATEGY")
-            meta_bits = []
-            turn_formed = _int_value(self._game_plan.get("turn_formed"))
-            if turn_formed:
-                meta_bits.append(f"T{turn_formed}")
-            source = str(self._game_plan.get("source") or "").strip().upper()
-            if source:
-                meta_bits.append(source)
-            self.advice_meta.setText(" · ".join(meta_bits))
-            self.advice_label.setText(self._build_strategy_html(self._game_plan))
-            return
-        self._card_title.setText("COACH")
-        if self._latest_advice is not None:
-            text, seat = self._latest_advice
-            self.advice_meta.setText(seat)
-            self.advice_label.setText(html.escape(text).replace("\n", "<br>"))
+    def _on_spoken_line(self, text: str) -> None:
+        self.append_log(text, role="spoken")
 
-    def _build_strategy_html(self, plan: dict[str, Any]) -> str:
-        t = self._theme_tokens()
+    def _on_advice_received(self, text: str, label: str) -> None:
+        self._latest_advice = (text, label)
+        if self._debug_logging:
+            self.append_log(f"[{label}] {text}", role="advice")
 
-        def row(label: str, value: str, color: str) -> str:
-            return (
-                f"<tr>"
-                f"<td style='color:{t['muted']}; font-size:10px; font-weight:700;"
-                f" padding:1px 8px 1px 0; vertical-align:top;'>{label}</td>"
-                f"<td style='color:{color}; padding:1px 0;'>{html.escape(value)}</td>"
-                f"</tr>"
+    def _on_log_emitted(self, msg: str, role: str) -> None:
+        if role in self._PERTINENT_LOG_ROLES or self._debug_logging:
+            self.append_log(msg, role=role)
+
+    def _on_error_occurred(self, err: str) -> None:
+        self.append_log(err, role="error")
+
+    def _on_telemetry_updated(self, data: dict[str, Any]) -> None:
+        if self._brain_stream_window and self._brain_stream_window.isVisible():
+            self._brain_stream_window.update_telemetry(
+                latency=data.get("latency_ms", ""),
+                backend=data.get("model", ""),
+                bridge_connected=data.get("bridge_connected", False),
             )
 
-        rows: list[str] = []
-        wins = [str(w).strip() for w in (plan.get("win_conditions") or []) if str(w).strip()]
-        if wins:
-            rows.append(row("WIN", " / ".join(wins), t["castable_fg"]))
-        path = str(plan.get("path") or "").strip()
-        if path:
-            rows.append(row("PATH", path, t["text"]))
-        threat = str(plan.get("threat") or "").strip()
-        if threat:
-            rows.append(row("THREAT", threat, t["uncastable_fg"]))
-        develop = str(plan.get("develop_next") or "").strip()
-        if develop:
-            rows.append(row("NEXT", develop, t["spell"]))
-        return f"<table cellspacing='0' cellpadding='0'>{''.join(rows)}</table>"
+    def _on_reasoning_chunk(self, chunk: str) -> None:
+        if self._brain_stream_window and self._brain_stream_window.isVisible():
+            self._brain_stream_window.append_reasoning_chunk(chunk)
 
-    # -- game state -----------------------------------------------------------
+    def append_log(self, text: str, role: str = "status") -> None:
+        """Append a colored line to the subtitle & activity feed."""
+        self._activity_history.append((text, role))
+        t = self._theme_tokens()
+        colors = self._LOG_COLORS_DARK if t["is_dark"] else self._LOG_COLORS_LIGHT
+        color = colors.get(role, colors["status"])
 
-    def _update_game_state(self, data: dict[str, Any]) -> None:
-        # The compact layout has no game_state_view document — track the
-        # payload and refresh the turn strip instead of delegating to the
-        # classic renderer.
-        self._last_game_state_payload = data
-        self._refresh_turn_strip(data)
-        mcts = data.get("mcts_tree")
-        if isinstance(mcts, dict):
-            self._update_mcts_tree(mcts)
-        else:
-            turn = data.get("turn") if isinstance(data.get("turn"), dict) else {}
-            self._update_mcts_tree({
-                "turn_number": turn.get("turn_number") or data.get("turn_number", 1),
-                "phase": turn.get("phase") or data.get("phase", "Main1"),
-            })
+        font_size = "13px" if role == "spoken" else "11px"
+        font_weight = "600" if role in ("spoken", "error") else "400"
+        escaped = html.escape(text).replace("\n", "<br>")
 
-    def refresh_game_state_view(self) -> None:
-        if self._last_game_state_payload:
-            self._refresh_turn_strip(self._last_game_state_payload)
-        else:
+        line_html = f"<div style='color:{color}; font-size:{font_size}; font-weight:{font_weight}; margin-bottom:3px;'>{escaped}</div>"
+        self.log_view.append(line_html)
+        sb = self.log_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def update_turn_strip(self, game_state: dict[str, Any]) -> None:
+        turn = game_state.get("turn") or {}
+        turn_num = turn.get("turn_number") or game_state.get("turn_number", 0)
+        phase = turn.get("phase") or game_state.get("phase", "") or ""
+        phase_short = phase.replace("Phase_", "").replace("Step_", " ").strip()
+
+        local_seat = game_state.get("local_seat_id")
+        active_player = turn.get("active_player")
+
+        if not turn_num and not phase:
             self.turn_strip.setText("Waiting for MTGA…")
             self.turn_strip.setProperty("who", "none")
-            self._repolish(self.turn_strip)
-
-    def _refresh_turn_strip(self, data: dict[str, Any]) -> None:
-        turn = data.get("turn")
-        if not isinstance(turn, dict):
-            turn = {}
-        local_seat = _int_value(data.get("local_seat_id"))
-        turn_num = _int_value(turn.get("turn_number"))
-        phase = _str_value(turn.get("phase")).replace("Phase_", "") or "?"
-        step = _str_value(turn.get("step")).replace("Step_", "")
-        if step in ("None", "-", "?"):
-            step = ""
-        active_player = _int_value(turn.get("active_player"))
-
-        who = "none"
-        if not turn_num and not active_player:
-            text = "Waiting for MTGA…"
         else:
-            bits = [f"T{turn_num}", phase]
-            if step and step != phase:
-                bits.append(step)
-            if active_player and local_seat:
-                yours = active_player == local_seat
-                who = "you" if yours else "opp"
-                bits.append("YOUR TURN" if yours else "OPP TURN")
-            text = "  ·  ".join(bits)
-            if _str_value(data.get("pending_decision")).strip():
-                text = f"⚠ {text}"
-
-        self.turn_strip.setText(text)
-        if self.turn_strip.property("who") != who:
-            self.turn_strip.setProperty("who", who)
-            self._repolish(self.turn_strip)
-
-    def _build_game_state_html(self, data: dict[str, Any]) -> str:
-        """Narrow-column board view: pending decision → OPP → stack → YOU
-        (hand inline). The turn header lives in the strip widget above, not
-        in this document.
-        """
-        tokens = self._theme_tokens()
-        zones = data.get("zones")
-        if not isinstance(zones, dict):
-            zones = data
-
-        players = data.get("players", [])
-        local_seat = _int_value(data.get("local_seat_id"))
-        local_player = next((p for p in players if isinstance(p, dict) and p.get("is_local") is True), None)
-        opponent_player = next(
-            (p for p in players if isinstance(p, dict) and p.get("is_local") is not True), None
-        )
-        opponent_seat = _int_value(opponent_player.get("seat_id")) if isinstance(opponent_player, dict) else 0
-
-        pending = self._render_pending_decision(
-            data.get("pending_decision"),
-            data.get("decision_context"),
-            data.get("legal_actions"),
-            tokens,
-        )
-
-        battlefield = zones.get("battlefield", [])
-        battlefield = battlefield if isinstance(battlefield, list) else []
-        opp_cards = [
-            card
-            for card in battlefield
-            if isinstance(card, dict) and self._card_controller_seat(card) == opponent_seat
-        ]
-        you_cards = [
-            card
-            for card in battlefield
-            if isinstance(card, dict) and self._card_controller_seat(card) == local_seat
-        ]
-
-        opp_zone = (
-            f"<div style='margin:0 0 4px 0; padding:5px 7px;"
-            f" border:1px solid {tokens['opponent']}40; border-radius:8px;"
-            f" background:{tokens['panel']};'>"
-            f"{self._render_seat_strip('OPP', opponent_player, data, zones, opponent_seat, tokens)}"
-            f"{self._render_board_lanes(opp_cards, tokens)}"
-            f"</div>"
-        )
-
-        stack_html = self._render_stack_section(zones.get("stack"), tokens)
-
-        hand_cards = self._cards_for_zone_and_seat(
-            zones.get("my_hand") or zones.get("hand"), local_seat, allow_unknown_owner=True
-        )
-        hand_html = self._render_hand_lane(hand_cards, data, tokens)
-        you_zone = (
-            f"<div style='margin:4px 0 0 0; padding:5px 7px;"
-            f" border:1px solid {tokens['player']}40; border-radius:8px;"
-            f" background:{tokens['panel']};'>"
-            f"{self._render_seat_strip('YOU', local_player, data, zones, local_seat, tokens)}"
-            f"{self._render_board_lanes(you_cards, tokens)}"
-            f"{hand_html}"
-            f"</div>"
-        )
-
-        # No legal-actions section here: that list is engine plumbing, not
-        # user-facing. It still drives the hand castability colors and the
-        # pending-decision options above.
-        return (
-            f'<div style=\'font-family:Consolas,"Courier New",monospace; color:{tokens["text"]};'
-            f" background:{tokens['bg']}; padding:6px;'>"
-            f"{pending}{opp_zone}{stack_html}{you_zone}"
-            f"</div>"
-        )
-
-    def _render_seat_strip(
-        self,
-        tag: str,
-        player: Any,
-        game_state: dict[str, Any],
-        zones: dict[str, Any],
-        seat_id: int,
-        tokens: dict[str, str],
-    ) -> str:
-        """One-line seat summary: tag, big life + bar, then count chips.
-
-        OPP  ♥ 17 ▰▰▰▰▰▰▰▰▱▱  ✋ 6 · 🪦 2
-        """
-        accent = tokens["opponent"] if tag == "OPP" else tokens["player"]
-        life_value = _int_value(player.get("life_total")) if isinstance(player, dict) else 0
-        try:
-            starting_life = int(game_state.get("starting_life") or 20) or 20
-        except (TypeError, ValueError):
-            starting_life = 20
-        ratio = min(1.0, max(0, life_value) / max(1, starting_life))
-        filled = int(round(ratio * 10))
-        bar = "▰" * filled + "▱" * (10 - filled)
-
-        grave_cards = self._cards_for_zone_and_seat(zones.get("graveyard"), seat_id)
-        exile_cards = self._cards_for_zone_and_seat(zones.get("exile"), seat_id)
-
-        chips: list[tuple[str, str, str]] = []
-        if tag == "OPP":
-            chips.append(("✋", str(_int_value(zones.get("opponent_hand_count"))), "Opponent hand size"))
-        else:
-            library_count = zones.get("library_count")
-            chips.append(
-                (
-                    "📚",
-                    "?" if library_count is None else str(_int_value(library_count)),
-                    "Your library count",
-                )
-            )
-        chips.append(
-            (
-                "🪦",
-                str(len(grave_cards)),
-                f"Graveyard: {self._zone_summary(grave_cards, 8) if grave_cards else 'empty'}",
-            )
-        )
-        # Exile is usually 0 — only spend width on it when non-empty.
-        if exile_cards:
-            chips.append(("⬜", str(len(exile_cards)), f"Exile: {self._zone_summary(exile_cards, 8)}"))
-
-        chip_html = "&nbsp;·&nbsp;".join(
-            f"<span title='{html.escape(tip)}'>"
-            f"<span style='color:{tokens['muted']};'>{icon}</span>"
-            f"<span style='color:{tokens['text']}; font-weight:600;'>&nbsp;{html.escape(value)}</span>"
-            f"</span>"
-            for icon, value, tip in chips
-        )
-        return (
-            f"<div style='font-size:11px; margin:0 0 3px 0;'>"
-            f"<span style='color:{accent}; font-weight:700;'>{tag}</span>"
-            f"&nbsp;&nbsp;"
-            f"<span style='color:{accent}; font-size:14px; font-weight:700;' title='Life total'>"
-            f"♥&nbsp;{life_value}</span>"
-            f"&nbsp;<span style='color:{accent}; letter-spacing:-1px;'>{bar}</span>"
-            f"&nbsp;&nbsp;{chip_html}"
-            f"</div>"
-        )
-
-    def _render_hand_lane(
-        self,
-        cards: list[dict[str, Any]],
-        game_state: dict[str, Any],
-        tokens: dict[str, str],
-    ) -> str:
-        """Your hand as a lane row matching the battlefield lanes, with
-        castability carried by text color instead of badge boxes:
-
-            HAND (2):  Earthbender Ascension 2G · Icetill Explorer 2GG
-        """
-        if not cards:
-            return ""
-        castable_names = self._castable_hand_names(game_state)
-        rendered: list[str] = []
-        for card in cards:
-            if not isinstance(card, dict):
-                continue
-            status = self._hand_card_status(card, castable_names, game_state)
-            if status == "castable":
-                color, tip = tokens["castable_fg"], "Castable now"
-            elif status == "uncastable":
-                color, tip = tokens["uncastable_fg"], "Not enough mana"
-            elif status == "land":
-                color, tip = tokens["land"], "Land"
+            if active_player is not None and local_seat is not None:
+                is_your_turn = int(active_player) == int(local_seat)
+                who = "you" if is_your_turn else "opp"
+                who_label = "Your Turn" if is_your_turn else "Opponent's Turn"
             else:
-                color, tip = tokens["hand_neutral_fg"], ""
-            name = _str_value(card.get("name"), "?")
-            cost = _str_value(card.get("mana_cost")).replace("{", "").replace("}", "")
-            label = f"{name} {cost}".strip()
-            title_attr = f" title='{html.escape(tip)}'" if tip else ""
-            rendered.append(f"<span style='color:{color};'{title_attr}>{html.escape(label)}</span>")
-        if not rendered:
-            return ""
-        joined = "&nbsp;&nbsp;·&nbsp;&nbsp;".join(rendered)
-        return (
-            f"<div style='font-size:11px; line-height:1.45;'>"
-            f"<span style='color:{tokens['muted']}; text-transform:uppercase;"
-            f" letter-spacing:0.04em;'>Hand ({len(rendered)}):</span>&nbsp;&nbsp;"
-            f"{joined}"
-            f"</div>"
+                who = "none"
+                who_label = "Turn"
+
+            self.turn_strip.setText(f"{who_label} (T{turn_num}) · {phase_short}")
+            self.turn_strip.setProperty("who", who)
+
+        self._repolish(self.turn_strip)
+
+    def _refresh_status_dots(self) -> None:
+        model = self._dot_values.get("MODEL") or "Local"
+        bridge_on = self._dot_values.get("BRIDGE") != "OFF"
+        seat = self._dot_values.get("SEAT") or "?"
+
+        t = self._theme_tokens()
+        green = t["castable_fg"]
+        red = t["uncastable_fg"]
+        bridge_color = green if bridge_on else red
+
+        html_dots = (
+            f"<span style='color:{t['muted']};'>Backend: </span>"
+            f"<span style='color:{t['text']}; font-weight:600;'>{html.escape(model)}</span>"
+            f"&nbsp;&nbsp;·&nbsp;&nbsp;"
+            f"<span style='color:{bridge_color}; font-size:13px;'>●</span>"
+            f"<span style='color:{t['text']};'> Bridge</span>"
+            f"&nbsp;&nbsp;·&nbsp;&nbsp;"
+            f"<span style='color:{t['muted']};'>Seat: {html.escape(str(seat))}</span>"
         )
+        self.status_dots.setText(html_dots)
 
-    def _render_board_lanes(self, cards: list[dict[str, Any]], tokens: dict[str, str]) -> str:
-        """Board lanes ordered for glanceability: threats first, lands last."""
-        grouped = self._group_battlefield(cards)
-        parts = [
-            self._render_card_lane(label, grouped.get(key, []), key, tokens)
-            for key, label in (
-                ("creature", "Creatures"),
-                ("planeswalker", "PW"),
-                ("battle", "Battles"),
-                ("enchantment", "Ench."),
-                ("artifact", "Artifacts"),
-                ("other", "Other"),
-                ("land", "Lands"),
-            )
-        ]
-        body = "".join(part for part in parts if part)
-        if not body:
-            return ""
-        return f"<div style='margin-left:2px;'>{body}</div>"
+    def send_chat(self) -> None:
+        text = self.chat_input.text().strip()
+        if not text:
+            return
+        self.chat_input.clear()
+        if text.lower() in ("/report", "/bug", "/debug", "/bugreport"):
+            self._session.trigger_debug_report()
+            return
+        self.append_log(f"> {text}", role="status")
+        self._session.send_chat(text)
 
-    # -- styling ----------------------------------------------------------------
+    def toggle_brain_stream(self) -> None:
+        if self._brain_stream_window is None:
+            self._brain_stream_window = BrainStreamWindow(self)
+        if self._brain_stream_window.isVisible():
+            self._brain_stream_window.hide()
+        else:
+            self._brain_stream_window.show()
+            self._brain_stream_window.raise_()
+            self._brain_stream_window.activateWindow()
+
+    def set_debug_logging(self, enabled: bool) -> None:
+        self._debug_logging = bool(enabled)
+        self._settings.set("desktop_debug_logging", self._debug_logging)
+
+    def _theme_tokens(self) -> dict[str, Any]:
+        from .theme import get_theme_tokens
+        return get_theme_tokens(self)
 
     @staticmethod
-    def _repolish(widget) -> None:
+    def _repolish(widget: QWidget) -> None:
         style = widget.style()
         style.unpolish(widget)
         style.polish(widget)
-
-    def changeEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        super().changeEvent(event)
-        if event.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange):
-            try:
-                self._apply_compact_style()
-                self._refresh_status_dots()
-                self._refresh_hero_card()
-            except Exception:
-                pass
 
     def _apply_compact_style(self) -> None:
         t = self._theme_tokens()
@@ -1064,7 +409,7 @@ class CompactCoachPanel(CoachTab):
     color: {t["header"]};
     border: 1px solid {t["border"]};
     border-radius: 8px;
-    padding: 7px 10px;
+    padding: 6px 10px;
     font-size: 13px;
     font-weight: 700;
 }}
@@ -1082,54 +427,11 @@ class CompactCoachPanel(CoachTab):
     font-size: 11px;
     padding: 0 2px;
 }}
-#adviceCard {{
-    background: {t["panel"]};
-    border: 1px solid {t["border"]};
-    border-left: 4px solid {accent};
-    border-radius: 10px;
-}}
-#adviceTitle {{
-    color: {accent};
-    font-size: 10px;
-    font-weight: 700;
-}}
-#adviceMeta {{
-    color: {t["muted"]};
-    font-size: 10px;
-    font-weight: 600;
-}}
-#adviceText {{
-    color: {t["text"]};
-    font-size: 13px;
-}}
-#activityToggle {{
-    border: none;
-    background: transparent;
-    color: {t["muted"]};
-    text-align: left;
-    font-size: 10px;
-    font-weight: 700;
-    padding: 2px 4px;
-}}
-#activityToggle:hover {{
-    color: {t["text"]};
-}}
-#mctsToggle {{
-    border: none;
-    background: transparent;
-    color: {accent};
-    text-align: left;
-    font-size: 11px;
-    font-weight: 700;
-    padding: 2px 4px;
-}}
-#mctsToggle:hover {{
-    color: {t["text"]};
-}}
-QTextEdit#gameStateView, QTextEdit#logView, QTextEdit#mctsView {{
+QTextEdit#gameStateView, QTextEdit#logView {{
     border: 1px solid {t["border"]};
     border-radius: 8px;
     background: {t["bg"]};
+    padding: 4px;
 }}
 QSplitter#compactSplitter::handle {{
     background: {t["border"]};
@@ -1148,17 +450,92 @@ QPushButton#apButton[apOn="true"] {{
     color: {t["castable_fg"]};
     border: 1px solid {t["castable_fg"]};
 }}
-QToolButton#overflowButton {{
-    border: 1px solid {t["border"]};
+QPushButton#brainStreamButton {{
+    font-weight: 600;
+    color: {accent};
+    border: 1px solid {accent};
     border-radius: 6px;
-    padding: 4px 10px;
-    font-weight: 700;
+    padding: 4px 6px;
 }}
-QToolButton#overflowButton::menu-indicator {{
-    width: 0px;
+QPushButton#bugReportButton {{
+    color: {t["uncastable_fg"]};
+    border: 1px solid {t["uncastable_fg"]};
+    border-radius: 6px;
+    font-weight: 600;
+    padding: 4px 6px;
 }}
 QPushButton#sendButton {{
     font-weight: 600;
 }}
 """
         )
+
+    def changeEvent(self, event: QEvent) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange):
+            with contextlib.suppress(Exception):
+                self._apply_compact_style()
+                self._refresh_status_dots()
+
+    # -- HTML Game State Formatter --------------------------------------------
+
+    def _format_game_state_html(self, state: dict[str, Any]) -> str:
+        tokens = self._theme_tokens()
+        local_seat = state.get("local_seat_id")
+        players = state.get("players", [])
+
+        you = next((p for p in players if p.get("is_local") or p.get("seat_id") == local_seat), {})
+        opp = next((p for p in players if p.get("seat_id") != you.get("seat_id")), {})
+
+        you_life = you.get("life_total", 20)
+        opp_life = opp.get("life_total", 20)
+
+        hand = state.get("hand", [])
+        battlefield = state.get("battlefield", [])
+
+        your_bf = [c for c in battlefield if c.get("controller_seat_id") == local_seat or c.get("owner_seat_id") == local_seat]
+        opp_bf = [c for c in battlefield if c.get("controller_seat_id") != local_seat and c.get("owner_seat_id") != local_seat]
+
+        # Render Opponent Summary
+        opp_html = (
+            f"<div style='margin-bottom:6px;'>"
+            f"<span style='color:{tokens['uncastable_fg']}; font-weight:700;'>OPPONENT</span>"
+            f"&nbsp;&nbsp;<span style='font-size:14px; font-weight:700; color:{tokens['uncastable_fg']};'>♥ {opp_life}</span>"
+            f"&nbsp;&nbsp;<span style='color:{tokens['muted']}; font-size:11px;'>Board: {len(opp_bf)} cards</span>"
+            f"</div>"
+        )
+
+        # Render You Summary
+        you_html = (
+            f"<div style='margin-bottom:6px;'>"
+            f"<span style='color:{tokens['castable_fg']}; font-weight:700;'>YOU</span>"
+            f"&nbsp;&nbsp;<span style='font-size:14px; font-weight:700; color:{tokens['castable_fg']};'>♥ {you_life}</span>"
+            f"&nbsp;&nbsp;<span style='color:{tokens['muted']}; font-size:11px;'>Hand: {len(hand)} · Board: {len(your_bf)}</span>"
+            f"</div>"
+        )
+
+        # Render Hand
+        hand_items = []
+        for c in hand:
+            if isinstance(c, dict):
+                name = html.escape(str(c.get("name") or "?"))
+                cost = html.escape(str(c.get("mana_cost") or "").replace("{", "").replace("}", ""))
+                hand_items.append(f"<span style='color:{tokens['castable_fg']};'>{name}</span> <span style='color:{tokens['muted']};'>{cost}</span>")
+        hand_joined = " · ".join(hand_items) if hand_items else "<i>Empty</i>"
+        hand_html = f"<div style='font-size:11px; margin-bottom:6px;'><b style='color:{tokens['muted']};'>HAND:</b> {hand_joined}</div>"
+
+        # Render Battlefield Creatures & Lands
+        creatures = [c for c in your_bf if "creature" in str(c.get("type_line", "")).lower()]
+        lands = [c for c in your_bf if "land" in str(c.get("type_line", "")).lower()]
+
+        c_strs = [f"{c.get('name', '?')} ({c.get('power', 0)}/{c.get('toughness', 0)})" for c in creatures[:6]]
+        l_strs = [str(c.get('name', '?')) for c in lands[:8]]
+
+        board_html = (
+            f"<div style='font-size:11px;'>"
+            f"<b style='color:{tokens['muted']};'>CREATURES ({len(creatures)}):</b> {html.escape(' · '.join(c_strs)) if c_strs else 'None'}<br>"
+            f"<b style='color:{tokens['muted']};'>LANDS ({len(lands)}):</b> {html.escape(' · '.join(l_strs)) if l_strs else 'None'}"
+            f"</div>"
+        )
+
+        return f"<div style='font-family:sans-serif;'>{opp_html}{you_html}{hand_html}{board_html}</div>"

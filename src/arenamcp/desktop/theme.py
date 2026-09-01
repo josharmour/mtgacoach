@@ -30,6 +30,40 @@ def available_themes() -> list[tuple[str, str]]:
     return list(THEME_LABELS.items())
 
 
+def get_theme_tokens(widget: object | None = None) -> dict[str, Any]:
+    theme = load_saved_theme()
+    is_dark = theme in (THEME_DARK, THEME_HIGH_CONTRAST, THEME_SYSTEM)
+    if is_dark:
+        return {
+            "is_dark": True,
+            "bg": "#181c20",
+            "panel2": "#20262c",
+            "border": "#39424d",
+            "header": "#e6edf3",
+            "text": "#e6edf3",
+            "muted": "#8b949e",
+            "castable_bg": "#142d1f",
+            "castable_fg": "#49d17d",
+            "uncastable_bg": "#34181c",
+            "uncastable_fg": "#ff7b72",
+            "spell": "#58a6ff",
+        }
+    return {
+        "is_dark": False,
+        "bg": "#ffffff",
+        "panel2": "#f5f6f8",
+        "border": "#c1c7d0",
+        "header": "#17191c",
+        "text": "#17191c",
+        "muted": "#6b7280",
+        "castable_bg": "#e6f4ea",
+        "castable_fg": "#137333",
+        "uncastable_bg": "#fce8e6",
+        "uncastable_fg": "#c5221f",
+        "spell": "#1f6feb",
+    }
+
+
 def normalize_theme_name(theme_name: str | None) -> str:
     if not theme_name:
         return THEME_SYSTEM

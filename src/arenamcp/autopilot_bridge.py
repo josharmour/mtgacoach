@@ -8,12 +8,11 @@ import time
 from typing import Any
 
 from arenamcp.action_planner import ActionPlan, ActionType, GameAction
-from arenamcp.autopilot_models import ExecutionPath
+from arenamcp.autopilot_models import ClickResult, ExecutionPath
 from arenamcp.autopilot_targets import (
     _match_target_in_battlefield,
     _normalize_planner_card_name,
 )
-from arenamcp.input_controller import ClickResult
 from arenamcp.mana import mana_cost_to_cmc
 
 logger = logging.getLogger(__name__)

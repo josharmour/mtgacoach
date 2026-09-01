@@ -104,18 +104,6 @@ class _AutopilotTelemetryMixin:
             logger.debug(f"Could not read planner state: {e}")
             info["planner_backend"] = "unavailable"
 
-        # Vision mapper info
-        if self._vision_mapper:
-            try:
-                info["vision_mapper"] = {
-                    "backend": type(self._vision_mapper._backend).__name__,
-                    "model": getattr(self._vision_mapper._backend, "model", "unknown"),
-                    "cache_size": len(self._vision_mapper._cache),
-                }
-            except Exception as e:
-                logger.debug(f"Could not read vision_mapper state: {e}")
-                info["vision_mapper"] = {"error": "unavailable"}
-
         return info
 
     def _record_autopilot_decision(

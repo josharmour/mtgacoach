@@ -97,8 +97,8 @@ class CoachProcess(QObject):
                 return
 
             process = self._process
+            self._process = None
             if process.state() == QProcess.NotRunning:
-                self._process = None
                 process.deleteLater()
                 return
 
@@ -109,6 +109,7 @@ class CoachProcess(QObject):
             if not process.waitForFinished(3000):
                 process.kill()
                 process.waitForFinished(2000)
+            process.deleteLater()
 
     def stop_async(self) -> None:
         """Non-blocking stop — terminates the process and schedules a

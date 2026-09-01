@@ -64,54 +64,21 @@ def panel(qapp):
     p.close()
 
 
-def test_compact_coach_mcts_tree_renders_on_game_state(panel):
+def test_compact_coach_renders_on_game_state(panel):
     snap = make_snapshot()
-    panel._update_game_state(snap)
-    html = panel.mcts_view.toHtml()
-    assert "WIN EXPECTANCY" in html
-    assert "sims" in html
-    assert "MCTS" in panel.mcts_toggle_btn.text()
-
-
-def test_compact_coach_mcts_tree_event(panel):
-    mcts_payload = {
-        "root_win_probability": 0.72,
-        "total_simulations": 1000,
-        "turn_number": 4,
-        "phase": "Main1",
-        "best_action": "Cast: Lightning Bolt",
-        "branches": [
-            {
-                "action": "Cast: Lightning Bolt",
-                "mana_cost": "{R}",
-                "win_probability": 0.75,
-                "value_delta": 0.03,
-                "tag": "⭐ BEST LINE",
-                "outcome_summary": "Removes top opponent threat; swings board power delta",
-            }
-        ],
-    }
-    panel._handle_event({"type": "mcts_tree", "data": mcts_payload})
-    html = panel.mcts_view.toHtml()
-    assert "72%" in html
-    assert "Cast: Lightning Bolt" in html
-    assert "BEST LINE" in html
-    assert "72% WIN" in panel.mcts_toggle_btn.text()
-
-
-def test_compact_coach_mcts_toggle_collapse(panel):
-    assert panel._mcts_expanded is True
-    assert panel.mcts_view.isVisible() is True
-    panel._toggle_mcts_expanded()
-    assert panel._mcts_expanded is False
-    assert panel.mcts_view.isVisible() is False
+    panel._on_game_state_changed(snap)
+    html = panel.game_state_view.toHtml()
+    assert "OPPONENT" in html
+    assert "YOU" in html
+    assert "Lightning Bolt" in html
+    assert "Grizzly Bears" in html
+    assert "Your Turn" in panel.turn_strip.text()
 
 
 def test_compact_coach_debug_report_triggers(panel, monkeypatch):
     called = []
-    monkeypatch.setattr(panel, "_submit_debug_report", lambda: called.append(True))
+    monkeypatch.setattr(panel.session, "trigger_debug_report", lambda: called.append(True))
 
-    # Test slash commands
     panel.chat_input.setText("/report")
     panel.send_chat()
     assert len(called) == 1
@@ -125,8 +92,10 @@ def test_compact_coach_debug_report_triggers(panel, monkeypatch):
     assert len(called) == 3
 
 
-def test_compact_coach_overflow_has_debug_report(panel):
-    more_btn = panel._build_overflow_button()
-    menu = more_btn.menu()
-    actions = [a.text() for a in menu.actions()]
-    assert "Debug Report" in actions
+def test_compact_coach_toolbar_buttons(panel):
+    assert panel.ap_btn is not None
+    assert panel.brain_stream_btn is not None
+    assert panel.bug_report_btn is not None
+    assert panel.voice_btn is not None
+    assert panel.style_btn is not None
+    assert panel.mute_btn is not None

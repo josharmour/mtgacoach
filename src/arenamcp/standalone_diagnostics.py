@@ -207,24 +207,16 @@ class _DiagnosticsMixin:
 
             from PIL import Image
 
-            from arenamcp.input_controller import find_mtga_hwnd
+            from arenamcp.desktop.window_tracking import get_mtga_window_rect
             from arenamcp.screen_capture import capture_mtga_png, is_mostly_black
 
-            window_rect = None
-            if self._vision_mapper:
-                window_rect = self._vision_mapper.window_rect or self._vision_mapper.refresh_window()
-
+            window_rect = get_mtga_window_rect()
             bbox = None
             if window_rect:
                 left, top, width, height = window_rect
                 bbox = (left, top, left + width, top + height)
 
-            try:
-                hwnd = find_mtga_hwnd()
-            except Exception:
-                hwnd = None
-
-            png_bytes = capture_mtga_png(hwnd=hwnd, bbox=bbox)
+            png_bytes = capture_mtga_png(bbox=bbox)
             if not png_bytes:
                 self.ui.log("[red]Screenshot capture returned no data.[/]")
                 return

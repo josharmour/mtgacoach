@@ -166,36 +166,6 @@ def analyze_sealed_pool(
     all_sorted = sorted(pool_cards, key=lambda c: c.get("gih_wr", 0) or 0, reverse=True)
     top_cards = all_sorted[:10]
 
-    # AI Shell Generator
-    generated_shells = []
-    try:
-        from arenamcp.deck_builder import DeckBuilderV2
-
-        grp_ids = []
-        pool_dict = {}
-        for c in pool_cards:
-            gid = c.get("grp_id")
-            if gid:
-                grp_ids.append(gid)
-                pool_dict[gid] = c
-
-        def enrich_fn(gid):
-            c = pool_dict.get(gid, {})
-            # Map pool_card keys to deck_builder expected keys
-            return {
-                "name": c.get("name", ""),
-                "type_line": c.get("type_line", ""),
-                "mana_cost": c.get("mana_cost", ""),
-                "oracle_text": c.get("oracle_text", ""),
-            }
-
-        builder = DeckBuilderV2(draft_stats=draft_stats, enrich_fn=enrich_fn)
-        # Generate top 3 shells (e.g., Best 2-Color, Greedy Splash, Aggro)
-        suggestions = builder.suggest_deck(grp_ids, set_code, top_n=3)
-        generated_shells = suggestions
-    except Exception as e:
-        logger.warning(f"Failed to generate AI Shells: {e}")
-
     return SealedAnalysis(
         set_code=set_code,
         total_cards=len(pool_cards),

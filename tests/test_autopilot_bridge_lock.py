@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import arenamcp.autopilot as autopilot_module
 from arenamcp.action_planner import ActionPlan, ActionType, GameAction
 from arenamcp.autopilot import AutopilotConfig, AutopilotEngine, AutopilotState
-from arenamcp.input_controller import ClickResult
+from arenamcp.autopilot_models import ClickResult
 
 
 class _DummyPlanner:

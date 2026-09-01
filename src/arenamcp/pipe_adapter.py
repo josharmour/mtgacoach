@@ -109,6 +109,14 @@ class PipeAdapter:
             self._stdout_thread = threading.Thread(target=self._stdout_loop, daemon=True, name="pipe-stdout")
             self._stdout_thread.start()
 
+        # Emit initial statuses so GUI is immediately in sync
+        coach = self._coach
+        if coach is not None:
+            ap_on = getattr(coach, "_autopilot_enabled", False)
+            self.status("AUTOPILOT", "AP:ON" if ap_on else "AP:OFF")
+            self.status("MUTE", "ON" if getattr(coach, "_muted", False) else "OFF")
+            self.status("STYLE", getattr(coach, "_style", "Quick").title())
+
     def stop(self) -> None:
         self._running = False
 
@@ -912,116 +920,11 @@ class PipeAdapter:
                 return
             self._handle_game_assessment()
         else:
-            # Out of match, /deck means "what should I play?" — delegate to
-            # the tiered deck-suggestion flow instead of a dead-end message.
             self._handle_out_of_match_deck_suggestions()
 
     def _handle_out_of_match_deck_suggestions(self) -> None:
-        """Generate tiered format deck suggestions for out-of-match or event view."""
-        coach = self._coach
-        if not coach:
-            self.log("Coach not available")
-            return
-
-        game_state = coach._mcp.get_game_state() if coach._mcp else {}
-        # The log parser does not surface the active event format yet, so
-        # this key is absent today — the Standard default is an assumption
-        # we make explicit in the output below.
-        format_known = bool(game_state.get("active_event_format"))
-        fmt = game_state.get("active_event_format") or "Standard"
-        self.log(f"Evaluating inventory & wildcards for '{fmt}' deck suggestions...")
-
-        try:
-            from arenamcp.deck_builder import DeckBuilderV2
-
-            builder = DeckBuilderV2(
-                draft_stats=getattr(coach, "draft_stats", None),
-                enrich_fn=lambda gid: coach._mcp.get_card_info(gid) if coach._mcp else {},
-            )
-
-            # Check if we have an active or recently completed draft/sealed pool
-            draft_state = getattr(coach, "_draft_state", None)
-            draft_pool = []
-            if draft_state:
-                draft_pool = (
-                    getattr(draft_state, "picked_cards", None)
-                    or getattr(draft_state, "last_completed_pool", None)
-                    or getattr(draft_state, "sealed_pool", None)
-                )
-
-            if draft_pool:
-                self.log(
-                    f"Building 40-card Limited deck recommendations from pool of {len(draft_pool)} cards..."
-                )
-                set_code = getattr(draft_state, "set_code", "") or ""
-                limited_suggestions = builder.suggest_decks_for_pool(draft_pool, set_code=set_code, top_n=3)
-                if limited_suggestions:
-                    lines = [f"### 🎴 Limited Deck Recommendations ({len(draft_pool)} Card Pool)"]
-                    for d in limited_suggestions:
-                        lines.append(f"\n#### {d.color_pair_name} ({d.main_colors}) — Score: {d.score:.1f}")
-                        lines.append(
-                            f"**Archetype**: {d.archetype} | **Lands**: {sum(d.lands.values())} | **Playables**: {sum(d.maindeck.values())}"
-                        )
-                        lines.append("```mtga\n" + d.to_arena_import() + "\n```")
-                    text = "\n".join(lines)
-                    self.advice(text, "LIMITED DECK RECOMMENDATIONS")
-                    if getattr(coach, "_voice_output", None):
-                        coach.speak_advice(
-                            "Generated Limited deck recommendations for your draft pool.", blocking=False
-                        )
-                    return
-
-            # Collection/wildcard counts for constructed Standard suggestions:
-            player_cards = game_state.get("player_cards") or {}
-            wildcards = game_state.get("player_wildcards") or {}
-            collection_known = bool(player_cards or wildcards)
-            if not collection_known and not getattr(self, "_warned_no_collection_data", False):
-                self._warned_no_collection_data = True
-                logger.warning(
-                    "Deck suggestions: collection/wildcard data is not "
-                    "available from the log parser — assuming an empty "
-                    "collection, so craft costs show the full deck cost."
-                )
-
-            suggestions = builder.suggest_tiered_decks(
-                player_cards=player_cards,
-                wildcards=wildcards,
-                format_name=fmt,
-                top_n_per_tier=2,
-            )
-
-            lines = [f"### 🎴 Deck Suggestions for Format: {fmt.title()}"]
-            has_suggestions = False
-            for tier_name, deck_list in suggestions.items():
-                if not deck_list:
-                    continue
-                has_suggestions = True
-                lines.append(f"\n#### {tier_name}")
-                for d in deck_list:
-                    lines.append(f"- **{d.name}** ({d.main_colors}) — *Score: {d.score:.1f}*")
-                    if d.craft_cost.total > 0:
-                        lines.append(f"  *Craft Cost*: {d.craft_cost}")
-                    else:
-                        lines.append("  *Status*: 100% Owned (0 Wildcards Needed!)")
-                    lines.append("```mtga\n" + d.to_arena_import() + "\n```")
-
-            notes = []
-            if not format_known:
-                notes.append("format assumed Standard (active event format not detected)")
-            if not collection_known:
-                notes.append(
-                    "collection/wildcard data unavailable — craft costs assume you own none of these cards"
-                )
-            if has_suggestions and notes:
-                lines.append("\n*Note: " + "; ".join(notes) + ".*")
-
-            text = "\n".join(lines) if has_suggestions else f"No format templates found for {fmt}."
-            self.advice(text, "DECK SUGGESTIONS")
-            if getattr(coach, "_voice_output", None):
-                coach.speak_advice(f"Generated deck suggestions for {fmt}.", blocking=False)
-        except Exception as e:
-            logger.error("Deck suggestions failed: %s", e)
-            self.error(f"Deck suggestions failed: {e}")
+        self.log("Deck builder is disabled in streamlined mode.")
+        self.advice("Deck builder is disabled in streamlined mode. In-game coaching and draft assistance are active.", "DECK ADVICE")
 
     def _handle_replay_advice(self) -> None:
         """Re-emit and re-speak the most recent advice (F4)."""

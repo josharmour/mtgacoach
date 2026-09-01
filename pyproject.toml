@@ -40,11 +40,8 @@ dependencies = [
     "PySide6>=6.7.0",
     "openai>=1.0.0",
     "kokoro-onnx",         # TTS (spoken advice)
-    "soundfile>=0.12.0",   # audio I/O for TTS/STT
-    "faster-whisper>=1.0.0",  # STT (push-to-talk voice input)
-    "Pillow>=10.0.0",      # autopilot vision/screenshot handling (imported
-                           # unconditionally by autopilot.py; without it the
-                           # AP toggle fails "init unsuccessful")
+    "soundfile>=0.12.0",   # audio I/O for TTS
+    "Pillow>=10.0.0",      # screenshot capture for debug reports
 ]
 
 [project.urls]
@@ -71,7 +68,6 @@ autopilot = [
 ]
 scraping = [
     "beautifulsoup4>=4.12.0",
-    "pyedhrec>=0.0.2",
     "lxml>=5.0.0",
     "networkx>=3.0",
 ]

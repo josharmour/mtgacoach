@@ -18,20 +18,16 @@ google-generativeai>=0.3.0
 anthropic>=0.18.0
 ollama>=0.1.0
 
-# Voice input (speech-to-text)
-sounddevice>=0.4.6
-faster-whisper>=0.10.0
-
 # Voice output (text-to-speech)
 kokoro-onnx
 soundfile>=0.12.0
+sounddevice>=0.4.6
 
 # Synergy graph
 networkx>=3.0
 
-# Web scraping (EDHREC + MTGGoldfish)
+# Web scraping (MTGGoldfish)
 beautifulsoup4>=4.12.0
-pyedhrec>=0.0.2
 lxml>=5.0.0
 
 # Utilities

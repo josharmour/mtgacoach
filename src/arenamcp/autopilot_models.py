@@ -74,3 +74,22 @@ class AutopilotConfig:
     # After a wait expires without a connection, skip further waits for
     # this long so a dead plugin doesn't add seconds to every action.
     bridge_reconnect_wait_cooldown: float = 20.0
+
+
+@dataclass
+class ClickResult:
+    """Result of an action execution."""
+
+    success: bool
+    x: int = 0
+    y: int = 0
+    description: str = ""
+    error: str = ""
+
+    def __str__(self) -> str:
+        if self.success:
+            return f"OK: {self.description}" + (f" at ({self.x}, {self.y})" if self.x or self.y else "")
+        return f"FAIL: {self.description} - {self.error}"
+
+
+ActionResult = ClickResult

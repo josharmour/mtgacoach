@@ -137,8 +137,6 @@ def _build_autopilot(backend_spec: str, recorder: TrajectoryRecorder, license_ke
     from arenamcp import server
     from arenamcp.action_planner import ActionPlanner
     from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
-    from arenamcp.input_controller import InputController
-    from arenamcp.screen_mapper import ScreenMapper
 
     # Start the in-process log watcher so server.get_game_state() is live.
     server.start_watching()
@@ -159,8 +157,6 @@ def _build_autopilot(backend_spec: str, recorder: TrajectoryRecorder, license_ke
         timeout=config.planning_timeout,
         land_drop_first=config.land_drop_first,
     )
-    mapper = ScreenMapper()
-    controller = InputController(dry_run=False)
 
     # Best-effort TTS for spoken game-plan announcements. If audio/TTS isn't
     # available, fall back to silent operation (never block data collection).
@@ -183,8 +179,6 @@ def _build_autopilot(backend_spec: str, recorder: TrajectoryRecorder, license_ke
 
     engine = AutopilotEngine(
         planner=planner,
-        mapper=mapper,
-        controller=controller,
         get_game_state=server.get_game_state,
         config=config,
         speak_fn=speak_fn,

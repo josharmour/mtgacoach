@@ -575,28 +575,8 @@ class StandaloneCoach(
         self._max_errors_before_fallback = 3
 
     def _init_vision_mapper(self) -> None:
-        """Initialize VisionMapper for vision watchdog and autopilot.
-
-        Sets self._vision_mapper if Ollama VLM is available.
-        Called regardless of autopilot mode so coaching-only users
-        still get missed-decision detection.
-        """
-        try:
-            from arenamcp.vision_mapper import VisionMapper
-
-            backend = self._coach._backend if self._coach else None
-            mapper = VisionMapper(
-                ollama_model="qwen2.5-vl:3b",
-                enable_local_vlm=True,
-                enable_cloud_vlm=True,
-            )
-            if backend:
-                mapper.set_cloud_backend(backend)
-            self._vision_mapper = mapper
-            self.ui.log("[bold cyan]VisionMapper enabled (Ollama + cache)[/]")
-        except Exception as e:
-            logger.info(f"VisionMapper unavailable: {e}")
-            self.ui.log(f"[yellow]VisionMapper unavailable ({e}) — vision watchdog disabled[/]")
+        """Vision mapper is disabled in streamlined mode."""
+        self._vision_mapper = None
 
     def _init_autopilot(self) -> None:
         """Initialize autopilot components (requires LLM backend + MCP)."""
@@ -604,15 +584,13 @@ class StandaloneCoach(
             from arenamcp.action_planner import ActionPlanner
             from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
             from arenamcp.coach import create_backend
-            from arenamcp.input_controller import InputController
 
+            if not self._coach:
+                self._init_llm()
             if not self._coach:
                 self.ui.log("[red]Autopilot: no LLM backend available[/]")
                 return
 
-            # Create a SEPARATE backend instance for autopilot so it has its
-            # own subprocess/connection and lock — eliminates lock contention
-            # with the coaching backend.
             autopilot_backend = create_backend(self._backend_name, model=self._model_name)
             self._autopilot_backend = autopilot_backend
 
@@ -628,21 +606,8 @@ class StandaloneCoach(
                 land_drop_first=config.land_drop_first,
             )
 
-            # Reuse shared VisionMapper if available, otherwise fall back to static coords
-            if self._vision_mapper:
-                mapper = self._vision_mapper
-            else:
-                from arenamcp.screen_mapper import ScreenMapper
-
-                mapper = ScreenMapper()
-                self.ui.log("[yellow]Autopilot: using static coords (VisionMapper not available)[/]")
-
-            controller = InputController(dry_run=self._autopilot_dry_run)
-
             self._autopilot = AutopilotEngine(
                 planner=planner,
-                mapper=mapper,
-                controller=controller,
                 get_game_state=self._mcp.get_game_state,
                 config=config,
                 speak_fn=self.speak_advice,
@@ -651,14 +616,11 @@ class StandaloneCoach(
                 ui_turn_plan_fn=(self.ui.turn_plan if self.ui and hasattr(self.ui, "turn_plan") else None),
                 ui_game_plan_fn=(self.ui.game_plan if self.ui and hasattr(self.ui, "game_plan") else None),
             )
-            # Give the autopilot a way to write into advice_history so
-            # auto-handled decisions (auto-target, auto-pay, etc.) show
-            # up in bug reports alongside LLM advice.
             self._autopilot._advice_recorder = self._record_advice
 
             mode = "DRY-RUN" if self._autopilot_dry_run else "LIVE"
             afk = " (AFK)" if self._autopilot_afk else ""
-            self.ui.log(f"[bold green]Autopilot initialized: {mode}{afk}[/]")
+            self.ui.log(f"[bold green]Autopilot initialized (GRE bridge mode): {mode}{afk}[/]")
             logger.info(f"Autopilot initialized: {mode}{afk}")
         except ImportError as e:
             self.ui.log(f"[red]Autopilot unavailable (missing deps): {e}[/]")
@@ -851,18 +813,7 @@ class StandaloneCoach(
             self.ui.error("TTS failed to initialize. Check audio devices/drivers.")
             return
 
-        # Initialize local STT (Whisper via VoiceInput) only if PTT/VOX mode
-        if self._voice_mode in ("ptt", "vox"):
-            try:
-                from arenamcp.voice import VoiceInput
-
-                logger.info(f"Initializing voice input ({self.voice_mode})...")
-                self._voice_input = VoiceInput(mode=self.voice_mode)
-            except Exception as e:
-                logger.error(f"Voice input init failed - keeping TTS only: {e}")
-                self._voice_input = None
-        else:
-            logger.info(f"Voice input disabled (mode={self._voice_mode})")
+        self._voice_input = None
 
     def _init_voice_background(self) -> None:
         """Initialize voice in a background thread (pipe mode only).
@@ -1417,26 +1368,6 @@ class StandaloneCoach(
                     last_actionable_window_log_at = 0.0
 
                 # Resolve unknown cards via VLM (only when using a local VLM backend)
-                # Skip entirely for cloud backends like Azure — the card DB
-                # or Scryfall fallback handles unknown cards without VLM.
-                if (
-                    turn_num > 0
-                    and self._vision_mapper
-                    and self.backend_name == "local"
-                    and not getattr(self, "_vlm_resolve_in_progress", False)
-                ):
-                    self._vlm_resolve_in_progress = True
-
-                    def _bg_resolve(state):
-                        try:
-                            self._resolve_unknown_cards(state)
-                        except Exception as exc:
-                            logger.debug(f"VLM card resolution error: {exc}")
-                        finally:
-                            self._vlm_resolve_in_progress = False
-
-                    threading.Thread(target=_bg_resolve, args=(curr_state,), daemon=True).start()
-
                 # ── GAME END DETECTION ──
                 # PRIMARY: Check threading.Event set by parser thread
                 # (IntermissionReq or finalMatchResult). This fires immediately
@@ -2632,126 +2563,6 @@ class StandaloneCoach(
 
         logger.info("Coaching loop stopped")
 
-    def _voice_loop(self) -> None:
-        """Handle voice input for questions (PTT mode with Whisper + Kokoro)."""
-        if not self._voice_input:
-            return
-
-        logger.info(f"Voice loop started ({self.voice_mode})")
-        if self.voice_mode == "ptt":
-            self.ui.log("\n[MIC] Press F4 to ask (tap for quick advice)\n")
-        else:
-            self.ui.log("\n[MIC] Voice activation enabled\n")
-
-        self._voice_input.start()
-
-        while self._running:
-            try:
-                text = self._voice_input.wait_for_speech(timeout=2.0)
-
-                if not self._voice_input._result_ready.is_set():
-                    continue
-
-                if self._coach and self._mcp:
-                    # Force a log poll to get freshest state before advice
-                    self._mcp.poll_log()
-                    game_state = self._mcp.get_game_state()
-
-                    # Get current seat and mana for display
-                    local_seat = None
-                    for p in game_state.get("players", []):
-                        if p.get("is_local"):
-                            local_seat = p.get("seat_id")
-                            break
-
-                    # Count untapped lands for mana display
-                    battlefield = game_state.get("battlefield", [])
-                    your_cards = [c for c in battlefield if c.get("owner_seat_id") == local_seat]
-                    untapped_lands = sum(
-                        1
-                        for c in your_cards
-                        if "land" in c.get("type_line", "").lower() and not c.get("is_tapped")
-                    )
-
-                    seat_info = (
-                        f"Seat {local_seat}|{untapped_lands} mana|{self.backend_name}"
-                        if local_seat
-                        else "Seat ?"
-                    )
-
-                    # Check if we can use direct audio with Gemini
-                    audio_data = self._voice_input.get_last_audio()
-                    use_direct_audio = (
-                        audio_data is not None
-                        and len(audio_data) > 0
-                        and hasattr(self._coach._backend, "complete_with_audio")
-                    )
-
-                    # Inject library targets when a tutor spell is in hand
-                    self._inject_library_summary_if_needed(game_state)
-
-                    if use_direct_audio:
-                        # Direct audio to Gemini - skip local transcription
-                        logger.info(f"AUDIO INPUT: {len(audio_data)} samples -> Gemini")
-                        self.ui.log("\n[AUDIO] Sending to Gemini...")
-                        context = self._coach._format_game_context(game_state)
-
-                        # FORCE specific answer mode
-                        user_message = (
-                            f"{context}\n\n"
-                            "IMPORTANT: The user just asked a specific question via audio (attached). "
-                            "Do NOT give generic gameplay advice. "
-                            "Listen to the audio and answer EXACTLY what they asked. "
-                            "If they asked about a specific card, interaction, or rule, explain it in detail. "
-                            "Ignore your usual brevity constraints if needed to answer fully."
-                        )
-                        advice = self._coach._backend.complete_with_audio(
-                            self._coach._system_prompt, user_message, audio_data
-                        )
-                    elif text and text.strip():
-                        logger.info(f"QUESTION: {text}")
-                        self.ui.log(f"\n[YOU] {text}")
-                        advice = self._coach.get_advice(game_state, question=text, style=self.advice_style)
-                    else:
-                        logger.info("QUICK ADVICE (F4 tap)")
-                        self.ui.log("\n[QUICK] Analyzing...")
-                        advice = self._coach.get_advice(
-                            game_state, trigger="user_request", style=self.advice_style
-                        )
-
-                    logger.info(f"RESPONSE: {advice}")
-
-                    # Check for backend auth/billing failures → auto-fallback
-                    from arenamcp.backend_detect import is_query_failure_retriable as _is_err2
-
-                    is_error_response = (
-                        is_backend_error_text(advice)
-                        or "didn't catch that" in advice
-                        or (_is_err2(advice) and len(advice) < 200)
-                    )
-                    if not self.check_advice_for_backend_failure(advice) and not is_error_response:
-                        self._mark_backend_healthy()
-                        self.ui.advice(advice, seat_info)
-                        self.speak_advice(advice)
-                    elif is_error_response:
-                        logger.warning(f"Suppressing error advice from voice TTS: {advice[:80]}")
-                        self._report_backend_failure(advice)
-                        self.ui.error(advice)
-
-                    # Record for debug history with the same game state
-                    trigger = (
-                        "voice_audio" if use_direct_audio else ("voice_question" if text else "voice_quick")
-                    )
-                    self._record_advice(advice, trigger, game_state=game_state)
-
-            except Exception as e:
-                if self._running:
-                    logger.error(f"Voice loop error: {e}")
-                    self._record_error(str(e), "voice_loop")
-
-        self._voice_input.stop()
-        logger.info("Voice loop stopped")
-
     def start(self) -> None:
         """Start the standalone coach."""
         logger.info(
@@ -2787,13 +2598,6 @@ class StandaloneCoach(
             if self._coach and hasattr(self._coach, "_backend"):
                 actual_model = getattr(self._coach._backend, "model", self.model_name)
 
-            # Initialize VisionMapper (shared: watchdog + autopilot)
-            self.ui.log("Initializing vision mapper...")
-            self._init_vision_mapper()
-
-            # Initialize autopilot if enabled. Restoring from a prior
-            # saved-on state surfaces a log/UI nudge so the user isn't
-            # surprised that it came up already armed.
             if self._autopilot_enabled:
                 self._init_autopilot()
                 if getattr(self, "_autopilot_restored_from_settings", False):
@@ -2805,16 +2609,10 @@ class StandaloneCoach(
                             "you want to play manually.[/]"
                         )
 
-            # Start coaching and voice threads
-            logger.info(f"Starting threads for backend: {self.backend_name}")
-            logger.info("Starting PTT voice loop + coaching loop")
+            # Start coaching thread
+            logger.info(f"Starting coaching thread for backend: {self.backend_name}")
             self._coaching_thread = threading.Thread(target=self._coaching_loop, daemon=True, name="coaching")
             self._coaching_thread.start()
-
-            # Only launch voice thread if PTT/VOX is wanted
-            if self._voice_mode in ("ptt", "vox"):
-                self._voice_thread = threading.Thread(target=self._voice_loop, daemon=True, name="voice")
-                self._voice_thread.start()
 
         # Register hotkeys in a background thread (the keyboard module's
         # low-level Windows hook install can take a few seconds).

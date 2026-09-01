@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from arenamcp.action_planner import ActionPlanner, ActionType, GameAction
 from arenamcp.autopilot import AutopilotEngine
-from arenamcp.input_controller import ClickResult
+from arenamcp.autopilot_models import ClickResult
 
 
 class _SubmitTargetBridge:

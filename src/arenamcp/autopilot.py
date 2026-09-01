@@ -32,8 +32,7 @@ from arenamcp.gre_bridge import (
     enrich_snapshot_from_pending_response,
     get_bridge,
 )
-from arenamcp.input_controller import ClickResult, InputController
-from arenamcp.screen_mapper import ScreenCoord, ScreenMapper
+from arenamcp.autopilot_models import ClickResult
 
 logger = logging.getLogger(__name__)
 
@@ -80,9 +79,9 @@ class AutopilotEngine(
     def __init__(
         self,
         planner: ActionPlanner,
-        mapper: ScreenMapper,
-        controller: InputController,
-        get_game_state: Callable[[], dict[str, Any]],
+        mapper: Any | None = None,
+        controller: Any | None = None,
+        get_game_state: Callable[[], dict[str, Any]] | None = None,
         config: AutopilotConfig | None = None,
         speak_fn: Callable[[str, bool], None] | None = None,
         ui_advice_fn: Callable[[str, str], None] | None = None,
@@ -90,32 +89,11 @@ class AutopilotEngine(
         ui_turn_plan_fn: Callable[[dict[str, Any] | None], None] | None = None,
         ui_game_plan_fn: Callable[[dict[str, Any] | None], None] | None = None,
     ):
-        """Initialize the autopilot engine.
-
-        Args:
-            planner: ActionPlanner for LLM-based action planning.
-            mapper: ScreenMapper for coordinate calculations.
-            controller: InputController for mouse/keyboard input.
-            get_game_state: Callable that returns current game state dict.
-            config: Optional autopilot configuration.
-            speak_fn: Optional TTS function (text, blocking) for previewing actions.
-            ui_advice_fn: Optional UI callback (text, label) for displaying actions.
-            bug_report_fn: Optional callback (reason, extra_context) invoked
-                whenever the GRE bridge can't submit an action and autopilot
-                has to fall back. Used to auto-file a bug report so we have
-                telemetry on every bridge miss.
-            ui_turn_plan_fn: Optional UI callback (payload-or-None) for the
-                static turn-plan panel. Receives the serialized turn plan
-                whenever progress advances or the plan is invalidated; None
-                payload means "hide the panel". Wholesale-replace; no append.
-            ui_game_plan_fn: Optional UI callback (payload-or-None) for the
-                strategic game-plan card. Receives GamePlan.as_payload()
-                whenever the persistent plan changes. Wholesale-replace.
-        """
+        """Initialize the autopilot engine."""
         self._planner = planner
         self._mapper = mapper
         self._controller = controller
-        self._game_state_fn = get_game_state
+        self._game_state_fn = get_game_state or (lambda: {})
         self._config = config or AutopilotConfig()
         self._speak_fn = speak_fn
         self._ui_advice_fn = ui_advice_fn
@@ -274,78 +252,6 @@ class AutopilotEngine(
         self._AUTO_RESPOND_LOOP_THRESHOLD = 3
         # Spoken game-plan announcement dedup (speak each new plan once).
         self._last_announced_plan: str = ""
-
-    def _capture_screenshot(self) -> bytes | None:
-        """Capture MTGA window as PNG bytes for VLM analysis.
-
-        Uses PrintWindow for DirectX/Unity windows; ImageGrab (GDI BitBlt)
-        returns black frames on many systems for MTGA.
-        """
-        try:
-            from arenamcp.input_controller import find_mtga_hwnd
-            from arenamcp.screen_capture import capture_mtga_png
-
-            window_rect = self._mapper.window_rect
-            if not window_rect:
-                window_rect = self._mapper.refresh_window()
-            bbox = None
-            if window_rect:
-                left, top, width, height = window_rect
-                bbox = (left, top, left + width, top + height)
-
-            try:
-                hwnd = find_mtga_hwnd()
-            except Exception:
-                hwnd = None
-
-            return capture_mtga_png(hwnd=hwnd, bbox=bbox)
-        except Exception as e:
-            logger.error(f"Screenshot capture failed: {e}")
-            return None
-
-    def _scan_layout_if_needed(self, game_state: dict[str, Any]) -> None:
-        """Trigger a VisionMapper layout scan if the mapper supports it.
-
-        Captures a screenshot and asks the VisionMapper to scan for all
-        visible UI elements. The scan only runs when the game state has
-        changed (phase/turn/hand/battlefield) or the cache has expired.
-        """
-        if not self._has_vision_scan:
-            return
-
-        try:
-            if not self._mapper.needs_rescan(game_state):
-                logger.debug("Vision scan: cache still valid, skipping")
-                return
-
-            png_bytes = self._capture_screenshot()
-            if not png_bytes:
-                logger.warning("Vision scan: screenshot capture failed")
-                return
-
-            start = time.perf_counter()
-            self._mapper.scan_layout(png_bytes, game_state)
-            elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.info(
-                f"Vision scan completed: {elapsed_ms:.0f}ms, {self._mapper.cache_size} elements cached"
-            )
-        except Exception as e:
-            logger.error(f"Vision scan failed (non-fatal): {e}")
-
-    def _should_prefetch_vision(self, game_state: dict[str, Any], trigger: str) -> bool:
-        """Whether to run a blocking layout scan before planning.
-
-        GRE + deterministic geometry should stay on the critical path. Vision
-        prefetch is only useful in vision-heavy mode; otherwise it just adds a
-        large delay before the staleness snapshot and causes plans to be
-        discarded in fast games.
-        """
-        del game_state, trigger
-        return (
-            self._has_vision_scan
-            and self._config.enable_vision_fallback
-            and not self._config.prefer_deterministic
-        )
 
     @property
     def state(self) -> AutopilotState:
@@ -3247,29 +3153,6 @@ class AutopilotEngine(
             logger.debug(f"get_turn_plan_payload failed: {e}")
             return
         self._notify_turn_plan(payload)
-
-    def _get_vision_coord(self, card_name: str, zone: str | None = None) -> ScreenCoord | None:
-        """Capture screenshot and use vision to find a card.
-
-        If VisionMapper is active, routes through its tiered lookup
-        (cache → local VLM → cloud VLM). Otherwise falls back to the
-        legacy single-shot cloud vision call.
-        """
-        try:
-            png_bytes = self._capture_screenshot()
-            if not png_bytes:
-                return None
-
-            # VisionMapper path: uses tiered cache → local VLM → cloud VLM
-            if self._has_vision_scan and hasattr(self._mapper, "get_element_coord"):
-                return self._mapper.get_element_coord(card_name, zone=zone, screenshot_bytes=png_bytes)
-
-            # Legacy path: single-shot cloud vision call
-            backend = self._planner._backend
-            return self._mapper.get_card_coord_via_vision(card_name, png_bytes, backend)
-        except Exception as e:
-            logger.error(f"Failed to get vision coord: {e}")
-            return None
 
     def _recover_stuck(self) -> None:
         """Attempt to recover from a stuck state (UI prompts, dialogs, etc)."""
