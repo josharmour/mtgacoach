@@ -8,7 +8,7 @@ Adapted from Voice Assistant's DeckBuilderV2 to use mtgacoach data sources.
 import logging
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class WildcardInventory:
     mythic: int = 0
 
     @classmethod
-    def from_dict(cls, data: Union["WildcardInventory", dict[str, Any], None]) -> "WildcardInventory":
+    def from_dict(cls, data: "WildcardInventory" | dict[str, Any] | None) -> "WildcardInventory":
         if isinstance(data, cls):
             return data
         if not isinstance(data, dict):

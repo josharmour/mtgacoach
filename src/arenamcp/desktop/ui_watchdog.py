@@ -5,9 +5,9 @@ import sys
 import threading
 import time
 import traceback
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 
 logger = logging.getLogger(__name__)
 

@@ -54,19 +54,35 @@ def load_card_map() -> dict:
         return json.load(f)
 
 
+@pytest.fixture(scope="module")
+def deck_names() -> set[str]:
+    return count_deck_names()
+
+
+@pytest.fixture(scope="module")
+def card_map() -> dict:
+    return load_card_map()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _import_module():
+    """Import once for the test module."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("magezero_actions", ACTIONS_MODULE)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    pytest.classify_action = mod.classify_action
+    pytest.classify_actions = mod.classify_actions
+    pytest.card_map = load_card_map()
+    return mod
+
+
 # ── Tests ──────────────────────────────────────────────────────────────────────
 
 
 class TestCardMapCompleteness:
     """Every card name from the 6 deck files is resolved in the map."""
-
-    @pytest.fixture(scope="class")
-    def deck_names(self) -> set[str]:
-        return count_deck_names()
-
-    @pytest.fixture(scope="class")
-    def card_map(self) -> dict:
-        return load_card_map()
 
     def test_map_exists(self):
         assert os.path.exists(CARD_MAP_PATH), f"Card map not found at {CARD_MAP_PATH}"
@@ -128,19 +144,6 @@ class TestCardMapCompleteness:
 
 class TestClassifyAction:
     """Tests for classify_action in magezero_actions.py."""
-
-    @pytest.fixture(scope="class", autouse=True)
-    def _import_module(self):
-        """Import once, before any test in the class."""
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("magezero_actions", ACTIONS_MODULE)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        pytest.classify_action = mod.classify_action
-        pytest.classify_actions = mod.classify_actions
-        pytest.card_map = load_card_map()
-        return mod
 
     # ── Known action strings ──
 
