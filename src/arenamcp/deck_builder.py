@@ -5,6 +5,8 @@ and archetype constraints (Aggro/Midrange/Control).
 Adapted from Voice Assistant's DeckBuilderV2 to use mtgacoach data sources.
 """
 
+from __future__ import annotations
+
 import logging
 from collections import Counter
 from dataclasses import dataclass

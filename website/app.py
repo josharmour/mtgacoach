@@ -16,6 +16,8 @@ import httpx
 import patreon
 import providers
 import state
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import (
     HTMLResponse,
@@ -34,7 +36,19 @@ logger = state.logger
 # Re-init state for this app runtime
 state.init_app_state()
 
-app = FastAPI(title="mtgacoach.com API", docs_url=None, redoc_url=None)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    state.http_client = httpx.AsyncClient(timeout=120.0)
+    logger.info(f"Proxy server started with {len(state.router.providers)} providers")
+    try:
+        yield
+    finally:
+        if state.http_client:
+            await state.http_client.aclose()
+
+
+app = FastAPI(title="mtgacoach.com API", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
@@ -61,18 +75,6 @@ async def log_requests(request: Request, call_next):
         f"ip={request.client.host if request.client else 'unknown'}"
     )
     return response
-
-
-@app.on_event("startup")
-async def startup():
-    state.http_client = httpx.AsyncClient(timeout=120.0)
-    logger.info(f"Proxy server started with {len(state.router.providers)} providers")
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    if state.http_client:
-        await state.http_client.aclose()
 
 
 @app.get("/", response_class=HTMLResponse)
