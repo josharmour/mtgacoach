@@ -88,8 +88,7 @@ def test_mana_creature_in_mtga_dialect_counts():
             "name": "Paradise Druid",
             "type_line": "Creature — Elf Druid",
             "oracle_text": (
-                "This creature has hexproof as long as it's untapped.\n"
-                "{oT}: Add one mana of any color."
+                "This creature has hexproof as long as it's untapped.\n{oT}: Add one mana of any color."
             ),
             "owner_seat_id": 1,
             "is_tapped": False,

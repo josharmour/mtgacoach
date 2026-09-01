@@ -10,7 +10,7 @@ import logging
 import threading
 import time
 from collections import deque
-from typing import Any, Literal
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 

@@ -45,7 +45,7 @@ def _load_patreon(tmp_path, monkeypatch):
     return patreon, db
 
 
-from tests.fakes import FakeLiteLLM, FakeResponse
+from tests.fakes import FakeLiteLLM
 
 
 @pytest.fixture()

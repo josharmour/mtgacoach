@@ -3,7 +3,6 @@
 Pure move: methods are unchanged and mixed back into AutopilotEngine."""
 
 import logging
-import re
 import time
 from typing import Any
 

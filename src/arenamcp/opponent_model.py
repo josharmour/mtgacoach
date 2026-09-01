@@ -179,16 +179,8 @@ class OpponentModel:
 
         local_seat = game_state.get("local_seat_id", 1)
         battlefield = game_state.get("battlefield") or []
-        graveyard = (
-            game_state.get("graveyard")
-            or game_state.get("zones", {}).get("graveyard")
-            or []
-        )
-        exile = (
-            game_state.get("exile")
-            or game_state.get("zones", {}).get("exile")
-            or []
-        )
+        graveyard = game_state.get("graveyard") or game_state.get("zones", {}).get("graveyard") or []
+        exile = game_state.get("exile") or game_state.get("zones", {}).get("exile") or []
 
         revealed_names: set[str] = set()
         opp_untapped_lands: list[dict] = []
@@ -256,14 +248,14 @@ class OpponentModel:
                     active_threats.extend(threat_list)
 
             # Sweeper risk check
-            turn_num = int(
-                (game_state.get("turn") or {}).get("turn_number") or 1
-            )
+            turn_num = int((game_state.get("turn") or {}).get("turn_number") or 1)
             sweepers = best_cfg.get("sweepers", {})
             if sweepers:
                 if turn_num >= 4 and ("W" in opp_mana_colors or "B" in opp_mana_colors):
                     sweeper_risk = min(0.85, 0.40 + (turn_num - 3) * 0.15)
-                    sweeper_warning = "High risk of board sweepers (e.g. Sunfall / Depopulate). Avoid overcommitting."
+                    sweeper_warning = (
+                        "High risk of board sweepers (e.g. Sunfall / Depopulate). Avoid overcommitting."
+                    )
 
         combat_trick_warning = best_cfg.get("combat_tricks", "") if best_cfg else ""
 

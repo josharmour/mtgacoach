@@ -6,7 +6,7 @@ on macOS and requires root on Linux, so every test injects a stub into
 """
 
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -69,4 +69,3 @@ def test_unregister_all_clears_shortcuts(manager, parent_widget):
     assert not manager._shortcuts
     for shortcut in parent_widget.findChildren(QShortcut):
         assert not shortcut.isEnabled()
-

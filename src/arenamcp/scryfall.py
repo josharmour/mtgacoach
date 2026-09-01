@@ -146,7 +146,7 @@ class ScryfallCache:
         logger.debug(f"Loading bulk data from {bulk_path}...")
 
         temp_index = {}
-        with open(bulk_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(bulk_path, encoding="utf-8", errors="replace") as f:
             first_char = f.read(1)
             f.seek(0)
             if first_char == "[":

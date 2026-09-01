@@ -9,7 +9,6 @@ logger = logging.getLogger(__name__)
 
 
 class _TempoTracker:
-
     def __init__(self, stall_threshold: float = 1.5, min_samples: int = 5):
         self._stall_threshold = stall_threshold
         self._min_samples = min_samples
@@ -84,5 +83,3 @@ class _TempoTracker:
         self._last_state_hash = None
         self._last_change_time = 0.0
         self._intervals.clear()
-
-

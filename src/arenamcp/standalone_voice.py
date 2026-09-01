@@ -158,53 +158,81 @@ class _PipeVoiceOutput:
         ("am_eric", "Eric (US Male)"),
     ]
 
-    def __init__(self, ui: Any, voice_index: int = 7):
+    def __init__(self, ui: Any, inner: Any = None):
         self._ui = ui
-        self._voice_index = voice_index % len(self._VOICES)
+        self._inner = inner
+        self._voice_index = 7
         self._speed = 1.0
         self._muted = False
 
+    def __getattr__(self, name: str) -> Any:
+        if self._inner is not None:
+            return getattr(self._inner, name)
+        raise AttributeError(f"'_PipeVoiceOutput' object has no attribute '{name}'")
+
     @property
     def current_voice(self) -> tuple[str, str]:
+        if self._inner is not None and hasattr(self._inner, "current_voice"):
+            return self._inner.current_voice
         return self._VOICES[self._voice_index]
 
     @property
     def muted(self) -> bool:
+        if self._inner is not None and hasattr(self._inner, "muted"):
+            return bool(self._inner.muted)
         return self._muted
 
     def next_voice(self) -> tuple[str, str]:
+        if self._inner is not None and hasattr(self._inner, "next_voice"):
+            return self._inner.next_voice()
         self._voice_index = (self._voice_index + 1) % len(self._VOICES)
         return self.current_voice
 
     def toggle_mute(self) -> bool:
+        if self._inner is not None and hasattr(self._inner, "toggle_mute"):
+            return self._inner.toggle_mute()
         self._muted = not self._muted
         return self._muted
 
     def speak(self, text: str, blocking: bool = False) -> None:
-        if not text or not text.strip() or self._muted:
+        if not text or not text.strip() or self.muted:
             return
-        import re
+        if self._inner is not None and hasattr(self._inner, "_clean_text"):
+            text = self._inner._clean_text(text)
+        else:
+            import re
 
-        text = text.replace("**", "").replace("*", "").replace("#", "")
-        text = text.replace("```", "").replace("`", "").replace("...", " ")
-        text = re.sub(r"\[[A-Z][A-Za-z0-9_,:{}/ ]*\]", "", text).strip()
-        if not text:
+            text = text.replace("**", "").replace("*", "").replace("#", "")
+            text = text.replace("```", "").replace("`", "").replace("...", " ")
+            text = re.sub(r"\[[A-Z][A-Za-z0-9_,:{}/ ]*\]", "", text).strip()
+        if not text or not text.strip():
             return
 
         emit_request = getattr(self._ui, "emit_speech_request", None)
         if callable(emit_request):
+            if self._inner is not None and hasattr(self._inner, "stop"):
+                with contextlib.suppress(Exception):
+                    self._inner.stop()
             voice_id, voice_name = self.current_voice
+            speed = float(getattr(self._inner, "speed", getattr(self, "_speed", 1.0)))
             emit_request(
                 text=text,
                 voice_id=voice_id,
                 voice_name=voice_name,
-                speed=self._speed,
+                speed=speed,
             )
+            return
+
+        if self._inner is not None and hasattr(self._inner, "speak"):
+            self._inner.speak(text, blocking=blocking)
 
     def stop(self) -> None:
         emit_stop = getattr(self._ui, "emit_speech_stop", None)
         if callable(emit_stop):
             emit_stop()
+        if self._inner is not None and hasattr(self._inner, "stop"):
+            with contextlib.suppress(Exception):
+                self._inner.stop()
 
 
 def _probe_sounddevice_import(timeout_seconds: float = 8.0) -> tuple[bool, str]:

@@ -260,9 +260,7 @@ class KokoroTTS:
                         urllib.request.urlretrieve(MODEL_URL, str(self._model_path))
                 except Exception as exc:
                     logger.warning("Failed to auto-download Kokoro models: %s", exc)
-                    raise FileNotFoundError(
-                        f"Kokoro TTS model files could not be downloaded: {exc}"
-                    ) from exc
+                    raise FileNotFoundError(f"Kokoro TTS model files could not be downloaded: {exc}") from exc
 
             # Import and load kokoro
             try:

@@ -55,11 +55,11 @@ class _FakeClient:
             # judge role
             blob = (
                 "{"
-                f"\"correctness\": {CORRECTNESS},"
-                f"\"reasoning\": {REASONING},"
-                f"\"conciseness\": {CONCISENESS},"
-                f"\"legality\": {LEGALITY},"
-                "\"notes\": \"deterministic fake\""
+                f'"correctness": {CORRECTNESS},'
+                f'"reasoning": {REASONING},'
+                f'"conciseness": {CONCISENESS},'
+                f'"legality": {LEGALITY},'
+                '"notes": "deterministic fake"'
                 "}"
             )
             return blob
@@ -119,7 +119,9 @@ def plumbing(tmp_path, monkeypatch):
     eval_run.run(prompts_path=prompts, responses_path=responses, backends=backends, concurrency=4)
 
     judge_be = eval_run.BackendSpec(label="judge", model="m-judge", base_url="http://z/v1", api_key="k")
-    eval_judge.judge(prompts_path=prompts, responses_path=responses, scores_path=scores, judge_backend=judge_be)
+    eval_judge.judge(
+        prompts_path=prompts, responses_path=responses, scores_path=scores, judge_backend=judge_be
+    )
 
     eval_report.report(responses_path=responses, scores_path=scores, csv_path=csv)
 
@@ -180,7 +182,9 @@ def test_backend_error_is_recorded_not_mislabeled_as_advice(tmp_path, monkeypatc
         assert rec["response"] == ""
 
     judge_be = eval_run.BackendSpec(label="judge", model="m-judge", base_url="http://z/v1", api_key="k")
-    eval_judge.judge(prompts_path=prompts, responses_path=responses, scores_path=scores, judge_backend=judge_be)
+    eval_judge.judge(
+        prompts_path=prompts, responses_path=responses, scores_path=scores, judge_backend=judge_be
+    )
 
     scored = _read_jsonl(scores)
     assert len(scored) == 3

@@ -27,9 +27,33 @@ def test_equip_target_selection_prefers_friendly_creatures():
             ],
         },
         "battlefield": [
-            {"instance_id": 211, "name": "Patriot, Shield Wielder", "owner_seat_id": 1, "controller_seat_id": 1, "power": 3, "toughness": 3, "type_line": "Creature — Human Hero"},
-            {"instance_id": 239, "name": "Hero in Training", "owner_seat_id": 1, "controller_seat_id": 1, "power": 2, "toughness": 2, "type_line": "Creature — Human Hero"},
-            {"instance_id": 230, "name": "Hawkeye, Young Avenger", "owner_seat_id": 2, "controller_seat_id": 2, "power": 2, "toughness": 4, "type_line": "Creature — Human Archer Hero"},
+            {
+                "instance_id": 211,
+                "name": "Patriot, Shield Wielder",
+                "owner_seat_id": 1,
+                "controller_seat_id": 1,
+                "power": 3,
+                "toughness": 3,
+                "type_line": "Creature — Human Hero",
+            },
+            {
+                "instance_id": 239,
+                "name": "Hero in Training",
+                "owner_seat_id": 1,
+                "controller_seat_id": 1,
+                "power": 2,
+                "toughness": 2,
+                "type_line": "Creature — Human Hero",
+            },
+            {
+                "instance_id": 230,
+                "name": "Hawkeye, Young Avenger",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "power": 2,
+                "toughness": 4,
+                "type_line": "Creature — Human Archer Hero",
+            },
         ],
     }
 

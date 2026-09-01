@@ -7,18 +7,14 @@ import html
 import logging
 from typing import Any
 
-from PySide6.QtCore import QEvent, QTimer, Qt, Signal
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
-    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMenu,
     QPushButton,
     QSplitter,
     QTextEdit,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -246,10 +242,14 @@ class CompactCoachPanel(QWidget):
             if steps:
                 step_strs = [html.escape(str(s)) for s in steps[:4]]
                 items.append(" → ".join(step_strs))
-            self.turn_plan_label.setText("<div style='font-size:11px; margin-bottom:4px;'>" + "<br>".join(items) + "</div>")
+            self.turn_plan_label.setText(
+                "<div style='font-size:11px; margin-bottom:4px;'>" + "<br>".join(items) + "</div>"
+            )
             self.turn_plan_label.show()
         elif isinstance(plan, str) and plan.strip():
-            self.turn_plan_label.setText(f"<div style='font-size:11px;'><b>Plan:</b> {html.escape(plan)}</div>")
+            self.turn_plan_label.setText(
+                f"<div style='font-size:11px;'><b>Plan:</b> {html.escape(plan)}</div>"
+            )
             self.turn_plan_label.show()
         else:
             self.turn_plan_label.hide()
@@ -391,6 +391,7 @@ class CompactCoachPanel(QWidget):
 
     def _theme_tokens(self) -> dict[str, Any]:
         from .theme import get_theme_tokens
+
         return get_theme_tokens(self)
 
     @staticmethod
@@ -493,8 +494,16 @@ QPushButton#sendButton {{
         hand = state.get("hand", [])
         battlefield = state.get("battlefield", [])
 
-        your_bf = [c for c in battlefield if c.get("controller_seat_id") == local_seat or c.get("owner_seat_id") == local_seat]
-        opp_bf = [c for c in battlefield if c.get("controller_seat_id") != local_seat and c.get("owner_seat_id") != local_seat]
+        your_bf = [
+            c
+            for c in battlefield
+            if c.get("controller_seat_id") == local_seat or c.get("owner_seat_id") == local_seat
+        ]
+        opp_bf = [
+            c
+            for c in battlefield
+            if c.get("controller_seat_id") != local_seat and c.get("owner_seat_id") != local_seat
+        ]
 
         # Render Opponent Summary
         opp_html = (
@@ -520,7 +529,9 @@ QPushButton#sendButton {{
             if isinstance(c, dict):
                 name = html.escape(str(c.get("name") or "?"))
                 cost = html.escape(str(c.get("mana_cost") or "").replace("{", "").replace("}", ""))
-                hand_items.append(f"<span style='color:{tokens['castable_fg']};'>{name}</span> <span style='color:{tokens['muted']};'>{cost}</span>")
+                hand_items.append(
+                    f"<span style='color:{tokens['castable_fg']};'>{name}</span> <span style='color:{tokens['muted']};'>{cost}</span>"
+                )
         hand_joined = " · ".join(hand_items) if hand_items else "<i>Empty</i>"
         hand_html = f"<div style='font-size:11px; margin-bottom:6px;'><b style='color:{tokens['muted']};'>HAND:</b> {hand_joined}</div>"
 
@@ -528,8 +539,10 @@ QPushButton#sendButton {{
         creatures = [c for c in your_bf if "creature" in str(c.get("type_line", "")).lower()]
         lands = [c for c in your_bf if "land" in str(c.get("type_line", "")).lower()]
 
-        c_strs = [f"{c.get('name', '?')} ({c.get('power', 0)}/{c.get('toughness', 0)})" for c in creatures[:6]]
-        l_strs = [str(c.get('name', '?')) for c in lands[:8]]
+        c_strs = [
+            f"{c.get('name', '?')} ({c.get('power', 0)}/{c.get('toughness', 0)})" for c in creatures[:6]
+        ]
+        l_strs = [str(c.get("name", "?")) for c in lands[:8]]
 
         board_html = (
             f"<div style='font-size:11px;'>"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any
 
@@ -63,6 +64,9 @@ class CoachSession(QObject):
         """Start the background coaching subprocess."""
         if self.is_running:
             return
+        with contextlib.suppress(Exception):
+            if not self._tts.is_running:
+                self._tts.start()
         self._process.start(autopilot=autopilot, dry_run=dry_run, afk=afk)
         self.started.emit()
 

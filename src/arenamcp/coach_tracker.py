@@ -1,8 +1,8 @@
 """Word usage and anti-repetition tracking for MTGA Coach advice."""
 
-from collections import Counter
 import re
 import time
+from collections import Counter
 
 # Words that tend to be overused by LLMs in coaching contexts
 OVERUSE_CANDIDATES = {
@@ -47,7 +47,6 @@ class WordUsageTracker:
             text: The response text to analyze
             exclude_words: Set of words to ignore (e.g., card names)
         """
-        import re
 
         now = time.time()
 
@@ -71,7 +70,6 @@ class WordUsageTracker:
         Args:
             exclude_words: Set of words to never blacklist (e.g., card names)
         """
-        from collections import Counter
 
         exclude = exclude_words or set()
         now = time.time()
@@ -83,5 +81,3 @@ class WordUsageTracker:
 
         # Return words over threshold, excluding protected words
         return [word for word, count in counts.items() if count >= self._threshold and word not in exclude]
-
-

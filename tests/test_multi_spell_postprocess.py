@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+
 from arenamcp.coach import CoachEngine
 from arenamcp.rules_db import RulesDB
 
@@ -130,7 +131,12 @@ def test_postprocess_strips_summoning_sick_attack_clause():
             "step": "Step_Main",
         },
         "hand": [
-            {"name": "Hero in Training", "type_line": "Creature — Human Hero", "mana_cost": "{2}{W}", "oracle_text": "When this creature enters, draw a card."},
+            {
+                "name": "Hero in Training",
+                "type_line": "Creature — Human Hero",
+                "mana_cost": "{2}{W}",
+                "oracle_text": "When this creature enters, draw a card.",
+            },
         ],
         "battlefield": [
             {"name": "Plains", "type_line": "Basic Land — Plains", "owner_seat_id": 1, "is_tapped": False},
@@ -184,4 +190,3 @@ def test_postprocess_strips_summoning_sick_attack_clause_with_comma():
 
     assert "Agent 13, Sharon Carter" in out
     assert "attack" not in out.lower()
-

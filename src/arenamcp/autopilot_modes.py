@@ -90,7 +90,8 @@ class _AutopilotModesMixin:
         if is_my_turn and can_play_land:
             land_actions = [a for a in legal_actions if a.startswith("Play ") or a.startswith("Cast ")]
             lands_in_hand = [
-                c for c in game_state.get("hand", [])
+                c
+                for c in game_state.get("hand", [])
                 if "Land" in c.get("card_types", []) or "Land" in c.get("type_line", "")
             ]
             if lands_in_hand and land_actions:
@@ -255,10 +256,10 @@ class _AutopilotModesMixin:
                 local_seat = p.get("system_seat_id")
                 break
         active_seat = turn.get("active_player_seat")
-        is_active = (local_seat is not None and active_seat is not None and local_seat == active_seat)
+        is_active = local_seat is not None and active_seat is not None and local_seat == active_seat
 
         turn_num = turn.get("turn_number", 0)
-        already_played = (self._land_drop_last_turn == turn_num and turn_num > 0)
+        already_played = self._land_drop_last_turn == turn_num and turn_num > 0
         is_main = "Main" in phase
 
         if is_active and is_main and not already_played:

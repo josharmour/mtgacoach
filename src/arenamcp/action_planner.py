@@ -1293,11 +1293,17 @@ class ActionPlanner(_ActionLegalityMixin):
                 # including commander tax (2 generic per previous cast) rather than
                 # blindly dropping the commander.
                 if card_zone == "command" and "[OK]" not in legal_action:
-                    commander_casts = card_hand_entry.get("commander_casts", 0) if isinstance(card_hand_entry, dict) else 0
+                    commander_casts = (
+                        card_hand_entry.get("commander_casts", 0) if isinstance(card_hand_entry, dict) else 0
+                    )
                     tax_cost = card_cost
                     if commander_casts > 0 and card_cost:
                         tax_cost = f"{{{commander_casts * 2}}}{card_cost}"
-                    if local_affordable is False or (rules_engine_cls and mana_pool is not None and not rules_engine_cls._can_afford(tax_cost, mana_pool)):
+                    if local_affordable is False or (
+                        rules_engine_cls
+                        and mana_pool is not None
+                        and not rules_engine_cls._can_afford(tax_cost, mana_pool)
+                    ):
                         logger.info(
                             "Dropping command-zone cast %s: no autotap [OK] and local check unaffordable "
                             "(printed cost %s + tax %d)",
@@ -2161,7 +2167,9 @@ class ActionPlanner(_ActionLegalityMixin):
         if not is_harmful and picked_opp:
             override = self._targeting_fallback_pick(decision, game_state)
             if override:
-                logger.warning(f"Overriding beneficial LLM target pick {chosen} (opponent permanent) with {override}")
+                logger.warning(
+                    f"Overriding beneficial LLM target pick {chosen} (opponent permanent) with {override}"
+                )
                 return override
 
         return chosen
@@ -2327,4 +2335,3 @@ class ActionPlanner(_ActionLegalityMixin):
             return ["mull:keep"]
         n = max(1, int(decision.min_select or 1))
         return [o.option_id for o in opts[:n]]
-

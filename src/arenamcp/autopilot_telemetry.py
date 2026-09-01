@@ -147,9 +147,7 @@ class _AutopilotTelemetryMixin:
             )
             planned = plan.actions[0] if (plan and plan.actions) else None
             request_type = (
-                game_state.get("_bridge_request_type")
-                or game_state.get("_bridge_request_class")
-                or trigger
+                game_state.get("_bridge_request_type") or game_state.get("_bridge_request_class") or trigger
             )
             recorder.record_decision(
                 game_state=game_state,
@@ -311,7 +309,7 @@ class _AutopilotTelemetryMixin:
             f"Standing down — your move (it wanted: {action_type_str} {card_name})".strip(),
         )
 
-    def _reclassify_matching_takeovers(self, action: "GameAction") -> None:
+    def _reclassify_matching_takeovers(self, action: GameAction) -> None:
         """Relabel provisional takeovers this verified execution disproves."""
         action_type = getattr(action, "action_type", None)
         name = (getattr(action, "card_name", "") or "").strip().lower()

@@ -20,7 +20,6 @@ sys.path.insert(0, str(_HERE.parent / "tools" / "training"))
 
 import numpy as np
 import pytest
-
 from magezero_hdf5_to_corpus import (
     action_tokens,
     decision_to_instance,
@@ -49,6 +48,7 @@ FT_CONTENT = """\
 def table() -> dict[int, list[str]]:
     with pytest.MonkeyPatch.context() as mp:
         import tempfile
+
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
             f.write(FT_CONTENT)
             path = f.name
@@ -89,7 +89,9 @@ def test_load_feature_table_mastery_vocab(table):
 
 def test_parse_game_name():
     assert parse_game_name("session148_UWTempo_vs_GBLegends.hdf5") == (
-        148, "UWTempo", "GBLegends",
+        148,
+        "UWTempo",
+        "GBLegends",
     )
     sid, deck, opp = parse_game_name("unknown.txt")
     assert sid is None and opp == ""
@@ -130,8 +132,8 @@ def _synthetic_game():
     row = np.zeros((1, A + 4), dtype=np.float32)
     row[0, A + 0] = 0.32  # result_label
     row[0, A + 1] = 0.30  # state_score
-    row[0, A + 2] = 1.0   # isPlayer = A (0.5 threshold)
-    row[0, A + 3] = 0     # actionType
+    row[0, A + 2] = 1.0  # isPlayer = A (0.5 threshold)
+    row[0, A + 3] = 0  # actionType
     return {"offsets": offsets, "indices": indices, "row": row, "N": 1, "A": A}
 
 

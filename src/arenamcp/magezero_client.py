@@ -10,8 +10,8 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any
 import urllib.request
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ def _get_auth_headers() -> dict[str, str]:
     headers = {"User-Agent": "MtgACoach/2.7"}
     try:
         from arenamcp.settings import get_settings
+
         key = get_settings().get("license_key") or os.environ.get("MTGACOACH_LICENSE_KEY", "")
         if key:
             headers["Authorization"] = f"Bearer {key.strip()}"

@@ -173,7 +173,7 @@ def analyze_sealed_pool(
         recommended_build=recommended,
         splash_candidates=splash_candidates,
         top_cards=top_cards,
-        generated_shells=generated_shells,
+        generated_shells=None,
     )
 
 

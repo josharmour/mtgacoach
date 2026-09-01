@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
-from typing import Any
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
@@ -16,7 +14,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QStackedWidget,
-    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
@@ -29,7 +26,7 @@ from .hotkeys import HotkeyManager
 from .performance_tab import PerformanceTab
 from .repair_tab import RepairTab
 from .runtime import open_url, read_version
-from .theme import THEME_LABELS, apply_theme, available_themes, load_saved_theme, save_theme
+from .theme import apply_theme, available_themes, load_saved_theme, save_theme
 from .ui_watchdog import UiAnrWatchdog
 
 logger = logging.getLogger(__name__)
@@ -118,9 +115,9 @@ class MainWindow(QMainWindow):
 
         # Stacked Widget Root
         self._stack = QStackedWidget()
-        self._stack.addWidget(self.coach_panel)       # Index 0
-        self._stack.addWidget(repair_page)             # Index 1
-        self._stack.addWidget(perf_page)               # Index 2
+        self._stack.addWidget(self.coach_panel)  # Index 0
+        self._stack.addWidget(repair_page)  # Index 1
+        self._stack.addWidget(perf_page)  # Index 2
         self.setCentralWidget(self._stack)
 
     def _build_menus(self) -> None:

@@ -22,7 +22,6 @@ from arenamcp.backend_health import (
     is_backend_error_text,
 )
 from arenamcp.backends import LLMBackend, ProxyBackend
-from arenamcp.coach_postprocess import _AdvicePostprocessMixin
 from arenamcp.coach_analysis import _CoachAnalysisMixin
 from arenamcp.coach_backends import (
     _is_local_backend,
@@ -32,8 +31,7 @@ from arenamcp.coach_backends import (
     get_models_for_mode,
     pick_thinking_model,
 )
-from arenamcp.coach_tracker import WordUsageTracker
-from arenamcp.mana import get_local_seat_id, mana_cost_to_cmc
+from arenamcp.coach_postprocess import _AdvicePostprocessMixin
 from arenamcp.coach_prompt_utils import (
     _ACTIONS_AVAILABLE_BRIDGE_REQUESTS,
     _build_bridge_context_lines,
@@ -50,7 +48,9 @@ from arenamcp.coach_prompts import (
     SIDEBOARD_RECOMMENDATION_PROMPT,
     WIN_PLAN_PROMPT,
 )
+from arenamcp.coach_tracker import WordUsageTracker
 from arenamcp.coach_triggers import GameStateTrigger
+from arenamcp.mana import get_local_seat_id, mana_cost_to_cmc
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +190,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if loyalty not in (None, ""):
             parts.append(f"Loyalty {loyalty}")
 
-        oracle_text = self._clean_oracle_for_prompt(str(card.get("oracle_text", "") or "")).replace("\n", " ").strip()
+        oracle_text = (
+            self._clean_oracle_for_prompt(str(card.get("oracle_text", "") or "")).replace("\n", " ").strip()
+        )
         if oracle_text:
             parts.append(oracle_text[:220] + ("..." if len(oracle_text) > 220 else ""))
 
@@ -2227,13 +2229,17 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             for c in your_cmds:
                 cost_str = f" {c.get('mana_cost', '')}" if c.get("mana_cost") else ""
                 cmd_parts.append(f"  YOUR CMD: {c.get('name', 'Unknown')}{cost_str}")
-                oracle = self._clean_oracle_for_prompt(c.get("oracle_text", "") or "").replace("\n", " ").strip()
+                oracle = (
+                    self._clean_oracle_for_prompt(c.get("oracle_text", "") or "").replace("\n", " ").strip()
+                )
                 if oracle:
                     cmd_parts.append(f"    {oracle}")
             for c in opp_cmds:
                 cost_str = f" {c.get('mana_cost', '')}" if c.get("mana_cost") else ""
                 cmd_parts.append(f"  OPP CMD: {c.get('name', 'Unknown')}{cost_str}")
-                oracle = self._clean_oracle_for_prompt(c.get("oracle_text", "") or "").replace("\n", " ").strip()
+                oracle = (
+                    self._clean_oracle_for_prompt(c.get("oracle_text", "") or "").replace("\n", " ").strip()
+                )
                 if oracle:
                     cmd_parts.append(f"    {oracle}")
             lines.append("COMMAND ZONE:")
@@ -3337,4 +3343,3 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         )
 
         return response
-

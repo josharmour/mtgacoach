@@ -184,12 +184,28 @@ def test_strip_uncastable_post_land_sequence():
         ],
         hand=[
             {"name": "Mountain", "type_line": "Basic Land — Mountain"},
-            {"name": "Eagle of the Great Shelf", "type_line": "Creature — Bird Soldier", "mana_cost": "{4}{W}"},
+            {
+                "name": "Eagle of the Great Shelf",
+                "type_line": "Creature — Bird Soldier",
+                "mana_cost": "{4}{W}",
+            },
         ],
     )
     state["battlefield"] = [
-        {"name": "Mountain", "type_line": "Basic Land — Mountain", "owner_seat_id": 1, "controller_seat_id": 1, "is_tapped": False},
-        {"name": "Mountain", "type_line": "Basic Land — Mountain", "owner_seat_id": 1, "controller_seat_id": 1, "is_tapped": False},
+        {
+            "name": "Mountain",
+            "type_line": "Basic Land — Mountain",
+            "owner_seat_id": 1,
+            "controller_seat_id": 1,
+            "is_tapped": False,
+        },
+        {
+            "name": "Mountain",
+            "type_line": "Basic Land — Mountain",
+            "owner_seat_id": 1,
+            "controller_seat_id": 1,
+            "is_tapped": False,
+        },
     ]
 
     out = coach._postprocess_advice("Play Mountain then cast Eagle of the Great Shelf.", state)
@@ -197,5 +213,3 @@ def test_strip_uncastable_post_land_sequence():
     # Postprocess should strip the uncastable 'then cast Eagle...' clause and recommend 'Play Mountain.'
     assert "Eagle of the Great Shelf" not in out
     assert "Play Mountain" in out
-
-

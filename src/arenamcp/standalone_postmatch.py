@@ -821,7 +821,7 @@ class _PostMatchMixin:
                 "You are an expert MTG coach grader. Given a match result and"
                 " the post-match analysis, rate how WELL THE PLAYER PLAYED"
                 " from 1 to 10 (5 = average, 10 = excellent). Output STRICT"
-                " JSON only, with a single field: {\"rating\": int}."
+                ' JSON only, with a single field: {"rating": int}.'
             )
             user = f"MATCH RESULT: {match_result}\n\nANALYSIS:\n{snippet}"
             resp = be.complete(system, user, max_tokens=60, temperature=0.0, request_timeout_s=30)

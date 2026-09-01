@@ -21,10 +21,10 @@ from typing import Any
 from arenamcp.action_planner import ActionPlan, ActionPlanner, ActionType, GameAction
 from arenamcp.autopilot_bridge import _BridgeSubmitMixin
 from arenamcp.autopilot_exec import _ActionExecMixin
+from arenamcp.autopilot_models import AutopilotConfig, AutopilotState, ClickResult, ExecutionPath
 from arenamcp.autopilot_modes import _AutopilotModesMixin
-from arenamcp.autopilot_telemetry import _AutopilotTelemetryMixin
-from arenamcp.autopilot_models import AutopilotConfig, AutopilotState, ExecutionPath
 from arenamcp.autopilot_targets import _normalize_planner_card_name
+from arenamcp.autopilot_telemetry import _AutopilotTelemetryMixin
 from arenamcp.gre_bridge import (
     _ACTIONS_AVAILABLE_BRIDGE_REQUESTS,
     UNMAPPED_INTERACTION_TYPE,
@@ -32,7 +32,6 @@ from arenamcp.gre_bridge import (
     enrich_snapshot_from_pending_response,
     get_bridge,
 )
-from arenamcp.autopilot_models import ClickResult
 
 logger = logging.getLogger(__name__)
 
@@ -3312,7 +3311,7 @@ class AutopilotEngine(
                 clean_name = str(label or "").strip().lower()
                 for prefix in ("cast ", "play land: ", "play ", "activate ability: ", "activate "):
                     if clean_name.startswith(prefix):
-                        clean_name = clean_name[len(prefix):].strip()
+                        clean_name = clean_name[len(prefix) :].strip()
                         break
                 clean_name = clean_name.split("[")[0].strip()
                 if clean_name:

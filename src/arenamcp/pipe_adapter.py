@@ -924,7 +924,10 @@ class PipeAdapter:
 
     def _handle_out_of_match_deck_suggestions(self) -> None:
         self.log("Deck builder is disabled in streamlined mode.")
-        self.advice("Deck builder is disabled in streamlined mode. In-game coaching and draft assistance are active.", "DECK ADVICE")
+        self.advice(
+            "Deck builder is disabled in streamlined mode. In-game coaching and draft assistance are active.",
+            "DECK ADVICE",
+        )
 
     def _handle_replay_advice(self) -> None:
         """Re-emit and re-speak the most recent advice (F4)."""

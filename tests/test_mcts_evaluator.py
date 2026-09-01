@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from typing import Any
+
+from arenamcp.magezero_client import MageZeroClient
 from arenamcp.mcts_evaluator import MCTSEvaluator, MCTSTreePayload
 from arenamcp.opponent_model import OpponentModel, OpponentProfile
-from arenamcp.magezero_client import MageZeroClient
 
 
 def test_mcts_evaluator_basic():

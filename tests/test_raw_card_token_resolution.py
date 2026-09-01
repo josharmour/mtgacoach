@@ -101,4 +101,3 @@ def test_scryfall_api_fallback_when_bulk_not_ready(monkeypatch):
     assert res is not None
     assert res.name == "Smite the Deathless"
     assert 12345 in called_ids
-

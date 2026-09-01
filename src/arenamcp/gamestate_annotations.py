@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import logging
-import time
-from typing import Any
 
-from arenamcp.gamestate_models import GameObject, GameObjectKind, ZoneType
 from arenamcp.gamestate_transforms import (
-    _collapse_gre_value,
     _coerce_int,
     _coerce_optional_int,
     _coerce_str_list,
+    _collapse_gre_value,
     _ensure_dict_list,
     _ensure_int_list,
     _ensure_list,
@@ -697,4 +694,3 @@ class _GameStateAnnotationsMixin:
                         affected_ids,
                         detail_map,
                     )
-

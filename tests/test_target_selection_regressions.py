@@ -388,4 +388,3 @@ def test_rules_engine_select_targets_req_with_gre_candidates() -> None:
     actions = RulesEngine._get_target_selection_actions(game_state)
     assert actions[0] == "Select target: Food (OPP)"
     assert "Select target: Mutagen (YOURS)" in actions
-

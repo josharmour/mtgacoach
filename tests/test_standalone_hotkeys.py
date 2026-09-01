@@ -1,6 +1,5 @@
 """Tests for standalone hotkey registration and cross-platform handling."""
 
-import sys
 from unittest.mock import MagicMock
 
 from arenamcp.standalone_hotkeys import _StandaloneHotkeysMixin

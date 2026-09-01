@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
-import os
 from typing import Any
 
 from arenamcp.backends import LLMBackend, ProxyBackend
 
 logger = logging.getLogger(__name__)
+
 
 def _is_local_backend(be: Any) -> bool:
     """True when `be` is a ProxyBackend pointed at a local LLM server.
@@ -225,7 +226,7 @@ def create_backend(
 def create_local_fallback(
     model: str | None = None,
     progress_callback: Any | None = None,
-) -> "ProxyBackend":
+) -> ProxyBackend:
     """Create a local backend as a fallback when online mode fails."""
     from arenamcp.backend_detect import DEFAULT_LOCAL_MODEL
 
@@ -267,5 +268,3 @@ OVERUSE_CANDIDATES = {
 # Threshold for blacklisting (uses in window)
 OVERUSE_THRESHOLD = 3
 OVERUSE_WINDOW_SECONDS = 120
-
-

@@ -96,8 +96,6 @@ class UiAnrWatchdog(threading.Thread):
             dump_text = "\n".join(lines)
             dump_file.write_text(dump_text, encoding="utf-8", errors="replace")
 
-            logger.warning(
-                f"UI thread stall detected ({stall_s:.2f}s) — ANR diagnostic saved to {dump_file}"
-            )
+            logger.warning(f"UI thread stall detected ({stall_s:.2f}s) — ANR diagnostic saved to {dump_file}")
         except Exception as e:
             logger.error(f"Failed to dump ANR stack trace: {e}")

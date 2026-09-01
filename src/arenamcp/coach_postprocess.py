@@ -232,6 +232,7 @@ class _AdvicePostprocessMixin:
         # 0. Resolve any raw Card<ID> or Card#<ID> patterns in advice using game_state and card_db
         raw_card_pattern = re.compile(r"\bCard#?(\d+)\b", re.IGNORECASE)
         if raw_card_pattern.search(advice):
+
             def _replace_raw_card_id(m):
                 cid = int(m.group(1))
                 for card_obj in all_cards:
@@ -240,6 +241,7 @@ class _AdvicePostprocessMixin:
                         if cname and not cname.startswith("Card"):
                             return cname
                 from arenamcp.rules_engine import RulesEngine
+
                 db_info = RulesEngine._card_db.get(cid)
                 if isinstance(db_info, dict) and db_info.get("name"):
                     return db_info["name"]
@@ -514,9 +516,7 @@ class _AdvicePostprocessMixin:
 
             target_lower = target_name.lower()
             target_in_hand = any(
-                target_lower in hn or hn in target_lower
-                for hn in hand_card_names
-                if len(target_lower) >= 3
+                target_lower in hn or hn in target_lower for hn in hand_card_names if len(target_lower) >= 3
             )
             target_on_bf = any(
                 target_lower in bn.lower() or bn.lower() in target_lower
@@ -527,9 +527,7 @@ class _AdvicePostprocessMixin:
             if target_in_hand and not target_on_bf:
                 if bf_creatures:
                     valid_target = bf_creatures[0]
-                    advice = re.sub(
-                        re.escape(target_name), valid_target, advice, flags=re.IGNORECASE
-                    )
+                    advice = re.sub(re.escape(target_name), valid_target, advice, flags=re.IGNORECASE)
                     logger.info(
                         f"Fixed invalid equip target '{target_name}' (card in hand) -> '{valid_target}' (on battlefield)"
                     )
@@ -670,8 +668,12 @@ class _AdvicePostprocessMixin:
                         source_card = str(decision_ctx.get("source_card") or "")
                         if source_card:
                             from arenamcp.rules_engine import RulesEngine
+
                             for card_info in RulesEngine._card_db.values():
-                                if isinstance(card_info, dict) and (card_info.get("name") or "").lower() == source_card.lower():
+                                if (
+                                    isinstance(card_info, dict)
+                                    and (card_info.get("name") or "").lower() == source_card.lower()
+                                ):
                                     source_oracle = (card_info.get("oracle_text") or "").lower()
                                     if source_oracle:
                                         break
@@ -908,8 +910,7 @@ class _AdvicePostprocessMixin:
                             if len(w) >= 4 and w.lower() not in ("ability", "card")
                         ]
                         if short_name and (
-                            short_name in advice_lower
-                            or any(w in advice_lower for w in card_words)
+                            short_name in advice_lower or any(w in advice_lower for w in card_words)
                         ):
                             matches = True
                             break
@@ -1214,9 +1215,7 @@ class _AdvicePostprocessMixin:
                     mentioned_spells.append(c)
 
             if len(mentioned_spells) > 1:
-                total_cmc = sum(
-                    RulesEngine._parse_cmc(c.get("mana_cost", "")) for c in mentioned_spells
-                )
+                total_cmc = sum(RulesEngine._parse_cmc(c.get("mana_cost", "")) for c in mentioned_spells)
                 if total_cmc > avail_mana:
                     first_spell_name = mentioned_spells[0].get("name", "")
                     land_match = re.search(
@@ -1269,8 +1268,12 @@ class _AdvicePostprocessMixin:
                     m_cost = spell_card.get("mana_cost", "")
                     if not m_cost and spell_card.get("grp_id"):
                         with contextlib.suppress(Exception):
-                            m_cost = RulesEngine._card_db.get(spell_card.get("grp_id"), {}).get("mana_cost", "")
-                    can_cast_post_land = RulesEngine._can_afford(m_cost, potential_mana_pool) if m_cost else True
+                            m_cost = RulesEngine._card_db.get(spell_card.get("grp_id"), {}).get(
+                                "mana_cost", ""
+                            )
+                    can_cast_post_land = (
+                        RulesEngine._can_afford(m_cost, potential_mana_pool) if m_cost else True
+                    )
 
                 if not spell_is_legal and not spell_in_then and not can_cast_post_land:
                     logger.info(
@@ -1282,9 +1285,7 @@ class _AdvicePostprocessMixin:
         # If advice recommends "Cast [creature] then attack" or "Play [creature] and attack",
         # check if the creature lacks haste. If it lacks haste, strip the attack clause.
         if isinstance(game_state, dict):
-            match_atk = re.search(
-                r"(?i)\b(?:cast|play)\s+(.+?)\s+(?:then|and)\s+attack\b", advice.strip()
-            )
+            match_atk = re.search(r"(?i)\b(?:cast|play)\s+(.+?)\s+(?:then|and)\s+attack\b", advice.strip())
             if match_atk:
                 c_name = match_atk.group(1).strip()
                 c_name = re.sub(r"\s*\(.*?\)", "", c_name).strip()
@@ -1296,9 +1297,7 @@ class _AdvicePostprocessMixin:
                 if card_obj and "creature" in (card_obj.get("type_line") or "").lower():
                     oracle = (card_obj.get("oracle_text") or "").lower()
                     if "haste" not in oracle:
-                        advice = re.sub(
-                            r"(?i)\s+(?:then|and)\s+attack\b.*$", "", advice.strip()
-                        ).strip()
+                        advice = re.sub(r"(?i)\s+(?:then|and)\s+attack\b.*$", "", advice.strip()).strip()
                         if not advice.endswith("."):
                             advice += "."
                         logger.info(

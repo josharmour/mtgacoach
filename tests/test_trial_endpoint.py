@@ -7,7 +7,6 @@ monkeypatched (no network), mirroring tests/test_proxy_server_signup.py.
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,7 +23,7 @@ MACHINE_ID = "a" * 64
 OTHER_MACHINE_ID = "b" * 64
 
 
-from tests.fakes import FakeLiteLLM, FakeResponse
+from tests.fakes import FakeLiteLLM
 
 
 def _load_proxy_app(tmp_path: Path, monkeypatch):

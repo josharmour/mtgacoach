@@ -147,12 +147,22 @@ class RulesEngine:
         # Bound total available mana to avoid double-counting if floating mana
         # was received before game object tapped states updated in game_state.
         total_permanent_sources = sum(
-            1 for c in your_cards
-            if ("land" in c.get("type_line", "").lower()
-                or bool(re.search(r"\{T\}.*[Aa]dd\s+(\{|one |two |three )", _normalize_mana_symbols(c.get("oracle_text", "")))))
+            1
+            for c in your_cards
+            if (
+                "land" in c.get("type_line", "").lower()
+                or bool(
+                    re.search(
+                        r"\{T\}.*[Aa]dd\s+(\{|one |two |three )",
+                        _normalize_mana_symbols(c.get("oracle_text", "")),
+                    )
+                )
+            )
         )
         if total_permanent_sources > 0 and pool["total"] > total_permanent_sources:
-            floating_total = sum(max(0, int(v or 0)) for v in floating.values()) if isinstance(floating, dict) else 0
+            floating_total = (
+                sum(max(0, int(v or 0)) for v in floating.values()) if isinstance(floating, dict) else 0
+            )
             pool["total"] = max(total_permanent_sources, floating_total)
 
         pool["_sources"] = sources
@@ -731,7 +741,10 @@ class RulesEngine:
 
         if not source_oracle and source_card and source_card != "spell":
             for card_info in RulesEngine._card_db.values():
-                if isinstance(card_info, dict) and (card_info.get("name") or "").lower() == source_card.lower():
+                if (
+                    isinstance(card_info, dict)
+                    and (card_info.get("name") or "").lower() == source_card.lower()
+                ):
                     source_oracle = card_info.get("oracle_text", "")
                     if source_oracle:
                         break

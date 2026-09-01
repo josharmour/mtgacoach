@@ -25,7 +25,9 @@ class FakeLiteLLM:
         self.fail_alias_once = False
         self.key_prefix = key_prefix
 
-    async def post(self, url: str, json: dict[str, Any] | None = None, headers: dict[str, str] | None = None, **kw):
+    async def post(
+        self, url: str, json: dict[str, Any] | None = None, headers: dict[str, str] | None = None, **kw
+    ):
         if url.endswith("/key/generate"):
             alias = json.get("key_alias") if json else ""
             if self.fail_alias_once:

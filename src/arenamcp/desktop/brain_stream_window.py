@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame,
@@ -425,7 +425,9 @@ class BrainStreamWindow(QMainWindow):
             root_pct = int(float(mcts_payload.get("root_win_probability", 0.5)) * 100)
             lines = [f"🌲 Win Expectancy: {root_pct}% (Sims: {mcts_payload.get('total_simulations', 1000)})"]
             for i, b in enumerate(branches[:4], 1):
-                lines.append(f"{i}. [{int(float(b.get('win_probability', 0.5))*100)}%] {b.get('tag', '')} {b.get('action', '')}")
+                lines.append(
+                    f"{i}. [{int(float(b.get('win_probability', 0.5)) * 100)}%] {b.get('tag', '')} {b.get('action', '')}"
+                )
             self.draw_odds_view.setPlainText("\n".join(lines))
         else:
             self.draw_odds_view.setPlainText("—")
@@ -460,7 +462,7 @@ class BrainStreamWindow(QMainWindow):
             f"<td align='left'><span style='font-size: 14px; font-weight: bold; color: {root_color};'>ROOT WIN EXPECTANCY: {root_pct}%</span></td>",
             f"<td align='right'><span style='background: #313244; color: #89b4fa; padding: 2px 8px; border-radius: 4px;'>Turn {turn_num} • {phase} • Mana: {mana}</span></td>",
             "</tr></table>",
-            f"<div style='background: #313244; width: 100%; border-radius: 4px; height: 10px; margin-bottom: 8px;'>",
+            "<div style='background: #313244; width: 100%; border-radius: 4px; height: 10px; margin-bottom: 8px;'>",
             f"<div style='background: {root_color}; width: {root_pct}%; height: 10px; border-radius: 4px;'></div>",
             "</div>",
             f"<div style='color: #a6adc8; font-size: 11px;'>Simulations: {sims:,} visits • Hero Life: {hero_life} • Opp Life: {opp_life}</div>",
@@ -469,7 +471,9 @@ class BrainStreamWindow(QMainWindow):
         ]
 
         if not branches:
-            html.append("<div style='color: #a6adc8; font-style: italic;'>No legal candidate actions evaluated.</div>")
+            html.append(
+                "<div style='color: #a6adc8; font-style: italic;'>No legal candidate actions evaluated.</div>"
+            )
         else:
             for idx, b in enumerate(branches, 1):
                 if not isinstance(b, dict):
@@ -504,22 +508,28 @@ class BrainStreamWindow(QMainWindow):
                     badge_fg = "#11111b"
 
                 cost_display = f" [{cost}]" if cost else ""
-                html.extend([
-                    "<div style='background: #181825; border: 1px solid #313244; border-radius: 6px; padding: 10px; margin-bottom: 8px;'>",
-                    "<table width='100%' style='border: none; margin-bottom: 4px;'><tr>",
-                    f"<td align='left'><span style='font-weight: bold; color: #cdd6f4;'>#{idx}. {act}{cost_display}</span></td>",
-                    f"<td align='right'><span style='background: {badge_bg}; color: {badge_fg}; font-weight: bold; padding: 2px 6px; border-radius: 4px; font-size: 11px;'>{tag}</span></td>",
-                    "</tr></table>",
-                    f"<div style='margin-bottom: 6px; font-size: 12px; color: #a6adc8;'>",
-                    f"Win: <b style='color: {b_color};'>{pct}%</b> (<span style='color: {delta_color};'>{delta_str}</span>) • Visits: <b>{visits}</b>",
-                    "</div>",
-                    f"<div style='background: #313244; width: 100%; border-radius: 3px; height: 6px; margin-bottom: 6px;'>",
-                    f"<div style='background: {b_color}; width: {pct}%; height: 6px; border-radius: 3px;'></div>",
-                    "</div>",
-                    f"<div style='color: #cdd6f4; font-size: 12px; margin-bottom: 2px;'>↳ <b>Outcome:</b> {summary}</div>" if summary else "",
-                    f"<div style='color: #a6adc8; font-size: 11px; font-style: italic;'>↳ <b>Counterplay:</b> {counter}</div>" if counter else "",
-                    "</div>",
-                ])
+                html.extend(
+                    [
+                        "<div style='background: #181825; border: 1px solid #313244; border-radius: 6px; padding: 10px; margin-bottom: 8px;'>",
+                        "<table width='100%' style='border: none; margin-bottom: 4px;'><tr>",
+                        f"<td align='left'><span style='font-weight: bold; color: #cdd6f4;'>#{idx}. {act}{cost_display}</span></td>",
+                        f"<td align='right'><span style='background: {badge_bg}; color: {badge_fg}; font-weight: bold; padding: 2px 6px; border-radius: 4px; font-size: 11px;'>{tag}</span></td>",
+                        "</tr></table>",
+                        "<div style='margin-bottom: 6px; font-size: 12px; color: #a6adc8;'>",
+                        f"Win: <b style='color: {b_color};'>{pct}%</b> (<span style='color: {delta_color};'>{delta_str}</span>) • Visits: <b>{visits}</b>",
+                        "</div>",
+                        "<div style='background: #313244; width: 100%; border-radius: 3px; height: 6px; margin-bottom: 6px;'>",
+                        f"<div style='background: {b_color}; width: {pct}%; height: 6px; border-radius: 3px;'></div>",
+                        "</div>",
+                        f"<div style='color: #cdd6f4; font-size: 12px; margin-bottom: 2px;'>↳ <b>Outcome:</b> {summary}</div>"
+                        if summary
+                        else "",
+                        f"<div style='color: #a6adc8; font-size: 11px; font-style: italic;'>↳ <b>Counterplay:</b> {counter}</div>"
+                        if counter
+                        else "",
+                        "</div>",
+                    ]
+                )
 
         html.append("</div>")
         self.mcts_tree_view.setHtml("".join(html))

@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
-import base64
-import json
 import logging
-import re
 import time
 from typing import Any
 
 from arenamcp.backend_health import (
-    BACKEND_ERROR_PREFIX,
-    LOCAL_FALLBACK_PREFIX,
     is_backend_error_text,
 )
-from arenamcp.backends.base import LLMBackend
+from arenamcp.backends.proxy import ProxyBackend
+from arenamcp.coach_backends import _is_local_backend
 from arenamcp.coach_prompts import (
     POST_MATCH_ANALYSIS_PROMPT,
     SIDEBOARD_RECOMMENDATION_PROMPT,

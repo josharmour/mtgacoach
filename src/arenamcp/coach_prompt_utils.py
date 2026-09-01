@@ -223,7 +223,10 @@ def _format_numeric_constraints(game_state: dict[str, Any]) -> str:
     if minimum is None and maximum is None:
         return ""
 
-    parts = [f"min={minimum if minimum is not None else '?'}", f"max={maximum if maximum is not None else '?'}"]
+    parts = [
+        f"min={minimum if minimum is not None else '?'}",
+        f"max={maximum if maximum is not None else '?'}",
+    ]
     step = game_state.get("_bridge_numeric_step")
     if step:
         parts.append(f"step={step}")

@@ -154,7 +154,10 @@ def _release_single_instance_lock() -> None:
 
 def main() -> int:
     # CLI routing for frozen executable / command-line invocations
-    if any(arg in sys.argv for arg in ("--pipe", "--standalone", "--autopilot", "--dry-run", "--afk", "--diagnose")):
+    if any(
+        arg in sys.argv
+        for arg in ("--pipe", "--standalone", "--autopilot", "--dry-run", "--afk", "--diagnose")
+    ):
         from arenamcp.standalone import main as standalone_main
 
         return standalone_main()

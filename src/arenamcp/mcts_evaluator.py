@@ -8,8 +8,6 @@ and leverages the OpponentModel for metagame-aware tactical synthesis.
 
 from __future__ import annotations
 
-import contextlib
-import html
 import logging
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -96,7 +94,11 @@ class MCTSTreePayload:
         if self.branches:
             best = self.branches[0]
             b_pct = int(round(best.win_probability * 100))
-            delta_str = f"+{best.value_delta * 100:.1f}%" if best.value_delta > 0 else f"{best.value_delta * 100:.1f}%"
+            delta_str = (
+                f"+{best.value_delta * 100:.1f}%"
+                if best.value_delta > 0
+                else f"{best.value_delta * 100:.1f}%"
+            )
             lines.append(f"⭐ BEST LINE (Win: {b_pct}%, Value Delta: {delta_str}):")
             if best.sequence_steps:
                 for idx, step in enumerate(best.sequence_steps, start=1):
@@ -120,8 +122,12 @@ class MCTSTreePayload:
                 lines.append("ALTERNATIVE LINES CONSIDERED:")
                 for b in self.branches[1:3]:
                     alt_pct = int(round(b.win_probability * 100))
-                    alt_delta = f"+{b.value_delta * 100:.1f}%" if b.value_delta > 0 else f"{b.value_delta * 100:.1f}%"
-                    lines.append(f"  • [{b.tag}] {b.action} (Win: {alt_pct}%, {alt_delta}): {b.outcome_summary}")
+                    alt_delta = (
+                        f"+{b.value_delta * 100:.1f}%" if b.value_delta > 0 else f"{b.value_delta * 100:.1f}%"
+                    )
+                    lines.append(
+                        f"  • [{b.tag}] {b.action} (Win: {alt_pct}%, {alt_delta}): {b.outcome_summary}"
+                    )
                 lines.append("")
 
         if self.blunder_traps:
@@ -201,7 +207,9 @@ class MCTSEvaluator:
                 else:
                     opp_creatures.append(obj)
 
-        available_mana = max(untapped_lands, sum(hero_mana_dict.values()) if hero_mana_dict else untapped_lands)
+        available_mana = max(
+            untapped_lands, sum(hero_mana_dict.values()) if hero_mana_dict else untapped_lands
+        )
 
         # Opponent hand count
         zones = game_state.get("zones") or {}
@@ -262,7 +270,9 @@ class MCTSEvaluator:
         blunder_traps: list[MCTSBranch] = []
 
         # Find playable lands and spells in hand
-        playable_lands = [c for c in hand if isinstance(c, dict) and "land" in str(c.get("type_line") or "").lower()]
+        playable_lands = [
+            c for c in hand if isinstance(c, dict) and "land" in str(c.get("type_line") or "").lower()
+        ]
         playable_spells = []
         for card in hand:
             if not isinstance(card, dict):
@@ -294,13 +304,19 @@ class MCTSEvaluator:
                     your_remaining_blockers=[c for c in hero_creatures if c not in ready_attackers],
                 )
                 if attack_plan:
-                    atk_names = ", ".join(attack_plan.attacker_names) if attack_plan.attacker_names else "Hold Blockers"
+                    atk_names = (
+                        ", ".join(attack_plan.attacker_names)
+                        if attack_plan.attacker_names
+                        else "Hold Blockers"
+                    )
                     atk_val = base_val + (attack_plan.score / 20.0)
                     atk_val = max(0.05, min(0.98, atk_val))
                     v_delta = atk_val - base_val
 
-                    tag = "⭐ BEST LINE" if attack_plan.damage_through >= opp_life else (
-                        "⚡ TEMPO" if attack_plan.damage_through > 0 else "🛡️ SAFE"
+                    tag = (
+                        "⭐ BEST LINE"
+                        if attack_plan.damage_through >= opp_life
+                        else ("⚡ TEMPO" if attack_plan.damage_through > 0 else "🛡️ SAFE")
                     )
 
                     branches.append(
@@ -319,18 +335,38 @@ class MCTSEvaluator:
                                 "opp_life": max(0, opp_life - attack_plan.damage_through),
                                 "hero_power": hero_power,
                             },
-                            details={"damage_through": attack_plan.damage_through, "crackback": attack_plan.worst_case_crackback},
+                            details={
+                                "damage_through": attack_plan.damage_through,
+                                "crackback": attack_plan.worst_case_crackback,
+                            },
                         )
                     )
 
                 # Check if an all-out / reckless attack is a lethal blunder trap
                 all_atk_names = ", ".join(c.get("name", "?") for c in ready_attackers)
                 opp_block = optimal_blocks(ready_attackers, opp_blockers, opp_life)
-                all_dmg_through = opp_block.damage_through if opp_block else sum(int(c.get("power") or 0) for c in ready_attackers)
-                crack_block = optimal_blocks(opp_creatures, [c for c in hero_creatures if c not in ready_attackers], hero_life)
-                all_crackback = crack_block.damage_through if crack_block else sum(int(c.get("power") or 0) for c in opp_creatures)
+                all_dmg_through = (
+                    opp_block.damage_through
+                    if opp_block
+                    else sum(int(c.get("power") or 0) for c in ready_attackers)
+                )
+                crack_block = optimal_blocks(
+                    opp_creatures, [c for c in hero_creatures if c not in ready_attackers], hero_life
+                )
+                all_crackback = (
+                    crack_block.damage_through
+                    if crack_block
+                    else sum(int(c.get("power") or 0) for c in opp_creatures)
+                )
 
-                if all_crackback >= hero_life and all_dmg_through < opp_life and (not attack_plan or set(attack_plan.attacker_names) != set(c.get("name") for c in ready_attackers)):
+                if (
+                    all_crackback >= hero_life
+                    and all_dmg_through < opp_life
+                    and (
+                        not attack_plan
+                        or set(attack_plan.attacker_names) != set(c.get("name") for c in ready_attackers)
+                    )
+                ):
                     blunder_traps.append(
                         MCTSBranch(
                             action=f"All-out Attack: {all_atk_names}",
@@ -386,7 +422,9 @@ class MCTSEvaluator:
                 # Factor in Opponent archetype counterplay prediction
                 counterplay_note = "Opponent must respect development; priority passes to opponent."
                 if opp_profile and opp_profile.open_mana_threats:
-                    counterplay_note = f"Playing around {opp_profile.open_mana_threats[0]} with {rem_mana} mana up."
+                    counterplay_note = (
+                        f"Playing around {opp_profile.open_mana_threats[0]} with {rem_mana} mana up."
+                    )
 
                 branches.append(
                     MCTSBranch(
@@ -426,10 +464,10 @@ class MCTSEvaluator:
                     outcome_msg = f"Adds {power_add}/{tough_add} creature to board; leaves {available_mana - cmc} mana open"
                 elif is_removal:
                     card_impact = 0.12
-                    outcome_msg = f"Removes top opponent threat; swings board power delta"
+                    outcome_msg = "Removes top opponent threat; swings board power delta"
                 elif is_counter:
                     card_impact = 0.09
-                    outcome_msg = f"Holds counterspell permission for opponent's key threat"
+                    outcome_msg = "Holds counterspell permission for opponent's key threat"
                 else:
                     card_impact = 0.05
                     outcome_msg = f"Resolves spell effect; utilizes {cmc} mana"

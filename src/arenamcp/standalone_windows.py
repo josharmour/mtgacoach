@@ -6,8 +6,6 @@ import logging
 import re
 from typing import Any
 
-from arenamcp.action_planner import ActionPlan, ActionType, GameAction
-
 logger = logging.getLogger(__name__)
 
 
@@ -406,9 +404,7 @@ class _StandaloneWindowsMixin:
         bridge_trig = curr_state.get("_bridge_trigger") or {}
         if isinstance(bridge_trig, dict):
             req_type = str(
-                bridge_trig.get("_bridge_request_type")
-                or bridge_trig.get("request_type")
-                or ""
+                bridge_trig.get("_bridge_request_type") or bridge_trig.get("request_type") or ""
             ).lower()
             req_class = str(bridge_trig.get("_bridge_request_class") or "").lower()
             if "mulligan" in req_type or "mulligan" in req_class:
@@ -423,5 +419,3 @@ class _StandaloneWindowsMixin:
                 return True
 
         return False
-
-

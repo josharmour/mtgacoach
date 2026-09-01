@@ -39,7 +39,6 @@ import argparse
 import contextlib
 import logging
 import os
-import re
 import signal
 import subprocess  # noqa: F401  # test contract: monkeypatched via standalone.subprocess.Popen
 import sys
@@ -62,13 +61,15 @@ from arenamcp.mana import get_local_seat_id
 from arenamcp.settings import get_settings
 from arenamcp.standalone_deck import _DeckAnalysisMixin
 from arenamcp.standalone_diagnostics import _DiagnosticsMixin
+from arenamcp.standalone_hotkeys import _StandaloneHotkeysMixin
 from arenamcp.standalone_mcp import MCPClient
 from arenamcp.standalone_postmatch import _PostMatchMixin
-from arenamcp.standalone_hotkeys import _StandaloneHotkeysMixin
 from arenamcp.standalone_tempo import _TempoTracker
-from arenamcp.standalone_windows import _StandaloneWindowsMixin
 from arenamcp.standalone_ui import CLIAdapter, UIAdapter
 from arenamcp.standalone_voice import _PipeVoiceOutput, _probe_sounddevice_import, _SAPIVoice
+from arenamcp.standalone_windows import _StandaloneWindowsMixin
+
+__all__ = ["StandaloneCoach", "_SAPIVoice", "_PipeVoiceOutput"]
 
 # Configure logging (shared with server.py via logging_config)
 # Console handler disabled -- GUI/pipe adapter handles user-facing output.
@@ -79,20 +80,6 @@ WATCHDOG_SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 WATCHDOG_SCREENSHOT_MAX = 20  # Keep last N screenshots (pruned at match end)
 
 logger = logging.getLogger(__name__)
-
-
-# Import dependencies
-# The `keyboard` package must never be imported on macOS: its darwin backend
-# calls abort() during import when the process lacks root/Accessibility
-# rights, killing the interpreter before any except clause can run.
-keyboard = None
-if sys.platform != "darwin":
-    try:
-        import keyboard
-    except ImportError:
-        logger.warning("keyboard module not available - hotkeys disabled")
-else:
-    logger.info("keyboard hotkeys disabled on macOS (unsupported backend)")
 
 
 class StandaloneCoach(
@@ -2357,13 +2344,17 @@ class StandaloneCoach(
                                     advice = self._coach.get_advice(
                                         curr_state, trigger=trigger, style=self.advice_style
                                     )
-                                if advice and advice.strip().lower().rstrip(".").startswith("no actionable play"):
+                                if advice and advice.strip().lower().rstrip(".").startswith(
+                                    "no actionable play"
+                                ):
                                     advice = None
                             else:
                                 advice = self._coach.get_advice(
                                     curr_state, trigger=trigger, style=self.advice_style
                                 )
-                                if advice and advice.strip().lower().rstrip(".").startswith("no actionable play"):
+                                if advice and advice.strip().lower().rstrip(".").startswith(
+                                    "no actionable play"
+                                ):
                                     advice = None
                             logger.info(f"ADVICE: {advice}")
 

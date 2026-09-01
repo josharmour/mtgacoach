@@ -7,7 +7,6 @@ platform; the Qt overlay smoke tests are skipped when PySide6 is missing.
 
 from __future__ import annotations
 
-import os
 import sys
 import types
 from typing import Any
@@ -375,6 +374,3 @@ except Exception:  # pragma: no cover - env specific
     _HAVE_PYSIDE6 = False
 
 needs_pyside6 = pytest.mark.skipif(not _HAVE_PYSIDE6, reason="PySide6 not installed in this environment")
-
-
-

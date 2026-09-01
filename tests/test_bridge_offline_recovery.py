@@ -13,8 +13,8 @@ import time
 import arenamcp.autopilot as autopilot_module
 from arenamcp.action_planner import ActionType, GameAction
 from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
-from arenamcp.gre_bridge import GREBridge
 from arenamcp.autopilot_models import ClickResult
+from arenamcp.gre_bridge import GREBridge
 
 
 class _FlippingBridge:

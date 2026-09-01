@@ -107,6 +107,7 @@ class MatchHistory:
             self._records = self._records[-500:]
         self._save()
         logger.info(f"Recorded match: {record.result} vs {record.opponent_name or 'unknown'}")
+
     def set_rating(self, match_id: str, rating: int | None, reason: str | None = None) -> None:
         """Backfill the best-effort coach rating for an already-recorded match.
 
@@ -126,7 +127,6 @@ class MatchHistory:
                 self._save()
                 logger.info(f"Attached coach rating {rating}/10 to match {match_id}")
                 return
-
 
     def get_recent(self, n: int = 20) -> list[MatchRecord]:
         """Get the N most recent matches."""

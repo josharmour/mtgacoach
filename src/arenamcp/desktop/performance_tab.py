@@ -118,9 +118,7 @@ class PerformanceTab(QWidget):
         rating = getattr(rec, "coach_rating", None)
         reason = (getattr(rec, "coach_score_reason", "") or "").strip()
         if rating is None:
-            self._detail.setText(
-                f"{result} vs {opponent} — no score (post-match analysis not run)"
-            )
+            self._detail.setText(f"{result} vs {opponent} — no score (post-match analysis not run)")
             return
         text = f"{result} vs {opponent} — score {int(rating)}/10"
         if reason:

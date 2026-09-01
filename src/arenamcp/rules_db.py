@@ -117,7 +117,9 @@ class RulesDB:
                 self._build_db()
             else:
                 # Verify table exists (may have been corrupted/empty)
-                cursor = self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='rules'")
+                cursor = self._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='rules'"
+                )
                 if cursor.fetchone() is None:
                     self._build_db()
 

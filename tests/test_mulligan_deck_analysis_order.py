@@ -11,12 +11,7 @@ def test_is_mulligan_pending_detection():
     assert StandaloneCoach._is_mulligan_pending({"pending_decision": "MulliganReq"}) is True
 
     # 2. Bridge trigger with request_type / _bridge_request_type / _bridge_request_class
-    assert (
-        StandaloneCoach._is_mulligan_pending(
-            {"_bridge_trigger": {"request_type": "Mulligan"}}
-        )
-        is True
-    )
+    assert StandaloneCoach._is_mulligan_pending({"_bridge_trigger": {"request_type": "Mulligan"}}) is True
     assert (
         StandaloneCoach._is_mulligan_pending(
             {"_bridge_trigger": {"_bridge_request_class": "MulliganRequest"}}
@@ -25,16 +20,9 @@ def test_is_mulligan_pending_detection():
     )
 
     # 3. decision_context with LondonMulligan
+    assert StandaloneCoach._is_mulligan_pending({"decision_context": {"context": "LondonMulligan"}}) is True
     assert (
-        StandaloneCoach._is_mulligan_pending(
-            {"decision_context": {"context": "LondonMulligan"}}
-        )
-        is True
-    )
-    assert (
-        StandaloneCoach._is_mulligan_pending(
-            {"decision_context": {"group_context": "LondonMulligan"}}
-        )
+        StandaloneCoach._is_mulligan_pending({"decision_context": {"group_context": "LondonMulligan"}})
         is True
     )
 

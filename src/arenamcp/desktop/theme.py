@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Final
+from typing import Any, Final
 
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QColor, QPalette

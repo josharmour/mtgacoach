@@ -6,10 +6,10 @@ import logging
 import sys
 import threading
 import time
-from typing import Any
+import traceback
 
-from arenamcp.coach import create_backend, create_local_fallback, get_models_for_mode
-from arenamcp.settings import get_settings
+from arenamcp.backend_health import is_backend_error_text
+from arenamcp.coach import get_models_for_mode
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,6 @@ class _StandaloneHotkeysMixin:
         Parses VIABLE: YES/NO from the LLM response. Only stores viable plans
         and plays a sound alert. The plan is read aloud only on Ctrl+0 press.
         """
-        import concurrent.futures
 
         try:
             # Lazy-init thinking model
@@ -229,8 +228,6 @@ class _StandaloneHotkeysMixin:
 
                 self.ui.status("WIN-PLAN", f"WIN IN {n} FOUND — Ctrl+0 to hear")
                 break  # First viable result wins
-
-            executor.shutdown(wait=False)
 
             if hasattr(thinking_backend, "close"):
                 thinking_backend.close()
@@ -432,8 +429,6 @@ class _StandaloneHotkeysMixin:
         if self.draft_mode:
             return
 
-        from arenamcp.coach import get_models_for_mode
-
         mode = self.backend_name
 
         # Rebuild model list when mode changes
@@ -574,4 +569,3 @@ class _StandaloneHotkeysMixin:
                 keyboard.unhook_all()
             except (ValueError, KeyError, Exception):
                 pass  # Already unhooked or error
-
