@@ -104,6 +104,13 @@ path = "src/arenamcp/__init__.py"
 target-version = "py310"
 line-length = 110
 src = ["src", "tests"]
+exclude = [
+    "tools",
+    "scripts",
+    "installer",
+    "dist",
+    "website",
+]
 
 [tool.ruff.lint]
 select = [

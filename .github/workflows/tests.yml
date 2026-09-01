@@ -63,5 +63,5 @@ jobs:
       - uses: astral-sh/ruff-action@v3
         with:
           version: "0.15.22"
-      - run: ruff check src tests
+          args: "check src tests"
       - run: ruff format --check src tests
