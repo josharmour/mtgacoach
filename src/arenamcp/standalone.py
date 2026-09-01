@@ -585,6 +585,9 @@ class StandaloneCoach(
             from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
             from arenamcp.coach import create_backend
 
+            if not self._mcp:
+                self._init_mcp()
+
             if not self._coach:
                 self._init_llm()
             if not self._coach:
@@ -744,40 +747,13 @@ class StandaloneCoach(
         """
         logger.info(f"_init_voice called, backend_name={self.backend_name}")
 
-        # In pipe mode (native GUI), try Kokoro directly with a hard timeout.
-        # If it hangs (numpy/PortAudio DLL issues), fall back to Windows SAPI.
+        # In pipe mode (native GUI), delegate speech to the desktop UI worker
+        # instantly without loading duplicate ONNX models in this process.
         if hasattr(self.ui, "emit_game_state"):
-            self.ui.log("Initializing TTS...")
-            kokoro_result = [None]  # mutable container for thread result
-
-            def _try_kokoro():
-                try:
-                    from arenamcp.tts import VoiceOutput
-
-                    kokoro_result[0] = VoiceOutput()
-                except Exception as e:
-                    logger.error(f"Kokoro init failed: {e}")
-
-            t = threading.Thread(target=_try_kokoro, daemon=True)
-            t.start()
-            t.join(timeout=10.0)
-
-            if kokoro_result[0] is not None:
-                self._voice_output = _PipeVoiceOutput(self.ui, kokoro_result[0])
-                voice_id, voice_desc = kokoro_result[0].current_voice
-                logger.info(f"TTS voice (Kokoro): {voice_desc}")
-                self.ui.status("VOICE", f"{voice_desc}")
-                self.ui.log(f"TTS ready: {voice_desc}")
-                # DO NOT warm up here — the ONNX Kokoro() constructor holds
-                # the GIL for 10+ seconds during model loading, which blocks
-                # the coaching thread from ever starting via threading.Thread.
-                # Warmup is deferred until the coaching loop is running.
-            else:
-                reason = "timeout" if t.is_alive() else "init failed"
-                logger.warning(f"Kokoro unavailable ({reason}), using Windows SAPI")
-                self._voice_output = _SAPIVoice()
-                self.ui.status("VOICE", "Windows SAPI")
-                self.ui.log(f"Kokoro unavailable ({reason}) — using Windows SAPI")
+            self._voice_output = _PipeVoiceOutput(self.ui)
+            voice_id, voice_desc = self._voice_output.current_voice
+            self.ui.status("VOICE", f"{voice_desc}")
+            self.ui.log(f"TTS ready: {voice_desc}")
             return
 
         sd_ok, sd_reason = _probe_sounddevice_import(timeout_seconds=8.0)

@@ -145,57 +145,66 @@ class _SAPIVoice:
 
 
 class _PipeVoiceOutput:
-    """Wrap VoiceOutput so the visible desktop parent owns audio playback."""
+    """Lightweight voice delegate for pipe mode — avoids duplicate ONNX model loading."""
 
-    def __init__(self, ui: Any, inner: Any):
+    _VOICES = [
+        ("af_heart", "Heart (Female)"),
+        ("af_bella", "Bella (Female)"),
+        ("af_nicole", "Nicole (Female)"),
+        ("af_aoede", "Aoede (Female)"),
+        ("am_fenrir", "Fenrir (Male)"),
+        ("am_puck", "Puck (Male)"),
+        ("am_michael", "Michael (Male)"),
+        ("am_eric", "Eric (US Male)"),
+    ]
+
+    def __init__(self, ui: Any, voice_index: int = 7):
         self._ui = ui
-        self._inner = inner
+        self._voice_index = voice_index % len(self._VOICES)
+        self._speed = 1.0
+        self._muted = False
 
-    def __getattr__(self, name: str):
-        return getattr(self._inner, name)
+    @property
+    def current_voice(self) -> tuple[str, str]:
+        return self._VOICES[self._voice_index]
 
-    def speak(self, text: str, blocking: bool = True) -> None:
-        if not text or not text.strip():
+    @property
+    def muted(self) -> bool:
+        return self._muted
+
+    def next_voice(self) -> tuple[str, str]:
+        self._voice_index = (self._voice_index + 1) % len(self._VOICES)
+        return self.current_voice
+
+    def toggle_mute(self) -> bool:
+        self._muted = not self._muted
+        return self._muted
+
+    def speak(self, text: str, blocking: bool = False) -> None:
+        if not text or not text.strip() or self._muted:
             return
+        import re
 
-        text = self._inner._clean_text(text)
-        if not text or not text.strip():
-            return
-
-        if getattr(self._inner, "muted", False):
+        text = text.replace("**", "").replace("*", "").replace("#", "")
+        text = text.replace("```", "").replace("`", "").replace("...", " ")
+        text = re.sub(r"\[[A-Z][A-Za-z0-9_,:{}/ ]*\]", "", text).strip()
+        if not text:
             return
 
         emit_request = getattr(self._ui, "emit_speech_request", None)
         if callable(emit_request):
-            with contextlib.suppress(Exception):
-                self._inner.stop()
-
-            try:
-                voice_id, voice_name = self._inner.current_voice
-                speed = float(getattr(self._inner, "speed", getattr(self._inner, "_speed", 1.0)))
-                emit_request(
-                    text=text,
-                    voice_id=voice_id,
-                    voice_name=voice_name,
-                    speed=speed,
-                )
-                logger.info(
-                    "Pipe voice delegated to desktop worker voice=%s speed=%.2f",
-                    voice_id,
-                    speed,
-                )
-                return
-            except Exception as e:
-                logger.error("Pipe voice delegation failed: %s", e)
-
-        # Fallback for non-pipe environments or if the desktop bridge is unavailable.
-        self._inner.speak(text, blocking=blocking)
+            voice_id, voice_name = self.current_voice
+            emit_request(
+                text=text,
+                voice_id=voice_id,
+                voice_name=voice_name,
+                speed=self._speed,
+            )
 
     def stop(self) -> None:
         emit_stop = getattr(self._ui, "emit_speech_stop", None)
         if callable(emit_stop):
             emit_stop()
-        self._inner.stop()
 
 
 def _probe_sounddevice_import(timeout_seconds: float = 8.0) -> tuple[bool, str]:
