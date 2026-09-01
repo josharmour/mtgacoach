@@ -12,6 +12,8 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
+from arenamcp.mana import mana_cost_to_cmc, parse_color_identity
+
 logger = logging.getLogger(__name__)
 
 
@@ -331,19 +333,8 @@ class DeckBuilderV2:
         type_line = card_data.get("type_line", "")
         mana_cost = card_data.get("mana_cost", "")
 
-        # Parse colors from mana cost
-        colors = ""
-        for c in "WUBRG":
-            if f"{{{c}}}" in mana_cost:
-                colors += c
-
-        # Parse CMC from mana cost
-        cmc = 0
-        for c in mana_cost.replace("{", "").replace("}", ""):
-            if c.isdigit():
-                cmc += int(c)
-            elif c in "WUBRGX":
-                cmc += 1
+        colors = parse_color_identity(mana_cost)
+        cmc = mana_cost_to_cmc(mana_cost)
 
         is_creature = "creature" in type_line.lower() if type_line else False
 

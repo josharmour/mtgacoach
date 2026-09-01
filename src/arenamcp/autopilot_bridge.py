@@ -14,6 +14,7 @@ from arenamcp.autopilot_targets import (
     _normalize_planner_card_name,
 )
 from arenamcp.input_controller import ClickResult
+from arenamcp.mana import mana_cost_to_cmc
 
 logger = logging.getLogger(__name__)
 
@@ -1891,15 +1892,4 @@ class _BridgeSubmitMixin:
     @staticmethod
     def _parse_mana_value(mana_cost: str) -> int:
         """Convert a mana-cost string like '{2}{G}{G}' to a CMC integer."""
-        if not mana_cost:
-            return 0
-        total = 0
-        for sym in re.findall(r"\{([^}]+)\}", mana_cost):
-            s = sym.strip().upper()
-            if s.isdigit():
-                total += int(s)
-            elif s in ("X", "Y", "Z"):
-                total += 0
-            else:
-                total += 1
-        return total
+        return mana_cost_to_cmc(mana_cost)

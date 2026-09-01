@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from typing import Any
@@ -11,6 +12,18 @@ from arenamcp.coach import create_backend, create_local_fallback, get_models_for
 from arenamcp.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+# The `keyboard` package must never be imported on macOS: its darwin backend
+# calls abort() during import when the process lacks root/Accessibility
+# rights, killing the interpreter before any except clause can run.
+keyboard = None
+if sys.platform != "darwin":
+    try:
+        import keyboard
+    except ImportError:
+        logger.warning("keyboard module not available - hotkeys disabled")
+else:
+    logger.info("keyboard hotkeys disabled on macOS (unsupported backend)")
 
 
 class _StandaloneHotkeysMixin:

@@ -24,28 +24,7 @@ MACHINE_ID = "a" * 64
 OTHER_MACHINE_ID = "b" * 64
 
 
-class FakeResponse:
-    def __init__(self, status_code=200, payload=None, text=""):
-        self.status_code = status_code
-        self._payload = payload or {}
-        self.text = text or json.dumps(self._payload)
-
-    def json(self):
-        return self._payload
-
-
-class FakeLiteLLM:
-    """Stands in for patreon._http() — records /key/generate calls."""
-
-    def __init__(self):
-        self.minted = []
-
-    async def post(self, url, json=None, headers=None, **kw):
-        if url.endswith("/key/generate"):
-            key = f"sk-fake-trial-{len(self.minted)}"
-            self.minted.append({"payload": json, "headers": headers, "key": key})
-            return FakeResponse(200, {"key": key})
-        raise AssertionError(f"unexpected POST {url}")
+from tests.fakes import FakeLiteLLM, FakeResponse
 
 
 def _load_proxy_app(tmp_path: Path, monkeypatch):
@@ -91,7 +70,7 @@ database:
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
     proxy_app, proxy_db, patreon = _load_proxy_app(tmp_path, monkeypatch)
-    fake = FakeLiteLLM()
+    fake = FakeLiteLLM(key_prefix="sk-fake-trial-")
     monkeypatch.setattr(patreon, "_http", lambda: fake)
     with TestClient(proxy_app.app) as client:
         yield proxy_app, proxy_db, patreon, fake, client

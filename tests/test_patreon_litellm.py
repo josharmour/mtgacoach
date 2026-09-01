@@ -45,37 +45,7 @@ def _load_patreon(tmp_path, monkeypatch):
     return patreon, db
 
 
-class FakeResponse:
-    def __init__(self, status_code=200, payload=None, text=""):
-        self.status_code = status_code
-        self._payload = payload or {}
-        self.text = text or json.dumps(self._payload)
-
-    def json(self):
-        return self._payload
-
-
-class FakeLiteLLM:
-    """Stands in for patreon._http() — records /key/generate and /key/delete."""
-
-    def __init__(self):
-        self.minted = []
-        self.deleted = []
-        self.fail_alias_once = False
-
-    async def post(self, url, json=None, headers=None, **kw):
-        if url.endswith("/key/generate"):
-            alias = json["key_alias"]
-            if self.fail_alias_once:
-                self.fail_alias_once = False
-                return FakeResponse(400, {"error": "alias already exists"})
-            key = f"sk-fake-{len(self.minted)}"
-            self.minted.append({"alias": alias, "payload": json, "key": key})
-            return FakeResponse(200, {"key": key})
-        if url.endswith("/key/delete"):
-            self.deleted.extend(json["keys"])
-            return FakeResponse(200, {"deleted_keys": json["keys"]})
-        raise AssertionError(f"unexpected POST {url}")
+from tests.fakes import FakeLiteLLM, FakeResponse
 
 
 @pytest.fixture()

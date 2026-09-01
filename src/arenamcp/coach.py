@@ -33,6 +33,7 @@ from arenamcp.coach_backends import (
     pick_thinking_model,
 )
 from arenamcp.coach_tracker import WordUsageTracker
+from arenamcp.mana import get_local_seat_id, mana_cost_to_cmc
 from arenamcp.coach_prompt_utils import (
     _ACTIONS_AVAILABLE_BRIDGE_REQUESTS,
     _build_bridge_context_lines,
@@ -148,23 +149,10 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         return zone_value if isinstance(zone_value, list) else []
 
     def _get_local_seat_id(self, game_state: dict[str, Any]) -> int | None:
-        for player in game_state.get("players", []):
-            if player.get("is_local"):
-                return player.get("seat_id")
-        return None
+        return get_local_seat_id(game_state)
 
     def _parse_mana_value(self, mana_cost: str) -> int:
-        import re
-
-        cmc = 0
-        for symbol in re.findall(r"\{([^}]+)\}", mana_cost or ""):
-            if symbol.isdigit():
-                cmc += int(symbol)
-            elif "/" in symbol:
-                cmc += 1
-            elif symbol.upper() in {"W", "U", "B", "R", "G", "C", "X"}:
-                cmc += 1 if symbol.upper() != "X" else 0
-        return cmc
+        return mana_cost_to_cmc(mana_cost)
 
     def _available_mana_now(self, game_state: dict[str, Any]) -> int:
         local_seat = self._get_local_seat_id(game_state)
@@ -603,18 +591,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
     @staticmethod
     def _get_cmc(mana_cost: str) -> int:
         """Calculate converted mana cost from a mana cost string like '{1}{W}{W}'."""
-        import re
-
-        if not mana_cost:
-            return 0
-        cmc = 0
-        generic = re.findall(r"\{(\d+)\}", mana_cost)
-        cmc += sum(int(g) for g in generic)
-        for color in "WUBRGC":
-            cmc += len(re.findall(rf"\{{{color}\}}", mana_cost))
-        hybrid = re.findall(r"\{[^}]+/[^}]+\}", mana_cost)
-        cmc += len(hybrid)
-        return cmc
+        return mana_cost_to_cmc(mana_cost)
 
     # ------------------------------------------------------------------
     # Helpers extracted from _format_game_context

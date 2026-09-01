@@ -58,6 +58,7 @@ from arenamcp.backend_health import (
 )
 from arenamcp.decision_arbiter import arbitrate
 from arenamcp.logging_config import LOG_DIR, LOG_FILE, configure_logging
+from arenamcp.mana import get_local_seat_id
 from arenamcp.settings import get_settings
 from arenamcp.standalone_deck import _DeckAnalysisMixin
 from arenamcp.standalone_diagnostics import _DiagnosticsMixin
@@ -359,10 +360,7 @@ class StandaloneCoach(
     @staticmethod
     def _get_local_seat_from_state(game_state: dict[str, Any]) -> int | None:
         """Return the local seat id from a serialized snapshot, if known."""
-        for player in game_state.get("players", []):
-            if player.get("is_local"):
-                return player.get("seat_id")
-        return None
+        return get_local_seat_id(game_state)
 
     def speak_advice(self, text: str, blocking: bool = True) -> None:
         """Speak advice using local Kokoro TTS."""
