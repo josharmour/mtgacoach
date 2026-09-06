@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mtgacoach — a coach in your ear for MTG Arena</title>
+    <meta name="description" content="mtgacoach watches your Magic: The Gathering Arena games and talks you through them — line by line, in real time.">
+    <style>
+        :root {
+            --bg: #16130f;
+            --ink: #e6ddcc;
+            --faint: #97907f;
+            --rule: #353026;
+            --accent: #d4a13c;
+            --accent-dim: #8a6b2b;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+        body {
+            font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+            background: var(--bg);
+            color: var(--ink);
+            line-height: 1.65;
+            font-size: 17px;
+            position: relative;
+        }
+        /* Faint candlelight over the table */
+        body::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background:
+                radial-gradient(1100px 520px at 72% -8%, rgba(212, 161, 60, 0.08), transparent 62%),
+                radial-gradient(900px 700px at 8% 30%, rgba(74, 106, 138, 0.05), transparent 60%);
+        }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; text-underline-offset: 3px; }
+        .wrap { max-width: 680px; margin: 0 auto; padding: 0 24px; }
+
+        header {
+            padding: 28px 0 0;
+        }
+        header .wrap {
+            display: flex; justify-content: space-between; align-items: baseline;
+        }
+        .wordmark {
+            font-style: italic;
+            font-size: 1.65rem;
+            color: var(--ink);
+            letter-spacing: 0.02em;
+        }
+        .wordmark:hover { text-decoration: none; color: var(--accent); }
+        nav a {
+            color: var(--faint);
+            font-size: 0.9rem;
+            margin-left: 22px;
+        }
+        nav a:hover { color: var(--ink); text-decoration: none; }
+
+        .hero { padding: 96px 0 64px; }
+        /* Full-page card-fan backdrop, weighted to the right */
+        .bg-art {
+            position: fixed;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            pointer-events: none;
+            user-select: none;
+        }
+        @media (max-width: 760px) { .bg-art { opacity: 0.5; } }
+        .kicker {
+            font-family: -apple-system, "Segoe UI", sans-serif;
+            font-size: 0.72rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--accent-dim);
+            margin-bottom: 20px;
+        }
+        h1 {
+            font-weight: 500;
+            font-size: 2.6rem;
+            line-height: 1.18;
+            letter-spacing: -0.01em;
+            max-width: 15em;
+        }
+        h1 em { font-style: italic; color: var(--accent); }
+        .hero p {
+            margin-top: 24px;
+            font-size: 1.12rem;
+            color: var(--faint);
+            max-width: 32em;
+        }
+        .hero-actions { margin-top: 36px; }
+        .button {
+            display: inline-block;
+            font-family: -apple-system, "Segoe UI", sans-serif;
+            font-size: 0.92rem;
+            padding: 11px 26px;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            letter-spacing: 0.03em;
+        }
+        .button:hover { background: var(--accent); color: var(--bg); text-decoration: none; }
+        .hero-actions .aside {
+            margin-left: 18px;
+            font-size: 0.92rem;
+            color: var(--faint);
+        }
+
+        hr {
+            border: 0;
+            border-top: 1px solid var(--rule);
+            margin: 0;
+        }
+
+        section { padding: 64px 0; }
+        .label {
+            font-family: -apple-system, "Segoe UI", sans-serif;
+            font-size: 0.72rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--faint);
+            margin-bottom: 36px;
+        }
+
+        dl.features dt {
+            font-size: 1.15rem;
+            font-style: italic;
+            margin-top: 30px;
+        }
+        dl.features dt:first-of-type { margin-top: 0; }
+        dl.features dd {
+            color: var(--faint);
+            margin-top: 4px;
+            max-width: 36em;
+        }
+
+        ol.steps {
+            list-style: none;
+            counter-reset: step;
+        }
+        ol.steps li {
+            counter-increment: step;
+            padding: 22px 0;
+            border-top: 1px solid var(--rule);
+            display: grid;
+            grid-template-columns: 3.5rem 1fr;
+            gap: 8px;
+        }
+        ol.steps li:first-child { border-top: 0; padding-top: 0; }
+        ol.steps li::before {
+            content: counter(step, upper-roman) ".";
+            font-style: italic;
+            color: var(--accent-dim);
+            font-size: 1.1rem;
+        }
+        ol.steps h3 { font-weight: 500; font-size: 1.05rem; display: inline; }
+        ol.steps p { color: var(--faint); margin-top: 2px; }
+        ol.steps code {
+            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+            font-size: 0.85em;
+            color: var(--ink);
+            background: #221e17;
+            padding: 1px 6px;
+        }
+
+        .closing { text-align: center; padding: 72px 0 88px; }
+        .closing .fleuron { color: var(--accent-dim); font-size: 1.3rem; margin-bottom: 28px; }
+        .closing p {
+            font-style: italic;
+            font-size: 1.25rem;
+            max-width: 26em;
+            margin: 0 auto 32px;
+        }
+
+        footer {
+            border-top: 1px solid var(--rule);
+            padding: 28px 0 40px;
+            color: var(--faint);
+            font-size: 0.82rem;
+        }
+        footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+        @media (max-width: 560px) {
+            h1 { font-size: 2rem; }
+            .hero { padding: 64px 0 48px; }
+            .hero-actions .aside { display: block; margin: 14px 0 0; }
+        }
+    </style>
+</head>
+<body>
+    <svg class="bg-art" viewBox="170 270 1730 820" preserveAspectRatio="xMaxYMax meet" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <!-- a held hand of five cards rising from the lower right, one pip per color of the pie -->
+        <g stroke-linejoin="round" stroke-width="2">
+            <g transform="rotate(-28 1030 1750)">
+                <rect x="840" y="330" width="380" height="540" rx="26" fill="#191510" stroke="#332c1f"/>
+                <rect x="866" y="356" width="328" height="488" rx="16" fill="none" stroke="#252017"/>
+                <circle cx="1030" cy="600" r="20" fill="#cfc49a" opacity="0.4"/>
+            </g>
+            <g transform="rotate(-14 1030 1750)">
+                <rect x="840" y="305" width="380" height="540" rx="26" fill="#191510" stroke="#332c1f"/>
+                <rect x="866" y="331" width="328" height="488" rx="16" fill="none" stroke="#252017"/>
+                <circle cx="1030" cy="575" r="20" fill="#4a7fa8" opacity="0.35"/>
+            </g>
+            <g>
+                <rect x="840" y="295" width="380" height="540" rx="26" fill="#1b1712" stroke="#3a3222"/>
+                <rect x="866" y="321" width="328" height="488" rx="16" fill="none" stroke="#272115"/>
+                <circle cx="1030" cy="565" r="20" fill="#7a6a8e" opacity="0.35"/>
+            </g>
+            <g transform="rotate(14 1030 1750)">
+                <rect x="840" y="305" width="380" height="540" rx="26" fill="#191510" stroke="#332c1f"/>
+                <rect x="866" y="331" width="328" height="488" rx="16" fill="none" stroke="#252017"/>
+                <circle cx="1030" cy="575" r="20" fill="#b25b47" opacity="0.35"/>
+            </g>
+            <g transform="rotate(28 1030 1750)">
+                <rect x="840" y="330" width="380" height="540" rx="26" fill="#191510" stroke="#332c1f"/>
+                <rect x="866" y="356" width="328" height="488" rx="16" fill="none" stroke="#252017"/>
+                <circle cx="1030" cy="600" r="20" fill="#5d8a5a" opacity="0.4"/>
+            </g>
+        </g>
+    </svg>
+    <header>
+        <div class="wrap">
+            <a href="/" class="wordmark">mtgacoach</a>
+            <nav>
+                <a href="/subscribe">Subscribe</a>
+                <a href="https://github.com/josharmour/mtgacoach">GitHub</a>
+            </nav>
+        </div>
+    </header>
+
+    <section class="hero">
+        <div class="wrap">
+            <div class="kicker">For Magic: The Gathering Arena</div>
+            <h1>A coach in your ear, <em>every turn</em> of the game.</h1>
+            <p>mtgacoach watches your Arena games as you play and talks you
+            through them — attacks, blocks, sequencing, the line you didn't
+            see. Out loud, while it matters, not in a post-mortem.</p>
+            <div class="hero-actions">
+                <a class="button" href="/subscribe">Subscribe</a>
+                <span class="aside">$9.99 a month, through Patreon.</span>
+            </div>
+        </div>
+    </section>
+
+    <div class="wrap"><hr></div>
+
+    <section>
+        <div class="wrap">
+            <div class="label">What it does</div>
+            <dl class="features">
+                <dt>Live table talk</dt>
+                <dd>It reads the real game state — your hand, the board, the
+                stack, every legal action — and speaks its advice so your eyes
+                never leave the game.</dd>
+
+                <dt>Draft picks, with receipts</dt>
+                <dd>Pack-by-pack pick ratings built on 17lands data, so you
+                draft the deck the numbers like and not just the rare.</dd>
+
+                <dt>An autopilot that actually plays</dt>
+                <dd>Step away and it takes the wheel: lands on curve, sensible
+                combat, priority passed on time. Come back to a game still in
+                progress, not a concession.</dd>
+
+                <dt>Our own table, our own stakes</dt>
+                <dd>Coaching runs on dedicated GPU hardware we operate
+                ourselves. No per-token metering — your subscription is the
+                whole bill.</dd>
+            </dl>
+        </div>
+    </section>
+
+    <div class="wrap"><hr></div>
+
+    <section>
+        <div class="wrap">
+            <div class="label">How it works</div>
+            <ol class="steps">
+                <li>
+                    <div>
+                        <h3>Install the app.</h3>
+                        <p>Grab the Windows installer from GitHub, or
+                        <code>pip install mtgacoach</code> anywhere Python runs.</p>
+                    </div>
+                </li>
+                <li>
+                    <div>
+                        <h3>Add your license key.</h3>
+                        <p>Subscribe on Patreon, link your account, and paste the
+                        key into the app under Settings.</p>
+                    </div>
+                </li>
+                <li>
+                    <div>
+                        <h3>Queue up.</h3>
+                        <p>Launch Arena, launch mtgacoach, and play. The coaching
+                        starts with your first priority.</p>
+                    </div>
+                </li>
+            </ol>
+        </div>
+    </section>
+
+    <section class="closing">
+        <div class="wrap">
+            <div class="fleuron" aria-hidden="true">
+                <svg width="64" height="60" viewBox="0 0 64 60" xmlns="http://www.w3.org/2000/svg">
+                    <!-- the color pie -->
+                    <circle cx="32" cy="10" r="4" fill="#cfc49a" opacity="0.8"/>
+                    <circle cx="53" cy="25" r="4" fill="#4a7fa8" opacity="0.8"/>
+                    <circle cx="45" cy="50" r="4" fill="#7a6a8e" opacity="0.8"/>
+                    <circle cx="19" cy="50" r="4" fill="#b25b47" opacity="0.8"/>
+                    <circle cx="11" cy="25" r="4" fill="#5d8a5a" opacity="0.8"/>
+                </svg>
+            </div>
+            <p>&ldquo;The difference between a good player and a great one is
+            somebody standing behind them asking: are you sure?&rdquo;</p>
+            <a class="button" href="/subscribe">Get mtgacoach</a>
+        </div>
+    </section>
+
+    <footer>
+        <div class="wrap">
+            <span>&copy; mtgacoach.com</span>
+            <span>Unofficial fan software. Magic: The Gathering is a trademark
+            of Wizards of the Coast LLC.</span>
+        </div>
+    </footer>
+</body>
+</html>

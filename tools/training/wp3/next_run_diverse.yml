@@ -1,0 +1,77 @@
+# next_run_diverse.yml — FINALIZED config for the NEXT MageZero curriculum run
+# (tracked mtgacoach-side copy; the live file is configs/run_diverse.yml in the
+#  separate magezero repo — deploy step below).
+#
+# DEPLOY (one file copy, run only between curriculum runs, NEVER mid-run):
+#   cp tools/training/wp3/next_run_diverse.yml \
+#      /home/joshu/repos/magezero/configs/run_diverse.yml
+#
+# Provenance:
+#   - Opponent set: issue #438 greedy-optimal 5 (exhaustive search over 23
+#     candidate decks, tools/training/wp3/deck_inventory.py), ADDED to the 5
+#     retained Standard-Mono baseline opponents. Pool: 83 -> 235 distinct
+#     cards (2.8x).
+#   - games_per_gen 550 / generations 6: matches the live run.yml scale the
+#     550-bump paid for (rl-pipeline-fix.md MORNING PRIORITY item 3 — start
+#     the NEXT run diverse by default, never change opponents mid-run).
+#   - PERMANENT HOLDOUT decks (unseen-deck gate slice contract): HighNoonControl,
+#     BGRoots, BWBats must NEVER appear as primary or opponent in ANY training
+#     config. Enforced by tools/training/wp3/validate_run_config.py (wired as
+#     tests/test_validate_run_config.py). Do not add them here.
+#
+# Coverage analysis (from tools/training/wp3/deck_inventory.py):
+#   UWTempo + 5 Standard-Mono:            83 distinct cards
+#   Added by the 5 diverse opponents:    152 new cards
+#   New pool:                            235 distinct cards
+#
+#   1. Oathbreaker_UR    — 46 cards, 41 new, UR storm/combo
+#   2. GBLegends         — 37 cards, 31 new, WUBRG 5c legends
+#   3. EVG_Elves         — 28 cards, 27 new, G tribal aggro
+#   4. EVG_Goblins       — 28 cards, 27 new, R tribal aggro
+#   5. Mind(MindvsMight) — 29 cards, 27 new, UR spellslinger
+#
+# Role diversity added: storm/combo, 5-colour goodstuff, tribal x2,
+# spellslinger — none of which the 5 mono opponents expose the student to.
+
+deck: UWTempo
+version: 2
+start_from_version: null   # owner call at deploy time: null = fresh bootstrap;
+                           # set to the final version of the current 550-run to
+                           # resume from its checkpoint instead.
+
+generations: 6
+games_per_gen: 550
+replay_buffer_gens: 3
+
+opponents:
+  # — retained Standard-Mono baseline opponents —
+  - deck: Standard-MonoR
+    mode: minimax
+  - deck: Standard-MonoG
+    mode: minimax
+  - deck: Standard-MonoB
+    mode: minimax
+  - deck: Standard-MonoW
+    mode: minimax
+  - deck: Standard-MonoU
+    mode: minimax
+  # — #438 diverse coverage opponents —
+  - deck: Oathbreaker_UR
+    mode: minimax
+  - deck: GBLegends
+    mode: minimax
+  - deck: EVG_Elves
+    mode: minimax
+  - deck: EVG_Goblins
+    mode: minimax
+  - deck: Mind(MindvsMight)
+    mode: minimax
+
+training:
+  analyze_dataset: true
+  generate_plots: true
+  eval_previous_model: true
+
+log_level: ACTIONS           # ALL | GAMEPLAY | ACTIONS | ERROR
+
+curriculum: configs/curriculum.yml

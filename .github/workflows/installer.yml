@@ -1,0 +1,88 @@
+name: build-installer
+
+# Builds mtgacoach-Setup.exe on a Windows runner and attaches it to the
+# release for the pushed tag, alongside the Python wheel (.whl) artifact.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag to attach the installer to (e.g. v2.4.0)"
+        required: false
+        default: ""
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build hatchling pyinstaller
+          pip install -e .[desktop,full]
+
+      - name: Build Python wheel
+        run: python -m build --wheel
+
+      - name: Build standalone executable (PyInstaller)
+        run: pyinstaller mtgacoach.spec --noconfirm
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          # Version source of truth: src/arenamcp/__init__.py. pyproject.toml
+          # uses hatch dynamic versioning and has no literal `version = "..."`
+          # line, so the old fallback could never resolve a version.
+          $versionMatch = Select-String -Path "src\arenamcp\__init__.py" -Pattern '^\s*__version__\s*=\s*"([^"]+)"' | Select-Object -First 1
+          if (-not $versionMatch) { throw "Could not read __version__ from src/arenamcp/__init__.py" }
+          $packageVersion = $versionMatch.Matches[0].Groups[1].Value
+
+          $version = "${{ inputs.release_tag || github.ref_name }}".TrimStart("v")
+          if ($version -notmatch '^\d') { $version = $packageVersion }
+          if ($version -ne $packageVersion) {
+            Write-Host "::warning::Release tag version '$version' does not match package __version__ '$packageVersion' - the installer asset will be stamped '$version'."
+          }
+
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=$version installer\mtgacoach.iss
+          if (-not (Test-Path dist\installer\mtgacoach-Setup.exe)) { throw "installer not produced" }
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ inputs.release_tag }}"
+          if (-not $tag) { $tag = "${{ github.ref_name }}" }
+          gh release upload "$tag" dist/installer/mtgacoach-Setup.exe --clobber
+          Get-ChildItem -Path dist\*.whl | ForEach-Object {
+            gh release upload "$tag" $_.FullName --clobber
+          }
+
+      - name: Upload installer artifact (non-tag runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && inputs.release_tag == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtgacoach-Setup
+          path: dist/installer/mtgacoach-Setup.exe
+
+      - name: Upload wheel artifact (non-tag runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && inputs.release_tag == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtgacoach-wheel
+          path: dist/*.whl
+

@@ -1,0 +1,261 @@
+INFO  2026-07-28 21:34:05,161 Total: simulated 2586 evaluations in 23.68699819 seconds - Average: 109.17381676044279     =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,161 0 illegals purged, 37 valid duplicates purged, 11 invalid duplicates purged.               =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,161 PRECOMBAT_MAIN0pool= actions: [Pass score: 0.014 count: 117] [Cast Combat Research score: 0.115 count: 678]  =>[pool-3-thread-1] MCTSNode.bestChild 
+INFO  2026-07-28 21:34:05,163 base choose target Cast Combat Research                                                    =>[pool-3-thread-1] ComputerPlayerMCTS.makeChoice 
+INFO  2026-07-28 21:34:05,163 possible targets: 1                                                                        =>[pool-3-thread-1] ComputerPlayerMCTS.makeChoice 
+INFO  2026-07-28 21:34:05,164 playable abilities: [Cast Combat Research, Pass]                                           =>[pool-3-thread-1] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:05,164 [4:Precombat Main:PRECOMBAT_MAIN]chose action:Cast Combat Research success ratio: 0.1148229506068113 =>[pool-3-thread-1] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:05,164 [4:Precombat Main:PRECOMBAT_MAIN][player PlayerA:20][player PlayerB:20]                    =>[pool-3-thread-1] ComputerPlayerMCTS.logLife 
+INFO  2026-07-28 21:34:05,164 [PlayerA], life = 20                                                                       =>[pool-3-thread-1] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:05,164 -> Hand: [Negate; Soul Partition; Skrelv, Defector Mite; Meticulous Archive]               =>[pool-3-thread-1] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:05,164 -> Permanents: [Seachrome Coast,tapped; Skrelv, Defector Mite; Island,tapped]              =>[pool-3-thread-1] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:05,164 -> Permanents: [Mountain,tapped; Mountain,tapped]                                          =>[pool-3-thread-1] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:05,166 auto pass                                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:05,170 auto pass                                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:05,176 STARTING ROOT VISITS: 678                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,932 timed out, ending search                                                                   =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,932 Pending Nodes: 0                                                                           =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,932 Ran 260 simulations.                                                                       =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,933 COMPOSITE CHILDREN: [324, 326]                                                             =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,933 Player: PlayerA simulated 260 evaluations in 2.006033723 seconds - nodes in tree: 1316     =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,933 Total: simulated 2685 evaluations in 24.508289450999996 seconds - Average: 109.55476943293755 =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,933 0 illegals purged, 21 valid duplicates purged, 0 invalid duplicates purged.                =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,933 PRECOMBAT_MAIN1 (top: Cast Combat Research)pool= actions: [Hired Claw score: 0.055 count: 324] [Sleep-Cursed Faerie score: 0.055 count: 326]  =>[pool-3-thread-6] MCTSNode.bestChild 
+INFO  2026-07-28 21:34:05,972 required visits reached, ending search                                                     =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,979 Targeting Sleep-Cursed Faerie                                                              =>[pool-3-thread-6] ComputerPlayerMCTS.makeChoice 
+INFO  2026-07-28 21:34:05,979 Pending Nodes: 0                                                                           =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,979 Ran 218 simulations.                                                                       =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,979 COMPOSITE CHILDREN: [258, 741]                                                             =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,980 Player: PlayerA simulated 218 evaluations in 1.967433253 seconds - nodes in tree: 1784     =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,980 Total: simulated 2997 evaluations in 24.313928567 seconds - Average: 123.26268014407464    =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,980 0 illegals purged, 26 valid duplicates purged, 4 invalid duplicates purged.                =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,980 UPKEEP0pool= actions: [Pass score: -0.233 count: 258] [Cast Malcolm, Alluring Scoundrel score: -0.183 count: 741]  =>[pool-3-thread-5] MCTSNode.bestChild 
+INFO  2026-07-28 21:34:05,981 playable abilities: [Cast Bounce Off, Cast Combat Research, Cast Combat Research, Cast Shardmage's Rescue, Cast Kitsa, Otterball Elite, {1}{U}: Untap {this}., Pass] =>[pool-3-thread-6] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:05,981 [3:Precombat Main:PRECOMBAT_MAIN]chose action:Cast Combat Research success ratio: 0.05429622374279548 =>[pool-3-thread-6] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:05,981 [3:Precombat Main:PRECOMBAT_MAIN][player PlayerA:19][player PlayerB:20]                    =>[pool-3-thread-6] ComputerPlayerMCTS.logLife 
+INFO  2026-07-28 21:34:05,981 [PlayerA], life = 19                                                                       =>[pool-3-thread-6] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:05,981 -> Hand: [Bounce Off; Combat Research; Shardmage's Rescue; Kitsa, Otterball Elite]         =>[pool-3-thread-6] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:05,981 -> Permanents: [Adarkar Wastes; Sleep-Cursed Faerie,tapped; Island,tapped]                 =>[pool-3-thread-6] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:05,981 -> Permanents: [Mountain,tapped; Hired Claw]                                               =>[pool-3-thread-6] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:05,982 playable abilities: [Cast Malcolm, Alluring Scoundrel, Pass]                               =>[pool-3-thread-5] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:05,982 [5:Beginning:UPKEEP]chose action:Cast Malcolm, Alluring Scoundrel success ratio: -0.18283560149873831 =>[pool-3-thread-5] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:05,982 [5:Beginning:UPKEEP][player PlayerA:17][player PlayerB:20]                                 =>[pool-3-thread-5] ComputerPlayerMCTS.logLife 
+INFO  2026-07-28 21:34:05,982 [PlayerA], life = 17                                                                       =>[pool-3-thread-5] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:05,982 -> Hand: [Adarkar Wastes; Floodfarm Verge; No More Lies; Shardmage's Rescue; Kitsa, Otterball Elite; Spell Pierce] =>[pool-3-thread-5] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:05,982 -> Permanents: [Island,tapped; Island,tapped]                                              =>[pool-3-thread-5] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:05,982 -> Permanents: [Mountain; Mountain; Razorkin Needlehead]                                   =>[pool-3-thread-5] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:05,985 auto pass                                                                                  =>[pool-3-thread-5] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:05,987 STARTING ROOT VISITS: 326                                                                  =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,989 timed out, ending search                                                                   =>[pool-3-thread-4] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:05,990 auto pass                                                                                  =>[pool-3-thread-5] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:05,993 auto pass                                                                                  =>[pool-3-thread-5] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:06,010 STARTING ROOT VISITS: 229                                                                  =>[pool-3-thread-4] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:06,025 ===> SELECTED ACTION for PlayerB: Emberheart Challenger [1d6]: Cast Emberheart Challenger  =>[pool-3-thread-5] ComputerPlayer8.act 
+INFO  2026-07-28 21:34:06,027 found matching root with 738 visits                                                        =>[pool-3-thread-5] ComputerPlayer8.act 
+INFO  2026-07-28 21:34:06,030 auto pass                                                                                  =>[pool-3-thread-5] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:06,032 auto pass                                                                                  =>[pool-3-thread-5] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:06,038 STARTING ROOT VISITS: 336                                                                  =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:06,078 timed out, ending search                                                                   =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:06,082 auto pass                                                                                  =>[pool-3-thread-3] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:06,085 auto pass                                                                                  =>[pool-3-thread-3] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:06,086 [PlayerB], life = 20, score = 2485 (Life:10000, Hand:20, Perm:2775)                        =>[pool-3-thread-3] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:06,086 -> Hand: [Ojer Axonil, Deepest Might:5; Burnout Bashtronaut:5; Burnout Bashtronaut:5; Razorkin Needlehead:5] =>[pool-3-thread-3] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:06,086 -> Permanents: [Mountain,tapped:280; Hired Claw:2215; Mountain,tapped:280]                 =>[pool-3-thread-3] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:06,086 -> Graveyard: [Full Bore]                                                                  =>[pool-3-thread-3] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:06,087 auto pass                                                                                  =>[pool-3-thread-3] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:06,088 [4:Beginning:UPKEEP]PlayerA hand: : Meticulous Archive,No More Lies,Soul Partition,Combat Research,Malcolm, Alluring Scoundrel,Combat Research, =>[pool-3-thread-3] ComputerPlayer.logList 
+INFO  2026-07-28 21:34:06,089 auto pass                                                                                  =>[pool-3-thread-3] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:06,091 auto pass                                                                                  =>[pool-3-thread-3] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:06,098 STARTING ROOT VISITS: 449                                                                  =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:06,608 timed out, ending search                                                                   =>[pool-3-thread-2] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:06,614 auto pass                                                                                  =>[pool-3-thread-2] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:06,617 auto pass                                                                                  =>[pool-3-thread-2] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:06,619 [PlayerB], life = 20, score = 385 (Life:10000, Hand:30, Perm:560)                          =>[pool-3-thread-2] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:06,619 -> Hand: [Mountain:5; Mountain:5; Lightning Strike:5; Nova Hellkite:5; Mountain:5; Emberheart Challenger:5] =>[pool-3-thread-2] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:06,619 -> Permanents: [Mountain,tapped:280; Mountain,tapped:280]                                  =>[pool-3-thread-2] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:06,619 -> Graveyard: [Burst Lightning]                                                            =>[pool-3-thread-2] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:06,620 auto pass                                                                                  =>[pool-3-thread-2] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:06,621 [5:Beginning:UPKEEP]PlayerA hand: : Island,Meticulous Archive,No More Lies,Combat Research,Combat Research, =>[pool-3-thread-2] ComputerPlayer.logList 
+INFO  2026-07-28 21:34:06,622 auto pass                                                                                  =>[pool-3-thread-2] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:06,625 auto pass                                                                                  =>[pool-3-thread-2] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:06,632 STARTING ROOT VISITS: 778                                                                  =>[pool-3-thread-2] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:07,183 timed out, ending search                                                                   =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:07,190 base choose use attack with: Skrelv, Defector Mite?                                        =>[pool-3-thread-1] ComputerPlayerMCTS.chooseUse 
+INFO  2026-07-28 21:34:07,194 prefix at root: PlayerScript{targets=[], choices=[], uses=[], modes=[], priority=[]}       =>[pool-3-thread-1] ComputerPlayerMCTS2.getNextAction 
+INFO  2026-07-28 21:34:07,194 opponent prefix at root: PlayerScript{targets=[], choices=[], uses=[], modes=[], priority=[Pass]} =>[pool-3-thread-1] ComputerPlayerMCTS2.getNextAction 
+INFO  2026-07-28 21:34:07,195 STARTING ROOT VISITS: 806                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:07,989 timed out, ending search                                                                   =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:07,989 Pending Nodes: 0                                                                           =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:07,989 Ran 189 simulations.                                                                       =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:07,989 COMPOSITE CHILDREN: [504]                                                                  =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:07,989 Player: PlayerA simulated 189 evaluations in 2.001516726 seconds - nodes in tree: 980      =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:07,989 Total: simulated 2874 evaluations in 26.509806176999994 seconds - Average: 108.41271266983057 =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:07,990 0 illegals purged, 24 valid duplicates purged, 8 invalid duplicates purged.                =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,001 STARTING ROOT VISITS: 504                                                                  =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,020 timed out, ending search                                                                   =>[pool-3-thread-4] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,026 ===> SELECTED ACTION for PlayerB: Pass                                                     =>[pool-3-thread-4] ComputerPlayer8.act 
+INFO  2026-07-28 21:34:08,030 found matching root with 407 visits                                                        =>[pool-3-thread-4] ComputerPlayer8.act 
+INFO  2026-07-28 21:34:08,038 STARTING ROOT VISITS: 406                                                                  =>[pool-3-thread-4] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,045 timed out, ending search                                                                   =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,063 STARTING ROOT VISITS: 231                                                                  =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,100 timed out, ending search                                                                   =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,101 Pending Nodes: 0                                                                           =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,101 Ran 204 simulations.                                                                       =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,101 COMPOSITE CHILDREN: [48, 513, 91]                                                          =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,101 Player: PlayerA simulated 204 evaluations in 2.002750069 seconds - nodes in tree: 1126     =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,101 Total: simulated 2891 evaluations in 25.984045095000006 seconds - Average: 111.26058277032094 =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,101 0 illegals purged, 7 valid duplicates purged, 0 invalid duplicates purged.                 =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,101 PRECOMBAT_MAIN0pool= actions: [Pass score: -0.291 count: 48] [Cast Combat Research score: -0.170 count: 513] [Play Meticulous Archive score: -0.228 count: 91]  =>[pool-3-thread-3] MCTSNode.bestChild 
+INFO  2026-07-28 21:34:08,102 base choose target Cast Combat Research                                                    =>[pool-3-thread-3] ComputerPlayerMCTS.makeChoice 
+INFO  2026-07-28 21:34:08,102 possible targets: 1                                                                        =>[pool-3-thread-3] ComputerPlayerMCTS.makeChoice 
+INFO  2026-07-28 21:34:08,103 playable abilities: [Play Meticulous Archive, Cast Combat Research, Cast Combat Research, Pass] =>[pool-3-thread-3] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:08,103 [4:Precombat Main:PRECOMBAT_MAIN]chose action:Cast Combat Research success ratio: -0.1700671103135156 =>[pool-3-thread-3] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:08,103 [4:Precombat Main:PRECOMBAT_MAIN][player PlayerA:20][player PlayerB:20]                    =>[pool-3-thread-3] ComputerPlayerMCTS.logLife 
+INFO  2026-07-28 21:34:08,103 [PlayerA], life = 20                                                                       =>[pool-3-thread-3] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:08,103 -> Hand: [Meticulous Archive; No More Lies; Soul Partition; Malcolm, Alluring Scoundrel; Combat Research; Shardmage's Rescue] =>[pool-3-thread-3] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:08,103 -> Permanents: [Island,tapped]                                                             =>[pool-3-thread-3] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:08,103 -> Permanents: [Mountain,tapped; Hired Claw; Mountain,tapped]                              =>[pool-3-thread-3] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:08,105 auto pass                                                                                  =>[pool-3-thread-3] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:08,112 STARTING ROOT VISITS: 513                                                                  =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,641 timed out, ending search                                                                   =>[pool-3-thread-2] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,642 Pending Nodes: 0                                                                           =>[pool-3-thread-2] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,642 Ran 217 simulations.                                                                       =>[pool-3-thread-2] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,642 COMPOSITE CHILDREN: [118, 448, 428]                                                        =>[pool-3-thread-2] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,642 Player: PlayerA simulated 217 evaluations in 2.009257283 seconds - nodes in tree: 1559     =>[pool-3-thread-2] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,642 Total: simulated 3388 evaluations in 27.177958471999997 seconds - Average: 124.65984166877273 =>[pool-3-thread-2] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,642 0 illegals purged, 45 valid duplicates purged, 0 invalid duplicates purged.                =>[pool-3-thread-2] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:08,642 PRECOMBAT_MAIN0pool= actions: [Pass score: -0.104 count: 118] [Play Island score: -0.056 count: 448] [Play Meticulous Archive score: -0.056 count: 428]  =>[pool-3-thread-2] MCTSNode.bestChild 
+INFO  2026-07-28 21:34:08,642 playable abilities: [Play Island, Play Meticulous Archive, Play Island, Pass]              =>[pool-3-thread-2] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:08,642 [5:Precombat Main:PRECOMBAT_MAIN]chose action:Play Island success ratio: -0.055936018564980095 =>[pool-3-thread-2] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:08,642 [5:Precombat Main:PRECOMBAT_MAIN][player PlayerA:18][player PlayerB:20]                    =>[pool-3-thread-2] ComputerPlayerMCTS.logLife 
+INFO  2026-07-28 21:34:08,642 [PlayerA], life = 18                                                                       =>[pool-3-thread-2] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:08,642 -> Hand: [Island; Meticulous Archive; No More Lies; Combat Research; Combat Research]      =>[pool-3-thread-2] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:08,643 -> Permanents: [Island; Floodfarm Verge; Island]                                           =>[pool-3-thread-2] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:08,643 -> Permanents: [Mountain,tapped; Mountain,tapped]                                          =>[pool-3-thread-2] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:08,645 auto pass                                                                                  =>[pool-3-thread-2] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:08,651 STARTING ROOT VISITS: 448                                                                  =>[pool-3-thread-2] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:09,197 timed out, ending search                                                                   =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:09,198 Pending Nodes: 0                                                                           =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:09,198 Ran 213 simulations.                                                                       =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:09,198 COMPOSITE CHILDREN: [104, 867]                                                             =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:09,198 Player: PlayerA simulated 213 evaluations in 2.002673354 seconds - nodes in tree: 1982     =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:09,198 Total: simulated 2991 evaluations in 27.696506284999998 seconds - Average: 107.99196004081857 =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:09,198 0 illegals purged, 32 valid duplicates purged, 13 invalid duplicates purged.               =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:09,199 DECLARE_ATTACKERS0pool= actions: [false score: 0.013 count: 104] [true score: 0.147 count: 867]  =>[pool-3-thread-1] MCTSNode.bestChild 
+INFO  2026-07-28 21:34:09,199 use attack with: Skrelv, Defector Mite?: true                                              =>[pool-3-thread-1] ComputerPlayerMCTS.chooseUse 
+INFO  2026-07-28 21:34:09,207 STARTING ROOT VISITS: 867                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,004 timed out, ending search                                                                   =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,004 Pending Nodes: 0                                                                           =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,004 Ran 260 simulations.                                                                       =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,004 COMPOSITE CHILDREN: [572, 159]                                                             =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,004 Player: PlayerA simulated 260 evaluations in 2.002476192 seconds - nodes in tree: 1363     =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,004 Total: simulated 3134 evaluations in 28.512282368999994 seconds - Average: 109.91754218201221 =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,004 0 illegals purged, 35 valid duplicates purged, 8 invalid duplicates purged.                =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,004 PRECOMBAT_MAIN0pool= actions: [Pass score: 0.050 count: 572] [Cast Shardmage's Rescue score: 0.016 count: 159]  =>[pool-3-thread-6] MCTSNode.bestChild 
+INFO  2026-07-28 21:34:10,013 STARTING ROOT VISITS: 572                                                                  =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,038 timed out, ending search                                                                   =>[pool-3-thread-4] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,052 STARTING ROOT VISITS: 545                                                                  =>[pool-3-thread-4] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,066 timed out, ending search                                                                   =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,067 base choose target choose which creature to block for Malcolm, Alluring Scoundrel          =>[pool-3-thread-5] ComputerPlayerMCTS.makeChoice 
+INFO  2026-07-28 21:34:10,067 possible targets: 2                                                                        =>[pool-3-thread-5] ComputerPlayerMCTS.makeChoice 
+INFO  2026-07-28 21:34:10,070 prefix at root: PlayerScript{targets=[], choices=[], uses=[], modes=[], priority=[Pass]}   =>[pool-3-thread-5] ComputerPlayerMCTS2.getNextAction 
+INFO  2026-07-28 21:34:10,070 opponent prefix at root: PlayerScript{targets=[], choices=[], uses=[], modes=[], priority=[]} =>[pool-3-thread-5] ComputerPlayerMCTS2.getNextAction 
+INFO  2026-07-28 21:34:10,070 STARTING ROOT VISITS: 478                                                                  =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,115 timed out, ending search                                                                   =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,115 Pending Nodes: 0                                                                           =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,115 Ran 223 simulations.                                                                       =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,115 COMPOSITE CHILDREN: [290, 445]                                                             =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,115 Player: PlayerA simulated 223 evaluations in 2.003357723 seconds - nodes in tree: 1430     =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,116 Total: simulated 3114 evaluations in 27.987402818000007 seconds - Average: 111.26434347088616 =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,116 0 illegals purged, 19 valid duplicates purged, 0 invalid duplicates purged.                =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,116 PRECOMBAT_MAIN0pool= actions: [Pass score: -0.185 count: 290] [Play Meticulous Archive score: -0.168 count: 445]  =>[pool-3-thread-3] MCTSNode.bestChild 
+INFO  2026-07-28 21:34:10,117 playable abilities: [Play Meticulous Archive, Pass]                                        =>[pool-3-thread-3] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:10,117 [4:Precombat Main:PRECOMBAT_MAIN]chose action:Play Meticulous Archive success ratio: -0.16798117693820905 =>[pool-3-thread-3] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:10,117 [4:Precombat Main:PRECOMBAT_MAIN][player PlayerA:20][player PlayerB:20]                    =>[pool-3-thread-3] ComputerPlayerMCTS.logLife 
+INFO  2026-07-28 21:34:10,117 [PlayerA], life = 20                                                                       =>[pool-3-thread-3] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:10,117 -> Hand: [No More Lies; Soul Partition; Malcolm, Alluring Scoundrel; Combat Research; Shardmage's Rescue] =>[pool-3-thread-3] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:10,117 -> Permanents: [Island,tapped; Combat Research; Meticulous Archive,tapped]                 =>[pool-3-thread-3] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:10,117 -> Permanents: [Mountain,tapped; Hired Claw; Mountain,tapped]                              =>[pool-3-thread-3] ComputerPlayerMCTS.printBattlefieldScore 
+INFO  2026-07-28 21:34:10,120 auto pass                                                                                  =>[pool-3-thread-3] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:10,122 base choose target When {this} enters, surveil 1.                                          =>[pool-3-thread-3] ComputerPlayerMCTS.makeChoice 
+INFO  2026-07-28 21:34:10,122 possible targets: 1                                                                        =>[pool-3-thread-3] ComputerPlayerMCTS.makeChoice 
+INFO  2026-07-28 21:34:10,127 prefix at root: PlayerScript{targets=[], choices=[], uses=[], modes=[], priority=[Play Meticulous Archive, Pass]} =>[pool-3-thread-3] ComputerPlayerMCTS2.getNextAction 
+INFO  2026-07-28 21:34:10,127 opponent prefix at root: PlayerScript{targets=[], choices=[], uses=[], modes=[], priority=[Pass]} =>[pool-3-thread-3] ComputerPlayerMCTS2.getNextAction 
+INFO  2026-07-28 21:34:10,128 STARTING ROOT VISITS: 445                                                                  =>[pool-3-thread-3] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,351 required visits reached, ending search                                                     =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,380 STARTING ROOT VISITS: 998                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,396 required visits reached, ending search                                                     =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,405 auto pass                                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:10,407 auto pass                                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:10,410 auto pass                                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:10,415 auto pass                                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:10,417 [PlayerA], life = 20, score = 2383 (Life:10000, Hand:25, Perm:2548)                        =>[pool-3-thread-1] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:10,417 -> Hand: [Negate:5; Soul Partition:5; Skrelv, Defector Mite:5; Meticulous Archive:5; Soul Partition:5] =>[pool-3-thread-1] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:10,417 -> Permanents: [Seachrome Coast,tapped:280; Skrelv, Defector Mite,tapped:1588; Island,tapped:280; Combat Research:400] =>[pool-3-thread-1] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:10,417 -> Graveyard: [Bounce Off]                                                                 =>[pool-3-thread-1] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:10,419 auto pass                                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:10,423 [5:Beginning:UPKEEP]PlayerA hand: : Negate,Soul Partition,Skrelv, Defector Mite,Meticulous Archive,Soul Partition, =>[pool-3-thread-1] ComputerPlayer.logList 
+INFO  2026-07-28 21:34:10,424 auto pass                                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:10,428 auto pass                                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:10,652 timed out, ending search                                                                   =>[pool-3-thread-2] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,660 STARTING ROOT VISITS: 792                                                                  =>[pool-3-thread-2] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:10,819 ===> SELECTED ACTION for PlayerB: Razorkin Needlehead [b56]: Cast Razorkin Needlehead      =>[pool-3-thread-1] ComputerPlayer8.act 
+INFO  2026-07-28 21:34:10,821 found matching root with 998 visits                                                        =>[pool-3-thread-1] ComputerPlayer8.act 
+INFO  2026-07-28 21:34:10,823 auto pass                                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:11,002 ===> SELECTED ACTION for PlayerB: Mountain [709]: Play Mountain                            =>[pool-3-thread-1] ComputerPlayer8.act 
+INFO  2026-07-28 21:34:11,004 found matching root with 568 visits                                                        =>[pool-3-thread-1] ComputerPlayer8.act 
+INFO  2026-07-28 21:34:11,025 ===> SELECTED ACTION for PlayerB: Full Bore [697]: Cast Full Bore -> Razorkin Needlehead [b56] =>[pool-3-thread-1] ComputerPlayer8.act 
+INFO  2026-07-28 21:34:11,027 found matching root with 296 visits                                                        =>[pool-3-thread-1] ComputerPlayer8.act 
+INFO  2026-07-28 21:34:11,032 auto pass                                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:11,037 auto pass                                                                                  =>[pool-3-thread-1] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:11,048 STARTING ROOT VISITS: 0                                                                    =>[pool-3-thread-1] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:11,625 required visits reached, ending search                                                     =>[pool-3-thread-2] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:11,633 auto pass                                                                                  =>[pool-3-thread-2] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:11,636 auto pass                                                                                  =>[pool-3-thread-2] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:11,638 [PlayerA], life = 18, score = -65 (Life:9600, Hand:25, Perm:900)                           =>[pool-3-thread-2] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:11,638 -> Hand: [Island:5; Meticulous Archive:5; No More Lies:5; Combat Research:5; Combat Research:5] =>[pool-3-thread-2] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:11,638 -> Permanents: [Island:300; Floodfarm Verge:300; Island:300]                               =>[pool-3-thread-2] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:11,638 -> Graveyard: [Bounce Off]                                                                 =>[pool-3-thread-2] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:11,639 auto pass                                                                                  =>[pool-3-thread-2] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:11,642 [6:Beginning:UPKEEP]PlayerA hand: : Island,Meticulous Archive,No More Lies,Combat Research,Combat Research, =>[pool-3-thread-2] ComputerPlayer.logList 
+INFO  2026-07-28 21:34:11,643 auto pass                                                                                  =>[pool-3-thread-2] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:11,646 auto pass                                                                                  =>[pool-3-thread-2] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:11,818 ===> SELECTED ACTION for PlayerB: Mountain [3b8]: Play Mountain                            =>[pool-3-thread-2] ComputerPlayer8.act 
+INFO  2026-07-28 21:34:11,820 found matching root with 176 visits                                                        =>[pool-3-thread-2] ComputerPlayer8.act 
+INFO  2026-07-28 21:34:11,908 ===> SELECTED ACTION for PlayerB: Nova Hellkite [83c]: Cast Nova Hellkite with Warp        =>[pool-3-thread-2] ComputerPlayer8.act 
+INFO  2026-07-28 21:34:11,911 found matching root with 87 visits                                                         =>[pool-3-thread-2] ComputerPlayer8.act 
+INFO  2026-07-28 21:34:11,928 STARTING ROOT VISITS: 24                                                                   =>[pool-3-thread-2] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,017 timed out, ending search                                                                   =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,017 Pending Nodes: 0                                                                           =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,017 Ran 281 simulations.                                                                       =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,017 COMPOSITE CHILDREN: [816]                                                                  =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,018 Player: PlayerA simulated 281 evaluations in 2.004385361 seconds - nodes in tree: 1498     =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,018 Total: simulated 3415 evaluations in 30.516667729999995 seconds - Average: 111.90605836176599 =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,018 0 illegals purged, 28 valid duplicates purged, 6 invalid duplicates purged.                =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,027 STARTING ROOT VISITS: 815                                                                  =>[pool-3-thread-6] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,057 timed out, ending search                                                                   =>[pool-3-thread-4] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,065 auto pass                                                                                  =>[pool-3-thread-4] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:12,069 auto pass                                                                                  =>[pool-3-thread-4] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:12,073 auto pass                                                                                  =>[pool-3-thread-4] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:12,076 auto pass                                                                                  =>[pool-3-thread-4] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:12,077 timed out, ending search                                                                   =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,078 Pending Nodes: 0                                                                           =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,078 Ran 281 simulations.                                                                       =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,078 COMPOSITE CHILDREN: [498, 35, 189]                                                         =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,078 Player: PlayerA simulated 281 evaluations in 2.007264724 seconds - nodes in tree: 1414     =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,078 Total: simulated 3716 evaluations in 30.331085849 seconds - Average: 122.51457196421191    =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,078 18 illegals purged, 13 valid duplicates purged, 3 invalid duplicates purged.               =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,078 DECLARE_BLOCKERS0pool= actions: [Stop Choosing score: -0.149 count: 498] [Razorkin Needlehead score: -0.383 count: 35] [Emberheart Challenger score: -0.198 count: 189]  =>[pool-3-thread-5] MCTSNode.bestChild 
+INFO  2026-07-28 21:34:12,078 Targeting Stop Choosing                                                                    =>[pool-3-thread-5] ComputerPlayerMCTS.makeChoice 
+INFO  2026-07-28 21:34:12,079 auto pass                                                                                  =>[pool-3-thread-4] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:12,082 [PlayerB], life = 20, score = 2935 (Life:10000, Hand:40, Perm:3275)                        =>[pool-3-thread-4] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:12,082 -> Hand: [Lightning Strike:5; Lightning Strike:5; Burst Lightning:5; Nova Hellkite:5; Hired Claw:5; Nova Hellkite:5; Burst Lightning:5; Razorkin Needlehead:5] =>[pool-3-thread-4] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:12,082 -> Permanents: [Mountain,tapped:280; Hired Claw,tapped:2995]                               =>[pool-3-thread-4] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:12,082 -> Graveyard: [Full Bore]                                                                  =>[pool-3-thread-4] GameStateEvaluator2.printBattlefield 
+INFO  2026-07-28 21:34:12,083 auto pass                                                                                  =>[pool-3-thread-4] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:12,085 possible targets: 8                                                                        =>[pool-3-thread-4] ComputerPlayer.makeChoice 
+INFO  2026-07-28 21:34:12,090 [5:Beginning:UPKEEP]PlayerA hand: : Meticulous Archive,Sheltered by Ghosts,Sheltered by Ghosts,Combat Research, =>[pool-3-thread-4] ComputerPlayer.logList 
+INFO  2026-07-28 21:34:12,092 auto pass                                                                                  =>[pool-3-thread-4] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:12,096 auto pass                                                                                  =>[pool-3-thread-4] ComputerPlayerMCTS.priority 
+INFO  2026-07-28 21:34:12,097 STARTING ROOT VISITS: 497                                                                  =>[pool-3-thread-5] ComputerPlayerMCTS2.applyMCTS 
+INFO  2026-07-28 21:34:12,103 STARTING ROOT VISITS: 379                                                                  =>[pool-3-thread-4] ComputerPlayerMCTS2.applyMCTS 

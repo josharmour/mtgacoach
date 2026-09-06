@@ -1,0 +1,177 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "arenamcp"
+dynamic = ["version"]
+description = "AI-powered real-time coaching and autopilot for Magic: The Gathering Arena"
+requires-python = ">=3.10"
+license = "MIT"
+readme = "README.md"
+keywords = ["mtga", "magic-the-gathering", "coaching", "ai", "assistant"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Games/Entertainment",
+]
+
+dependencies = [
+    # mcp 2.0.0 REMOVED mcp.server.fastmcp (src/arenamcp/server.py:15 imports
+    # FastMCP from it), which turned CI red on 2026-07-27 with no code change.
+    # Verified: the 2.0.0 wheel contains zero fastmcp modules. Pinned until the
+    # server is migrated to the 2.x API — that is separate, non-trivial work.
+    "mcp>=1.0.0,<2",
+    "watchdog>=3.0.0",
+    "requests>=2.28.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+    "keyboard>=0.13.5",
+    # The product IS the desktop VOICE coach + online gateway — these are
+    # not optional. A bare `uv tool install <wheel>` used to strand them in
+    # extras, so the installed app couldn't launch the GUI, reach the
+    # gateway, or speak (2026-07-06: "Kokoro worker exited (1)", grey
+    # Coach/Bridge dots). onnxruntime comes transitively via kokoro-onnx.
+    "PySide6>=6.7.0",
+    "openai>=1.0.0",
+    "kokoro-onnx",         # TTS (spoken advice)
+    "soundfile>=0.12.0",   # audio I/O for TTS
+    "Pillow>=10.0.0",      # screenshot capture for debug reports
+    "msgpack>=1.0.0",       # fast binary serialization for MageZero RL evaluations
+]
+
+[project.urls]
+Homepage = "https://github.com/josharmour/mtgacoach"
+Releases = "https://github.com/josharmour/mtgacoach/releases"
+Issues = "https://github.com/josharmour/mtgacoach/issues"
+
+[project.optional-dependencies]
+# DEPRECATED (2026-07): PySide6/kokoro-onnx/faster-whisper/soundfile moved to
+# core dependencies — bare installs used to strand the GUI/voice stack in
+# extras. Empty extras kept so `.[desktop]` / `.[voice]` don't error.
+desktop = [
+]
+voice = [
+]
+llm = [
+    "google-genai>=1.0.0",
+    "anthropic>=0.18.0",
+    "ollama>=0.1.0",
+]
+autopilot = [
+    "pyautogui>=0.9.54",
+    "pydirectinput-rgx>=1.0.0",
+]
+scraping = [
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    "networkx>=3.0",
+]
+full = [
+    "arenamcp[llm,autopilot,scraping]",
+    "websocket-client>=1.6.0",
+    "scipy>=1.10.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.6.0",
+    "mypy>=1.10.0",
+    "pre-commit>=3.5.0",
+    "prometheus_client>=0.20.0",
+]
+
+[project.scripts]
+mtgacoach-repair = "arenamcp.repair_cli:main"
+
+[project.gui-scripts]
+mtgacoach-desktop = "arenamcp.desktop.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/arenamcp"]
+
+[tool.hatch.version]
+path = "src/arenamcp/__init__.py"
+
+# ---------------------------------------------------------------------------
+# Tooling (added 2026-07-22)
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+target-version = "py310"
+line-length = 110
+src = ["src", "tests"]
+exclude = [
+    "tools",
+    "scripts",
+    "installer",
+    "dist",
+    "website",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "C90", # mccabe complexity
+]
+ignore = [
+    "E501",   # long lines: formatter's domain, too noisy on legacy prompts
+    "SIM108", # ternary suggestions — noisy on this codebase
+    "B008",   # function call in default arg — intentional patterns here
+    "C901",   # complexity gate advisory-only until god objects are split
+    # --- Ratchet list (2026-07-22): legacy violations grandfathered so CI is
+    # green from day one. Fix module-by-module and REMOVE from this list. ---
+    "SIM102", # 33x collapsible-if — manual refactors
+    "E402",   # 31x module-import-not-at-top — intentional lazy/deferred imports
+              # (PortAudio hang workaround, sys.path setup, availability probes)
+    "E741",   # 8x ambiguous-variable-name
+    "B904",   # 6x raise-without-from-inside-except
+    "SIM103", # 4x needless-bool
+    "SIM112", # 4x uncapitalized-environment-variables (user-facing names)
+    "SIM105", # 3x suppressible-exception
+    "SIM115", # 2x open-file-with-context-handler
+    "B007",   # 1x unused-loop-control-variable
+    "F841",   # 1x unused-variable
+    "UP031",  # 1x printf-string-formatting
+    "UP045",  # 1x non-pep604-annotation-optional (quoted forward ref edge case)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["arenamcp"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011", "SIM117"]
+# Conditional re-export pattern: names are imported in try/except ImportError
+# blocks and re-exported via dynamic __all__ extension. diagnose.py imports
+# purely as availability probes.
+"src/arenamcp/__init__.py" = ["F401"]
+"src/arenamcp/diagnose.py" = ["F401"]
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "src"
+packages = ["arenamcp"]
+# Advisory baseline — not yet gating. Tighten module-by-module.
+ignore_missing_imports = true
+follow_imports = "silent"
+strict_optional = false
+warn_redundant_casts = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

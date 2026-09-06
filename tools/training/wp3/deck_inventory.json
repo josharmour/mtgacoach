@@ -1,0 +1,573 @@
+{
+  "primary_deck": "UWTempo",
+  "deck_count": 29,
+  "union_card_count": 473,
+  "expected_union": 471,
+  "reconciles": false,
+  "decks": [
+    {
+      "deck": "BGRoots",
+      "filename": "BGRoots.dck",
+      "distinct_total": 21,
+      "distinct_main": 21,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "BG",
+      "colour_set": [
+        "B",
+        "G"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 21,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "BWBats",
+      "filename": "BWBats.dck",
+      "distinct_total": 20,
+      "distinct_main": 20,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "WB",
+      "colour_set": [
+        "B",
+        "W"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 20,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "EVG_Elves",
+      "filename": "EVG_Elves.dck",
+      "distinct_total": 28,
+      "distinct_main": 28,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "G",
+      "colour_set": [
+        "G"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 28,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "EVG_Goblins",
+      "filename": "EVG_Goblins.dck",
+      "distinct_total": 28,
+      "distinct_main": 28,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "R",
+      "colour_set": [
+        "R"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 28,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "EsperTempo",
+      "filename": "EsperTempo.dck",
+      "distinct_total": 18,
+      "distinct_main": 18,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "WU",
+      "colour_set": [
+        "U",
+        "W"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 7,
+        "new_cards_vs_primary": 11,
+        "overlap_pct": 38.9
+      }
+    },
+    {
+      "deck": "GBLegends",
+      "filename": "GBLegends.dck",
+      "distinct_total": 37,
+      "distinct_main": 37,
+      "distinct_sb": 0,
+      "total_cards": 75,
+      "main_total": 75,
+      "sb_total": 0,
+      "colours": "WUBRG",
+      "colour_set": [
+        "B",
+        "G",
+        "R",
+        "U",
+        "W"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 2,
+        "new_cards_vs_primary": 35,
+        "overlap_pct": 5.4
+      }
+    },
+    {
+      "deck": "HighNoonControl",
+      "filename": "HighNoonControl.dck",
+      "distinct_total": 27,
+      "distinct_main": 27,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "WUR",
+      "colour_set": [
+        "R",
+        "U",
+        "W"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 2,
+        "new_cards_vs_primary": 25,
+        "overlap_pct": 7.4
+      }
+    },
+    {
+      "deck": "MTGA_MonoB",
+      "filename": "MTGA_MonoB.dck",
+      "distinct_total": 18,
+      "distinct_main": 18,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "B",
+      "colour_set": [
+        "B"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 18,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "MTGA_MonoG",
+      "filename": "MTGA_MonoG.dck",
+      "distinct_total": 17,
+      "distinct_main": 17,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "G",
+      "colour_set": [
+        "G"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 17,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "MTGA_MonoR",
+      "filename": "MTGA_MonoR.dck",
+      "distinct_total": 17,
+      "distinct_main": 17,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "R",
+      "colour_set": [
+        "R"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 17,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "MTGA_MonoU",
+      "filename": "MTGA_MonoU.dck",
+      "distinct_total": 18,
+      "distinct_main": 18,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "U",
+      "colour_set": [
+        "U"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 1,
+        "new_cards_vs_primary": 17,
+        "overlap_pct": 5.6
+      }
+    },
+    {
+      "deck": "MTGA_MonoW",
+      "filename": "MTGA_MonoW.dck",
+      "distinct_total": 18,
+      "distinct_main": 18,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "W",
+      "colour_set": [
+        "W"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 18,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "Mind(MindvsMight)",
+      "filename": "Mind(MindvsMight).dck",
+      "distinct_total": 29,
+      "distinct_main": 29,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "UR",
+      "colour_set": [
+        "R",
+        "U"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 1,
+        "new_cards_vs_primary": 28,
+        "overlap_pct": 3.4
+      }
+    },
+    {
+      "deck": "MonoUArtifacts",
+      "filename": "MonoUArtifacts.dck",
+      "distinct_total": 19,
+      "distinct_main": 19,
+      "distinct_sb": 0,
+      "total_cards": 75,
+      "main_total": 75,
+      "sb_total": 0,
+      "colours": "U",
+      "colour_set": [
+        "U"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 2,
+        "new_cards_vs_primary": 17,
+        "overlap_pct": 10.5
+      }
+    },
+    {
+      "deck": "Oathbreaker_UR",
+      "filename": "Oathbreaker_UR.dck",
+      "distinct_total": 46,
+      "distinct_main": 44,
+      "distinct_sb": 2,
+      "total_cards": 60,
+      "main_total": 58,
+      "sb_total": 2,
+      "colours": "UR",
+      "colour_set": [
+        "R",
+        "U"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 3,
+        "new_cards_vs_primary": 43,
+        "overlap_pct": 6.5
+      }
+    },
+    {
+      "deck": "RB Aggro",
+      "filename": "RB Aggro.dck",
+      "distinct_total": 1,
+      "distinct_main": 1,
+      "distinct_sb": 0,
+      "total_cards": 71,
+      "main_total": 71,
+      "sb_total": 0,
+      "colours": "R",
+      "colour_set": [
+        "R"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 1,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "Standard-MonoB",
+      "filename": "Standard-MonoB.dck",
+      "distinct_total": 11,
+      "distinct_main": 11,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "B",
+      "colour_set": [
+        "B"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 11,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "Standard-MonoG",
+      "filename": "Standard-MonoG.dck",
+      "distinct_total": 12,
+      "distinct_main": 12,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "G",
+      "colour_set": [
+        "G"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 12,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "Standard-MonoR",
+      "filename": "Standard-MonoR.dck",
+      "distinct_total": 13,
+      "distinct_main": 13,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "R",
+      "colour_set": [
+        "R"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 13,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "Standard-MonoU",
+      "filename": "Standard-MonoU.dck",
+      "distinct_total": 17,
+      "distinct_main": 17,
+      "distinct_sb": 0,
+      "total_cards": 62,
+      "main_total": 62,
+      "sb_total": 0,
+      "colours": "U",
+      "colour_set": [
+        "U"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 3,
+        "new_cards_vs_primary": 14,
+        "overlap_pct": 17.6
+      }
+    },
+    {
+      "deck": "Standard-MonoW",
+      "filename": "Standard-MonoW.dck",
+      "distinct_total": 16,
+      "distinct_main": 16,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "W",
+      "colour_set": [
+        "W"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 16,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "UBArtifacts",
+      "filename": "UBArtifacts.dck",
+      "distinct_total": 18,
+      "distinct_main": 18,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "C",
+      "colour_set": [],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 18,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "UW Control",
+      "filename": "UW Control.dck",
+      "distinct_total": 22,
+      "distinct_main": 22,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "WU",
+      "colour_set": [
+        "U",
+        "W"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 2,
+        "new_cards_vs_primary": 20,
+        "overlap_pct": 9.1
+      }
+    },
+    {
+      "deck": "UWTempo",
+      "filename": "UWTempo.dck",
+      "distinct_total": 17,
+      "distinct_main": 17,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "WU",
+      "colour_set": [
+        "U",
+        "W"
+      ]
+    },
+    {
+      "deck": "WillS_Tempo",
+      "filename": "WillS_Tempo.dck",
+      "distinct_total": 26,
+      "distinct_main": 26,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "WU",
+      "colour_set": [
+        "U",
+        "W"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 2,
+        "new_cards_vs_primary": 24,
+        "overlap_pct": 7.7
+      }
+    },
+    {
+      "deck": "chooseAmountTest",
+      "filename": "chooseAmountTest.dck",
+      "distinct_total": 26,
+      "distinct_main": 26,
+      "distinct_sb": 0,
+      "total_cards": 63,
+      "main_total": 63,
+      "sb_total": 0,
+      "colours": "WUBRG",
+      "colour_set": [
+        "B",
+        "G",
+        "R",
+        "U",
+        "W"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 2,
+        "new_cards_vs_primary": 24,
+        "overlap_pct": 7.7
+      }
+    },
+    {
+      "deck": "simic-eldrazi",
+      "filename": "simic-eldrazi.dck",
+      "distinct_total": 21,
+      "distinct_main": 21,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "UG",
+      "colour_set": [
+        "G",
+        "U"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 1,
+        "new_cards_vs_primary": 20,
+        "overlap_pct": 4.8
+      }
+    },
+    {
+      "deck": "simplegreen",
+      "filename": "simplegreen.dck",
+      "distinct_total": 10,
+      "distinct_main": 10,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "G",
+      "colour_set": [
+        "G"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 0,
+        "new_cards_vs_primary": 10,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "deck": "willw_deck",
+      "filename": "willw_deck.dck",
+      "distinct_total": 19,
+      "distinct_main": 19,
+      "distinct_sb": 0,
+      "total_cards": 60,
+      "main_total": 60,
+      "sb_total": 0,
+      "colours": "WU",
+      "colour_set": [
+        "U",
+        "W"
+      ],
+      "overlap_with_primary": {
+        "common_cards": 2,
+        "new_cards_vs_primary": 17,
+        "overlap_pct": 10.5
+      }
+    }
+  ]
+}

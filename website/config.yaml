@@ -1,0 +1,64 @@
+# mtgacoach.com Proxy Server Configuration
+# ==========================================
+# Rewired 2026-06-13 to the live home-lab stack:
+#   PRIMARY  Gemma-4-12B (FP8) on vLLM @ 8001  (fast, isolated from Hermes)
+#   ON-ASK   DeepSeek-V4-Flash (284B-A13B) on vLLM @ 8002
+# The old Ollama `gemma4:31b` provider was REMOVED so the heavy 31B never loads;
+# its name (and the other legacy gemma names) now ALIAS to gemma-12b.
+
+# Server settings
+server:
+  host: "0.0.0.0"
+  port: 8443
+
+# Provider routing: requests are tried in order of priority (lowest first).
+# The proxy picks the first available provider whose model list matches and
+# forwards the request, rewriting the model name to that provider's models[0].
+providers:
+  # Cloud Azure gpt-5.4 — disabled; the home-lab gemma below is primary.
+  - name: azure-openai
+    priority: 100
+    base_url: "${AZURE_OPENAI_BASE_URL}"
+    api_key: "${AZURE_OPENAI_API_KEY}"
+    api_version: "2024-05-01-preview"
+    models:
+      - "gpt-5.4"
+    enabled: false
+
+  # PRIMARY — Gemma-4-12B (FP8) on vLLM @ 8001, TP=2 across both cards.
+  # Only the canonical name is advertised, so the coach's /v1/models cycler stays
+  # clean. As the highest-priority provider this is ALSO the fallback: any
+  # unmatched name (a stale gemma-4-31b-it / gemma4:31b / gpt-5.4) routes here and
+  # is rewritten to gemma-4-12b — so the retired Ollama 31B is never reachable
+  # (its provider was removed entirely).
+  - name: home-gemma-12b
+    priority: 0
+    base_url: "http://10.0.0.10:8001/v1"
+    api_key: "vllm"
+    models:
+      - "gemma-4-12b"
+    enabled: true
+
+  # DeepSeek V4 Flash (284B-A13B MoE) on vLLM @ 8002 — smarter but slower and
+  # shared with Hermes. Reached by explicitly asking for "deepseek-v4-flash".
+  - name: home-dsv4-flash
+    priority: 5
+    base_url: "http://10.0.0.10:8002/v1"
+    api_key: "vllm"
+    models:
+      - "deepseek-v4-flash"
+    enabled: true
+
+# Default model when client doesn't specify (or sends model="" / "default").
+# The /v1/chat/completions handler substitutes this in when no model is given.
+default_model: "gemma-4-12b"
+
+# Admin credentials for the management dashboard
+admin:
+  username: "admin"
+  # Change this! Use: python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+  password: "${ADMIN_PASSWORD}"
+
+# Database
+database:
+  path: "./data/mtgacoach.db"

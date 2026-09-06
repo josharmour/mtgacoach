@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Subscribe — mtgacoach</title>
+    <meta name="description" content="Subscribe to mtgacoach through Patreon and get your license key.">
+    <style>
+        :root {
+            --bg: #16130f;
+            --ink: #e6ddcc;
+            --faint: #97907f;
+            --rule: #353026;
+            --accent: #d4a13c;
+            --accent-dim: #8a6b2b;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+            background: var(--bg);
+            color: var(--ink);
+            line-height: 1.65;
+            font-size: 17px;
+            position: relative;
+        }
+        /* Faint candlelight over the table */
+        body::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background:
+                radial-gradient(1100px 520px at 72% -8%, rgba(212, 161, 60, 0.08), transparent 62%),
+                radial-gradient(900px 700px at 8% 30%, rgba(74, 106, 138, 0.05), transparent 60%);
+        }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; text-underline-offset: 3px; }
+        .wrap { max-width: 680px; margin: 0 auto; padding: 0 24px; }
+
+        header { padding: 28px 0 0; }
+        header .wrap { display: flex; justify-content: space-between; align-items: baseline; }
+        .wordmark { font-style: italic; font-size: 1.65rem; color: var(--ink); letter-spacing: 0.02em; }
+        .wordmark:hover { text-decoration: none; color: var(--accent); }
+        nav a { color: var(--faint); font-size: 0.9rem; margin-left: 22px; }
+        nav a:hover { color: var(--ink); text-decoration: none; }
+
+        .hero { padding: 84px 0 48px; }
+        /* Full-page card-fan backdrop, weighted to the right */
+        .bg-art {
+            position: fixed;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            pointer-events: none;
+            user-select: none;
+        }
+        @media (max-width: 760px) { .bg-art { opacity: 0.5; } }
+        .kicker {
+            font-family: -apple-system, "Segoe UI", sans-serif;
+            font-size: 0.72rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--accent-dim);
+            margin-bottom: 20px;
+        }
+        h1 { font-weight: 500; font-size: 2.3rem; line-height: 1.2; letter-spacing: -0.01em; }
+        .hero p { margin-top: 20px; font-size: 1.1rem; color: var(--faint); max-width: 32em; }
+        .price { color: var(--ink); font-style: italic; }
+
+        hr { border: 0; border-top: 1px solid var(--rule); }
+
+        section { padding: 56px 0; }
+        .label {
+            font-family: -apple-system, "Segoe UI", sans-serif;
+            font-size: 0.72rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--faint);
+            margin-bottom: 32px;
+        }
+
+        ul.included { list-style: none; max-width: 36em; }
+        ul.included li {
+            padding: 14px 0;
+            border-top: 1px solid var(--rule);
+            color: var(--faint);
+        }
+        ul.included li:first-child { border-top: 0; padding-top: 0; }
+        ul.included li strong { color: var(--ink); font-weight: 500; }
+
+        .actions { max-width: 26em; }
+        .button {
+            display: block;
+            text-align: center;
+            font-family: -apple-system, "Segoe UI", sans-serif;
+            font-size: 0.95rem;
+            padding: 13px 26px;
+            letter-spacing: 0.03em;
+            margin-bottom: 14px;
+        }
+        .button.primary {
+            background: var(--accent);
+            border: 1px solid var(--accent);
+            color: var(--bg);
+        }
+        .button.primary:hover { background: transparent; color: var(--accent); text-decoration: none; }
+        .button.quiet {
+            border: 1px solid var(--rule);
+            color: var(--faint);
+        }
+        .button.quiet:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+        .actions .note {
+            font-size: 0.88rem;
+            color: var(--faint);
+            margin-top: 18px;
+        }
+
+        ol.steps { list-style: none; counter-reset: step; max-width: 36em; }
+        ol.steps li {
+            counter-increment: step;
+            padding: 18px 0;
+            border-top: 1px solid var(--rule);
+            display: grid;
+            grid-template-columns: 3.5rem 1fr;
+        }
+        ol.steps li:first-child { border-top: 0; padding-top: 0; }
+        ol.steps li::before {
+            content: counter(step, upper-roman) ".";
+            font-style: italic;
+            color: var(--accent-dim);
+            font-size: 1.05rem;
+        }
+        ol.steps p { color: var(--faint); }
+        ol.steps p strong { color: var(--ink); font-weight: 500; }
+
+        footer {
+            border-top: 1px solid var(--rule);
+            padding: 28px 0 40px;
+            color: var(--faint);
+            font-size: 0.82rem;
+        }
+        footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+        @media (max-width: 560px) {
+            h1 { font-size: 1.85rem; }
+            .hero { padding: 56px 0 40px; }
+        }
+    </style>
+</head>
+<body>
+    <svg class="bg-art" viewBox="170 270 1730 820" preserveAspectRatio="xMaxYMax meet" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <!-- a held hand of five cards rising from the lower right, one pip per color of the pie -->
+        <g stroke-linejoin="round" stroke-width="2">
+            <g transform="rotate(-28 1030 1750)">
+                <rect x="840" y="330" width="380" height="540" rx="26" fill="#191510" stroke="#332c1f"/>
+                <rect x="866" y="356" width="328" height="488" rx="16" fill="none" stroke="#252017"/>
+                <circle cx="1030" cy="600" r="20" fill="#cfc49a" opacity="0.4"/>
+            </g>
+            <g transform="rotate(-14 1030 1750)">
+                <rect x="840" y="305" width="380" height="540" rx="26" fill="#191510" stroke="#332c1f"/>
+                <rect x="866" y="331" width="328" height="488" rx="16" fill="none" stroke="#252017"/>
+                <circle cx="1030" cy="575" r="20" fill="#4a7fa8" opacity="0.35"/>
+            </g>
+            <g>
+                <rect x="840" y="295" width="380" height="540" rx="26" fill="#1b1712" stroke="#3a3222"/>
+                <rect x="866" y="321" width="328" height="488" rx="16" fill="none" stroke="#272115"/>
+                <circle cx="1030" cy="565" r="20" fill="#7a6a8e" opacity="0.35"/>
+            </g>
+            <g transform="rotate(14 1030 1750)">
+                <rect x="840" y="305" width="380" height="540" rx="26" fill="#191510" stroke="#332c1f"/>
+                <rect x="866" y="331" width="328" height="488" rx="16" fill="none" stroke="#252017"/>
+                <circle cx="1030" cy="575" r="20" fill="#b25b47" opacity="0.35"/>
+            </g>
+            <g transform="rotate(28 1030 1750)">
+                <rect x="840" y="330" width="380" height="540" rx="26" fill="#191510" stroke="#332c1f"/>
+                <rect x="866" y="356" width="328" height="488" rx="16" fill="none" stroke="#252017"/>
+                <circle cx="1030" cy="600" r="20" fill="#5d8a5a" opacity="0.4"/>
+            </g>
+        </g>
+    </svg>
+    <header>
+        <div class="wrap">
+            <a href="/" class="wordmark">mtgacoach</a>
+            <nav>
+                <a href="/">Home</a>
+                <a href="https://github.com/josharmour/mtgacoach">GitHub</a>
+            </nav>
+        </div>
+    </header>
+
+    <section class="hero">
+        <div class="wrap">
+            <div class="kicker">Subscribe</div>
+            <h1>One plan. The whole coach.</h1>
+            <p><span class="price">$9.99 a month</span>, billed through Patreon.
+            Cancel there any time; your key simply stops working when your
+            pledge does.</p>
+        </div>
+    </section>
+
+    <div class="wrap"><hr></div>
+
+    <section>
+        <div class="wrap">
+            <div class="label">Included</div>
+            <ul class="included">
+                <li><strong>Real-time coaching</strong> — spoken advice for every
+                priority, attack, and block, for as many games as you play.</li>
+                <li><strong>Draft helper</strong> — 17lands-backed pick ratings in
+                every pack.</li>
+                <li><strong>Autopilot</strong> — the coach plays on while you step
+                away.</li>
+                <li><strong>Dedicated hardware</strong> — models we serve
+                ourselves, no usage metering.</li>
+            </ul>
+        </div>
+    </section>
+
+    <div class="wrap"><hr></div>
+
+    <section>
+        <div class="wrap">
+            <div class="label">Get your key</div>
+            <ol class="steps">
+                <li><p><strong>Pledge on Patreon.</strong> That's the
+                subscription — there is no separate checkout here.</p></li>
+                <li><p><strong>Link your Patreon account</strong> below and your
+                license key appears on screen.</p></li>
+                <li><p><strong>Paste it into the app</strong> under Settings, and
+                queue up.</p></li>
+            </ol>
+            <div class="actions" style="margin-top:36px">
+                <a class="button primary" href="https://www.patreon.com/c/mtgacoach">Subscribe on Patreon</a>
+                <a class="button quiet" href="https://www.patreon.com/oauth2/authorize?response_type=code&client_id=uhositmCwj3sei5XK9HBYOPxZF6-eiCJEr4xdNWcUX3TOQqAjQvhhe5NPc7LFWB0&redirect_uri=https%3A%2F%2Fmtgacoach.com%2Fpatreon%2Fcallback&scope=identity%20identity%5Bemail%5D%20identity.memberships">Already a patron? Get your license key</a>
+                <p class="note">Keys are issued only through Patreon — nothing is
+                sold or stored on this page.</p>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="wrap">
+            <span>&copy; mtgacoach.com</span>
+            <span>Unofficial fan software. Magic: The Gathering is a trademark
+            of Wizards of the Coast LLC.</span>
+        </div>
+    </footer>
+</body>
+</html>

@@ -1,0 +1,4 @@
+# Eval artifacts are local-only; only the seed corpus is checked in.
+*
+!.gitignore
+!seed_prompts.jsonl

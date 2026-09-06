@@ -1,0 +1,69 @@
+.env
+.env.*
+!.env.example
+tmpclaude-*
+__pycache__/
+.venv/
+tools/training/wp3/scryfall_cache.json
+tools/training/data/wp3/
+*.pyc
+debug_log.txt
+log_tail.txt
+last_match_event.txt
+build/
+dist/
+*.egg-info/
+.codex/
+.claude/
+re-output/
+nul
+@eaDir/
+*.planning/
+bug_reports/
+# Synology/deployment configs
+docker-compose.yml
+config.yaml
+*.db
+data/
+# ...except tracked infra-as-code (no secrets; env refs only)
+!gateway/config.yaml
+!gateway/docker-compose.yml
+!website/config.yaml
+!website/docker-compose.yml
+# Dev-only (not for public repo)
+rl-pipeline-fix.md
+tools/*
+!tools/training/
+!tools/monitoring/
+tools/monitoring/*
+!tools/monitoring/grafana/
+tools/training/checkpoints/
+tools/training/data/
+!tools/eval/
+tools/eval/data/
+!tools/monitoring/
+docs/
+CLAUDE.md
+*.spec
+venv/
+.venv/
+.venv_*/
+test_env/
+# BepInEx plugin build artifacts
+bepinex-plugin/**/bin/
+bepinex-plugin/**/obj/
+.DS_Store
+stage0v2_31b_train.log
+*_train.log
+models/
+
+# Dev-machine scratch, deliberately untracked (2026-07-27):
+#   launch.sh     — hardcodes the old WSL path /home/joshu/repos/mtgacoach
+#   run_update.py — one-shot regex migration that REWRITES src/arenamcp/server.py
+#                   in place; its edits are already merged. Keeping it runnable
+#                   in the repo is a footgun, not history.
+launch.sh
+run_update.py
+
+# Local grading worksheet (contains replay-derived game states; not for the public repo)
+tripwire_review_v2.md

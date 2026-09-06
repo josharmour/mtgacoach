@@ -1,0 +1,1251 @@
+import logging
+import re
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# MTGA's own card DB renders mana symbols in an "o"-prefixed dialect and packs
+# a whole cost into one brace: {oT}, {oG}, {o4oG} (= {4}{G}), {oB/oR}. Scryfall
+# uses the plain per-symbol form. Oracle text reaches us from both sources, so
+# every symbol-matching pattern below must see the plain form or it silently
+# fails to recognise the ability — Talisman of Resilience and Paradise Druid
+# were both worth zero mana because of this.
+_MTGA_SYMBOL_BLOCK_RE = re.compile(r"\{((?:o[WUBRGCXTQSPE0-9]+/?)+)\}", re.IGNORECASE)
+
+
+def _expand_mtga_symbol_block(match: "re.Match[str]") -> str:
+    body = match.group(1)
+    if "/" in body:  # hybrid: {oB/oR} -> {B/R}
+        halves = [part.lstrip("oO") for part in body.split("/") if part]
+        return "{" + "/".join(halves) + "}"
+    # run of symbols in one brace: {o4oG} -> {4}{G}
+    return "".join("{" + part + "}" for part in re.split(r"[oO]", body) if part)
+
+
+def _normalize_mana_symbols(text: str) -> str:
+    """Rewrite MTGA-dialect mana symbols ({oT}, {o4oG}) to Scryfall form."""
+    if not text or "{o" not in text.lower():
+        return text or ""
+    return _MTGA_SYMBOL_BLOCK_RE.sub(_expand_mtga_symbol_block, text)
+
+
+class RulesEngine:
+    """
+    A deterministic rules engine to calculate legal game actions.
+    Serves as a 'Grounding' layer for the AI.
+    """
+
+    @staticmethod
+    def _count_available_mana(game_state: dict[str, Any], local_seat: int) -> int:
+        """Count total available mana from untapped lands and mana creatures."""
+        pool = RulesEngine._get_mana_pool(game_state, local_seat)
+        return pool["total"]
+
+    @staticmethod
+    def _get_mana_pool(game_state: dict[str, Any], local_seat: int) -> dict[str, Any]:
+        """Get available mana pool with color breakdown from untapped sources.
+
+        Besides the per-color counts, ``pool["_sources"]`` holds one frozenset
+        of producible colors per source so ``_can_afford`` can match pips to
+        sources exactly — a dual land bumps both its color counts but is still
+        a single source that can only produce one mana.
+
+        Mana already floating in the pool (``game_state["floating_mana"]``,
+        e.g. ``{"G": 2}`` after tapping for a partially-paid cost) counts too:
+        those lands are already tapped, so without it the same mana would be
+        lost from the total twice over.
+        """
+        battlefield = game_state.get("battlefield", [])
+        pool: dict[str, Any] = {"W": 0, "U": 0, "B": 0, "R": 0, "G": 0, "C": 0, "Any": 0, "total": 0}
+        sources: list[frozenset] = []
+        turn_num = game_state.get("turn", {}).get("turn_number", 0)
+        creature_mana_source_count = 0
+        your_cards = [c for c in battlefield if c.get("owner_seat_id") == local_seat]
+        for card in your_cards:
+            if card.get("is_tapped"):
+                continue
+            type_line = card.get("type_line", "").lower()
+            oracle = _normalize_mana_symbols(card.get("oracle_text", ""))
+            name = card.get("name", "")
+            is_land = "land" in type_line
+            is_creature = "creature" in type_line
+            has_mana_ability = bool(re.search(r"\{T\}.*[Aa]dd\s+(\{|one |two |three )", oracle))
+            # Detect lands with basic subtypes but no explicit "add" (e.g. Multiversal Passage)
+            if is_land and not has_mana_ability:
+                for basic in ("plains", "island", "swamp", "mountain", "forest"):
+                    if basic in type_line:
+                        has_mana_ability = True
+                        break
+            entered = card.get("turn_entered_battlefield", -1)
+            has_haste = "haste" in oracle.lower()
+            is_sick = is_creature and (entered == turn_num) and not has_haste
+            # Any permanent with a tap-for-mana ability is a source, not just
+            # lands and mana creatures — Talismans, Signets, Sol Ring and the
+            # rest were previously invisible, undercounting available mana.
+            if is_land or (has_mana_ability and not is_sick):
+                pool["total"] += 1
+                if is_creature and has_mana_ability and not is_sick:
+                    creature_mana_source_count += 1
+                colors: set = set()
+                if "Plains" in name or "plains" in type_line or "{W}" in oracle:
+                    pool["W"] += 1
+                    colors.add("W")
+                if "Island" in name or "island" in type_line or "{U}" in oracle:
+                    pool["U"] += 1
+                    colors.add("U")
+                if "Swamp" in name or "swamp" in type_line or "{B}" in oracle:
+                    pool["B"] += 1
+                    colors.add("B")
+                if "Mountain" in name or "mountain" in type_line or "{R}" in oracle:
+                    pool["R"] += 1
+                    colors.add("R")
+                if "Forest" in name or "forest" in type_line or "{G}" in oracle:
+                    pool["G"] += 1
+                    colors.add("G")
+                if "{C}" in oracle:
+                    pool["C"] += 1
+                    colors.add("C")
+                if "any color" in oracle.lower():
+                    pool["Any"] += 1
+                    colors = set("WUBRGC")
+                sources.append(frozenset(colors))
+
+        # Detect bonus-mana effects: "whenever you tap a creature for mana, add"
+        if creature_mana_source_count > 0:
+            for card in your_cards:
+                oracle_lower = _normalize_mana_symbols(card.get("oracle_text", "")).lower()
+                bonus_match = re.search(
+                    r"whenever you tap a creature for mana,?\s*add an additional \{(\w)\}", oracle_lower
+                )
+                if bonus_match:
+                    bonus_color = bonus_match.group(1).upper()
+                    pool["total"] += creature_mana_source_count
+                    if bonus_color in pool:
+                        pool[bonus_color] += creature_mana_source_count
+                    bonus_set = frozenset({bonus_color}) if bonus_color in "WUBRGC" else frozenset()
+                    sources.extend([bonus_set] * creature_mana_source_count)
+
+        # Mana already floating in the pool. Its sources are tapped (so the
+        # loop above skipped them) but the mana is still spendable.
+        floating = game_state.get("floating_mana") or {}
+        if isinstance(floating, dict):
+            for color, count in floating.items():
+                count = max(0, int(count or 0))
+                if not count:
+                    continue
+                key = str(color).strip().upper()
+                pool["total"] += count
+                if key == "ANY":
+                    pool["Any"] += count
+                    sources.extend([frozenset("WUBRGC")] * count)
+                elif key in ("W", "U", "B", "R", "G", "C"):
+                    pool[key] += count
+                    sources.extend([frozenset({key})] * count)
+                else:
+                    sources.extend([frozenset()] * count)
+
+        # Bound total available mana to avoid double-counting if floating mana
+        # was received before game object tapped states updated in game_state.
+        total_permanent_sources = sum(
+            1
+            for c in your_cards
+            if (
+                "land" in c.get("type_line", "").lower()
+                or bool(
+                    re.search(
+                        r"\{T\}.*[Aa]dd\s+(\{|one |two |three )",
+                        _normalize_mana_symbols(c.get("oracle_text", "")),
+                    )
+                )
+            )
+        )
+        if total_permanent_sources > 0 and pool["total"] > total_permanent_sources:
+            floating_total = (
+                sum(max(0, int(v or 0)) for v in floating.values()) if isinstance(floating, dict) else 0
+            )
+            pool["total"] = max(total_permanent_sources, floating_total)
+
+        pool["_sources"] = sources
+        return pool
+
+    @staticmethod
+    def _can_afford(mana_cost: str, mana_pool: dict[str, Any]) -> bool:
+        """Check if a spell can be cast with the available mana pool (total + colors).
+
+        An empty/unknown cost is treated as NOT affordable (a DB gap must not
+        tag a spell castable). Hybrid pips are payable if any half is payable;
+        Phyrexian pips are always payable (life). Every source can pay at most
+        one pip: when the pool carries per-source color sets (``_sources``
+        from ``_get_mana_pool``), pips are matched to sources exactly;
+        otherwise the per-color counts are consumed as commitments so
+        multiple hybrid pips can't reuse one surplus source.
+        """
+        if not mana_cost:
+            return False
+        cmc = RulesEngine._parse_cmc(mana_cost)
+        if not isinstance(mana_pool, dict) or mana_pool.get("total", 0) < cmc:
+            return False
+        pips = {c: 0 for c in "WUBRGC"}
+        hybrid_pips: list[list[str]] = []
+        for symbol in re.findall(r"\{([^}]+)\}", mana_cost):
+            parts = [p.strip().upper() for p in symbol.split("/")]
+            if len(parts) == 1:
+                if parts[0] in pips:
+                    pips[parts[0]] += 1
+                continue
+            if "P" in parts:
+                # Phyrexian: payable with life
+                continue
+            if any(p.isdigit() for p in parts):
+                # {2/W}-style: payable generically, covered by the cmc check
+                continue
+            halves = [p for p in parts if p in "WUBRG"]
+            if halves:
+                hybrid_pips.append(halves)
+
+        # Exact path: per-source color-capability sets from _get_mana_pool.
+        # The cmc-vs-total check above already covers the generic portion
+        # (leftover sources pay it), so only the colored pips need matching.
+        sources = mana_pool.get("_sources")
+        if isinstance(sources, list):
+            return RulesEngine._match_pips_to_sources(pips, hybrid_pips, sources)
+
+        # Legacy path (plain per-color dicts from other callers): the color
+        # counts may double-count multi-color sources, but commitments are
+        # still tracked so one surplus source can't pay two hybrid pips.
+        # True colorless {C} can only be paid by colorless sources
+        if pips["C"] > mana_pool.get("C", 0):
+            return False
+        # Colored pips: direct color first, any-color sources as a shared budget
+        any_budget = mana_pool.get("Any", 0)
+        surplus: dict[str, int] = {}
+        for color in "WUBRG":
+            short = pips[color] - mana_pool.get(color, 0)
+            if short > 0:
+                any_budget -= short
+                if any_budget < 0:
+                    return False
+                surplus[color] = 0
+            else:
+                surplus[color] = -short
+        # Hybrid pips: commit one uncommitted source (or Any budget) per pip
+        for halves in hybrid_pips:
+            best = max(
+                (c for c in halves if surplus.get(c, 0) > 0),
+                key=lambda c: surplus[c],
+                default=None,
+            )
+            if best is not None:
+                surplus[best] -= 1
+                continue
+            any_budget -= 1
+            if any_budget < 0:
+                return False
+        return True
+
+    @staticmethod
+    def _match_pips_to_sources(
+        pips: dict[str, int],
+        hybrid_pips: list[list[str]],
+        sources: list[frozenset],
+    ) -> bool:
+        """Exact bipartite matching between colored pips and mana sources.
+
+        Each pip is a set of acceptable colors (fixed pip = one color, hybrid
+        pip = the union of its halves); each source is the frozenset of colors
+        it can produce. A pip may consume a source iff the sets intersect, and
+        each source pays at most one pip. DFS augmenting paths — trivial at
+        MTGA cost/board scale.
+        """
+        pip_sets: list[frozenset] = []
+        for color, count in pips.items():
+            pip_sets.extend([frozenset({color})] * count)
+        for halves in hybrid_pips:
+            pip_sets.append(frozenset(halves))
+        if not pip_sets:
+            return True
+
+        match_of_source: list[int] = [-1] * len(sources)
+
+        def try_assign(pip_idx: int, visited: set) -> bool:
+            for s_idx, src in enumerate(sources):
+                if s_idx in visited or not (pip_sets[pip_idx] & src):
+                    continue
+                visited.add(s_idx)
+                if match_of_source[s_idx] == -1 or try_assign(match_of_source[s_idx], visited):
+                    match_of_source[s_idx] = pip_idx
+                    return True
+            return False
+
+        return all(try_assign(i, set()) for i in range(len(pip_sets)))
+
+    @staticmethod
+    def _parse_cmc(mana_cost: str) -> int:
+        """Parse converted mana cost from a mana cost string like '{3}{R}{R}'."""
+        if not mana_cost:
+            return 0
+        cmc = 0
+        generic = re.findall(r"\{(\d+)\}", mana_cost)
+        cmc += sum(int(g) for g in generic)
+        for color in "WUBRGC":
+            cmc += len(re.findall(rf"\{{{color}\}}", mana_cost))
+        # Hybrid mana symbols like {U/R} count as 1 each
+        hybrid = re.findall(r"\{[^}]+/[^}]+\}", mana_cost)
+        cmc += len(hybrid)
+        return cmc
+
+    @staticmethod
+    def _disambiguate_names(names: list[str]) -> list[str]:
+        """Add #1, #2 suffixes to duplicate names in a list."""
+        from collections import Counter
+
+        counts = Counter(names)
+        seen = {}
+        result = []
+        for name in names:
+            if counts[name] > 1:
+                seen[name] = seen.get(name, 0) + 1
+                result.append(f"{name} #{seen[name]}")
+            else:
+                result.append(name)
+        return result
+
+    @staticmethod
+    def _infer_chained_target_types(text: str) -> set[str]:
+        """Return every card type named in a chained target clause.
+
+        "exile target artifact or creature" names two types; matching only
+        the leading phrase drops the rest. Types are collected only when the
+        clause really is a chain (two or more types), so single-type clauses
+        keep whatever the dedicated phrase checks decided.
+        """
+        type_words = {"artifact", "creature", "enchantment", "land", "planeswalker", "battle"}
+        # Words that may sit between chained types without ending the clause.
+        connectors = {
+            "or",
+            "and",
+            "another",
+            "other",
+            "attacking",
+            "blocking",
+            "tapped",
+            "untapped",
+            "legendary",
+            "nonland",
+            "nontoken",
+            "noncreature",
+            "nonlegendary",
+            "",
+        }
+        found: set[str] = set()
+        for match in re.finditer(r"\btarget\s+([a-z',\s-]+)", text):
+            chain: list[str] = []
+            for word in re.split(r"[,\s]+", match.group(1)):
+                if word in type_words:
+                    chain.append(word)
+                elif word in connectors:
+                    continue
+                else:
+                    break  # clause ended (e.g. "creature an opponent controls")
+            if len(chain) > 1:
+                found.update(chain)
+        return found
+
+    @staticmethod
+    def _infer_target_requirements(oracle_text: str) -> dict[str, Any]:
+        """Infer rough target constraints from oracle text."""
+        text = (oracle_text or "").lower()
+        req = {
+            "types": set(),
+            "player_target": False,
+            "planeswalker_target": False,
+            "permanent_target": False,
+            "nonland_only": False,
+            "must_control": None,  # "you" | "opponent" | None
+            "zones": set(),  # battlefield, stack, graveyard
+            "target_spell": False,
+            "target_ability": False,
+            "must_be_attacking": False,
+            "must_be_blocking": False,
+            "must_be_tapped": False,
+            "must_be_untapped": False,
+            "must_have_flying": False,
+            "power_ge": None,
+            "power_le": None,
+            "toughness_ge": None,
+            "toughness_le": None,
+            "mana_value_ge": None,
+            "mana_value_le": None,
+        }
+
+        if "earthbend" in text:
+            req["types"].add("land")
+            req["permanent_target"] = True
+            req["must_control"] = "you"
+            req["zones"].add("battlefield")
+            return req
+
+        if "target opponent" in text:
+            req["player_target"] = True
+            req["must_control"] = "opponent"
+            return req
+
+        if "target player" in text:
+            req["player_target"] = True
+
+        if "target planeswalker" in text:
+            req["planeswalker_target"] = True
+            req["types"].add("planeswalker")
+
+        if "target spell" in text:
+            req["target_spell"] = True
+            req["zones"].add("stack")
+        if (
+            "target ability" in text
+            or "target activated ability" in text
+            or "target triggered ability" in text
+        ):
+            req["target_ability"] = True
+            req["zones"].add("stack")
+
+        if "target creature spell" in text:
+            req["target_spell"] = True
+            req["types"].add("creature")
+            req["zones"].add("stack")
+        if "target instant or sorcery spell" in text:
+            req["target_spell"] = True
+            req["types"].update(["instant", "sorcery"])
+            req["zones"].add("stack")
+
+        if "target creature or planeswalker" in text:
+            req["types"].update(["creature", "planeswalker"])
+        elif "target creature" in text:
+            req["types"].add("creature")
+
+        if "target nonland permanent" in text:
+            req["permanent_target"] = True
+            req["nonland_only"] = True
+        elif "target permanent" in text:
+            req["permanent_target"] = True
+
+        if "target artifact" in text:
+            req["types"].add("artifact")
+        if "target enchantment" in text:
+            req["types"].add("enchantment")
+        if "target land" in text:
+            req["types"].add("land")
+
+        # Chained target clauses ("target artifact or creature") must yield
+        # every type in the chain. The phrase checks above only ever match the
+        # first one, which hid every creature from Planar Incision's target
+        # list and left the player choosing between two irrelevant artifacts
+        # (issue #482).
+        req["types"].update(RulesEngine._infer_chained_target_types(text))
+
+        if "graveyard" in text:
+            req["zones"].add("graveyard")
+
+        if "attacking" in text:
+            req["must_be_attacking"] = True
+        if "blocking" in text:
+            req["must_be_blocking"] = True
+        if "untapped" in text:
+            req["must_be_untapped"] = True
+        if "tapped" in text:
+            req["must_be_tapped"] = True
+        if "with flying" in text:
+            req["must_have_flying"] = True
+
+        for m in re.findall(r"power\s+(\d+)\s+or\s+greater", text):
+            req["power_ge"] = int(m)
+        for m in re.findall(r"power\s+(\d+)\s+or\s+less", text):
+            req["power_le"] = int(m)
+        for m in re.findall(r"toughness\s+(\d+)\s+or\s+greater", text):
+            req["toughness_ge"] = int(m)
+        for m in re.findall(r"toughness\s+(\d+)\s+or\s+less", text):
+            req["toughness_le"] = int(m)
+        for m in re.findall(r"mana value\s+(\d+)\s+or\s+greater", text):
+            req["mana_value_ge"] = int(m)
+        for m in re.findall(r"mana value\s+(\d+)\s+or\s+less", text):
+            req["mana_value_le"] = int(m)
+
+        if "you control" in text or "equip" in text or "equipped" in text:
+            req["must_control"] = "you"
+        elif "opponent controls" in text or "an opponent controls" in text:
+            req["must_control"] = "opponent"
+
+        return req
+
+    @staticmethod
+    def _match_battlefield_targets(
+        battlefield: list[dict[str, Any]],
+        local_seat: int,
+        opponent_seat: int | None,
+        req: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        matches = []
+        for card in battlefield:
+            controller = card.get("controller_seat_id") or card.get("owner_seat_id")
+            if req["must_control"] == "you" and controller != local_seat:
+                continue
+            if (
+                req["must_control"] == "opponent"
+                and opponent_seat is not None
+                and controller != opponent_seat
+            ):
+                continue
+
+            type_line = (card.get("type_line") or "").lower()
+            if req["nonland_only"] and "land" in type_line:
+                continue
+
+            if req["types"]:
+                # Allow "permanent" without narrowing types
+                type_match = any(t in type_line for t in req["types"])
+                if not type_match:
+                    continue
+
+            if req["must_be_attacking"] and not card.get("is_attacking"):
+                continue
+            if req["must_be_blocking"] and not card.get("is_blocking"):
+                continue
+            if req["must_be_tapped"] and not card.get("is_tapped"):
+                continue
+            if req["must_be_untapped"] and card.get("is_tapped"):
+                continue
+            if req["must_have_flying"]:
+                is_creature = "creature" in type_line
+                non_creature_types = req["types"] - {"creature"}
+                if is_creature or not non_creature_types:
+                    if "flying" not in (card.get("oracle_text") or "").lower():
+                        continue
+
+            power = card.get("power")
+            toughness = card.get("toughness")
+            if req["power_ge"] is not None and (power is None or power < req["power_ge"]):
+                continue
+            if req["power_le"] is not None and (power is None or power > req["power_le"]):
+                continue
+            if req["toughness_ge"] is not None and (toughness is None or toughness < req["toughness_ge"]):
+                continue
+            if req["toughness_le"] is not None and (toughness is None or toughness > req["toughness_le"]):
+                continue
+
+            matches.append(card)
+        return matches
+
+    @staticmethod
+    def _match_stack_targets(
+        stack: list[dict[str, Any]],
+        local_seat: int,
+        opponent_seat: int | None,
+        req: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        matches = []
+        for obj in stack:
+            controller = obj.get("controller_seat_id") or obj.get("owner_seat_id")
+            if req["must_control"] == "you" and controller != local_seat:
+                continue
+            if (
+                req["must_control"] == "opponent"
+                and opponent_seat is not None
+                and controller != opponent_seat
+            ):
+                continue
+
+            name = (obj.get("name") or "").lower()
+            type_line = (obj.get("type_line") or "").lower()
+
+            is_ability = "ability of" in name or "ability" in type_line
+            is_spell = not is_ability
+
+            if req["target_spell"] and not is_spell:
+                continue
+            if req["target_ability"] and not is_ability:
+                continue
+            if req["types"]:
+                type_match = any(t in type_line for t in req["types"])
+                if not type_match:
+                    continue
+
+            matches.append(obj)
+        return matches
+
+    @staticmethod
+    def _match_graveyard_targets(
+        graveyard: list[dict[str, Any]],
+        local_seat: int,
+        opponent_seat: int | None,
+        req: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        matches = []
+        for card in graveyard:
+            controller = card.get("controller_seat_id") or card.get("owner_seat_id")
+            if req["must_control"] == "you" and controller != local_seat:
+                continue
+            if (
+                req["must_control"] == "opponent"
+                and opponent_seat is not None
+                and controller != opponent_seat
+            ):
+                continue
+
+            type_line = (card.get("type_line") or "").lower()
+            if req["nonland_only"] and "land" in type_line:
+                continue
+            if req["types"]:
+                type_match = any(t in type_line for t in req["types"])
+                if not type_match:
+                    continue
+            matches.append(card)
+        return matches
+
+    @staticmethod
+    def _score_target(
+        card: dict[str, Any],
+        local_seat: int | None,
+        prefer_opponent: bool = False,
+        prefer_you: bool = False,
+    ) -> int:
+        type_line = (card.get("type_line") or "").lower()
+        power = card.get("power") or 0
+        toughness = card.get("toughness") or 0
+        score = 0
+        if "planeswalker" in type_line:
+            score += 5
+        if "creature" in type_line:
+            score += 2
+        if "land" in type_line and not card.get("is_tapped"):
+            score += 2
+        if "flying" in (card.get("oracle_text") or "").lower():
+            score += 1
+        score += int(power) + int(toughness)
+
+        controller = card.get("controller_seat_id") or card.get("owner_seat_id")
+        is_opp = (local_seat is not None) and (controller != local_seat)
+
+        if prefer_opponent:
+            if is_opp:
+                score += 100
+            else:
+                score -= 100
+        elif prefer_you:
+            if not is_opp:
+                score += 100
+            else:
+                score -= 100
+        return score
+
+    @staticmethod
+    def _extract_explicit_target_instance_ids(decision_context: dict[str, Any]) -> list[int]:
+        """Extract legal target instance ids from bridge-enriched decision context."""
+        ids: list[int] = []
+
+        def _collect(value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, int):
+                ids.append(value)
+                return
+            if isinstance(value, list):
+                for item in value:
+                    _collect(item)
+                return
+            if isinstance(value, dict):
+                for key in (
+                    "instanceId",
+                    "instance_id",
+                    "targetInstanceId",
+                    "target_instance_id",
+                    "cardInstanceId",
+                    "objectInstanceId",
+                ):
+                    raw = value.get(key)
+                    if isinstance(raw, int):
+                        ids.append(raw)
+                        return
+                for key in ("target", "card", "object"):
+                    child = value.get(key)
+                    if isinstance(child, (dict, list, int)):
+                        _collect(child)
+
+        for key in (
+            "validTargets",
+            "qualifiedTargets",
+            "targetsToSelect",
+            "options",
+            "targets",
+            "raw",
+        ):
+            _collect(decision_context.get(key))
+
+        deduped: list[int] = []
+        seen: set[int] = set()
+        for instance_id in ids:
+            if instance_id > 0 and instance_id not in seen:
+                seen.add(instance_id)
+                deduped.append(instance_id)
+        return deduped
+
+    @staticmethod
+    def _lookup_target_cards_by_instance_ids(
+        game_state: dict[str, Any],
+        instance_ids: list[int],
+    ) -> list[dict[str, Any]]:
+        """Resolve legal target instance ids to visible objects across zones."""
+        if not instance_ids:
+            return []
+
+        zones: list[Any] = [
+            game_state.get("battlefield", []),
+            game_state.get("stack", []),
+            game_state.get("graveyard", []),
+            game_state.get("exile", []),
+        ]
+        by_id: dict[int, dict[str, Any]] = {}
+        for zone in zones:
+            if not isinstance(zone, list):
+                continue
+            for item in zone:
+                if not isinstance(item, dict):
+                    continue
+                instance_id = item.get("instance_id")
+                if isinstance(instance_id, int):
+                    by_id[instance_id] = item
+
+        resolved: list[dict[str, Any]] = []
+        for instance_id in instance_ids:
+            card = by_id.get(instance_id)
+            if card is not None:
+                resolved.append(card)
+        return resolved
+
+    @staticmethod
+    def _get_target_selection_actions(game_state: dict[str, Any]) -> list[str]:
+        decision_context = game_state.get("decision_context") or {}
+        if decision_context.get("type") != "target_selection":
+            return []
+
+        source_id = decision_context.get("source_id")
+        source_card = decision_context.get("source_card") or "spell"
+        source_oracle = str(
+            decision_context.get("source_oracle_text")
+            or decision_context.get("source_card_oracle_text")
+            or ""
+        )
+        for obj in game_state.get("stack", []):
+            if obj.get("instance_id") == source_id:
+                source_oracle = source_oracle or obj.get("oracle_text", "")
+                source_card = decision_context.get("source_card") or obj.get("name", source_card)
+                break
+
+        if not source_oracle and source_card and source_card != "spell":
+            for card_info in RulesEngine._card_db.values():
+                if (
+                    isinstance(card_info, dict)
+                    and (card_info.get("name") or "").lower() == source_card.lower()
+                ):
+                    source_oracle = card_info.get("oracle_text", "")
+                    if source_oracle:
+                        break
+
+        req = RulesEngine._infer_target_requirements(source_oracle)
+
+        local_seat = game_state.get("local_seat_id")
+        players = game_state.get("players", [])
+        local_player = next((p for p in players if p.get("is_local")), None)
+        if local_seat is None and local_player:
+            local_seat = local_player.get("seat_id")
+        if local_seat is None:
+            return [f"Select target for {source_card}"]
+
+        opponent_player = next((p for p in players if p.get("seat_id") != local_seat), None)
+        opponent_seat = opponent_player.get("seat_id") if opponent_player else None
+
+        actions = []
+        if req["player_target"]:
+            if req["must_control"] == "opponent":
+                actions.append("Select target: Opponent")
+            elif req["must_control"] == "you":
+                actions.append("Select target: You")
+            else:
+                actions.extend(["Select target: Opponent", "Select target: You"])
+
+        explicit_target_ids = RulesEngine._extract_explicit_target_instance_ids(decision_context)
+        matches = RulesEngine._lookup_target_cards_by_instance_ids(game_state, explicit_target_ids)
+        if not req["zones"] or "battlefield" in req["zones"]:
+            battlefield = game_state.get("battlefield", [])
+            if not matches:
+                matches.extend(
+                    RulesEngine._match_battlefield_targets(battlefield, local_seat, opponent_seat, req)
+                )
+
+        if "stack" in req["zones"]:
+            stack = game_state.get("stack", [])
+            if not matches:
+                matches.extend(RulesEngine._match_stack_targets(stack, local_seat, opponent_seat, req))
+
+        if "graveyard" in req["zones"]:
+            graveyard = game_state.get("graveyard", [])
+            if not matches:
+                matches.extend(
+                    RulesEngine._match_graveyard_targets(graveyard, local_seat, opponent_seat, req)
+                )
+
+        if matches:
+            source_oracle_lower = source_oracle.lower()
+            harmful_keywords = (
+                "deal",
+                "damage",
+                "destroy",
+                "exile",
+                "loses",
+                "fight",
+                "sacrifice",
+                "-1/",
+                "-2/",
+                "-3/",
+                "-4/",
+                "-5/",
+            )
+            beneficial_keywords = (
+                "+1/+1",
+                "draw a card",
+                "draws",
+                "gain life",
+                "equip",
+                "gains indestructible",
+                "hexproof",
+                "protection",
+                "gets +",
+            )
+            # A blink ("exile ... then return it to the battlefield") is not
+            # removal: it re-triggers your own ETB abilities, and Planar
+            # Incision even hands the permanent back with a +1/+1 counter.
+            # Reading it as removal made the coach aim it at an opponent's
+            # creature, which just gives that creature a counter (issue #482).
+            is_blink = bool(
+                re.search(r"\bexile[^.]*?\breturn (it|them|that card|those cards)\b", source_oracle_lower)
+                and "to the battlefield" in source_oracle_lower
+            )
+            is_harmful = not is_blink and any(kw in source_oracle_lower for kw in harmful_keywords)
+            is_beneficial = is_blink or any(kw in source_oracle_lower for kw in beneficial_keywords)
+
+            prefer_opponent = req["must_control"] == "opponent" or (is_harmful and not is_beneficial)
+            prefer_you = req["must_control"] == "you" or (is_beneficial and not is_harmful)
+
+            matches.sort(
+                key=lambda c: RulesEngine._score_target(
+                    c, local_seat, prefer_opponent=prefer_opponent, prefer_you=prefer_you
+                ),
+                reverse=True,
+            )
+            # Owner tags are load-bearing: without them the LLM enchanted an
+            # opponent's land with the player's own Wolfwillow Haven — the
+            # candidates were just "Mountain" and it had no way to know whose
+            # (field report 2026-07-16).
+            names = []
+            for c in matches[:3]:
+                owner = "YOURS" if c.get("owner_seat_id") == local_seat else "OPP"
+                names.append(f"{c.get('name', 'Unknown')} ({owner})")
+            for name in RulesEngine._disambiguate_names(names):
+                actions.append(f"Select target: {name}")
+
+        if not actions:
+            actions.append(f"Select target for {source_card}")
+        return actions
+
+    @staticmethod
+    def _filter_legal_attackers(game_state: dict[str, Any], legal_attackers: list[str]) -> list[str]:
+        """Filter declared attackers against visible battlefield legality."""
+        if not legal_attackers:
+            return []
+
+        players = game_state.get("players", [])
+        local_player = next((p for p in players if p.get("is_local")), None)
+        if not local_player:
+            return legal_attackers
+
+        local_seat = local_player.get("seat_id")
+        turn_num = game_state.get("turn", {}).get("turn_number", 0)
+        valid_name_counts: dict[str, int] = {}
+        saw_local_creature = False
+
+        for card in game_state.get("battlefield", []):
+            controller = card.get("controller_seat_id")
+            owner = card.get("owner_seat_id")
+            if controller not in (None, local_seat) and owner != local_seat:
+                continue
+            type_line = (card.get("type_line") or "").lower()
+            if "creature" not in type_line:
+                continue
+            saw_local_creature = True
+            if card.get("is_tapped"):
+                continue
+            if (
+                card.get("turn_entered_battlefield", -1) == turn_num
+                and "haste" not in (card.get("oracle_text") or "").lower()
+            ):
+                continue
+            name = card.get("name")
+            if not name:
+                continue
+            valid_name_counts[name] = valid_name_counts.get(name, 0) + 1
+
+        if not saw_local_creature:
+            return legal_attackers
+
+        filtered: list[str] = []
+        for name in legal_attackers:
+            if valid_name_counts.get(name, 0) > 0:
+                filtered.append(name)
+                valid_name_counts[name] -= 1
+        return filtered
+
+    @staticmethod
+    def _get_decision_actions(game_state: dict[str, Any]) -> list[str]:
+        """Compute legal actions for pending GRE decision types."""
+        decision_context = game_state.get("decision_context") or {}
+        dec_type = decision_context.get("type", "")
+        if not dec_type:
+            return []
+
+        if dec_type == "declare_attackers":
+            legal = RulesEngine._filter_legal_attackers(
+                game_state, decision_context.get("legal_attackers", [])
+            )
+            actions = []
+            if legal:
+                # Pair each legal attacker name with the P/T of a matching
+                # creature on the battlefield. When two creatures share a
+                # name, the #1/#2 disambiguation is assigned in the same
+                # order we iterate — callers see e.g.
+                # "Attack with: Filcher #1 (1/3)" vs "Attack with: Filcher #2 (0/2)"
+                # so the planner can distinguish a useful attacker from a
+                # dead-weight one. 0-power creatures are flagged explicitly.
+                local_seat = None
+                for p in game_state.get("players", []):
+                    if p.get("is_local"):
+                        local_seat = p.get("seat_id")
+                        break
+                turn_num = game_state.get("turn", {}).get("turn_number", 0)
+                candidates_by_name: dict[str, list[dict[str, Any]]] = {}
+                for card in game_state.get("battlefield", []):
+                    controller = card.get("controller_seat_id")
+                    owner = card.get("owner_seat_id")
+                    if controller not in (None, local_seat) and owner != local_seat:
+                        continue
+                    type_line = (card.get("type_line") or "").lower()
+                    if "creature" not in type_line:
+                        continue
+                    if card.get("is_tapped"):
+                        continue
+                    if (
+                        card.get("turn_entered_battlefield", -1) == turn_num
+                        and "haste" not in (card.get("oracle_text") or "").lower()
+                    ):
+                        continue
+                    name = card.get("name")
+                    if name:
+                        candidates_by_name.setdefault(name, []).append(card)
+
+                disambiguated = RulesEngine._disambiguate_names(legal)
+                consumed: dict[str, int] = {}
+                for display_name, bare_name in zip(disambiguated, legal, strict=False):
+                    queue = candidates_by_name.get(bare_name, [])
+                    idx = consumed.get(bare_name, 0)
+                    suffix = ""
+                    if idx < len(queue):
+                        card = queue[idx]
+                        consumed[bare_name] = idx + 1
+                        power = card.get("power")
+                        toughness = card.get("toughness")
+                        if power not in (None, "") and toughness not in (None, ""):
+                            try:
+                                power_val = int(power)
+                            except (TypeError, ValueError):
+                                power_val = None
+                            suffix = f" ({power}/{toughness})"
+                            if power_val == 0:
+                                oracle = (card.get("oracle_text") or "").lower()
+                                # Attack-triggered abilities can still make
+                                # a 0-power attacker worthwhile (raid, exert,
+                                # "whenever ~ attacks" clauses).
+                                attack_trigger = (
+                                    "whenever" in oracle and "attack" in oracle
+                                ) or "exert" in oracle
+                                if not attack_trigger:
+                                    suffix += " [0 POWER — attacking deals 0 damage]"
+                    actions.append(f"Attack with: {display_name}{suffix}")
+            actions.append("Done (confirm attackers)")
+            return actions
+
+        if dec_type == "declare_blockers":
+            legal = decision_context.get("legal_blockers", [])
+            actions = []
+            if legal:
+                for name in RulesEngine._disambiguate_names(legal):
+                    actions.append(f"Block with: {name}")
+            actions.append("Done (confirm blockers)")
+            return actions
+
+        if dec_type == "assign_damage":
+            return ["Assign damage (order targets by priority)", "Done"]
+
+        if dec_type == "order_combat_damage":
+            return ["Order damage targets by priority", "Done"]
+
+        if dec_type == "pay_costs":
+            source = decision_context.get("source_card", "spell")
+            return [f"Pay costs for {source}", "Auto-pay"]
+
+        if dec_type == "search":
+            return ["Search library (pick best card)", "Cancel search"]
+
+        if dec_type == "distribution":
+            source = decision_context.get("source_card", "effect")
+            total = decision_context.get("total", "?")
+            if total in (0, "0", "?", None):
+                return [f"Distribute damage/counters from {source}", "Done"]
+            return [f"Distribute {total} from {source}", "Done"]
+
+        if dec_type == "numeric_input":
+            source = decision_context.get("source_card", "effect")
+            min_v = decision_context.get("min", 0)
+            max_v = decision_context.get("max", "?")
+            return [f"Choose number ({min_v}-{max_v}) for {source}"]
+
+        if dec_type == "choose_starting_player":
+            return ["Choose: Play", "Choose: Draw"]
+
+        if dec_type == "select_replacement":
+            return ["Select replacement effect order", "Done"]
+
+        if dec_type == "casting_time_options":
+            return ["Cast normally", "Use alternative cost (Foretell/Flashback/Escape)"]
+
+        if dec_type == "select_counters":
+            return ["Select counters", "Done"]
+
+        if dec_type == "order_triggers":
+            return ["Order triggered abilities", "Done"]
+
+        if dec_type in ("select_n_group", "select_from_groups", "search_from_groups", "gather"):
+            return ["Select from options", "Done"]
+
+        if dec_type == "optional_action":
+            # MTGA is presenting a yes/no prompt (e.g. "Send your commander to
+            # the command zone instead of the graveyard?"). Without these,
+            # get_legal_actions() falls through to the priority check and
+            # returns "Wait (Opponent has priority)" — which is wrong because
+            # the local player is the one being asked, and the planner ends up
+            # passing priority on a request type that doesn't accept a pass.
+            return ["Accept (yes)", "Decline (no)"]
+
+        return []
+
+    @staticmethod
+    def get_legal_actions(game_state: dict[str, Any]) -> list[str]:
+        target_actions = RulesEngine._get_target_selection_actions(game_state)
+        if target_actions:
+            return target_actions
+
+        # Decision windows must override any stale ActionsAvailable list.
+        decision_actions = RulesEngine._get_decision_actions(game_state)
+        if decision_actions:
+            return decision_actions
+
+        # PREFERENCE: Use ground-truth legal actions from GRE if available
+        if game_state.get("legal_actions"):
+            return game_state["legal_actions"]
+
+        actions = []
+
+        turn = game_state.get("turn", {})
+        phase = turn.get("phase", "")
+
+        players = game_state.get("players", [])
+        local_player = next((p for p in players if p.get("is_local")), None)
+        if not local_player:
+            return ["Wait (Game State Syncing)"]
+
+        local_seat = local_player.get("seat_id")
+        is_active_player = turn.get("active_player") == local_seat
+        has_priority = turn.get("priority_player") == local_seat
+
+        if not has_priority:
+            # Exception: We can declare blockers if it's the DeclareBlock step and we are defender
+            step = turn.get("step", "")
+            is_blocking_step = (step == "Step_DeclareBlock") and (not is_active_player)
+
+            if not is_blocking_step:
+                return ["Wait (Opponent has priority)"]
+
+        # Calculate available mana (with color breakdown)
+        mana_pool = RulesEngine._get_mana_pool(game_state, local_seat)
+
+        # 1. LAND DROPS
+        # Legal if: Main Phase, Stack Empty, Lands Played < 1, Active Player
+        stack = game_state.get("stack", [])
+        is_stack_empty = len(stack) == 0
+        is_main_phase = "Main" in phase
+
+        if is_active_player and is_main_phase and is_stack_empty:
+            if local_player.get("lands_played", 0) < 1:
+                # Check hand for lands
+                hand = game_state.get("hand", [])
+                for card in hand:
+                    if "Land" in card.get("type_line", ""):
+                        actions.append(f"Play Land: {card.get('name')}")
+                        # We only need to list one land action generally, or all specific ones?
+                        # Let's list specific logic.
+
+        # Pre-fetch battlefield for Aura target checks and attacker/blocker logic
+        battlefield = game_state.get("battlefield", [])
+
+        # 2. CASTING
+        # Sorcery Speed: Main Phase, Stack Empty, Active Player
+        # Instant Speed: Anytime we have priority
+        hand = game_state.get("hand", [])
+        for card in hand:
+            type_line = card.get("type_line", "")
+            name = card.get("name", "")
+
+            # Skip lands handled above
+            if "Land" in type_line:
+                continue
+
+            is_instant_speed = "Instant" in type_line or "Flash" in card.get("oracle_text", "")
+
+            can_cast_timing = False
+            if is_instant_speed or is_active_player and is_main_phase and is_stack_empty:
+                can_cast_timing = True
+
+            # Mana check: ensure player can afford the spell (total + colors)
+            can_afford = RulesEngine._can_afford(card.get("mana_cost", ""), mana_pool)
+
+            if can_cast_timing and can_afford:
+                # Aura target check: Auras require a valid target to cast.
+                # Beneficial Auras (+X/+X, keyword grants) need a friendly creature;
+                # detrimental Auras (Pacifism, -X/-X, "can't") need an enemy creature.
+                if "Aura" in type_line:
+                    oracle = card.get("oracle_text", "").lower()
+                    if "enchant creature" in oracle:
+                        my_creatures = [
+                            c
+                            for c in battlefield
+                            if c.get("owner_seat_id") == local_seat and "Creature" in c.get("type_line", "")
+                        ]
+                        opp_creatures = [
+                            c
+                            for c in battlefield
+                            if c.get("owner_seat_id") != local_seat and "Creature" in c.get("type_line", "")
+                        ]
+                        # Heuristic: detrimental if it weakens or restricts the target
+                        is_detrimental = any(
+                            kw in oracle
+                            for kw in (
+                                "-1/",
+                                "-2/",
+                                "-3/",
+                                "-4/",
+                                "can't attack",
+                                "can't block",
+                                "doesn't untap",
+                                "sacrifice enchanted",
+                            )
+                        )
+                        if is_detrimental:
+                            if not opp_creatures:
+                                continue  # No enemy targets for detrimental Aura
+                        else:
+                            if not my_creatures:
+                                continue  # No friendly targets for beneficial Aura
+
+                # Non-Aura targeted removal: spells/enchantments that exile or
+                # destroy a target opponent's permanent need a valid target.
+                # Without this check the RulesEngine suggests cards like
+                # Seam Rip when the opponent has no valid targets.
+                oracle = card.get("oracle_text", "").lower()
+                if "target" in oracle and "opponent controls" in oracle:
+                    opp_nonlands = [
+                        c
+                        for c in battlefield
+                        if c.get("owner_seat_id") != local_seat and "Land" not in c.get("type_line", "")
+                    ]
+                    if not opp_nonlands:
+                        continue  # No valid opponent targets
+
+                actions.append(f"Cast {name}")
+
+        # 3. ATTACKING
+        # Legal if: Combat Phase (specifically Declare Attackers step?), Active Player, Creatures Untapped + !Sick
+        # In Arena, we usually get priority *before* attackers are declared (Beginning of Combat)
+        # or *during* declare attackers (if we hold priority, but usually it's a game step).
+        # Actually, asking "Who should attack" happens at 'Phase_Combat_Beginning' or 'Phase_Main1' (planning).
+
+        my_creatures = [
+            c
+            for c in battlefield
+            if c.get("owner_seat_id") == local_seat and "Creature" in c.get("type_line", "")
+        ]
+
+        if is_active_player and ("Main" in phase or "Combat" in phase):
+            potential_attackers = []
+            turn_num = turn.get("turn_number", 0)
+
+            # Safe turn parse
+            try:
+                current_turn_int = int(str(turn_num).replace("?", "0"))
+            except Exception:
+                current_turn_int = 0
+
+            for c in my_creatures:
+                # Check Sickness
+                entered = c.get("turn_entered_battlefield", -1)
+                has_haste = "haste" in c.get("oracle_text", "").lower()
+                is_tapped = c.get("is_tapped", False)
+
+                is_sick = (entered == current_turn_int) and not has_haste
+
+                if not is_sick and not is_tapped:
+                    potential_attackers.append(c.get("name"))
+
+            if potential_attackers:
+                actions.append(
+                    f"Declare Attackers: {', '.join(RulesEngine._disambiguate_names(potential_attackers))}"
+                )
+
+        # 4. BLOCKING
+        # Legal if: Combat Phase, Defending Player
+        if not is_active_player and "Combat" in phase:
+            untapped_blockers = [c.get("name") for c in my_creatures if not c.get("is_tapped")]
+            if untapped_blockers:
+                actions.append(f"Block with: {', '.join(RulesEngine._disambiguate_names(untapped_blockers))}")
+
+        # 5. ABILITIES
+        # Activated abilities on battlefield
+        turn_num = turn.get("turn_number", 0)
+        try:
+            current_turn_int = int(str(turn_num).replace("?", "0"))
+        except Exception:
+            current_turn_int = 0
+        ability_names = []
+        for c in my_creatures:  # And lands/artifacts
+            oracle = c.get("oracle_text", "")
+            if ": " not in oracle:  # Crude check for activated ability
+                continue
+            if c.get("is_tapped"):
+                continue
+            # Summoning sickness: creatures can't use {T} abilities the turn they enter
+            entered = c.get("turn_entered_battlefield", -1)
+            has_haste = "haste" in oracle.lower()
+            is_sick = (entered == current_turn_int) and not has_haste
+            uses_tap = bool(re.search(r"\{T\}", oracle))
+            if is_sick and uses_tap:
+                continue
+            ability_names.append(c.get("name"))
+        for aname in RulesEngine._disambiguate_names(ability_names):
+            actions.append(f"Activate {aname}")
+
+        return actions
