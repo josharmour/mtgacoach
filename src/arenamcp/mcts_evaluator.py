@@ -9,6 +9,7 @@ and leverages the OpponentModel for metagame-aware tactical synthesis.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -981,22 +982,29 @@ class MCTSEvaluator:
                     items.append((afterstate, hand))
 
         batch_results = MageZeroClient.evaluate_batch(items, model_id=model_id)
-        if not batch_results or len(batch_results) < 8:
+        n_rows = len(items)
+        row_results = cls._validate_batch_rows(batch_results, n_rows)
+        if row_results is None:
+            logger.info(
+                "MageZero batch failed validation; preserving heuristic result "
+                "(reject reason: %s)",
+                MageZeroClient.last_reject_reason(),
+            )
             return base_val, "Tactical Heuristic Lookahead", []
 
-        # 1. Average root prediction
-        root_vals = [r["value"] for r in batch_results[:8]]
-        root_nn_val = sum(root_vals) / 8.0
+        # 1. Average root prediction (first 8 rows, one per sampled opponent hand)
+        root_rows = row_results[:8]
+        root_nn_val = sum(r["value"] for r in root_rows) / 8.0
         root_win_p = max(0.02, min(0.98, (root_nn_val + 1.0) / 2.0))
         base_val = root_win_p
 
         # 2. Average policy logits over the 8 root predictions
         avg_policy_player = [
-            sum(batch_results[j]["policy_player"][i] for j in range(8)) / 8.0
+            sum(root_rows[j]["policy_player"][i] for j in range(8)) / 8.0
             for i in range(128)
         ]
         avg_policy_opp = [
-            sum(batch_results[j]["policy_opponent"][i] for j in range(8)) / 8.0
+            sum(root_rows[j]["policy_opponent"][i] for j in range(8)) / 8.0
             for i in range(128)
         ]
 
@@ -1012,7 +1020,7 @@ class MCTSEvaluator:
             branch.prior_probability = priors.get(branch.action, 0.0)
             if b_idx in evaluated_branch_map:
                 start = evaluated_branch_map[b_idx]
-                cand_vals = [r["value"] for r in batch_results[start : start + 8]]
+                cand_vals = [r["value"] for r in row_results[start : start + 8]]
                 if cand_vals:
                     cand_nn_val = sum(cand_vals) / len(cand_vals)
                     delta_v = cand_nn_val - root_nn_val
@@ -1031,3 +1039,48 @@ class MCTSEvaluator:
         opp_threats = decode_opponent_threats(avg_policy_opp, top_k=3)
 
         return base_val, eval_label, opp_threats
+
+    @classmethod
+    def _validate_batch_rows(
+        cls,
+        batch_results: list[dict[str, Any]] | None,
+        n_rows: int,
+    ) -> list[dict[str, Any]] | None:
+        """Validate every batch row before any value is consumed.
+
+        Requires exactly ``n_rows`` results, bound to request rows by
+        request_index when present, with finite in-range values and 128-wide
+        policy heads. Any violation returns None (heuristic path preserved).
+        """
+        if not isinstance(batch_results, list) or len(batch_results) != n_rows:
+            return None
+        validated: list[dict[str, Any]] = []
+        for row_idx, row in enumerate(batch_results):
+            if not isinstance(row, dict):
+                return None
+            req_idx = row.get("request_index", row_idx)
+            if not isinstance(req_idx, int) or isinstance(req_idx, bool) or req_idx != row_idx:
+                return None
+            value = row.get("value")
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+                or not -1.0 <= float(value) <= 1.0
+            ):
+                return None
+            for key in ("policy_player", "policy_opponent"):
+                head = row.get(key)
+                if (
+                    not isinstance(head, list)
+                    or len(head) != 128
+                    or any(
+                        not isinstance(x, (int, float))
+                        or isinstance(x, bool)
+                        or not math.isfinite(float(x))
+                        for x in head
+                    )
+                ):
+                    return None
+            validated.append(row)
+        return validated

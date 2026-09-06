@@ -1,40 +1,82 @@
 """MageZero RL Neural Value & Policy Client for MTGA Coach.
 
-Communicates with the live MageZero inference server (running on localhost:50052
-or LAN host 10.0.0.10:50052) to evaluate game state tensors, extract deep neural
-network position values (V(s) in [-1, +1]), and retrieve policy priors.
+Communicates with the live MageZero *coaching* inference server to evaluate game
+state tensors, extract deep neural network position values (V(s) in [-1, +1]),
+and retrieve policy priors.
+
+Endpoint policy (task 01):
+- Coaching never contacts the self-play / candidate-evaluation service
+  (port 50052) automatically. Falling back to it would expose an unpromoted
+  checkpoint and contend with the running training fleet.
+- Default discovery targets the dedicated coaching server only
+  (127.0.0.1:50054, plus 10.0.0.10:50054 when LAN opt-in is enabled).
+- Operators can still aim coaching at any endpoint - including 50052 - for
+  deliberate diagnostics via MAGEZERO_SERVER_URL.
+- Discovery runs under an overall latency budget (MAGEZERO_DISCOVERY_BUDGET,
+  default 2.5 seconds) and reports why it fell back via
+  ``MageZeroClient.last_fallback_reason()``. No model discovery happens here.
+
+Response validation (task 02):
+- ``evaluate`` / ``evaluate_batch`` enforce a strict response contract and
+  reject - as a whole, never element-wise - responses that are not exactly one
+  fresh, finite, correctly shaped result per requested item. Accepted items are
+  annotated with their request index (``request_index``) so a future versioned
+  protocol can build on them.
+- Rejection is binary: the caller falls back to the heuristic path and a
+  structured reason is exposed via ``MageZeroClient.last_reject_reason()``.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
+import urllib.error
 import urllib.request
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Fallback hosts to check for live MageZero inference
+# Dedicated coaching endpoint(s). The self-play/candidate-evaluation service on
+# port 50052 is intentionally absent: automatic fallback to it would expose an
+# unpromoted model to coaching and contend with the live training fleet.
+DEFAULT_ENDPOINTS: tuple[str, ...] = ("http://127.0.0.1:50054",)
+
+# LAN coaching endpoints are only queried when the user explicitly opts in
+# (MAGEZERO_ENABLE_LAN / ARENAMCP_LAN_EVAL) to avoid connect-timeout latency on
+# user networks. Port 50052 is not here for the same fleet-isolation reason.
+LAN_ENDPOINTS: tuple[str, ...] = ("http://10.0.0.10:50054",)
+
+
 def _get_candidate_hosts() -> list[str]:
+    """Return the ordered list of coach endpoints to probe.
+
+    MAGEZERO_SERVER_URL, when set, is an explicit operator override and
+    replaces the candidate list entirely (single endpoint, deliberate).
+    """
     explicit = os.environ.get("MAGEZERO_SERVER_URL", "").strip()
     if explicit:
         return [explicit]
 
-    hosts = [
-        "http://127.0.0.1:50054",
-        "http://127.0.0.1:50052",
-    ]
-    # LAN addresses on Blackwell R9700 are only queried if explicitly enabled
-    # to avoid connect-timeout latency on customer networks
+    hosts = list(DEFAULT_ENDPOINTS)
     lan_enabled = (
         os.environ.get("MAGEZERO_ENABLE_LAN", "").strip().lower() in ("1", "true", "yes")
         or os.environ.get("ARENAMCP_LAN_EVAL", "").strip().lower() in ("1", "true", "yes")
     )
     if lan_enabled:
-        hosts.insert(0, "http://10.0.0.10:50054")
-        hosts.insert(1, "http://10.0.0.10:50052")
+        return list(LAN_ENDPOINTS) + hosts
     return hosts
+
+
+def _discovery_budget() -> float:
+    """Overall latency budget (seconds) for one discovery pass."""
+    raw = os.environ.get("MAGEZERO_DISCOVERY_BUDGET", "").strip()
+    try:
+        budget = float(raw) if raw else 2.5
+    except ValueError:
+        budget = 2.5
+    return max(0.1, min(30.0, budget))
 
 
 def _get_auth_headers() -> dict[str, str]:
@@ -50,12 +92,99 @@ def _get_auth_headers() -> dict[str, str]:
     return headers
 
 
+def _finite_float(value: Any) -> float | None:
+    """Convert ``value`` to a finite float, or return None (NaN/Inf/text/bool-ish)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    f = float(value)
+    if not math.isfinite(f):
+        return None
+    return f
+
+
+def _finite_list(value: Any, width: int | None = None) -> list[float] | None:
+    """Validate a (possibly 128-wide) numeric vector; None if malformed."""
+    if not isinstance(value, list):
+        return None
+    if width is not None and len(value) != width:
+        return None
+    out: list[float] = []
+    for item in value:
+        f = _finite_float(item)
+        if f is None:
+            return None
+        out.append(f)
+    return out
+
+
+def _validate_result(
+    data_list: Any,
+    expected: int,
+    width: int,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Validate the decoded response synchronised to the request items.
+
+    Returns (annotated_results, reject_reason). Results are only returned when
+    ALL items are valid: exactly ``expected`` entries, request/response order
+    locked by request_index when present (mismatch = reorder), finite bounded
+    values, and finite ``width``-wide policy heads.
+    """
+    if not isinstance(data_list, list):
+        return [], f"response-not-a-list ({type(data_list).__name__})"
+    if len(data_list) != expected:
+        return [], f"result-count {len(data_list)} != requested {expected}"
+
+    has_request_index = any(
+        isinstance(item, dict) and "request_index" in item for item in data_list
+    )
+    results: list[dict[str, Any]] = []
+    for i, item_data in enumerate(data_list):
+        if not isinstance(item_data, dict):
+            return [], f"result[{i}] not-a-dict ({type(item_data).__name__})"
+        req_idx = item_data.get("request_index", i)
+        if not isinstance(req_idx, int) or isinstance(req_idx, bool):
+            return [], f"result[{i}] invalid request_index"
+        if not 0 <= req_idx < expected:
+            return [], f"result[{i}] request_index {req_idx} out of range 0..{expected - 1}"
+        if has_request_index:
+            if req_idx != i:
+                return [], (
+                    f"result[{i}] out of order: request_index {req_idx} (strict "
+                    "request/response order required)"
+                )
+        value = _finite_float(item_data.get("value"))
+        if value is None:
+            return [], f"result[{i}] value missing/non-finite/non-numeric"
+        if not -1.0 <= value <= 1.0:
+            return [], f"result[{i}] value {value} outside contract [-1.0, 1.0]"
+        policy_player = _finite_list(item_data.get("policy_player"), width)
+        if policy_player is None:
+            return [], f"result[{i}] policy_player missing/not-{width}-wide/non-finite"
+        policy_opponent = _finite_list(item_data.get("policy_opponent"), width)
+        if policy_opponent is None:
+            return [], f"result[{i}] policy_opponent missing/not-{width}-wide/non-finite"
+        win_p = max(0.0, min(1.0, (value + 1.0) / 2.0))
+        results.append(
+            {
+                "request_index": req_idx,
+                "value": value,
+                "win_probability": round(win_p, 3),
+                "policy_player": policy_player,
+                "policy_opponent": policy_opponent,
+                "source": "magezero_nn",
+            }
+        )
+    return results, None
+
+
 class MageZeroClient:
     """Client for MageZero neural net evaluation and position scoring."""
 
     _active_host: str | None = None
     _last_health_check: float = 0.0
     _is_healthy: bool = False
+    _fallback_reason: str | None = None
+    _reject_reason: str | None = None
 
     @classmethod
     def reset_health_cache(cls) -> None:
@@ -63,13 +192,30 @@ class MageZeroClient:
         cls._last_health_check = 0.0
         cls._is_healthy = False
         cls._active_host = None
+        cls._fallback_reason = None
+        cls._reject_reason = None
+
+    @classmethod
+    def last_fallback_reason(cls) -> str | None:
+        """Return why the last discovery pass found no healthy endpoint."""
+        return cls._fallback_reason
+
+    @classmethod
+    def last_reject_reason(cls) -> str | None:
+        """Return why the last response failed validation (None = accepted)."""
+        return cls._reject_reason
 
     @classmethod
     def check_health(cls, timeout: float = 0.5, force: bool = False) -> bool:
-        """Check if any MageZero inference server endpoint is reachable.
+        """Check if any MageZero coaching endpoint is reachable.
 
         Caches positive health checks for 5 seconds and negative health checks
         for 15 seconds to prevent GUI / inference thread blocking.
+
+        All candidates are probed under the overall discovery budget
+        (MAGEZERO_DISCOVERY_BUDGET, default 2.5s); each attempt is additionally
+        capped by ``timeout`` and the remaining budget so the caller never
+        blocks longer than the budget.
         """
         now = time.time()
         if not force:
@@ -85,28 +231,66 @@ class MageZeroClient:
             hosts.remove(cls._active_host)
             hosts.insert(0, cls._active_host)
 
+        if not hosts:
+            cls._is_healthy = False
+            cls._active_host = None
+            cls._last_health_check = now
+            cls._fallback_reason = "no-coaching-endpoint-configured"
+            logger.info("MageZero coaching disabled: no candidate endpoint configured")
+            return False
+
+        budget = _discovery_budget()
+        started = time.monotonic()
+        elapsed = 0.0
         for host in hosts:
+            remaining = budget - elapsed
+            if remaining <= 0.0:
+                cls._is_healthy = False
+                cls._active_host = None
+                cls._last_health_check = now
+                cls._fallback_reason = (
+                    f"discovery-budget-exhausted ({elapsed:.2f}s budget {budget:.2f}s)"
+                )
+                logger.info(
+                    "MageZero coaching unavailable: %s (last fallback reason)",
+                    cls._fallback_reason,
+                )
+                return False
+            attempt_timeout = max(0.05, min(timeout, remaining))
             try:
                 url = f"{host.rstrip('/')}/healthz"
                 req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                with urllib.request.urlopen(req, timeout=attempt_timeout) as resp:
                     if resp.status in (200, 204):
                         cls._active_host = host
                         cls._is_healthy = True
                         cls._last_health_check = now
-                        logger.debug("MageZero inference server online at %s", host)
+                        cls._fallback_reason = None
+                        logger.debug("MageZero coaching server online at %s", host)
                         return True
-            except Exception:
+            except Exception as exc:
+                elapsed = time.monotonic() - started
+                logger.debug("MageZero coaching endpoint %s failed: %s", host, exc)
                 continue
 
+        elapsed = time.monotonic() - started
         cls._is_healthy = False
         cls._active_host = None
         cls._last_health_check = now
+        if elapsed >= budget:
+            cls._fallback_reason = (
+                f"discovery-budget-exhausted ({elapsed:.2f}s budget {budget:.2f}s)"
+            )
+        else:
+            cls._fallback_reason = (
+                f"no-healthy-coaching-endpoint; probed={hosts} ({elapsed:.2f}s)"
+            )
+        logger.info("MageZero coaching unavailable: %s", cls._fallback_reason)
         return False
 
     @classmethod
     def is_available(cls) -> bool:
-        """Return True if MageZero server is currently connected and healthy."""
+        """Return True if a MageZero coaching server is currently connected."""
         return cls.check_health()
 
     @classmethod
@@ -120,8 +304,9 @@ class MageZeroClient:
         if not cls.check_health():
             return None
 
-        hosts = _get_candidate_hosts()
-        host = cls._active_host or (hosts[0] if hosts else "http://127.0.0.1:50054")
+        host = cls._active_host
+        if not host:
+            return None
         url = f"{host.rstrip('/')}/evaluate"
 
         try:
@@ -145,19 +330,24 @@ class MageZeroClient:
             )
 
             with urllib.request.urlopen(req, timeout=0.8) as resp:
-                if resp.status == 200:
-                    data = msgpack.unpackb(resp.read(), raw=False)
-                    if isinstance(data, dict):
-                        raw_val = float(data.get("value", 0.0))
-                        win_p = max(0.02, min(0.98, (raw_val + 1.0) / 2.0))
-                        return {
-                            "value": raw_val,
-                            "win_probability": round(win_p, 3),
-                            "policy_player": data.get("policy_player", []),
-                            "policy_opponent": data.get("policy_opponent", []),
-                            "source": "magezero_nn",
-                        }
+                if resp.status != 200:
+                    cls._reject_reason = f"http-status {resp.status}"
+                    return None
+                data = msgpack.unpackb(resp.read(), raw=False)
+                # normalize single result to a list for shared validation
+                data_list = data if isinstance(data, list) else [data]
+                results, reject_reason = _validate_result(data_list, expected=1, width=128)
+                if reject_reason:
+                    cls._reject_reason = reject_reason
+                    logger.info("MageZero /evaluate rejected: %s", reject_reason)
+                    return None
+                cls._reject_reason = None
+                return results[0]
+        except urllib.error.HTTPError as e:
+            cls._reject_reason = f"http-status {e.code}"
+            logger.debug("MageZero evaluate call failed: %s", e)
         except Exception as e:
+            cls._reject_reason = f"transport-error: {type(e).__name__}"
             logger.debug("MageZero evaluate call failed: %s", e)
 
         return None
@@ -170,19 +360,16 @@ class MageZeroClient:
     ) -> list[dict[str, Any]] | None:
         """Score multiple game states / afterstates in a single batched HTTP request.
 
-        Args:
-            items: List of (game_state, opponent_hand_cards) tuples.
-            model_id: Optional model_id to route evaluation to on multi-model inference servers.
-
-        Returns:
-            List of result dicts each containing 'value', 'win_probability', 'policy_player',
-            or None if request fails.
+        Returns validated results (one per requested item, request/response
+        order locked by request_index) or None if the response fails the
+        contract. ``MageZeroClient.last_reject_reason()`` explains rejections.
         """
         if not items or not cls.check_health():
             return None
 
-        hosts = _get_candidate_hosts()
-        host = cls._active_host or (hosts[0] if hosts else "http://127.0.0.1:50054")
+        host = cls._active_host
+        if not host:
+            return None
         url = f"{host.rstrip('/')}/evaluate"
 
         try:
@@ -200,7 +387,13 @@ class MageZeroClient:
             if not all_indices:
                 return None
 
-            req_dict = {"indices": all_indices, "offsets": offsets}
+            req_dict = {
+                "indices": all_indices,
+                "offsets": offsets,
+                # request/result indices (future versioned protocol); servers
+                # that ignore them are unaffected.
+                "items": [{"request_index": i, "offset": offsets[i]} for i in range(len(items))],
+            }
             if model_id:
                 req_dict["model"] = model_id
             payload = msgpack.packb(req_dict, use_bin_type=True)
@@ -213,25 +406,26 @@ class MageZeroClient:
             )
 
             with urllib.request.urlopen(req, timeout=1.5) as resp:
-                if resp.status == 200:
-                    raw_data = msgpack.unpackb(resp.read(), raw=False)
-                    results: list[dict[str, Any]] = []
-                    data_list = raw_data if isinstance(raw_data, list) else [raw_data]
-                    for item_data in data_list:
-                        if isinstance(item_data, dict):
-                            raw_val = float(item_data.get("value", 0.0))
-                            win_p = max(0.02, min(0.98, (raw_val + 1.0) / 2.0))
-                            results.append(
-                                {
-                                    "value": raw_val,
-                                    "win_probability": round(win_p, 3),
-                                    "policy_player": item_data.get("policy_player", []),
-                                    "policy_opponent": item_data.get("policy_opponent", []),
-                                    "source": "magezero_nn",
-                                }
-                            )
-                    return results
+                if resp.status != 200:
+                    cls._reject_reason = f"http-status {resp.status}"
+                    return None
+                raw_data = msgpack.unpackb(resp.read(), raw=False)
+                if isinstance(raw_data, dict):
+                    raw_data = raw_data.get("results", [])
+                results, reject_reason = _validate_result(
+                    raw_data, expected=len(items), width=128
+                )
+                if reject_reason:
+                    cls._reject_reason = reject_reason
+                    logger.info("MageZero /evaluate rejected: %s", reject_reason)
+                    return None
+                cls._reject_reason = None
+                return results
+        except urllib.error.HTTPError as e:
+            cls._reject_reason = f"http-status {e.code}"
+            logger.debug("MageZero evaluate_batch call failed: %s", e)
         except Exception as e:
+            cls._reject_reason = f"transport-error: {type(e).__name__}"
             logger.debug("MageZero evaluate_batch call failed: %s", e)
 
         return None
