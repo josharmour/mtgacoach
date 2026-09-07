@@ -66,20 +66,30 @@ def outcome_filter(rows: list[dict], mode: str) -> tuple[list[dict], int]:
 
 
 def _dedupe_key(row: dict) -> tuple:
-    """Build an order-independent deduplication key for one decision row."""
+    """Build an order-independent deduplication key for one decision row.
+    Includes full battlefield state with multiplicities, opponent board, and life totals."""
     menu = tuple(row.get("menu", []))
     hand = tuple(row.get("hand", []))
-    bf = row.get("battlefield_self", [])
-    # frozenset of (name, tapped) tuples so order & dupes don't matter
-    bf_key = frozenset((p.get("name", ""), bool(p.get("tapped", False))) for p in bf)
+
+    def _bf_tuple(bf_list):
+        items = []
+        for p in (bf_list or []):
+            if isinstance(p, dict):
+                items.append((p.get("name", ""), bool(p.get("tapped", False))))
+            else:
+                items.append((str(p), False))
+        return tuple(sorted(items))
+
+    bf_self = _bf_tuple(row.get("battlefield_self", []))
+    bf_opp = _bf_tuple(row.get("battlefield_opp", []))
+    active_life = row.get("active_life", 20)
+    opp_life = row.get("opp_life", 20)
     chosen = row.get("chosen", "")
-    return (menu, hand, bf_key, chosen)
+    return (menu, hand, bf_self, bf_opp, active_life, opp_life, chosen)
 
 
 def dedupe(rows: list[dict]) -> tuple[list[dict], int]:
     """Deduplicate rows by decision context key.
-
-    Key = ``(tuple(menu), tuple(hand), frozenset(battlefield name+tapped), chosen)``.
 
     Uses order-preserving dedup: the **first** occurrence of each key is kept,
     which matters when rows have the same context but different MCTS counts
@@ -228,75 +238,164 @@ def pass_rate_tripwire(rows: list[dict], max_frac: float = 0.40) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _game_id(row: dict) -> str:
-    """Extract the game identifier from a row."""
-    gid = row.get("game_id", "")
+def canonical_game_id(row: dict) -> str:
+    """Return a canonical game ID that is stable across file path renames.
+
+    If explicit ``canonical_game_id`` is present, return it.
+    If ``source_hash`` is present and ``game_id`` contains a filename prefix (<log_name>:<rest>),
+    replace the volatile log filename with ``source:<source_hash[:16]>:<rest>``.
+    If ``game_id`` is missing/empty, return "". Missing game IDs must never be
+    assigned a volatile session:turn pseudo-key.
+    """
+    if row.get("canonical_game_id"):
+        return str(row["canonical_game_id"])
+    gid = row.get("game_id")
     if not gid:
-        # fallback: use session + turn as a pseudo-key
-        session = row.get("session", "")
-        turn = row.get("turn", 0)
-        gid = f"{session}:turn_{turn}"
-    return gid
+        return ""
+    gid_str = str(gid).strip()
+    if not gid_str:
+        return ""
+    source_hash = row.get("source_hash") or row.get("_source_hash")
+    if source_hash and ":" in gid_str:
+        parts = gid_str.split(":", 1)
+        return f"source:{source_hash[:16]}:{parts[1]}"
+    return gid_str
+
+
+def _game_id(row: dict) -> str:
+    """Extract the canonical game identifier from a row."""
+    return canonical_game_id(row)
+
+
+def assign_game_split(
+    gid: str,
+    seed: int = 7,
+    fracs: tuple[float, float, float] = (0.90, 0.05, 0.05),
+) -> str:
+    """Deterministically assign a canonical game ID to a split using hashing.
+
+    Independent of corpus membership: adding or removing other games never
+    changes the split assignment of this game.
+    """
+    train_frac, val_frac, test_frac = fracs
+    h = hashlib.sha256(f"seed:{seed}:{gid}".encode("utf-8")).digest()
+    val = int.from_bytes(h[:8], "big") / float(0xFFFFFFFFFFFFFFFF)
+    if val < train_frac:
+        return "train"
+    elif val < train_frac + val_frac:
+        return "val"
+    else:
+        return "test"
 
 
 def split_by_game(
     rows: list[dict],
     seed: int = 7,
     fracs: tuple[float, float, float] = (0.90, 0.05, 0.05),
+    method: str = "hash",
+    split_from: dict[str, str] | None = None,
 ) -> dict[str, list[dict]]:
     """Split rows by *game_id* (never row-level) to prevent train/val leakage.
 
-    All rows sharing the same ``game_id`` go to the same split.  The
-    assignment is deterministic given *seed* and stable across runs.
+    All rows sharing the same ``canonical_game_id`` go to the same split.
+    Under ``method="hash"`` (default), assignment is deterministic given *seed*
+    and independent of current corpus membership: appending games preserves all
+    existing split assignments.
+    Missing game IDs are quarantined into a 'quarantine' split rather than
+    being assigned to train/val/test via pseudo-keys.
 
     Parameters
     ----------
     rows:
         Decision records.
     seed:
-        PRNG seed for deterministic shuffling of game IDs.
+        PRNG seed for deterministic hashing or shuffling of game IDs.
     fracs:
         (train, val, test) fractions.  Must sum to 1.0.
+    method:
+        "hash" (default, stable across corpus growth) or "legacy" / "shuffle"
+        (for migration/backward compatibility).
+    split_from:
+        Optional mapping of {game_id: split_name} inherited from a prior manifest.
 
     Returns
     -------
-    ``{"train": [...], "val": [...], "test": [...]}``.
-    Any split whose cumulative count rounds to zero is dropped from the result.
+    ``{"train": [...], "val": [...], "test": [...]}`` (and optionally ``"quarantine": [...]``).
     """
     if len(fracs) != 3 or abs(sum(fracs) - 1.0) > 1e-9:
         raise ValueError(f"fracs must sum to 1.0, got {fracs}")
     train_frac, val_frac, test_frac = fracs
 
-    # Group rows by game_id
+    # Group rows by canonical game_id
     game_groups: dict[str, list[dict]] = {}
+    quarantined: list[dict] = []
     for r in rows:
-        gid = _game_id(r)
+        gid = canonical_game_id(r)
+        if not gid:
+            quarantined.append(r)
+            continue
         game_groups.setdefault(gid, []).append(r)
 
-    game_ids = sorted(game_groups.keys())
-
-    # Deterministic shuffle
-    rng = __import__("random").Random(seed)
-    rng.shuffle(game_ids)
-
-    n_games = len(game_ids)
-    n_train = max(0, int(n_games * train_frac))
-    n_val = max(0, int(n_games * val_frac))
-    # test gets the remainder to avoid off-by-one due to rounding
-    remainder = n_games - n_train - n_val
-    n_test = max(0, remainder)
-
     result: dict[str, list[dict]] = {}
-    splits = [("train", n_train), ("val", n_val), ("test", n_test)]
-    pos = 0
-    for name, count in splits:
-        if count == 0:
-            continue
-        batch: list[dict] = []
-        for gid in game_ids[pos : pos + count]:
-            batch.extend(game_groups[gid])
-        result[name] = batch
-        pos += count
+    if quarantined:
+        result["quarantine"] = quarantined
+
+    if method in ("legacy", "shuffle"):
+        game_ids = sorted(game_groups.keys())
+        rng = __import__("random").Random(seed)
+        rng.shuffle(game_ids)
+
+        n_games = len(game_ids)
+        n_train = max(0, int(n_games * train_frac))
+        n_val = max(0, int(n_games * val_frac))
+        # test gets the remainder to avoid off-by-one due to rounding
+        remainder = n_games - n_train - n_val
+        n_test = max(0, remainder)
+
+        splits = [("train", n_train), ("val", n_val), ("test", n_test)]
+        pos = 0
+        for name, count in splits:
+            if count == 0:
+                continue
+            batch: list[dict] = []
+            for gid in game_ids[pos : pos + count]:
+                batch.extend(game_groups[gid])
+            result[name] = batch
+            pos += count
+
+        return result
+
+    # method == "hash"
+    train_rows: list[dict] = []
+    val_rows: list[dict] = []
+    test_rows: list[dict] = []
+
+    for gid in sorted(game_groups.keys()):
+        group = game_groups[gid]
+        if split_from and gid in split_from:
+            sname = split_from[gid]
+        else:
+            sname = assign_game_split(gid, seed=seed, fracs=fracs)
+
+        if sname == "train":
+            train_rows.extend(group)
+        elif sname == "val":
+            val_rows.extend(group)
+        elif sname == "test":
+            test_rows.extend(group)
+        else:
+            result.setdefault(sname, []).extend(group)
+
+    if train_rows or train_frac > 0:
+        result["train"] = train_rows
+    if val_rows or val_frac > 0:
+        result["val"] = val_rows
+    if test_rows or test_frac > 0:
+        result["test"] = test_rows
+
+    for name in ("train", "val", "test"):
+        if name in result and not result[name] and ((name == "train" and train_frac == 0) or (name == "val" and val_frac == 0) or (name == "test" and test_frac == 0)):
+            del result[name]
 
     return result
 

@@ -18,8 +18,11 @@ Rule
 # R2 — attackers/blockers rows are OUT OF SCOPE:
     decision_kind := priority only; attackers/blockers are skipped and counted.
 
-# R3 — unknown-outcome rows are skipped and counted:
-    The bridge corpus must only contain resolved games.
+# R3 — outcome eligibility follows --outcome:
+    mode "all"      — unknown-outcome rows are KEPT as pure policy records:
+                      outcome stays "unknown" and the label is the menu pick;
+                      no value/outcome supervision is attached.
+    mode "won_only" — unknown-outcome rows are skipped and counted.
 
 # R4 — answer indexing:
     Answers are {"pick": N} where N is the 1-based index of the human's
@@ -306,19 +309,22 @@ def _build_card(
     seat: int,
     tapped: bool,
     instance_id: int,
-    turn: int = -1,
+    turn: int | None = None,
     attacking: bool = False,
     blocking: bool = False,
+    turn_known: bool = True,
 ) -> dict:
     """One battlefield card entry from MageZero data.
 
-    ``turn_entered_battlefield`` is set to the CURRENT turn: the entry turn is
-    not recoverable from MZ logs, and with untyped cards the field's only
-    prompt-visible effect is the planner formatter's recent-ETB gate on
-    rendering oracle text (long-resident cards render flags only). Current
-    turn makes the attached oracle text actually reach the prompt; no SS flag
-    or summoning-sickness inference can fire because those need a creature
-    type line, which MZ cards never carry.
+    ``turn_entered_battlefield``: MZ logs do not establish when a permanent
+    entered the battlefield, so the value is OMITTED (``None`` / key absent)
+    unless the caller can prove otherwise — never defaulted to the current
+    turn (the old behaviour fabricated a fresh-ETB fact, which made the
+    formatter render every permanent as long-resident and decided the
+    recent-ETB oracle gate from a simulated fact). Cards whose entry turn is
+    known from an authoritative source are marked ``_etb_turn_known=True``;
+    for everything else the terminology is "assumed-present/long-resident",
+    not "established" — raw facts render without the annotation.
 
     ``attacking``/``blocking`` markers are honoured for the LOCAL seat only,
     exactly like magezero_combat_micro.build_combat_record: an
@@ -335,25 +341,33 @@ def _build_card(
         "owner_seat_id": seat,
         "controller_seat_id": seat,
         "is_tapped": tapped,
-        "turn_entered_battlefield": turn,
     }
-    if seat == LOCAL_SEAT:
-        if attacking:
-            card["is_attacking"] = True
-        if blocking:
-            card["is_blocking"] = True
+    if turn_known:
+        card["turn_entered_battlefield"] = turn
+        card["_etb_turn_known"] = True
+    card["_legacy_render_mode"] = True
+    if attacking:
+        card["is_attacking"] = True
+    if blocking:
+        card["is_blocking"] = True
     return card
 
 
 def _build_hand_card(name: str) -> dict:
-    """One hand card entry from MageZero data."""
+    """One hand card entry from MageZero data.
+
+    ``mana_cost`` and ``cmc`` are omitted when no authoritative card source
+    resolves the name: mana_cost=None is a fact statement about the entity
+    that has it, and absent facts stay absent (task 11) — the legacy default
+    mana_cost=""/cmc=0.0 asserted zero CMC, which the formatter's castability
+    logic can turn into a fabricated "[OK,X=0]" tag.
+    """
     tl = _resolve_type_line(name)
     return {
         "instance_id": 0,
         "name": name,
         "type_line": tl,
-        "mana_cost": "",
-        "cmc": 0.0,
+        "mana_cost": None,
         "oracle_text": _lookup_oracle(name),
     }
 
@@ -364,6 +378,27 @@ def build_game_state(row: dict) -> dict:
     The output shape matches what build_user_message (→_build_action_prompt
     →_format_game_context) expects: players, turn, battlefield, hand, stack,
     graveyard, legal_actions.
+
+    Truth representation (task 11) — the MZ log establishes only: the actor's
+    life, the opponent's life, the actor's hand cards, both battlefield
+    permanents (name + tapped flag), the current turn number, the phase, the
+    menu, the chosen action, and the MCTS counts. Everything else is carried
+    as unknown/omitted, never as a fabricated fact:
+
+    * ``turn.active_player`` / ``turn.priority_player``: ``None`` (unknown) —
+      the row does not establish who is active or who holds priority; the
+      deployed formatter renders Opinionated defaults ("T<n> YOU | Pri:You")
+      from the *assumption*, clearly labelled.
+    * ``_render_unknown`` declares stack / active_player / opponent hand /
+      ETB-entry turns as unestablished so the formatter can annotate (or, in
+      the strict footer, refuse to render) rather than assert.
+    * opponent ``hand_size``: omitted (no key) — the log exposes no opponent
+      hand data at all; no hand-size fact is asserted anywhere.
+    * battlefield cards: ETB turn omitted (see _build_card) — the log does
+      not establish entry turns, so no fresh-ETB / summoning-sickness fact
+      is asserted.
+    * hand cards carry ``mana_cost=None`` when no authoritative card source
+      resolves the name, instead of asserting cost ""/CMC 0.
     """
     turn_num = row.get("turn", 0)
     battlefield: list[dict] = []
@@ -375,7 +410,7 @@ def build_game_state(row: dict) -> dict:
                 LOCAL_SEAT,
                 card.get("tapped", False),
                 next_id,
-                turn=turn_num,
+                turn_known=False,
                 attacking=bool(card.get("attacking")),
                 blocking=bool(card.get("blocking")),
             )
@@ -388,7 +423,9 @@ def build_game_state(row: dict) -> dict:
                 OPP_SEAT,
                 card.get("tapped", False),
                 1000 + next_id,
-                turn=turn_num,
+                turn_known=False,
+                attacking=bool(card.get("attacking")),
+                blocking=bool(card.get("blocking")),
             )
         )
         next_id += 1
@@ -421,21 +458,33 @@ def build_game_state(row: dict) -> dict:
                 "is_local": False,
                 "life_total": row.get("opp_life", 20),
                 "lands_played": 0,
-                "hand_size": 0,
+                # Task 11: opponent hand size is NOT established by the MZ
+                # log — omit the field instead of asserting hand_size=0.
             },
         ],
         "turn": {
             "turn_number": row.get("turn", 0),
             "phase": phase,
             "step": "",
-            "active_player": LOCAL_SEAT,
-            "priority_player": LOCAL_SEAT,
+            # Task 11: the MZ row does not establish who is active or who
+            # holds priority (the actor acted, but the render must not claim
+            # local priority). None renders as UNKNOWN.
+            "active_player": None,
+            "priority_player": None,
         },
         "battlefield": battlefield,
         "hand": hand,
         "stack": [],
         "graveyard": [],
         "legal_actions": [],
+        # Task 11 observation-fact declaration: consumed by
+        # CoachEngine._format_game_context legacy-render opinions.
+        "_render_unknown": {
+            "stack": True,
+            "active_player": True,
+            "turn_entered_battlefield": True,
+            "opponent_hand_size": True,
+        },
     }
 
 
@@ -457,17 +506,32 @@ def _resolve_answer(menu: list[str], chosen: str) -> int | None:
 # ---------------------------------------------------------------------------
 
 
-def build_record(row: dict) -> tuple[dict | None, str]:
-    """Single MageZero row → training record, or (None, drop_reason)."""
+def build_record(row: dict, outcome_mode: str = "all") -> tuple[dict | None, str]:
+    """Single MageZero row → training record, or (None, drop_reason).
+
+    ``outcome_mode`` selects outcome handling (default "all", matching the
+    pipeline's filter default):
+
+    * ``"all"`` — an unknown-outcome row is NOT dropped. It is kept as a pure
+      policy record: ``meta["outcome"]`` stays the literal ``"unknown"`` and
+      ``meta["policy_label"]`` is ``"menu.pick"`` (supervision target is the
+      menu choice only — no value/outcome label is attached where no terminal
+      state exists). The row is never relabeled won/lost.
+    * ``"won_only"`` — unknown-outcome rows are dropped and counted with a
+      distinct reason (``outcome_unknown``), mirroring the filter stage.
+    """
+    if outcome_mode not in ("all", "won_only"):
+        raise ValueError(f"Unknown outcome mode: {outcome_mode!r}")
+
     # R2: skip attackers/blockers — handled by build_combat_decisions.py
     kind = row.get("decision_kind", "priority")
     if kind not in ("priority",):
         return None, f"decision_kind_{kind}"
 
-    # R3: unknown-outcome rows skipped
+    # R3: outcome eligibility is outcome_mode-dependent, not unconditional.
     outcome = row.get("outcome", "unknown")
-    if outcome == "unknown":
-        return None, "outcome_unknown"
+    if outcome_mode == "won_only" and outcome != "won":
+        return None, f"outcome_{outcome}"
 
     game_state = build_game_state(row)
     menu = row.get("menu", [])
@@ -486,7 +550,12 @@ def build_record(row: dict) -> tuple[dict | None, str]:
 
     # Build user message via production formatter (build_user_message calls
     # ActionPlanner._build_action_prompt → CoachEngine._format_game_context).
-    user = sanitize_user(G.build_user_message(game_state, menu))
+    # Task 11: legacy_render=True (the explicit legacy-render mode) makes the
+    # shared production formatter omit unestablished facts (stack/priority/
+    # ETB/opponent hand) or label assumed values, instead of asserting
+    # fabricated defaults. legacy_render=False (strict fail-hard) would abort
+    # on any MZ state and exists for validators, not record builders.
+    user = sanitize_user(G.build_user_message(game_state, menu, legacy_render=True))
 
     # R1: the guard that killed prior runs — assert every record.
     if user.count("Legal: (pick by number)") != 1:
@@ -495,11 +564,13 @@ def build_record(row: dict) -> tuple[dict | None, str]:
     # Build meta
     session = row.get("session", "")
     actor = row.get("actor", "")
+    policy_label = "menu.pick" if outcome == "unknown" else "outcome.menu.pick"
     meta = {
         "game_id": row.get("game_id", ""),
         "turn": row.get("turn", 0),
         "phase": row.get("phase", ""),
         "outcome": outcome,
+        "policy_label": policy_label,
         "actor": actor,
         "session": session,
         "decision_kind": kind,
@@ -622,6 +693,14 @@ def main(argv: list[str] | None = None) -> int:
         "--out", dest="output", type=Path, required=True, help="Path to write training records JSONL"
     )
     parser.add_argument("--report", action="store_true", help="Print build report to stderr on completion")
+    parser.add_argument(
+        "--outcome",
+        choices=("all", "won_only"),
+        default="all",
+        help="Outcome handling ('all' keeps unknown-outcome rows as pure policy "
+        "records labeled menu.pick; 'won_only' drops them). Default: all. "
+        "Matches run_wp3_pipeline.py --outcome.",
+    )
     args = parser.parse_args(argv)
 
     t0 = time.time()
@@ -641,7 +720,7 @@ def main(argv: list[str] | None = None) -> int:
     drops: Counter = Counter()
 
     for row in raw:
-        record, reason = build_record(row)
+        record, reason = build_record(row, outcome_mode=args.outcome)
         if record is None:
             drops[reason] += 1
             continue

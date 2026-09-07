@@ -81,6 +81,11 @@ class CardInfo:
     arena_id: int = 0
     scryfall_uri: str = ""
     source: str = ""  # Which database provided this result
+    keywords: list[str] = field(default_factory=list)
+    produced_mana: list[str] = field(default_factory=list)
+    color_identity: list[str] = field(default_factory=list)
+    related_tokens: list[str] = field(default_factory=list)
+    legalities: dict[str, str] = field(default_factory=dict)
 
 
 @runtime_checkable

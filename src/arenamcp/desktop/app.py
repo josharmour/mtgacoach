@@ -235,13 +235,26 @@ def main() -> int:
 
     # Audit blocker #5: never gate the main window on the setup splash —
     # its own failure text says "open the Repair tab", which only exists
-    # inside MainWindow. MainWindow degrades gracefully when the runtime
-    # is unprovisioned, and the Repair tab is the recovery surface.
-    _run_first_run_setup(app)
-
     window = MainWindow()
     window.show()
-    return app.exec()
+    exit_code = app.exec()
+    if exit_code == RESTART_EXIT_CODE:
+        relaunch_application()
+    return exit_code
+
+
+def relaunch_application() -> None:
+    """Relaunch the desktop application process cleanly."""
+    _release_single_instance_lock()
+    python = sys.executable
+    _write_log(f"relaunching desktop process: {python} with argv={sys.argv}")
+    if sys.platform == "win32":
+        import subprocess
+
+        subprocess.Popen([python] + sys.argv)
+        sys.exit(0)
+    else:
+        os.execv(python, [python] + sys.argv)
 
 
 def _run_first_run_setup(app) -> bool:

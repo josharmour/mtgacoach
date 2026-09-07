@@ -26,10 +26,28 @@ class _SAPIVoice:
     _SAY_MIN_WPM = 90
     _SAY_MAX_WPM = 450
 
+    @property
+    def _is_darwin(self) -> bool:
+        try:
+            from arenamcp import standalone
+
+            return getattr(standalone.sys, "platform", sys.platform) == "darwin"
+        except Exception:
+            return sys.platform == "darwin"
+
+    @staticmethod
+    def _get_popen():
+        try:
+            from arenamcp import standalone
+
+            return getattr(standalone.subprocess, "Popen", subprocess.Popen)
+        except Exception:
+            return subprocess.Popen
+
     def __init__(self):
         self._proc: subprocess.Popen | None = None
         self._muted = False
-        self._is_darwin = sys.platform == "darwin"
+        self._speed = 1.0
         self._say_voice: str | None = None
         self._say_rate: int = self._SAY_BASE_WPM
         if self._is_darwin:
@@ -42,6 +60,7 @@ class _SAPIVoice:
 
                 settings = standalone.get_settings()
                 speed = float(settings.get("voice_speed", 1.0) or 1.0)
+                self._speed = speed
                 # Optional passthrough for a native macOS voice name
                 # (e.g. "Samantha"); Kokoro voice IDs don't map to `say`.
                 voice = settings.get("macos_voice") or settings.get("say_voice")
@@ -49,7 +68,7 @@ class _SAPIVoice:
                     self._say_voice = str(voice)
             except Exception:
                 pass
-            self._say_rate = self._say_wpm(speed)
+            self._say_rate = self._say_wpm(self._speed)
 
     @classmethod
     def _say_wpm(cls, speed: float) -> int:
@@ -93,7 +112,7 @@ class _SAPIVoice:
         cmd = ["say", "-r", str(self._say_rate)]
         if self._say_voice:
             cmd += ["-v", self._say_voice]
-        proc = subprocess.Popen(
+        proc = self._get_popen()(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
@@ -115,7 +134,7 @@ class _SAPIVoice:
             "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
             f"$s.Speak('{safe}')"
         )
-        return subprocess.Popen(
+        return self._get_popen()(
             ["powershell", "-NoProfile", "-Command", cmd],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -132,9 +151,26 @@ class _SAPIVoice:
                 pass
         self._proc = None
 
+    SPEED_PRESETS = [0.8, 1.0, 1.2, 1.4, 1.6]
+
     @property
     def is_speaking(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
+
+    @property
+    def speed(self) -> float:
+        return self._speed
+
+    def cycle_speed(self) -> float:
+        try:
+            idx = self.SPEED_PRESETS.index(self._speed)
+            idx = (idx + 1) % len(self.SPEED_PRESETS)
+        except ValueError:
+            idx = 1
+        self._speed = self.SPEED_PRESETS[idx]
+        if self._is_darwin:
+            self._say_rate = self._say_wpm(self._speed)
+        return self._speed
 
     def toggle_mute(self) -> bool:
         self._muted = not self._muted
@@ -157,6 +193,7 @@ class _PipeVoiceOutput:
         ("am_michael", "Michael (Male)"),
         ("am_eric", "Eric (US Male)"),
     ]
+    SPEED_PRESETS = [0.8, 1.0, 1.2, 1.4, 1.6]
 
     def __init__(self, ui: Any, inner: Any = None):
         self._ui = ui
@@ -175,6 +212,27 @@ class _PipeVoiceOutput:
         if self._inner is not None and hasattr(self._inner, "current_voice"):
             return self._inner.current_voice
         return self._VOICES[self._voice_index]
+
+    @property
+    def speed(self) -> float:
+        if self._inner is not None and hasattr(self._inner, "speed"):
+            return float(self._inner.speed)
+        return self._speed
+
+    def cycle_speed(self) -> float:
+        if self._inner is not None and hasattr(self._inner, "cycle_speed"):
+            return self._inner.cycle_speed()
+        try:
+            idx = self.SPEED_PRESETS.index(self._speed)
+            idx = (idx + 1) % len(self.SPEED_PRESETS)
+        except ValueError:
+            idx = 1
+        self._speed = self.SPEED_PRESETS[idx]
+        from arenamcp.settings import get_settings
+
+        with contextlib.suppress(Exception):
+            get_settings().set("voice_speed", self._speed)
+        return self._speed
 
     @property
     def muted(self) -> bool:

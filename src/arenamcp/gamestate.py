@@ -182,6 +182,9 @@ class GameState(_GameStateAnnotationsMixin):
         "legal_actions_raw": list,
         # Match tracking
         "match_id": None,
+        "opponent_name": "",
+        "format_name": "",
+        "event_id": "",
         # Deck list
         "deck_cards": list,
         # Annotation-derived event tracking
@@ -205,6 +208,10 @@ class GameState(_GameStateAnnotationsMixin):
         "sideboard_cards": list,
         # Pre-warmed card name cache (grp_id -> name)
         "_card_name_cache": dict,
+        # Commander & Format tracking
+        "commander_grp_ids": list,
+        "commander_casts": dict,
+        "format_profile": None,
     }
 
     def _apply_field_defaults(self) -> None:
@@ -406,6 +413,8 @@ class GameState(_GameStateAnnotationsMixin):
                 "action_history": copy.deepcopy(self.action_history),
                 "sideboard_cards": list(self.sideboard_cards),
                 "last_game_result": self.last_game_result,
+                "commander_grp_ids": list(self.commander_grp_ids),
+                "commander_casts": dict(self.commander_casts),
             }
 
     def restore_checkpoint(self, checkpoint: dict[str, Any]) -> bool:
@@ -420,6 +429,14 @@ class GameState(_GameStateAnnotationsMixin):
         try:
             with self._state_lock:
                 self._apply_field_defaults()
+                self.commander_grp_ids = [
+                    _coerce_int(gid, 0) for gid in checkpoint.get("commander_grp_ids", []) if _coerce_int(gid, 0)
+                ]
+                self.commander_casts = {
+                    _coerce_int(gid, 0): _coerce_int(casts, 0)
+                    for gid, casts in (checkpoint.get("commander_casts") or {}).items()
+                    if _coerce_int(gid, 0)
+                }
                 self.turn_info = TurnInfo()
                 self._raw_gre_sequence = 0
                 self.last_game_result = checkpoint.get("last_game_result")
@@ -1098,6 +1115,9 @@ class GameState(_GameStateAnnotationsMixin):
 
         return {
             "match_id": self.match_id,
+            "opponent_name": self.opponent_name,
+            "format_name": self.format_name,
+            "event_id": self.event_id,
             "local_seat_id": self.local_seat_id,
             "opponent_seat_id": opponent_seat,
             "turn_info": self.turn_info.to_dict(),
@@ -1111,7 +1131,10 @@ class GameState(_GameStateAnnotationsMixin):
                 "stack": [obj.to_dict() for obj in self.stack],
                 "graveyard": [obj.to_dict() for obj in self.graveyard],
                 "exile": [obj.to_dict() for obj in self.get_objects_in_zone(ZoneType.EXILE)],
-                "command": [obj.to_dict() for obj in self.command],
+                "command": [
+                    dict(obj.to_dict(), commander_casts=self.commander_casts.get(obj.grp_id, 0))
+                    for obj in self.command
+                ],
                 "library_count": len(self.get_objects_in_zone(ZoneType.LIBRARY, self.local_seat_id))
                 if self.local_seat_id
                 else "?",
@@ -1140,6 +1163,10 @@ class GameState(_GameStateAnnotationsMixin):
             "engine_busy": copy.deepcopy(self.engine_busy_flags) if self.engine_busy_flags else {},
             "action_history": list(self.action_history[-20:]) if self.action_history else [],
             "sideboard_cards": list(self.sideboard_cards) if self.sideboard_cards else [],
+            "commander_grp_ids": list(self.commander_grp_ids),
+            "commander_casts": dict(self.commander_casts),
+            "format": self.format_profile.format_summary() if getattr(self, "format_profile", None) else "",
+            "format_profile": self.format_profile.__dict__ if getattr(self, "format_profile", None) else None,
         }
 
     def publish_snapshot(self) -> None:
@@ -1206,8 +1233,12 @@ class GameState(_GameStateAnnotationsMixin):
                     enriched.setdefault("oracle_text", "")
             else:
                 enriched.setdefault("name", "Unknown")
-                enriched.setdefault("type_line", "")
-                enriched.setdefault("oracle_text", "")
+            if "commander_casts" in data:
+                enriched["commander_casts"] = data["commander_casts"]
+            elif hasattr(self, "commander_grp_ids") and grp_id in self.commander_grp_ids:
+                enriched["commander_casts"] = getattr(self, "commander_casts", {}).get(grp_id, 0)
+            elif hasattr(self, "commander_casts") and grp_id in self.commander_casts:
+                enriched["commander_casts"] = self.commander_casts[grp_id]
             return enriched
 
         zones = raw.get("zones", {})
@@ -1475,7 +1506,18 @@ class GameState(_GameStateAnnotationsMixin):
         if "grpId" in obj_data:
             grp_id = obj_data["grpId"]
         if "zoneId" in obj_data:
-            zone_id = obj_data["zoneId"]
+            new_zone_id = obj_data["zoneId"]
+            if existing_obj and existing_obj.zone_id != new_zone_id:
+                old_zone = self.zones.get(existing_obj.zone_id)
+                new_zone = self.zones.get(new_zone_id)
+                old_type = getattr(old_zone, "zone_type", getattr(old_zone, "type", None))
+                new_type = getattr(new_zone, "zone_type", getattr(new_zone, "type", None))
+                if old_type == ZoneType.COMMAND and new_type in (ZoneType.STACK, ZoneType.BATTLEFIELD):
+                    cid = grp_id or existing_obj.grp_id
+                    if cid:
+                        self.commander_casts[cid] = self.commander_casts.get(cid, 0) + 1
+                        logger.info("Commander %s cast from command zone (total: %d)", cid, self.commander_casts[cid])
+            zone_id = new_zone_id
         if "ownerSeatId" in obj_data:
             owner_seat_id = obj_data["ownerSeatId"]
         if "controllerSeatId" in obj_data:

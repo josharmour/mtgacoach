@@ -8,7 +8,7 @@
 - **BepInEx Plugin (`bepinex-plugin/MtgaCoachBridge/`)**: C# plugin injected into MTGA for direct GRE state access, action submission, and automation.
 - **Proxy Server (`website/`)**: FastAPI gateway at `api.mtgacoach.com` routing subscriber LLM requests, tracking usage, and providing an eval dashboard.
 - **LLM Evaluation Harness (`tools/eval/`)**: Harness for scoring local model quality (mulligans, turn-actions, replays) using real play prompts.
-- **Sister RL Engine (`~/repos/magezero/`)**: Independent AlphaZero-style MCTS self-play training pipeline running in XMage on `blackwell` (`10.0.0.10`). Refer to `~/repos/magezero/AGENTS.md` and `~/repos/magezero/docs/PLAN_OF_RECORD.md` for RL telemetry and status.
+- **Sister RL Engine (`~/repos/magezero/`)**: Independent AlphaZero-style MCTS self-play training pipeline running in XMage on `blackwell` (`10.0.0.10`). Run `2026-08-16_00-24-17` active at Gen 13 (attempt `recoveryB20260906_gen13`). Telemetry via `python3 ~/repos/magezero/tools/rl_status.py`. Refer to `~/repos/magezero/AGENTS.md`, `~/repos/magezero/memory/recovery-status-20260906.md`, and `~/repos/magezero/docs/PLAN_OF_RECORD.md`.
 
 ## Core Direction & Architecture
 

@@ -568,6 +568,28 @@ def _handle_match_created(payload: dict) -> None:
         game_state.set_local_seat_id(seat_id, source=2)
         logger.info(f"Captured local seat ID {seat_id} from match message")
 
+    # ── Match format and event tracking ──
+    event_id = (
+        game_room_config.get("eventId")
+        or room_info.get("eventId")
+        or event_payload.get("eventId")
+        or payload.get("eventId")
+        or ""
+    )
+    if event_id:
+        game_state.event_id = str(event_id)
+        clean_fmt = str(event_id).replace("_", " ").replace("Play ", "").strip()
+        game_state.format_name = clean_fmt
+
+    # ── Opponent name tracking ──
+    for participant in participants:
+        p_seat = participant.get("systemSeatId")
+        p_user = participant.get("userId")
+        p_name = participant.get("playerName") or participant.get("screenName") or participant.get("userName")
+        if p_name and ((seat_id is not None and p_seat != seat_id) or (local_user_id and p_user != local_user_id)):
+            game_state.opponent_name = str(p_name)
+            break
+
     # ── Match ID tracking ──
     match_id = (
         event_payload.get("matchId")
@@ -1488,6 +1510,9 @@ def get_game_state() -> dict[str, Any]:
 
     response = {
         "match_id": snap.get("match_id"),
+        "opponent_name": snap.get("opponent_name", ""),
+        "format_name": snap.get("format_name", ""),
+        "event_id": snap.get("event_id", ""),
         "turn": turn,
         "players": players,
         "battlefield": battlefield,

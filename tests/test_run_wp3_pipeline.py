@@ -42,7 +42,7 @@ def test_leak_scan_ignores_menu_numbering():
     """THE regression: a menu index equal to an MCTS count is not a leak."""
     # MCTS count 31 exists, and the menu happens to have 31 entries.
     raw = [{"mcts_counts": {"Pass": 31, "Play Island": 700}}]
-    menu_lines = "\n".join(f"  {i}. Option {i}" for i in range(1, 32))
+    menu_lines = "\n".join(f"  {i}. Pass" if i == 31 else f"  {i}. Option" for i in range(1, 32))
     rendered = {"test": [_record(f"Legal actions:\n{menu_lines}\n")]}
     P.stage_leak_scan(rendered, raw)  # must not raise
 

@@ -279,6 +279,23 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
             logger.info(f"Captured deck list from ConnectResp: {len(deck_cards)} cards")
         if sideboard_cards:
             game_state.sideboard_cards = sideboard_cards
+        if commander_cards:
+            game_state.commander_grp_ids = commander_cards
+            logger.info(f"Captured commander from ConnectResp: {commander_cards}")
+
+        # Update format profile on game_state
+        try:
+            from arenamcp.format_profile import detect_format_profile
+
+            game_state.format_profile = detect_format_profile(
+                {},
+                event_name=getattr(game_state, "event_name", ""),
+                deck_cards=deck_cards,
+                commander_grp_ids=commander_cards,
+            )
+            logger.info(f"Format classified: {game_state.format_profile.format_summary()}")
+        except Exception as e:
+            logger.debug(f"Failed to detect format profile in ConnectResp: {e}")
 
         all_match_cards = list(set(deck_cards + sideboard_cards + commander_cards))
         if all_match_cards:
@@ -306,6 +323,8 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         logger.info(f"Captured Decision: Declare Attackers ({len(attacker_names)} legal)")
         game_state.pending_decision = "Declare Attackers"
         game_state.decision_timestamp = _time.time()
+        game_state.legal_actions = [f"Attack with: {name}" for name in attacker_names] + ["Done (confirm attackers)"]
+        game_state.legal_actions_raw = legal_attackers
         game_state.decision_context = {
             "type": "declare_attackers",
             "legal_attackers": attacker_names,
@@ -358,6 +377,8 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         )
         game_state.pending_decision = "Declare Blockers"
         game_state.decision_timestamp = _time.time()
+        game_state.legal_actions = [f"Block with: {name}" for name in blocker_names] + ["Done (confirm blockers)"]
+        game_state.legal_actions_raw = legal_blockers
         game_state.decision_context = {
             "type": "declare_blockers",
             "legal_blockers": blocker_names,
@@ -794,7 +815,7 @@ def _handle_actions_available(game_state: "GameState", msg: dict) -> bool:
                 or action.get("manaPaymentOptionsCount", 0) > 0
             )
             castable = has_autotap
-            if not castable and not game_state.get("_bridge_connected", False) and info.get("mana_cost"):
+            if not castable and not getattr(game_state, "_bridge_connected", False) and info.get("mana_cost"):
                 try:
                     from arenamcp.rules_engine import RulesEngine
 

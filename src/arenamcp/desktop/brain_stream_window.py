@@ -423,7 +423,7 @@ class BrainStreamWindow(QMainWindow):
         elif mcts_payload and isinstance(mcts_payload, dict):
             branches = mcts_payload.get("branches") or []
             root_pct = int(float(mcts_payload.get("root_win_probability", 0.5)) * 100)
-            lines = [f"🌲 Win Expectancy: {root_pct}% (Sims: {mcts_payload.get('total_simulations', 1000)})"]
+            lines = [f"🌲 Win Expectancy: {root_pct}% (Candidates: {mcts_payload.get('total_simulations', 0)})"]
             for i, b in enumerate(branches[:4], 1):
                 lines.append(
                     f"{i}. [{int(float(b.get('win_probability', 0.5)) * 100)}%] {b.get('tag', '')} {b.get('action', '')}"
@@ -444,7 +444,7 @@ class BrainStreamWindow(QMainWindow):
             self._mcts_timer.start()
 
         root_win = float(mcts_data.get("root_win_probability") or 0.50)
-        sims = int(mcts_data.get("total_simulations") or 1000)
+        sims = int(mcts_data.get("total_simulations") or 0)
         turn_num = mcts_data.get("turn_number") or 1
         phase = mcts_data.get("phase") or "Main1"
         hero_life = mcts_data.get("hero_life", 20)
@@ -465,9 +465,9 @@ class BrainStreamWindow(QMainWindow):
             "<div style='background: #313244; width: 100%; border-radius: 4px; height: 10px; margin-bottom: 8px;'>",
             f"<div style='background: {root_color}; width: {root_pct}%; height: 10px; border-radius: 4px;'></div>",
             "</div>",
-            f"<div style='color: #a6adc8; font-size: 11px;'>Simulations: {sims:,} visits • Hero Life: {hero_life} • Opp Life: {opp_life}</div>",
+            f"<div style='color: #a6adc8; font-size: 11px;'>Candidates: {sims:,} evaluated • Hero Life: {hero_life} • Opp Life: {opp_life}</div>",
             "</div>",
-            "<div style='font-weight: bold; color: #89b4fa; margin-bottom: 8px;'>CANDIDATE ACTION BRANCHES (MCTS SEARCH):</div>",
+            "<div style='font-weight: bold; color: #89b4fa; margin-bottom: 8px;'>CANDIDATE ACTION BRANCHES (TACTICAL LOOKAHEAD):</div>",
         ]
 
         if not branches:
@@ -508,6 +508,9 @@ class BrainStreamWindow(QMainWindow):
                     badge_fg = "#11111b"
 
                 cost_display = f" [{cost}]" if cost else ""
+                prov = str(b.get("score_provenance") or ("Neural 1-Ply" if b.get("details", {}).get("afterstate_supported") else "Lookahead"))
+                prov_label = "Neural 1-Ply" if prov == "neural_afterstate" else ("Policy Prior" if prov == "prior_only" else ("Approx Lookahead" if prov == "unsupported_fallback" else "Lookahead"))
+                visits_txt = f"Visits: <b>{visits}</b> • " if visits > 0 else ""
                 html.extend(
                     [
                         "<div style='background: #181825; border: 1px solid #313244; border-radius: 6px; padding: 10px; margin-bottom: 8px;'>",
@@ -516,7 +519,7 @@ class BrainStreamWindow(QMainWindow):
                         f"<td align='right'><span style='background: {badge_bg}; color: {badge_fg}; font-weight: bold; padding: 2px 6px; border-radius: 4px; font-size: 11px;'>{tag}</span></td>",
                         "</tr></table>",
                         "<div style='margin-bottom: 6px; font-size: 12px; color: #a6adc8;'>",
-                        f"Win: <b style='color: {b_color};'>{pct}%</b> (<span style='color: {delta_color};'>{delta_str}</span>) • Visits: <b>{visits}</b>",
+                        f"Score: <b style='color: {b_color};'>{pct}%</b> (<span style='color: {delta_color};'>{delta_str}</span>) • {visits_txt}Type: <b>{prov_label}</b>",
                         "</div>",
                         "<div style='background: #313244; width: 100%; border-radius: 3px; height: 6px; margin-bottom: 6px;'>",
                         f"<div style='background: {b_color}; width: {pct}%; height: 6px; border-radius: 3px;'></div>",

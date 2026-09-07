@@ -38,6 +38,8 @@ class _ActionLegalityMixin:
             return f"Block with {_strip_attacker_annotations(s.split(':', 1)[1]).strip()}."
         if low.startswith("activate "):
             return f"Activate {s[9:].strip()}."
+        if low.startswith("discard "):
+            return f"Discard {s[8:].strip()}."
         if "done" in low and "confirm" in low:
             return "Confirm."
         if low.startswith("pass"):
@@ -95,6 +97,8 @@ class _ActionLegalityMixin:
                 return 60
             if "choose: play" in a or "choose: draw" in a:
                 return 55
+            if a.startswith("discard "):
+                return 50
             if "done" in a or "auto-pay" in a:
                 return 40
             if "pass" in a or "wait" in a:
@@ -166,6 +170,13 @@ class _ActionLegalityMixin:
             return GameAction(
                 action_type=ActionType.SELECT_TARGET,
                 target_names=[self._strip_decoration(act.split(":", 1)[1])],
+            )
+        if lower.startswith("discard "):
+            card = self._strip_decoration(act[8:])
+            return GameAction(
+                action_type=ActionType.SELECT_N,
+                select_card_names=[card] if card else [],
+                card_name=card,
             )
         if lower.startswith("x = "):
             # Casting-time X chooser entry ("X = 3") — P3-1.

@@ -42,6 +42,7 @@ dependencies = [
     "kokoro-onnx",         # TTS (spoken advice)
     "soundfile>=0.12.0",   # audio I/O for TTS
     "Pillow>=10.0.0",      # screenshot capture for debug reports
+    "msgpack>=1.0.0",       # fast binary serialization for MageZero RL evaluations
 ]
 
 [project.urls]

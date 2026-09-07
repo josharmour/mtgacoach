@@ -261,30 +261,72 @@ def record_from_game_end(
         turn_info = game_state_snapshot.get("turn", game_state_snapshot.get("turn_info", {}))
         record.turns = turn_info.get("turn_number", 0)
 
+        # Opponent Name
+        record.opponent_name = (
+            game_state_snapshot.get("opponent_name")
+            or game_state_snapshot.get("opponent_screen_name")
+            or ""
+        )
+
+        # Format Name
+        record.format_name = (
+            game_state_snapshot.get("format_name")
+            or game_state_snapshot.get("event_id")
+            or game_state_snapshot.get("event_name")
+            or game_state_snapshot.get("match_format")
+            or ""
+        )
+
         players = game_state_snapshot.get("players", [])
         for p in players:
             if p.get("is_local"):
                 record.local_life_final = p.get("life_total", 0)
             else:
                 record.opponent_life_final = p.get("life_total", 0)
+                if not record.opponent_name:
+                    record.opponent_name = p.get("name") or p.get("screen_name") or p.get("user_name") or ""
 
-    # Extract opponent colors from their played cards
-    if opponent_cards:
-        colors_seen = set()
-        for card in opponent_cards:
-            mana = card.get("mana_cost", "")
-            if "{W}" in mana or "White" in str(card.get("colors", [])):
-                colors_seen.add("W")
-            if "{U}" in mana or "Blue" in str(card.get("colors", [])):
-                colors_seen.add("U")
-            if "{B}" in mana or "Black" in str(card.get("colors", [])):
-                colors_seen.add("B")
-            if "{R}" in mana or "Red" in str(card.get("colors", [])):
-                colors_seen.add("R")
-            if "{G}" in mana or "Green" in str(card.get("colors", [])):
-                colors_seen.add("G")
-        record.opponent_colors_seen = sorted(colors_seen)
+    # Extract opponent colors from their played cards or snapshot zones
+    colors_seen = set()
+    opp_seat = game_state_snapshot.get("opponent_seat_id") if game_state_snapshot else None
+    local_seat = game_state_snapshot.get("local_seat_id") if game_state_snapshot else None
 
+    # 1. Direct opponent_cards list
+    cards_to_scan = list(opponent_cards or [])
+
+    # 2. Add cards from all visible zones owned by opponent
+    if game_state_snapshot:
+        zones = game_state_snapshot.get("zones", {})
+        for z_key in ("battlefield", "graveyard", "exile", "command", "stack"):
+            for c in zones.get(z_key, []) or game_state_snapshot.get(z_key, []) or []:
+                if isinstance(c, dict):
+                    c_owner = c.get("owner_seat_id")
+                    if c_owner is not None and (
+                        c_owner == opp_seat or (opp_seat is None and local_seat is not None and c_owner != local_seat)
+                    ):
+                        cards_to_scan.append(c)
+
+    for card in cards_to_scan:
+        if not isinstance(card, dict):
+            continue
+        mana = str(card.get("mana_cost") or card.get("cost") or "")
+        card_colors = card.get("colors") or []
+        name = str(card.get("name") or "")
+        t_line = str(card.get("type_line") or "")
+        oracle = str(card.get("oracle_text") or "")
+
+        if "{W}" in mana or "White" in str(card_colors) or "Plains" in name or "Plains" in t_line or "{W}" in oracle:
+            colors_seen.add("W")
+        if "{U}" in mana or "Blue" in str(card_colors) or "Island" in name or "Island" in t_line or "{U}" in oracle:
+            colors_seen.add("U")
+        if "{B}" in mana or "Black" in str(card_colors) or "Swamp" in name or "Swamp" in t_line or "{B}" in oracle:
+            colors_seen.add("B")
+        if "{R}" in mana or "Red" in str(card_colors) or "Mountain" in name or "Mountain" in t_line or "{R}" in oracle:
+            colors_seen.add("R")
+        if "{G}" in mana or "Green" in str(card_colors) or "Forest" in name or "Forest" in t_line or "{G}" in oracle:
+            colors_seen.add("G")
+
+    record.opponent_colors_seen = sorted(colors_seen)
     return record
 
 

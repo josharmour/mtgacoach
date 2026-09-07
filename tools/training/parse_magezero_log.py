@@ -26,7 +26,7 @@ RE_DIE_ROLL = re.compile(r"Player ([AB]) won the die roll")
 
 RE_LOG_LIFE = re.compile(
     r"\[(\d+):([^:]+):(\w+)\]"
-    r"\[player PlayerA:(\d+)\]\[player PlayerB:(\d+)\]"
+    r"\[player PlayerA:(-?\d+)\]\[player PlayerB:(-?\d+)\]"
 )
 
 RE_CHOSE_ACTION = re.compile(
@@ -40,7 +40,7 @@ RE_POOL_TOP = re.compile(r"(\w+)(\d+) \(top: [^)]+\)pool= actions: (.*?)(?:  )?(
 RE_PLAYABLE = re.compile(r"playable abilities: \[(.*?)\]")
 RE_HAND = re.compile(r"-> Hand: \[(.*?)\]")
 RE_PERMANENTS = re.compile(r"-> Permanents: \[(.*?)\]")
-RE_PLAYER_LIFE = re.compile(r"\[(Player[AB])\], life = (\d+)")
+RE_PLAYER_LIFE = re.compile(r"\[(Player[AB])\], life = (-?\d+)")
 
 # Name-attributed hand lines from ComputerPlayer.logList, e.g.
 #   [1:Beginning:UPKEEP]PlayerA hand: : Island,Soul Partition, =>[pool-3-thread-4] ComputerPlayer.logList
@@ -572,6 +572,7 @@ def parse_log(
     *,
     primary_deck: str | None = None,
     decks_dir: str | Path | None = None,
+    calibrate_outcomes: bool = False,
 ) -> tuple[list[dict], list[SessionInfo]]:
     log_name = os.path.basename(log_path)
     is_smoke = "smoke" in log_name
@@ -765,7 +766,7 @@ def parse_log(
         _finalize_game(state, decisions, stats)
 
     # Enrich with sessions using per-thread game counts
-    _enrich_sessions(decisions, sessions)
+    _enrich_sessions(decisions, sessions, calibrate_outcomes=calibrate_outcomes)
 
     # Runtime deck-signature guardrail (raises DeckSignatureError on any
     # off-deck hand card; see verify_hand_signature).
@@ -976,15 +977,11 @@ def _finalize_game(state: _ThreadState, all_decisions: list[dict], stats: dict[s
 # ── Session enrichment ──────────────────────────────────────────────────
 
 
-def _enrich_sessions(decisions: list[dict], sessions: list[SessionInfo]):
-    """Assign sessions and calibrate outcomes.
+def _enrich_sessions(decisions: list[dict], sessions: list[SessionInfo], calibrate_outcomes: bool = False):
+    """Assign sessions and optionally calibrate outcomes for legacy tests.
 
     Each session has n_total games distributed evenly across 6 threads.
     Uses per-thread game sequence numbers to assign each decision to its session.
-
-    THEN calibrates game outcomes within each session to match the logged
-    win rate: sort games by Player A's life advantage at the last decision
-    and tag the top n_wins as won.
     """
     if not sessions:
         for d in decisions:
@@ -1015,57 +1012,51 @@ def _enrich_sessions(decisions: list[dict], sessions: list[SessionInfo]):
         if not found:
             d["session"] = sessions[0].label if sessions else "unknown"
 
-    # ── Calibrate outcomes per session ───────────────
-    # Use largest-remainder for precise proportional distribution
-    # across all sessions simultaneously
-    calibratable_sessions = [s for s in sessions if s.n_wins is not None]
-    if not calibratable_sessions:
-        return
+    if calibrate_outcomes:
+        calibratable_sessions = [s for s in sessions if s.n_wins is not None]
+        if calibratable_sessions:
+            sess_game_counts: dict[str, set[str]] = {}
+            for d in decisions:
+                gid = d.get("game_id", "")
+                sess = d.get("session", "")
+                if gid and sess:
+                    sess_game_counts.setdefault(sess, set()).add(gid)
+                elif gid and not sess:
+                    sess_game_counts.setdefault("unknown", set()).add(gid)
 
-    # Total available games per session
-    sess_game_counts: dict[str, set[str]] = {}
+            for sess in calibratable_sessions:
+                n_available = len(sess_game_counts.get(sess.label, set()))
+                if n_available == 0:
+                    continue
+
+                total_expected = sess.n_total or sess.n_games
+                expected_wins = sess.n_wins / total_expected * n_available
+
+                game_life_adv: dict[str, float] = {}
+                for d in decisions:
+                    if d.get("session") != sess.label:
+                        continue
+                    gid = d.get("game_id", "")
+                    a = d.get("active_life", 20)
+                    b = d.get("opp_life", 20)
+                    game_life_adv[gid] = float(a - b)
+
+                if not game_life_adv:
+                    continue
+
+                sorted_games = sorted(game_life_adv.items(), key=lambda x: (-x[1], x[0]))
+                n_wins_needed = min(round(expected_wins), len(sorted_games))
+                win_games = {gid for i, (gid, _) in enumerate(sorted_games) if i < n_wins_needed}
+
+                for d in decisions:
+                    if d.get("session") != sess.label:
+                        continue
+                    gid = d.get("game_id", "")
+                    d["outcome"] = "won" if gid in win_games else "lost"
+
     for d in decisions:
-        gid = d.get("game_id", "")
-        sess = d.get("session", "")
-        if gid and sess:
-            sess_game_counts.setdefault(sess, set()).add(gid)
-        elif gid and not sess:
-            sess_game_counts.setdefault("unknown", set()).add(gid)
-
-    # For each session that has win rate data, compute proportional expected wins
-    for sess in calibratable_sessions:
-        n_available = len(sess_game_counts.get(sess.label, set()))
-        if n_available == 0:
-            continue
-
-        total_expected = sess.n_total or sess.n_games
-        expected_wins = sess.n_wins / total_expected * n_available
-
-        # Collect per-game life advantage (last decision's active_life - opp_life)
-        game_life_adv: dict[str, float] = {}
-        for d in decisions:
-            if d.get("session") != sess.label:
-                continue
-            gid = d.get("game_id", "")
-            a = d.get("active_life", 20)
-            b = d.get("opp_life", 20)
-            game_life_adv[gid] = float(a - b)
-
-        if not game_life_adv:
-            continue
-
-        # Sort games by life advantage descending
-        sorted_games = sorted(game_life_adv.items(), key=lambda x: (-x[1], x[0]))
-
-        n_wins_needed = min(round(expected_wins), len(sorted_games))
-        win_games = {gid for i, (gid, _) in enumerate(sorted_games) if i < n_wins_needed}
-
-        # Update outcome in all decisions
-        for d in decisions:
-            if d.get("session") != sess.label:
-                continue
-            gid = d.get("game_id", "")
-            d["outcome"] = "won" if gid in win_games else "lost"
+        if not d.get("outcome"):
+            d["outcome"] = "unknown"
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────

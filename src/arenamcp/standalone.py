@@ -1739,8 +1739,9 @@ class StandaloneCoach(
 
                     if not bridge_active:
                         if pending_now and "decision_required" not in triggers:
-                            # Scry/surveil are time-critical — always force trigger
-                            if pending_now in ("Group Selection", "Order Cards"):
+                            pending_sig = self._build_pending_decision_signature(curr_state)
+                            # Force decision_required for time-critical decisions if not yet advised
+                            if pending_sig != self._last_advised_decision_sig and pending_now != "Action Required":
                                 triggers.append("decision_required")
                                 logger.info(f"Forced decision_required for {pending_now}")
 
@@ -2377,6 +2378,17 @@ class StandaloneCoach(
                             elif trigger in ("combat_attackers", "combat_blockers"):
                                 # Combat advice: stale if no longer in combat
                                 is_stale = fresh_turn_num != pre_advice_turn or "Combat" not in fresh_phase
+                            elif trigger == "decision_required":
+                                # Decision advice: stale if the specific decision was resolved or changed while LLM was thinking
+                                fresh_decision = fresh_state.get("pending_decision")
+                                fresh_sig = self._build_pending_decision_signature(fresh_state)
+                                fresh_active = fresh_turn.get("active_player")
+                                is_stale = (
+                                    (fresh_turn_num != pre_advice_turn)
+                                    or (fresh_active != pre_advice_active_player)
+                                    or (fresh_decision != pending_decision)
+                                    or bool(pending_decision_sig and fresh_sig != pending_decision_sig)
+                                )
                             else:
                                 # General advice: stale if turn number or active player changed
                                 fresh_active = fresh_turn.get("active_player")
@@ -2388,7 +2400,8 @@ class StandaloneCoach(
                                 stale_label = "[STALE - discarded]"
                                 logger.info(
                                     f"Discarding stale advice: turn {pre_advice_turn}->{fresh_turn_num}, "
-                                    f"phase {pre_advice_phase}->{fresh_phase}"
+                                    f"phase {pre_advice_phase}->{fresh_phase}, "
+                                    f"decision {pending_decision}->{fresh_state.get('pending_decision')}"
                                 )
                                 self._record_advice(f"{stale_label} {advice}", trigger, game_state=curr_state)
                                 curr_state = fresh_state

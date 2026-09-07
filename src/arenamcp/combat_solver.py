@@ -529,7 +529,11 @@ def _score_attack_plan(plan: AttackPlan, your_life: int, opponent_life: int) -> 
     opp_pressure = plan.damage_through * (5.0 / max(1, opponent_life - plan.damage_through))
     our_pressure = -plan.worst_case_crackback * (5.0 / max(1, your_life - plan.worst_case_crackback))
     material = plan.blockers_killed_material - plan.attackers_lost_material
-    return opp_pressure + our_pressure + material
+    # Penalize attacking with creatures that deal 0 damage and kill 0 material (wastes blocker/taps mana dork)
+    waste_penalty = 0.0
+    if plan.attacker_names and plan.damage_through == 0 and plan.blockers_killed_material == 0:
+        waste_penalty = -2.0 * len(plan.attacker_names)
+    return opp_pressure + our_pressure + material + waste_penalty
 
 
 # --- Game-state adapters -----------------------------------------------

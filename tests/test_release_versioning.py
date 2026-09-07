@@ -196,7 +196,11 @@ def test_only_one_workflow_runs_the_test_suite() -> None:
 
 
 def test_only_one_workflow_runs_ruff() -> None:
-    runners = [p.name for p in _workflow_files() if "ruff check" in p.read_text(encoding="utf-8")]
+    runners = [
+        p.name
+        for p in _workflow_files()
+        if "ruff check" in p.read_text(encoding="utf-8") or "ruff-action" in p.read_text(encoding="utf-8")
+    ]
     assert len(runners) == 1, f"expected exactly one ruff workflow, found {runners}"
 
 

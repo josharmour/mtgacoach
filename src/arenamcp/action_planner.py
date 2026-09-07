@@ -488,6 +488,14 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         start = time.perf_counter()
         effective_legal_actions = self._filter_legal_actions_for_planning(game_state, legal_actions or [])
+        dec_ctx = decision_context or game_state.get("decision_context") or {}
+        dec_type = str(dec_ctx.get("type") or "").lower()
+        if not effective_legal_actions and dec_type == "discard":
+            option_cards = dec_ctx.get("option_cards") or []
+            if not option_cards:
+                option_cards = [c.get("name") for c in game_state.get("hand", []) if c.get("name")]
+            if option_cards:
+                effective_legal_actions = [f"Discard {c}" for c in option_cards]
 
         # Clear turn memo on turn change, and record what was executed in the
         # previous window so the next prompt sees it.
@@ -1554,10 +1562,19 @@ class ActionPlanner(_ActionLegalityMixin):
         trigger: str,
         legal_actions: list[str] | None = None,
         decision_context: dict[str, Any] | None = None,
+        legacy_render: bool | None = None,
     ) -> str:
         """Build the user message with formatted game context.
 
         Reuses the compact format from CoachEngine._format_game_context().
+
+        ``legacy_render``: task 11 — forwarded to
+        CoachEngine._format_game_context. ``True`` enables the explicit
+        legacy-render mode (offline training renders annotate assumed
+        defaults instead of asserting fabricated facts); ``None`` (default)
+        keeps live production rendering exactly as before. When the game_state
+        itself carries a ``_legacy_render_mode`` key (set by
+        gate_play_decisions.build_user_message) it wins over this argument.
         """
         # Import and use CoachEngine's formatter for consistency. The planner
         # variant drops heavy GRE JSON dumps and trims oracle text on
@@ -1566,7 +1583,11 @@ class ActionPlanner(_ActionLegalityMixin):
             from arenamcp.coach import CoachEngine
 
             formatter = CoachEngine.__new__(CoachEngine)
-            context = formatter._format_game_context(game_state, for_planner=True)
+            if "_legacy_render_mode" in game_state and legacy_render is None:
+                legacy_render = bool(game_state.get("_legacy_render_mode"))
+            context = formatter._format_game_context(
+                game_state, for_planner=True, legacy_render=legacy_render
+            )
         except Exception as e:
             logger.warning(f"Failed to use CoachEngine formatter: {e}")
             context = self._fallback_format(game_state)
@@ -1590,10 +1611,22 @@ class ActionPlanner(_ActionLegalityMixin):
                 for a in legal_actions
                 if a.strip().lower() not in ("action: activate_mana", "action: floatmana")
             ]
+            dec_ctx = decision_context or game_state.get("decision_context") or {}
+            dec_type = str(dec_ctx.get("type") or "").lower()
+            if not menu and dec_type == "discard":
+                option_cards = dec_ctx.get("option_cards") or []
+                if not option_cards:
+                    option_cards = [c.get("name") for c in game_state.get("hand", []) if c.get("name")]
+                if option_cards:
+                    menu = [f"Discard {c}" for c in option_cards]
             self._last_menu = menu
             if menu:
                 menu_lines = "\n".join(f"  {i + 1}. {a}" for i, a in enumerate(menu))
-                eff_str = f"(pick by number)\n{menu_lines}"
+                if dec_type == "discard":
+                    count = dec_ctx.get("count", 1)
+                    eff_str = f"(pick {count} by number to discard)\n{menu_lines}"
+                else:
+                    eff_str = f"(pick by number)\n{menu_lines}"
             else:
                 eff_str = 'NONE — say "pass priority"'
             context, n = re.subn(r"(?m)^Legal: .*$", f"Legal: {eff_str}", context, count=1)
@@ -1605,6 +1638,8 @@ class ActionPlanner(_ActionLegalityMixin):
                 )
 
         # Build trigger description
+        dec_ctx = decision_context or game_state.get("decision_context") or {}
+        dec_type = str(dec_ctx.get("type") or "").lower()
         trigger_descriptions = {
             "new_turn": "Your turn started (Main Phase 1). Plan your plays.",
             "opponent_turn": "Opponent's turn. Plan responses if you have instants.",
@@ -1628,7 +1663,11 @@ class ActionPlanner(_ActionLegalityMixin):
             "casting_options": "Choose alternative casting cost (Foretell, Flashback, etc.).",
             "order_triggers": "Order triggered abilities on the stack.",
         }
-        trigger_desc = trigger_descriptions.get(trigger, f"Trigger: {trigger}")
+        if trigger == "decision_required" and dec_type == "discard":
+            count = dec_ctx.get("count", 1)
+            trigger_desc = f"Discard decision. Choose {count} card(s) to discard from hand."
+        else:
+            trigger_desc = trigger_descriptions.get(trigger, f"Trigger: {trigger}")
 
         parts = [
             f"TRIGGER: {trigger_desc}",

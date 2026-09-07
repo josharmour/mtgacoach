@@ -184,8 +184,34 @@ class MainWindow(QMainWindow):
     def _show_performance_view(self) -> None:
         self._stack.setCurrentIndex(2)
 
-    def _restart_coach(self) -> None:
-        self._session.restart()
+    def _restart_coach(self, *args, **kwargs) -> None:
+        """Perform a full UI restart, cleanly shutting down and relaunching the entire desktop app."""
+        logger.info("Restart Coach requested: closing and relaunching desktop UI...")
+        if not self.isMaximized() and not self.isMinimized():
+            geom = self.frameGeometry()
+            self._settings.set(
+                self._WINDOW_GEOMETRY_KEY,
+                {
+                    "x": max(0, geom.x()),
+                    "y": max(0, geom.y()),
+                    "width": geom.width(),
+                    "height": geom.height(),
+                },
+            )
+
+        if hasattr(self, "_ui_watchdog") and self._ui_watchdog:
+            self._ui_watchdog.stop()
+
+        self._session.shutdown()
+        self._hotkeys.unregister_all()
+
+        app = QApplication.instance()
+        if app is not None:
+            app.exit(42)
+        else:
+            from .app import relaunch_application
+
+            relaunch_application()
 
     def _handle_theme_action(self, action: QAction) -> None:
         theme_name = str(action.data() or "")

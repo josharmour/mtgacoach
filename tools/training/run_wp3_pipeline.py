@@ -110,8 +110,12 @@ def stage_parse(
     per_log_counts: dict[str, int] = {}
 
     for lp in log_paths:
+        file_sha = _sha256_file(lp)
         print(f"  Parsing {lp} ...", end=" ", flush=True)
         decisions, sessions = PARSER.parse_log(str(lp), primary_deck=primary_deck, decks_dir=decks_dir)
+        for d in decisions:
+            d["source_hash"] = file_sha
+            d["canonical_game_id"] = FILTERS.canonical_game_id(d)
         all_decisions.extend(decisions)
         per_log_counts[str(lp)] = len(decisions)
         checked = PARSER.LAST_PARSE_STATS.get("deck_signature_checked_rows", 0)
@@ -128,10 +132,10 @@ def stage_parse(
 
 def stage_filter(
     rows: list[dict],
-    *,
-    balance: str | None = None,
     max_pass_frac: float = 0.40,
+    balance: str | None = None,
     seed: int = 7,
+    outcome_mode: str = "all",
 ) -> tuple[list[dict], dict[str, int]]:
     """Apply filters in order: drop_single_option → outcome_filter → dedupe.
 
@@ -147,9 +151,9 @@ def stage_filter(
     counts["drop_single_option"] = n
     print(f"  drop_single_option: {n} dropped ({len(rows)} kept)")
 
-    rows, n = FILTERS.outcome_filter(rows, "won_only")
+    rows, n = FILTERS.outcome_filter(rows, outcome_mode)
     counts["outcome_filter"] = n
-    print(f"  outcome_filter (won_only): {n} dropped ({len(rows)} kept)")
+    print(f"  outcome_filter ({outcome_mode}): {n} dropped ({len(rows)} kept)")
 
     rows, n = FILTERS.dedupe(rows)
     counts["dedupe"] = n
@@ -225,10 +229,15 @@ def stage_render(
     split_filter_counts: dict[str, Counter],
     attackers_blockers_counts: dict[str, int],
     include_combat: bool = False,
+    outcome_mode: str = "all",
 ) -> dict[str, list[dict]]:
     """Render rows in each split via the kind-appropriate builder.
 
-    * ``priority`` rows -> build_magezero_bridge.build_record (unchanged).
+    * ``priority`` rows -> build_magezero_bridge.build_record with the SAME
+      ``outcome_mode`` the filter stage received, so ``--outcome all`` and
+      ``--outcome won_only`` behave consistently from filtering through
+      rendering (task 10: an unknown-outcome row kept by the filter under
+      ``all`` must reach rendered policy records, not be re-dropped here).
     * ``attack_commit`` / ``block_assign`` rows -> magezero_combat_micro.
       build_combat_record, only when ``include_combat`` (they cannot appear
       otherwise; if one does with the flag off, it is counted, not rendered).
@@ -253,7 +262,7 @@ def stage_render(
                     continue
                 record, reason = COMBAT.build_combat_record(row)
             else:
-                record, reason = BRIDGE.build_record(row)
+                record, reason = BRIDGE.build_record(row, outcome_mode=outcome_mode)
             if record is None:
                 drops[reason] += 1
                 continue
@@ -364,31 +373,22 @@ def stage_leak_scan(
     bug would surface via "score:" / "count:" markers. The integer-check
     here is a secondary defense against subtle leaks.
     """
-    # Collect all distinct MCTS integer values ≥ 10
+    # Collect all distinct MCTS integer values
     mcts_values: set[int] = set()
     for d in raw_decisions:
         mcts = d.get("mcts_counts", {})
         for count in mcts.values():
-            if isinstance(count, (int, float)) and count >= 10:
+            if isinstance(count, (int, float)):
                 mcts_values.add(int(count))
-
-    # Values 10-20 are common in life totals ("Life: You=13 Opp=20") —
-    # only flag values > 30 that are unlikely to be legitimate game state
-    mcts_values_high = {v for v in mcts_values if v > 30}
 
     errors: list[str] = []
 
-    re_bare_int = re.compile(r"\b(\d{2,})\b")
-    # The rendered menu is NUMBERED ("  31. Pass") and that numbering is the
-    # answer mechanism, not a leak — the model must see it to emit {"pick": N}.
-    # Scanning it for bare integers made the scan reject the whole corpus the
-    # moment a menu grew past the smallest MCTS count (reproduced: 31 options
-    # with an MCTS count of 31). Strip menu lines before the integer scan; the
-    # word-level checks above still cover the whole prompt.
-    re_menu_line = re.compile(r"^\s*\d+\.\s", re.MULTILINE)
-
-    def _strip_menu_lines(text: str) -> str:
-        return "\n".join("" if re_menu_line.match(line) else line for line in text.splitlines())
+    re_bare_int = re.compile(r"\b(\d+)\b")
+    # The rendered menu is NUMBERED ("  31. Pass") and that numbering prefix is
+    # the answer mechanism, not a leak. We strip only the leading menu-prefix span
+    # (e.g. "^\s*\d+\.\s+"), ensuring that any MCTS count in the option text
+    # (e.g. "1. Cast X 999" or "31. Cast X 31") is strictly caught.
+    re_menu_prefix = re.compile(r"^\s*\d+\.\s+(.*)$")
 
     for split_name, records in rendered.items():
         for i, rec in enumerate(records):
@@ -403,27 +403,22 @@ def stage_leak_scan(
             if "count:" in user or "count:" in system:
                 errors.append(f"[{split_name} record {i}] 'count:' found in prompt")
 
-            # 3. MCTS integer ≥30 leak: find all bare integers in the prompt
-            # and check if any are in our high MCTS set. Menu numbering is
-            # excluded (see _strip_menu_lines) because it is the input
-            # mechanism, not model-invisible search data.
-            combined = _strip_menu_lines(user) + " " + _strip_menu_lines(system)
-            for match in re_bare_int.finditer(combined):
-                val = int(match.group(1))
-                if val in mcts_values_high:
-                    # Check context: is this a life total (preceded by =)?
-                    pos = match.start()
-                    prev_char = combined[pos - 1] if pos > 0 else " "
-                    # Menu numbers like "1. " start at position 0 or after \n
-                    # Life totals: "You=NN" or "Opp=NN"
-                    # Turn: "TNN"
-                    # We flag if not preceded by =, :, >, <, or T
-                    if prev_char not in ("=", ":", ">", "<"):
-                        errors.append(
-                            f"[{split_name} record {i}] MCTS count {val} "
-                            f"found as bare integer in prompt (preceded by "
-                            f"'{prev_char}')"
-                        )
+            # 3. MCTS integer leak: find bare integers in user prompt text
+            all_lines = user.splitlines() + system.splitlines()
+            for line in all_lines:
+                m = re_menu_prefix.match(line)
+                scan_text = m.group(1) if m else line
+                for match in re_bare_int.finditer(scan_text):
+                    val = int(match.group(1))
+                    if val in mcts_values:
+                        pos = match.start()
+                        prev_char = scan_text[pos - 1] if pos > 0 else " "
+                        if prev_char not in ("=", ":", ">", "<"):
+                            errors.append(
+                                f"[{split_name} record {i}] MCTS count {val} "
+                                f"found as bare integer in prompt (preceded by "
+                                f"'{prev_char}')"
+                            )
 
     if errors:
         for e in errors:
@@ -442,6 +437,36 @@ def stage_leak_scan(
 # ---------------------------------------------------------------------------
 
 
+def _render_accounting(
+    rendered: dict[str, list[dict]],
+    render_drop_counts: dict[str, Counter],
+    filter_counts: dict[str, int],
+    raw_count: int,
+) -> dict[str, Any]:
+    """Reconcile raw decisions → filtered → rendered rows.
+
+    Invariant asserted here: for the priority lane,
+    ``filtered ≈ rendered + render_drops + render_pre_drops``. A mismatch is
+    how a silently-rejected adapter (e.g. an unknown-outcome row dropped by the
+    renderer although ``--outcome all`` kept it) looks like a working one.
+    """
+    rendered_total = sum(len(v) for v in rendered.values())
+    drops_total = sum(sum(c.values()) for c in render_drop_counts.values())
+    by_reason: Counter = Counter()
+    for counter in render_drop_counts.values():
+        by_reason.update(counter)
+    dropped_after_filters = sum(
+        int(v) for v in filter_counts.values() if isinstance(v, (int, float))
+    )
+    return {
+        "raw_decisions": raw_count,
+        "dropped_by_filters": dropped_after_filters,
+        "dropped_at_render": drops_total,
+        "rendered_records": rendered_total,
+        "render_drop_reasons": {str(k): v for k, v in sorted(by_reason.items())},
+    }
+
+
 def stage_write(
     rendered: dict[str, list[dict]],
     outdir: Path,
@@ -453,6 +478,20 @@ def stage_write(
     elapsed: float,
     combat_info: dict[str, Any] | None = None,
     oracle_summary: dict[str, Any] | None = None,
+    outcome_mode: str = "all",
+    render_drop_counts: dict[str, Counter] | None = None,
+    log_paths: list[Path] | None = None,
+    split_method: str = "hash",
+    split_migration: bool = False,
+    split_from: str | None = None,
+    teacher_checkpoint: str | None = None,
+    primary_deck: str | None = None,
+    decks_dir: str | None = None,
+    balance: str | None = None,
+    max_pass_frac: float = 0.40,
+    seed: int = 7,
+    include_combat: bool = False,
+    min_oracle_coverage: float | None = None,
 ) -> dict:
     """Write per-split JSONL files and manifest. Returns manifest dict."""
     outdir.mkdir(parents=True, exist_ok=True)
@@ -467,8 +506,17 @@ def stage_write(
         "pass_rate": round(pass_rate, 6),
         "attackers_blockers_excluded_total": attackers_blockers_total,
         "filter_counts": dict(filter_counts),
+        "outcome_mode": outcome_mode,
         "splits": {},
     }
+
+    # Render-stage accounting: raw filtered rows vs rendered records per
+    # split, reconciled as rendered + drops == filtered input rows (task 10:
+    # unknown-outcome rows kept under --outcome all must show up here).
+    if render_drop_counts is not None:
+        manifest["render_accounting"] = _render_accounting(
+            rendered, render_drop_counts, filter_counts, raw_count
+        )
 
     if oracle_summary is not None:
         manifest["oracle_text_coverage"] = oracle_summary
@@ -509,16 +557,19 @@ def stage_write(
 
         sha = _sha256_file(split_path)
 
-        # Count outcome, decision_kind, sessions
+        # Count outcome, decision_kind, sessions, policy labels
         by_outcome: Counter = Counter()
         by_kind: Counter = Counter()
         by_session: Counter = Counter()
+        by_policy_label: Counter = Counter()
         menu_sizes: list[int] = []
         for rec in records:
             meta = rec.get("meta", {})
             by_outcome[meta.get("outcome", "?")] += 1
             by_kind[meta.get("decision_kind", "?")] += 1
             by_session[meta.get("session", "?")] += 1
+            if "policy_label" in meta:
+                by_policy_label[meta.get("policy_label", "?")] += 1
             menu_sizes.append(meta.get("menu_size", 0))
 
         manifest["splits"][split_name] = {
@@ -528,6 +579,7 @@ def stage_write(
             "by_outcome": dict(by_outcome),
             "by_decision_kind": dict(by_kind),
             "by_session": dict(by_session),
+            "by_policy_label": dict(by_policy_label),
             "menu_size": {
                 "min": min(menu_sizes) if menu_sizes else 0,
                 "median": sorted(menu_sizes)[len(menu_sizes) // 2] if menu_sizes else 0,
@@ -535,6 +587,99 @@ def stage_write(
                 "mean": round(sum(menu_sizes) / len(menu_sizes), 2) if menu_sizes else 0,
             },
         }
+
+    # Lineage: input hashes, dirty source hashes, versions, card map, teacher provenance
+    input_log_hashes: dict[str, str] = {}
+    if log_paths:
+        for lp in log_paths:
+            try:
+                input_log_hashes[lp.name] = _sha256_file(lp)
+            except Exception:
+                pass
+
+    core_modules = [
+        "tools/training/run_wp3_pipeline.py",
+        "tools/training/magezero_filters.py",
+        "tools/training/build_magezero_bridge.py",
+        "tools/training/parse_magezero_log.py",
+        "tools/training/magezero_combat_micro.py",
+        "tools/training/oracle_coverage.py",
+    ]
+    dirty_source_hashes: dict[str, str] = {}
+    for mod in core_modules:
+        mod_path = REPO / mod
+        if mod_path.exists():
+            try:
+                dirty_source_hashes[mod] = _sha256_file(mod_path)
+            except Exception:
+                pass
+
+    git_dirty = False
+    try:
+        res = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(REPO),
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            git_dirty = True
+    except Exception:
+        pass
+
+    card_map_path = REPO / "tools" / "training" / "magezero_card_map.json"
+    card_map_hash = _sha256_file(card_map_path) if card_map_path.exists() else None
+
+    game_splits: dict[str, str] = {}
+    for sname, srows in splits.items():
+        if sname == "quarantine":
+            continue
+        for r in srows:
+            cgid = FILTERS.canonical_game_id(r)
+            if cgid:
+                game_splits[cgid] = sname
+
+    manifest["lineage"] = {
+        "schema_version": "wp3-v2",
+        "parser_version": getattr(PARSER, "PARSER_VERSION", "1.1.0"),
+        "renderer_version": getattr(BRIDGE, "RENDERER_VERSION", "1.1.0"),
+        "git_sha": _git_sha(),
+        "git_dirty": git_dirty,
+        "input_log_hashes": input_log_hashes,
+        "dirty_source_hashes": dirty_source_hashes,
+        "card_map_hash": card_map_hash,
+        "teacher_checkpoint": {
+            "identity": teacher_checkpoint if teacher_checkpoint else "unknown",
+            "provenance": "authoritative" if teacher_checkpoint else "teacher_unknown",
+        },
+        "config": {
+            "max_pass_frac": max_pass_frac,
+            "seed": seed,
+            "balance": balance,
+            "include_combat": include_combat,
+            "primary_deck": primary_deck,
+            "decks_dir": decks_dir,
+            "min_oracle_coverage": min_oracle_coverage,
+            "outcome_mode": outcome_mode,
+            "split_method": split_method,
+            "split_migration": split_migration,
+            "split_from": split_from,
+        },
+    }
+    manifest["split_config"] = {
+        "method": split_method,
+        "seed": seed,
+        "migration": split_migration,
+        "split_from": split_from,
+    }
+    manifest["game_splits"] = game_splits
+
+    quarantined_count = len(splits.get("quarantine", []))
+    manifest["quarantine"] = {
+        "count": quarantined_count,
+        "reason": "missing_game_id" if quarantined_count else "none",
+    }
 
     manifest_path = outdir / "manifest.json"
     with open(manifest_path, "w", encoding="utf-8") as f:
@@ -595,6 +740,20 @@ def stage_report(
     lines.append(f"Pass fraction (post-filter): {pass_rate:.4f} ({pass_rate * 100:.1f}%)")
     lines.append(f"Pass rate tripwire: {pass_rate <= 0.40} ({'PASS' if pass_rate <= 0.40 else 'FAIL'})")
     lines.append("")
+    lines.append("## Outcome Mode / Eligibility")
+    lines.append("")
+    lines.append(f"Outcome mode: `{manifest.get('outcome_mode', 'all')}`")
+    lines.append("Intent: `all` = unknown-outcome rows retained as pure policy records")
+    lines.append("(`policy_label: menu.pick`, outcome stays `unknown`); `won_only` = dropped.")
+    lines.append("")
+    ra = manifest.get("render_accounting")
+    if ra:
+        lines.append("Render accounting (raw → filters → rendered, task 10 reconciliation):")
+        lines.append("")
+        lines.append("```json")
+        lines.append(json.dumps(ra, indent=2, sort_keys=True))
+        lines.append("```")
+        lines.append("")
     lines.append("## Attackers/Blockers Excluded")
     lines.append("")
     lines.append(f"Total attackers/blockers rows: {attackers_blockers_total}")
@@ -732,9 +891,13 @@ def stage_combat(
     combat_rows: list[dict] = []
     total_acct: Counter = Counter()
     for lp in log_paths:
+        file_sha = _sha256_file(lp)
         print(f"  Combat-scanning {lp} ...", end=" ", flush=True)
         rows, acct = COMBAT.parse_combat_log(str(lp))
         COMBAT.verify_accounting(acct)
+        for r in rows:
+            r["source_hash"] = file_sha
+            r["canonical_game_id"] = FILTERS.canonical_game_id(r)
         combat_rows.extend(rows)
         total_acct.update(acct)
         print(f"{len(rows)} combat rows")
@@ -781,6 +944,11 @@ def run_pipeline(
     primary_deck: str | None = None,
     decks_dir: str | None = None,
     min_oracle_coverage: float | None = None,
+    outcome_mode: str = "all",
+    split_method: str = "hash",
+    split_migration: bool = False,
+    split_from: str | None = None,
+    teacher_checkpoint: str | None = None,
 ) -> dict[str, Any]:
     """Run the full WP-3 pipeline.
 
@@ -812,7 +980,7 @@ def run_pipeline(
     # ── Stage 2: Filter ────────────────────────────────────────────────────
     print("Stage 2/5 — Filter decisions")
     filtered, filter_counts = stage_filter(
-        raw_decisions, balance=balance, max_pass_frac=max_pass_frac, seed=seed
+        raw_decisions, balance=balance, max_pass_frac=max_pass_frac, seed=seed, outcome_mode=outcome_mode
     )
     filtered_count = len(filtered)
 
@@ -837,8 +1005,8 @@ def run_pipeline(
         print("Stage 2b — Filter combat rows")
         combat_filtered, cn1 = FILTERS.drop_single_option(combat_rows)
         print(f"  drop_single_option: {cn1} dropped ({len(combat_filtered)} kept)")
-        combat_filtered, cn2 = FILTERS.outcome_filter(combat_filtered, "won_only")
-        print(f"  outcome_filter (won_only): {cn2} dropped ({len(combat_filtered)} kept)")
+        combat_filtered, cn2 = FILTERS.outcome_filter(combat_filtered, outcome_mode)
+        print(f"  outcome_filter ({outcome_mode}): {cn2} dropped ({len(combat_filtered)} kept)")
         combat_filtered, cn3 = FILTERS.dedupe(combat_filtered)
         print(f"  dedupe: {cn3} dropped ({len(combat_filtered)} kept)")
         assert combat_info is not None
@@ -861,9 +1029,23 @@ def run_pipeline(
     # land in the same split (game-level leak safety across kinds).
     print("Stage 4/5 — Split by game")
     split_input = filtered + combat_filtered if include_combat else filtered
-    splits = FILTERS.split_by_game(split_input, seed=seed)
+    split_from_map: dict[str, str] | None = None
+    if split_from:
+        p_from = Path(split_from)
+        if p_from.exists():
+            data = json.loads(p_from.read_text(encoding="utf-8"))
+            split_from_map = data.get("game_splits") or data.get("split_by_replay") or {}
+            print(f"  Inherited {len(split_from_map)} game split assignments from {split_from}")
+    splits = FILTERS.split_by_game(
+        split_input,
+        seed=seed,
+        method=split_method,
+        split_from=split_from_map,
+    )
+    if "quarantine" in splits and splits["quarantine"]:
+        print(f"  ** QUARANTINE: {len(splits['quarantine'])} row(s) quarantined due to missing game_id **")
     for name, group in splits.items():
-        unique_games = len(set(FILTERS._game_id(r) for r in group))
+        unique_games = len(set(FILTERS.canonical_game_id(r) for r in group if FILTERS.canonical_game_id(r)))
         print(f"  split '{name}': {len(group)} rows ({unique_games} games)")
 
     # Count attackers/blockers before rendering
@@ -873,7 +1055,7 @@ def run_pipeline(
     # ── Stage 5: Render ────────────────────────────────────────────────────
     print("Stage 5/5 — Render training records via build_magezero_bridge")
     split_drops: dict[str, Counter] = {}
-    rendered = stage_render(splits, split_drops, {}, include_combat=include_combat)
+    rendered = stage_render(splits, split_drops, {}, include_combat=include_combat, outcome_mode=outcome_mode)
 
     # Surface the per-reason drop tally. It was computed into split_drops and
     # then never read, so the PR body's claim about WHY rows were dropped could
@@ -914,6 +1096,20 @@ def run_pipeline(
         elapsed,
         combat_info=combat_info,
         oracle_summary=oracle_summary,
+        outcome_mode=outcome_mode,
+        render_drop_counts=split_drops,
+        log_paths=log_paths,
+        split_method=split_method,
+        split_migration=split_migration,
+        split_from=split_from,
+        teacher_checkpoint=teacher_checkpoint,
+        primary_deck=primary_deck,
+        decks_dir=decks_dir,
+        balance=balance,
+        max_pass_frac=max_pass_frac,
+        seed=seed,
+        include_combat=include_combat,
+        min_oracle_coverage=min_oracle_coverage,
     )
 
     # ── Report ──────────────────────────────────────────────────────────────
@@ -1029,6 +1225,36 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "text falls below FRAC aborts the pipeline (exit 43). Coverage is "
         "always measured and reported; the floor is OFF by default.",
     )
+    parser.add_argument(
+        "--outcome",
+        choices=("all", "won_only"),
+        default="all",
+        help="Outcome filter mode ('all' to preserve valid decisions from close/lost games, or 'won_only', default: all)",
+    )
+    parser.add_argument(
+        "--split-method",
+        choices=("hash", "legacy_shuffle"),
+        default="hash",
+        help="Game splitting method ('hash' for deterministic splits independent of corpus membership, or 'legacy_shuffle', default: hash)",
+    )
+    parser.add_argument(
+        "--split-migration",
+        action="store_true",
+        default=False,
+        help="Migration mode: re-derive and preserve splits when updating older manifests",
+    )
+    parser.add_argument(
+        "--split-from",
+        type=str,
+        default=None,
+        help="Path to an existing manifest JSON to inherit game-to-split assignments from",
+    )
+    parser.add_argument(
+        "--teacher-checkpoint",
+        type=str,
+        default=None,
+        help="Teacher checkpoint identifier if known (defaults to 'unknown' with teacher_unknown provenance)",
+    )
     return parser
 
 
@@ -1107,6 +1333,11 @@ def main(argv: list[str] | None = None) -> int:
             primary_deck=args.primary_deck,
             decks_dir=args.decks_dir,
             min_oracle_coverage=args.min_oracle_coverage,
+            outcome_mode=args.outcome,
+            split_method=args.split_method,
+            split_migration=args.split_migration,
+            split_from=args.split_from,
+            teacher_checkpoint=args.teacher_checkpoint,
         )
     except PARSER.DeckSignatureError as e:
         print(f"\nPipeline aborted (fail closed): {e}", file=sys.stderr)

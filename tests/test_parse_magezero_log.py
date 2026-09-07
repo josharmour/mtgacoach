@@ -402,12 +402,12 @@ class TestLogParsing:
         assert parsed[1]["tapped"] is True
 
     def test_outcome_coverage(self):
-        """All decisions should have won/lost outcome (100% coverage)."""
+        """All decisions should have won/lost outcome with calibrate_outcomes=True."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
             f.write(TEST_LOG_MULTI_THREAD)
             log_path = f.name
 
-        decisions, sessions = parse_log(log_path)
+        decisions, sessions = parse_log(log_path, calibrate_outcomes=True)
         Path(log_path).unlink()
 
         for d in decisions:
@@ -416,6 +416,17 @@ class TestLogParsing:
         won = sum(1 for d in decisions if d["outcome"] == "won")
         lost = sum(1 for d in decisions if d["outcome"] == "lost")
         assert won + lost == len(decisions)
+
+    def test_default_outcomes_uncalibrated(self):
+        """By default, parse_log preserves unknown outcomes without fabricating won/lost."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+            f.write(TEST_LOG_MULTI_THREAD)
+            log_path = f.name
+
+        decisions, sessions = parse_log(log_path)
+        Path(log_path).unlink()
+
+        assert all(d["outcome"] == "unknown" for d in decisions)
 
     def test_session_assignment(self):
         """Decisions are assigned to correct session."""
@@ -447,7 +458,7 @@ class TestLogParsing:
             f.write(TEST_LOG_MULTI_THREAD)
             log_path = f.name
 
-        decisions, sessions = parse_log(log_path)
+        decisions, sessions = parse_log(log_path, calibrate_outcomes=True)
         Path(log_path).unlink()
 
         assert len(sessions) == 1

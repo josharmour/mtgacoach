@@ -764,13 +764,28 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         lines: list[str] = []
         local_player = next((p for p in game_state.get("players", []) if p.get("is_local")), None)
         lands_played_count = local_player.get("lands_played", 0) if local_player else 0
+        current_turn = (game_state.get("turn") or {}).get("turn_number", 0)
+        bf = game_state.get("battlefield", [])
+        lands_entered_this_turn = sum(
+            1
+            for c in bf
+            if c.get("owner_seat_id") == local_seat
+            and c.get("turn_entered_battlefield") == current_turn
+            and "land" in (c.get("type_line") or "").lower()
+        )
+        if lands_entered_this_turn > 0:
+            lands_played_count = max(lands_played_count, lands_entered_this_turn)
+
         _stack = game_state.get("stack", [])
         has_land_drop = is_my_turn and "Main" in phase and len(_stack) == 0 and lands_played_count == 0
         if not (has_land_drop and valid_moves):
             return lines
 
         hand_cards = game_state.get("hand", [])
-        bf = game_state.get("battlefield", [])
+        command_cards = [
+            c for c in game_state.get("command", [])
+            if isinstance(c, dict) and c.get("owner_seat_id") == local_seat
+        ]
         cur_mana = RulesEngine._count_available_mana(game_state, local_seat)
 
         hand_lands: dict[str, dict] = {}
@@ -786,6 +801,14 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         has_spelunking = any(
             c.get("owner_seat_id") == local_seat and "spelunking" in (c.get("name") or "").lower() for c in bf
         )
+
+        candidate_spells: list[tuple[dict[str, Any], bool]] = []
+        for c in hand_cards:
+            if "Land" not in c.get("type_line", ""):
+                candidate_spells.append((c, False))
+        for c in command_cards:
+            if "Land" not in c.get("type_line", ""):
+                candidate_spells.append((c, True))
 
         post_land_parts = []
         for land_name, land_card in hand_lands.items():
@@ -819,11 +842,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             ]
 
             new_casts = []
-            for c in hand_cards:
-                if "Land" in c.get("type_line", ""):
-                    continue
+            for c, is_cmd in candidate_spells:
                 cost = c.get("mana_cost", "")
                 cmc = RulesEngine._parse_cmc(cost)
+                if is_cmd:
+                    cmc += c.get("commander_casts", 0) * 2
                 if cur_mana < cmc <= post_mana:
                     colored_pips = set(_re_plan.findall(r"\{([WUBRG])\}", cost))
                     existing_colors: set[str] = set()
@@ -850,7 +873,10 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                         )
                         if needs_my_creature and not my_creatures:
                             continue
-                        new_casts.append(c.get("name", "?"))
+                        name = c.get("name", "?")
+                        if is_cmd:
+                            name = f"{name} (Commander)"
+                        new_casts.append(name)
             if new_casts:
                 if len(new_casts) == 1:
                     post_land_parts.append(f"Play {land_name} \u2192 Cast {new_casts[0]}")
@@ -1363,8 +1389,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             )
             # Planner skips full oracle text on long-resident permanents — the
             # flags already summarize relevant abilities. Recent ETBs keep
-            # oracle text so triggered abilities stay visible.
-            entered_recently = (turn_num - (card.get("turn_entered_battlefield") or 0)) <= 1
+            # oracle text so triggered abilities stay visible. In legacy render
+            # mode (where entry turns may not be established), unknown entry turn
+            # is treated as recent so oracle text is preserved. In live planner
+            # mode, baseline behavior is strictly preserved.
+            _etb_turn = card.get("turn_entered_battlefield")
+            if card.get("_legacy_render_mode"):
+                entered_recently = _etb_turn is None or (turn_num - _etb_turn) <= 1
+            else:
+                entered_recently = (turn_num - (_etb_turn or 0)) <= 1
             if for_planner and not entered_recently:
                 pass
             elif not keyword_only and len(stripped) > 0:
@@ -1941,7 +1974,10 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
             cmc = 0
             reqs = {"W": 0, "U": 0, "B": 0, "R": 0, "G": 0, "C": 0}
-            if cost:
+            cost_known = cost is not None
+            if cost is None:
+                cost = ""
+            elif cost:
                 generic = re.findall(r"\{(\d+)\}", cost)
                 cmc += sum(int(g) for g in generic)
                 for color in "WUBRGC":
@@ -1954,6 +1990,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             castable = self._check_castability(
                 type_line, cost, cmc, reqs, total_mana, mana_pool, can_play_land
             )
+            # Task 11: no cost fact -> no castability fact. A fabricated
+            # zero-CMC made non-lands render "[OK]" (and X-spells "[OK,X=0]")
+            # from absent data; the presence of the card still shows in the
+            # Legal menu, which is the authority for what is castable.
+            if not cost_known and "land" not in type_line:
+                castable = "CAST?"
 
             # Track cards the player can't afford so they're filtered from Legal
             if castable.startswith("NEED"):
@@ -2352,6 +2394,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         question: str = "",
         *,
         for_planner: bool = False,
+        legacy_render: bool | None = None,
     ) -> str:
         """Format the game state into a COMPACT context for the LLM.
 
@@ -2363,7 +2406,52 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 text on long-resident permanents (the flags already summarize
                 their relevant abilities). Coach advice path keeps full
                 fidelity by default.
+            legacy_render: Explicit legacy-render opinion (task 11). Only
+                offline training builders may pass this; live production
+                callers leave it unset and render byte-identically.
+                ``True`` = annotate assumed defaults in the prompt;
+                ``False`` = fail hard on an observation marked unknown
+                (``game_state["_render_unknown"]``) instead of rendering a
+                fabricated fact. Unknown/omitted facts are represented by
+                omission or an explicit UNKNOWN marker, never by zero.
+
+        When omitted (None), the marker ``game_state["_legacy_render_mode"]``
+        (set by gate_play_decisions.build_user_message) is honoured if
+        present; otherwise this renders with production opinion
+        (assume-absent defaults) exactly as before.
         """
+        # Legacy-render mode: prefer the explicit argument, then the game_state
+        # marker (offline builders), then default (production opinion).
+        ls_render = game_state.get("_legacy_render_mode")
+        if legacy_render is None:
+            legacy_render = ls_render
+        annotate: bool = bool(legacy_render)
+        strict: bool = legacy_render is False
+
+        # Observation-fact declaration (task 11): the offline bridge declares
+        # the fields the MageZero log cannot establish. Only four render
+        # opinions exist (coach.py render, unknown-managed, unknown-owned,
+        # fail hard) — anything else is a builder contract violation.
+        fact_meta = game_state.get("_render_unknown") or {}
+        UNKNOWN_STACK = fact_meta.get("stack", False)
+        UNKNOWN_ACTIVE = fact_meta.get("active_player", False)
+        UNKNOWN_OPP_HAND_COUNT = fact_meta.get("opponent_hand_size", False)
+        UNKNOWN_ETB = fact_meta.get("turn_entered_battlefield", False)
+        if strict and (
+            UNKNOWN_STACK or UNKNOWN_ACTIVE or UNKNOWN_OPP_HAND_COUNT or UNKNOWN_ETB
+        ):
+            unknown_keys = sorted(
+                k for k, v in (
+                    ("stack", UNKNOWN_STACK),
+                    ("active_player", UNKNOWN_ACTIVE),
+                    ("opponent_hand_size", UNKNOWN_OPP_HAND_COUNT),
+                    ("turn_entered_battlefield", UNKNOWN_ETB),
+                ) if v
+            )
+            raise AssertionError(
+                "strict legacy render: refusing to render a state with "
+                f"unknown facts as established (unknown: {', '.join(unknown_keys)})"
+            )
 
         # Determine local player seat and active turn
         players = game_state.get("players", [])
@@ -2408,10 +2496,19 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 break
         opp_seat = opponent_player.get("seat_id") if opponent_player else None
 
-        active_label = "YOUR" if active_seat == local_seat else "OPP"
-        priority_label = "You" if priority_seat == local_seat else "Opp"
-        is_main_phase = "Main" in phase
         is_your_turn = active_seat == local_seat
+        # An explicit seat from an authoritative builder (combat rows get
+        # active_player=OPP_SEAT assigned) overrides the declared-unknown
+        # marker; the marker only controls the fallback rendering of a
+        # MISSING value (None).
+        active_unknown_effective = UNKNOWN_ACTIVE and active_seat is None
+        if active_unknown_effective:
+            active_label = "UNKNOWN"
+            priority_label = "UNKNOWN"
+        else:
+            active_label = "YOUR" if is_your_turn else "OPP"
+            priority_label = "You" if priority_seat == local_seat else "Opp"
+        is_main_phase = "Main" in phase
         stack = game_state.get("stack", [])
         stack_empty = len(stack) == 0
         can_cast_sorcery = is_your_turn and is_main_phase and stack_empty and has_priority
@@ -2465,25 +2562,42 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         # Mana info
         mana_lines, total_mana, mana_pool = self._format_mana_info(your_cards, turn_num)
-        lines.extend(mana_lines)
+        # task 11: mana pool size is only established when the controller's
+        # permanent-entry turns are known. With unknown ETB turns, "Mana: N"
+        # could be high or low — emit the ASSUMED label instead of a bare number
+        # (strict opinion: refuse rather than label). Known sources are still
+        # listed on the annotated line.
+        mana_is_assumed = bool(UNKNOWN_ETB) and total_mana > 0 or bool(UNKNOWN_ETB) and bool(mana_lines)
+        if annotate and mana_is_assumed:
+            lines.append(f"Mana: {total_mana} (assumed pool — sources may be missing)")
+        elif strict and mana_is_assumed:
+            raise AssertionError(
+                "strict legacy render: mana pool assumed from cards with "
+                "unestablished ETB facts (turn_entered_battlefield unknown)"
+            )
+        else:
+            lines.extend(mana_lines)
 
         # Land drop status. P2-9: lands_played is inferred post-message and
         # lags for seconds after a drop — the CURRENT window's menu is the
         # authority. "Land: AVAILABLE" with no "Play Land:" entry produced
         # play_land hallucinations (Forest #3, 2026-07-05 22:50).
-        lands_played = local_player.get("lands_played", 0) if local_player else 0
-        has_land_entry = any(
-            str(la).strip().lower().startswith(("play land:", "action: playmdfc"))
-            for la in (game_state.get("legal_actions") or [])
-        )
-        if is_your_turn and lands_played == 0 and has_land_entry:
-            lines.append("Land: AVAILABLE")
-        elif is_your_turn and lands_played == 0:
-            lines.append("Land: not playable in this window (no Play Land action)")
-        elif is_your_turn:
-            lines.append(f"Land: USED ({lands_played})")
+        if UNKNOWN_ACTIVE and active_seat is None:
+            lines.append("Land: UNKNOWN (active player unknown)")
         else:
-            lines.append("Land: N/A (opp turn)")
+            lands_played = local_player.get("lands_played", 0) if local_player else 0
+            has_land_entry = any(
+                str(la).strip().lower().startswith(("play land:", "action: playmdfc"))
+                for la in (game_state.get("legal_actions") or [])
+            )
+            if is_your_turn and lands_played == 0 and has_land_entry:
+                lines.append("Land: AVAILABLE")
+            elif is_your_turn and lands_played == 0:
+                lines.append("Land: not playable in this window (no Play Land action)")
+            elif is_your_turn:
+                lines.append(f"Land: USED ({lands_played})")
+            else:
+                lines.append("Land: N/A (opp turn)")
 
         # Build attachment map
         _attachments: dict[int, list[dict]] = {}
@@ -2561,8 +2675,16 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             else:
                 lines.append("  (empty)")
 
-            # Combat analysis
-            if ("Combat" in phase or "Main" in phase) and is_your_turn:
+            # Combat analysis — the zero-priority recommendation ("Atk: None
+            # (T/SS)") is a direct machine decision from tapped/ETB facts, so
+            # under legacy-render opinions it runs only when the attacker's
+            # freshness is actually established (task 11).
+            combat_derivable = not active_unknown_effective
+            if (
+                ("Combat" in phase or "Main" in phase)
+                and is_your_turn
+                and combat_derivable
+            ):
                 your_creatures = [
                     c
                     for c in your_cards
@@ -2594,7 +2716,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             # "Computed optimal blocks:" line on exactly the decision it
             # exists for. _in_block_decision already encodes this rule for the
             # inferred-attacker flags above; the dispatch must agree with it.
-            elif ("Combat" in phase or _in_block_decision) and not is_your_turn:
+            elif (
+                ("Combat" in phase or _in_block_decision)
+                and not is_your_turn
+                and combat_derivable
+            ):
                 lines.extend(
                     self._format_block_combat(
                         your_cards,
@@ -2612,6 +2738,24 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         # Recent events and revealed cards
         lines.extend(self._format_zones_and_events(game_state, local_seat, opp_seat))
+
+        # Opponent hand (task 11): represent the count exactly when it is
+        # known — a missing producer entry is UNKNOWN, never a bare zero.
+        # Production format renders no opponent-hand section at all, so this
+        # line is legacy-render-mode only (live output stays byte-identical).
+        opp_hs = opponent_player.get("hand_size") if opponent_player else None
+        known_opp_hand = opp_hs if isinstance(opp_hs, int) else None
+        if not (annotate or strict):
+            pass  # production: no opponent-hand section (unchanged format)
+        elif known_opp_hand is None:
+            if strict:
+                raise AssertionError(
+                    "strict legacy render: opponent hand size is not "
+                    "established — refusing to render a hand-size fact"
+                )
+            lines.append("Opp hand: UNKNOWN")
+        else:
+            lines.append(f"Opp hand: {int(known_opp_hand)} card(s)")
 
         # Hand cards
         hand_lines, no_target_card_names, uncastable_card_names = self._format_hand_cards(
@@ -3310,22 +3454,6 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         if trigger == "threat_detected" and threat and (not response or is_backend_error_text(response)):
             response = self._build_threat_fallback(game_state, threat)
-
-        # Prepend a short plan framing for longer styles only (the "quick" style
-        # has a very tight word cap — prepending would blow it). Fully guarded.
-        try:
-            if (
-                style_key in ("normal", "chatty", "explain")
-                and response
-                and not is_backend_error_text(response)
-                and not response.lstrip().lower().startswith("plan")
-            ):
-                mgr = self._game_plan_mgr
-                intro = mgr.coach_intro() if mgr is not None else ""
-                if intro:
-                    response = f"{intro}. {response}"
-        except Exception as e:
-            logger.debug(f"Game-plan intro prepend failed (non-fatal): {e}")
 
         # POST-PROCESSING: Validate and fix common LLM issues (especially for smaller models)
         response = self._postprocess_advice(response, game_state, style=style_key)

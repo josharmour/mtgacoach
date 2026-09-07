@@ -25,6 +25,7 @@ class CoachSession(QObject):
     spokenLine = Signal(str)
     logEmitted = Signal(str, str)  # message, role
     adviceReceived = Signal(str, str)  # text, label
+    bugReportSaved = Signal(str, str)  # path, error
     errorOccurred = Signal(str)
 
     # Telemetry & BrainStream signals
@@ -67,8 +68,14 @@ class CoachSession(QObject):
         with contextlib.suppress(Exception):
             if not self._tts.is_running:
                 self._tts.start()
-        self._process.start(autopilot=autopilot, dry_run=dry_run, afk=afk)
-        self.started.emit()
+        try:
+            self._process.start(autopilot=autopilot, dry_run=dry_run, afk=afk)
+            self.started.emit()
+            self.logEmitted.emit("✅ Coach process started.", "status")
+        except Exception as e:
+            logger.error(f"Failed to start coach process: {e}")
+            self.errorOccurred.emit(str(e))
+            self.logEmitted.emit(f"❌ Failed to start coach process: {e}", "error")
 
     def stop(self) -> None:
         """Stop the background coaching subprocess."""
@@ -105,8 +112,119 @@ class CoachSession(QObject):
     def send_chat(self, text: str) -> None:
         self.send_command("chat", text)
 
+    def capture_screenshots(self) -> dict[str, str]:
+        """Capture coach window + MTGA window screenshots into bug_reports directory."""
+        from datetime import datetime
+        from pathlib import Path
+        import sys
+        from arenamcp.logging_config import LOG_DIR
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            bug_dir = Path(LOG_DIR) / "bug_reports"
+        except Exception:
+            bug_dir = Path.home() / ".arenamcp" / "logs" / "bug_reports"
+        bug_dir.mkdir(parents=True, exist_ok=True)
+
+        out: dict[str, str] = {}
+
+        # 1. Coach PySide window screenshot
+        try:
+            from PySide6.QtWidgets import QApplication, QWidget
+
+            active_win = QApplication.activeWindow()
+            if active_win is None:
+                parent = self.parent()
+                if isinstance(parent, QWidget):
+                    active_win = parent.window()
+            if active_win is None:
+                for w in QApplication.topLevelWidgets():
+                    if w.isVisible():
+                        active_win = w
+                        break
+            if active_win is not None:
+                pix = active_win.grab()
+                if not pix.isNull():
+                    coach_path = bug_dir / f"bug_{ts}_coach.png"
+                    if pix.save(str(coach_path), "PNG"):
+                        out["coach"] = str(coach_path)
+        except Exception as e:
+            logger.debug("Coach screenshot failed: %s", e)
+
+        # 2. MTGA window screenshot
+        try:
+            from PIL import ImageGrab
+            from arenamcp.desktop.window_tracking import get_mtga_window_rect
+
+            rect = get_mtga_window_rect()
+            if rect is not None:
+                left, top, width, height = rect
+                if width > 0 and height > 0:
+                    grab_kwargs = {}
+                    if sys.platform == "win32":
+                        grab_kwargs["all_screens"] = True
+                    bbox = (left, top, left + width, top + height)
+                    img = ImageGrab.grab(bbox=bbox, **grab_kwargs)
+                    mtga_path = bug_dir / f"bug_{ts}_mtga.png"
+                    img.save(str(mtga_path), "PNG")
+                    out["mtga"] = str(mtga_path)
+        except Exception as e:
+            logger.debug("MTGA screenshot failed: %s", e)
+
+        return out
+
     def trigger_debug_report(self) -> None:
-        self.send_command("debug_report")
+        """Capture screenshots and request bug report creation."""
+        screenshots = self.capture_screenshots()
+        if self.is_running:
+            self._process.send_payload(
+                {
+                    "cmd": "debug_report",
+                    "screenshots": screenshots,
+                }
+            )
+        else:
+            self._save_offline_debug_report(screenshots)
+
+    def _save_offline_debug_report(self, screenshots: dict[str, str]) -> None:
+        """Create a local debug report directly when coach subprocess is not running."""
+        import json
+        import platform
+        from datetime import datetime
+        from pathlib import Path
+        from arenamcp import __version__
+        from arenamcp.logging_config import LOG_DIR
+
+        try:
+            bug_dir = Path(LOG_DIR) / "bug_reports"
+        except Exception:
+            bug_dir = Path.home() / ".arenamcp" / "logs" / "bug_reports"
+        bug_dir.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bug_file = bug_dir / f"bug_{ts}.json"
+
+        try:
+            report = {
+                "timestamp": datetime.now().isoformat(),
+                "version": __version__,
+                "reason": "Desktop Bug Report (offline)",
+                "system": {
+                    "platform": platform.platform(),
+                    "python_version": platform.python_version(),
+                    "machine": platform.machine(),
+                },
+                "game_state": self._last_game_state,
+                "statuses": self._statuses,
+                "screenshots": screenshots,
+                "process_running": False,
+            }
+            with open(bug_file, "w", encoding="utf-8") as f:
+                json.dump(report, f, indent=2, default=str)
+            self.bugReportSaved.emit(str(bug_file), "")
+        except Exception as e:
+            logger.exception("Offline bug report failed")
+            self.bugReportSaved.emit("", str(e))
 
     def _handle_process_event(self, event: Any) -> None:
         """Decode pipe protocol JSON event from standalone coach."""
@@ -180,6 +298,11 @@ class CoachSession(QObject):
         elif ev_type in ("mcts_tree", "emit_mcts"):
             payload = event.get("data") if "data" in event else event.get("mcts")
             self.mctsUpdated.emit(payload)
+
+        elif ev_type in ("bug_report_saved", "emit_bug_report_saved"):
+            path = str(event.get("path") or "")
+            err = str(event.get("error") or "")
+            self.bugReportSaved.emit(path, err)
 
         elif ev_type in ("error", "emit_error"):
             err = str(event.get("message") or event.get("error") or "Unknown error")

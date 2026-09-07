@@ -766,18 +766,16 @@ class _PostMatchMixin:
             opponent_cards=opponent_cards,
             replay_path=replay_path or "",
         )
-        # Format is not yet captured by the game-state parser; pass it through
-        # when the snapshot exposes it (best-effort — commonly empty).
         if isinstance(final_state, dict):
-            for key in ("format_name", "super_format", "match_format"):
-                if final_state.get(key):
-                    rec.format_name = str(final_state[key])
+            for key in ("format_name", "event_id", "event_name", "super_format", "match_format"):
+                if final_state.get(key) and not rec.format_name:
+                    rec.format_name = str(final_state[key]).replace("_", " ").replace("Play ", "").strip()
                     break
         if replay_path:
             try:
                 cos = parse_replay_cosmetics(replay_path)
                 if cos and isinstance(cos.get("Opponent"), dict):
-                    rec.opponent_name = cos["Opponent"].get("ScreenName") or ""
+                    rec.opponent_name = cos["Opponent"].get("ScreenName") or rec.opponent_name
             except Exception:
                 pass
         MatchHistory().add_record(rec)

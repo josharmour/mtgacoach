@@ -47,7 +47,8 @@ class CoachProcess(QObject):
             else:
                 python_exe, python_source = find_python_executable()
                 if python_exe is None:
-                    raise RuntimeError("Python executable not found")
+                    python_exe = sys.executable
+                    python_source = "sys.executable"
                 args = ["-u", "-m", "arenamcp.standalone", "--pipe"]
 
             if autopilot:

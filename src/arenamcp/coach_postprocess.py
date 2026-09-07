@@ -619,6 +619,11 @@ class _AdvicePostprocessMixin:
                     score += 90
                 if "declare attackers" in act and "declare attackers" in pending_decision:
                     score += 120
+                if act.startswith("attack with:"):
+                    if ("combat" in phase and "declareattack" in step) or "declare attackers" in pending_decision:
+                        score += 120
+                    else:
+                        score -= 100
                 if "block with" in act and "combat" in phase and "declareblock" in step:
                     score += 120
                 if "block with" in act and "declare blockers" in pending_decision:
@@ -633,19 +638,25 @@ class _AdvicePostprocessMixin:
                     if "[ok]" in act:
                         score += 60  # confirmed castable
                     else:
-                        score += 10  # may not have mana — low priority
+                        score -= 100  # not castable with available mana — do not recommend
                 if act.startswith("activate "):
-                    score += 40
+                    if "[need:" in act or "[unaffordable]" in act:
+                        score -= 100
+                    elif "[ok]" in act:
+                        score += 40
+                    else:
+                        score += 20
                 if act.startswith("activate ") and (
                     ("combat" in phase and "declareblock" in step) or ("declare blockers" in pending_decision)
                 ):
                     # During blocker declaration, avoid replacing with activations.
                     score -= 100
 
-                # During combat, "Pass" (the Next button) is usually correct
-                # when no cast/play/declare actions are available
-                if act == "pass" and "combat" in phase:
-                    score += 10
+                # "Pass" priority / Next button
+                if act == "pass":
+                    score += 5
+                    if "combat" in phase:
+                        score += 10
 
                 # Target Selection scoring: prefer opponent targets for harmful spells/abilities, player targets for beneficial spells
                 if act.startswith("select target:"):
@@ -1124,22 +1135,36 @@ class _AdvicePostprocessMixin:
                 in_declare_blockers = ("combat" in phase and "declareblock" in step) or (
                     "declare blockers" in pending_decision
                 )
+                in_declare_attackers = ("combat" in phase and "declareattack" in step) or (
+                    "declare attackers" in pending_decision
+                )
                 if in_declare_blockers:
                     blocker_actions = [a for a in _candidates if a.lower().startswith("block with:")]
                     if blocker_actions:
                         best = max(blocker_actions, key=_score_action)
                     else:
-                        # No verifiable block actions (log-only mode may not
-                        # surface legal blockers). NEVER emit an unrelated game
-                        # action — e.g. "Activate Ability: Wooded Foothills" —
-                        # as the block recommendation (observed in live play).
-                        # Give a neutral, truthful line instead.
                         best = "Choose which creatures to block."
+                elif in_declare_attackers:
+                    attacker_actions = [
+                        a for a in _candidates
+                        if a.lower().startswith("attack with:") or "declare attackers:" in a.lower()
+                    ]
+                    if attacker_actions:
+                        best = max(attacker_actions, key=_score_action)
+                    else:
+                        best = "Don't attack"
                 else:
                     if legal_pass_action and ("need:" in advice.lower() or "[need:" in advice.lower()):
                         best = legal_pass_action
                     else:
-                        best = max(_candidates, key=_score_action)
+                        # Prefer affordable candidates
+                        affordable_candidates = [
+                            a for a in _candidates
+                            if "[need:" not in a.lower() and "[unaffordable]" not in a.lower()
+                            and (not a.lower().startswith("cast ") or "[ok]" in a.lower())
+                        ]
+                        candidate_pool = affordable_candidates if affordable_candidates else _candidates
+                        best = max(candidate_pool, key=_score_action)
                 best = _normalize_best_legal_action(best)
                 logger.info(f"Replaced illegal advice with legal action: {best} (original: {advice[:80]})")
                 advice = best
@@ -1184,8 +1209,9 @@ class _AdvicePostprocessMixin:
             advice = re.sub(r"(?i)^Done \(confirm blockers\)$", "Don't block", advice)
 
         # Sequence & Mana Budget validator:
-        # If advice recommends casting multiple non-land spells whose total CMC exceeds
-        # total available mana (current or post-land), strip the extra spells.
+        # If advice explicitly recommends casting multiple non-land spells in sequence
+        # (e.g. "Cast X and cast Y") whose total CMC exceeds total available mana,
+        # keep only the first castable spell.
         if isinstance(game_state, dict):
             from arenamcp.rules_engine import RulesEngine
 
@@ -1193,43 +1219,59 @@ class _AdvicePostprocessMixin:
             ls = lp.get("seat_id") if lp else 1
             cur_mana = RulesEngine._count_available_mana(game_state, ls)
 
-            hand = game_state.get("hand", [])
-            land_in_advice = bool(
-                re.search(
-                    r"(?i)\bplay\s+([\w\s'—]+?\b(?:forest|plains|island|swamp|mountain|land))\b",
-                    advice,
-                )
+            turn = game_state.get("turn", {})
+            active_player = turn.get("active_player")
+            phase = str(turn.get("phase") or "")
+            is_our_main = (active_player == ls or active_player is None) and "Main" in phase
+
+            # Only applies if advice actually suggests casting multiple spells
+            has_multi_cast = bool(
+                re.search(r"(?i)\b(?:cast|play)\s+[\w\s'—]+?\s+(?:then|and)\s+(?:cast|play)\b", advice)
+                or re.search(r"(?i)\b(?:cast|play)\s+[\w\s'—]+?\s*,\s*(?:then\s+)?(?:cast|play)\b", advice)
+                or re.search(r"(?i)\bcast\s+[\w\s'—]+?(?:,\s*and|\s+and|\s+then)\s+[\w\s'—]+", advice)
             )
-            avail_mana = cur_mana + 1 if land_in_advice else cur_mana
 
-            advice_low = advice.lower()
-            mentioned_spells = []
-            for c in hand:
-                if "land" in c.get("type_line", "").lower():
-                    continue
-                name = c.get("name", "")
-                if not name:
-                    continue
-                short_name = re.split(r"[,—/]", name)[0].strip().lower()
-                if len(short_name) >= 3 and short_name in advice_low:
-                    mentioned_spells.append(c)
+            if has_multi_cast and is_our_main:
+                hand = game_state.get("hand", [])
+                land_in_advice = bool(
+                    re.search(
+                        r"(?i)\bplay\s+([\w\s'—]*?\b(?:forest|plains|island|swamp|mountain|land))\b",
+                        advice,
+                    )
+                )
+                avail_mana = cur_mana + 1 if land_in_advice else cur_mana
 
-            if len(mentioned_spells) > 1:
-                total_cmc = sum(RulesEngine._parse_cmc(c.get("mana_cost", "")) for c in mentioned_spells)
-                if total_cmc > avail_mana:
-                    first_spell_name = mentioned_spells[0].get("name", "")
-                    land_match = re.search(
-                        r"(?i)^(Play\s+[\w\s'—]+?)(?:\s+(?:then|and)\s+cast\b.*)?$",
-                        advice.strip(),
-                    )
-                    if land_in_advice and land_match:
-                        land_part = land_match.group(1).strip()
-                        advice = f"{land_part} then cast {first_spell_name}."
-                    else:
-                        advice = f"Cast {first_spell_name}."
-                    logger.info(
-                        f"Stripped impossible multi-spell advice (total CMC {total_cmc} > {avail_mana} mana) -> '{advice}'"
-                    )
+                advice_low = advice.lower()
+                mentioned_spells = []
+                for c in hand:
+                    if "land" in c.get("type_line", "").lower():
+                        continue
+                    name = c.get("name", "")
+                    if not name:
+                        continue
+                    short_name = re.split(r"[,—/]", name)[0].strip().lower()
+                    if len(short_name) >= 3 and short_name in advice_low:
+                        mentioned_spells.append(c)
+
+                if len(mentioned_spells) > 1:
+                    total_cmc = sum(RulesEngine._parse_cmc(c.get("mana_cost", "")) for c in mentioned_spells)
+                    if total_cmc > avail_mana:
+                        first_spell = mentioned_spells[0]
+                        first_spell_name = first_spell.get("name", "")
+                        first_cmc = RulesEngine._parse_cmc(first_spell.get("mana_cost", ""))
+                        if first_cmc <= avail_mana:
+                            land_match = re.search(
+                                r"(?i)^(Play\s+[\w\s'—]+?)(?:\s+(?:then|and)\s+cast\b.*)?$",
+                                advice.strip(),
+                            )
+                            if land_in_advice and land_match:
+                                land_part = land_match.group(1).strip()
+                                advice = f"{land_part} then cast {first_spell_name}."
+                            else:
+                                advice = f"Cast {first_spell_name}."
+                            logger.info(
+                                f"Stripped impossible multi-spell advice (total CMC {total_cmc} > {avail_mana} mana) -> '{advice}'"
+                            )
 
         # Sequence validator: If advice says "Play [land] then cast/play [spell]" or "Play [land] and cast/play [spell]"
         # but [spell] is illegal and not in post-land THEN options, strip the illegal spell clause.

@@ -495,6 +495,7 @@ class _StandaloneHotkeysMixin:
         if self._voice_output:
             try:
                 voice_id, desc = self._voice_output.next_voice()
+                self.ui.status("VOICE", desc)
                 self.ui.status("VOICE_ID", desc)
                 self.ui.log(f"\n[VOICE] Changed to: {desc}\n")
                 self.speak_advice("Voice changed.", blocking=False)

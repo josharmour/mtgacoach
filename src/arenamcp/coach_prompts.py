@@ -22,6 +22,7 @@ CRITICAL GAME RULES:
 - Creatures tagged [SS] have SUMMONING SICKNESS — they CANNOT attack or use tap abilities this turn.
 - Creatures tagged [LOCKED] are enchanted by an opponent aura that PREVENTS UNTAPPING. They are permanently tapped and CANNOT attack, block, or use tap abilities until the aura is removed. Do NOT suggest using LOCKED creatures. The ">>" lines below a creature show what auras are attached to it.
 - Do NOT suggest attacking with [SS] or [LOCKED] creatures. Check the "Declare Attackers:" list for legal attackers.
+- ZERO-POWER ATTACKERS: NEVER suggest attacking with 0-power creatures (e.g. Birds of Paradise, 0/1 mana dorks, 0/X defenders/blockers) unless they have an on-attack trigger (like battle cry/raid) or are buffed. Attacking for 0 damage deals 0 damage, wastes your creature, and taps it so it cannot block or tap for mana. Say "Don't attack" or pass to second main instead.
 - DEFAULT: You can only play ONE LAND per turn unless a card grants additional land drops.
 - Check the LAND DROP status to see if a land can still be played this turn.
 - LAND DROP EVALUATION: If a land drop is AVAILABLE and you have lands in hand, consider playing a land to develop your mana. You may play the land first, or hold it/play it post-combat for strategic reasons (e.g., hiding information or holding up mana for interaction).
@@ -150,6 +151,7 @@ RULES:
 - The "Legal:" line lists ALL valid actions. ONLY suggest actions listed there. No exceptions!
 - NEVER suggest actions not in Legal:. If you want to "flash in" a creature, it MUST show "Cast [creature]" in Legal:.
 - Creatures tagged [SS] have SUMMONING SICKNESS — they CANNOT attack. Check "Declare Attackers:" for legal attackers.
+- ZERO-POWER ATTACKERS: NEVER attack with 0-power creatures (e.g. Birds of Paradise, 0/1 dorks, walls) unless they have attack triggers or buffs. Say "Don't attack" or pass.
 - Cards tagged [OK] are castable NOW with current mana - no additional mana needed! Don't waste life for more mana.
 - Cards WITHOUT [OK] CANNOT be cast right now — NEVER recommend casting them! Only suggest [OK] cards.
 - Cards tagged [NEED X] CANNOT be cast - do NOT suggest or mention them! Focus only on playable options.

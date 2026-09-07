@@ -1,13 +1,13 @@
 # PROGRESS: build_magezero_bridge
 
-Built: 2026-08-31 16:52:17
+Built: 2026-09-05 20:45:44
 
 ## Stats
 
-- Input: tools\training\wp3\fixture_decisions.jsonl (20 rows)
-- Output: tools\training\wp3\fixture_bridge_out.jsonl (14 records)
+- Input: /home/joshu/repos/mtgacoach/tools/training/wp3/fixture_decisions.jsonl (20 rows)
+- Output: /home/joshu/repos/mtgacoach/tools/training/wp3/fixture_bridge_out.jsonl (14 records)
 - Drops: {'decision_kind_attackers': 2, 'decision_kind_blockers': 1, 'outcome_unknown': 3}
-- Elapsed: 15.52s
+- Elapsed: 0.06s
 
 ## Drops
 
