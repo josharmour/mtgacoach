@@ -1054,13 +1054,27 @@ class MCTSEvaluator:
         """
         if not isinstance(batch_results, list) or len(batch_results) != n_rows:
             return None
+        # Ordering policy mirrored from magezero_client._validate_result:
+        # partial request_index echo -> reject; full echo -> verify order;
+        # no echo -> legacy positional sync WITHOUT a verified-ordering claim.
+        echo_flags = [
+            isinstance(row, dict) and "request_index" in row for row in batch_results
+        ]
+        if any(echo_flags) and not all(echo_flags):
+            return None
+        has_echo = all(echo_flags)
         validated: list[dict[str, Any]] = []
         for row_idx, row in enumerate(batch_results):
             if not isinstance(row, dict):
                 return None
-            req_idx = row.get("request_index", row_idx)
-            if not isinstance(req_idx, int) or isinstance(req_idx, bool) or req_idx != row_idx:
-                return None
+            if has_echo:
+                req_idx = row.get("request_index")
+                if (
+                    not isinstance(req_idx, int)
+                    or isinstance(req_idx, bool)
+                    or req_idx != row_idx
+                ):
+                    return None
             value = row.get("value")
             if (
                 not isinstance(value, (int, float))
