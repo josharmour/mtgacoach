@@ -231,24 +231,34 @@ class MCTSEvaluator:
         """
         count = game_state.get("opponent_hand_count")
         if count is not None:
-            return count, "top_level"
+            return cls._coerce_hand_count(count), "top_level"
         zones = game_state.get("zones") or {}
         if isinstance(zones, dict):
             count = zones.get("opponent_hand_count")
             if count is not None:
-                return count, "zones"
+                return cls._coerce_hand_count(count), "zones"
         players = game_state.get("players") or []
         for p in players:
             if not isinstance(p, dict):
                 continue
             if p.get("is_local") or p.get("seat_id") == local_seat:
                 continue
-            # or-semantics: a present-but-None hand_count falls through;
-            # hand_size is a documented producer alias
-            hand_count = p.get("hand_count") or p.get("cards_in_hand") or p.get("hand_size")
-            if hand_count is not None:
-                return hand_count, "player"
+            for key in ("hand_count", "hand_size", "cards_in_hand"):
+                val = p.get(key)
+                if val is not None:
+                    return cls._coerce_hand_count(val), "player"
         return None, "unknown"
+
+    @staticmethod
+    def _coerce_hand_count(value: Any) -> int | None:
+        """Coerce a producer hand-count field to a non-negative int, else None."""
+        if isinstance(value, bool):
+            return None
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            return None
+        return max(0, count)
 
     @staticmethod
     def _zone_identity(zone: Any, *, ordered: bool = False) -> tuple:
@@ -1215,46 +1225,62 @@ class MCTSEvaluator:
                 # counters, replacement effects — none of that is verified
                 # by this adapter.
                 return None
+
+            # Reject cards with ETB triggers or target requirements (cannot be modeled as simple resolution)
+            oracle_text = str(card.get("oracle_text") or "").lower()
+            if oracle_text:
+                if re.search(r"\b(when(ever)?|as)\b[^.\n]*\benters(\s+the\s+battlefield)?\b", oracle_text):
+                    return None
+                if "target" in oracle_text:
+                    return None
+
             # Full-cost payment check: parse the card's mana cost and confirm
-            # it is payable from the local player's mana pool. Colored
-            # requirements are only waived when GRE legality names the card.
-            cost_str = str(card.get("mana_cost") or card.get("cost") or "")
+            # it is payable from the local player's mana pool.
+            cost_raw = card.get("mana_cost") if card.get("mana_cost") is not None else card.get("cost")
+            if cost_raw is None:
+                return None
+            cost_str = str(cost_raw).strip()
+            if not cost_str:
+                return None
+
+            symbols = re.findall(r"\{([^}]+)\}", cost_str)
+            if not symbols:
+                return None
+            remainder = re.sub(r"\{[^}]+\}", "", cost_str).strip()
+            if remainder:
+                return None
+
+            generics = 0
+            colored: dict[str, int] = {}
+            for sym in symbols:
+                sym = sym.strip()
+                if sym.isdigit():
+                    generics += int(sym)
+                elif sym.upper() in {"W", "U", "B", "R", "G", "C"}:
+                    colored[sym.upper()] = colored.get(sym.upper(), 0) + 1
+                else:
+                    # Nonstandard symbols ({W/U}, {W/P}, {X}, etc.) are unsupported
+                    return None
+
             mana_pool: dict[str, int] = {}
             for p in state_copy.get("players", []):
                 if isinstance(p, dict) and (p.get("is_local") or p.get("seat_id") == local_seat):
                     raw_pool = p.get("mana_pool") or {}
                     if isinstance(raw_pool, dict):
                         mana_pool = {str(k): int(v or 0) for k, v in raw_pool.items()}
+                    break
+
+            # Colored requirements must be satisfied
+            for c, req in colored.items():
+                if mana_pool.get(c, 0) < req:
+                    return None
+
+            # Generic requirements must be satisfied
             total_pool = sum(mana_pool.values())
-            generics = 0
-            colored: dict[str, int] = {}
-            x_cost = False
-            for sym in cost_str.replace("{", " ").replace("}", " ").split():
-                if sym.isdigit():
-                    generics += int(sym)
-                elif sym.upper() in {"W", "U", "B", "R", "G", "C"}:
-                    colored[sym.upper()] = colored.get(sym.upper(), 0) + 1
-                elif sym.upper() == "X":
-                    x_cost = True
-                elif sym.isalpha() and len(sym) > 1:
-                    # Hybrid/phyrexian/other nonstandard symbols unsupported
-                    return None
-            if x_cost:
+            total_colored_req = sum(colored.values())
+            if total_pool < total_colored_req + generics:
                 return None
-            color_payable = all(mana_pool.get(c, 0) >= n for c, n in colored.items())
-            if not color_payable:
-                legal_actions = state_copy.get("legal_actions") or []
-                gre_ok = any(
-                    str(a.get("name") if isinstance(a, dict) else a).strip().lower()
-                    .startswith(f"cast {spell_name.lower()}")
-                    for a in legal_actions
-                )
-                if not gre_ok:
-                    return None
-            if sum(colored.values()) + generics > total_pool and not (
-                color_payable and generics == 0 and colored
-            ):
-                return None
+
             bf = state_copy.setdefault("battlefield", [])
             # Deduct the paid mana from the local player's pool (colored
             # requirements first, then generic greedily largest-color).
@@ -1299,7 +1325,7 @@ class MCTSEvaluator:
         """Apply 1-ply batched afterstate evaluation and policy prior calibration if gated."""
         from arenamcp.format_profile import detect_format_profile
         from arenamcp.magezero_client import MageZeroClient
-        from arenamcp.magezero_gating import sample_opponent_hands
+        from arenamcp.magezero_gating import sample_opponent_hands_meta
         from arenamcp.magezero_policy import (
             compute_legal_action_priors,
             decode_opponent_threats,
@@ -1328,8 +1354,12 @@ class MCTSEvaluator:
 
         eval_label = f"{selection.label} ({selection.similarity:.0%})"
         model_id = selection.model_spec.model_id
-
-        opp_hands = sample_opponent_hands(game_state, num_samples=8)
+        meta = sample_opponent_hands_meta(game_state, num_samples=8)
+        if not meta.hand_count_known:
+            # Unknown opponent hand count cannot be represented as known empty hands;
+            # fall back explicitly to heuristic lookahead.
+            return base_val, "Tactical Heuristic Lookahead", []
+        opp_hands = meta.samples
 
         # Build batch items: root state (with 8 sampled hands) + candidate afterstates
         items: list[tuple[dict[str, Any], list[str] | None]] = [
