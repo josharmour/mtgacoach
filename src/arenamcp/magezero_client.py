@@ -121,14 +121,19 @@ def _validate_result(
     data_list: Any,
     expected: int,
     width: int,
+    expected_model_id: str | None = None,
+    expected_checkpoint_hash: str | None = None,
+    served_meta: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
-    """Validate the decoded response synchronised to the request items.
+    """Validate the decoded response synchronised to the request items."""
+    if served_meta:
+        served_model = served_meta.get("served_model_id") or served_meta.get("model_id")
+        if expected_model_id and served_model and served_model != expected_model_id:
+            return [], f"served-model-mismatch: expected {expected_model_id}, got {served_model}"
+        served_hash = served_meta.get("served_checkpoint_hash") or served_meta.get("checkpoint_hash")
+        if expected_checkpoint_hash and served_hash and served_hash != expected_checkpoint_hash:
+            return [], f"served-checkpoint-mismatch: expected {expected_checkpoint_hash}, got {served_hash}"
 
-    Returns (annotated_results, reject_reason). Results are only returned when
-    ALL items are valid: exactly ``expected`` entries, request/response order
-    locked by request_index when present (mismatch = reorder), finite bounded
-    values, and finite ``width``-wide policy heads.
-    """
     if not isinstance(data_list, list):
         return [], f"response-not-a-list ({type(data_list).__name__})"
     if len(data_list) != expected:
@@ -324,6 +329,7 @@ class MageZeroClient:
         game_state: dict[str, Any],
         opponent_hand_cards: list[str] | None = None,
         model_id: str | None = None,
+        checkpoint_hash: str | None = None,
     ) -> dict[str, Any] | None:
         """Score a game state using the MageZero neural inference server."""
         if not cls.check_health():
@@ -342,9 +348,12 @@ class MageZeroClient:
             if not indices:
                 return None
 
-            req_dict = {"indices": indices}
+            req_dict: dict[str, Any] = {"indices": indices}
             if model_id:
                 req_dict["model"] = model_id
+                req_dict["model_id"] = model_id
+            if checkpoint_hash:
+                req_dict["checkpoint_hash"] = checkpoint_hash
             payload = msgpack.packb(req_dict, use_bin_type=True)
             headers = _get_auth_headers()
             headers["Content-Type"] = "application/x-msgpack"
@@ -359,9 +368,16 @@ class MageZeroClient:
                     cls._reject_reason = f"http-status {resp.status}"
                     return None
                 data = msgpack.unpackb(resp.read(), raw=False)
-                # normalize single result to a list for shared validation
-                data_list = data if isinstance(data, list) else [data]
-                results, reject_reason = _validate_result(data_list, expected=1, width=128)
+                served_meta = data if isinstance(data, dict) else None
+                row_data = data.get("results", []) if isinstance(data, dict) else (data if isinstance(data, list) else [data])
+                results, reject_reason = _validate_result(
+                    row_data,
+                    expected=1,
+                    width=128,
+                    expected_model_id=model_id,
+                    expected_checkpoint_hash=checkpoint_hash,
+                    served_meta=served_meta,
+                )
                 if reject_reason:
                     cls._reject_reason = reject_reason
                     logger.info("MageZero /evaluate rejected: %s", reject_reason)
@@ -382,6 +398,7 @@ class MageZeroClient:
         cls,
         items: list[tuple[dict[str, Any], list[str] | None]],
         model_id: str | None = None,
+        checkpoint_hash: str | None = None,
     ) -> list[dict[str, Any]] | None:
         """Score multiple game states / afterstates in a single batched HTTP request.
 
@@ -412,15 +429,16 @@ class MageZeroClient:
             if not all_indices:
                 return None
 
-            req_dict = {
+            req_dict: dict[str, Any] = {
                 "indices": all_indices,
                 "offsets": offsets,
-                # request/result indices (future versioned protocol); servers
-                # that ignore them are unaffected.
                 "items": [{"request_index": i, "offset": offsets[i]} for i in range(len(items))],
             }
             if model_id:
                 req_dict["model"] = model_id
+                req_dict["model_id"] = model_id
+            if checkpoint_hash:
+                req_dict["checkpoint_hash"] = checkpoint_hash
             payload = msgpack.packb(req_dict, use_bin_type=True)
             headers = _get_auth_headers()
             headers["Content-Type"] = "application/x-msgpack"
@@ -435,10 +453,15 @@ class MageZeroClient:
                     cls._reject_reason = f"http-status {resp.status}"
                     return None
                 raw_data = msgpack.unpackb(resp.read(), raw=False)
-                if isinstance(raw_data, dict):
-                    raw_data = raw_data.get("results", [])
+                served_meta = raw_data if isinstance(raw_data, dict) else None
+                row_data = raw_data.get("results", []) if isinstance(raw_data, dict) else raw_data
                 results, reject_reason = _validate_result(
-                    raw_data, expected=len(items), width=128
+                    row_data,
+                    expected=len(items),
+                    width=128,
+                    expected_model_id=model_id,
+                    expected_checkpoint_hash=checkpoint_hash,
+                    served_meta=served_meta,
                 )
                 if reject_reason:
                     cls._reject_reason = reject_reason

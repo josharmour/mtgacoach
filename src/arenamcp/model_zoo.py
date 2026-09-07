@@ -271,6 +271,15 @@ def _validate_certification(
             "certification: panel.arms must record every opponent arm of the "
             "promotion evaluation (incomplete panels are uncertified)"
         )
+    if cert.get("criteria_version") == "all10-v1":
+        if len(decks) != 10:
+            raise ManifestError(
+                f"certification: criteria_version 'all10-v1' requires 10 distinct panel decks, got {len(decks)}"
+            )
+        if len(arms) != 10:
+            raise ManifestError(
+                f"certification: criteria_version 'all10-v1' requires 10 panel arms, got {len(arms)}"
+            )
     arm_games_total = 0
     arm_wr_weighted = 0.0
     arm_opponents: list[str] = []
@@ -721,6 +730,10 @@ class ModelZooClient:
             base_url = MageZeroClient.get_active_endpoint()
             if not base_url:
                 with cls._lock:
+                    if cls._active_host is not None:
+                        cls._models_by_host.pop(cls._active_host, None)
+                    cls._active_host = None
+                    cls._resident_models.clear()
                     cls._last_refresh = now
                     cls._last_fallback_reason = "no-active-coaching-endpoint"
                 return []
@@ -753,12 +766,11 @@ class ModelZooClient:
         except Exception as e:
             with cls._lock:
                 cls._last_refresh = now
-                # Endpoint changed mid-flight or /models failed: the previous
-                # host's rows MUST NOT masquerade as current — invalidate.
-                if cls._active_host is not None and cls._active_host != base_url:
+                if cls._active_host is not None:
                     cls._models_by_host.pop(cls._active_host, None)
-                    cls._active_host = None
-                    cls._resident_models.clear()
+                cls._models_by_host.pop(base_url, None)
+                cls._active_host = None
+                cls._resident_models.clear()
                 cls._last_fallback_reason = f"model-discovery-failed: {type(e).__name__}"
             logger.debug("ModelZoo refresh from %s failed: %s", base_url, e)
             return []
@@ -847,11 +859,19 @@ class ModelZooClient:
         if refresh:
             cls.refresh()
 
+        from arenamcp.magezero_client import MageZeroClient
+        active_ep = MageZeroClient.get_active_endpoint()
+        if not active_ep or cls._active_host != active_ep:
+            return None
+
         specs = cls.cached_models()
         candidates: list[tuple[float, ModelSpec]] = []
         for spec in specs:
             if not spec.is_resident:
                 # Do not select models the server has not confirmed as loaded.
+                continue
+            if spec.promotion_status != "certified":
+                # Uncertified and rejected models are never selected by default
                 continue
             # 1. Format family and deck size must match
             if spec.format_family != profile.family:
@@ -924,7 +944,7 @@ class ModelZooClient:
         from arenamcp.magezero_client import MageZeroClient
 
         base_url = MageZeroClient.get_active_endpoint()
-        if not base_url:
+        if not base_url or cls._active_host != base_url:
             return
 
         spec = next((s for s in cls.cached_models() if s.model_id == model_id), None)

@@ -98,9 +98,20 @@ def test_mcts_evaluator_gated_in_1ply_afterstates():
             )
         return results
 
+    from dataclasses import replace
+    from arenamcp.model_zoo import ModelZooClient, ModelSelection, ModelSpec
+    from test_model_zoo import _v2_manifest
+    spec = replace(ModelSpec.from_manifest(_v2_manifest()), is_resident=True, promotion_status="certified")
+    selection = ModelSelection(
+        model_spec=spec,
+        similarity=1.0,
+        label="MageZero UWTempo v2",
+        is_resident=True,
+    )
+
     with patch.object(MageZeroClient, "check_health", return_value=True), patch.object(
         MageZeroClient, "evaluate_batch", side_effect=mock_eval_batch
-    ):
+    ), patch.object(ModelZooClient, "select", return_value=selection):
         payload = MCTSEvaluator.evaluate(state)
 
         # Verified neural source label

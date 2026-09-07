@@ -87,7 +87,7 @@ def _models_handler(payload, status: int = 200):
     return Handler
 
 
-def _v2_manifest(model_id: str = "UWTempo/ver2", warm: bool = False, resident: bool = True):
+def _v2_manifest(model_id: str = "UWTempo/ver2", warm: bool = False, resident: bool = True, status: str = "certified"):
     # Same deck the task-04 contract fixture uses (real training deck counts),
     # so the canonical deck_hash verifies.
     counts = {
@@ -112,6 +112,26 @@ def _v2_manifest(model_id: str = "UWTempo/ver2", warm: bool = False, resident: b
     from arenamcp.model_zoo import _canonical_deck_hash, _normalize_deck_counts
 
     deck_hash = _canonical_deck_hash(_normalize_deck_counts(counts))
+    arms = [
+        {"opponent": f"Deck_{i}", "win_rate": 0.60, "games": 100, "returncode": 0}
+        for i in range(10)
+    ]
+    cert = {
+        "evaluated_at": "2026-09-06T00:00:00",
+        "criteria_version": "all10-v1",
+        "checkpoint_hash": "a" * 64,
+        "deck_hash": deck_hash,
+        "panel": {
+            "decks": [a["opponent"] for a in arms],
+            "arms": arms,
+            "games": 1000,
+            "wins": 600,
+            "losses": 400,
+            "draws": 0,
+        },
+        "aggregation": "mean_win_rate",
+        "threshold": 0.50,
+    }
     return {
         "schema_version": 2,
         "model_id": model_id,
@@ -139,8 +159,8 @@ def _v2_manifest(model_id: str = "UWTempo/ver2", warm: bool = False, resident: b
             "terminal_handling": "win=1 loss=-1 draw=0",
             "truncation_handling": "none",
         },
-        "promotion_status": "uncertified",
-        "certification": None,
+        "promotion_status": status,
+        "certification": cert if status == "certified" else None,
         "capabilities": {"warm": warm},
         "protocol_version": 2,
         "trained_at": "2026-09-05T00:52:09",

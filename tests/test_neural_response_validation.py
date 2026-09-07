@@ -342,6 +342,17 @@ def test_evaluator_valid_batch_applies_rl(monkeypatch: pytest.MonkeyPatch):
             out.append(row)
         return out
 
+    from dataclasses import replace
+    from arenamcp.model_zoo import ModelZooClient, ModelSelection, ModelSpec
+    from test_model_zoo import _v2_manifest
+    spec = replace(ModelSpec.from_manifest(_v2_manifest()), is_resident=True, promotion_status="certified")
+    selection = ModelSelection(
+        model_spec=spec,
+        similarity=1.0,
+        label="MageZero UWTempo v2",
+        is_resident=True,
+    )
+    monkeypatch.setattr(ModelZooClient, "select", classmethod(lambda cls, *a, **kw: selection))
     monkeypatch.setattr(MageZeroClient, "evaluate_batch", classmethod(lambda cls, *a, **kw: valid_batch(*a, **kw)))
     payload = MCTSEvaluator.evaluate(dict(_GATED_STATE), force=True)
     assert "MageZero UWTempo v2" in payload.eval_source
