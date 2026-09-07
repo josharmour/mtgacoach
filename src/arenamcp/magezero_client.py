@@ -218,6 +218,19 @@ class MageZeroClient:
         return cls._reject_reason
 
     @classmethod
+    def get_active_endpoint(cls) -> str | None:
+        """Return the currently connected coaching endpoint, or None.
+
+        Runs a (budget-bounded, cached) health/discovery pass when the cache
+        is cold or stale; never contacts port 50052 (task 01 policy) and never
+        blocks beyond the discovery budget. This is the single endpoint
+        accessor for model-zoo discovery (task 05) — the host it returns is
+        the same one ``evaluate``/``evaluate_batch`` will use, so manifest
+        residency scoping and inference destination cannot disagree.
+        """
+        return cls._active_host if cls.check_health() else None
+
+    @classmethod
     def check_health(cls, timeout: float = 0.5, force: bool = False) -> bool:
         """Check if any MageZero coaching endpoint is reachable.
 

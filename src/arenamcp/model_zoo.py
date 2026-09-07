@@ -3,6 +3,18 @@
 Implements the Model Zoo manifest contract, selecting the best trained neural model
 for the hero's deck and format, firing non-blocking warm requests during mulligans,
 and providing seamless fallback to heuristic lookahead when off-distribution.
+
+Task 05 (wired discovery + honest residency):
+- Model discovery is wired to the real coaching lifecycle: the same
+  ``MageZeroClient`` endpoint used for /evaluate is probed for /models, with
+  a bounded TTL cache and asynchronous background refresh.
+- Model rows and residency are scoped to the endpoint that advertised them;
+  switching endpoints invalidates the previous cache.
+- Nothing is resident or certified by default: there is NO bundled fallback
+  model and NO invented benchmark value. Selection only ever considers
+  specs a live server reported as resident.
+- Warm requests are only issued when the manifest (task 04 contract)
+  explicitly declares ``capabilities.warm = True``.
 """
 
 from __future__ import annotations
@@ -510,8 +522,13 @@ class ModelSelection:
     is_resident: bool
 
 
-# Canonical default manifest for UWTempo/ver2 (bundled fallback)
-_DEFAULT_UWTEMPO_MANIFEST = {
+# LEGACY artifact, retained as test evidence only (task 05): the old client
+# bundled this v1 manifest as a "resident" default model and implicitly carried
+# the invented 0.26 gauntlet benchmark ("historical 0.26 benchmark score" from
+# the task table). Production code must never re-install it: v1 manifests are
+# REJECTED by ModelSpec.from_manifest, and residency can only come from a live
+# server. Import target for tests that assert the bundled default is gone.
+LEGACY_BUNDLED_UWTEMPO_MANIFEST_V1: dict[str, Any] = {
     "manifest_version": 1,
     "model_id": "UWTempo/ver2",
     "deck": "UWTempo",
@@ -543,58 +560,299 @@ _DEFAULT_UWTEMPO_MANIFEST = {
 
 
 class ModelZooClient:
-    """Manages model discovery, selection, and non-blocking warming."""
+    """Manages model discovery, selection, and non-blocking warming.
 
-    _models: list[ModelSpec] = [ModelSpec.from_dict(_DEFAULT_UWTEMPO_MANIFEST, is_resident=True)]
+    Residency policy (task 05):
+
+    - NOTHING is resident until a real inference server says so. The client
+      starts EMPTY — no bundled fallback model, no invented resident set, no
+      invented benchmark value. With no healthy endpoint, ``select()``
+      returns None and the coach falls back to the heuristic path explicitly.
+    - Model rows and residency are scoped to the endpoint that advertised
+      them. A different active endpoint invalidates the previous cache
+      before new manifests are stored: manifest content and residency are
+      per-server facts, not global ones.
+    - Refresh is bounded and lifecycle-friendly: first discovery is a
+      synchronous bounded fetch; a stale same-endpoint cache is refreshed
+      asynchronously on a daemon thread so the coaching loop never blocks.
+    """
+
+    # How long a /models snapshot is trusted before re-discovery. Bounded
+    # expiry is required: residency is a server-side fact that can change.
+    REFRESH_TTL_SECONDS: float = 60.0
+    FETCH_TIMEOUT_SECONDS: float = 1.5
+
+    _models_by_host: dict[str, list[ModelSpec]] = {}
+    _active_host: str | None = None
+    _resident_models: set[str] = set()
     _last_refresh: float = 0.0
-    _resident_models: set[str] = {"UWTempo/ver2"}
+    _last_fallback_reason: str | None = "discovery-not-run"
+    _refresh_thread: threading.Thread | None = None
     _lock = threading.Lock()
 
     @classmethod
-    def refresh(cls, candidate_urls: list[str] | None = None) -> list[ModelSpec]:
-        """Fetch active model manifests from inference servers (cached 60s)."""
-        now = time.time()
-        if now - cls._last_refresh < 60.0 and cls._models:
-            return list(cls._models)
+    def _get_auth_headers(cls) -> dict[str, str]:
+        from arenamcp.magezero_client import _get_auth_headers
 
+        return _get_auth_headers()
+
+    @classmethod
+    def reset(cls) -> None:
+        """Clear all discovery state (tests and lifecycle teardown)."""
+        with cls._lock:
+            cls._models_by_host.clear()
+            cls._active_host = None
+            cls._resident_models.clear()
+            cls._last_refresh = 0.0
+            cls._last_fallback_reason = "discovery-reset"
+
+    @classmethod
+    def _fetch_manifests(cls, base_url: str) -> dict[str, Any]:
+        """Fetch + parse /models from ``base_url``.
+
+        Returns {"models": [ModelSpec...], "resident_ids": set[str]}.
+        Residency is accepted ONLY as reported by the server; manifests are
+        parsed under the strict v2 contract (task 04) — a malformed or stale
+        v1 row raises instead of quietly entering selection.
+        """
+        import urllib.request
+
+        req = urllib.request.Request(
+            f"{base_url.rstrip('/')}/models",
+            headers={"Accept": "application/json", **cls._get_auth_headers()},
+        )
+        with urllib.request.urlopen(req, timeout=cls.FETCH_TIMEOUT_SECONDS) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"/models returned HTTP {resp.status}")
+            data = json.loads(resp.read().decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ManifestError("/models payload must be a JSON object")
+
+        models_list = data.get("models") or []
+        if not isinstance(models_list, list):
+            raise ManifestError("/models: 'models' must be a list")
+
+        resident_raw = data.get("resident")
+        if isinstance(resident_raw, dict):
+            raw_ids = resident_raw.get("models") or resident_raw.get("ids") or []
+        elif resident_raw is None:
+            raw_ids = []
+        elif isinstance(resident_raw, list):
+            raw_ids = resident_raw
+        else:
+            raise ManifestError("/models: 'resident' must be a list or object")
+        if not isinstance(raw_ids, list):
+            raise ManifestError("/models: 'resident' entries malformed")
+
+        resident_ids: set[str] = set()
+        for entry in raw_ids:
+            if isinstance(entry, str) and entry.strip():
+                resident_ids.add(entry.strip())
+            elif isinstance(entry, dict) and isinstance(entry.get("model_id"), str):
+                if entry["model_id"].strip():
+                    resident_ids.add(entry["model_id"].strip())
+            else:
+                raise ManifestError("/models: 'resident' entries malformed")
+
+        parsed: list[ModelSpec] = []
+        seen_ids: set[str] = set()
+        for idx, raw_manifest in enumerate(models_list):
+            if not isinstance(raw_manifest, dict):
+                raise ManifestError(f"/models: entry {idx} is not an object")
+            spec = ModelSpec.from_manifest(raw_manifest)
+            if spec.model_id in seen_ids:
+                raise ManifestError(f"/models: duplicate model_id {spec.model_id!r}")
+            seen_ids.add(spec.model_id)
+            spec_dict: dict[str, Any] = dict(spec.__dict__)
+            spec_dict["is_resident"] = spec.model_id in resident_ids
+            parsed.append(ModelSpec(**spec_dict))
+
+        if parsed and not resident_ids:
+            logger.debug(
+                "ModelZoo discovery from %s advertised %d model(s) but none resident",
+                base_url,
+                len(parsed),
+            )
+        return {"models": parsed, "resident_ids": resident_ids}
+
+    @classmethod
+    def _snapshot_for(cls, host: str | None) -> list[ModelSpec]:
+        """Model rows cached for ``host`` (None-returning helper for tests)."""
+        if host is None:
+            return []
+        with cls._lock:
+            return list(cls._models_by_host.get(host, []))
+
+    @classmethod
+    def refresh(
+        cls,
+        candidate_urls: list[str] | None = None,
+        *,
+        force: bool = False,
+        async_ok: bool = True,
+    ) -> list[ModelSpec]:
+        """Bounded discovery of the served model zoo through the real client.
+
+        Resolution order: explicit ``candidate_urls`` override, else the
+        coaching client's actual endpoint (``MageZeroClient.get_active_
+        endpoint()``), which itself runs the budget-bounded /healthz
+        discovery with fallback reasons (task 01).
+
+        Behavior:
+        - TTL cache is scoped to the active endpoint. A cache from a
+          different host is invalidated before any new data is stored.
+        - First discovery is synchronous and bounded by the HTTP timeout;
+          a stale cache for the SAME endpoint is refreshed asynchronously
+          (daemon thread) so the coaching loop never blocks on re-discovery.
+        - Empty/unavailable/malformed discovery sets an explicit fallback
+          reason and leaves selection empty. This method NEVER injects a
+          bundled model, never synthesizes residency, and never carries a
+          resident set across endpoints.
+
+        Returns the CURRENT model rows for the resolved endpoint (possibly
+        empty — callers must treat empty as explicit fallback, not data).
+        """
         from arenamcp.magezero_client import MageZeroClient
 
-        base_url = MageZeroClient.get_active_endpoint()
-        if not base_url:
-            return list(cls._models)
-
-        import urllib.request
-        try:
-            req = urllib.request.Request(f"{base_url}/models", headers={"Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=1.5) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                models_list = data.get("models") or []
-                resident_set = set(data.get("resident") or [])
-                parsed = [
-                    ModelSpec.from_dict(m, is_resident=(m.get("model_id") in resident_set))
-                    for m in models_list
-                ]
+        now = time.time()
+        if candidate_urls:
+            base_url = candidate_urls[0].rstrip("/")
+        else:
+            base_url = MageZeroClient.get_active_endpoint()
+            if not base_url:
                 with cls._lock:
-                    if parsed:
-                        cls._models = parsed
-                        cls._resident_models = resident_set
                     cls._last_refresh = now
-        except Exception as e:
-            logger.debug("Failed to query /models from inference server: %s", e)
+                    cls._last_fallback_reason = "no-active-coaching-endpoint"
+                return []
 
-        return list(cls._models)
+        with cls._lock:
+            cached_host = cls._active_host
+            cache_fresh = (
+                cached_host is not None
+                and cached_host == base_url
+                and (now - cls._last_refresh) < cls.REFRESH_TTL_SECONDS
+                and bool(cls._models_by_host.get(cached_host, []))
+            )
+            if not force and cache_fresh:
+                return list(cls._models_by_host.get(cached_host) or [])
+            if (
+                not force
+                and not cache_fresh
+                and async_ok
+                and cached_host is not None
+                and cached_host == base_url
+            ):
+                # Same endpoint, expired data: refresh in the background (the
+                # coaching loop must not stall on re-discovery) and serve the
+                # current snapshot meanwhile.
+                cls._start_background_refresh_locked()
+                return list(cls._models_by_host.get(cached_host, []))
+
+        try:
+            discovered = cls._fetch_manifests(base_url)
+        except Exception as e:
+            with cls._lock:
+                cls._last_refresh = now
+                # Endpoint changed mid-flight or /models failed: the previous
+                # host's rows MUST NOT masquerade as current — invalidate.
+                if cls._active_host is not None and cls._active_host != base_url:
+                    cls._models_by_host.pop(cls._active_host, None)
+                    cls._active_host = None
+                    cls._resident_models.clear()
+                cls._last_fallback_reason = f"model-discovery-failed: {type(e).__name__}"
+            logger.debug("ModelZoo refresh from %s failed: %s", base_url, e)
+            return []
+
+        models: list[ModelSpec] = discovered["models"]
+        resident_ids: set[str] = discovered["resident_ids"]
+        with cls._lock:
+            if cls._active_host is not None and cls._active_host != base_url:
+                cls._models_by_host.pop(cls._active_host, None)
+            cls._models_by_host[base_url] = models
+            cls._active_host = base_url
+            cls._resident_models = set(resident_ids)
+            cls._last_refresh = now
+            cls._last_fallback_reason = None if models else "model-discovery-empty"
+        return list(models)
+
+    @classmethod
+    def _start_background_refresh_locked(cls) -> None:
+        thread = cls._refresh_thread
+        if thread is not None and thread.is_alive():
+            return
+
+        def _bg() -> None:
+            try:
+                cls.refresh(force=True, async_ok=False)
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("ModelZoo background refresh failed: %s", e)
+
+        cls._refresh_thread = threading.Thread(target=_bg, daemon=True, name="model-zoo-refresh")
+        cls._refresh_thread.start()
+
+    @classmethod
+    def last_fallback_reason(cls) -> str | None:
+        """Why the last discovery pass produced no usable model rows."""
+        return cls._last_fallback_reason
+
+    @classmethod
+    def active_endpoint(cls) -> str | None:
+        """The endpoint whose manifests/residency are currently cached."""
+        return cls._active_host
+
+    @classmethod
+    def resident_model_ids(cls) -> set[str]:
+        """Model ids the ACTIVE server reports as resident right now."""
+        with cls._lock:
+            return set(cls._resident_models)
+
+    @classmethod
+    def cached_models(cls) -> list[ModelSpec]:
+        """Model rows cached for the active endpoint (possibly empty)."""
+        host = cls._active_host
+        if host is None:
+            return []
+        with cls._lock:
+            return list(cls._models_by_host.get(host, []))
 
     @classmethod
     def select(
-        cls, profile: FormatProfile, hero_deck: Counter[str] | list[str]
+        cls,
+        profile: FormatProfile,
+        hero_deck: Counter[str] | list[str],
+        *,
+        refresh: bool = True,
     ) -> ModelSelection | None:
-        """Select the highest-quality resident or warming model matching the hero deck."""
+        """Select the best matching model among the ACTIVE server's specs.
+
+        Only RESIDENT specs are eligible: a non-resident model is not loaded
+        on the GPU, and warming is not load-bearing (task 05). With no
+        discovery data, or no matching resident model, selection returns
+        None — the caller preserves the heuristic path explicitly.
+        """
         hero_counts = Counter(hero_deck)
         if not hero_counts:
             return None
 
+        # Normalization must MATCH the manifest side: ModelSpec carries
+        # casefolded/canonical deck_counts (task 04), so raw game-state card
+        # names ("Malcolm, Alluring Scoundrel" vs "malcolm, ...") have to be
+        # normalized identically before any similarity comparison, otherwise
+        # a perfect deck match computes as 0.0.
+        try:
+            hero_counts = Counter(_normalize_deck_counts(dict(hero_counts)))
+        except ManifestError:
+            pass  # non-representable input (defensive); compare as-is
+
+        if refresh:
+            cls.refresh()
+
+        specs = cls.cached_models()
         candidates: list[tuple[float, ModelSpec]] = []
-        for spec in cls._models:
+        for spec in specs:
+            if not spec.is_resident:
+                # Do not select models the server has not confirmed as loaded.
+                continue
             # 1. Format family and deck size must match
             if spec.format_family != profile.family:
                 continue
@@ -606,7 +864,7 @@ class ModelZooClient:
                 if not profile.commander_names or spec.commander not in profile.commander_names:
                     continue
 
-            # 3. Compute match score against model's reference deck
+            # 3. Compute match score against the model's reference deck
             spec_counter = Counter(spec.deck_counts)
             if not spec_counter:
                 continue
@@ -622,24 +880,26 @@ class ModelZooClient:
                 if score >= 0.75 and distinct_seen >= 2:
                     candidates.append((score, spec))
             else:
-                # Full decklist available: count-weighted Jaccard
+                # Full decklist available: count-weighted Jaccard against the
+                # manifest's OWN similarity threshold (v2 gate block, task 04).
                 sim = compute_count_weighted_jaccard(hero_counts, spec_counter)
-                if sim >= spec.gate_threshold:
+                if sim >= spec.deck_similarity_threshold:
                     candidates.append((sim, spec))
 
         if not candidates:
+            if not specs:
+                logger.debug(
+                    "ModelZoo select: no discovered models (reason: %s)",
+                    cls.last_fallback_reason(),
+                )
             return None
 
-        # Sort candidates by:
-        # 1. is_resident (prioritize currently loaded GPU models)
-        # 2. similarity score descending
-        # 3. gauntlet win rate descending
+        # Rank by loading state (warming last), then similarity descending.
+        # NO benchmark/win-rate tiebreak: gauntlet_win_rate is historical
+        # metadata and certification is a strict, evidenced boolean — never a
+        # fabricated ranking signal.
         candidates.sort(
-            key=lambda item: (
-                1 if item[1].is_resident else 0,
-                item[0],
-                item[1].gauntlet_win_rate,
-            ),
+            key=lambda item: (0 if item[1].is_warming else 1, item[0]),
             reverse=True,
         )
 
@@ -653,27 +913,55 @@ class ModelZooClient:
 
     @classmethod
     def warm(cls, model_id: str) -> None:
-        """Send asynchronous non-blocking warm request during mulligans."""
+        """Non-blocking warm request — ONLY when the server advertises it.
+
+        Task 04 contract: manifests declare warm support via the
+        ``capabilities`` block. If the discovered spec for ``model_id`` does
+        not explicitly declare ``capabilities.warm is True``, NO request is
+        issued (task-05 clause: never send unsupported warm requests to the
+        inference server).
+        """
         from arenamcp.magezero_client import MageZeroClient
 
         base_url = MageZeroClient.get_active_endpoint()
         if not base_url:
             return
 
+        spec = next((s for s in cls.cached_models() if s.model_id == model_id), None)
+        if spec is None:
+            logger.debug(
+                "ModelZoo warm skipped: %s not in the discovered zoo "
+                "(no capability data to authorize a warm request)",
+                model_id,
+            )
+            return
+        # Capability gate: explicit True only. A missing key defaults to
+        # unsupported; truthy-from-default is never sufficient.
+        capabilities = spec.capabilities if isinstance(spec.capabilities, dict) else {}
+        if capabilities.get("warm") is not True:
+            logger.debug(
+                "ModelZoo warm skipped: server does not advertise warm support for %s",
+                model_id,
+            )
+            return
+
         def _do_warm():
             try:
-                import urllib.request
-
-                req = urllib.request.Request(
-                    f"{base_url}/models/{model_id}/warm",
-                    data=b"{}",
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=2.0) as resp:
-                    logger.info("Warmed model %s on inference server", model_id)
+                cls._post_warm(f"{base_url.rstrip('/')}/models/{model_id}/warm")
+                logger.info("Warmed model %s on inference server", model_id)
             except Exception as e:
                 logger.debug("Failed to warm model %s: %s", model_id, e)
 
         thread = threading.Thread(target=_do_warm, daemon=True, name=f"warm-{model_id}")
         thread.start()
+
+    @classmethod
+    def _post_warm(cls, url: str, timeout: float = 2.0) -> None:
+        """Issue the actual warm POST (HTTP hook for tests/audit)."""
+        import urllib.request
+
+        headers = {"Content-Type": "application/json", **cls._get_auth_headers()}
+        req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status not in (200, 202, 204):
+                raise RuntimeError(f"warm request returned HTTP {resp.status}")
