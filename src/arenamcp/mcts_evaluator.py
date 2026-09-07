@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -18,6 +19,31 @@ from arenamcp.magezero_client import MageZeroClient
 from arenamcp.opponent_model import OpponentModel, OpponentProfile
 
 logger = logging.getLogger(__name__)
+
+
+def _freeze(value: Any, _depth: int = 0) -> Any:
+    """Recursively freeze JSON-like data into an immutable, hashable, sortable form.
+
+    Scalars are type-tagged so mixed optional fields (``None`` vs ``int`` vs
+    ``str``) always compare and hash cleanly; lists/tuples/dicts nest as
+    tuples. Lists preserve order; dicts sort by key. Cyclic or overly deep
+    structures terminate at a depth guard.
+    """
+    if _depth > 16:
+        return ("depth-guard",)
+    if value is None:
+        return ("z",)
+    if isinstance(value, bool):
+        return ("b", value)
+    if isinstance(value, (int, float)):
+        return ("n", round(float(value), 9))
+    if isinstance(value, str):
+        return ("s", value)
+    if isinstance(value, dict):
+        return ("m", tuple(sorted((str(k), _freeze(v, _depth + 1)) for k, v in value.items())))
+    if isinstance(value, (list, tuple)):
+        return ("l", tuple(_freeze(v, _depth + 1) for v in value))
+    return ("o", repr(value))
 
 
 @dataclass
@@ -163,12 +189,162 @@ class MCTSEvaluator:
 
     _last_sig: tuple[Any, ...] | None = None
     _last_payload: MCTSTreePayload | None = None
+    _last_payload_at: float = 0.0
+
+    # Cached heuristic evaluations expire so a stale tactical payload is not
+    # retained forever if serving state changes underneath it. Override the
+    # class attribute (or monkeypatch it in tests) to tune. TTL=0 disables
+    # expiry only — the payload cache itself stays active (use force=True or
+    # reset_cache() to bypass/clear it).
+    CACHE_TTL_SECONDS: float = 15.0
 
     @classmethod
     def reset_cache(cls) -> None:
         """Reset the cached evaluation state."""
         cls._last_sig = None
         cls._last_payload = None
+        cls._last_payload_at = 0.0
+
+    @classmethod
+    def _cache_fresh(cls) -> bool:
+        """True while the cached payload is inside its bounded expiry window."""
+        ttl = cls.CACHE_TTL_SECONDS
+        if ttl <= 0.0:
+            return True
+        return (time.monotonic() - cls._last_payload_at) < ttl
+
+    @staticmethod
+    def _zone_identity(zone: Any, *, ordered: bool = False) -> tuple:
+        """Semantically complete identity of a zone's cards, as a hashable tuple.
+
+        Every entry is built from type-tagged, scalar-normalized values, so
+        mixed or missing optional fields (e.g. one Forest with an integer
+        instance_id and another without) can never raise during comparison.
+
+        Covers name, instance id, controller/owner seat, tapped AND attacking
+        state, summoning-sickness-signal (turn_entered_battlefield), power and
+        toughness, mana cost, type line, and oracle text — the card facts that
+        candidate generation, afterstate construction, and encoding consume.
+
+        ``ordered=False`` (default) treats the zone as a multiset (hand/board
+        order is not semantically consumed); ``ordered=True`` preserves card
+        sequence — required for the stack, where the top spell is what a
+        response interacts with.
+        """
+        if not isinstance(zone, (list, tuple)):
+            return ()
+        entries: list[tuple] = []
+        for c in zone:
+            if not isinstance(c, dict):
+                entries.append(("raw", _freeze(c)))
+                continue
+            name = c.get("name")
+            if not name:
+                continue
+            entries.append(
+                (
+                    ("name", str(name)),
+                    ("id", _freeze(c.get("instance_id"))),
+                    ("ctrl", _freeze(c.get("controller_seat_id"))),
+                    ("owner", _freeze(c.get("owner_seat_id"))),
+                    ("tapped", bool(c.get("is_tapped"))),
+                    ("attacking", bool(c.get("is_attacking"))),
+                    ("etb", _freeze(c.get("turn_entered_battlefield"))),
+                    ("pt", _freeze((c.get("power") if "power" in c else None,
+                                    c.get("toughness") if "toughness" in c else None))),
+                    ("cost", str(c.get("mana_cost") or "")),
+                    ("types", str(c.get("type_line") or "")),
+                    ("oracle", str(c.get("oracle_text") or "")),
+                )
+            )
+        if not ordered:
+            entries.sort()
+        return tuple(entries)
+
+    @classmethod
+    def _decision_signature(cls, game_state: dict[str, Any], local_seat: Any) -> tuple:
+        """Immutable semantic fingerprint of the fields consumed by evaluation.
+
+        Includes actor/phase context, full card identity of all zones (with
+        controller and tapped state), mana pool, life totals, opponent hand
+        count, stack identity, pending decision, and match identity scoped to
+        the current game. Cached payloads must never be reused across different
+        decisions merely because zone *lengths* agree.
+        """
+        turn = game_state.get("turn") or {}
+        players = game_state.get("players") or []
+        zones = game_state.get("zones") or {}
+
+        mana: tuple = ()
+        opp_hand_count: Any = None
+        opp_life: Any = None
+        for p in players:
+            if not isinstance(p, dict):
+                continue
+            is_local = p.get("is_local") or p.get("seat_id") == local_seat
+            if is_local:
+                mana = tuple(sorted((k, _freeze(v)) for k, v in (p.get("mana_pool") or {}).items()))
+            else:
+                opp_life = p.get("life_total") if p.get("life_total") is not None else opp_life
+
+        # Opponent-hand extraction EXACTLY mirrors MCTSEvaluator.evaluate's
+        # precedence: top-level opponent_hand_count, then zones, then the
+        # (non-local) player row. Zero counts are preserved (0 is a real,
+        # distinct state from missing/unknown); the previously-simulated
+        # default of 4 is NOT baked into the signature.
+        opp_hand_count = game_state.get("opponent_hand_count")
+        if opp_hand_count is None and isinstance(zones, dict):
+            opp_hand_count = zones.get("opponent_hand_count")
+        if opp_hand_count is None:
+            for p in players:
+                if isinstance(p, dict) and not (p.get("is_local") or p.get("seat_id") == local_seat):
+                    opp_hand_count = p.get("hand_count", p.get("cards_in_hand"))
+                    break
+
+        hero_player = next(
+            (p for p in players if isinstance(p, dict) and p.get("is_local")), None
+        )
+        hero_life = next(
+            (p.get("life_total") for p in players
+             if isinstance(p, dict) and (p.get("is_local") or p.get("seat_id") == local_seat)),
+            None,
+        )
+        hero_lands_played = hero_player.get("lands_played") if hero_player else None
+
+        return (
+            # Actor / decision context
+            turn.get("turn_number"),
+            str(turn.get("phase") or game_state.get("phase", "")),
+            turn.get("step"),
+            turn.get("active_player"),
+            turn.get("priority_player"),
+            # pending_decision is nested semantic state; deep-freeze so an
+            # in-place options mutation above (e.g. options.append) invalidates.
+            _freeze(game_state.get("pending_decision")),
+            # Actor + actor-level state
+            local_seat,
+            hero_life,
+            opp_life,
+            mana,
+            hero_lands_played,
+            # Opponent information
+            opp_hand_count,
+            # Match identity
+            game_state.get("match_id") or game_state.get("arena_match_id") or None,
+            # Zone identities (semantic card facts, fully). The stack is the
+            # one order-sensitive zone: the top spell is what a response
+            # interacts with, so its sequence is preserved.
+            cls._zone_identity(game_state.get("hand")),
+            cls._zone_identity(game_state.get("battlefield")),
+            cls._zone_identity(game_state.get("stack"), ordered=True),
+            cls._zone_identity(game_state.get("graveyard")),
+            cls._zone_identity(game_state.get("exile")),
+            cls._zone_identity(game_state.get("command")),
+            cls._zone_identity(zones.get("command") if isinstance(zones, dict) else None),
+            # Model/checkpoint identity when exposed by upstream tasks (04)
+            game_state.get("magezero_model_id"),
+        )
+
 
     @classmethod
     def evaluate(cls, game_state: dict[str, Any], force: bool = False) -> MCTSTreePayload:
@@ -194,19 +370,13 @@ class MCTSEvaluator:
         hand = game_state.get("hand") or []
         battlefield = game_state.get("battlefield") or []
         stack = game_state.get("stack") or []
-        sig = (
-            turn_num,
-            phase,
-            turn.get("step"),
-            turn.get("active_player"),
-            turn.get("priority_player"),
-            len(hand),
-            len(battlefield),
-            len(stack),
-            game_state.get("pending_decision"),
-            tuple((p.get("seat_id"), p.get("life_total")) for p in players if isinstance(p, dict)),
-        )
-        if not force and cls._last_sig == sig and cls._last_payload is not None:
+        sig = cls._decision_signature(game_state, local_seat)
+        if (
+            not force
+            and cls._last_sig == sig
+            and cls._last_payload is not None
+            and cls._cache_fresh()
+        ):
             return cls._last_payload
 
         hero_life, opp_life = 20, 20
@@ -839,6 +1009,7 @@ class MCTSEvaluator:
         )
         cls._last_sig = sig
         cls._last_payload = payload
+        cls._last_payload_at = time.monotonic()
         return payload
 
     @classmethod
