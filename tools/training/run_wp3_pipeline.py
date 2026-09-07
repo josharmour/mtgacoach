@@ -110,8 +110,12 @@ def stage_parse(
     per_log_counts: dict[str, int] = {}
 
     for lp in log_paths:
+        file_sha = _sha256_file(lp)
         print(f"  Parsing {lp} ...", end=" ", flush=True)
         decisions, sessions = PARSER.parse_log(str(lp), primary_deck=primary_deck, decks_dir=decks_dir)
+        for d in decisions:
+            d["source_hash"] = file_sha
+            d["canonical_game_id"] = FILTERS.canonical_game_id(d)
         all_decisions.extend(decisions)
         per_log_counts[str(lp)] = len(decisions)
         checked = PARSER.LAST_PARSE_STATS.get("deck_signature_checked_rows", 0)
@@ -476,6 +480,18 @@ def stage_write(
     oracle_summary: dict[str, Any] | None = None,
     outcome_mode: str = "all",
     render_drop_counts: dict[str, Counter] | None = None,
+    log_paths: list[Path] | None = None,
+    split_method: str = "hash",
+    split_migration: bool = False,
+    split_from: str | None = None,
+    teacher_checkpoint: str | None = None,
+    primary_deck: str | None = None,
+    decks_dir: str | None = None,
+    balance: str | None = None,
+    max_pass_frac: float = 0.40,
+    seed: int = 7,
+    include_combat: bool = False,
+    min_oracle_coverage: float | None = None,
 ) -> dict:
     """Write per-split JSONL files and manifest. Returns manifest dict."""
     outdir.mkdir(parents=True, exist_ok=True)
@@ -571,6 +587,99 @@ def stage_write(
                 "mean": round(sum(menu_sizes) / len(menu_sizes), 2) if menu_sizes else 0,
             },
         }
+
+    # Lineage: input hashes, dirty source hashes, versions, card map, teacher provenance
+    input_log_hashes: dict[str, str] = {}
+    if log_paths:
+        for lp in log_paths:
+            try:
+                input_log_hashes[lp.name] = _sha256_file(lp)
+            except Exception:
+                pass
+
+    core_modules = [
+        "tools/training/run_wp3_pipeline.py",
+        "tools/training/magezero_filters.py",
+        "tools/training/build_magezero_bridge.py",
+        "tools/training/parse_magezero_log.py",
+        "tools/training/magezero_combat_micro.py",
+        "tools/training/oracle_coverage.py",
+    ]
+    dirty_source_hashes: dict[str, str] = {}
+    for mod in core_modules:
+        mod_path = REPO / mod
+        if mod_path.exists():
+            try:
+                dirty_source_hashes[mod] = _sha256_file(mod_path)
+            except Exception:
+                pass
+
+    git_dirty = False
+    try:
+        res = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(REPO),
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            git_dirty = True
+    except Exception:
+        pass
+
+    card_map_path = REPO / "tools" / "training" / "magezero_card_map.json"
+    card_map_hash = _sha256_file(card_map_path) if card_map_path.exists() else None
+
+    game_splits: dict[str, str] = {}
+    for sname, srows in splits.items():
+        if sname == "quarantine":
+            continue
+        for r in srows:
+            cgid = FILTERS.canonical_game_id(r)
+            if cgid:
+                game_splits[cgid] = sname
+
+    manifest["lineage"] = {
+        "schema_version": "wp3-v2",
+        "parser_version": getattr(PARSER, "PARSER_VERSION", "1.1.0"),
+        "renderer_version": getattr(BRIDGE, "RENDERER_VERSION", "1.1.0"),
+        "git_sha": _git_sha(),
+        "git_dirty": git_dirty,
+        "input_log_hashes": input_log_hashes,
+        "dirty_source_hashes": dirty_source_hashes,
+        "card_map_hash": card_map_hash,
+        "teacher_checkpoint": {
+            "identity": teacher_checkpoint if teacher_checkpoint else "unknown",
+            "provenance": "authoritative" if teacher_checkpoint else "teacher_unknown",
+        },
+        "config": {
+            "max_pass_frac": max_pass_frac,
+            "seed": seed,
+            "balance": balance,
+            "include_combat": include_combat,
+            "primary_deck": primary_deck,
+            "decks_dir": decks_dir,
+            "min_oracle_coverage": min_oracle_coverage,
+            "outcome_mode": outcome_mode,
+            "split_method": split_method,
+            "split_migration": split_migration,
+            "split_from": split_from,
+        },
+    }
+    manifest["split_config"] = {
+        "method": split_method,
+        "seed": seed,
+        "migration": split_migration,
+        "split_from": split_from,
+    }
+    manifest["game_splits"] = game_splits
+
+    quarantined_count = len(splits.get("quarantine", []))
+    manifest["quarantine"] = {
+        "count": quarantined_count,
+        "reason": "missing_game_id" if quarantined_count else "none",
+    }
 
     manifest_path = outdir / "manifest.json"
     with open(manifest_path, "w", encoding="utf-8") as f:
@@ -782,9 +891,13 @@ def stage_combat(
     combat_rows: list[dict] = []
     total_acct: Counter = Counter()
     for lp in log_paths:
+        file_sha = _sha256_file(lp)
         print(f"  Combat-scanning {lp} ...", end=" ", flush=True)
         rows, acct = COMBAT.parse_combat_log(str(lp))
         COMBAT.verify_accounting(acct)
+        for r in rows:
+            r["source_hash"] = file_sha
+            r["canonical_game_id"] = FILTERS.canonical_game_id(r)
         combat_rows.extend(rows)
         total_acct.update(acct)
         print(f"{len(rows)} combat rows")
@@ -832,6 +945,10 @@ def run_pipeline(
     decks_dir: str | None = None,
     min_oracle_coverage: float | None = None,
     outcome_mode: str = "all",
+    split_method: str = "hash",
+    split_migration: bool = False,
+    split_from: str | None = None,
+    teacher_checkpoint: str | None = None,
 ) -> dict[str, Any]:
     """Run the full WP-3 pipeline.
 
@@ -912,9 +1029,23 @@ def run_pipeline(
     # land in the same split (game-level leak safety across kinds).
     print("Stage 4/5 — Split by game")
     split_input = filtered + combat_filtered if include_combat else filtered
-    splits = FILTERS.split_by_game(split_input, seed=seed)
+    split_from_map: dict[str, str] | None = None
+    if split_from:
+        p_from = Path(split_from)
+        if p_from.exists():
+            data = json.loads(p_from.read_text(encoding="utf-8"))
+            split_from_map = data.get("game_splits") or data.get("split_by_replay") or {}
+            print(f"  Inherited {len(split_from_map)} game split assignments from {split_from}")
+    splits = FILTERS.split_by_game(
+        split_input,
+        seed=seed,
+        method=split_method,
+        split_from=split_from_map,
+    )
+    if "quarantine" in splits and splits["quarantine"]:
+        print(f"  ** QUARANTINE: {len(splits['quarantine'])} row(s) quarantined due to missing game_id **")
     for name, group in splits.items():
-        unique_games = len(set(FILTERS._game_id(r) for r in group))
+        unique_games = len(set(FILTERS.canonical_game_id(r) for r in group if FILTERS.canonical_game_id(r)))
         print(f"  split '{name}': {len(group)} rows ({unique_games} games)")
 
     # Count attackers/blockers before rendering
@@ -967,6 +1098,18 @@ def run_pipeline(
         oracle_summary=oracle_summary,
         outcome_mode=outcome_mode,
         render_drop_counts=split_drops,
+        log_paths=log_paths,
+        split_method=split_method,
+        split_migration=split_migration,
+        split_from=split_from,
+        teacher_checkpoint=teacher_checkpoint,
+        primary_deck=primary_deck,
+        decks_dir=decks_dir,
+        balance=balance,
+        max_pass_frac=max_pass_frac,
+        seed=seed,
+        include_combat=include_combat,
+        min_oracle_coverage=min_oracle_coverage,
     )
 
     # ── Report ──────────────────────────────────────────────────────────────
@@ -1088,6 +1231,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="all",
         help="Outcome filter mode ('all' to preserve valid decisions from close/lost games, or 'won_only', default: all)",
     )
+    parser.add_argument(
+        "--split-method",
+        choices=("hash", "legacy_shuffle"),
+        default="hash",
+        help="Game splitting method ('hash' for deterministic splits independent of corpus membership, or 'legacy_shuffle', default: hash)",
+    )
+    parser.add_argument(
+        "--split-migration",
+        action="store_true",
+        default=False,
+        help="Migration mode: re-derive and preserve splits when updating older manifests",
+    )
+    parser.add_argument(
+        "--split-from",
+        type=str,
+        default=None,
+        help="Path to an existing manifest JSON to inherit game-to-split assignments from",
+    )
+    parser.add_argument(
+        "--teacher-checkpoint",
+        type=str,
+        default=None,
+        help="Teacher checkpoint identifier if known (defaults to 'unknown' with teacher_unknown provenance)",
+    )
     return parser
 
 
@@ -1167,6 +1334,10 @@ def main(argv: list[str] | None = None) -> int:
             decks_dir=args.decks_dir,
             min_oracle_coverage=args.min_oracle_coverage,
             outcome_mode=args.outcome,
+            split_method=args.split_method,
+            split_migration=args.split_migration,
+            split_from=args.split_from,
+            teacher_checkpoint=args.teacher_checkpoint,
         )
     except PARSER.DeckSignatureError as e:
         print(f"\nPipeline aborted (fail closed): {e}", file=sys.stderr)
