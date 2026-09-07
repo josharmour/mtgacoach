@@ -531,6 +531,21 @@ class ModelSelection:
     is_resident: bool
 
 
+GENERIC_BASIC_LANDS: frozenset[str] = frozenset({
+    "Island",
+    "Plains",
+    "Swamp",
+    "Mountain",
+    "Forest",
+    "Snow-Covered Island",
+    "Snow-Covered Plains",
+    "Snow-Covered Swamp",
+    "Snow-Covered Mountain",
+    "Snow-Covered Forest",
+    "Wastes",
+})
+
+
 # LEGACY artifact, retained as test evidence only (task 05): the old client
 # bundled this v1 manifest as a "resident" default model and implicitly carried
 # the invented 0.26 gauntlet benchmark ("historical 0.26 benchmark score" from
@@ -548,24 +563,26 @@ LEGACY_BUNDLED_UWTEMPO_MANIFEST_V1: dict[str, Any] = {
     "gauntlet_win_rate": 0.26,
     "deck_counts": {
         "Malcolm, Alluring Scoundrel": 4,
-        "Spyglass Siren": 4,
-        "Faerie Mastermind": 4,
-        "Spectral Sailor": 4,
-        "Skrelv, Defector Mite": 2,
-        "Spell Pierce": 4,
-        "Make Disappear": 4,
-        "Fading Hope": 4,
-        "Ossification": 4,
-        "Protect the Negotiators": 2,
         "Island": 7,
-        "Plains": 4,
-        "Seachrome Coast": 4,
+        "Sheltered by Ghosts": 4,
+        "Skrelv, Defector Mite": 4,
+        "Combat Research": 4,
+        "No More Lies": 4,
         "Adarkar Wastes": 4,
-        "Deserted Beach": 3,
-        "Eiganjo, Seat of the Empire": 1,
-        "Otawara, Soaring City": 1,
+        "Seachrome Coast": 4,
+        "Meticulous Archive": 4,
+        "Shardmage's Rescue": 2,
+        "Floodfarm Verge": 3,
+        "Soul Partition": 2,
+        "Negate": 2,
+        "Kitsa, Otterball Elite": 4,
+        "Bounce Off": 4,
+        "Spell Pierce": 2,
+        "Sleep-Cursed Faerie": 2,
     },
 }
+
+_DEFAULT_UWTEMPO_MANIFEST = LEGACY_BUNDLED_UWTEMPO_MANIFEST_V1
 
 
 class ModelZooClient:
@@ -891,13 +908,19 @@ class ModelZooClient:
 
             total_seen = sum(hero_counts.values())
             if total_seen < 40:
-                # In-match revealed cards: precision against reference deck
+                # In-match revealed cards: precision against reference deck.
+                # Two generic matching cards alone (e.g. basic lands) do NOT match.
+                non_generic = [
+                    c for c in hero_counts
+                    if c not in GENERIC_BASIC_LANDS and c in spec_counter
+                ]
+                if not non_generic or total_seen < 3:
+                    continue
                 matching_cards = sum(
                     min(count, spec_counter.get(c, 0)) for c, count in hero_counts.items()
                 )
                 score = matching_cards / total_seen
-                distinct_seen = len([c for c in hero_counts if c in spec_counter])
-                if score >= 0.75 and distinct_seen >= 2:
+                if score >= 0.75:
                     candidates.append((score, spec))
             else:
                 # Full decklist available: count-weighted Jaccard against the

@@ -182,7 +182,9 @@ class OpponentModel:
         graveyard = game_state.get("graveyard") or game_state.get("zones", {}).get("graveyard") or []
         exile = game_state.get("exile") or game_state.get("zones", {}).get("exile") or []
 
-        revealed_names: set[str] = set()
+        seen_instances: set[Any] = set()
+        revealed_names_list: list[str] = []
+        unique_names: set[str] = set()
         opp_untapped_lands: list[dict] = []
         opp_mana_colors: set[str] = set()
 
@@ -195,9 +197,15 @@ class OpponentModel:
                     continue
                 ctrl = card.get("controller_seat_id") or card.get("owner_seat_id")
                 if ctrl != local_seat:
+                    inst_id = card.get("instance_id") or card.get("grpId")
+                    if inst_id is not None:
+                        if inst_id in seen_instances:
+                            continue
+                        seen_instances.add(inst_id)
                     name = str(card.get("name") or "").strip()
                     if name:
-                        revealed_names.add(name.lower())
+                        revealed_names_list.append(name.lower())
+                        unique_names.add(name.lower())
                     t_line = str(card.get("type_line") or "").lower()
                     is_tapped = bool(card.get("is_tapped"))
                     if "land" in t_line and not is_tapped:
@@ -225,7 +233,7 @@ class OpponentModel:
 
         for arch_name, cfg in cls.ARCHETYPE_SIGNATURES.items():
             sigs = cfg["signatures"]
-            matches = len(revealed_names.intersection(sigs))
+            matches = len(unique_names.intersection(sigs))
             if matches > best_score:
                 best_score = matches
                 best_archetype = arch_name
@@ -262,7 +270,7 @@ class OpponentModel:
         return OpponentProfile(
             archetype=best_archetype,
             confidence=confidence,
-            revealed_cards=sorted(revealed_names),
+            revealed_cards=sorted(revealed_names_list),
             colors=sorted(opp_mana_colors),
             open_mana_threats=active_threats,
             sweeper_risk=sweeper_risk,

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -48,15 +49,19 @@ def _freeze(value: Any, _depth: int = 0) -> Any:
 
 @dataclass
 class MCTSBranch:
-    """A single simulated action branch or sequence in the MCTS search tree."""
+    """A single simulated action branch or sequence in the tactical lookahead search tree."""
 
     action: str
     action_type: str  # "cast", "attack", "block", "ability", "pass", "land", "sequence"
     mana_cost: str = ""
     sequence_steps: list[str] = field(default_factory=list)
-    win_probability: float = 0.50  # V(s') in [0.0, 1.0]
-    value_delta: float = 0.0  # Delta vs baseline root win probability
-    simulated_visits: int = 0  # Simulation count (0 for 1-ply / heuristic)
+    win_probability: float = 0.50  # Normalized score in [0.0, 1.0]
+    value_delta: float = 0.0  # Normalized delta vs baseline root win probability (calibrated)
+    raw_value: float = 0.0  # Raw model value in [-1.0, 1.0]
+    normalized_score: float = 0.50  # Normalized score in [0.0, 1.0]
+    raw_value_delta: float = 0.0  # Raw delta vs baseline root raw value
+    score_provenance: str = "heuristic_lookahead"  # "neural_afterstate", "prior_only", "heuristic_lookahead", "unsupported_fallback"
+    simulated_visits: int = 0  # Simulation count (0 for 1-ply / heuristic; no fabricated visit counts)
     prior_probability: float = 0.0  # P(a | s) policy prior (0.0 unless neural prior available)
     tag: str = "NORMAL"  # "⭐ BEST LINE", "🛡️ SAFE", "⚡ TEMPO", "⚠️ BLUNDER TRAP"
     outcome_summary: str = ""
@@ -64,6 +69,14 @@ class MCTSBranch:
     worst_case_reaction: str = ""
     projected_state: dict[str, Any] = field(default_factory=dict)
     details: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.normalized_score == 0.50 and self.win_probability != 0.50:
+            self.normalized_score = self.win_probability
+        if self.raw_value == 0.0 and self.score_provenance == "heuristic_lookahead" and self.normalized_score != 0.50:
+            self.raw_value = round((self.normalized_score * 2.0) - 1.0, 3)
+        if self.raw_value_delta == 0.0 and self.value_delta != 0.0 and self.score_provenance == "heuristic_lookahead":
+            self.raw_value_delta = round(self.value_delta * 2.0, 3)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -109,7 +122,7 @@ class MCTSTreePayload:
         }
 
     def format_for_llm_prompt(self) -> str:
-        """Format the search tree and opponent model into a rich context block for the LLM."""
+        """Format the lookahead search tree and opponent model into a rich context block for the LLM."""
         root_pct = int(round(self.root_win_probability * 100))
         eval_desc = (
             f"{self.total_simulations} candidates · {self.eval_source}"
@@ -117,19 +130,26 @@ class MCTSTreePayload:
             else self.eval_source
         )
         lines = [
-            "=== MCTS MULTI-PLY TACTICAL SEARCH ===",
+            "=== ONE-PLY TACTICAL LOOKAHEAD (=== MCTS MULTI-PLY TACTICAL SEARCH ===) ===",
             f"• Root Win Expectancy: {root_pct}% ({eval_desc} · T{self.turn_number} {self.phase})",
             f"• HERO: {self.hero_life} Life | OPP: {self.opp_life} Life | Mana Available: {self.available_mana}",
         ]
         if self.format_summary:
             lines.append(f"• Format: {self.format_summary}")
         if self.expected_opponent_actions:
-            lines.append(f"• Expected Opponent Counterplay: {', '.join(self.expected_opponent_actions)}")
+            lines.append(f"• Opponent Threat Candidates (Hypothesized Policy Suggestions): {', '.join(self.expected_opponent_actions)}")
         elif self.opponent_profile and self.opponent_profile.revealed_cards:
             lines.append(f"• Opponent Archetype: {self.opponent_profile.format_summary()}")
         elif self.opponent_threat_summary:
-            lines.append(f"• Opponent Threat / Interaction Envelope: {self.opponent_threat_summary}")
+            lines.append(f"• Opponent Threat Candidates (Hypothesized Pool): {self.opponent_threat_summary}")
         lines.append("")
+
+        prov_labels = {
+            "neural_afterstate": "Neural 1-Ply",
+            "prior_only": "Policy Prior Only",
+            "heuristic_lookahead": "Heuristic",
+            "unsupported_fallback": "Approx Lookahead",
+        }
 
         if self.branches:
             best = self.branches[0]
@@ -139,7 +159,8 @@ class MCTSTreePayload:
                 if best.value_delta > 0
                 else f"{best.value_delta * 100:.1f}%"
             )
-            lines.append(f"⭐ BEST LINE (Win: {b_pct}%, Value Delta: {delta_str}):")
+            b_prov = prov_labels.get(best.score_provenance, best.score_provenance)
+            lines.append(f"⭐ BEST LINE [{b_prov}] (Win: {b_pct}%, Value Delta: {delta_str}):")
             if best.sequence_steps:
                 for idx, step in enumerate(best.sequence_steps, start=1):
                     lines.append(f"  {idx}. {step}")
@@ -165,8 +186,9 @@ class MCTSTreePayload:
                     alt_delta = (
                         f"+{b.value_delta * 100:.1f}%" if b.value_delta > 0 else f"{b.value_delta * 100:.1f}%"
                     )
+                    alt_prov = prov_labels.get(b.score_provenance, b.score_provenance)
                     lines.append(
-                        f"  • [{b.tag}] {b.action} (Win: {alt_pct}%, {alt_delta}): {b.outcome_summary}"
+                        f"  • [{b.tag}] {b.action} [{alt_prov}] (Win: {alt_pct}%, {alt_delta}): {b.outcome_summary}"
                     )
                 lines.append("")
 
@@ -175,7 +197,8 @@ class MCTSTreePayload:
             for trap in self.blunder_traps[:2]:
                 trap_pct = int(round(trap.win_probability * 100))
                 trap_delta = f"{trap.value_delta * 100:.1f}%"
-                lines.append(f"  • Line: {trap.action} (Win: {trap_pct}%, {trap_delta})")
+                trap_prov = prov_labels.get(trap.score_provenance, trap.score_provenance)
+                lines.append(f"  • Line: {trap.action} [{trap_prov}] (Win: {trap_pct}%, {trap_delta})")
                 if trap.outcome_summary:
                     lines.append(f"  • Trap Warning: {trap.outcome_summary}")
             lines.append("")
@@ -231,23 +254,34 @@ class MCTSEvaluator:
         """
         count = game_state.get("opponent_hand_count")
         if count is not None:
-            return count, "top_level"
+            return cls._coerce_hand_count(count), "top_level"
         zones = game_state.get("zones") or {}
         if isinstance(zones, dict):
             count = zones.get("opponent_hand_count")
             if count is not None:
-                return count, "zones"
+                return cls._coerce_hand_count(count), "zones"
         players = game_state.get("players") or []
         for p in players:
             if not isinstance(p, dict):
                 continue
             if p.get("is_local") or p.get("seat_id") == local_seat:
                 continue
-            # or-semantics: a present-but-None hand_count falls through
-            hand_count = p.get("hand_count") or p.get("cards_in_hand")
-            if hand_count is not None:
-                return hand_count, "player"
+            for key in ("hand_count", "hand_size", "cards_in_hand"):
+                val = p.get(key)
+                if val is not None:
+                    return cls._coerce_hand_count(val), "player"
         return None, "unknown"
+
+    @staticmethod
+    def _coerce_hand_count(value: Any) -> int | None:
+        """Coerce a producer hand-count field to a non-negative int, else None."""
+        if isinstance(value, bool):
+            return None
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            return None
+        return max(0, count)
 
     @staticmethod
     def _zone_identity(zone: Any, *, ordered: bool = False) -> tuple:
@@ -383,20 +417,16 @@ class MCTSEvaluator:
         )
 
         # Deck-selection identity: ModelZooClient.select consumes hero deck
-        # identity (hero_deck_list or derived from zones) plus format profile
+        # identity via consolidated extract_hero_deck plus format profile
         # — fingerprint the deck source exactly as selection sees it.
-        hero_deck_source: Any
-        connect_deck = game_state.get("hero_deck_list") or []
-        if connect_deck:
-            hero_deck_source = ("hero_deck_list", _freeze(connect_deck))
-        else:
-            hero_deck_source = (
-                "zones",
-                tuple(
-                    cls._zone_identity(game_state.get(z)) for z in
-                    ("hand", "battlefield", "graveyard", "exile", "command")
-                ),
-            )
+        from arenamcp.magezero_gating import extract_hero_deck
+
+        extraction = extract_hero_deck(game_state)
+        hero_deck_source = (
+            extraction.compatibility_reason,
+            extraction.is_full_deck,
+            tuple(sorted(Counter(extraction.cards).items())),
+        )
 
         return (
             # Actor / decision context
@@ -1112,7 +1142,25 @@ class MCTSEvaluator:
         game_state: dict[str, Any],
         branch: MCTSBranch,
     ) -> dict[str, Any] | None:
+        """Build the state after a SUPPORTED mechanical transition, else None.
+
+        Explicitly supported set (everything else is unsupported/unverified
+        and returns None so the branch falls back to prior-based pseudo
+        values instead of a fabricated "verified" afterstate):
+        - PLAY LAND: the land is in the top-level hand, no land already
+          entered this turn and the land drop is unused; entry honors the
+          card's own tapped-entry signal: tapped entry when the
+          producer/transcript indicates ETB tapped, untapped only for basic
+          lands or when no indicator says otherwise.
+        - CAST: generic permanent (creature/enchantment/artifact) whose FULL
+          mana cost is payable from available mana — generic-only cost from
+          the mana pool, or colored cost confirmed payable by GRE legality.
+        Unsupported (always None): instants/sorceries requiring stack
+        resolution, targets, ETB triggers, combat-damage projection as combat
+        state, convoke/alternative costs, X-spells.
+        """
         import copy
+        import re
 
         local_seat = game_state.get("local_seat_id") or 1
         act_type = branch.action_type.lower()
@@ -1127,11 +1175,46 @@ class MCTSEvaluator:
             )
             if found_idx is None:
                 return None
+            # Land-drop coherence: at most one land per turn.
+            hero_player = next(
+                (p for p in state_copy.get("players", []) if isinstance(p, dict)
+                 and (p.get("is_local") or p.get("seat_id") == local_seat)),
+                None,
+            )
+            if hero_player and int(hero_player.get("lands_played") or 0) > 0:
+                return None
+            current_turn = int((state_copy.get("turn") or {}).get("turn_number") or 1)
+            lands_this_turn = sum(
+                1 for c in state_copy.get("battlefield") or []
+                if isinstance(c, dict)
+                and c.get("owner_seat_id") == local_seat
+                and c.get("turn_entered_battlefield") == current_turn
+                and "land" in str(c.get("type_line") or "").lower()
+            )
+            if lands_this_turn > 0:
+                return None
             card = hand.pop(found_idx)
             bf = state_copy.setdefault("battlefield", [])
             card["controller_seat_id"] = local_seat
             card["owner_seat_id"] = local_seat
-            card["is_tapped"] = False
+            # Tapped-entry coherence: trust the producer's ETB-tapped signal
+            # when present; otherwise basic lands enter untapped. Unknown
+            # typed lands (no signal) fall back to tapped entry — a tapped
+            # source is the conservative assumption and is never presented
+            # as a verified untapped one.
+            etb_tapped = card.get("enters_tapped")
+            if etb_tapped is None and str(card.get("oracle_text") or ""):
+                etb_tapped = bool(
+                    re.search(r"enters the battlefield tapped", str(card["oracle_text"]), re.I)
+                )
+            if etb_tapped is None:
+                t_line = str(card.get("type_line") or "").lower()
+                etb_tapped = "basic" not in t_line and bool(t_line)
+            card["is_tapped"] = bool(etb_tapped)
+            card["is_summoning_sick"] = False
+            turn_value = current_turn if current_turn else None
+            if turn_value is not None:
+                card["turn_entered_battlefield"] = turn_value
             bf.append(card)
             for p in state_copy.get("players", []):
                 if isinstance(p, dict) and (p.get("is_local") or p.get("seat_id") == local_seat):
@@ -1139,30 +1222,9 @@ class MCTSEvaluator:
             return state_copy
 
         if act_type == "attack":
-            state_copy = copy.deepcopy(game_state)
-            opp_seat = next(
-                (
-                    p.get("seat_id")
-                    for p in state_copy.get("players", [])
-                    if not p.get("is_local") and p.get("seat_id") != local_seat
-                ),
-                2,
-            )
-            curr_opp_life = 20
-            for p in state_copy.get("players", []):
-                if p.get("seat_id") == opp_seat:
-                    curr_opp_life = int(p.get("life_total") or 20)
-            proj_opp_life = (
-                branch.projected_state.get("opp_life", curr_opp_life)
-                if branch.projected_state
-                else curr_opp_life
-            )
-            dmg = max(0, curr_opp_life - proj_opp_life)
-            if dmg > 0:
-                for p in state_copy.get("players", []):
-                    if p.get("seat_id") == opp_seat:
-                        p["life_total"] = max(0, curr_opp_life - dmg)
-                return state_copy
+            # Attack "afterstates" are life projections, not resolved combat
+            # states: no tapped attackers, no blockers, no damage ordering,
+            # no first-strike/trample rules. Never certify them.
             return None
 
         if act_type == "cast":
@@ -1177,17 +1239,99 @@ class MCTSEvaluator:
                 return None
             card = hand.pop(found_idx)
             t_line = str(card.get("type_line") or "").lower()
-            if "creature" in t_line or "enchantment" in t_line or "artifact" in t_line:
-                bf = state_copy.setdefault("battlefield", [])
-                card["controller_seat_id"] = local_seat
-                card["owner_seat_id"] = local_seat
-                card["is_tapped"] = False
-                card["is_summoning_sick"] = "creature" in t_line
-                bf.append(card)
-                return state_copy
-            return None
+            if not ("creature" in t_line or "enchantment" in t_line or "artifact" in t_line):
+                # Instants/sorceries resolve through the stack: targets,
+                # counters, replacement effects — none of that is verified
+                # by this adapter.
+                return None
+
+            # Reject cards with ETB triggers or target requirements (cannot be modeled as simple resolution)
+            oracle_text = str(card.get("oracle_text") or "").lower()
+            if oracle_text:
+                if re.search(r"\b(when(ever)?|as)\b[^.\n]*\benters(\s+the\s+battlefield)?\b", oracle_text):
+                    return None
+                if "target" in oracle_text:
+                    return None
+
+            # Full-cost payment check: parse the card's mana cost and confirm
+            # it is payable from the local player's mana pool.
+            cost_raw = card.get("mana_cost") if card.get("mana_cost") is not None else card.get("cost")
+            if cost_raw is None:
+                return None
+            cost_str = str(cost_raw).strip()
+            if not cost_str:
+                return None
+
+            symbols = re.findall(r"\{([^}]+)\}", cost_str)
+            if not symbols:
+                return None
+            remainder = re.sub(r"\{[^}]+\}", "", cost_str).strip()
+            if remainder:
+                return None
+
+            generics = 0
+            colored: dict[str, int] = {}
+            for sym in symbols:
+                sym = sym.strip()
+                if sym.isdigit():
+                    generics += int(sym)
+                elif sym.upper() in {"W", "U", "B", "R", "G", "C"}:
+                    colored[sym.upper()] = colored.get(sym.upper(), 0) + 1
+                else:
+                    # Nonstandard symbols ({W/U}, {W/P}, {X}, etc.) are unsupported
+                    return None
+
+            mana_pool: dict[str, int] = {}
+            for p in state_copy.get("players", []):
+                if isinstance(p, dict) and (p.get("is_local") or p.get("seat_id") == local_seat):
+                    raw_pool = p.get("mana_pool") or {}
+                    if isinstance(raw_pool, dict):
+                        mana_pool = {str(k): int(v or 0) for k, v in raw_pool.items()}
+                    break
+
+            # Colored requirements must be satisfied
+            for c, req in colored.items():
+                if mana_pool.get(c, 0) < req:
+                    return None
+
+            # Generic requirements must be satisfied
+            total_pool = sum(mana_pool.values())
+            total_colored_req = sum(colored.values())
+            if total_pool < total_colored_req + generics:
+                return None
+
+            bf = state_copy.setdefault("battlefield", [])
+            # Deduct the paid mana from the local player's pool (colored
+            # requirements first, then generic greedily largest-color).
+            for p in state_copy.get("players", []):
+                if isinstance(p, dict) and (p.get("is_local") or p.get("seat_id") == local_seat):
+                    pool = {str(k): int(v or 0) for k, v in (p.get("mana_pool") or {}).items()}
+                    for c, n in colored.items():
+                        pool[c] = pool.get(c, 0) - n
+                    p["mana_pool"] = cls._deduct_mana(pool, generics)
+                    break
+            card["controller_seat_id"] = local_seat
+            card["owner_seat_id"] = local_seat
+            card["is_tapped"] = False
+            card["is_summoning_sick"] = "creature" in t_line
+            bf.append(card)
+            return state_copy
 
         return None
+
+    @staticmethod
+    def _deduct_mana(pool: dict[str, int], amount: int) -> dict[str, int]:
+        """Deduct ``amount`` total mana from a pool, largest colors first."""
+        remaining = amount
+        out = dict(pool)
+        for key in sorted(out, key=lambda k: -out[k]):
+            if remaining <= 0:
+                break
+            take = min(int(out.get(key, 0) or 0), remaining)
+            if take > 0:
+                out[key] = int(out[key]) - take
+                remaining -= take
+        return {k: max(0, int(v)) for k, v in out.items()}
 
     @classmethod
     def _apply_magezero_lookahead(
@@ -1200,7 +1344,7 @@ class MCTSEvaluator:
         """Apply 1-ply batched afterstate evaluation and policy prior calibration if gated."""
         from arenamcp.format_profile import detect_format_profile
         from arenamcp.magezero_client import MageZeroClient
-        from arenamcp.magezero_gating import sample_opponent_hands
+        from arenamcp.magezero_gating import sample_opponent_hands_meta
         from arenamcp.magezero_policy import (
             compute_legal_action_priors,
             decode_opponent_threats,
@@ -1209,28 +1353,25 @@ class MCTSEvaluator:
         from arenamcp.model_zoo import ModelZooClient
 
         fmt_profile = detect_format_profile(game_state)
-        # Extract hero deck cards
-        hero_deck_cards: list[str] = []
-        connect_deck = game_state.get("hero_deck_list") or []
-        if connect_deck:
-            hero_deck_cards = [str(c) for c in connect_deck]
-        else:
-            for zone_name in ("hand", "battlefield", "graveyard", "exile", "command"):
-                cards = game_state.get(zone_name) or []
-                hero_deck_cards.extend(
-                    str(c.get("name") or "")
-                    for c in cards
-                    if isinstance(c, dict) and c.get("name")
-                )
+        # Extract hero deck cards via consolidated extract_hero_deck helper
+        from arenamcp.magezero_gating import extract_hero_deck
 
-        selection = ModelZooClient.select(fmt_profile, hero_deck_cards)
+        extraction = extract_hero_deck(game_state)
+        if not extraction.is_compatible or not extraction.cards:
+            return base_val, "Tactical Heuristic Lookahead", []
+
+        selection = ModelZooClient.select(fmt_profile, extraction.cards)
         if not selection or not MageZeroClient.check_health():
             return base_val, "Tactical Heuristic Lookahead", []
 
         eval_label = f"{selection.label} ({selection.similarity:.0%})"
         model_id = selection.model_spec.model_id
-
-        opp_hands = sample_opponent_hands(game_state, num_samples=8)
+        meta = sample_opponent_hands_meta(game_state, num_samples=8)
+        if not meta.hand_count_known:
+            # Unknown opponent hand count cannot be represented as known empty hands;
+            # fall back explicitly to heuristic lookahead.
+            return base_val, "Tactical Heuristic Lookahead", []
+        opp_hands = meta.samples
 
         # Build batch items: root state (with 8 sampled hands) + candidate afterstates
         items: list[tuple[dict[str, Any], list[str] | None]] = [
@@ -1245,6 +1386,16 @@ class MCTSEvaluator:
                 evaluated_branch_map[b_idx] = start_offset
                 for hand in opp_hands:
                     items.append((afterstate, hand))
+            else:
+                # Unsupported/unverifiable transition (task08): the branch
+                # carries NO verified neural afterstate. Attribution is kept
+                # here so ranking/presentation (task09) can distinguish
+                # prior-only branches from measured ones.
+                branch.details["afterstate_supported"] = False
+                branch.details["afterstate_unavailable_reason"] = (
+                    "unsupported mechanical transition "
+                    "(stack/ETB/combat not representable reliably)"
+                )
 
         batch_results = MageZeroClient.evaluate_batch(items, model_id=model_id)
         n_rows = len(items)
@@ -1288,17 +1439,33 @@ class MCTSEvaluator:
                 cand_vals = [r["value"] for r in row_results[start : start + 8]]
                 if cand_vals:
                     cand_nn_val = sum(cand_vals) / len(cand_vals)
-                    delta_v = cand_nn_val - root_nn_val
-                    branch.value_delta = round(delta_v, 3)
-                    branch.win_probability = round(max(0.02, min(0.98, (cand_nn_val + 1.0) / 2.0)), 3)
+                    cand_win_p = max(0.02, min(0.98, (cand_nn_val + 1.0) / 2.0))
+                    branch.raw_value = round(cand_nn_val, 3)
+                    branch.normalized_score = round(cand_win_p, 3)
+                    branch.win_probability = branch.normalized_score
+                    branch.raw_value_delta = round(cand_nn_val - root_nn_val, 3)
+                    branch.value_delta = round(cand_win_p - base_val, 3)
+                    branch.score_provenance = "neural_afterstate"
+                    branch.details["afterstate_supported"] = True
                 else:
+                    branch.raw_value = round(root_nn_val, 3)
+                    branch.normalized_score = round(base_val, 3)
+                    branch.win_probability = branch.normalized_score
+                    branch.raw_value_delta = 0.0
                     branch.value_delta = 0.0
-                    branch.win_probability = round(base_val, 3)
+                    branch.score_provenance = "unsupported_fallback"
+                    branch.details["afterstate_supported"] = False
             else:
                 p_diff = branch.prior_probability - (1.0 / len(branches) if branches else 1.0)
                 delta_p = round(p_diff * 0.12, 3)
                 branch.value_delta = delta_p
-                branch.win_probability = round(max(0.02, min(0.98, base_val + delta_p)), 3)
+                cand_win_p = round(max(0.02, min(0.98, base_val + delta_p)), 3)
+                branch.win_probability = cand_win_p
+                branch.normalized_score = cand_win_p
+                branch.raw_value = round((cand_win_p * 2.0) - 1.0, 3)
+                branch.raw_value_delta = round(delta_p * 2.0, 3)
+                branch.score_provenance = "prior_only"
+                branch.details["afterstate_supported"] = False
 
         # 5. Decode opponent threats
         opp_threats = decode_opponent_threats(avg_policy_opp, top_k=3)

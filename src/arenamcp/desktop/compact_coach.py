@@ -280,13 +280,33 @@ class CompactCoachPanel(QWidget):
             return
 
         is_rl = ("MageZero" in eval_src or "Neural" in eval_src or "RL" in eval_src) and "Heuristic" not in eval_src
-        src_tag = "MageZero RL" if is_rl else "Lookahead"
-        src_color = "#89b4fa" if is_rl else "#a6adc8"
-        line_title = "🧠 RL Line" if is_rl else "🌳 Tactical Line"
 
         best_branch = branches[0] if branches else None
+        provenance = (
+            best_branch.get("score_provenance")
+            if best_branch
+            else ("neural_afterstate" if is_rl else "heuristic_lookahead")
+        )
+        if provenance == "neural_afterstate":
+            src_tag = "Neural 1-Ply"
+            src_color = "#89b4fa"
+            line_title = "🧠 Neural Line"
+        elif provenance == "prior_only":
+            src_tag = "Policy Prior"
+            src_color = "#cba6f7"
+            line_title = "📋 Prior Line"
+        elif provenance == "unsupported_fallback":
+            src_tag = "Approx Lookahead"
+            src_color = "#a6adc8"
+            line_title = "🌳 Approx Line"
+        else:
+            src_tag = "Lookahead"
+            src_color = "#a6adc8"
+            line_title = "🌳 Tactical Line"
+
         if best_branch:
-            win_pct = int(round(float(best_branch.get("win_probability", 0.5)) * 100))
+            win_p = float(best_branch.get("normalized_score", best_branch.get("win_probability", 0.5)))
+            win_pct = int(round(win_p * 100))
             delta = float(best_branch.get("value_delta", 0.0))
             delta_str = (
                 f"+{delta * 100:.1f}%" if delta > 0 else (f"{delta * 100:.1f}%" if delta != 0 else "0%")
@@ -323,7 +343,7 @@ class CompactCoachPanel(QWidget):
         expected_opp = data.get("expected_opponent_actions") or []
         if expected_opp:
             html_lines.append(
-                f"<div style='color:#fab387; font-size:10px; margin-top:2px;'>🎯 <b>Counterplay:</b> {html.escape(', '.join(str(x) for x in expected_opp[:2]))}</div>"
+                f"<div style='color:#fab387; font-size:10px; margin-top:2px;'>🎯 <b>Hypothesized Threats:</b> {html.escape(', '.join(str(x) for x in expected_opp[:2]))}</div>"
             )
 
         self.mcts_pill_label.setText("".join(html_lines))
