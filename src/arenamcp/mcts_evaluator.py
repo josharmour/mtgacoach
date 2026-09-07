@@ -49,15 +49,19 @@ def _freeze(value: Any, _depth: int = 0) -> Any:
 
 @dataclass
 class MCTSBranch:
-    """A single simulated action branch or sequence in the MCTS search tree."""
+    """A single simulated action branch or sequence in the tactical lookahead search tree."""
 
     action: str
     action_type: str  # "cast", "attack", "block", "ability", "pass", "land", "sequence"
     mana_cost: str = ""
     sequence_steps: list[str] = field(default_factory=list)
-    win_probability: float = 0.50  # V(s') in [0.0, 1.0]
-    value_delta: float = 0.0  # Delta vs baseline root win probability
-    simulated_visits: int = 0  # Simulation count (0 for 1-ply / heuristic)
+    win_probability: float = 0.50  # Normalized score in [0.0, 1.0]
+    value_delta: float = 0.0  # Normalized delta vs baseline root win probability (calibrated)
+    raw_value: float = 0.0  # Raw model value in [-1.0, 1.0]
+    normalized_score: float = 0.50  # Normalized score in [0.0, 1.0]
+    raw_value_delta: float = 0.0  # Raw delta vs baseline root raw value
+    score_provenance: str = "heuristic_lookahead"  # "neural_afterstate", "prior_only", "heuristic_lookahead", "unsupported_fallback"
+    simulated_visits: int = 0  # Simulation count (0 for 1-ply / heuristic; no fabricated visit counts)
     prior_probability: float = 0.0  # P(a | s) policy prior (0.0 unless neural prior available)
     tag: str = "NORMAL"  # "⭐ BEST LINE", "🛡️ SAFE", "⚡ TEMPO", "⚠️ BLUNDER TRAP"
     outcome_summary: str = ""
@@ -65,6 +69,14 @@ class MCTSBranch:
     worst_case_reaction: str = ""
     projected_state: dict[str, Any] = field(default_factory=dict)
     details: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.normalized_score == 0.50 and self.win_probability != 0.50:
+            self.normalized_score = self.win_probability
+        if self.raw_value == 0.0 and self.score_provenance == "heuristic_lookahead" and self.normalized_score != 0.50:
+            self.raw_value = round((self.normalized_score * 2.0) - 1.0, 3)
+        if self.raw_value_delta == 0.0 and self.value_delta != 0.0 and self.score_provenance == "heuristic_lookahead":
+            self.raw_value_delta = round(self.value_delta * 2.0, 3)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -110,7 +122,7 @@ class MCTSTreePayload:
         }
 
     def format_for_llm_prompt(self) -> str:
-        """Format the search tree and opponent model into a rich context block for the LLM."""
+        """Format the lookahead search tree and opponent model into a rich context block for the LLM."""
         root_pct = int(round(self.root_win_probability * 100))
         eval_desc = (
             f"{self.total_simulations} candidates · {self.eval_source}"
@@ -118,19 +130,26 @@ class MCTSTreePayload:
             else self.eval_source
         )
         lines = [
-            "=== MCTS MULTI-PLY TACTICAL SEARCH ===",
+            "=== ONE-PLY TACTICAL LOOKAHEAD (=== MCTS MULTI-PLY TACTICAL SEARCH ===) ===",
             f"• Root Win Expectancy: {root_pct}% ({eval_desc} · T{self.turn_number} {self.phase})",
             f"• HERO: {self.hero_life} Life | OPP: {self.opp_life} Life | Mana Available: {self.available_mana}",
         ]
         if self.format_summary:
             lines.append(f"• Format: {self.format_summary}")
         if self.expected_opponent_actions:
-            lines.append(f"• Expected Opponent Counterplay: {', '.join(self.expected_opponent_actions)}")
+            lines.append(f"• Opponent Threat Candidates (Hypothesized Policy Suggestions): {', '.join(self.expected_opponent_actions)}")
         elif self.opponent_profile and self.opponent_profile.revealed_cards:
             lines.append(f"• Opponent Archetype: {self.opponent_profile.format_summary()}")
         elif self.opponent_threat_summary:
-            lines.append(f"• Opponent Threat / Interaction Envelope: {self.opponent_threat_summary}")
+            lines.append(f"• Opponent Threat Candidates (Hypothesized Pool): {self.opponent_threat_summary}")
         lines.append("")
+
+        prov_labels = {
+            "neural_afterstate": "Neural 1-Ply",
+            "prior_only": "Policy Prior Only",
+            "heuristic_lookahead": "Heuristic",
+            "unsupported_fallback": "Approx Lookahead",
+        }
 
         if self.branches:
             best = self.branches[0]
@@ -140,7 +159,8 @@ class MCTSTreePayload:
                 if best.value_delta > 0
                 else f"{best.value_delta * 100:.1f}%"
             )
-            lines.append(f"⭐ BEST LINE (Win: {b_pct}%, Value Delta: {delta_str}):")
+            b_prov = prov_labels.get(best.score_provenance, best.score_provenance)
+            lines.append(f"⭐ BEST LINE [{b_prov}] (Win: {b_pct}%, Value Delta: {delta_str}):")
             if best.sequence_steps:
                 for idx, step in enumerate(best.sequence_steps, start=1):
                     lines.append(f"  {idx}. {step}")
@@ -166,8 +186,9 @@ class MCTSTreePayload:
                     alt_delta = (
                         f"+{b.value_delta * 100:.1f}%" if b.value_delta > 0 else f"{b.value_delta * 100:.1f}%"
                     )
+                    alt_prov = prov_labels.get(b.score_provenance, b.score_provenance)
                     lines.append(
-                        f"  • [{b.tag}] {b.action} (Win: {alt_pct}%, {alt_delta}): {b.outcome_summary}"
+                        f"  • [{b.tag}] {b.action} [{alt_prov}] (Win: {alt_pct}%, {alt_delta}): {b.outcome_summary}"
                     )
                 lines.append("")
 
@@ -176,7 +197,8 @@ class MCTSTreePayload:
             for trap in self.blunder_traps[:2]:
                 trap_pct = int(round(trap.win_probability * 100))
                 trap_delta = f"{trap.value_delta * 100:.1f}%"
-                lines.append(f"  • Line: {trap.action} (Win: {trap_pct}%, {trap_delta})")
+                trap_prov = prov_labels.get(trap.score_provenance, trap.score_provenance)
+                lines.append(f"  • Line: {trap.action} [{trap_prov}] (Win: {trap_pct}%, {trap_delta})")
                 if trap.outcome_summary:
                     lines.append(f"  • Trap Warning: {trap.outcome_summary}")
             lines.append("")
@@ -1417,17 +1439,33 @@ class MCTSEvaluator:
                 cand_vals = [r["value"] for r in row_results[start : start + 8]]
                 if cand_vals:
                     cand_nn_val = sum(cand_vals) / len(cand_vals)
-                    delta_v = cand_nn_val - root_nn_val
-                    branch.value_delta = round(delta_v, 3)
-                    branch.win_probability = round(max(0.02, min(0.98, (cand_nn_val + 1.0) / 2.0)), 3)
+                    cand_win_p = max(0.02, min(0.98, (cand_nn_val + 1.0) / 2.0))
+                    branch.raw_value = round(cand_nn_val, 3)
+                    branch.normalized_score = round(cand_win_p, 3)
+                    branch.win_probability = branch.normalized_score
+                    branch.raw_value_delta = round(cand_nn_val - root_nn_val, 3)
+                    branch.value_delta = round(cand_win_p - base_val, 3)
+                    branch.score_provenance = "neural_afterstate"
+                    branch.details["afterstate_supported"] = True
                 else:
+                    branch.raw_value = round(root_nn_val, 3)
+                    branch.normalized_score = round(base_val, 3)
+                    branch.win_probability = branch.normalized_score
+                    branch.raw_value_delta = 0.0
                     branch.value_delta = 0.0
-                    branch.win_probability = round(base_val, 3)
+                    branch.score_provenance = "unsupported_fallback"
+                    branch.details["afterstate_supported"] = False
             else:
                 p_diff = branch.prior_probability - (1.0 / len(branches) if branches else 1.0)
                 delta_p = round(p_diff * 0.12, 3)
                 branch.value_delta = delta_p
-                branch.win_probability = round(max(0.02, min(0.98, base_val + delta_p)), 3)
+                cand_win_p = round(max(0.02, min(0.98, base_val + delta_p)), 3)
+                branch.win_probability = cand_win_p
+                branch.normalized_score = cand_win_p
+                branch.raw_value = round((cand_win_p * 2.0) - 1.0, 3)
+                branch.raw_value_delta = round(delta_p * 2.0, 3)
+                branch.score_provenance = "prior_only"
+                branch.details["afterstate_supported"] = False
 
         # 5. Decode opponent threats
         opp_threats = decode_opponent_threats(avg_policy_opp, top_k=3)
