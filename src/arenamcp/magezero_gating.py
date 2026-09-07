@@ -11,6 +11,7 @@ import json
 import logging
 import random
 from collections import Counter
+from dataclasses import asdict as _dc_asdict, dataclass, field as _dc_field
 from pathlib import Path
 from typing import Any
 
@@ -184,39 +185,153 @@ def is_hero_deck_gated(
     return False, round(precision, 2), "Tactical Heuristic Lookahead"
 
 
-def sample_opponent_hands(
+@dataclass
+class OpponentHandSamples:
+    """Sampled opponent-hand determinizations plus uncertainty metadata.
+
+    ``samples[i]`` is a determinization of the opponent's hidden hand for the
+    i-th evaluation row. Samples are HYPOTHESES drawn from an archetype-matched
+    card pool — never facts about the opponent's actual hand.
+
+    Attributes:
+        samples: One hand (list of card names) per requested sample.
+        num_samples: Requested number of samples actually returned.
+        hand_count_known: True only when the producer reported an actual count.
+            When False, ``samples`` are the fallback heuristic envelope and MUST
+            NOT be presented as cards the opponent is known to hold.
+        hand_count: The known count (including 0), or None when unknown.
+        hand_count_tier: Producer fallback tier that resolved the count
+            ('top_level'|'zones'|'player'|'unknown').
+        revealed_cards: Opponent card identities already observed (distinct
+            names, as reported by OpponentModel). Revealed cards are excluded
+            from the sampling pool — one pool copy per revealed name — and
+            never re-added (see ``revealed_multiplicity_respected``).
+        revealed_multiplicity_respected: True when every revealed card was
+            subtracted from the pool without exceeding available copies.
+        pool_size: Total card copies available in the sampling pool AFTER
+            subtracting revealed cards.
+        pool_coverage_ratio: pool_size / max(hand_count, 1); values < 1.0 mean
+            the pool cannot fully populate a real hand, so samples may repeat
+            cards and are weaker evidence (see ``undersized_pool``).
+        undersized_pool: True when the revealed-corrected pool holds fewer
+            copies than the known hand count; deterministic sub-sampling of the
+            largest-fitting prefix is used instead of fabricating with
+            replacement from an exhausted pool.
+        notes: Human-readable caveats for provenance / LLM surface.
+    """
+
+    samples: list[list[str]] = _dc_field(default_factory=list)
+    num_samples: int = 0
+    hand_count_known: bool = False
+    hand_count: int | None = None
+    hand_count_tier: str = "unknown"
+    revealed_cards: list[str] = _dc_field(default_factory=list)
+    revealed_multiplicity_respected: bool = True
+    revealed_subtracted: list[str] = _dc_field(default_factory=list)
+    pool_size: int = 0
+    pool_coverage_ratio: float = 0.0
+    undersized_pool: bool = False
+    notes: list[str] = _dc_field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _dc_asdict(self)
+
+
+def _resolve_opponent_hand_count_and_tier(
+    game_state: dict[str, Any],
+) -> tuple[int | None, str]:
+    """Resolve the opponent's hand count with known-zero preserved.
+
+    Mirrors the producer schema: top-level ``opponent_hand_count`` ->
+    ``zones.opponent_hand_count`` -> the non-local player row, where a
+    present-but-None ``hand_count`` falls through to ``cards_in_hand`` and
+    both ``hand_size`` and ``hand_count`` are accepted aliases. A real 0 is a
+    KNOWN count (hellbent), distinct from missing/unknown (which returns
+    ``(None, 'unknown')``).
+
+    NOTE: keep semantics aligned with
+    ``MCTSEvaluator._resolve_opponent_hand_count``; this Dallas copy exists so
+    gating does not import the evaluator, and the two are locked together by
+    tests/test_opponent_hand_uncertainty.py.
+    """
+    top = game_state.get("opponent_hand_count")
+    if top is not None:
+        return _coerce_hand_count(top), "top_level"
+    zones = game_state.get("zones") or {}
+    if isinstance(zones, dict):
+        zc = zones.get("opponent_hand_count")
+        if zc is not None:
+            return _coerce_hand_count(zc), "zones"
+    local_seat = game_state.get("local_seat_id")
+    if local_seat is None:
+        for p in game_state.get("players") or []:
+            if isinstance(p, dict) and p.get("is_local"):
+                local_seat = p.get("seat_id")
+                break
+    for p in game_state.get("players") or []:
+        if not isinstance(p, dict):
+            continue
+        if p.get("is_local") or (local_seat is not None and p.get("seat_id") == local_seat):
+            continue
+        for key in ("hand_count", "hand_size", "cards_in_hand"):
+            val = p.get(key)
+            if val is not None:
+                return _coerce_hand_count(val), "player"
+    return None, "unknown"
+
+
+def _coerce_hand_count(value: Any) -> int | None:
+    """Coerce a producer hand-count field to a non-negative int, else None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0, count)
+
+
+def sample_opponent_hands_meta(
     game_state: dict[str, Any],
     num_samples: int = 8,
     seed: int | None = None,
-) -> list[list[str]]:
-    """Sample candidate opponent hands from gauntlet card pools to eliminate hellbent bias.
+) -> OpponentHandSamples:
+    """Sample candidate opponent hands WITHOUT claiming to know hidden cards.
 
-    Matches the determinization performed by XMage's ComputerPlayerMCTS.shuffleUnknowns().
+    Determinization matches XMage's ComputerPlayerMCTS.shuffleUnknowns(): when
+    the opponent's hand count is known, draw that many cards from an
+    archetype-matched, revealed-corrected pool using a LOCAL RNG (global RNG
+    state is never touched). Known zero produces empty hands. Missing data is
+    reported unknown — no fabricated count, no fabricated determinization.
     """
-    if seed is not None:
-        random.seed(seed)
+    rng = random.Random(seed)
+    meta = OpponentHandSamples(num_samples=max(0, num_samples))
 
-    # Determine opponent hand size
-    local_seat = game_state.get("local_seat_id")
-    if local_seat is None:
-        local_seat = 1
+    hand_count, tier = _resolve_opponent_hand_count_and_tier(game_state)
+    meta.hand_count = hand_count
+    meta.hand_count_tier = tier
+    meta.hand_count_known = hand_count is not None
 
-    opp_hand_count = 0
-    for p in game_state.get("players", []):
-        if isinstance(p, dict) and not p.get("is_local") and p.get("seat_id") != local_seat:
-            opp_hand_count = int(p.get("cards_in_hand") or p.get("hand_count") or 0)
-            break
-
-    if opp_hand_count <= 0:
-        return [[] for _ in range(num_samples)]
-
-    # Determine archetype card pool
     from arenamcp.opponent_model import OpponentModel
 
     opp_profile = OpponentModel.classify(game_state)
-    archetype = opp_profile.archetype.lower()
+    meta.revealed_cards = list(opp_profile.revealed_cards)
 
-    # Match archetype to gauntlet deck pool
+    if hand_count is None:
+        meta.notes.append(
+            "opponent hand size unknown; no hand determinization performed "
+            "(samples are empty placeholders, not facts)"
+        )
+        meta.samples = [[] for _ in range(meta.num_samples)]
+        return meta
+
+    if hand_count == 0:
+        meta.notes.append("opponent known hellbent (0 cards in hand); empty hands")
+        meta.samples = [[] for _ in range(meta.num_samples)]
+        return meta
+
+    # Determine archetype card pool
+    archetype = opp_profile.archetype.lower()
     pool: list[str] = []
     if "mono-red" in archetype:
         pool = _GAUNTLET_POOLS.get("Standard-MonoR", [])
@@ -238,22 +353,59 @@ def sample_opponent_hands(
             combined.extend(p_list)
         pool = combined or list(UWTEMPO_DECK_COUNTS.keys())
 
-    # Subtract revealed cards from available pool
-    pool_counter = Counter(pool)
+    # Subtract revealed cards with multiplicity: a revealed card consumes one
+    # pool copy and never returns once its copies are exhausted. Matching is
+    # case-insensitive (OpponentModel reports lowercase names, pools are
+    # mixed-case); the earlier exact-match code silently subtracted nothing.
+    pool_counter: Counter[str] = Counter(pool)
+    pool_by_lower: dict[str, str] = {}
+    for name in pool_counter:
+        pool_by_lower.setdefault(str(name).lower(), str(name))
+    exhausted: list[str] = []
     for c in opp_profile.revealed_cards:
-        if pool_counter[c] > 0:
-            pool_counter[c] -= 1
+        canonical = pool_by_lower.get(str(c).lower())
+        if canonical is not None and pool_counter.get(canonical, 0) > 0:
+            pool_counter[canonical] -= 1
+            meta.revealed_subtracted.append(canonical)
+        else:
+            exhausted.append(c)
+    meta.revealed_multiplicity_respected = not exhausted
+    if exhausted:
+        meta.notes.append(
+            "revealed cards beyond archetype-pool copies were not re-added"
+        )
 
     remaining_pool = list(pool_counter.elements())
-    if len(remaining_pool) < opp_hand_count:
-        remaining_pool = pool
+    meta.pool_size = len(remaining_pool)
+    meta.pool_coverage_ratio = round(len(remaining_pool) / hand_count, 4)
 
-    samples: list[list[str]] = []
-    for _ in range(num_samples):
-        if len(remaining_pool) >= opp_hand_count:
-            sample = random.sample(remaining_pool, opp_hand_count)
-        else:
-            sample = random.choices(remaining_pool, k=opp_hand_count)
-        samples.append(sample)
+    if len(remaining_pool) < hand_count:
+        # Undersized pool: draw the largest-fitting deterministic subset rather
+        # than re-using exhausted cards (random.choices would do exactly that).
+        # Deterministic order: most-common-first, name as tie-break.
+        meta.undersized_pool = True
+        meta.notes.append(
+            "revealed-corrected pool smaller than hand count; samples are "
+            "partial-hypotheses, not full determinizations"
+        )
+        base = sorted(remaining_pool, key=lambda s: (pool_counter.get(s, 0), s), reverse=True)
+        sample = base[:hand_count]
+        meta.samples = [list(sample) for _ in range(meta.num_samples)]
+        return meta
 
-    return samples
+    meta.samples = [rng.sample(remaining_pool, hand_count) for _ in range(meta.num_samples)]
+    return meta
+
+
+def sample_opponent_hands(
+    game_state: dict[str, Any],
+    num_samples: int = 8,
+    seed: int | None = None,
+) -> list[list[str]]:
+    """Sample opponent-hand determinizations (backward-compatible wrapper).
+
+    Callers that need the uncertainty metadata should call
+    :func:`sample_opponent_hands_meta` instead; this returns just the sample
+    hands list in the original shape.
+    """
+    return sample_opponent_hands_meta(game_state, num_samples=num_samples, seed=seed).samples

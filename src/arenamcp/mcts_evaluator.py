@@ -243,8 +243,9 @@ class MCTSEvaluator:
                 continue
             if p.get("is_local") or p.get("seat_id") == local_seat:
                 continue
-            # or-semantics: a present-but-None hand_count falls through
-            hand_count = p.get("hand_count") or p.get("cards_in_hand")
+            # or-semantics: a present-but-None hand_count falls through;
+            # hand_size is a documented producer alias
+            hand_count = p.get("hand_count") or p.get("cards_in_hand") or p.get("hand_size")
             if hand_count is not None:
                 return hand_count, "player"
         return None, "unknown"
