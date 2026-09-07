@@ -18,8 +18,11 @@ Rule
 # R2 — attackers/blockers rows are OUT OF SCOPE:
     decision_kind := priority only; attackers/blockers are skipped and counted.
 
-# R3 — unknown-outcome rows are skipped and counted:
-    The bridge corpus must only contain resolved games.
+# R3 — outcome eligibility follows --outcome:
+    mode "all"      — unknown-outcome rows are KEPT as pure policy records:
+                      outcome stays "unknown" and the label is the menu pick;
+                      no value/outcome supervision is attached.
+    mode "won_only" — unknown-outcome rows are skipped and counted.
 
 # R4 — answer indexing:
     Answers are {"pick": N} where N is the 1-based index of the human's
@@ -457,16 +460,31 @@ def _resolve_answer(menu: list[str], chosen: str) -> int | None:
 # ---------------------------------------------------------------------------
 
 
-def build_record(row: dict) -> tuple[dict | None, str]:
-    """Single MageZero row → training record, or (None, drop_reason)."""
+def build_record(row: dict, outcome_mode: str = "all") -> tuple[dict | None, str]:
+    """Single MageZero row → training record, or (None, drop_reason).
+
+    ``outcome_mode`` selects outcome handling (default "all", matching the
+    pipeline's filter default):
+
+    * ``"all"`` — an unknown-outcome row is NOT dropped. It is kept as a pure
+      policy record: ``meta["outcome"]`` stays the literal ``"unknown"`` and
+      ``meta["policy_label"]`` is ``"menu.pick"`` (supervision target is the
+      menu choice only — no value/outcome label is attached where no terminal
+      state exists). The row is never relabeled won/lost.
+    * ``"won_only"`` — unknown-outcome rows are dropped and counted with a
+      distinct reason (``outcome_unknown``), mirroring the filter stage.
+    """
+    if outcome_mode not in ("all", "won_only"):
+        raise ValueError(f"Unknown outcome mode: {outcome_mode!r}")
+
     # R2: skip attackers/blockers — handled by build_combat_decisions.py
     kind = row.get("decision_kind", "priority")
     if kind not in ("priority",):
         return None, f"decision_kind_{kind}"
 
-    # R3: unknown-outcome rows skipped
+    # R3: outcome eligibility is outcome_mode-dependent, not unconditional.
     outcome = row.get("outcome", "unknown")
-    if outcome == "unknown":
+    if outcome == "unknown" and outcome_mode == "won_only":
         return None, "outcome_unknown"
 
     game_state = build_game_state(row)
@@ -495,11 +513,13 @@ def build_record(row: dict) -> tuple[dict | None, str]:
     # Build meta
     session = row.get("session", "")
     actor = row.get("actor", "")
+    policy_label = "menu.pick" if outcome == "unknown" else "outcome.menu.pick"
     meta = {
         "game_id": row.get("game_id", ""),
         "turn": row.get("turn", 0),
         "phase": row.get("phase", ""),
         "outcome": outcome,
+        "policy_label": policy_label,
         "actor": actor,
         "session": session,
         "decision_kind": kind,
@@ -622,6 +642,14 @@ def main(argv: list[str] | None = None) -> int:
         "--out", dest="output", type=Path, required=True, help="Path to write training records JSONL"
     )
     parser.add_argument("--report", action="store_true", help="Print build report to stderr on completion")
+    parser.add_argument(
+        "--outcome",
+        choices=("all", "won_only"),
+        default="all",
+        help="Outcome handling ('all' keeps unknown-outcome rows as pure policy "
+        "records labeled menu.pick; 'won_only' drops them). Default: all. "
+        "Matches run_wp3_pipeline.py --outcome.",
+    )
     args = parser.parse_args(argv)
 
     t0 = time.time()
@@ -641,7 +669,7 @@ def main(argv: list[str] | None = None) -> int:
     drops: Counter = Counter()
 
     for row in raw:
-        record, reason = build_record(row)
+        record, reason = build_record(row, outcome_mode=args.outcome)
         if record is None:
             drops[reason] += 1
             continue
