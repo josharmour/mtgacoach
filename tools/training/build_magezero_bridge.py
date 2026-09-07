@@ -345,11 +345,11 @@ def _build_card(
     if turn_known:
         card["turn_entered_battlefield"] = turn
         card["_etb_turn_known"] = True
-    if seat == LOCAL_SEAT:
-        if attacking:
-            card["is_attacking"] = True
-        if blocking:
-            card["is_blocking"] = True
+    card["_legacy_render_mode"] = True
+    if attacking:
+        card["is_attacking"] = True
+    if blocking:
+        card["is_blocking"] = True
     return card
 
 
@@ -424,6 +424,8 @@ def build_game_state(row: dict) -> dict:
                 card.get("tapped", False),
                 1000 + next_id,
                 turn_known=False,
+                attacking=bool(card.get("attacking")),
+                blocking=bool(card.get("blocking")),
             )
         )
         next_id += 1
@@ -528,8 +530,8 @@ def build_record(row: dict, outcome_mode: str = "all") -> tuple[dict | None, str
 
     # R3: outcome eligibility is outcome_mode-dependent, not unconditional.
     outcome = row.get("outcome", "unknown")
-    if outcome == "unknown" and outcome_mode == "won_only":
-        return None, "outcome_unknown"
+    if outcome_mode == "won_only" and outcome != "won":
+        return None, f"outcome_{outcome}"
 
     game_state = build_game_state(row)
     menu = row.get("menu", [])

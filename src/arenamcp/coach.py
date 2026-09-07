@@ -1389,12 +1389,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             )
             # Planner skips full oracle text on long-resident permanents — the
             # flags already summarize relevant abilities. Recent ETBs keep
-            # oracle text so triggered abilities stay visible. An UNKNOWN
-            # entry turn (task 11: producers that cannot establish it) is not
-            # evidence of long residency — treat as recent so the text renders
-            # rather than being dropped on a fabricated freshness fact.
+            # oracle text so triggered abilities stay visible. In legacy render
+            # mode (where entry turns may not be established), unknown entry turn
+            # is treated as recent so oracle text is preserved. In live planner
+            # mode, baseline behavior is strictly preserved.
             _etb_turn = card.get("turn_entered_battlefield")
-            entered_recently = _etb_turn is None or (turn_num - _etb_turn) <= 1
+            if card.get("_legacy_render_mode"):
+                entered_recently = _etb_turn is None or (turn_num - _etb_turn) <= 1
+            else:
+                entered_recently = (turn_num - (_etb_turn or 0)) <= 1
             if for_planner and not entered_recently:
                 pass
             elif not keyword_only and len(stripped) > 0:

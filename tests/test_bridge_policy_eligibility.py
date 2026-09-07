@@ -217,9 +217,8 @@ def test_render_accounting_reconciles():
     acct = PIPE._render_accounting(rendered, split_drops, filter_counts, raw)
     assert acct["rendered_records"] == 3
     assert acct["dropped_at_render"] == 2
-    # filtered = raw - filter drops = 7; rendered + render drops = 5, the
-    # remaining 2 are attackers/blockers pre-counted by the caller.
-    assert acct["dropped_by_filters"] == 7
+    # filter drops = 2 + 0 + 1 = 3; filtered (retained) = raw - filter drops = 7
+    assert acct["dropped_by_filters"] == 3
 
 
 def test_manifest_outcome_mode_and_render_accounting_written(tmp_path):

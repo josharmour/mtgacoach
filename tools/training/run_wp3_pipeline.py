@@ -451,7 +451,7 @@ def _render_accounting(
     by_reason: Counter = Counter()
     for counter in render_drop_counts.values():
         by_reason.update(counter)
-    dropped_after_filters = raw_count - sum(
+    dropped_after_filters = sum(
         int(v) for v in filter_counts.values() if isinstance(v, (int, float))
     )
     return {
