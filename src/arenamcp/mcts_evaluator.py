@@ -213,6 +213,42 @@ class MCTSEvaluator:
             return True
         return (time.monotonic() - cls._last_payload_at) < ttl
 
+    @classmethod
+    def _resolve_opponent_hand_count(
+        cls, game_state: dict[str, Any], local_seat: Any
+    ) -> tuple[Any, str]:
+        """Single source of truth for opponent-hand-count resolution.
+
+        SHARED by the cache signature and the evaluation body, so their
+        precedence rules cannot drift. Precedence (mirroring evaluate):
+        top-level ``opponent_hand_count`` -> ``zones.opponent_hand_count`` ->
+        the non-local player row, using ``or`` fallback semantics where a
+        present-but-None ``hand_count`` falls through to ``cards_in_hand``.
+        Real zero is preserved (0 is a known count, distinct from unknown).
+        Returns ``(count_or_None, tier)`` — tier is the fallback level that
+        produced the value ('top_level'|'zones'|'player'|'unknown'), so the
+        cache can distinguish unknown from any known count including 0.
+        """
+        count = game_state.get("opponent_hand_count")
+        if count is not None:
+            return count, "top_level"
+        zones = game_state.get("zones") or {}
+        if isinstance(zones, dict):
+            count = zones.get("opponent_hand_count")
+            if count is not None:
+                return count, "zones"
+        players = game_state.get("players") or []
+        for p in players:
+            if not isinstance(p, dict):
+                continue
+            if p.get("is_local") or p.get("seat_id") == local_seat:
+                continue
+            # or-semantics: a present-but-None hand_count falls through
+            hand_count = p.get("hand_count") or p.get("cards_in_hand")
+            if hand_count is not None:
+                return hand_count, "player"
+        return None, "unknown"
+
     @staticmethod
     def _zone_identity(zone: Any, *, ordered: bool = False) -> tuple:
         """Semantically complete identity of a zone's cards, as a hashable tuple.
@@ -234,27 +270,35 @@ class MCTSEvaluator:
         if not isinstance(zone, (list, tuple)):
             return ()
         entries: list[tuple] = []
+        # Every variant (canonical card tuple, untyped raw value) shares one
+        # outer representation — a 2-tuple starting with a string tag — so the
+        # sort below can never compare a str against a tuple.
         for c in zone:
             if not isinstance(c, dict):
-                entries.append(("raw", _freeze(c)))
+                entries.append(("raw", 0, _freeze(c)))
                 continue
             name = c.get("name")
             if not name:
                 continue
             entries.append(
                 (
-                    ("name", str(name)),
-                    ("id", _freeze(c.get("instance_id"))),
-                    ("ctrl", _freeze(c.get("controller_seat_id"))),
-                    ("owner", _freeze(c.get("owner_seat_id"))),
-                    ("tapped", bool(c.get("is_tapped"))),
-                    ("attacking", bool(c.get("is_attacking"))),
-                    ("etb", _freeze(c.get("turn_entered_battlefield"))),
-                    ("pt", _freeze((c.get("power") if "power" in c else None,
-                                    c.get("toughness") if "toughness" in c else None))),
-                    ("cost", str(c.get("mana_cost") or "")),
-                    ("types", str(c.get("type_line") or "")),
-                    ("oracle", str(c.get("oracle_text") or "")),
+                    "card",
+                    1,
+                    (
+                        ("name", str(name)),
+                        ("id", _freeze(c.get("instance_id"))),
+                        ("ctrl", _freeze(c.get("controller_seat_id"))),
+                        ("owner", _freeze(c.get("owner_seat_id"))),
+                        ("tapped", bool(c.get("is_tapped"))),
+                        ("attacking", bool(c.get("is_attacking"))),
+                        ("sick", bool(c.get("is_summoning_sick"))),
+                        ("etb", _freeze(c.get("turn_entered_battlefield"))),
+                        ("pt", _freeze((c.get("power") if "power" in c else None,
+                                        c.get("toughness") if "toughness" in c else None))),
+                        ("cost", str(c.get("mana_cost") or "")),
+                        ("types", str(c.get("type_line") or "")),
+                        ("oracle", str(c.get("oracle_text") or "")),
+                    ),
                 )
             )
         if not ordered:
@@ -276,30 +320,28 @@ class MCTSEvaluator:
         zones = game_state.get("zones") or {}
 
         mana: tuple = ()
-        opp_hand_count: Any = None
-        opp_life: Any = None
         for p in players:
             if not isinstance(p, dict):
                 continue
             is_local = p.get("is_local") or p.get("seat_id") == local_seat
             if is_local:
                 mana = tuple(sorted((k, _freeze(v)) for k, v in (p.get("mana_pool") or {}).items()))
-            else:
-                opp_life = p.get("life_total") if p.get("life_total") is not None else opp_life
 
-        # Opponent-hand extraction EXACTLY mirrors MCTSEvaluator.evaluate's
-        # precedence: top-level opponent_hand_count, then zones, then the
-        # (non-local) player row. Zero counts are preserved (0 is a real,
-        # distinct state from missing/unknown); the previously-simulated
-        # default of 4 is NOT baked into the signature.
-        opp_hand_count = game_state.get("opponent_hand_count")
-        if opp_hand_count is None and isinstance(zones, dict):
-            opp_hand_count = zones.get("opponent_hand_count")
-        if opp_hand_count is None:
-            for p in players:
-                if isinstance(p, dict) and not (p.get("is_local") or p.get("seat_id") == local_seat):
-                    opp_hand_count = p.get("hand_count", p.get("cards_in_hand"))
-                    break
+        # Opponent-hand count through the SHARED helper with the EXACT same
+        # precedence and or-semantics as the evaluation body. The (count,
+        # tier) pair is the semantic input: unknown counts are distinguished
+        # from every known value (including 0) via the tier, not by baking a
+        # default into the signature.
+        opp_hand_count, opp_hand_tier = cls._resolve_opponent_hand_count(
+            game_state, local_seat
+        )
+
+        opp_life = next(
+            (p.get("life_total") for p in players
+             if isinstance(p, dict) and not (p.get("is_local") or p.get("seat_id") == local_seat)
+             and p.get("life_total") is not None),
+            None,
+        )
 
         hero_player = next(
             (p for p in players if isinstance(p, dict) and p.get("is_local")), None
@@ -310,6 +352,51 @@ class MCTSEvaluator:
             None,
         )
         hero_lands_played = hero_player.get("lands_played") if hero_player else None
+
+        # Format identity: resolve_format is a semantic consumer (numerical
+        # config, model eligibility, visible output). Fingerprint the RESOLVED
+        # profile plus the raw inputs used to derive it, so both an explicit
+        # format_profile/format field change and an underlying board-shape
+        # change that flips detection produce fresh evaluations.
+        from arenamcp.format_profile import detect_format_profile
+
+        raw_fmt = game_state.get("format_profile") or game_state.get("format")
+        fmt_fingerprint = _freeze(
+            {
+                "resolved": (
+                    {
+                        "family": getattr(raw_fmt, "family", None),
+                        "variant": getattr(raw_fmt, "variant", None),
+                        "deck_size": getattr(raw_fmt, "deck_size", None),
+                        "singleton": getattr(raw_fmt, "singleton", None),
+                        "commander": getattr(raw_fmt, "commander_names", None),
+                        "has_command_zone": getattr(raw_fmt, "has_command_zone", None),
+                    }
+                    if hasattr(raw_fmt, "family")
+                    else raw_fmt if isinstance(raw_fmt, dict) else None
+                ),
+                "detected": _freeze(detect_format_profile(game_state).__dict__)
+                if not (isinstance(raw_fmt, dict) and raw_fmt.get("family"))
+                and not hasattr(raw_fmt, "family")
+                else None,
+            }
+        )
+
+        # Deck-selection identity: ModelZooClient.select consumes hero deck
+        # identity (hero_deck_list or derived from zones) plus format profile
+        # — fingerprint the deck source exactly as selection sees it.
+        hero_deck_source: Any
+        connect_deck = game_state.get("hero_deck_list") or []
+        if connect_deck:
+            hero_deck_source = ("hero_deck_list", _freeze(connect_deck))
+        else:
+            hero_deck_source = (
+                "zones",
+                tuple(
+                    cls._zone_identity(game_state.get(z)) for z in
+                    ("hand", "battlefield", "graveyard", "exile", "command")
+                ),
+            )
 
         return (
             # Actor / decision context
@@ -327,10 +414,15 @@ class MCTSEvaluator:
             opp_life,
             mana,
             hero_lands_played,
-            # Opponent information
+            # Opponent information — (count, tier) pair: unknown ≠ 0 ≠ N
             opp_hand_count,
+            opp_hand_tier,
             # Match identity
             game_state.get("match_id") or game_state.get("arena_match_id") or None,
+            # Format identity (resolved + detection inputs)
+            fmt_fingerprint,
+            # Deck-selection identity (what ModelZooClient.select consumes)
+            hero_deck_source,
             # Zone identities (semantic card facts, fully). The stack is the
             # one order-sensitive zone: the top spell is what a response
             # interacts with, so its sequence is preserved.
@@ -433,17 +525,19 @@ class MCTSEvaluator:
         pool_mana = sum(hero_mana_dict.values()) if hero_mana_dict else 0
         available_mana = max(perm_mana, pool_mana)
 
-        # Opponent hand count
+        # Opponent-hand count via the SHARED normalization helper, so the
+        # signature and the evaluation can never drift apart again.
+        # Returns the raw (possibly None) resolved count plus the fallback tier
+        # that produced it — both are semantic inputs (a synthesized default
+        # for unknown is NOT the same state as a known count).
         zones = game_state.get("zones") or {}
-        opp_hand_count = game_state.get("opponent_hand_count")
-        if opp_hand_count is None and isinstance(zones, dict):
-            opp_hand_count = zones.get("opponent_hand_count")
+        opp_hand_count, opp_hand_count_tier = cls._resolve_opponent_hand_count(
+            game_state, local_seat
+        )
         if opp_hand_count is None:
-            for p in players:
-                if isinstance(p, dict) and not p.get("is_local") and p.get("seat_id") != local_seat:
-                    opp_hand_count = p.get("hand_count") or p.get("cards_in_hand")
-                    break
-        if opp_hand_count is None:
+            # Evaluation synthesizes 4 for unknown; the signature tiers on the
+            # (count, tier) pair so the cache distinguishes unknown from any
+            # known value including 0.
             opp_hand_count = 4
 
         # Resolve format evaluator config
