@@ -134,9 +134,21 @@ def _validate_result(
     if len(data_list) != expected:
         return [], f"result-count {len(data_list)} != requested {expected}"
 
-    has_request_index = any(
+    # Ordering policy: request_index echo is all-or-none. A partially indexed
+    # response (some rows echo, some omit) is rejected immediately — position
+    # synthesis for the missing rows would create an unverified ordering claim.
+    # A fully unindexed response is LEGACY COMPATIBILITY MODE: rows are synced
+    # by position and NO verified ordering is claimed for it.
+    echo_flags = [
         isinstance(item, dict) and "request_index" in item for item in data_list
-    )
+    ]
+    if any(echo_flags) and not all(echo_flags):
+        missing = [i for i, flag in enumerate(echo_flags) if not flag]
+        return [], (
+            f"partial request_index echo: rows {missing} omit the index while "
+            "others include it; all-or-none required"
+        )
+    has_request_index = all(echo_flags)
     results: list[dict[str, Any]] = []
     for i, item_data in enumerate(data_list):
         if not isinstance(item_data, dict):
