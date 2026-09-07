@@ -1562,10 +1562,19 @@ class ActionPlanner(_ActionLegalityMixin):
         trigger: str,
         legal_actions: list[str] | None = None,
         decision_context: dict[str, Any] | None = None,
+        legacy_render: bool | None = None,
     ) -> str:
         """Build the user message with formatted game context.
 
         Reuses the compact format from CoachEngine._format_game_context().
+
+        ``legacy_render``: task 11 — forwarded to
+        CoachEngine._format_game_context. ``True`` enables the explicit
+        legacy-render mode (offline training renders annotate assumed
+        defaults instead of asserting fabricated facts); ``None`` (default)
+        keeps live production rendering exactly as before. When the game_state
+        itself carries a ``_legacy_render_mode`` key (set by
+        gate_play_decisions.build_user_message) it wins over this argument.
         """
         # Import and use CoachEngine's formatter for consistency. The planner
         # variant drops heavy GRE JSON dumps and trims oracle text on
@@ -1574,7 +1583,11 @@ class ActionPlanner(_ActionLegalityMixin):
             from arenamcp.coach import CoachEngine
 
             formatter = CoachEngine.__new__(CoachEngine)
-            context = formatter._format_game_context(game_state, for_planner=True)
+            if "_legacy_render_mode" in game_state and legacy_render is None:
+                legacy_render = bool(game_state.get("_legacy_render_mode"))
+            context = formatter._format_game_context(
+                game_state, for_planner=True, legacy_render=legacy_render
+            )
         except Exception as e:
             logger.warning(f"Failed to use CoachEngine formatter: {e}")
             context = self._fallback_format(game_state)
