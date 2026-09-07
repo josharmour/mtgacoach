@@ -9,10 +9,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 import threading
 import time
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from arenamcp.format_profile import FormatProfile
@@ -25,54 +29,292 @@ class ManifestError(ValueError):
     """A model manifest failed v2 contract validation (explicit, not silent)."""
 
 
-def _canonical_deck_hash(counts: dict[str, int]) -> str:
-    """Canonical sha256 over normalized, sorted card entries (ws04 contract).
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
-    NFC + casefold + whitespace collapse; counts clamped >= 0; zero/negative
-    entries and blank names dropped; list order canonical. Excludes sideboard
-    structurally (deck dict has no sideboard field merged here).
+
+def _normalize_deck_counts(counts: Any) -> dict[str, int]:
+    """Validated deck representation: the single source for deck size AND hash.
+
+    Every entry must be a positive integer count for a non-blank name. Names
+    are NFC-normalized, casefolded and whitespace-collapsed; collisions after
+    normalization are aggregated by summation (a raw "Island"/"island" mix and
+    "Island" denote the same card). Absent cards are simply omitted — zero or
+    negative counts are rejected rather than silently clamped or dropped, and
+    fractional/bool/non-numeric counts are rejected outright. Sideboard data
+    is structurally excluded (the v2 deck block carries mainboard counts only).
     """
-    import hashlib
-    import unicodedata
-
-    normalized: list[list[Any]] = []
-    for name, count in (counts or {}).items():
+    if not isinstance(counts, dict) or not counts:
+        raise ManifestError("deck: deck_counts required (no invented defaults)")
+    normalized: dict[str, int] = {}
+    for name, count in counts.items():
         n = unicodedata.normalize("NFC", str(name)).casefold()
         n = " ".join(n.split())
-        try:
-            c = max(0, int(count))
-        except (TypeError, ValueError):
-            continue
-        if c > 0 and n:
-            normalized.append([n, c])
-    normalized.sort()
+        if not n:
+            raise ManifestError(f"deck: blank card name in deck_counts: {name!r}")
+        if isinstance(count, bool) or not isinstance(count, (int, float)) or (
+                isinstance(count, float) and not float(count).is_integer()):
+            raise ManifestError(
+                f"deck: card count for {name!r} must be an integer, got {count!r}"
+            )
+        c = int(count)
+        if c <= 0:
+            raise ManifestError(
+                f"deck: card count for {name!r} must be a positive integer, got "
+                f"{count!r} (omit absent cards; zero/negative counts are rejected, "
+                "not silently clamped)"
+            )
+        normalized[n] = normalized.get(n, 0) + c
+    return normalized
+
+
+def _canonical_deck_hash(normalized_counts: dict[str, int]) -> str:
+    """Canonical sha256 over the VALIDATED deck representation.
+
+    Input must come from _normalize_deck_counts (same validated representation
+    the parser records); this function performs no permissive normalization of
+    its own. Entries are emitted as a sorted JSON list of [name, count] pairs.
+    """
+    import hashlib
+
+    normalized = sorted([name, int(count)] for name, count in normalized_counts.items())
     payload = json.dumps({"cards": normalized}, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _require_probability(value: Any, what: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) \
+            or not math.isfinite(float(value)) or not 0.0 <= float(value) <= 1.0:
+        raise ManifestError(
+            f"{what}: must be a finite number in [0.0, 1.0], got {value!r}"
+        )
+    return float(value)
+
+
+def _require_nonempty_str(value: Any, what: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ManifestError(f"{what}: non-empty string required, got {value!r}")
+    return value
+
+
+# ---- value-target semantics -------------------------------------------------
+# Evidence (read-only, /mnt/repos/magezero @6b54f51):
+#   dataset.py:25  row = [policy(A), resultLabel, stateScore, isPlayer, actionType]
+#   dataset.py:136 value_t = clamp(resultLabel, -1.0, 1.0)
+#   train.py:271   lv = mse(value_pred, batch_value_labels)
+# i.e. the value target is the per-state game-result label from the recording
+# player's perspective. There is NO search blending and NO truncation
+# bootstrapping in the trainer; manifests claiming such semantics are
+# unverified and rejected rather than certified by name alone.
+_VALUE_TARGET_KINDS = ("game_result_label",)
+_VALUE_TARGET_PERSPECTIVES = ("recording_player",)
+
+
+def _validate_value_target(vt: Any) -> dict[str, Any]:
+    if not isinstance(vt, dict):
+        raise ManifestError("value_target: required with trainer-evidenced semantics")
+    for key in ("kind", "perspective", "range", "terminal_handling"):
+        if key not in vt:
+            raise ManifestError(f"value_target: missing required key {key!r}")
+    kind = _require_nonempty_str(vt["kind"], "value_target.kind")
+    if kind not in _VALUE_TARGET_KINDS:
+        raise ManifestError(
+            f"value_target.kind {kind!r} is not a semantics verified in the magezero "
+            f"trainer (dataset.py resultLabel only); verified kinds: "
+            f"{list(_VALUE_TARGET_KINDS)}"
+        )
+    perspective = _require_nonempty_str(vt["perspective"], "value_target.perspective")
+    if perspective not in _VALUE_TARGET_PERSPECTIVES:
+        raise ManifestError(
+            f"value_target.perspective {perspective!r} unverified; "
+            f"trainer label is the recording player's (isPlayer-signed) resultLabel"
+        )
+    rng = vt["range"]
+    if (not isinstance(rng, (list, tuple)) or len(rng) != 2
+            or any(isinstance(x, bool) or not isinstance(x, (int, float))
+                   or not math.isfinite(float(x)) for x in rng)
+            or not float(rng[0]) < float(rng[1])):
+        raise ManifestError(f"value_target.range: finite [lo, hi] with lo < hi required, got {rng!r}")
+    # The trainer clamps the result label to exactly [-1.0, 1.0]
+    # (dataset.py:136 torch.clamp(..., -1.0, 1.0)); any other advertised range
+    # does not match the evidenced training semantics.
+    if abs(float(rng[0]) - (-1.0)) > 1e-9 or abs(float(rng[1]) - 1.0) > 1e-9:
+        raise ManifestError(
+            f"value_target.range must be exactly [-1.0, 1.0] (trainer clamp), got {rng!r}"
+        )
+    _require_nonempty_str(vt["terminal_handling"], "value_target.terminal_handling")
+    if "search_blend" in vt:
+        raise ManifestError(
+            "value_target.search_blend present but no search blend exists in the "
+            "magezero trainer; do not certify invented training semantics"
+        )
+    trunc = vt.get("truncation_handling")
+    if trunc is not None and _require_nonempty_str(
+            trunc, "value_target.truncation_handling") not in ("none", "unknown"):
+        raise ManifestError(
+            "value_target.truncation_handling: only 'none'/'unknown' are supported; "
+            "the trainer has no truncation bootstrap to certify"
+        )
+    return dict(vt)
+
+
+# ---- certification evidence -------------------------------------------------
+# Certified status must be EVIDENCED, not key-shaped. Requirements
+# (runner evidence: runner.py acceptance-gate + candidate_eval record):
+#   - bound to the manifest's checkpoint/deck identity (immutable hashes)
+#   - evaluated_at / criteria_version present and real
+#   - a complete opponent panel: per-arm records with finite win rates on
+#     successful arm runs, coherent finite counts, and the aggregate mean
+#     win rate meeting the promotion threshold actually gated against
 _CERTIFICATION_REQUIRED_KEYS = (
     "evaluated_at",
     "criteria_version",
+    "checkpoint_hash",
+    "deck_hash",
     "panel",
     "aggregation",
     "threshold",
 )
 
 
-def _validate_certification(cert: Any) -> None:
-    """Certification evidence must be complete for status == certified."""
+def _validate_certification(
+    cert: Any, checkpoint_hash: str, deck_hash: str, promotion_threshold: float
+) -> dict[str, Any]:
+    """Certification evidence must be complete, coherent and identity-bound."""
     if not isinstance(cert, dict):
         raise ManifestError(
             "certification: status 'certified' requires a complete certification "
-            "evidence block; missing or historical unverifiable evidence means "
-            "uncertified"
+            "evidence block; missing/historical unverifiable evidence means "
+            "uncertified, never certified-by-default"
         )
     missing = [k for k in _CERTIFICATION_REQUIRED_KEYS if k not in cert]
     if missing:
         raise ManifestError(f"certification: missing required keys {missing}")
+
+    # Identity binding: the certification claim must name the exact model.
+    for key, expected, label in (
+        ("checkpoint_hash", checkpoint_hash, "checkpoint"),
+        ("deck_hash", deck_hash, "deck"),
+    ):
+        got = str(cert[key] or "")
+        if got != expected:
+            raise ManifestError(
+                f"certification: {key} not bound to this manifest {label} "
+                f"(certification {got!r} != manifest {expected!r})"
+            )
+
+    evaluated_at = _require_nonempty_str(cert["evaluated_at"], "certification.evaluated_at")
+    try:
+        datetime.fromisoformat(evaluated_at)
+    except ValueError as e:
+        raise ManifestError(
+            f"certification.evaluated_at: ISO-8601 timestamp required, got {evaluated_at!r}"
+        ) from e
+    _require_nonempty_str(cert["criteria_version"], "certification.criteria_version")
+    _require_nonempty_str(cert["aggregation"], "certification.aggregation")
+    cert_threshold = _require_probability(
+        cert["threshold"], "certification.threshold"
+    )
+    if abs(cert_threshold - promotion_threshold) > 1e-9:
+        raise ManifestError(
+            "certification: threshold "
+            f"{cert_threshold} does not match manifest promotion_win_rate_threshold "
+            f"{promotion_threshold}"
+        )
+
     panel = cert["panel"]
-    if not isinstance(panel, dict) or "games" not in panel or "wins" not in panel:
-        raise ManifestError("certification: panel must record games/wins/losses/draws")
+    if not isinstance(panel, dict):
+        raise ManifestError("certification: panel must be a record of the opponent panel")
+    games = panel.get("games")
+    wins = panel.get("wins")
+    losses = panel.get("losses")
+    draws = panel.get("draws")
+    for label, v in (("games", games), ("wins", wins), ("losses", losses), ("draws", draws)):
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ManifestError(
+                f"certification: panel.{label} must be a non-negative integer, got {v!r}"
+            )
+    if games <= 0:
+        raise ManifestError(
+            "certification: panel.games must be a positive game count; a certified "
+            "panel with zero evaluated games is not certification"
+        )
+    if wins + losses + draws != games:
+        raise ManifestError(
+            f"certification: panel wins+losses+draws ({wins + losses + draws}) "
+            f"must equal games ({games})"
+        )
+    decks = panel.get("decks")
+    if not isinstance(decks, list) or not decks or not all(
+            isinstance(d, str) and d.strip() for d in decks):
+        raise ManifestError(
+            "certification: panel.decks must list the complete opponent panel"
+        )
+    if isinstance(decks, list) and len(set(decks)) != len(decks):
+        raise ManifestError("certification: panel.decks contains duplicate opponents")
+
+    # Per-arm records (runner-shaped complete panel).
+    arms = panel.get("arms")
+    if not isinstance(arms, list) or not arms:
+        raise ManifestError(
+            "certification: panel.arms must record every opponent arm of the "
+            "promotion evaluation (incomplete panels are uncertified)"
+        )
+    arm_games_total = 0
+    arm_wr_weighted = 0.0
+    arm_opponents: list[str] = []
+    for arm in arms:
+        if not isinstance(arm, dict):
+            raise ManifestError("certification: each panel.arm must be a record")
+        opponent = _require_nonempty_str(
+            arm.get("opponent"), "certification: panel.arm.opponent"
+        )
+        if opponent in arm_opponents:
+            raise ManifestError(
+                f"certification: duplicate panel arm for opponent {opponent!r}"
+            )
+        arm_opponents.append(opponent)
+        games_i = arm.get("games")
+        if isinstance(games_i, bool) or not isinstance(games_i, int) or games_i < 1:
+            raise ManifestError(
+                f"certification: arm {opponent!r} games must be a positive integer, got {games_i!r}"
+            )
+        win_rate = arm.get("win_rate")
+        if isinstance(win_rate, bool) or not isinstance(win_rate, (int, float)) \
+                or not math.isfinite(float(win_rate)) or not 0.0 <= float(win_rate) <= 1.0:
+            raise ManifestError(
+                f"certification: arm {opponent!r} win_rate must be finite in [0,1], "
+                f"got {win_rate!r}"
+            )
+        returncode = arm.get("returncode")
+        if returncode != 0:
+            raise ManifestError(
+                f"certification: arm {opponent!r} returncode {returncode!r} != 0; "
+                "failed arm runs are not certification evidence"
+            )
+        arm_games_total += games_i
+        arm_wr_weighted += float(win_rate) * games_i
+    if set(arm_opponents) != set(decks):
+        raise ManifestError(
+            f"certification: panel.arms opponents {sorted(arm_opponents)} must equal "
+            f"panel.decks {sorted(decks)}"
+        )
+    if arm_games_total != games:
+        raise ManifestError(
+            f"certification: arm games sum ({arm_games_total}) must equal panel games ({games})"
+        )
+    mean_wr = arm_wr_weighted / games
+    if abs(mean_wr - wins / games) > 1e-6:
+        raise ManifestError(
+            "certification: arm-weighted mean win rate "
+            f"{mean_wr:.6f} is incoherent with panel wins/games ({wins}/{games})"
+        )
+    if wins / games < promotion_threshold:
+        raise ManifestError(
+            f"certification: panel win rate {wins}/{games} does not meet the "
+            f"promotion threshold {promotion_threshold}; a below-threshold result "
+            "is uncertified regardless of keys present"
+        )
+    return dict(cert)
 
 
 @dataclass(frozen=True)
@@ -150,11 +392,31 @@ class ModelSpec:
                 f"unsupported manifest schema_version {data.get('schema_version')} (only 2)"
             )
 
-        deck_block = data.get("deck") or {}
-        if not isinstance(deck_block, dict) or not deck_block.get("deck_counts"):
+        model_id = _require_nonempty_str(data.get("model_id"), "model_id")
+
+        block = data.get("deck") or {}
+        if not isinstance(block, dict) or not block.get("deck_counts"):
             raise ManifestError("deck: deck_counts required (no invented defaults)")
-        counts = {str(k): int(v) for k, v in deck_block.get("deck_counts", {}).items()}
+        # Single validated representation drives size AND hash: no silently
+        # dropped entries, no raw/card-name ambiguity, collisions aggregated.
+        counts = _normalize_deck_counts(block.get("deck_counts"))
+        deck_size_declared = block.get("size")
+        if deck_size_declared is not None:
+            if isinstance(deck_size_declared, bool) or not isinstance(deck_size_declared, int) \
+                    or deck_size_declared <= 0:
+                raise ManifestError(
+                    f"deck.size: positive integer required, got {deck_size_declared!r}"
+                )
+            actual_size = sum(counts.values())
+            if deck_size_declared != actual_size:
+                raise ManifestError(
+                    f"deck.size {deck_size_declared} != sum of deck_counts "
+                    f"({actual_size}); the declared size must match the validated deck"
+                )
+
         fmt = data.get("format") or {}
+        if not isinstance(fmt, dict):
+            raise ManifestError("format: object required")
         gate = data.get("gate") or {}
         if not isinstance(gate, dict) or "deck_similarity_threshold" not in gate or \
                 "promotion_win_rate_threshold" not in gate:
@@ -168,45 +430,67 @@ class ModelSpec:
                 "gate_threshold is not a v2 field; use "
                 "deck_similarity_threshold / promotion_win_rate_threshold"
             )
+        deck_similarity_threshold = _require_probability(
+            gate["deck_similarity_threshold"], "gate.deck_similarity_threshold"
+        )
+        promotion_win_rate_threshold = _require_probability(
+            gate["promotion_win_rate_threshold"], "gate.promotion_win_rate_threshold"
+        )
+
+        encoder_version = _require_nonempty_str(data.get("encoder_version"), "encoder_version")
+        action_schema_version = _require_nonempty_str(
+            data.get("action_schema_version"), "action_schema_version"
+        )
+        value_target = _validate_value_target(data.get("value_target"))
+
         status = str(data.get("promotion_status") or "uncertified")
         if status not in ("certified", "uncertified", "rejected"):
             raise ManifestError(f"promotion_status must be certified|uncertified|rejected, got {status!r}")
-        cert = data.get("certification")
-        if status == "certified":
-            _validate_certification(cert)
 
         checkpoint_hash = str(data.get("checkpoint_hash") or "")
-        if len(checkpoint_hash) != 64:
+        if not _SHA256_HEX_RE.fullmatch(checkpoint_hash):
             raise ManifestError(
-                "checkpoint_hash: 64-hex sha256 of the immutable checkpoint bytes "
-                "required; a human-readable model name is not model identity"
+                "checkpoint_hash: 64-hex lowercase sha256 of the immutable "
+                "checkpoint bytes required; synthetic/human names are not identity"
             )
-        deck_hash = str(deck_block.get("deck_hash") or "")
+        deck_hash = str(block.get("deck_hash") or "")
         expected_hash = _canonical_deck_hash(counts)
-        if deck_hash and deck_hash != expected_hash:
+        if not _SHA256_HEX_RE.fullmatch(deck_hash):
+            raise ManifestError(
+                f"deck_hash: 64-hex sha256 required (canonical {expected_hash})"
+            )
+        if deck_hash != expected_hash:
             raise ManifestError(
                 f"deck_hash mismatch: manifest {deck_hash} != canonical {expected_hash}"
             )
 
+        cert = data.get("certification")
+        if status == "certified":
+            _validate_certification(
+                cert, checkpoint_hash, deck_hash, promotion_win_rate_threshold
+            )
+        elif status != "uncertified" and cert is not None:
+            raise ManifestError("certification: must be null unless promotion_status is 'certified'")
+
         format_family = str(fmt.get("family") or "constructed")
         return cls(
-            model_id=str(data.get("model_id") or ""),
-            deck=str(deck_block.get("name") or data.get("deck") or "Unknown"),
+            model_id=model_id,
+            deck=str(block.get("name") or data.get("deck") or "Unknown"),
             version=int(data.get("version") or 1),
             format_family=format_family,
-            deck_size=int(deck_block.get("size") or sum(counts.values())),
-            singleton=bool(deck_block.get("singleton", False)),
-            commander=deck_block.get("commander"),
+            deck_size=sum(counts.values()),
+            singleton=bool(block.get("singleton", False)),
+            commander=block.get("commander"),
             deck_counts=counts,
-            gate_threshold=float(gate["deck_similarity_threshold"]),
+            gate_threshold=deck_similarity_threshold,
             schema_version=2,
-            deck_similarity_threshold=float(gate["deck_similarity_threshold"]),
-            promotion_win_rate_threshold=float(gate["promotion_win_rate_threshold"]),
+            deck_similarity_threshold=deck_similarity_threshold,
+            promotion_win_rate_threshold=promotion_win_rate_threshold,
             checkpoint_hash=checkpoint_hash,
-            deck_hash=deck_hash or expected_hash,
-            encoder_version=str(data.get("encoder_version") or ""),
-            action_schema_version=str(data.get("action_schema_version") or ""),
-            value_target=dict(data.get("value_target") or {}),
+            deck_hash=deck_hash,
+            encoder_version=encoder_version,
+            action_schema_version=action_schema_version,
+            value_target=value_target,
             promotion_status=status,
             certification=dict(cert) if isinstance(cert, dict) else None,
             capabilities=dict(data.get("capabilities") or {"warm": False}),
