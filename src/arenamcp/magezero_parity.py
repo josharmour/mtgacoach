@@ -44,12 +44,25 @@ def validate_record(record: dict[str, Any]) -> list[str]:
     for key in REQUIRED_TOP_LEVEL:
         if key not in record:
             problems.append(f"missing required field: {key}")
+    if record.get("schema_version") != FIXTURE_SCHEMA_VERSION:
+        problems.append(
+            f"unsupported schema_version: {record.get('schema_version')!r}; expected {FIXTURE_SCHEMA_VERSION!r}"
+        )
     prov = record.get("provenance") or {}
     for key in REQUIRED_PROVENANCE:
         if key not in prov:
             problems.append(f"missing provenance field: {key}")
-    if prov.get("emitter_kind") not in (AUTHORITATIVE_EMITTER, SYNTHETIC_EMITTER):
+    emitter_kind = prov.get("emitter_kind")
+    if emitter_kind not in (AUTHORITATIVE_EMITTER, SYNTHETIC_EMITTER):
         problems.append("provenance.emitter_kind must be 'xmage_jvm_hdf5' or 'synthetic_harness'")
+    elif emitter_kind == AUTHORITATIVE_EMITTER:
+        for fld in ("encoder_version", "action_schema_version"):
+            val = prov.get(fld)
+            if not val or val == "unknown":
+                problems.append(f"authoritative emitter requires known '{fld}', got {val!r}")
+        sha = prov.get("reference_artifact_sha256") or prov.get("source_hash")
+        if not sha or sha == "unknown":
+            problems.append("authoritative emitter requires verified reference_artifact_sha256 or source_hash linkage")
 
     rows = record.get("emitted_rows")
     if not isinstance(rows, list) or not rows:
@@ -219,7 +232,12 @@ def compare_row(expected: dict[str, Any], actual: dict[str, Any]) -> RowComparis
         reasons.append(f"policy slots differ at {bad}")
 
     extras_equal = True
-    if len(exp_vec) >= ad + 4 and len(act_vec) >= ad + 4:
+    if len(exp_vec) < ad + 4 or len(act_vec) < ad + 4:
+        extras_equal = False
+        reasons.append(
+            f"row vector missing extra columns (expected at least {ad + 4}, got expected {len(exp_vec)}, actual {len(act_vec)})"
+        )
+    else:
         labels = ("resultLabel", "stateScore", "isPlayer", "actionType")
         for off, name in enumerate(labels):
             e, a = exp_vec[ad + off], act_vec[ad + off]
@@ -236,12 +254,7 @@ def compare_row(expected: dict[str, Any], actual: dict[str, Any]) -> RowComparis
 
 
 def compare_case(record: dict[str, Any], actual_rows: list[dict[str, Any]]) -> ParityReport:
-    """Compare one fixture case's authoritative rows against actually-emitted rows.
-
-    ``actual_rows`` must come from the authoritative emitter (JUnit-captured
-    LabeledStateWriter output against the same Arena-shaped state), never from
-    the Python encoder under test.
-    """
+    """Compare one fixture case's authoritative expected rows against actual emitted rows (e.g. from the Python encoder under test or JVM emitter)."""
     if not isinstance(actual_rows, list) or not actual_rows:
         raise FixtureValidationError(
             f"case {record.get('case_id')}: actual_rows must be a non-empty list"
@@ -265,6 +278,12 @@ def compare_case(record: dict[str, Any], actual_rows: list[dict[str, Any]]) -> P
                 f"case {record.get('case_id')}: duplicate actual row_index {rid}"
             )
         seen.add(rid)
+
+    for e, a in zip(expected_rows, actual_sorted):
+        if e.get("row_index") != a.get("row_index"):
+            raise FixtureValidationError(
+                f"case {record.get('case_id')}: row_index mismatch (expected {e.get('row_index')}, actual {a.get('row_index')})"
+            )
     per_row = [compare_row(e, a) for e, a in zip(expected_rows, actual_sorted)]
     return ParityReport(
         case_id=record.get("case_id", "?"),
