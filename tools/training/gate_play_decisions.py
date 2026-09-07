@@ -647,20 +647,47 @@ def _new_planner():
     return planner
 
 
-def build_user_message(game_state: dict, menu_texts: list[str], trigger: str = TRIGGER) -> str:
+def build_user_message(
+    game_state: dict,
+    menu_texts: list[str],
+    trigger: str = TRIGGER,
+    legacy_render: bool | None = None,
+) -> str:
     """Call production's prompt builder. Never re-implement it (§17.2).
 
     ``_build_action_prompt`` swallows a formatter exception and degrades to
     ``_fallback_format``, whose output is NOT production-shaped. A corpus built
     from that would repeat the exact failure that killed the two prior runs, so
     the degraded shape is detected here and raises instead.
+
+    ``legacy_render``: task 11 — a three-state render opinion for offline
+    training builders, forwarded to ActionPlanner._build_action_prompt →
+    CoachEngine._format_game_context:
+
+    * ``None`` (default) — production opinionated defaults exactly as the live
+      autopilot renders.  Unchanged behaviour for every existing call site.
+    * ``False`` — assert absent evidence instead of assuming it: a game_state
+      carrying ``_render_unknown = {stack=True, active_player=True, ...}`` fails
+      the render (raises) rather than silently rendering an assumed-empty stack
+      or assumed-local priority.
+    * ``True`` — annotate assumed defaults in the prompt (task 11's explicit
+      legacy-render mode); the annotation is produced by the formatter.
+
+    With ``legacy_render`` unset and no ``_render_unknown`` marker, ``True`` and
+    ``False`` are identical: an unmarked state asserts nothing unknown, so both
+    opinions are vacuously satisfied.
     """
+    if legacy_render is not None:
+        game_state = dict(game_state)
+        game_state["_legacy_render_mode"] = bool(legacy_render)
     planner = _new_planner()
     game_state = dict(game_state)
     game_state["legal_actions"] = list(menu_texts)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        message = planner._build_action_prompt(game_state, trigger, legal_actions=list(menu_texts))
+        message = planner._build_action_prompt(
+            game_state, trigger, legal_actions=list(menu_texts)
+        )
     if "Legal: (pick by number)" not in message or "Life: You=" not in message:
         raise RuntimeError(
             "production formatter degraded to the fallback shape — refusing to build a "
