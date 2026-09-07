@@ -7,6 +7,7 @@ and providing seamless fallback to heuristic lookahead when off-distribution.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -18,6 +19,60 @@ from arenamcp.format_profile import FormatProfile
 from arenamcp.magezero_gating import compute_count_weighted_jaccard
 
 logger = logging.getLogger(__name__)
+
+
+class ManifestError(ValueError):
+    """A model manifest failed v2 contract validation (explicit, not silent)."""
+
+
+def _canonical_deck_hash(counts: dict[str, int]) -> str:
+    """Canonical sha256 over normalized, sorted card entries (ws04 contract).
+
+    NFC + casefold + whitespace collapse; counts clamped >= 0; zero/negative
+    entries and blank names dropped; list order canonical. Excludes sideboard
+    structurally (deck dict has no sideboard field merged here).
+    """
+    import hashlib
+    import unicodedata
+
+    normalized: list[list[Any]] = []
+    for name, count in (counts or {}).items():
+        n = unicodedata.normalize("NFC", str(name)).casefold()
+        n = " ".join(n.split())
+        try:
+            c = max(0, int(count))
+        except (TypeError, ValueError):
+            continue
+        if c > 0 and n:
+            normalized.append([n, c])
+    normalized.sort()
+    payload = json.dumps({"cards": normalized}, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+_CERTIFICATION_REQUIRED_KEYS = (
+    "evaluated_at",
+    "criteria_version",
+    "panel",
+    "aggregation",
+    "threshold",
+)
+
+
+def _validate_certification(cert: Any) -> None:
+    """Certification evidence must be complete for status == certified."""
+    if not isinstance(cert, dict):
+        raise ManifestError(
+            "certification: status 'certified' requires a complete certification "
+            "evidence block; missing or historical unverifiable evidence means "
+            "uncertified"
+        )
+    missing = [k for k in _CERTIFICATION_REQUIRED_KEYS if k not in cert]
+    if missing:
+        raise ManifestError(f"certification: missing required keys {missing}")
+    panel = cert["panel"]
+    if not isinstance(panel, dict) or "games" not in panel or "wins" not in panel:
+        raise ManifestError("certification: panel must record games/wins/losses/draws")
 
 
 @dataclass(frozen=True)
@@ -38,6 +93,19 @@ class ModelSpec:
     trained_at: str = ""
     is_resident: bool = False
     is_warming: bool = False
+    # ---- v2 contract fields (task 04) ----
+    schema_version: int = 1
+    deck_similarity_threshold: float = 0.60
+    promotion_win_rate_threshold: float = 0.50
+    checkpoint_hash: str = ""
+    deck_hash: str = ""
+    encoder_version: str = ""
+    action_schema_version: str = ""
+    value_target: dict[str, Any] = field(default_factory=dict)
+    promotion_status: str = "uncertified"
+    certification: dict[str, Any] | None = None
+    capabilities: dict[str, Any] = field(default_factory=lambda: {"warm": False})
+    protocol_version: int = 1
 
     @property
     def label(self) -> str:
@@ -58,6 +126,91 @@ class ModelSpec:
             gate_threshold=float(data.get("gate_threshold") or 0.60),
             gauntlet=tuple(data.get("gauntlet") or ()),
             gauntlet_win_rate=float(data.get("gauntlet_win_rate") or 0.0),
+            trained_at=str(data.get("trained_at") or ""),
+            is_resident=is_resident,
+        )
+
+    @classmethod
+    def from_manifest(cls, data: dict[str, Any], is_resident: bool = False) -> ModelSpec:
+        """Strict v2 manifest parser (task 04). Rejects silently-fabricated fields.
+
+        v1 manifests are rejected with ManifestError (missing schema_version):
+        the old format carried the overloaded gate_threshold and no checkpoint
+        identity, so accepting it would re-introduce silent-certification bugs.
+        """
+        if not isinstance(data, dict):
+            raise ManifestError("manifest must be an object")
+        if "schema_version" not in data:
+            raise ManifestError(
+                "manifest missing schema_version (v2 contract required; refusing "
+                "to guess from a v1 manifest)"
+            )
+        if int(data.get("schema_version") or 0) != 2:
+            raise ManifestError(
+                f"unsupported manifest schema_version {data.get('schema_version')} (only 2)"
+            )
+
+        deck_block = data.get("deck") or {}
+        if not isinstance(deck_block, dict) or not deck_block.get("deck_counts"):
+            raise ManifestError("deck: deck_counts required (no invented defaults)")
+        counts = {str(k): int(v) for k, v in deck_block.get("deck_counts", {}).items()}
+        fmt = data.get("format") or {}
+        gate = data.get("gate") or {}
+        if not isinstance(gate, dict) or "deck_similarity_threshold" not in gate or \
+                "promotion_win_rate_threshold" not in gate:
+            raise ManifestError(
+                "gate: separate deck_similarity_threshold and "
+                "promotion_win_rate_threshold required (overloaded "
+                "gate_threshold is not accepted in v2)"
+            )
+        if "gate_threshold" in data:
+            raise ManifestError(
+                "gate_threshold is not a v2 field; use "
+                "deck_similarity_threshold / promotion_win_rate_threshold"
+            )
+        status = str(data.get("promotion_status") or "uncertified")
+        if status not in ("certified", "uncertified", "rejected"):
+            raise ManifestError(f"promotion_status must be certified|uncertified|rejected, got {status!r}")
+        cert = data.get("certification")
+        if status == "certified":
+            _validate_certification(cert)
+
+        checkpoint_hash = str(data.get("checkpoint_hash") or "")
+        if len(checkpoint_hash) != 64:
+            raise ManifestError(
+                "checkpoint_hash: 64-hex sha256 of the immutable checkpoint bytes "
+                "required; a human-readable model name is not model identity"
+            )
+        deck_hash = str(deck_block.get("deck_hash") or "")
+        expected_hash = _canonical_deck_hash(counts)
+        if deck_hash and deck_hash != expected_hash:
+            raise ManifestError(
+                f"deck_hash mismatch: manifest {deck_hash} != canonical {expected_hash}"
+            )
+
+        format_family = str(fmt.get("family") or "constructed")
+        return cls(
+            model_id=str(data.get("model_id") or ""),
+            deck=str(deck_block.get("name") or data.get("deck") or "Unknown"),
+            version=int(data.get("version") or 1),
+            format_family=format_family,
+            deck_size=int(deck_block.get("size") or sum(counts.values())),
+            singleton=bool(deck_block.get("singleton", False)),
+            commander=deck_block.get("commander"),
+            deck_counts=counts,
+            gate_threshold=float(gate["deck_similarity_threshold"]),
+            schema_version=2,
+            deck_similarity_threshold=float(gate["deck_similarity_threshold"]),
+            promotion_win_rate_threshold=float(gate["promotion_win_rate_threshold"]),
+            checkpoint_hash=checkpoint_hash,
+            deck_hash=deck_hash or expected_hash,
+            encoder_version=str(data.get("encoder_version") or ""),
+            action_schema_version=str(data.get("action_schema_version") or ""),
+            value_target=dict(data.get("value_target") or {}),
+            promotion_status=status,
+            certification=dict(cert) if isinstance(cert, dict) else None,
+            capabilities=dict(data.get("capabilities") or {"warm": False}),
+            protocol_version=int(data.get("protocol_version") or 2),
             trained_at=str(data.get("trained_at") or ""),
             is_resident=is_resident,
         )
