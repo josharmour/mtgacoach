@@ -73,7 +73,22 @@ class ModelSelection:
     is_resident: bool
 
 
-# Canonical default manifest for UWTempo/ver2 (bundled fallback)
+GENERIC_BASIC_LANDS: frozenset[str] = frozenset({
+    "Island",
+    "Plains",
+    "Swamp",
+    "Mountain",
+    "Forest",
+    "Snow-Covered Island",
+    "Snow-Covered Plains",
+    "Snow-Covered Swamp",
+    "Snow-Covered Mountain",
+    "Snow-Covered Forest",
+    "Wastes",
+})
+
+
+# Canonical default manifest for UWTempo/ver2 (bundled fallback matching training deck)
 _DEFAULT_UWTEMPO_MANIFEST = {
     "manifest_version": 1,
     "model_id": "UWTempo/ver2",
@@ -85,22 +100,22 @@ _DEFAULT_UWTEMPO_MANIFEST = {
     "gauntlet_win_rate": 0.26,
     "deck_counts": {
         "Malcolm, Alluring Scoundrel": 4,
-        "Spyglass Siren": 4,
-        "Faerie Mastermind": 4,
-        "Spectral Sailor": 4,
-        "Skrelv, Defector Mite": 2,
-        "Spell Pierce": 4,
-        "Make Disappear": 4,
-        "Fading Hope": 4,
-        "Ossification": 4,
-        "Protect the Negotiators": 2,
         "Island": 7,
-        "Plains": 4,
-        "Seachrome Coast": 4,
+        "Sheltered by Ghosts": 4,
+        "Skrelv, Defector Mite": 4,
+        "Combat Research": 4,
+        "No More Lies": 4,
         "Adarkar Wastes": 4,
-        "Deserted Beach": 3,
-        "Eiganjo, Seat of the Empire": 1,
-        "Otawara, Soaring City": 1,
+        "Seachrome Coast": 4,
+        "Meticulous Archive": 4,
+        "Shardmage's Rescue": 2,
+        "Floodfarm Verge": 3,
+        "Soul Partition": 2,
+        "Negate": 2,
+        "Kitsa, Otterball Elite": 4,
+        "Bounce Off": 4,
+        "Spell Pierce": 2,
+        "Sleep-Cursed Faerie": 2,
     },
 }
 
@@ -128,15 +143,19 @@ class ModelZooClient:
 
         import urllib.request
         try:
-            req = urllib.request.Request(f"{base_url}/models", headers={"Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=1.5) as resp:
+            url = f"{base_url}/models"
+            req = urllib.request.Request(url, headers={"User-Agent": "ArenaMCP-Client/1.0"})
+            with urllib.request.urlopen(req, timeout=1.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                models_list = data.get("models") or []
-                resident_set = set(data.get("resident") or [])
-                parsed = [
-                    ModelSpec.from_dict(m, is_resident=(m.get("model_id") in resident_set))
-                    for m in models_list
-                ]
+                models_data = data.get("models", [])
+                resident_set = set(data.get("resident_model_ids", []))
+
+                parsed = []
+                for m in models_data:
+                    mid = str(m.get("model_id") or "")
+                    spec = ModelSpec.from_dict(m, is_resident=(mid in resident_set))
+                    parsed.append(spec)
+
                 with cls._lock:
                     if parsed:
                         cls._models = parsed
@@ -176,13 +195,19 @@ class ModelZooClient:
 
             total_seen = sum(hero_counts.values())
             if total_seen < 40:
-                # In-match revealed cards: precision against reference deck
+                # In-match revealed cards: precision against reference deck.
+                # Two generic matching cards alone (e.g. basic lands) do NOT match.
+                non_generic = [
+                    c for c in hero_counts
+                    if c not in GENERIC_BASIC_LANDS and c in spec_counter
+                ]
+                if not non_generic or total_seen < 3:
+                    continue
                 matching_cards = sum(
                     min(count, spec_counter.get(c, 0)) for c, count in hero_counts.items()
                 )
                 score = matching_cards / total_seen
-                distinct_seen = len([c for c in hero_counts if c in spec_counter])
-                if score >= 0.75 and distinct_seen >= 2:
+                if score >= 0.75:
                     candidates.append((score, spec))
             else:
                 # Full decklist available: count-weighted Jaccard

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -394,20 +395,16 @@ class MCTSEvaluator:
         )
 
         # Deck-selection identity: ModelZooClient.select consumes hero deck
-        # identity (hero_deck_list or derived from zones) plus format profile
+        # identity via consolidated extract_hero_deck plus format profile
         # — fingerprint the deck source exactly as selection sees it.
-        hero_deck_source: Any
-        connect_deck = game_state.get("hero_deck_list") or []
-        if connect_deck:
-            hero_deck_source = ("hero_deck_list", _freeze(connect_deck))
-        else:
-            hero_deck_source = (
-                "zones",
-                tuple(
-                    cls._zone_identity(game_state.get(z)) for z in
-                    ("hand", "battlefield", "graveyard", "exile", "command")
-                ),
-            )
+        from arenamcp.magezero_gating import extract_hero_deck
+
+        extraction = extract_hero_deck(game_state)
+        hero_deck_source = (
+            extraction.compatibility_reason,
+            extraction.is_full_deck,
+            tuple(sorted(Counter(extraction.cards).items())),
+        )
 
         return (
             # Actor / decision context
@@ -1334,21 +1331,14 @@ class MCTSEvaluator:
         from arenamcp.model_zoo import ModelZooClient
 
         fmt_profile = detect_format_profile(game_state)
-        # Extract hero deck cards
-        hero_deck_cards: list[str] = []
-        connect_deck = game_state.get("hero_deck_list") or []
-        if connect_deck:
-            hero_deck_cards = [str(c) for c in connect_deck]
-        else:
-            for zone_name in ("hand", "battlefield", "graveyard", "exile", "command"):
-                cards = game_state.get(zone_name) or []
-                hero_deck_cards.extend(
-                    str(c.get("name") or "")
-                    for c in cards
-                    if isinstance(c, dict) and c.get("name")
-                )
+        # Extract hero deck cards via consolidated extract_hero_deck helper
+        from arenamcp.magezero_gating import extract_hero_deck
 
-        selection = ModelZooClient.select(fmt_profile, hero_deck_cards)
+        extraction = extract_hero_deck(game_state)
+        if not extraction.is_compatible or not extraction.cards:
+            return base_val, "Tactical Heuristic Lookahead", []
+
+        selection = ModelZooClient.select(fmt_profile, extraction.cards)
         if not selection or not MageZeroClient.check_health():
             return base_val, "Tactical Heuristic Lookahead", []
 
