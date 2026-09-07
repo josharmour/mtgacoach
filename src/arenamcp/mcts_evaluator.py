@@ -1113,7 +1113,25 @@ class MCTSEvaluator:
         game_state: dict[str, Any],
         branch: MCTSBranch,
     ) -> dict[str, Any] | None:
+        """Build the state after a SUPPORTED mechanical transition, else None.
+
+        Explicitly supported set (everything else is unsupported/unverified
+        and returns None so the branch falls back to prior-based pseudo
+        values instead of a fabricated "verified" afterstate):
+        - PLAY LAND: the land is in the top-level hand, no land already
+          entered this turn and the land drop is unused; entry honors the
+          card's own tapped-entry signal: tapped entry when the
+          producer/transcript indicates ETB tapped, untapped only for basic
+          lands or when no indicator says otherwise.
+        - CAST: generic permanent (creature/enchantment/artifact) whose FULL
+          mana cost is payable from available mana — generic-only cost from
+          the mana pool, or colored cost confirmed payable by GRE legality.
+        Unsupported (always None): instants/sorceries requiring stack
+        resolution, targets, ETB triggers, combat-damage projection as combat
+        state, convoke/alternative costs, X-spells.
+        """
         import copy
+        import re
 
         local_seat = game_state.get("local_seat_id") or 1
         act_type = branch.action_type.lower()
@@ -1128,11 +1146,46 @@ class MCTSEvaluator:
             )
             if found_idx is None:
                 return None
+            # Land-drop coherence: at most one land per turn.
+            hero_player = next(
+                (p for p in state_copy.get("players", []) if isinstance(p, dict)
+                 and (p.get("is_local") or p.get("seat_id") == local_seat)),
+                None,
+            )
+            if hero_player and int(hero_player.get("lands_played") or 0) > 0:
+                return None
+            current_turn = int((state_copy.get("turn") or {}).get("turn_number") or 1)
+            lands_this_turn = sum(
+                1 for c in state_copy.get("battlefield") or []
+                if isinstance(c, dict)
+                and c.get("owner_seat_id") == local_seat
+                and c.get("turn_entered_battlefield") == current_turn
+                and "land" in str(c.get("type_line") or "").lower()
+            )
+            if lands_this_turn > 0:
+                return None
             card = hand.pop(found_idx)
             bf = state_copy.setdefault("battlefield", [])
             card["controller_seat_id"] = local_seat
             card["owner_seat_id"] = local_seat
-            card["is_tapped"] = False
+            # Tapped-entry coherence: trust the producer's ETB-tapped signal
+            # when present; otherwise basic lands enter untapped. Unknown
+            # typed lands (no signal) fall back to tapped entry — a tapped
+            # source is the conservative assumption and is never presented
+            # as a verified untapped one.
+            etb_tapped = card.get("enters_tapped")
+            if etb_tapped is None and str(card.get("oracle_text") or ""):
+                etb_tapped = bool(
+                    re.search(r"enters the battlefield tapped", str(card["oracle_text"]), re.I)
+                )
+            if etb_tapped is None:
+                t_line = str(card.get("type_line") or "").lower()
+                etb_tapped = "basic" not in t_line and bool(t_line)
+            card["is_tapped"] = bool(etb_tapped)
+            card["is_summoning_sick"] = False
+            turn_value = current_turn if current_turn else None
+            if turn_value is not None:
+                card["turn_entered_battlefield"] = turn_value
             bf.append(card)
             for p in state_copy.get("players", []):
                 if isinstance(p, dict) and (p.get("is_local") or p.get("seat_id") == local_seat):
@@ -1140,30 +1193,9 @@ class MCTSEvaluator:
             return state_copy
 
         if act_type == "attack":
-            state_copy = copy.deepcopy(game_state)
-            opp_seat = next(
-                (
-                    p.get("seat_id")
-                    for p in state_copy.get("players", [])
-                    if not p.get("is_local") and p.get("seat_id") != local_seat
-                ),
-                2,
-            )
-            curr_opp_life = 20
-            for p in state_copy.get("players", []):
-                if p.get("seat_id") == opp_seat:
-                    curr_opp_life = int(p.get("life_total") or 20)
-            proj_opp_life = (
-                branch.projected_state.get("opp_life", curr_opp_life)
-                if branch.projected_state
-                else curr_opp_life
-            )
-            dmg = max(0, curr_opp_life - proj_opp_life)
-            if dmg > 0:
-                for p in state_copy.get("players", []):
-                    if p.get("seat_id") == opp_seat:
-                        p["life_total"] = max(0, curr_opp_life - dmg)
-                return state_copy
+            # Attack "afterstates" are life projections, not resolved combat
+            # states: no tapped attackers, no blockers, no damage ordering,
+            # no first-strike/trample rules. Never certify them.
             return None
 
         if act_type == "cast":
@@ -1178,17 +1210,83 @@ class MCTSEvaluator:
                 return None
             card = hand.pop(found_idx)
             t_line = str(card.get("type_line") or "").lower()
-            if "creature" in t_line or "enchantment" in t_line or "artifact" in t_line:
-                bf = state_copy.setdefault("battlefield", [])
-                card["controller_seat_id"] = local_seat
-                card["owner_seat_id"] = local_seat
-                card["is_tapped"] = False
-                card["is_summoning_sick"] = "creature" in t_line
-                bf.append(card)
-                return state_copy
-            return None
+            if not ("creature" in t_line or "enchantment" in t_line or "artifact" in t_line):
+                # Instants/sorceries resolve through the stack: targets,
+                # counters, replacement effects — none of that is verified
+                # by this adapter.
+                return None
+            # Full-cost payment check: parse the card's mana cost and confirm
+            # it is payable from the local player's mana pool. Colored
+            # requirements are only waived when GRE legality names the card.
+            cost_str = str(card.get("mana_cost") or card.get("cost") or "")
+            mana_pool: dict[str, int] = {}
+            for p in state_copy.get("players", []):
+                if isinstance(p, dict) and (p.get("is_local") or p.get("seat_id") == local_seat):
+                    raw_pool = p.get("mana_pool") or {}
+                    if isinstance(raw_pool, dict):
+                        mana_pool = {str(k): int(v or 0) for k, v in raw_pool.items()}
+            total_pool = sum(mana_pool.values())
+            generics = 0
+            colored: dict[str, int] = {}
+            x_cost = False
+            for sym in cost_str.replace("{", " ").replace("}", " ").split():
+                if sym.isdigit():
+                    generics += int(sym)
+                elif sym.upper() in {"W", "U", "B", "R", "G", "C"}:
+                    colored[sym.upper()] = colored.get(sym.upper(), 0) + 1
+                elif sym.upper() == "X":
+                    x_cost = True
+                elif sym.isalpha() and len(sym) > 1:
+                    # Hybrid/phyrexian/other nonstandard symbols unsupported
+                    return None
+            if x_cost:
+                return None
+            color_payable = all(mana_pool.get(c, 0) >= n for c, n in colored.items())
+            if not color_payable:
+                legal_actions = state_copy.get("legal_actions") or []
+                gre_ok = any(
+                    str(a.get("name") if isinstance(a, dict) else a).strip().lower()
+                    .startswith(f"cast {spell_name.lower()}")
+                    for a in legal_actions
+                )
+                if not gre_ok:
+                    return None
+            if sum(colored.values()) + generics > total_pool and not (
+                color_payable and generics == 0 and colored
+            ):
+                return None
+            bf = state_copy.setdefault("battlefield", [])
+            # Deduct the paid mana from the local player's pool (colored
+            # requirements first, then generic greedily largest-color).
+            for p in state_copy.get("players", []):
+                if isinstance(p, dict) and (p.get("is_local") or p.get("seat_id") == local_seat):
+                    pool = {str(k): int(v or 0) for k, v in (p.get("mana_pool") or {}).items()}
+                    for c, n in colored.items():
+                        pool[c] = pool.get(c, 0) - n
+                    p["mana_pool"] = cls._deduct_mana(pool, generics)
+                    break
+            card["controller_seat_id"] = local_seat
+            card["owner_seat_id"] = local_seat
+            card["is_tapped"] = False
+            card["is_summoning_sick"] = "creature" in t_line
+            bf.append(card)
+            return state_copy
 
         return None
+
+    @staticmethod
+    def _deduct_mana(pool: dict[str, int], amount: int) -> dict[str, int]:
+        """Deduct ``amount`` total mana from a pool, largest colors first."""
+        remaining = amount
+        out = dict(pool)
+        for key in sorted(out, key=lambda k: -out[k]):
+            if remaining <= 0:
+                break
+            take = min(int(out.get(key, 0) or 0), remaining)
+            if take > 0:
+                out[key] = int(out[key]) - take
+                remaining -= take
+        return {k: max(0, int(v)) for k, v in out.items()}
 
     @classmethod
     def _apply_magezero_lookahead(
@@ -1246,6 +1344,16 @@ class MCTSEvaluator:
                 evaluated_branch_map[b_idx] = start_offset
                 for hand in opp_hands:
                     items.append((afterstate, hand))
+            else:
+                # Unsupported/unverifiable transition (task08): the branch
+                # carries NO verified neural afterstate. Attribution is kept
+                # here so ranking/presentation (task09) can distinguish
+                # prior-only branches from measured ones.
+                branch.details["afterstate_supported"] = False
+                branch.details["afterstate_unavailable_reason"] = (
+                    "unsupported mechanical transition "
+                    "(stack/ETB/combat not representable reliably)"
+                )
 
         batch_results = MageZeroClient.evaluate_batch(items, model_id=model_id)
         n_rows = len(items)
