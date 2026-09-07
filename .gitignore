@@ -67,3 +67,4 @@ run_update.py
 
 # Local grading worksheet (contains replay-derived game states; not for the public repo)
 tripwire_review_v2.md
+.__smb*
