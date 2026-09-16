@@ -411,6 +411,77 @@ def test_turn_advice_mode_skips_controller_and_calls_legacy(monkeypatch):
     assert coach.conversation.memory.turns == []
 
 
+# ---------------------------------------------------------------------------
+# Wave 3 — proactive topic pipeline in the loop
+# ---------------------------------------------------------------------------
+
+
+def test_loop_calls_speak_topic_after_batch_in_conversation_mode(monkeypatch):
+    coach = make_loop_coach(mode="conversation", triggers=["land_played"])
+
+    topic_calls: list[tuple] = []
+    original = coach.conversation.speak_topic_if_any
+
+    def spy(match_id=None, match_number=0):
+        topic_calls.append((match_id, match_number))
+        return original(match_id=match_id, match_number=match_number)
+
+    coach.conversation.speak_topic_if_any = spy  # type: ignore[method-assign]
+
+    run_loop(monkeypatch, coach, iterations=1)
+
+    # The loop asked for topics after dispatching the batch, passing the
+    # loop's live match identity.
+    assert topic_calls == [("m1", 0)]
+    # No meaningful board change in the fixture state → nothing spoken.
+    assert coach.speak_advice_calls == []
+
+
+def test_loop_skips_speak_topic_in_turn_advice_mode(monkeypatch):
+    coach = make_loop_coach(mode=TURN_ADVICE, triggers=["land_played"])
+
+    topic_calls: list = []
+    coach.conversation.speak_topic_if_any = (  # type: ignore[method-assign]
+        lambda *a, **k: topic_calls.append((a, k))
+    )
+
+    run_loop(monkeypatch, coach, iterations=1)
+
+    assert coach.speak_advice_calls == ["Cast your Lightning Bolt."]
+    assert topic_calls == []
+
+
+def test_loop_delivers_proactive_topic_speech(monkeypatch):
+    coach = make_loop_coach(mode="conversation", triggers=["land_played"])
+    # Meaningful board change: opponent revealed a new permanent this batch.
+    prev_state = dict(coach._mcp.state)
+    coach._mcp.state["battlefield"] = [
+        {"name": "Grizzly Bears", "controller_seat_id": 2, "instance_id": 99, "type_line": "Creature"}
+    ]
+    coach._mcp.state["local_seat_id"] = 1
+    coach._mcp.state["opponent_seat_id"] = 2
+    coach.conversation.memory.last_proactive_ts = 0.0
+
+    spoken: list[tuple] = []
+
+    def fake_speak_topic(match_id=None, match_number=0):
+        result = coach.conversation._speak_topic_if_any(match_id, match_number)
+        if result is not None:
+            spoken.append(result)
+        return result
+
+    coach.conversation.speak_topic_if_any = fake_speak_topic  # type: ignore[method-assign]
+
+    run_loop(monkeypatch, coach, iterations=1)
+
+    assert len(spoken) == 1
+    text, priority, topic = spoken[0]
+    assert topic.key == "opponent_development"
+    assert priority == "proactive"
+    # Spoken via the controller's arbiter route, NOT legacy speak_advice.
+    assert coach.speak_advice_calls == []
+
+
 def test_pipe_set_mode_flips_loop_routing_live(monkeypatch):
     import arenamcp.conversation as conversation_mod
 

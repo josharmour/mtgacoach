@@ -1,15 +1,21 @@
 """Conversation Mode controller, response identity, and match memory.
 
-This module implements the Wave-2 vertical slice of Conversation Mode (see
+This module implements the Conversation Mode engine layer (see
 ``conversation-mode.md`` and the binding contract in
 ``conversation-mode-progress.md``):
 
 - ``ResponseIdentity`` — canonical frozen identity stamped on every response
   so stale answers can be discarded (session/match/turn/request).
 - ``MatchMemory`` — a compact, thread-safe per-match conversation memory
-  (turn ring, discussed topics, revealed opponent cards, plan summary).
+  (turn ring, discussed topics, revealed opponent cards, plan summary,
+  proactive-speech timestamps, deferred pending questions).
+- ``TopicSelector`` — Wave-3 proactive commentary: derives prioritized
+  candidate topics from *meaningful* state changes (opponent developments,
+  role shifts, material swings, plan drift), never from every turn/event.
 - ``ConversationController`` — the engine-side session that records user
-  questions, preempts speech, spawns answer threads, and gates delivery.
+  questions, preempts speech, spawns answer threads, gates delivery, and
+  (Wave 3) selects/gates/speaks proactive topics behind verbosity, cooldown,
+  repetition, and user-question-priority gates.
 
 The controller is deliberately structural about its collaborators: it never
 imports ``voice_session`` (duck-typed via ``coach.voice_session``) and it
@@ -46,6 +52,36 @@ VERBOSITY_DETAILED = "detailed"
 
 VALID_MODES: tuple[str, ...] = (TURN_ADVICE, CONVERSATION)
 VALID_VERBOSITIES: tuple[str, ...] = (VERBOSITY_QUIET, VERBOSITY_BALANCED, VERBOSITY_DETAILED)
+
+# Default minimum seconds between proactive topic utterances (settings key
+# ``conversation_cooldown_seconds``). Per-topic repetition windows are 3x this.
+DEFAULT_COOLDOWN_SECONDS = 90
+# A deferred user question stays answerable after an urgent interrupt for at
+# most this many seconds, and only within the same match.
+PENDING_QUESTION_TTL_SECONDS = 60
+PENDING_QUESTION_CAP = 5
+# Topic keys that read as "the situation just changed materially" — these are
+# the STATE_SHIFT-and-above classes the Balanced verbosity tier allows.
+URGENT_TOPIC_KEYS: frozenset[str] = frozenset({"threat", "urgent_decision", "low_life"})
+
+# Instruction block prepended to every proactive-topic prompt. The
+# observed-facts-vs-hypotheses rule lives HERE (in the prompt text) rather
+# than in any semantic analyzer: statements about the opponent's hidden
+# hand/library must be phrased as hypotheses.
+TOPIC_PROMPT_PREFIX = (
+    "You are a Magic: The Gathering coach commenting proactively on how the "
+    "game is developing. Keep it under two short sentences. Never state or "
+    "imply a win probability. Any statement about the opponent's hidden hand "
+    "or library must be phrased as a hypothesis (\"they might have...\"), "
+    "never as an observed fact."
+)
+
+
+def match_number_from_identity(identity: ResponseIdentity | None) -> int:
+    try:
+        return int(getattr(identity, "match_number", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 class EventPriority(IntEnum):
@@ -151,6 +187,15 @@ MEMORY_RING_SIZE = 12
 
 
 @dataclass
+class PendingQuestion:
+    """A user question deferred by an urgent interrupt, kept for later."""
+
+    text: str
+    ts: float = field(default_factory=time.time)
+    match_id: str | None = None
+
+
+@dataclass
 class MatchMemory:
     """Compact per-match conversation memory. All mutation is controller-locked."""
 
@@ -159,11 +204,400 @@ class MatchMemory:
     revealed_opponent_cards: list[str] = field(default_factory=list)
     plan_summary: str = ""
     last_evidence: EvidenceBlock | None = None
+    # Wave 3: last proactive topic utterance (monotonic-free wall clock) and
+    # questions deferred by urgent interrupts, newest last, capped.
+    last_proactive_ts: float = 0.0
+    pending_questions: list[PendingQuestion] = field(default_factory=list)
+    # Previous plan summary, kept so plan-drift topics can detect change.
+    plan_summary_prev: str = ""
 
     def append(self, turn: ConversationTurn) -> None:
         self.turns.append(turn)
         if len(self.turns) > MEMORY_RING_SIZE:
             del self.turns[: len(self.turns) - MEMORY_RING_SIZE]
+
+    def record_pending_question(self, text: str, match_id: str | None = None) -> None:
+        """Defer a question for later recovery (capped, newest kept)."""
+        self.pending_questions.append(PendingQuestion(text=str(text), match_id=match_id))
+        if len(self.pending_questions) > PENDING_QUESTION_CAP:
+            del self.pending_questions[: len(self.pending_questions) - PENDING_QUESTION_CAP]
+
+
+# ---------------------------------------------------------------------------
+# Topic selection (Wave 3 — proactive game-dynamics commentary)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TopicCandidate:
+    """One proactive-commentary candidate produced by TopicSelector."""
+
+    key: str
+    priority: EventPriority
+    evidence: str  # observed facts; hidden-info claims phrased as hypotheses
+
+
+# Material-change thresholds for snapshot-diff topics (mirrors the
+# GamePlanManager material-signature philosophy: only *meaningful* movement
+# generates commentary, never every turn/event).
+_LIFE_DELTA = 3
+_CREATURE_DELTA = 2
+_LAND_DELTA = 2
+_HAND_DELTA = 2
+
+
+def _state_players(state: dict[str, Any] | None) -> dict[int, dict[str, Any]]:
+    if not isinstance(state, dict):
+        return {}
+    out: dict[int, dict[str, Any]] = {}
+    for p in state.get("players", []) or []:
+        if isinstance(p, dict) and isinstance(p.get("seat_id"), int):
+            out[p["seat_id"]] = p
+    return out
+
+
+def _local_seat(state: dict[str, Any] | None) -> int | None:
+    if not isinstance(state, dict):
+        return None
+    seat = state.get("local_seat_id")
+    if isinstance(seat, int):
+        return seat
+    for p in state.get("players", []) or []:
+        if isinstance(p, dict) and p.get("is_local") and isinstance(p.get("seat_id"), int):
+            return p["seat_id"]
+    return None
+
+
+def _opponent_seat(state: dict[str, Any] | None, local_seat: int | None) -> int | None:
+    if not isinstance(state, dict):
+        return None
+    seat = state.get("opponent_seat_id")
+    if isinstance(seat, int):
+        return seat
+    for controller in {c.get("controller_seat_id") for c in _battlefield_cards(state)}:
+        if isinstance(controller, int) and controller != local_seat:
+            return controller
+    return None
+
+
+def _battlefield_cards(state: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(state, dict):
+        return []
+    return [c for c in (state.get("battlefield", []) or []) if isinstance(c, dict)]
+
+
+def _is_creature(card: dict[str, Any]) -> bool:
+    return "Creature" in str(card.get("type_line", ""))
+
+
+def _is_land(card: dict[str, Any]) -> bool:
+    return "Land" in str(card.get("type_line", ""))
+
+
+def _cards_for_seat(state: dict[str, Any] | None, seat: int | None, predicate) -> list[dict[str, Any]]:
+    if seat is None:
+        return []
+    return [c for c in _battlefield_cards(state) if c.get("controller_seat_id") == seat and predicate(c)]
+
+
+def _life_total(state: dict[str, Any] | None, seat: int | None) -> int | None:
+    if seat is None:
+        return None
+    player = _state_players(state).get(seat)
+    if player is None:
+        return None
+    try:
+        return int(player.get("life_total"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _hand_size(state: dict[str, Any] | None, seat: int | None) -> int | None:
+    """Local hand comes from ``hand``; opponent hand size from the public zones."""
+    if not isinstance(state, dict):
+        return None
+    local = _local_seat(state)
+    if seat is not None and seat == local:
+        return len([c for c in (state.get("hand", []) or []) if isinstance(c, dict)])
+    zones = state.get("zones")
+    if isinstance(zones, dict):
+        try:
+            count = zones.get("opponent_hand_count")
+            if count is not None:
+                return int(count)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _instance_ids(state: dict[str, Any] | None) -> set[int]:
+    ids: set[int] = set()
+    for card in _battlefield_cards(state):
+        iid = card.get("instance_id")
+        if isinstance(iid, int):
+            ids.add(iid)
+    return ids
+
+
+def _attackers_for_seat(state: dict[str, Any] | None, seat: int | None) -> bool:
+    if seat is None:
+        return False
+    return any(c.get("is_attacking") for c in _cards_for_seat(state, seat, _is_creature))
+
+
+class TopicSelector:
+    """Derives prioritized proactive-commentary candidates from *meaningful*
+    changes between consecutive snapshots — never from every turn or event.
+
+    Input: ``(prev_state, curr_state, triggers, memory)``. Output: candidates
+    sorted by descending :class:`EventPriority`. Every candidate carries a
+    short evidence note that distinguishes observed facts (revealed cards,
+    life totals) from hypotheses about hidden information.
+    """
+
+    def select(
+        self,
+        prev_state: dict[str, Any] | None,
+        curr_state: dict[str, Any] | None,
+        triggers: list[str] | None,
+        memory: MatchMemory | None = None,
+    ) -> list[TopicCandidate]:
+        if not isinstance(curr_state, dict):
+            return []
+        # Development/threat detection first so a just-revealed threat cites
+        # "revealed" (the sharper observed fact) rather than "board includes".
+        candidates: list[TopicCandidate] = []
+        candidates.extend(self._opponent_development_topics(prev_state, curr_state, triggers))
+        candidates.extend(self._threat_topics(curr_state, triggers))
+        candidates.extend(self._role_shift_topics(prev_state, curr_state))
+        candidates.extend(self._material_shift_topics(prev_state, curr_state))
+        candidates.extend(self._plan_drift_topics(memory))
+        # Dedupe by topic key (a board threat also matches development) and
+        # sort highest priority first; stable within a tier (detection order).
+        deduped: dict[str, TopicCandidate] = {}
+        for candidate in candidates:
+            deduped.setdefault(candidate.key, candidate)
+        return sorted(deduped.values(), key=lambda c: -int(c.priority))
+
+    # -- (d) threats and interaction windows ---------------------------------
+
+    def _threat_topics(
+        self, curr_state: dict[str, Any], triggers: list[str] | None
+    ) -> list[TopicCandidate]:
+        names = sorted({str(c.get("name")) for c in _battlefield_cards(curr_state) if _threat_card_name(c)})
+        if triggers and "threat_detected" in triggers and not names:
+            # The trigger machinery already carries the specific threat; the
+            # snapshot names are the observed facts we can cite.
+            board_names = sorted(
+                {str(c.get("name")) for c in _battlefield_cards(curr_state) if c.get("name")}
+            )
+            if board_names:
+                names = board_names[:3]
+        if not names:
+            return []
+        joined = ", ".join(names)
+        return [
+            TopicCandidate(
+                key="threat",
+                priority=EventPriority.THREAT,
+                evidence=(f"Opponent board now includes {joined} (observed)."),
+            )
+        ]
+
+    # -- (a) matchup / opponent-archetype developments ------------------------
+
+    def _opponent_development_topics(
+        self,
+        prev_state: dict[str, Any] | None,
+        curr_state: dict[str, Any],
+        triggers: list[str] | None,
+    ) -> list[TopicCandidate]:
+        prev_ids = _instance_ids(prev_state) if prev_state is not None else None
+        local_seat = _local_seat(curr_state)
+        new_cards: list[dict[str, Any]] = []
+        if prev_ids is not None:
+            for card in _battlefield_cards(curr_state):
+                controller = card.get("controller_seat_id")
+                iid = card.get("instance_id")
+                if (
+                    controller != local_seat
+                    and isinstance(iid, int)
+                    and iid not in prev_ids
+                    and card.get("name")
+                ):
+                    new_cards.append(card)
+        if not new_cards and triggers and "stack_spell_opponent" in triggers:
+            # A spell is resolving/stacking for the opponent — names on the
+            # stack are observed once they resolve; on the stack they are
+            # still public information.
+            stack = [c for c in (curr_state.get("stack", []) or []) if isinstance(c, dict)]
+            opp_seat = _opponent_seat(curr_state, local_seat)
+            new_cards = [c for c in stack if c.get("name") and c.get("controller_seat_id") in (opp_seat, None)]
+
+        if not new_cards:
+            return []
+
+        threat_names = [name for c in new_cards if (name := _threat_card_name(c))]
+        names = sorted({str(c.get("name")) for c in new_cards})
+        joined = ", ".join(names)
+        if threat_names:
+            # Threat-level development outranks a generic archetype note.
+            return [
+                TopicCandidate(
+                    key="threat",
+                    priority=EventPriority.THREAT,
+                    evidence=(f"Opponent revealed {joined} (observed)."),
+                )
+            ]
+        return [
+            TopicCandidate(
+                key="opponent_development",
+                priority=EventPriority.STATE_SHIFT,
+                evidence=(
+                    f"Opponent revealed new permanent(s): {joined} (observed). "
+                    "What this means for the matchup is a hypothesis."
+                ),
+            )
+        ]
+
+    # -- (b) role shifts: attacking vs defending ------------------------------
+
+    def _role_shift_topics(
+        self, prev_state: dict[str, Any] | None, curr_state: dict[str, Any]
+    ) -> list[TopicCandidate]:
+        if not prev_state:
+            return []
+        local_seat = _local_seat(curr_state) or _local_seat(prev_state)
+        opp_seat = _opponent_seat(curr_state, local_seat) or _opponent_seat(prev_state, local_seat)
+        if local_seat is None or opp_seat is None:
+            return []
+        was_attacking = _attackers_for_seat(prev_state, local_seat)
+        is_attacking = _attackers_for_seat(curr_state, local_seat)
+        opp_was_attacking = _attackers_for_seat(prev_state, opp_seat)
+        opp_is_attacking = _attackers_for_seat(curr_state, opp_seat)
+        # A shift fires exactly once per flip: the next comparison starts from
+        # the flipped baseline, so sustained roles never re-trigger.
+        if not was_attacking and is_attacking and not opp_is_attacking:
+            return [
+                TopicCandidate(
+                    key="role_shift",
+                    priority=EventPriority.STATE_SHIFT,
+                    evidence=(
+                        "Your creatures were not attacking last check and now "
+                        "have attacking creatures while the opponent does not "
+                        "(observed) — you are on the offensive."
+                    ),
+                )
+            ]
+        if was_attacking and not is_attacking and opp_is_attacking:
+            return [
+                TopicCandidate(
+                    key="role_shift",
+                    priority=EventPriority.STATE_SHIFT,
+                    evidence=(
+                        "You had attacking creatures last check and now the "
+                        "opponent does while yours do not (observed) — "
+                        "shifting to defense."
+                    ),
+                )
+            ]
+        return []
+
+    # -- (c) mana / card advantage / tempo / clock changes --------------------
+
+    def _material_shift_topics(
+        self, prev_state: dict[str, Any] | None, curr_state: dict[str, Any]
+    ) -> list[TopicCandidate]:
+        if not prev_state:
+            return []
+        local_seat = _local_seat(curr_state) or _local_seat(prev_state)
+        opp_seat = _opponent_seat(curr_state, local_seat) or _opponent_seat(prev_state, local_seat)
+        changes: list[str] = []
+        card_changes: list[str] = []
+
+        my_life = (_life_total(prev_state, local_seat), _life_total(curr_state, local_seat))
+        opp_life = (_life_total(prev_state, opp_seat), _life_total(curr_state, opp_seat))
+        if None not in my_life and abs(my_life[1] - my_life[0]) >= _LIFE_DELTA:
+            changes.append(f"your life {my_life[0]}→{my_life[1]}")
+        if None not in opp_life and abs(opp_life[1] - opp_life[0]) >= _LIFE_DELTA:
+            changes.append(f"opponent life {opp_life[0]}→{opp_life[1]}")
+
+        my_creatures = (
+            len(_cards_for_seat(prev_state, local_seat, _is_creature)),
+            len(_cards_for_seat(curr_state, local_seat, _is_creature)),
+        )
+        opp_creatures = (
+            len(_cards_for_seat(prev_state, opp_seat, _is_creature)),
+            len(_cards_for_seat(curr_state, opp_seat, _is_creature)),
+        )
+        if abs(my_creatures[1] - my_creatures[0]) >= _CREATURE_DELTA:
+            changes.append(f"your creatures {my_creatures[0]}→{my_creatures[1]}")
+        if abs(opp_creatures[1] - opp_creatures[0]) >= _CREATURE_DELTA:
+            changes.append(f"opponent creatures {opp_creatures[0]}→{opp_creatures[1]}")
+
+        my_lands = (
+            len(_cards_for_seat(prev_state, local_seat, _is_land)),
+            len(_cards_for_seat(curr_state, local_seat, _is_land)),
+        )
+        opp_lands = (
+            len(_cards_for_seat(prev_state, opp_seat, _is_land)),
+            len(_cards_for_seat(curr_state, opp_seat, _is_land)),
+        )
+        if abs(my_lands[1] - my_lands[0]) >= _LAND_DELTA:
+            changes.append(f"your lands {my_lands[0]}→{my_lands[1]}")
+        if abs(opp_lands[1] - opp_lands[0]) >= _LAND_DELTA:
+            changes.append(f"opponent lands {opp_lands[0]}→{opp_lands[1]}")
+
+        my_hand = (_hand_size(prev_state, local_seat), _hand_size(curr_state, local_seat))
+        opp_hand = (_hand_size(prev_state, opp_seat), _hand_size(curr_state, opp_seat))
+        if None not in my_hand and abs(my_hand[1] - my_hand[0]) >= _HAND_DELTA:
+            card_changes.append(f"your hand {my_hand[0]}→{my_hand[1]}")
+        if None not in opp_hand and abs(opp_hand[1] - opp_hand[0]) >= _HAND_DELTA:
+            card_changes.append(f"opponent hand count {opp_hand[0]}→{opp_hand[1]}")
+
+        if not changes and not card_changes:
+            return []
+        evidence = "Observed changes: " + ", ".join(changes + card_changes) + "."
+        if card_changes:
+            evidence += " What the opponent holds is a hypothesis."
+        return [
+            TopicCandidate(
+                key="material_shift",
+                priority=EventPriority.STATE_SHIFT,
+                evidence=evidence,
+            )
+        ]
+
+    # -- (e) plan success / drift ---------------------------------------------
+
+    def _plan_drift_topics(self, memory: MatchMemory | None) -> list[TopicCandidate]:
+        if memory is None:
+            return []
+        prev = getattr(memory, "plan_summary_prev", "") or ""
+        curr = memory.plan_summary or ""
+        # The controller refreshes plan_summary from GamePlanManager when
+        # reachable; a *changed* non-empty plan is the drift signal. Without a
+        # reachable manager, an externally-seeded plan_summary change counts.
+        if prev and curr and prev != curr:
+            return [
+                TopicCandidate(
+                    key="plan_update",
+                    priority=EventPriority.STATE_SHIFT,
+                    evidence=(f"The game plan changed: {curr}"),
+                )
+            ]
+        return []
+
+
+def _threat_card_name(card: dict[str, Any]) -> str | None:
+    name = card.get("name")
+    if not name:
+        return None
+    from arenamcp.coach_triggers import GameStateTrigger  # local import: no cycle at module load
+
+    if str(name) in GameStateTrigger.THREAT_CARDS:
+        return str(name)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +630,11 @@ class ConversationController:
         self._pending: dict[int, ResponseIdentity] = {}
         self._answer_threads: list[threading.Thread] = []
         self.memory = MatchMemory()
+        # Wave 3: topic pipeline state — candidates from the last on_state
+        # batch plus the selector instance (structurally simple, no coach I/O).
+        self._topic_selector = TopicSelector()
+        self._last_topics: list[TopicCandidate] = []
+        self._last_topics_ts: float = 0.0
 
     # -- properties ---------------------------------------------------------
 
@@ -256,22 +695,314 @@ class ConversationController:
         prev_state: dict[str, Any] | None,
         triggers: list[str] | None = None,
     ) -> None:
-        # Memory-record only in this slice: no proactive speech (Wave 3 adds
-        # the topic selector). Triggers are folded into the ring for context.
-        if not triggers:
-            return
+        """Record the trigger batch in memory, refresh plan info, and remember
+        the candidate topics for the loop to gate and speak.
+
+        Wave-2 slice semantics (memory-record only) are preserved; Wave 3 adds
+        topic selection. No speech happens here — the coaching loop asks
+        :meth:`speak_topic_if_any` after the batch is dispatched so urgency
+        ordering (CRITICAL legacy dispatch first) is respected.
+        """
+        triggers = [str(t) for t in (triggers or [])]
+        if triggers:
+            with self._lock:
+                self.memory.append(
+                    ConversationTurn(
+                        role="state",
+                        text=", ".join(triggers),
+                        identity=self.current_identity(request_id=self._request_counter),
+                        trigger=", ".join(triggers),
+                    )
+                )
+
+        self._refresh_plan_summary()
 
         with self._lock:
-            self.memory.append(
-                ConversationTurn(
-                    role="state",
-                    text=", ".join(str(t) for t in triggers),
-                    identity=self.current_identity(request_id=self._request_counter),
-                    trigger=", ".join(str(t) for t in triggers),
-                )
+            self._last_topics = self._topic_selector.select(
+                prev_state, curr_state, triggers, self.memory
+            )
+            self._last_topics_ts = time.time()
+
+    # -- proactive topics (Wave 3) -------------------------------------------
+
+    def speak_topic_if_any(
+        self, match_id: str | None = None, match_number: int = 0
+    ) -> tuple[str, str, TopicCandidate] | None:
+        """Gate and speak the best surviving proactive topic.
+
+        Runs the full gate ladder — user-question priority, verbosity matrix,
+        speaking cooldown, per-topic repetition suppression — and, when a
+        topic survives, renders it through the coaching LLM and speaks it via
+        the arbiter (``urgent`` for URGENT-class topics, ``proactive``
+        otherwise). Returns ``(text, speech_priority, topic)`` when something
+        was spoken, else ``None``. Designed to be called from the coaching
+        loop after ``on_state``; never raises.
+        """
+        try:
+            return self._speak_topic_if_any(match_id, match_number)
+        except Exception:
+            logger.exception("speak_topic_if_any failed")
+            return None
+
+    def _speak_topic_if_any(
+        self, match_id: str | None, match_number: int
+    ) -> tuple[str, str, TopicCandidate] | None:
+        with self._lock:
+            topics = list(self._last_topics)
+            self._last_topics = []
+        if not topics or self.mode != CONVERSATION:
+            return None
+
+        # USER QUESTION PRIORITY: a pending (or recoverable) user question
+        # always preempts topic speech.
+        with self._lock:
+            has_pending = bool(self._pending)
+            has_deferred = bool(self.memory.pending_questions)
+        if has_pending or has_deferred:
+            return None
+
+        cooldown = self._cooldown_seconds()
+        now = time.time()
+
+        verbosity = self.verbosity
+        for topic in topics:
+            # VERBOSITY MATRIX (questions bypass verbosity entirely; this gate
+            # is topic-only): Quiet speaks only URGENT_DECISION/THREAT-class
+            # topics; Balanced speaks STATE_SHIFT and above; Detailed speaks
+            # everything except FILLER.
+            if verbosity == VERBOSITY_QUIET and topic.priority < EventPriority.THREAT:
+                continue
+            if verbosity == VERBOSITY_BALANCED and topic.priority < EventPriority.STATE_SHIFT:
+                continue
+            if verbosity == VERBOSITY_DETAILED and topic.priority <= EventPriority.FILLER:
+                continue
+
+            with self._lock:
+                # SPEAKING COOLDOWN: no proactive speech within N seconds of
+                # the last proactive utterance. URGENT-class topics bypass
+                # the cooldown — they interrupt in-flight speech by design.
+                if (
+                    topic.priority < EventPriority.THREAT
+                    and now - self.memory.last_proactive_ts < cooldown
+                ):
+                    return None
+                # REPETITION SUPPRESSION: skip a topic already discussed
+                # within its own window (3x the cooldown). URGENT-class
+                # topics likewise bypass repetition suppression.
+                if topic.priority >= EventPriority.THREAT:
+                    continue_ok = True
+                else:
+                    last_spoken = self.memory.discussed_topics.get(topic.key, 0.0)
+                    continue_ok = now - last_spoken >= cooldown * 3
+                if not continue_ok:
+                    continue
+
+            identity = self.current_identity()
+            self._emit("conversation_status", state="thinking")
+
+            reply = self._render_topic(topic)
+
+            with self._lock:
+                stale = self._mode != identity.mode or self._session_id != identity.session_id
+
+            if stale or is_backend_error_text(reply):
+                # Tagged backend failures are transcript-only (identical to
+                # the question path) — never spoken, topic not recorded.
+                if not stale:
+                    payload = identity.to_payload()
+                    self._emit("conversation_reply", text=reply, identity=payload)
+                    with self._lock:
+                        self.memory.append(
+                            ConversationTurn(role="coach", text=reply, identity=identity)
+                        )
+                return None
+
+            spoken = strip_health_tags(reply)
+            if not spoken:
+                return None
+
+            speech_priority = (
+                "urgent" if topic.priority >= EventPriority.THREAT else "proactive"
             )
 
-    # -- user questions -----------------------------------------------------
+            with self._lock:
+                self.memory.discussed_topics[topic.key] = now
+                self.memory.last_proactive_ts = now
+                self.memory.append(
+                    ConversationTurn(
+                        role="coach",
+                        text=spoken,
+                        identity=identity,
+                        trigger="proactive_topic",
+                        topic=topic.key,
+                    )
+                )
+
+            self._speak_topic(spoken, speech_priority, identity, topic, match_id)
+
+            self._emit("conversation_status", state="idle")
+            return (spoken, speech_priority, topic)
+
+        return None
+
+    def _render_topic(self, topic: TopicCandidate) -> str:
+        """Render a topic through the coaching LLM (same backend as questions).
+
+        The prompt carries the topic evidence, the current plan summary, a
+        last-2-turns digest, and instructions: keep it under ~2 sentences,
+        never claim win probabilities, and phrase anything about the
+        opponent's hidden hand/library as a hypothesis.
+        """
+        with self._lock:
+            recent = [
+                turn
+                for turn in self.memory.turns[-6:]
+                if turn.role in ("user", "coach")
+            ][-2:]
+        digest_lines = []
+        for turn in recent:
+            prefix = "user" if turn.role == "user" else "coach"
+            digest_lines.append(f"{prefix}: {turn.text[:120]}")
+        digest = "\n".join(digest_lines) or "(none)"
+
+        with self._lock:
+            plan = self.memory.plan_summary or ""
+
+        evidence = topic.evidence
+        question = (
+            f"{TOPIC_PROMPT_PREFIX}\n"
+            f"Topic: {topic.key}\n"
+            f"Evidence: {evidence}\n"
+            f"Current plan: {plan or '(not yet formed)'}\n"
+            f"Recent conversation:\n{digest}\n"
+            "Respond with at most two short sentences of commentary."
+        )
+
+        inner = getattr(self._coach, "_coach", None)
+        if inner is None or not hasattr(inner, "get_advice"):
+            return "[BACKEND ERROR] coach engine unavailable"
+        snapshot = self._snapshot()
+        try:
+            return str(inner.get_advice(snapshot, question=question))
+        except Exception as exc:
+            logger.warning("topic get_advice failed: %s", exc, exc_info=True)
+            return f"[BACKEND ERROR] {type(exc).__name__}: {exc}"
+
+    def _speak_topic(
+        self,
+        text: str,
+        speech_priority: str,
+        identity: ResponseIdentity,
+        topic: TopicCandidate,
+        match_id: str | None,
+    ) -> None:
+        """Deliver topic speech; an URGENT-class topic preempts in-flight
+        speech via the arbiter and defers any in-flight answer thread's
+        question for recovery."""
+        # URGENT INTERRUPT: preemption is the arbiter's job; we stop current
+        # speech and let the higher-priority request win the channel.
+        if speech_priority == "urgent":
+            self._preempt_speech("urgent_topic")
+            self._defer_pending_questions(match_id)
+
+        spoken = False
+        vs = getattr(self._coach, "voice_session", None)
+        if vs is not None and hasattr(vs, "speak"):
+            try:
+                outcome = vs.speak(text, priority=speech_priority, identity=identity)
+                spoken = bool(getattr(outcome, "played", True))
+            except Exception:
+                logger.debug("voice_session.speak failed (topic)", exc_info=True)
+                spoken = True  # conservative: assume delivered rather than re-speaking
+        else:
+            vo = getattr(self._coach, "_voice_output", None)
+            if vo is not None and hasattr(vo, "speak"):
+                try:
+                    vo.speak(text)
+                    spoken = True
+                except Exception:
+                    logger.debug("voice_output.speak failed (topic)", exc_info=True)
+
+        if speech_priority == "urgent" and spoken:
+            # PENDING-QUESTION RECOVERY: after the urgent speech, re-answer a
+            # still-relevant deferred question on a daemon thread.
+            thread = threading.Thread(
+                target=self._recover_pending_question,
+                args=(match_id, match_number_from_identity(identity)),
+                daemon=True,
+                name="convo-topic-recovery",
+            )
+            with self._lock:
+                self._answer_threads.append(thread)
+            thread.start()
+
+    def _defer_pending_questions(self, match_id: str | None) -> None:
+        """Snapshot pending user questions into memory for later recovery."""
+        with self._lock:
+            if not self._pending:
+                return
+            # The most recent user turn is the in-flight question thread's
+            # text (on_user_question appends it before the answer spawns).
+            turn = next((t for t in reversed(self.memory.turns) if t.role == "user"), None)
+            if turn is None:
+                return
+            self.memory.record_pending_question(turn.text, match_id)
+
+    def _recover_pending_question(self, match_id: str | None, match_number: int) -> None:
+        """Answer the most recent still-relevant deferred question, if any."""
+        with self._lock:
+            candidates = list(self.memory.pending_questions)
+        now = time.time()
+        for pq in reversed(candidates):  # newest first
+            if now - pq.ts > PENDING_QUESTION_TTL_SECONDS:
+                with self._lock:
+                    if pq in self.memory.pending_questions:
+                        self.memory.pending_questions.remove(pq)
+                continue
+            if match_id is not None and pq.match_id is not None and pq.match_id != match_id:
+                # Same-match relevance rule: questions from a finished match
+                # are no longer relevant.
+                with self._lock:
+                    if pq in self.memory.pending_questions:
+                        self.memory.pending_questions.remove(pq)
+                continue
+            with self._lock:
+                if pq in self.memory.pending_questions:
+                    self.memory.pending_questions.remove(pq)
+            self.on_user_question(pq.text, source="deferred")
+            return
+
+    def _refresh_plan_summary(self) -> None:
+        """Fold the current GamePlanManager plan into memory (guarded).
+
+        When the coach exposes a manager, ``coach_intro()`` becomes the plan
+        summary and drift detection works against real plan state; otherwise
+        plan_summary stays whatever was last seeded (Wave-2 behavior).
+        """
+        mgr = getattr(self._coach, "_game_plan_mgr", None)
+        if mgr is None:
+            inner = getattr(self._coach, "_coach", None)
+            mgr = getattr(inner, "_game_plan_mgr", None) if inner is not None else None
+        if mgr is None or not hasattr(mgr, "coach_intro"):
+            return
+        try:
+            intro = str(mgr.coach_intro() or "")
+        except Exception:
+            logger.debug("plan coach_intro failed", exc_info=True)
+            return
+        if not intro:
+            return
+        with self._lock:
+            if self.memory.plan_summary and self.memory.plan_summary != intro:
+                self.memory.plan_summary_prev = self.memory.plan_summary
+            self.memory.plan_summary = intro
+
+    def _cooldown_seconds(self) -> float:
+        try:
+            value = get_settings().get("conversation_cooldown_seconds", DEFAULT_COOLDOWN_SECONDS)
+            return max(0.0, float(value))
+        except Exception:
+            return float(DEFAULT_COOLDOWN_SECONDS)
 
     def on_user_question(self, text: str, source: str = "typed") -> int:
         """Record a user question, preempt speech, and spawn the answer thread.
@@ -316,11 +1047,13 @@ class ConversationController:
             self._pending.clear()
 
     def reset_for_match(self, match_id: str | None, match_number: int) -> None:
-        # Match boundary: clear memory, bump session identity, drop pending.
+        # Match boundary: clear memory (including Wave-3 proactive-timing and
+        # deferred-question fields), bump session identity, drop pending.
         with self._lock:
             self.memory = MatchMemory()
             self._session_id += 1
             self._pending.clear()
+            self._last_topics = []
 
     def current_identity(self, request_id: int | None = None) -> ResponseIdentity:
         # Built from coach state with guarded attribute access everywhere;

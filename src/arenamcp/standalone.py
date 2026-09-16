@@ -1995,9 +1995,9 @@ class StandaloneCoach(
                     triggers.sort(key=lambda x: trigger_priorities.get(x, 0), reverse=True)
 
                     # Conversation mode: record the trigger batch in match
-                    # memory BEFORE dispatch (memory-only in this slice —
-                    # proactive commentary is Wave 3). Turn-advice never
-                    # consults the controller.
+                    # memory BEFORE dispatch. Wave 3: on_state also runs the
+                    # topic selector (candidates held for speak_topic_if_any
+                    # below). Turn-advice never consults the controller.
                     _conversation = getattr(self, "conversation", None)
                     if _conversation is not None and _conversation.mode == "conversation":
                         try:
@@ -2683,6 +2683,23 @@ class StandaloneCoach(
                                 # game states (e.g. Select Targets) immediately.
                                 # New advice will interrupt stale speech.
                                 self.speak_advice(advice, blocking=False)
+
+                    # Wave 3 — proactive game-dynamics commentary: after the
+                    # trigger batch is dispatched (CRITICAL triggers keep the
+                    # legacy dispatch), the loop asks the controller for the
+                    # best surviving topic. The controller applies the full
+                    # gate ladder (user-question priority, verbosity matrix,
+                    # cooldown, repetition suppression) internally and speaks
+                    # via the arbiter with the correct priority.
+                    _conversation = getattr(self, "conversation", None)
+                    if _conversation is not None and _conversation.mode == "conversation":
+                        try:
+                            _conversation.speak_topic_if_any(
+                                match_id=self.last_match_id,
+                                match_number=self._match_number,
+                            )
+                        except Exception as e:
+                            logger.debug(f"conversation.speak_topic_if_any failed: {e}")
 
                 prev_state = curr_state
 

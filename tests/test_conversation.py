@@ -150,6 +150,23 @@ class TestMatchMemory:
         assert mem.turns[-1].text == f"q{MEMORY_RING_SIZE + 4}"
         assert mem.turns[0].text == "q5"
 
+    def test_wave3_fields_default_zero_and_empty(self) -> None:
+        mem = MatchMemory()
+        assert mem.last_proactive_ts == 0.0
+        assert mem.pending_questions == []
+        assert mem.plan_summary_prev == ""
+
+    def test_record_pending_question_caps_at_five(self) -> None:
+        from arenamcp.conversation import PENDING_QUESTION_CAP
+
+        mem = MatchMemory()
+        for i in range(PENDING_QUESTION_CAP + 3):
+            mem.record_pending_question(f"q{i}", match_id="m-1")
+        assert len(mem.pending_questions) == PENDING_QUESTION_CAP
+        # Newest kept (oldest dropped from the front).
+        assert mem.pending_questions[-1].text == f"q{PENDING_QUESTION_CAP + 2}"
+        assert mem.pending_questions[0].text == "q3"
+
 
 # ---------------------------------------------------------------------------
 # Mode / verbosity
@@ -427,6 +444,24 @@ class TestMatchResetAndIdentity:
         after = ctrl.current_identity()
         assert after.session_id == before.session_id + 1
         assert after.match_id == "m-1"  # snapshot still reports the old match id
+
+    def test_reset_for_match_clears_wave3_fields(self, monkeypatch) -> None:
+        ctrl, _, _ = make_controller()
+        ctrl.memory.last_proactive_ts = 999.0
+        ctrl.memory.record_pending_question("stale question", match_id="m-1")
+        ctrl.memory.discussed_topics["threat"] = 123.0
+        ctrl.memory.plan_summary = "old plan"
+        ctrl.memory.plan_summary_prev = "older plan"
+        ctrl._last_topics = [MagicMock()]
+
+        ctrl.reset_for_match("m-2", 5)
+
+        assert ctrl.memory.last_proactive_ts == 0.0
+        assert ctrl.memory.pending_questions == []
+        assert ctrl.memory.discussed_topics == {}
+        assert ctrl.memory.plan_summary == ""
+        assert ctrl.memory.plan_summary_prev == ""
+        assert ctrl._last_topics == []
 
     def test_current_identity_from_snapshot(self, monkeypatch) -> None:
         ctrl, _, _ = make_controller()

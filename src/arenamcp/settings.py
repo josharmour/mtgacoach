@@ -64,10 +64,12 @@ DEFAULTS = {
     "last_seen_message_id": None,
     # Autopilot persistent toggle state
     "autopilot_enabled": False,
-    # Conversation Mode session mode ("turn_advice" | "conversation") and
-    # commentary verbosity ("quiet" | "balanced" | "detailed"; behavior Wave 3)
+    # Conversation Mode session mode ("turn_advice" | "conversation"),
+    # commentary verbosity ("quiet" | "balanced" | "detailed"), and the
+    # minimum seconds between proactive topic utterances (Wave 3).
     "conversation_mode": "turn_advice",
     "conversation_verbosity": "balanced",
+    "conversation_cooldown_seconds": 90,
 }
 
 # Keys from the old multi-provider settings that should be migrated/removed
