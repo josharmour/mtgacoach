@@ -194,16 +194,22 @@ class PipeAdapter:
         voice_id: str,
         voice_name: str,
         speed: float,
+        priority: Any = None,
+        identity: Any = None,
     ) -> None:
-        self._emit(
-            {
-                "type": "speak_request",
-                "text": strip_markup(text),
-                "voice_id": voice_id,
-                "voice_name": voice_name,
-                "speed": speed,
-            }
-        )
+        payload: dict[str, Any] = {
+            "type": "speak_request",
+            "text": strip_markup(text),
+            "voice_id": voice_id,
+            "voice_name": voice_name,
+            "speed": speed,
+        }
+        # Backward compatible: legacy consumers never see the new keys.
+        if priority is not None:
+            payload["priority"] = priority
+        if identity is not None:
+            payload["identity"] = identity
+        self._emit(payload)
 
     def emit_speech_stop(self) -> None:
         self._emit({"type": "speak_stop"})
@@ -592,6 +598,34 @@ class PipeAdapter:
                 coach._running = False
             elif action == "toggle_fallback_mode":
                 self._handle_toggle_fallback_mode()
+            elif action == "set_mode":
+                mode = str(cmd.get("mode") or "")
+                conversation = getattr(coach, "conversation", None)
+                if mode and conversation is not None:
+                    with contextlib.suppress(Exception):
+                        conversation.set_mode(mode)
+                resulting = str(getattr(conversation, "mode", mode) if conversation is not None else mode)
+                self.status("MODE", resulting)
+            elif action == "set_verbosity":
+                verbosity = str(cmd.get("verbosity") or "")
+                conversation = getattr(coach, "conversation", None)
+                if verbosity and conversation is not None:
+                    with contextlib.suppress(Exception):
+                        conversation.set_verbosity(verbosity)
+                resulting = str(
+                    getattr(conversation, "verbosity", verbosity) if conversation is not None else verbosity
+                )
+                self.status("VERBOSITY", resulting)
+            elif action == "stop_speech":
+                voice_session = getattr(coach, "voice_session", None)
+                if voice_session is not None:
+                    with contextlib.suppress(Exception):
+                        voice_session.stop_speaking("ui")
+                else:
+                    voice_output = getattr(coach, "_voice_output", None)
+                    if voice_output is not None and hasattr(voice_output, "stop"):
+                        with contextlib.suppress(Exception):
+                            voice_output.stop()
             else:
                 logger.warning("Unknown pipe command: %s", action)
         except Exception as e:
@@ -678,7 +712,17 @@ class PipeAdapter:
             return
 
         coach = self._coach
-        if coach is None or coach._coach is None:
+        if coach is None:
+            return
+        conversation = getattr(coach, "conversation", None)
+        if conversation is not None and getattr(conversation, "mode", "") == "conversation":
+            # Conversation mode: route through the ConversationController
+            # (memory + identity-gated answer thread) instead of the legacy
+            # one-shot advice path.
+            with contextlib.suppress(Exception):
+                conversation.on_user_question(text, source="typed")
+            return
+        if coach._coach is None:
             return
         try:
             game_state = coach._mcp.get_game_state() if coach._mcp else {}

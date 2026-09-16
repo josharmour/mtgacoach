@@ -252,7 +252,7 @@ class _PipeVoiceOutput:
         self._muted = not self._muted
         return self._muted
 
-    def speak(self, text: str, blocking: bool = False) -> None:
+    def speak(self, text: str, blocking: bool = False, priority: Any = None, identity: Any = None) -> None:
         if not text or not text.strip() or self.muted:
             return
         if self._inner is not None and hasattr(self._inner, "_clean_text"):
@@ -273,11 +273,17 @@ class _PipeVoiceOutput:
                     self._inner.stop()
             voice_id, voice_name = self.current_voice
             speed = float(getattr(self._inner, "speed", getattr(self, "_speed", 1.0)))
+            extra: dict[str, Any] = {}
+            if priority is not None:
+                extra["priority"] = priority
+            if identity is not None:
+                extra["identity"] = identity
             emit_request(
                 text=text,
                 voice_id=voice_id,
                 voice_name=voice_name,
                 speed=speed,
+                **extra,
             )
             return
 
