@@ -1687,17 +1687,24 @@ class ConversationController:
         thread.start()
         return request_id
 
-    def reset_for_match(self, match_id: str | None, match_number: int) -> None:
+    def reset_for_match(
+        self, match_id: str | None, match_number: int, match_start: bool = True
+    ) -> None:
         # Match boundary: clear memory (including Wave-3 proactive-timing and
         # deferred-question fields), bump session identity, drop pending.
+        # ``match_start``: True when a NEW match is beginning; False when the
+        # boundary is a match ENDING (match_id -> None). The audible opener
+        # only belongs to match START — announcing "Match underway" as the
+        # match ended was wrong (live report 2026-09-16 10:09).
         in_conversation = self._mode == CONVERSATION
         # Capture the pre-reset plan summary for the match-start opener —
         # reset_for_match replaces MatchMemory below, so this must be read
         # BEFORE the wipe (the fresh memory has no plan until the first
         # _refresh_plan_summary in on_state).
         plan_hint = ""
-        with contextlib.suppress(Exception):
-            plan_hint = str(self.memory.plan_summary or "")
+        if match_start:
+            with contextlib.suppress(Exception):
+                plan_hint = str(self.memory.plan_summary or "")
         with self._lock:
             had_pending = bool(self._pending)
             self.memory = MatchMemory()
@@ -1711,11 +1718,13 @@ class ConversationController:
         if had_pending:
             self._emit_idle()
         # Match-start handshake (user request 2026-09-16): in conversation
-        # mode, announce the session audibly at every match boundary so mode
-        # state is knowable without looking at the panel. The plan summary is
-        # seeded by the first _refresh_plan_summary (GamePlanManager intro);
-        # the opener speaks immediately with whatever identity exists now.
-        if in_conversation:
+        # mode, announce the session audibly when a NEW match begins so mode
+        # state is knowable without looking at the panel. Match-END boundaries
+        # (match_id -> None) reset silently — no "Match underway" as the match
+        # ends. The plan summary is seeded by the first _refresh_plan_summary
+        # (GamePlanManager intro); the opener speaks immediately with whatever
+        # identity exists now.
+        if in_conversation and match_start:
             self._speak_match_opener(match_id, plan_hint=plan_hint)
 
     def _speak_match_opener(self, match_id: str | None, plan_hint: str = "") -> None:

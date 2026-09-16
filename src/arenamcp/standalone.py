@@ -920,12 +920,21 @@ class StandaloneCoach(
 
     def _conversation_reset_for_match(self, match_id: str | None) -> None:
         """Reset conversation memory at a match boundary (guarded for
-        tests and other embedders without the controller attribute)."""
+        tests and other embedders without the controller attribute).
+
+        ``match_start`` marks a boundary where a NEW match begins (as opposed
+        to a match ending / returning to the menu, match_id -> None): only
+        match-start boundaries speak the conversation-mode opener — announcing
+        "Match underway" when the match just ENDED was wrong and confusing
+        (live report 2026-09-16 10:09).
+        """
         conversation = getattr(self, "conversation", None)
         if conversation is None or not hasattr(conversation, "reset_for_match"):
             return
         try:
-            conversation.reset_for_match(match_id, self._match_number)
+            conversation.reset_for_match(
+                match_id, self._match_number, match_start=match_id is not None
+            )
         except Exception as e:
             logger.debug(f"conversation.reset_for_match failed: {e}")
 

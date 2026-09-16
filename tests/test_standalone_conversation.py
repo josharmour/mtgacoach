@@ -528,9 +528,9 @@ def test_game_end_event_resets_conversation(monkeypatch):
     reset_calls: list[tuple] = []
     original_reset = coach.conversation.reset_for_match
 
-    def spy_reset(match_id, match_number):
+    def spy_reset(match_id, match_number, match_start=True):
         reset_calls.append((match_id, match_number))
-        return original_reset(match_id, match_number)
+        return original_reset(match_id, match_number, match_start=match_start)
 
     coach.conversation.reset_for_match = spy_reset  # type: ignore[method-assign]
     seed_memory(coach)
@@ -571,9 +571,9 @@ def test_match_id_change_resets_conversation_and_bumps_session(monkeypatch):
     reset_calls: list[tuple] = []
     original_reset = coach.conversation.reset_for_match
 
-    def spy_reset(match_id, match_number):
+    def spy_reset(match_id, match_number, match_start=True):
         reset_calls.append((match_id, match_number))
-        return original_reset(match_id, match_number)
+        return original_reset(match_id, match_number, match_start=match_start)
 
     coach.conversation.reset_for_match = spy_reset  # type: ignore[method-assign]
     seed_memory(coach)
@@ -609,9 +609,9 @@ def test_turn_drop_resets_conversation(monkeypatch):
     reset_calls: list[tuple] = []
     original_reset = coach.conversation.reset_for_match
 
-    def spy_reset(match_id, match_number):
+    def spy_reset(match_id, match_number, match_start=True):
         reset_calls.append((match_id, match_number))
-        return original_reset(match_id, match_number)
+        return original_reset(match_id, match_number, match_start=match_start)
 
     coach.conversation.reset_for_match = spy_reset  # type: ignore[method-assign]
     seed_memory(coach)

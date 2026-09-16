@@ -780,3 +780,33 @@ class TestMatchOpener:
         ctrl = ConversationController(coach)
         ctrl.set_mode(CONVERSATION, persist=False)
         ctrl.reset_for_match("m1", 1)  # must not raise
+
+
+class TestMatchOpenerBoundaries:
+    """The opener belongs ONLY to match START (match_id is not None).
+    A match-END boundary (match_id -> None) must reset silently —
+    live report 2026-09-16 10:09 heard 'Match underway' as the match ended."""
+
+    def _controller_in_conversation(self):
+        coach = MagicMock()
+        coach._voice_output = MagicMock()
+        ctrl = ConversationController(coach)
+        ctrl.set_mode(CONVERSATION, persist=False)
+        return ctrl, coach._voice_output
+
+    def test_match_start_boundary_speaks(self):
+        ctrl, vo = self._controller_in_conversation()
+        ctrl.reset_for_match("m-new", 2, match_start=True)
+        vo.speak.assert_called_once()
+
+    def test_match_end_boundary_is_silent(self):
+        ctrl, vo = self._controller_in_conversation()
+        ctrl.reset_for_match(None, 2, match_start=False)
+        vo.speak.assert_not_called()
+
+    def test_match_end_still_resets_memory(self):
+        ctrl, vo = self._controller_in_conversation()
+        ctrl.memory.plan_summary = "stale plan"
+        ctrl.reset_for_match(None, 2, match_start=False)
+        assert ctrl.memory.plan_summary == ""
+        assert ctrl.memory.turns == []
