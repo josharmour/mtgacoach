@@ -33,6 +33,11 @@ class CoachSession(QObject):
     reasoningChunk = Signal(str)
     mctsUpdated = Signal(object)
 
+    # Conversation Mode signals
+    modeChanged = Signal(str)
+    conversationReply = Signal(str)
+    conversationStatus = Signal(str)
+
     # Lifecycle signals
     started = Signal()
     stopped = Signal()
@@ -46,7 +51,12 @@ class CoachSession(QObject):
         self._process.exited.connect(self._handle_exited)
 
         self._tts = TtsManager(self)
-        self._tts.start()
+        # Lazy-start: TtsManager.request_speech() starts the Kokoro worker on
+        # demand (and start() re-arms it). Eagerly spawning a worker per
+        # CoachSession means every Constructed test panel owns a live Kokoro
+        # subprocess that dies inside the QObject destructor cascade at GC —
+        # the source of the intermittent SIGSEGV/QProcess-destroyed noise in
+        # offscreen pytest runs.
 
         self._last_game_state: dict[str, Any] = {}
         self._statuses: dict[str, str] = {}
@@ -111,6 +121,19 @@ class CoachSession(QObject):
 
     def send_chat(self, text: str) -> None:
         self.send_command("chat", text)
+
+    def set_mode(self, mode: str) -> None:
+        """Switch coaching mode ("turn_advice" | "conversation")."""
+        self._tts.stop_speech()
+        self.send_command("set_mode", mode)
+
+    def set_verbosity(self, verbosity: str) -> None:
+        """Set conversation commentary verbosity (quiet/balanced/detailed)."""
+        self.send_command("set_verbosity", verbosity)
+
+    def stop_speaking(self) -> None:
+        """Stop current TTS playback (conversation + turn advice)."""
+        self._tts.stop_speech()
 
     def capture_screenshots(self) -> dict[str, str]:
         """Capture coach window + MTGA window screenshots into bug_reports directory."""
@@ -257,6 +280,10 @@ class CoachSession(QObject):
                 elif key == "MUTE":
                     self._muted = "ON" in val
                 self.statusChanged.emit(key, val)
+                if key == "MODE":
+                    self.modeChanged.emit(val)
+                elif key == "CONVO_STATE":
+                    self.conversationStatus.emit(val)
 
         elif ev_type in ("speak_request", "speak", "speak_audio"):
             text = str(event.get("text") or event.get("data") or "")
@@ -266,12 +293,26 @@ class CoachSession(QObject):
                     speed = float(event.get("speed") or 1.0)
                     voice_id = str(event.get("voice_id") or "af_heart")
                     voice_name = str(event.get("voice_name") or "Auto")
+                    # Conversation-mode speech carries optional priority and
+                    # identity (stale-response suppression); absent fields are
+                    # legacy behavior.
+                    extra_kwargs: dict[str, Any] = {}
+                    if "priority" in event:
+                        extra_kwargs["priority"] = event.get("priority")
+                    if "identity" in event:
+                        extra_kwargs["identity"] = event.get("identity")
                     self._tts.request_speech(
                         text=text,
                         voice_id=voice_id,
                         voice_name=voice_name,
                         speed=speed,
+                        **extra_kwargs,
                     )
+
+        elif ev_type == "conversation_reply":
+            reply = str(event.get("text") or "")
+            if reply:
+                self.conversationReply.emit(reply)
 
         elif ev_type in ("advice", "emit_advice"):
             text = str(event.get("text") or event.get("advice") or "")
@@ -320,6 +361,6 @@ class CoachSession(QObject):
 
     def shutdown(self) -> None:
         """Cleanly terminate subprocess and TTS manager."""
-        self.stop()
         if self._tts is not None:
             self._tts.shutdown()
+        self.stop()

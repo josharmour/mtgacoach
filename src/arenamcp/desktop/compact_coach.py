@@ -24,8 +24,14 @@ from arenamcp.settings import get_settings
 
 from .brain_stream_window import BrainStreamWindow
 from .coach_session import CoachSession
+from .conversation_transcript import ConversationTranscript
+from .flow_layout import FlowLayout
 
 logger = logging.getLogger(__name__)
+
+CONVERSATION_MODES = ("turn_advice", "conversation")
+VERBOSITY_LEVELS = ("quiet", "balanced", "detailed")
+_CONVO_STATES = ("idle", "listening", "thinking", "speaking")
 
 
 def _str_value(value: Any, default: str = "") -> str:
@@ -78,6 +84,12 @@ class CompactCoachPanel(QWidget):
         self._latest_advice: tuple[str, str] | None = None
         self._debug_logging = bool(self._settings.get("desktop_debug_logging", False))
         self._activity_history: list[tuple[str, str]] = []
+        self._conversation_mode = str(
+            self._settings.get("conversation_mode", "turn_advice") or "turn_advice"
+        )
+        self._conversation_verbosity = str(
+            self._settings.get("conversation_verbosity", "balanced") or "balanced"
+        )
 
         self._brain_stream_window: BrainStreamWindow | None = None
 
@@ -99,6 +111,7 @@ class CompactCoachPanel(QWidget):
         self.turn_strip.setObjectName("turnStrip")
         self.turn_strip.setProperty("who", "none")
         self.turn_strip.setAlignment(Qt.AlignCenter)
+        self.turn_strip.setWordWrap(True)
         root.addWidget(self.turn_strip)
 
         # 2. Status dots: Model / Bridge / Seat indicators
@@ -106,7 +119,15 @@ class CompactCoachPanel(QWidget):
         self.status_dots.setObjectName("statusDots")
         self.status_dots.setTextFormat(Qt.RichText)
         self.status_dots.setAlignment(Qt.AlignCenter)
+        self.status_dots.setWordWrap(True)
         root.addWidget(self.status_dots)
+
+        # Conversation status line (idle / listening / thinking / speaking)
+        self.conversation_status_label = QLabel()
+        self.conversation_status_label.setObjectName("conversationStatusLabel")
+        self.conversation_status_label.setAlignment(Qt.AlignCenter)
+        self.conversation_status_label.hide()
+        root.addWidget(self.conversation_status_label)
 
         # 3. Main content splitter: Game State + Advice & Speech Feed
         self.main_splitter = QSplitter(Qt.Vertical)
@@ -145,6 +166,13 @@ class CompactCoachPanel(QWidget):
         self.turn_plan_label.hide()
         act_layout.addWidget(self.turn_plan_label)
 
+        # Conversation transcript (visible only in conversation mode)
+        self.conversation_transcript = ConversationTranscript()
+        self.conversation_transcript.setObjectName("conversationTranscript")
+        self.conversation_transcript.setMinimumHeight(120)
+        self.conversation_transcript.hide()
+        act_layout.addWidget(self.conversation_transcript)
+
         # Speech & Advice Subtitle Log
         self.log_view = QTextEdit()
         self.log_view.setObjectName("logView")
@@ -157,7 +185,7 @@ class CompactCoachPanel(QWidget):
         root.addWidget(self.main_splitter, stretch=1)
 
         # 4. Controls Bar (AP toggle, Brain Stream, Bug Report / Voice, Style, Mute)
-        ctrl_row1 = QHBoxLayout()
+        ctrl_row1 = FlowLayout()
         ctrl_row1.setSpacing(5)
 
         self.ap_btn = QPushButton("AP: OFF")
@@ -180,9 +208,32 @@ class CompactCoachPanel(QWidget):
         self.bug_report_btn.clicked.connect(self._session.trigger_debug_report)
         ctrl_row1.addWidget(self.bug_report_btn)
 
+        # Conversation Mode switch: toggles turn_advice <-> conversation
+        self.mode_btn = QPushButton("Conversation")
+        self.mode_btn.setObjectName("modeButton")
+        self.mode_btn.setProperty("convoOn", "false")
+        self.mode_btn.setToolTip("Switch between Conversation mode and Turn Advice mode")
+        self.mode_btn.clicked.connect(self._toggle_mode)
+        ctrl_row1.addWidget(self.mode_btn)
+
+        # Verbosity cycler (quiet -> balanced -> detailed)
+        saved_verbosity = str(self._settings.get("conversation_verbosity", "balanced") or "balanced")
+        self.verbosity_btn = QPushButton(f"Detail: {saved_verbosity.capitalize()}")
+        self.verbosity_btn.setObjectName("verbosityButton")
+        self.verbosity_btn.setToolTip("Cycle conversation verbosity (Quiet / Balanced / Detailed)")
+        self.verbosity_btn.clicked.connect(self._cycle_verbosity)
+        ctrl_row1.addWidget(self.verbosity_btn)
+
+        # Stop-speaking (works in both modes)
+        self.stop_speech_btn = QPushButton("⏹ Stop")
+        self.stop_speech_btn.setObjectName("stopSpeechButton")
+        self.stop_speech_btn.setToolTip("Stop current speech playback")
+        self.stop_speech_btn.clicked.connect(self._session.stop_speaking)
+        ctrl_row1.addWidget(self.stop_speech_btn)
+
         root.addLayout(ctrl_row1)
 
-        ctrl_row2 = QHBoxLayout()
+        ctrl_row2 = FlowLayout()
         ctrl_row2.setSpacing(5)
 
         self.voice_btn = QPushButton("Voice: Auto")
@@ -211,6 +262,16 @@ class CompactCoachPanel(QWidget):
         self.mute_btn.clicked.connect(self._session.toggle_mute)
         ctrl_row2.addWidget(self.mute_btn)
         self._buttons["toggle_mute"] = self.mute_btn
+
+        # Push-to-talk (hold to record, release to transcribe + send)
+        self.ptt_btn = QPushButton("🎙 Hold to talk")
+        self.ptt_btn.setObjectName("pttButton")
+        from .ptt import PttController
+
+        self._ptt_controller = PttController(
+            self.ptt_btn, self._session, on_send=self._send_ptt_text
+        )
+        ctrl_row2.addWidget(self.ptt_btn)
 
         root.addLayout(ctrl_row2)
 
@@ -242,6 +303,10 @@ class CompactCoachPanel(QWidget):
         self._session.reasoningChunk.connect(self._on_reasoning_chunk)
         self._session.mctsUpdated.connect(self._on_mcts_updated)
         self._session.bugReportSaved.connect(self._on_bug_report_saved)
+        self._session.modeChanged.connect(self._on_mode_changed)
+        self._session.conversationReply.connect(self._on_conversation_reply)
+        self._session.conversationStatus.connect(self._on_conversation_status)
+        self._session.started.connect(self._sync_conversation_prefs)
 
     def _on_game_state_changed(self, state: dict[str, Any]) -> None:
         self.update_turn_strip(state)
@@ -304,6 +369,13 @@ class CompactCoachPanel(QWidget):
             src_color = "#a6adc8"
             line_title = "🌳 Tactical Line"
 
+        if 'experimental' in eval_src.lower():
+            src_tag = 'Experimental / ' + src_tag
+            line_title = '🧪 Model Score'
+            self.mcts_pill_label.setToolTip('Experimental model score; not a calibrated probability of winning.')
+        else:
+            self.mcts_pill_label.setToolTip('')
+
         if best_branch:
             win_p = float(best_branch.get("normalized_score", best_branch.get("win_probability", 0.5)))
             win_pct = int(round(win_p * 100))
@@ -321,12 +393,17 @@ class CompactCoachPanel(QWidget):
             delta_str = "0%"
             action_text = str(best_action)
 
+        score_text = f"{win_pct}%"
+        if best_branch and provenance == "prior_only":
+            score_text = f"Policy weight {float(best_branch.get('prior_probability', 0.0)):.0%}"
+            delta_str = "outcome not evaluated"
+
         win_color = "#a6e3a1" if win_pct >= 55 else ("#f9e2af" if win_pct >= 45 else "#f38ba8")
 
         html_lines = [
             f"<div style='margin-bottom:2px;'>"
             f"  <span style='color:{src_color}; font-weight:700;'>{line_title}</span> "
-            f"  <span style='color:{win_color}; font-weight:700;'>{win_pct}%</span> "
+            f"  <span style='color:{win_color}; font-weight:700;'>{score_text}</span> "
             f"  <span style='color:#a6adc8; font-size:10px;'>({delta_str})</span> "
             f"  <span style='color:#6c7086; font-size:9px; float:right;'>[{html.escape(src_tag)}]</span>"
             f"</div>",
@@ -387,6 +464,13 @@ class CompactCoachPanel(QWidget):
             self.ap_btn.setText("AP: ON" if ap_on else "AP: OFF")
             self.ap_btn.setProperty("apOn", "true" if ap_on else "false")
             self._repolish(self.ap_btn)
+        elif key == "MODE":
+            self._on_mode_changed(val)
+        elif key == "VERBOSITY":
+            verbosity = val.strip().lower()
+            if verbosity in VERBOSITY_LEVELS:
+                self._conversation_verbosity = verbosity
+                self.verbosity_btn.setText(f"Detail: {verbosity.capitalize()}")
         elif key == "STYLE":
             self.style_btn.setText(val)
         elif key == "MUTE":
@@ -409,6 +493,70 @@ class CompactCoachPanel(QWidget):
             if not speed_val.endswith("x") and not speed_val.endswith("X"):
                 speed_val = f"{speed_val}x"
             self.speed_btn.setText(f"Speed: {speed_val}")
+
+    @property
+    def conversation_mode(self) -> str:
+        return self._conversation_mode
+
+    def _toggle_mode(self) -> None:
+        next_mode = "turn_advice" if self._conversation_mode == "conversation" else "conversation"
+        self._session.set_mode(next_mode)
+        self._settings.set("conversation_mode", next_mode)
+
+    def _cycle_verbosity(self) -> None:
+        try:
+            idx = VERBOSITY_LEVELS.index(self._conversation_verbosity)
+        except ValueError:
+            idx = VERBOSITY_LEVELS.index("balanced")
+        next_verbosity = VERBOSITY_LEVELS[(idx + 1) % len(VERBOSITY_LEVELS)]
+        self._conversation_verbosity = next_verbosity
+        self.verbosity_btn.setText(f"Detail: {next_verbosity.capitalize()}")
+        self._session.set_verbosity(next_verbosity)
+        self._settings.set("conversation_verbosity", next_verbosity)
+
+    def _on_mode_changed(self, mode: str) -> None:
+        mode = str(mode).strip()
+        if mode not in CONVERSATION_MODES:
+            return
+        self._conversation_mode = mode
+        in_convo = mode == "conversation"
+        self.mode_btn.setText("Turn Advice" if in_convo else "Conversation")
+        self.mode_btn.setProperty("convoOn", "true" if in_convo else "false")
+        self._repolish(self.mode_btn)
+        self.conversation_transcript.setVisible(in_convo)
+        self.log_view.setVisible(not in_convo)
+        self.conversation_status_label.setVisible(in_convo)
+
+    def _on_conversation_reply(self, text: str) -> None:
+        self.conversation_transcript.set_pending(False)
+        self.conversation_transcript.add_entry("coach", text)
+
+    def _on_conversation_status(self, state: str) -> None:
+        state = str(state).strip().lower()
+        if state not in _CONVO_STATES:
+            return
+        if state == "thinking":
+            self.conversation_transcript.set_pending(True)
+        elif state == "idle":
+            self.conversation_transcript.set_pending(False)
+        self.conversation_status_label.setText(f"⏺ {state.capitalize()}")
+        self.conversation_status_label.setProperty("convoState", state)
+        self._repolish(self.conversation_status_label)
+
+    def _send_ptt_text(self, text: str) -> None:
+        self.conversation_transcript.add_entry("user", text)
+        self.append_log(f"> {text}", role="status")
+        self._session.send_chat(text)
+
+    def _sync_conversation_prefs(self) -> None:
+        """Sync saved mode/verbosity to the engine at session start."""
+        saved_mode = str(self._settings.get("conversation_mode", "turn_advice") or "turn_advice")
+        saved_verbosity = str(
+            self._settings.get("conversation_verbosity", "balanced") or "balanced"
+        )
+        self._session.set_verbosity(saved_verbosity)
+        if saved_mode != self._conversation_mode:
+            self._session.set_mode(saved_mode)
 
     def _on_bug_report_saved(self, path: str, error: str) -> None:
         if error or not path:
@@ -577,6 +725,10 @@ class CompactCoachPanel(QWidget):
         if text.lower() in ("/report", "/bug", "/debug", "/bugreport", "/debugreport"):
             self._session.trigger_debug_report()
             return
+        if self._conversation_mode == "conversation":
+            self.conversation_transcript.add_entry("user", text)
+            self._session.send_chat(text)
+            return
         self.append_log(f"> {text}", role="status")
         self._session.send_chat(text)
 
@@ -662,6 +814,27 @@ QPushButton#brainStreamButton {{
     border: 1px solid {accent};
     border-radius: 6px;
     padding: 4px 6px;
+}}
+QPushButton#modeButton {{
+    font-weight: 700;
+}}
+QPushButton#modeButton[convoOn="true"] {{
+    background: {t["castable_bg"]};
+    color: {t["castable_fg"]};
+    border: 1px solid {t["castable_fg"]};
+}}
+QPushButton#stopSpeechButton {{
+    font-weight: 600;
+}}
+QTextEdit#conversationTranscript {{
+    border: 1px solid {t["border"]};
+    border-radius: 8px;
+    background: {t["bg"]};
+    padding: 4px;
+}}
+QLabel#conversationStatusLabel {{
+    color: {t["muted"]};
+    font-size: 11px;
 }}
 QPushButton#bugReportButton {{
     color: {t["uncastable_fg"]};

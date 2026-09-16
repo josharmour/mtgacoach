@@ -17,6 +17,8 @@ class TtsManager(QObject):
     log_line = Signal(str)
     status_line = Signal(str)
     error_line = Signal(str)
+    speechStarted = Signal()
+    speechStopped = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -94,8 +96,10 @@ class TtsManager(QObject):
         voice_id: str,
         voice_name: str,
         speed: float,
+        priority: str | None = None,
+        identity: dict[str, Any] | None = None,
     ) -> None:
-        if not text or not text.strip():
+        if self._closing or not text or not text.strip():
             return
 
         self._last_text = text
@@ -115,6 +119,32 @@ class TtsManager(QObject):
                 self._speak_fallback(text, speed)
                 return
 
+        # Conversation-mode arbitration (contract: "question" > "urgent" >
+        # "advice" > "proactive"). A proactive request never displaces a
+        # pending question.
+        pending = self._pending_request
+        if pending is not None:
+            pending_priority = str(pending.get("priority") or "")
+            if priority == "proactive" and pending_priority == "question":
+                return
+            # Mode-change effect: an identity whose session_id differs from
+            # the last one we stored makes the older pending request stale —
+            # bump the generation so its late "rendered" is discarded.
+            pending_identity = pending.get("identity")
+            if identity is not None and pending_identity is not None:
+                try:
+                    last_session_id = int(pending_identity.get("session_id"))
+                    new_session_id = int(identity.get("session_id"))
+                except (TypeError, ValueError):
+                    last_session_id = new_session_id = None
+                if (
+                    new_session_id is not None
+                    and last_session_id is not None
+                    and new_session_id != last_session_id
+                ):
+                    self._generation += 1
+                    self._pending_request = None
+
         self._generation += 1
         self._pending_request = {
             "cmd": "render",
@@ -123,8 +153,11 @@ class TtsManager(QObject):
             "voice_id": voice_id,
             "voice_name": voice_name,
             "speed": float(speed),
+            "priority": priority,
+            "identity": identity,
         }
         self._stop_playback()
+        self._stop_say()
         self._dispatch_pending()
 
     def stop_speech(self) -> None:
@@ -180,6 +213,8 @@ class TtsManager(QObject):
 
     def shutdown(self) -> None:
         self._closing = True
+        self._generation += 1
+        self._busy_timer.stop()
         self._pending_request = None
         self._stop_playback()
         self._stop_say()
@@ -218,17 +253,7 @@ class TtsManager(QObject):
     def _on_busy_timeout(self) -> None:
         if not self._busy:
             return
-        self.error_line.emit("TTS worker stalled (>6.0s) — restarting worker...")
-        self._busy = False
-        last_text = self._last_text
-        last_speed = self._last_speed
-        self.shutdown()
-        try:
-            self.start()
-        except Exception as exc:
-            self.error_line.emit(f"Failed to restart TTS worker: {exc}")
-        if last_text:
-            self._speak_fallback(last_text, last_speed)
+        self.status_line.emit("Kokoro is taking longer than expected; waiting for speech.")
 
     def _on_stdout_ready(self) -> None:
         if self._process is None:
@@ -283,9 +308,11 @@ class TtsManager(QObject):
             self._busy_timer.stop()
             generation = int(payload.get("generation", 0))
             path = str(payload.get("path", "")).strip()
-            if generation == self._generation and path:
+            if not self._closing and generation == self._generation and path:
+                self._stop_say()
                 if AudioPlayback.play_file(path):
                     self._current_audio_path = Path(path)
+                    self.speechStarted.emit()
                 else:
                     self.error_line.emit(f"Kokoro audio playback failed: {path}")
                     self._cleanup_path(Path(path))
@@ -348,10 +375,13 @@ class TtsManager(QObject):
             self.error_line.emit(self._process.errorString())
 
     def _stop_playback(self) -> None:
+        had_audio = self._current_audio_path is not None
         AudioPlayback.stop()
         if self._current_audio_path is not None:
             self._cleanup_path(self._current_audio_path)
             self._current_audio_path = None
+        if had_audio:
+            self.speechStopped.emit()
 
     @staticmethod
     def _cleanup_path(path: Path) -> None:
