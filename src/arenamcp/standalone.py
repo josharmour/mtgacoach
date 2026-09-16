@@ -55,6 +55,7 @@ from arenamcp.backend_health import (
     is_backend_error_text,
     strip_health_tags,
 )
+from arenamcp.conversation import TURN_ADVICE, ConversationController
 from arenamcp.decision_arbiter import arbitrate
 from arenamcp.logging_config import LOG_DIR, LOG_FILE, configure_logging
 from arenamcp.mana import get_local_seat_id
@@ -68,6 +69,7 @@ from arenamcp.standalone_tempo import _TempoTracker
 from arenamcp.standalone_ui import CLIAdapter, UIAdapter
 from arenamcp.standalone_voice import _PipeVoiceOutput, _probe_sounddevice_import, _SAPIVoice
 from arenamcp.standalone_windows import _StandaloneWindowsMixin
+from arenamcp.voice_session import SpeechIdentity, VoiceSession
 
 __all__ = ["StandaloneCoach", "_SAPIVoice", "_PipeVoiceOutput"]
 
@@ -193,6 +195,32 @@ class StandaloneCoach(
 
         # Match tracking for LLM context
         self._match_number: int = 0  # Incremented on each new match
+
+        # Match identity exposed for ConversationController (the coaching
+        # loop keeps its own local last_match_id copy and mirrors every
+        # boundary change here so current_identity() always sees it).
+        self.last_match_id: str | None = None
+
+        # Conversation Mode (Wave 2): speech arbiter + conversation session.
+        # Created eagerly so pipe commands (set_mode/stop_speech) and tests
+        # always see them; start() rebinds voice_session to the real sink
+        # after _init_voice() runs. With voice disabled the VoiceSession
+        # wraps a None sink (structural no-op) rather than staying None.
+        self.voice_session = VoiceSession(self._voice_output)
+        self.conversation = ConversationController(
+            self,
+            emit_event=self._emit_conversation_event,
+            snapshot_fn=self._conversation_snapshot,
+        )
+        try:
+            saved_mode = str(self.settings.get("conversation_mode", TURN_ADVICE) or TURN_ADVICE)
+        except Exception:
+            saved_mode = TURN_ADVICE
+        if saved_mode != TURN_ADVICE:
+            # Restore the persisted session mode without re-persisting it
+            # (persist=True is reserved for explicit user mode changes).
+            with contextlib.suppress(Exception):
+                self.conversation.set_mode(saved_mode, persist=False)
 
         # Rolling in-match advice history (used for post-match analysis)
         self._advice_history: list[dict] = []
@@ -375,6 +403,17 @@ class StandaloneCoach(
 
         # Use local Kokoro TTS
         if self._voice_output:
+            # Conversation mode: funnel through the speech arbiter so
+            # question-priority answers can preempt urgent advice and
+            # stale identities are dropped. Turn-advice keeps the raw
+            # sink path byte-for-byte.
+            identity = self._conversation_identity_for_speech()
+            if identity is not None:
+                try:
+                    self.voice_session.speak(text, priority="urgent", identity=identity)
+                    return
+                except Exception as e:
+                    logger.debug(f"voice_session.speak failed, falling back to raw sink: {e}")
             try:
                 self._voice_output.speak(text, blocking=blocking)
             except Exception as e:
@@ -801,6 +840,89 @@ class StandaloneCoach(
             logger.error(f"Voice init failed: {e}")
             self.ui.status("VOICE", "TTS init failed")
             self.ui.log(f"TTS unavailable: {e}")
+
+    def _init_conversation_session(self) -> None:
+        """Rebind the voice session to the real speech sink after voice init.
+
+        __init__ creates ``voice_session``/``conversation`` eagerly (the sink
+        is a no-op until voice I/O initializes) so pipe commands and tests
+        always see them; start() calls this right after _init_voice() to
+        swap in the actual output when one exists.
+        """
+        self.voice_session = VoiceSession(self._voice_output)
+
+    def _conversation_snapshot(self) -> dict[str, Any] | None:
+        """Live snapshot source for ConversationController (guarded)."""
+        try:
+            mcp = getattr(self, "_mcp", None)
+            if mcp is None:
+                return None
+            state = mcp.get_game_state()
+            if not isinstance(state, dict):
+                return None
+            normalizer = getattr(self, "_normalize_turn_snapshot", None)
+            if callable(normalizer):
+                state = normalizer(state)
+            return state if isinstance(state, dict) else None
+        except Exception:
+            logger.debug("conversation snapshot read failed", exc_info=True)
+            return None
+
+    def _emit_conversation_event(self, event_type: str, **fields: Any) -> None:
+        """Forward ConversationController events to the pipe UI (best-effort).
+
+        Pipe mode: ``conversation_reply`` rides the adapter's event queue and
+        ``conversation_status`` maps to a CONVO_STATE status event (the shape
+        the desktop session already understands). CLI mode has no event
+        channel and silently drops events.
+        """
+        try:
+            if event_type == "conversation_status":
+                status_fn = getattr(self.ui, "status", None)
+                if callable(status_fn):
+                    status_fn("CONVO_STATE", str(fields.get("state", "idle")))
+                return
+            emit = getattr(self.ui, "_emit", None)
+            if callable(emit):
+                emit({"type": event_type, **fields})
+        except Exception as e:
+            logger.debug(f"conversation event emit failed: {e}")
+
+    def _conversation_identity_for_speech(self) -> Any | None:
+        """Identity for arbiter-routed TTS in conversation mode, else None.
+
+        Wraps the controller identity in a SpeechIdentity with a monotonic
+        seq so back-to-back urgent advice preempts itself like legacy TTS
+        (equal request ids would otherwise self-cancel at equal rank).
+        """
+        conversation = getattr(self, "conversation", None)
+        if conversation is None or conversation.mode != "conversation":
+            return None
+        try:
+            identity = conversation.current_identity()
+        except Exception:
+            return None
+        if identity is None:
+            return None
+        seq = getattr(self, "_conversation_speech_seq", 0) + 1
+        self._conversation_speech_seq = seq
+        return SpeechIdentity(
+            session_id=getattr(identity, "session_id", 0) or 0,
+            match_id=getattr(identity, "match_id", None),
+            turn_number=getattr(identity, "turn_number", 0) or 0,
+            seq=seq,
+        )
+
+    def _conversation_reset_for_match(self, match_id: str | None) -> None:
+        """Reset conversation memory at a match boundary (guarded for
+        tests and other embedders without the controller attribute)."""
+        conversation = getattr(self, "conversation", None)
+        if conversation is None or not hasattr(conversation, "reset_for_match"):
+            return
+        try:
+            conversation.reset_for_match(match_id, self._match_number)
+        except Exception as e:
+            logger.debug(f"conversation.reset_for_match failed: {e}")
 
     def _emit_control_status_snapshot(self, actual_model: str | None) -> None:
         """Emit the current control-state snapshot for GUI frontends."""
@@ -1387,6 +1509,9 @@ class StandaloneCoach(
                                     packet.save()
                             except Exception as e:
                                 logger.warning(f"Failed to save match packet on event-signal: {e}")
+                            # Match boundary (game-end event): conversation
+                            # memory is per-match — clear it here too.
+                            self._conversation_reset_for_match(curr_match_id)
                 except Exception as e:
                     msg = str(e)
                     if msg != self._last_game_end_check_error:
@@ -1399,6 +1524,9 @@ class StandaloneCoach(
                 #   (b) match_id goes FROM something TO None (match ended, back to menu)
                 match_id_changed = curr_match_id != last_match_id
                 if match_id_changed and last_match_id is not None:
+                    # Expose the new match id BEFORE the reset logic so
+                    # ConversationController.current_identity() sees it.
+                    self.last_match_id = curr_match_id
                     self._match_number += 1
                     logger.info(
                         f"Match boundary detected ({last_match_id} -> {curr_match_id}), match #{self._match_number}, resetting coaching state"
@@ -1469,8 +1597,10 @@ class StandaloneCoach(
                     # fire false positives (new_turn, land_played, etc.)
                     # because it sees the reconstructed state as entirely new.
                     self._match_boundary_ts = time.time()
+                    self._conversation_reset_for_match(curr_match_id)
                 if match_id_changed:
                     last_match_id = curr_match_id
+                    self.last_match_id = curr_match_id
                     if curr_match_id is not None:
                         try:
                             from arenamcp.match_packets import start_match_packet
@@ -1539,6 +1669,9 @@ class StandaloneCoach(
                         self._coach.clear_deck_strategy()
                     self._match_boundary_ts = time.time()
                     self._last_logged_deck_reconstruct_count = 0
+                    # Match boundary (turn-number drop): conversation
+                    # memory is per-match — clear it here too.
+                    self._conversation_reset_for_match(curr_match_id)
                     logger.info("Cleared advice history for new match")
 
                 # Announce seat detection when game starts
@@ -1861,6 +1994,17 @@ class StandaloneCoach(
 
                     triggers.sort(key=lambda x: trigger_priorities.get(x, 0), reverse=True)
 
+                    # Conversation mode: record the trigger batch in match
+                    # memory BEFORE dispatch (memory-only in this slice —
+                    # proactive commentary is Wave 3). Turn-advice never
+                    # consults the controller.
+                    _conversation = getattr(self, "conversation", None)
+                    if _conversation is not None and _conversation.mode == "conversation":
+                        try:
+                            _conversation.on_state(curr_state, prev_state, triggers)
+                        except Exception as e:
+                            logger.debug(f"conversation.on_state failed: {e}")
+
                     stale_retry_enqueued = False
                     for trigger in triggers:
                         raw_new_turn = trigger == "new_turn"
@@ -1869,6 +2013,17 @@ class StandaloneCoach(
                         # not a real decision (Mulligan/Scry/Discard/Target). Suppress
                         # it if we already advised this turn+phase to avoid duplicates.
                         is_critical = trigger in CRITICAL_PRIORITY
+
+                        # Conversation-mode gate (Wave-2 slice): CRITICAL
+                        # triggers keep the legacy dispatch (decision
+                        # machinery preserved); all other triggers are
+                        # memory-only here — the batch was already recorded
+                        # via on_state above and must NOT reach the legacy
+                        # advice ladder (no proactive speech).
+                        _conversation = getattr(self, "conversation", None)
+                        if _conversation is not None and _conversation.mode == "conversation":
+                            if not is_critical:
+                                continue
                         if trigger == "decision_required":
                             # Arbiter (fable-improvements.md item 4): when the
                             # bridge is connected and idle, a log-derived
@@ -2562,6 +2717,7 @@ class StandaloneCoach(
         self._init_mcp()
         self.ui.log("Initializing voice (background)...")
         self._init_voice()
+        self._init_conversation_session()
 
         # Track actual model name for display
         actual_model = self.model_name
