@@ -48,6 +48,9 @@ def _int_value(value: Any, default: int = 0) -> int:
 
 
 class CompactCoachPanel(QWidget):
+    # Panel-level dynamic property for the conversation-mode visual identity:
+    # set on every mode ack, repolished with the rest of the panel styles.
+    OBJECT_NAME = "CompactCoachPanel"
     """Svelte, single-column sidebar layout of the MTGA Coach HUD (~260-440px wide)."""
 
     repair_requested = Signal()
@@ -524,9 +527,15 @@ class CompactCoachPanel(QWidget):
             return
         self._conversation_mode = mode
         in_convo = mode == "conversation"
+        # Panel-wide conversation identity: tint border/background so the
+        # whole HUD visibly changes theme in conversation mode, not just
+        # the mode button (user request 2026-09-16).
+        self.setProperty("convoActive", "true" if in_convo else "false")
+        self.setObjectName(self.OBJECT_NAME)
         self.mode_btn.setText("Mode: Conversation" if in_convo else "Mode: Turn Advice")
         self.mode_btn.setProperty("convoOn", "true" if in_convo else "false")
         self._repolish(self.mode_btn)
+        self._repolish(self)
         self.conversation_transcript.setVisible(in_convo)
         self.log_view.setVisible(not in_convo)
         self.conversation_status_label.setVisible(in_convo)
@@ -772,6 +781,14 @@ class CompactCoachPanel(QWidget):
         accent = t["spell"]
         self.setStyleSheet(
             f"""
+#CompactCoachPanel[convoActive="true"] {{
+    border: 2px solid {t["castable_fg"]};
+    border-radius: 10px;
+    background: {t["castable_bg"]};
+}}
+#CompactCoachPanel[convoActive="false"] {{
+    border: none;
+}}
 #turnStrip {{
     background: {t["panel2"]};
     color: {t["header"]};

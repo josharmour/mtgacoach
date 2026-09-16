@@ -25,6 +25,7 @@ fake. No PySide6 imports here.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
@@ -1689,6 +1690,14 @@ class ConversationController:
     def reset_for_match(self, match_id: str | None, match_number: int) -> None:
         # Match boundary: clear memory (including Wave-3 proactive-timing and
         # deferred-question fields), bump session identity, drop pending.
+        in_conversation = self._mode == CONVERSATION
+        # Capture the pre-reset plan summary for the match-start opener —
+        # reset_for_match replaces MatchMemory below, so this must be read
+        # BEFORE the wipe (the fresh memory has no plan until the first
+        # _refresh_plan_summary in on_state).
+        plan_hint = ""
+        with contextlib.suppress(Exception):
+            plan_hint = str(self.memory.plan_summary or "")
         with self._lock:
             had_pending = bool(self._pending)
             self.memory = MatchMemory()
@@ -1701,6 +1710,37 @@ class ConversationController:
         # the UI's "thinking" status.
         if had_pending:
             self._emit_idle()
+        # Match-start handshake (user request 2026-09-16): in conversation
+        # mode, announce the session audibly at every match boundary so mode
+        # state is knowable without looking at the panel. The plan summary is
+        # seeded by the first _refresh_plan_summary (GamePlanManager intro);
+        # the opener speaks immediately with whatever identity exists now.
+        if in_conversation:
+            self._speak_match_opener(match_id, plan_hint=plan_hint)
+
+    def _speak_match_opener(self, match_id: str | None, plan_hint: str = "") -> None:
+        """Short audible match-start handshake in conversation mode.
+
+        Doubles as the auditory mode indicator: hearing the opener IS the
+        confirmation that conversation mode is live for this match. Uses the
+        raw voice sink (not the arbiter) with no identity — it must never be
+        stale-dropped, it always plays at the match boundary. ``plan_hint``
+        carries the pre-reset plan summary (reset_for_match wipes memory
+        before this runs, so the fresh MatchMemory cannot be read here).
+        """
+        plan = (plan_hint or "").strip()[:140]
+        opener = (
+            f"Conversation mode. Match underway. {plan}"
+            if plan
+            else "Conversation mode. Match underway. I'll call the swings as they come."
+        )
+        vo = getattr(self._coach, "_voice_output", None)
+        if vo is None or not hasattr(vo, "speak"):
+            return
+        try:
+            vo.speak(opener)
+        except Exception:
+            logger.debug("match-opener speech failed", exc_info=True)
 
     def cancel_pending(self) -> None:
         # Invalidate in-flight requests: their identities no longer match

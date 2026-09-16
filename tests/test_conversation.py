@@ -735,3 +735,48 @@ class TestStatusLifecycle:
         ctrl._pending[7] = ctrl.current_identity(request_id=7)
         ctrl.set_mode(TURN_ADVICE)
         assert self._states(ctrl)[-1] == "idle"
+
+
+class TestMatchOpener:
+    """Match-start handshake (user request 2026-09-16): conversation mode
+    announces audibly at every match boundary; turn advice stays silent."""
+
+    def _controller(self, mode: str) -> tuple[ConversationController, MagicMock]:
+        coach = MagicMock()
+        coach.voice_session = MagicMock()
+        coach._voice_output = MagicMock()
+        ctrl = ConversationController(coach)
+        if mode != TURN_ADVICE:
+            ctrl.set_mode(mode, persist=False)
+        return ctrl, coach._voice_output
+
+    def test_opener_spoken_in_conversation_mode(self):
+        ctrl, vo = self._controller(CONVERSATION)
+        ctrl.reset_for_match("m1", 1)
+        text = vo.speak.call_args[0][0]
+        assert text.startswith("Conversation mode. Match underway.")
+
+    def test_no_opener_in_turn_advice_mode(self):
+        ctrl, vo = self._controller(TURN_ADVICE)
+        ctrl.reset_for_match("m1", 1)
+        vo.speak.assert_not_called()
+
+    def test_opener_includes_plan_summary_when_seeded(self):
+        ctrl, vo = self._controller(CONVERSATION)
+        ctrl.memory.plan_summary = "Elf swarm into Overrun."
+        ctrl.reset_for_match("m1", 1)
+        text = vo.speak.call_args[0][0]
+        assert "Elf swarm" in text
+
+    def test_opener_falls_back_without_plan(self):
+        ctrl, vo = self._controller(CONVERSATION)
+        ctrl.reset_for_match("m1", 1)
+        text = vo.speak.call_args[0][0]
+        assert "call the swings" in text
+
+    def test_opener_silent_when_no_voice_output(self):
+        coach = MagicMock()
+        coach._voice_output = None
+        ctrl = ConversationController(coach)
+        ctrl.set_mode(CONVERSATION, persist=False)
+        ctrl.reset_for_match("m1", 1)  # must not raise
