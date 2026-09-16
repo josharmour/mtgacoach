@@ -285,3 +285,28 @@ def test_speak_request_payload_with_priority_and_identity() -> None:
             "identity": identity,
         }
     ]
+
+
+def _dispatch_with_payload(adapter, payload):
+    """Run one dispatch cycle with a raw payload (test helper)."""
+    adapter._dispatch(payload)
+
+
+def test_set_mode_accepts_text_key_payload():
+    """Regression (2026-09-16 Mac): UI send_command transports the value in
+    'text'; engine read only 'mode' — every UI mode switch silently no-op'd."""
+    coach = FakeCoach()
+    coach.conversation = FakeConversation()
+    adapter, _ = make_adapter(coach)
+    _dispatch_with_payload(adapter, {"cmd": "set_mode", "text": "conversation"})
+    assert coach.conversation.mode == "conversation"
+    _dispatch_with_payload(adapter, {"cmd": "set_mode", "text": "turn_advice"})
+    assert coach.conversation.mode == "turn_advice"
+
+
+def test_set_verbosity_accepts_text_key_payload():
+    coach = FakeCoach()
+    coach.conversation = FakeConversation()
+    adapter, _ = make_adapter(coach)
+    _dispatch_with_payload(adapter, {"cmd": "set_verbosity", "text": "quiet"})
+    assert coach.conversation.verbosity == "quiet"

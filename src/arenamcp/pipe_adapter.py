@@ -599,7 +599,12 @@ class PipeAdapter:
             elif action == "toggle_fallback_mode":
                 self._handle_toggle_fallback_mode()
             elif action == "set_mode":
-                mode = str(cmd.get("mode") or "")
+                # Tolerate BOTH payload shapes: {"cmd":"set_mode","mode":...}
+                # (contract) and {"cmd":"set_mode","text":...} (generic
+                # send_command transport). The key mismatch silently no-op'd
+                # every UI mode switch (2026-09-16 Mac session: clicks never
+                # reached the controller — no ack, no speech, no log line).
+                mode = str(cmd.get("mode") or cmd.get("text") or "")
                 conversation = getattr(coach, "conversation", None)
                 if mode and conversation is not None:
                     with contextlib.suppress(Exception):
@@ -607,7 +612,8 @@ class PipeAdapter:
                 resulting = str(getattr(conversation, "mode", mode) if conversation is not None else mode)
                 self.status("MODE", resulting)
             elif action == "set_verbosity":
-                verbosity = str(cmd.get("verbosity") or "")
+                # Same dual-shape tolerance as set_mode (text-vs-verbosity key).
+                verbosity = str(cmd.get("verbosity") or cmd.get("text") or "")
                 conversation = getattr(coach, "conversation", None)
                 if verbosity and conversation is not None:
                     with contextlib.suppress(Exception):
