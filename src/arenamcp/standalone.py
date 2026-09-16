@@ -1523,6 +1523,14 @@ class StandaloneCoach(
                 #   (a) match_id goes FROM something TO a different value (new match started)
                 #   (b) match_id goes FROM something TO None (match ended, back to menu)
                 match_id_changed = curr_match_id != last_match_id
+                if match_id_changed and last_match_id is None and curr_match_id is not None:
+                    # Wave 5: None -> first match id is a real boundary — the
+                    # controller's memory may already hold pre-match content
+                    # (startup questions, deferred answers), so it must be
+                    # cleared even though match_number does not bump. The
+                    # bump-only reset used here is acceptable per review: the
+                    # session_id bump invalidates all in-flight identities.
+                    self._conversation_reset_for_match(curr_match_id)
                 if match_id_changed and last_match_id is not None:
                     # Expose the new match id BEFORE the reset logic so
                     # ConversationController.current_identity() sees it.

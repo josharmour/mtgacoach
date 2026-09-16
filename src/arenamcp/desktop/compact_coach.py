@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from arenamcp.settings import get_settings
+from arenamcp import settings as settings
 
 from .brain_stream_window import BrainStreamWindow
 from .coach_session import CoachSession
@@ -76,7 +76,7 @@ class CompactCoachPanel(QWidget):
 
     def __init__(self, session: CoachSession | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._settings = get_settings()
+        self._settings = settings.get_settings()
         self._session = session or CoachSession(self)
         self._dot_values: dict[str, str] = {}
         self._buttons: dict[str, Any] = {}
@@ -243,7 +243,7 @@ class CompactCoachPanel(QWidget):
         ctrl_row2.addWidget(self.voice_btn)
         self._buttons["cycle_voice"] = self.voice_btn
 
-        saved_speed = get_settings().get("voice_speed", 1.0)
+        saved_speed = settings.get_settings().get("voice_speed", 1.0)
         self.speed_btn = QPushButton(f"Speed: {saved_speed}x")
         self.speed_btn.setObjectName("speedButton")
         self.speed_btn.setToolTip("Cycle TTS voice speed (0.8x, 1.0x, 1.2x, 1.5x)")
@@ -306,6 +306,9 @@ class CompactCoachPanel(QWidget):
         self._session.modeChanged.connect(self._on_mode_changed)
         self._session.conversationReply.connect(self._on_conversation_reply)
         self._session.conversationStatus.connect(self._on_conversation_status)
+        fallback_notice = getattr(self._session, "localFallbackNotice", None)
+        if fallback_notice is not None and hasattr(fallback_notice, "connect"):
+            fallback_notice.connect(self._on_local_fallback_notice)
         self._session.started.connect(self._sync_conversation_prefs)
 
     def _on_game_state_changed(self, state: dict[str, Any]) -> None:
@@ -530,6 +533,12 @@ class CompactCoachPanel(QWidget):
     def _on_conversation_reply(self, text: str) -> None:
         self.conversation_transcript.set_pending(False)
         self.conversation_transcript.add_entry("coach", text)
+
+    def _on_local_fallback_notice(self, message: str) -> None:
+        """[LOCAL FALLBACK] notices ride the conversation transcript."""
+        self.conversation_transcript.set_pending(False)
+        self.conversation_transcript.add_entry("system", str(message))
+        self.append_log(str(message), role="error")
 
     def _on_conversation_status(self, state: str) -> None:
         state = str(state).strip().lower()

@@ -29,6 +29,25 @@ CHANNELS = 1
 SAMPLE_WIDTH = 2  # int16
 
 VOICE_UNAVAILABLE_TOOLTIP = "voice input unavailable"
+LOCAL_FALLBACK_PREFIX = "[LOCAL FALLBACK]"
+
+
+def _local_fallback_notice(message: str) -> str:
+    """User-visible failure notice (T7): mic/transcription problems must be
+    explained in the transcript, never silently dropped."""
+    return f"{LOCAL_FALLBACK_PREFIX} {message}"
+
+
+def _mic_failure_notice(message: str) -> str:
+    return _local_fallback_notice(f"microphone: {message}")
+
+
+def _transcription_failure_notice(message: str) -> str:
+    return _local_fallback_notice(f"transcription failed: {message}")
+
+
+def _no_speech_notice() -> str:
+    return _local_fallback_notice("no speech detected — hold the button a little longer")
 
 
 def check_dependencies() -> tuple[bool, str]:
@@ -183,13 +202,17 @@ class PttController(QObject):
     def _on_pressed(self) -> None:
         if self._recorder is None:
             return
-        with contextlib.suppress(Exception):
+        try:
             if hasattr(self._session, "stop_speaking"):
                 self._session.stop_speaking()
             self._recorder.start()
-            self._listening = True
-            self._button.setText("🎙 Listening…")
-            self.listeningChanged.emit(True)
+        except Exception as exc:
+            logger.warning("PTT recorder start failed: %s", exc)
+            self._notice(_mic_failure_notice(str(exc) or "could not start recording"))
+            return
+        self._listening = True
+        self._button.setText("🎙 Listening…")
+        self.listeningChanged.emit(True)
 
     def _on_released(self) -> None:
         if not self._listening:
@@ -197,18 +220,48 @@ class PttController(QObject):
         self._listening = False
         self._button.setText("🎙 Hold to talk")
         self.listeningChanged.emit(False)
-        wav_bytes = b""
-        with contextlib.suppress(Exception):
+        try:
             wav_bytes = self._recorder.stop() or b""
-        if not wav_bytes:
+        except Exception as exc:
+            logger.warning("PTT recorder stop failed: %s", exc)
+            self._notice(_mic_failure_notice(str(exc) or "could not finish recording"))
             return
-        text = ""
-        with contextlib.suppress(Exception):
+        if not wav_bytes:
+            # No audio captured: an info-level condition, but the user should
+            # know the press produced nothing (T7 — failures are explained).
+            self._notice(_no_speech_notice())
+            return
+        try:
             text = (self._transcriber.transcribe(wav_bytes) or "").strip()
+        except Exception as exc:
+            logger.warning("PTT transcription failed: %s", exc)
+            self._notice(_transcription_failure_notice(str(exc) or "transcriber error"))
+            return
         if not text:
             logger.info("PTT transcription produced no text")
+            self._notice(_no_speech_notice())
             return
         if self._on_send is not None:
             self._on_send(text)
         else:
             self._session.send_chat(text)
+
+    def _notice(self, message: str) -> None:
+        """Surface a user-visible notice through the transcript surface.
+
+        Prefers ``emit_local_fallback_notice`` on the session (wired by the
+        desktop panel), then ``send_chat`` as a generic channel.
+        """
+        emitter = getattr(self._session, "emit_local_fallback_notice", None)
+        if callable(emitter):
+            try:
+                emitter(message)
+                return
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("emit_local_fallback_notice failed", exc_info=True)
+        sender = getattr(self._session, "send_chat", None)
+        if callable(sender):
+            try:
+                sender(message)
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("PTT notice send_chat failed", exc_info=True)

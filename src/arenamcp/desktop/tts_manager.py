@@ -29,6 +29,11 @@ class TtsManager(QObject):
         self._busy = False
         self._closing = False
         self._generation = 0
+        # Generation captured alongside _last_text at request time — the
+        # fallback paths below speak _last_text ONLY when this generation is
+        # still current, so a cancelled (stopped/superseded) utterance is
+        # never re-spoken by the say/SAPI fallback after a stop.
+        self._last_text_generation = -1
         self._pending_request: dict[str, Any] | None = None
         self._current_audio_path: Path | None = None
         # When the Kokoro worker can't serve (init failure, dead process),
@@ -104,6 +109,7 @@ class TtsManager(QObject):
 
         self._last_text = text
         self._last_speed = float(speed)
+        self._last_text_generation = self._generation
 
         if self._worker_failed:
             self._speak_fallback(text, speed)
@@ -163,6 +169,11 @@ class TtsManager(QObject):
     def stop_speech(self) -> None:
         self._generation += 1
         self._pending_request = None
+        # Forget the last text: the say/SAPI fallback paths must never
+        # re-speak a cancelled utterance after the user pressed stop (M4).
+        self._last_text = ""
+        self._last_speed = 1.0
+        self._last_text_generation = -1
         self._stop_playback()
         self._stop_say()
 
@@ -216,6 +227,9 @@ class TtsManager(QObject):
         self._generation += 1
         self._busy_timer.stop()
         self._pending_request = None
+        self._last_text = ""
+        self._last_speed = 1.0
+        self._last_text_generation = -1
         self._stop_playback()
         self._stop_say()
 
@@ -333,13 +347,36 @@ class TtsManager(QObject):
             if "init failed" in message:
                 # Kokoro can't come up at all (usually missing model files).
                 # Downgrade permanently for this session and voice the advice
-                # that just failed rather than dropping it.
+                # that just failed rather than dropping it — but ONLY when
+                # that text's generation is still current (a stop or newer
+                # request invalidates the fallback).
+                #
+                # Dormant-gating activation contract (Wave 5, comment only):
+                # these fallback paths speak _last_text when its captured
+                # generation still equals _generation. Generation semantics
+                # mirror VoiceSession's arbiter: _generation is bumped by
+                # every accepted speak() request, by stop_speech(), and by
+                # shutdown(), so a stale _last_text (cancelled utterance,
+                # superseded request) can never re-speak after a stop. When
+                # playback is ACTIVE (AudioPlayback still playing the previous
+                # utterance), a newer generation has already been taken — the
+                # generation comparison against that active request is what
+                # suppresses the fallback, exactly as coerce_priority-based
+                # preemption would in the arbiter path.
                 self._worker_failed = True
-                if sys.platform == "darwin" and self._last_text:
+                if (
+                    sys.platform == "darwin"
+                    and self._last_text
+                    and self._last_text_generation == self._generation
+                ):
                     self.status_line.emit("Kokoro unavailable — using macOS voice.")
                     self._speak_via_say(self._last_text, self._last_speed)
                 return
-            if sys.platform == "darwin" and self._last_text:
+            if (
+                sys.platform == "darwin"
+                and self._last_text
+                and self._last_text_generation == self._generation
+            ):
                 # Transient render failure: keep Kokoro for next time, but
                 # don't lose this utterance.
                 self._speak_via_say(self._last_text, self._last_speed)
@@ -366,7 +403,11 @@ class TtsManager(QObject):
             self.error_line.emit(f"Kokoro worker exited ({exit_code}).")
             if exit_code != 0:
                 self._worker_failed = True
-                if sys.platform == "darwin" and self._last_text:
+                if (
+                    sys.platform == "darwin"
+                    and self._last_text
+                    and self._last_text_generation == self._generation
+                ):
                     self.status_line.emit("Kokoro unavailable — using macOS voice.")
                     self._speak_via_say(self._last_text, self._last_speed)
 

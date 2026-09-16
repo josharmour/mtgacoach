@@ -37,6 +37,7 @@ class CoachSession(QObject):
     modeChanged = Signal(str)
     conversationReply = Signal(str)
     conversationStatus = Signal(str)
+    localFallbackNotice = Signal(str)
 
     # Lifecycle signals
     started = Signal()
@@ -132,8 +133,20 @@ class CoachSession(QObject):
         self.send_command("set_verbosity", verbosity)
 
     def stop_speaking(self) -> None:
-        """Stop current TTS playback (conversation + turn advice)."""
+        """Stop current TTS playback (conversation + turn advice).
+
+        Also notifies the engine (``stop_speech`` command) so the engine-side
+        arbiter channel is released and pending conversation work is cancelled
+        — the UI stop button must not leave a question answer still rendering
+        on the engine side.
+        """
         self._tts.stop_speech()
+        self.send_command("stop_speech")
+
+    def emit_local_fallback_notice(self, message: str) -> None:
+        """Surface a [LOCAL FALLBACK] notice (PTT/mic failures) on the
+        conversation transcript surface."""
+        self.localFallbackNotice.emit(str(message))
 
     def capture_screenshots(self) -> dict[str, str]:
         """Capture coach window + MTGA window screenshots into bug_reports directory."""
@@ -284,6 +297,13 @@ class CoachSession(QObject):
                     self.modeChanged.emit(val)
                 elif key == "CONVO_STATE":
                     self.conversationStatus.emit(val)
+
+        elif ev_type == "speak_stop":
+            # Engine-initiated preemption (typed question, urgent topic): the
+            # engine stopped its arbiter channel, so desktop audio must halt
+            # too — otherwise the preempted utterance keeps playing for the
+            # full LLM answer latency. stop_speech() is idempotent.
+            self._tts.stop_speech()
 
         elif ev_type in ("speak_request", "speak", "speak_audio"):
             text = str(event.get("text") or event.get("data") or "")

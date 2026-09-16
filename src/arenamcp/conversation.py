@@ -38,6 +38,26 @@ from arenamcp.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Wall-clock ``time.time`` captured at import so a test harness that
+# monkeypatches ``time.time`` (the replay suite's fake clock) is detectable
+# by identity at call time.
+_ORIGINAL_WALL_TIME = time.time
+
+
+def _gate_now() -> float:
+    """Clock for suppression windows (speaking cooldown / per-topic repetition).
+
+    Production reads ``time.monotonic()``: a wall-clock jump (NTP correction,
+    suspend/resume) must never freeze or instantly expire a suppression
+    window. The replay harness injects its fake clock by monkeypatching
+    ``conversation.time.time``; the identity check follows such a patched
+    clock so recorded-game replays stay deterministic. Tests that need full
+    control inject ``now_fn`` into :class:`ConversationController` instead.
+    """
+    if time.time is not _ORIGINAL_WALL_TIME:  # pragma: no cover - harness path
+        return time.time()
+    return time.monotonic()
+
 
 # ---------------------------------------------------------------------------
 # Canonical constants
@@ -60,6 +80,10 @@ DEFAULT_COOLDOWN_SECONDS = 90
 # most this many seconds, and only within the same match.
 PENDING_QUESTION_TTL_SECONDS = 60
 PENDING_QUESTION_CAP = 5
+# Fallback wait after an urgent topic's speech when the arbiter exposes no
+# completion machinery (non-VoiceSession sinks) — recovery still must not
+# preempt the topic instantly.
+_RECOVERY_GRACE_SECONDS = 1.0
 # Topic keys that read as "the situation just changed materially" — these are
 # the STATE_SHIFT-and-above classes the Balanced verbosity tier allows.
 URGENT_TOPIC_KEYS: frozenset[str] = frozenset({"threat", "urgent_decision", "low_life"})
@@ -72,7 +96,7 @@ TOPIC_PROMPT_PREFIX = (
     "You are a Magic: The Gathering coach commenting proactively on how the "
     "game is developing. Keep it under two short sentences. Never state or "
     "imply a win probability. Any statement about the opponent's hidden hand "
-    "or library must be phrased as a hypothesis (\"they might have...\"), "
+    'or library must be phrased as a hypothesis ("they might have..."), '
     "never as an observed fact. MageZero model evidence, when present below, "
     "is supporting context only: never state a win probability from it, do "
     "not imply a one-ply estimate is full rules-engine search, and never "
@@ -81,14 +105,30 @@ TOPIC_PROMPT_PREFIX = (
 
 # Wave 4 — the standing caveat for uncalibrated model evidence, mirrored from
 # the codebase's own claim in ``MCTSTreePayload.format_for_llm_prompt``
-# ("scores are not calibrated win probabilities ... distinguish evaluated
-# one-ply states from policy-only preferences"). Do not strengthen or weaken
-# this wording in prompts: it must match what the code itself asserts.
+# ("scores are not calibrated win probabilities ... preserve legal-action
+# checks ... Candidate order remains the tactical heuristic ranking, not a
+# neural recommendation"). The two tail clauses mirror
+# ``mcts_evaluator.py``'s experimental-evidence wording verbatim in meaning —
+# do not strengthen or weaken this wording in prompts: it must match what the
+# code itself asserts.
 UNCALIBRATED_EVIDENCE_CAVEAT = (
     "Model scores are not calibrated win probabilities: use them as "
     "supporting evidence only, distinguish evaluated one-ply states from "
-    "policy-only preferences, and never present a policy preference as an "
-    "evaluated outcome."
+    "policy-only preferences, never present a policy preference as an "
+    "evaluated outcome, preserve legal-action checks, and treat candidate "
+    "order as the tactical heuristic ranking, not a neural recommendation."
+)
+
+
+# Standing instruction for the QUESTION path whenever MageZero evidence is
+# present: mirrors the topic-path rules (TOPIC_PROMPT_PREFIX) so a direct
+# question ("what's my win chance?") can never parrot the uncalibrated model
+# score as a real win probability (M7 grounding fix).
+QUESTION_EVIDENCE_INSTRUCTIONS = (
+    "Rules for using the MageZero evidence below: it is supporting context "
+    "only — never state or imply a win probability from it, do not imply a "
+    "one-ply estimate is full rules-engine search, and never describe a "
+    "policy preference as an evaluated outcome."
 )
 
 
@@ -227,6 +267,18 @@ _PROVENANCE_RANK: dict[str, int] = {
 _EVALUATED_PROVENANCE = "neural_afterstate"
 _HEURISTIC_EVAL_SOURCE = "Tactical Heuristic Lookahead"
 
+# Wave 5: payload-style labels for ``MCTSBranch.score_provenance`` values,
+# mirroring ``mcts_evaluator.py``'s own provenance label map — used instead of
+# a blanket "policy preference" tag so each provenance class reads as what it
+# actually is. Unknown values degrade to the conservative policy-preference
+# label (never an evaluated-sounding one).
+_PROVENANCE_LABELS: dict[str, str] = {
+    "neural_afterstate": "evaluated",
+    "prior_only": "policy preference",
+    "heuristic_lookahead": "heuristic",
+    "unsupported_fallback": "approx lookahead",
+}
+
 
 def _mcts_last_payload() -> Any:
     """Read the tactical evaluator's cached payload via a guarded getattr chain.
@@ -292,8 +344,14 @@ def _selection_identity(game_state: dict[str, Any]) -> tuple[str | None, str | N
 
 def _evidence_signature(state: dict[str, Any] | None) -> tuple[Any, ...] | None:
     """Cheap change-detection key so evidence is recomputed only when the
-    inputs that could change it changed (board/hand shape, payload identity,
-    client fallback/reject reasons)."""
+    inputs that could change it changed (board/hand shape, payload CONTENT,
+    client fallback/reject reasons).
+
+    Wave 5: the payload contributes a CONTENT fingerprint (eval_source +
+    per-branch/trap provenance counts + score/eval reasons), not ``id()``
+    which is meaningless across re-created payload objects and stable across
+    real content changes.
+    """
     if not isinstance(state, dict):
         return None
     battlefield = [c for c in (state.get("battlefield") or []) if isinstance(c, dict)]
@@ -309,12 +367,33 @@ def _evidence_signature(state: dict[str, Any] | None) -> tuple[Any, ...] | None:
         fb, rej = _magezero_reasons()
     except Exception:  # pragma: no cover - defensive
         payload, fb, rej = None, None, None
+
+    payload_fp: tuple[Any, ...] | None = None
+    if payload is not None:
+        try:
+            branches = [
+                getattr(b, "score_provenance", "") or "" for b in list(getattr(payload, "branches", []) or [])
+            ]
+            traps = [
+                getattr(b, "score_provenance", "") or ""
+                for b in list(getattr(payload, "blunder_traps", []) or [])
+            ]
+            payload_fp = (
+                str(getattr(payload, "eval_source", "") or ""),
+                len(branches),
+                len(traps),
+                tuple(sorted(branches)),
+                tuple(sorted(traps)),
+                str(getattr(payload, "root_win_probability", None)),
+            )
+        except Exception:  # pragma: no cover - defensive
+            payload_fp = None
     return (
         len(hand),
         len(battlefield),
         iids,
         zones.get("opponent_hand_count"),
-        id(payload) if payload is not None else None,
+        payload_fp,
         fb,
         rej,
     )
@@ -371,9 +450,10 @@ def collect_evidence_block(game_state: dict[str, Any] | None) -> EvidenceBlock:
         ev.provenance = provenance
         # ``evaluated`` requires a real neural afterstate row, not just an
         # experimental label: policy-only/heuristic branches never count.
-        ev.evaluated = provenance == _EVALUATED_PROVENANCE and str(
-            getattr(payload, "eval_source", "") or ""
-        ) != _HEURISTIC_EVAL_SOURCE
+        ev.evaluated = (
+            provenance == _EVALUATED_PROVENANCE
+            and str(getattr(payload, "eval_source", "") or "") != _HEURISTIC_EVAL_SOURCE
+        )
         if ev.evaluated:
             try:
                 ev.root_win_probability = float(payload.root_win_probability)
@@ -396,8 +476,7 @@ def collect_evidence_block(game_state: dict[str, Any] | None) -> EvidenceBlock:
         ev.uncertainty_reason = UNCALIBRATED_EVIDENCE_CAVEAT
     elif ev.is_supported():
         ev.uncertainty_reason = (
-            "No evaluated model evidence for this position yet; coaching "
-            "continues from observed board facts."
+            "No evaluated model evidence for this position yet; coaching continues from observed board facts."
         )
     else:
         ev.uncertainty_reason = _unavailable_sentence(None)
@@ -407,10 +486,7 @@ def collect_evidence_block(game_state: dict[str, Any] | None) -> EvidenceBlock:
 
 def _unavailable_sentence(reason: str | None) -> str:
     suffix = f" ({reason})" if reason else ""
-    return (
-        f"MageZero evidence is unavailable{suffix}; coaching continues "
-        "from observed board facts alone."
-    )
+    return f"MageZero evidence is unavailable{suffix}; coaching continues from observed board facts alone."
 
 
 def format_evidence_lines(evidence: EvidenceBlock | None) -> str:
@@ -440,6 +516,7 @@ def format_evidence_lines(evidence: EvidenceBlock | None) -> str:
             "coaching continues usefully without MageZero."
         )
     if evidence.provenance:
+        label = _PROVENANCE_LABELS.get(evidence.provenance)
         if evidence.evaluated:
             score_txt = ""
             if evidence.root_win_probability is not None:
@@ -449,11 +526,15 @@ def format_evidence_lines(evidence: EvidenceBlock | None) -> str:
                 f"Provenance: {evidence.provenance} "
                 f"(evaluated one-ply afterstates, not full rules-engine search{score_txt})"
             )
+        elif label is not None and label != "evaluated":
+            # Wave 5: payload-style label per provenance class instead of a
+            # blanket "policy preference" tag. The "evaluated" label is
+            # reserved for actually-evaluated rows (branch above) so a
+            # neural_afterstate provenance with a heuristic eval_source can
+            # never read as an evaluated outcome.
+            lines.append(f"Provenance: {evidence.provenance} ({label})")
         else:
-            lines.append(
-                f"Provenance: {evidence.provenance} "
-                "(policy preference, not an evaluated outcome)"
-            )
+            lines.append(f"Provenance: {evidence.provenance} (policy preference, not an evaluated outcome)")
     if evidence.uncertainty_reason:
         lines.append(f"Uncertainty: {evidence.uncertainty_reason}")
     elif evidence.fallback_reason:
@@ -476,7 +557,12 @@ MEMORY_RING_SIZE = 12
 
 @dataclass
 class PendingQuestion:
-    """A user question deferred by an urgent interrupt, kept for later."""
+    """A user question deferred by an urgent interrupt, kept for later.
+
+    ``ts`` defaults to wall clock for direct constructions, but the
+    controller stamps deferred questions with its suppression clock (see
+    ``ConversationController._now``) so TTL checks share one clock base.
+    """
 
     text: str
     ts: float = field(default_factory=time.time)
@@ -504,9 +590,18 @@ class MatchMemory:
         if len(self.turns) > MEMORY_RING_SIZE:
             del self.turns[: len(self.turns) - MEMORY_RING_SIZE]
 
-    def record_pending_question(self, text: str, match_id: str | None = None) -> None:
-        """Defer a question for later recovery (capped, newest kept)."""
-        self.pending_questions.append(PendingQuestion(text=str(text), match_id=match_id))
+    def record_pending_question(
+        self, text: str, match_id: str | None = None, ts: float | None = None
+    ) -> None:
+        """Defer a question for later recovery (capped, newest kept).
+
+        ``ts`` defaults to the monotonic clock (Wave 5) so a backward
+        wall-clock jump can never extend a deferral's lifetime; callers with
+        their own clock base pass ``ts`` explicitly.
+        """
+        self.pending_questions.append(
+            PendingQuestion(text=str(text), match_id=match_id, ts=time.monotonic() if ts is None else ts)
+        )
         if len(self.pending_questions) > PENDING_QUESTION_CAP:
             del self.pending_questions[: len(self.pending_questions) - PENDING_QUESTION_CAP]
 
@@ -649,6 +744,7 @@ class TopicSelector:
         curr_state: dict[str, Any] | None,
         triggers: list[str] | None,
         memory: MatchMemory | None = None,
+        threat_signature_prev: tuple[str, ...] | None = None,
     ) -> list[TopicCandidate]:
         if not isinstance(curr_state, dict):
             return []
@@ -656,7 +752,14 @@ class TopicSelector:
         # "revealed" (the sharper observed fact) rather than "board includes".
         candidates: list[TopicCandidate] = []
         candidates.extend(self._opponent_development_topics(prev_state, curr_state, triggers))
-        candidates.extend(self._threat_topics(curr_state, triggers))
+        # M2 spam fix: the board-scan threat topic only fires when the threat
+        # set is NEWLY detected (the trigger path already has its own
+        # instance-id change detection). An unchanged threat set re-listed on
+        # every batch must not produce a candidate.
+        threat_sig = self._threat_signature(curr_state)
+        threat_changed = threat_sig is not None and threat_sig != threat_signature_prev
+        if threat_changed or (triggers and "threat_detected" in triggers):
+            candidates.extend(self._threat_topics(curr_state, triggers))
         candidates.extend(self._role_shift_topics(prev_state, curr_state))
         candidates.extend(self._material_shift_topics(prev_state, curr_state))
         candidates.extend(self._material_assessment_topics(prev_state, curr_state, memory))
@@ -670,9 +773,7 @@ class TopicSelector:
 
     # -- (d) threats and interaction windows ---------------------------------
 
-    def _threat_topics(
-        self, curr_state: dict[str, Any], triggers: list[str] | None
-    ) -> list[TopicCandidate]:
+    def _threat_topics(self, curr_state: dict[str, Any], triggers: list[str] | None) -> list[TopicCandidate]:
         names = sorted({str(c.get("name")) for c in _battlefield_cards(curr_state) if _threat_card_name(c)})
         if triggers and "threat_detected" in triggers and not names:
             # The trigger machinery already carries the specific threat; the
@@ -692,6 +793,16 @@ class TopicSelector:
                 evidence=(f"Opponent board now includes {joined} (observed)."),
             )
         ]
+
+    def _threat_signature(self, curr_state: dict[str, Any]) -> tuple[str, ...] | None:
+        """Change-detection key for the board-threat topic (M2 spam fix).
+
+        Returns the sorted set of threat-card names currently on the opponent
+        board, or ``None`` when there is no threat — so an UNCHANGED threat
+        batch can be distinguished from a NEW one by the controller.
+        """
+        names = sorted({str(c.get("name")) for c in _battlefield_cards(curr_state) if _threat_card_name(c)})
+        return tuple(names) if names else None
 
     # -- (a) matchup / opponent-archetype developments ------------------------
 
@@ -721,7 +832,9 @@ class TopicSelector:
             # still public information.
             stack = [c for c in (curr_state.get("stack", []) or []) if isinstance(c, dict)]
             opp_seat = _opponent_seat(curr_state, local_seat)
-            new_cards = [c for c in stack if c.get("name") and c.get("controller_seat_id") in (opp_seat, None)]
+            new_cards = [
+                c for c in stack if c.get("name") and c.get("controller_seat_id") in (opp_seat, None)
+            ]
 
         if not new_cards:
             return []
@@ -949,6 +1062,7 @@ class ConversationController:
         coach: Any,
         emit_event: Callable[..., None] | None = None,
         snapshot_fn: Callable[[], dict[str, Any] | None] | None = None,
+        now_fn: Callable[[], float] | None = None,
     ) -> None:
         self._coach = coach
         self._emit_event = emit_event
@@ -971,6 +1085,17 @@ class ConversationController:
         # memory.last_evidence; this signature detects actual input change so
         # evidence is recomputed (and prompt text rewritten) only when needed.
         self._last_evidence_sig: tuple[Any, ...] | None = None
+        # Wave 5 (M2): last seen threat-card signature — a threat set that
+        # does not change between batches never re-announces.
+        self._threat_signature_prev: tuple[str, ...] | None = None
+        # Wave 5: suppression-window clock (speaking cooldown, per-topic
+        # repetition). Injectable for tests; the production default is the
+        # monotonic clock (see :func:`_gate_now`) so a backward wall-clock
+        # jump can never freeze or instantly expire suppression.
+        # ConversationTurn.ts stays wall-clock (display timestamps) and the
+        # pending-question TTL stays wall-clock too (PendingQuestion.ts is
+        # constructed with wall-clock timestamps across the codebase).
+        self._now: Callable[[], float] = now_fn or _gate_now
 
     # -- properties ---------------------------------------------------------
 
@@ -1001,14 +1126,20 @@ class ConversationController:
         with self._lock:
             self._mode = mode
             self._session_id += 1
+            had_pending = bool(self._pending)
             self._pending.clear()
+
+        # Status lifecycle (M6): clearing a non-empty pending set orphans any
+        # in-flight answer's delivery — emit idle so the UI never stays stuck
+        # on "thinking" after a mode switch.
+        if had_pending:
+            self._emit_idle()
 
         if persist:
             try:
                 get_settings().set("conversation_mode", mode)
             except Exception:
                 logger.warning("Failed to persist conversation_mode", exc_info=True)
-
 
     def set_verbosity(self, verbosity: str) -> None:
         """Set commentary verbosity; behavior is reserved for Wave 3."""
@@ -1029,20 +1160,56 @@ class ConversationController:
         """Refresh ``memory.last_evidence`` only when evidence inputs changed.
 
         Cheap guard: the change signature covers board/hand shape, the cached
-        tactical payload identity, and client fallback/reject reasons — the
+        tactical payload CONTENT, and client fallback/reject reasons — the
         things that can actually alter an EvidenceBlock. Never raises.
+
+        Thread safety (Wave 5 TOCTOU fix): the shared signature field is
+        re-read inside the write lock (compare-and-set) and the write is
+        skipped when another refresh advanced it while our (potentially slow)
+        evidence collection ran, so a concurrent refresh can never regress
+        ``memory.last_evidence`` to an older snapshot.
         """
         try:
             sig = _evidence_signature(curr_state)
             with self._lock:
                 if sig is not None and sig == self._last_evidence_sig:
                     return
+                prior_sig = self._last_evidence_sig
             evidence = collect_evidence_block(curr_state)
             with self._lock:
+                # Compare-and-set: if another refresh advanced the shared
+                # signature while we were collecting, our snapshot is stale —
+                # skip the write (the newer refresh owns the field, or the
+                # next on_state will write).
+                if self._last_evidence_sig != prior_sig:
+                    return
                 self.memory.last_evidence = evidence
                 self._last_evidence_sig = sig
         except Exception:
             logger.debug("evidence refresh failed", exc_info=True)
+
+    def _sweep_expired_pending_questions(self) -> None:
+        """TTL sweep of deferred questions (M3) — expire unconditionally.
+
+        Deferred questions older than :data:`PENDING_QUESTION_TTL_SECONDS` are
+        removed regardless of any urgent topic in flight, so a stale question
+        can never block topic speech forever. The sweep runs on the
+        controller's suppression clock (monotonic in production, Wave 5). A
+        negative elapsed time means the question's timestamp is on a
+        different clock base (or predates a backward jump) — its age is
+        unverifiable, so it is dropped rather than trusted.
+        """
+        now = self._now()
+        with self._lock:
+            expired = [
+                pq
+                for pq in self.memory.pending_questions
+                if not 0 <= now - pq.ts <= PENDING_QUESTION_TTL_SECONDS
+            ]
+            if expired:
+                self.memory.pending_questions = [
+                    pq for pq in self.memory.pending_questions if pq not in expired
+                ]
 
     def on_state(
         self,
@@ -1072,12 +1239,24 @@ class ConversationController:
 
         self._refresh_plan_summary()
         self._refresh_evidence(curr_state)
+        # M3: expire stale deferred questions on every state batch so they
+        # unblock topic speech and can never recover stale answers.
+        self._sweep_expired_pending_questions()
 
         with self._lock:
             self._last_topics = self._topic_selector.select(
-                prev_state, curr_state, triggers, self.memory
+                prev_state,
+                curr_state,
+                triggers,
+                self.memory,
+                threat_signature_prev=self._threat_signature_prev,
             )
             self._last_topics_ts = time.time()
+            # Advance the threat baseline so the NEXT batch sees an unchanged
+            # threat set as unchanged (not newly announced).
+            self._threat_signature_prev = self._topic_selector._threat_signature(
+                curr_state if isinstance(curr_state, dict) else {}
+            )
 
     # -- proactive topics (Wave 3) -------------------------------------------
 
@@ -1093,6 +1272,15 @@ class ConversationController:
         otherwise). Returns ``(text, speech_priority, topic)`` when something
         was spoken, else ``None``. Designed to be called from the coaching
         loop after ``on_state``; never raises.
+
+        Parameters are delivery-context only (Wave 5 review): delivery
+        gating itself comes exclusively from ``current_identity()`` —
+        ``match_id`` is forwarded to the urgent-interrupt path so deferred
+        questions stay same-match relevant, and ``match_number`` is accepted
+        for call-site symmetry with the loop's match identity but is not used
+        for gating (it is not asserted against the identity because the
+        loop's counter can legitimately differ transiently across a boundary;
+        the session_id bump, not the number, is what gates delivery).
         """
         try:
             return self._speak_topic_if_any(match_id, match_number)
@@ -1117,8 +1305,23 @@ class ConversationController:
         if has_pending or has_deferred:
             return None
 
+        try:
+            return self._gate_and_speak_topics(topics, match_id, match_number)
+        except Exception:
+            # Status lifecycle (M6): any exception in the gate/render path
+            # must leave the UI idle, never stuck on "thinking".
+            logger.exception("topic gate/speak failed")
+            self._emit_idle()
+            return None
+
+    def _gate_and_speak_topics(
+        self, topics: list[TopicCandidate], match_id: str | None, match_number: int
+    ) -> tuple[str, str, TopicCandidate] | None:
         cooldown = self._cooldown_seconds()
-        now = time.time()
+        # Suppression windows run on the injectable monotonic clock (Wave 5):
+        # a backward wall-clock jump must never freeze or instantly expire a
+        # cooldown/repetition window.
+        now = self._now()
 
         verbosity = self.verbosity
         for topic in topics:
@@ -1136,21 +1339,17 @@ class ConversationController:
             with self._lock:
                 # SPEAKING COOLDOWN: no proactive speech within N seconds of
                 # the last proactive utterance. URGENT-class topics bypass
-                # the cooldown — they interrupt in-flight speech by design.
-                if (
-                    topic.priority < EventPriority.THREAT
-                    and now - self.memory.last_proactive_ts < cooldown
-                ):
+                # the cooldown — they interrupt in-flight speech by design —
+                # but not the per-key minimum spacing below (M2: a NEW threat
+                # is announced, then not re-announced 3× within one window).
+                if topic.priority < EventPriority.THREAT and now - self.memory.last_proactive_ts < cooldown:
                     return None
-                # REPETITION SUPPRESSION: skip a topic already discussed
-                # within its own window (3x the cooldown). URGENT-class
-                # topics likewise bypass repetition suppression.
-                if topic.priority >= EventPriority.THREAT:
-                    continue_ok = True
-                else:
-                    last_spoken = self.memory.discussed_topics.get(topic.key, 0.0)
-                    continue_ok = now - last_spoken >= cooldown * 3
-                if not continue_ok:
+                # PER-KEY MINIMUM SPACING (applies to ALL topics including
+                # urgent): the same topic key may re-speak only after
+                # 3×cooldown — the urgent bypass lifts the global cooldown,
+                # never a per-key re-announce cap.
+                last_spoken = self.memory.discussed_topics.get(topic.key, 0.0)
+                if now - last_spoken < cooldown * 3:
                     continue
 
             identity = self.current_identity()
@@ -1159,27 +1358,28 @@ class ConversationController:
             reply = self._render_topic(topic)
 
             with self._lock:
-                stale = self._mode != identity.mode or self._session_id != identity.session_id
+                stale = identity.is_stale_vs(self.current_identity())
 
             if stale or is_backend_error_text(reply):
                 # Tagged backend failures are transcript-only (identical to
-                # the question path) — never spoken, topic not recorded.
+                # the question path) — never spoken, topic not recorded, and
+                # NOT appended to memory turns: the error text must never
+                # leak into later prompt digests (Wave 5). Status lifecycle
+                # (M6): stale/error paths return the UI to idle — the
+                # thinking status must never get stuck.
+                self._emit_idle()
                 if not stale:
                     payload = identity.to_payload()
                     self._emit("conversation_reply", text=reply, identity=payload)
-                    with self._lock:
-                        self.memory.append(
-                            ConversationTurn(role="coach", text=reply, identity=identity)
-                        )
                 return None
 
             spoken = strip_health_tags(reply)
             if not spoken:
+                # Empty render: nothing was delivered; leave the UI idle.
+                self._emit_idle()
                 return None
 
-            speech_priority = (
-                "urgent" if topic.priority >= EventPriority.THREAT else "proactive"
-            )
+            speech_priority = "urgent" if topic.priority >= EventPriority.THREAT else "proactive"
 
             with self._lock:
                 self.memory.discussed_topics[topic.key] = now
@@ -1210,11 +1410,7 @@ class ConversationController:
         opponent's hidden hand/library as a hypothesis.
         """
         with self._lock:
-            recent = [
-                turn
-                for turn in self.memory.turns[-6:]
-                if turn.role in ("user", "coach")
-            ][-2:]
+            recent = [turn for turn in self.memory.turns[-6:] if turn.role in ("user", "coach")][-2:]
         digest_lines = []
         for turn in recent:
             prefix = "user" if turn.role == "user" else "coach"
@@ -1284,17 +1480,64 @@ class ConversationController:
                     logger.debug("voice_output.speak failed (topic)", exc_info=True)
 
         if speech_priority == "urgent" and spoken:
-            # PENDING-QUESTION RECOVERY: after the urgent speech, re-answer a
-            # still-relevant deferred question on a daemon thread.
+            # PENDING-QUESTION RECOVERY: after the urgent speech COMPLETES
+            # (not when it starts — a recovery answer must never preempt the
+            # urgent topic it follows), re-answer a still-relevant deferred
+            # question on a daemon thread.
             thread = threading.Thread(
-                target=self._recover_pending_question,
-                args=(match_id, match_number_from_identity(identity)),
+                target=self._recover_after_speech_completes,
+                args=(text, speech_priority, identity, match_id, match_number_from_identity(identity)),
                 daemon=True,
                 name="convo-topic-recovery",
             )
             with self._lock:
                 self._answer_threads.append(thread)
             thread.start()
+
+    def _recover_after_speech_completes(
+        self,
+        text: str,
+        speech_priority: str,
+        identity: Any,
+        match_id: str | None,
+        match_number: int,
+    ) -> None:
+        """Wait for the urgent topic's speech to finish, then recover.
+
+        Never preempts the urgent utterance it follows and never raises.
+        """
+        try:
+            vs = getattr(self._coach, "voice_session", None)
+            self._wait_for_speech_completion(vs)
+            # Race guard: only recover in conversation mode (a mode switch
+            # mid-utterance invalidates the deferral).
+            with self._lock:
+                if self.mode != CONVERSATION:
+                    return
+            self._recover_pending_question(match_id, match_number)
+        except Exception:
+            logger.exception("pending-question recovery failed")
+
+    def _wait_for_speech_completion(self, vs: Any, timeout: float = 30.0) -> None:
+        """Block until the arbiter channel is free after the urgent speech.
+
+        Real :class:`VoiceSession` arbiters expose ``wait_for_idle`` ( backed
+        by the C1 completion machinery); anything else degrades to a bounded
+        grace wait so a recovery answer can never preempt the topic
+        immediately. Thread-safety: called from the recovery daemon only.
+        """
+        try:
+            from arenamcp.voice_session import VoiceSession  # local import: avoids cycle
+
+            if isinstance(vs, VoiceSession):
+                vs.wait_for_idle(timeout)
+                return
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("voice_session wait_for_idle unavailable", exc_info=True)
+        # Non-arbiter sink: no completion signal — bounded grace period.
+        grace_end = time.monotonic() + _RECOVERY_GRACE_SECONDS
+        while time.monotonic() < grace_end:
+            time.sleep(0.05)
 
     def _defer_pending_questions(self, match_id: str | None) -> None:
         """Snapshot pending user questions into memory for later recovery."""
@@ -1306,15 +1549,24 @@ class ConversationController:
             turn = next((t for t in reversed(self.memory.turns) if t.role == "user"), None)
             if turn is None:
                 return
-            self.memory.record_pending_question(turn.text, match_id)
+            # Stamp with the controller's suppression clock so the TTL sweep
+            # and recovery compare timestamps on ONE clock base (Wave 5).
+            self.memory.record_pending_question(turn.text, match_id, ts=self._now())
 
     def _recover_pending_question(self, match_id: str | None, match_number: int) -> None:
-        """Answer the most recent still-relevant deferred question, if any."""
+        """Answer the most recent still-relevant deferred question, if any.
+
+        TTL checks use the controller's suppression clock (monotonic in
+        production, Wave 5). A negative elapsed time means the question's
+        timestamp is on a different clock base (or predates a backward
+        jump) — its age is unverifiable, so it is expired rather than
+        trusted.
+        """
         with self._lock:
             candidates = list(self.memory.pending_questions)
-        now = time.time()
+        now = self._now()
         for pq in reversed(candidates):  # newest first
-            if now - pq.ts > PENDING_QUESTION_TTL_SECONDS:
+            if not 0 <= now - pq.ts <= PENDING_QUESTION_TTL_SECONDS:
                 with self._lock:
                     if pq in self.memory.pending_questions:
                         self.memory.pending_questions.remove(pq)
@@ -1400,21 +1652,32 @@ class ConversationController:
         thread.start()
         return request_id
 
-    def cancel_pending(self) -> None:
-        # Invalidate in-flight requests: their identities no longer match
-        # pending set membership, so answers are discarded on delivery.
-        with self._lock:
-            self._pending.clear()
-
     def reset_for_match(self, match_id: str | None, match_number: int) -> None:
         # Match boundary: clear memory (including Wave-3 proactive-timing and
         # deferred-question fields), bump session identity, drop pending.
         with self._lock:
+            had_pending = bool(self._pending)
             self.memory = MatchMemory()
             self._session_id += 1
             self._pending.clear()
             self._last_topics = []
             self._last_evidence_sig = None  # Wave 4: force evidence re-collection
+            self._threat_signature_prev = None  # Wave 5 (M2): new board baseline
+        # Status lifecycle (M6): see set_mode — orphaned answers must clear
+        # the UI's "thinking" status.
+        if had_pending:
+            self._emit_idle()
+
+    def cancel_pending(self) -> None:
+        # Invalidate in-flight requests: their identities no longer match
+        # pending set membership, so answers are discarded on delivery.
+        with self._lock:
+            had_pending = bool(self._pending)
+            self._pending.clear()
+        # Status lifecycle (M6): a stop/cancel that drops a non-empty pending
+        # set must also release the "thinking" status.
+        if had_pending:
+            self._emit_idle()
 
     def current_identity(self, request_id: int | None = None) -> ResponseIdentity:
         # Built from coach state with guarded attribute access everywhere;
@@ -1429,11 +1692,7 @@ class ConversationController:
         if active_player is None:
             active_player = snapshot.get("active_player")
 
-        match_id = (
-            getattr(self._coach, "last_match_id", None)
-            or snapshot.get("match_id")
-            or None
-        )
+        match_id = getattr(self._coach, "last_match_id", None) or snapshot.get("match_id") or None
         match_number = getattr(self._coach, "_match_number", 0) or 0
 
         decision_sig: str | None = None
@@ -1507,6 +1766,16 @@ class ConversationController:
         except Exception:
             logger.debug("emit_event(%s) failed", event_type, exc_info=True)
 
+    def _emit_idle(self) -> None:
+        """Emit conversation_status idle — M6 lifecycle fix.
+
+        ``thinking`` is emitted when a topic/question render starts; EVERY
+        exit path that leaves nothing pending/speaking must return the UI to
+        idle, including stale-after-cancel, backend-error, and exception
+        paths. Guarded: safe to call redundantly.
+        """
+        self._emit("conversation_status", state="idle")
+
     def _augment_question(self, text: str) -> str:
         # Replay the recent conversation as a compact digest so the coaching
         # LLM can answer follow-ups without a second stateful channel, plus
@@ -1534,11 +1803,16 @@ class ConversationController:
             return str(text)
 
         if not lines:
-            return f"MageZero evidence:\n{evidence_block}\n\nUser question: {text}"
+            return (
+                f"{QUESTION_EVIDENCE_INSTRUCTIONS}\n"
+                f"MageZero evidence:\n{evidence_block}\n\n"
+                f"User question: {text}"
+            )
 
         digest = "\n".join(lines)
         return (
             f"Recent conversation:\n{digest}\n\n"
+            f"{QUESTION_EVIDENCE_INSTRUCTIONS}\n"
             f"MageZero evidence:\n{evidence_block}\n\n"
             f"User question: {text}"
         )
@@ -1588,22 +1862,30 @@ class ConversationController:
                 reply = "[BACKEND ERROR] empty response from coach backend"
 
             if self._is_stale(identity):
-                # Superseded / stale answers are dropped silently.
+                # Superseded / stale answers are dropped silently. Status
+                # lifecycle (M6): the question's "thinking" status must still
+                # resolve to idle — the answer thread owns that transition.
                 with self._lock:
                     self._pending.pop(identity.request_id, None)
+                self._emit_idle()
                 return
 
             payload = identity.to_payload()
             self._emit("conversation_reply", text=reply, identity=payload)
 
-            with self._lock:
-                self.memory.append(
-                    ConversationTurn(
-                        role="coach",
-                        text=reply,
-                        identity=identity,
+            # Backend-error replies are transcript-only (Wave 5): they are
+            # emitted for display but never appended to memory turns, so a
+            # failure message can never leak into later prompt digests.
+            if not is_backend_error_text(reply):
+                with self._lock:
+                    self.memory.append(
+                        ConversationTurn(
+                            role="coach",
+                            text=reply,
+                            identity=identity,
+                        )
                     )
-                )
+            with self._lock:
                 self._pending.pop(identity.request_id, None)
 
             self._speak(reply, identity)
@@ -1611,6 +1893,9 @@ class ConversationController:
         except Exception:
             # Absolute backstop: the thread must never crash the engine.
             logger.exception("conversation answer thread crashed")
+            # Status lifecycle (M6): a crashed answer must still clear the
+            # "thinking" status rather than leave the UI stuck.
+            self._emit_idle()
 
     def _speak(self, text: str, identity: ResponseIdentity) -> None:
         # TTS boundary: health tags are stripped, error-tagged text is never

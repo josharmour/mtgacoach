@@ -125,6 +125,23 @@ def _identity_seq(identity: Any) -> int | None:
     return seq
 
 
+def _seq_namespace(identity: Any) -> str | None:
+    """Which counter namespace supplies this identity's sequence number.
+
+    ``SpeechIdentity`` (advice path) carries ``seq``; the canonical
+    ``ResponseIdentity`` (conversation answers) carries ``request_id``. The
+    two counters are unrelated — comparing across them would falsely cancel
+    same-priority speech, so the arbiter only supersedes within one class.
+    """
+    if identity is None:
+        return None
+    if _attr(identity, "seq") is not None:
+        return "seq"
+    if _attr(identity, "request_id") is not None:
+        return "request_id"
+    return None
+
+
 class VoiceSession:
     """Thread-safe speech arbiter delegating playback to a sink.
 
@@ -135,7 +152,13 @@ class VoiceSession:
     arbitrated calls.
     """
 
-    def __init__(self, output: Any = None, now: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        output: Any = None,
+        now: Callable[[], float] = time.monotonic,
+        release_poll_interval: float = 0.05,
+        release_max_wait: float = 300.0,
+    ) -> None:
         self._output = output
         self._now = now
         self._lock = threading.RLock()
@@ -148,6 +171,15 @@ class VoiceSession:
         self._active: Any = None
         self._active_rank = -1
         self._active_seq: int | None = None
+        self._active_seq_ns: str | None = None
+        # Channel ownership token: bumped on every accepted speak() and on
+        # stop_speaking(). A completion release only clears the channel when
+        # its token is still current, so a slow sink's late completion can
+        # never clobber a newer request.
+        self._channel_token = 0
+        self._completion_callbacks: dict[int, Callable[[], None]] = {}
+        self._release_poll_interval = release_poll_interval
+        self._release_max_wait = release_max_wait
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -166,6 +198,7 @@ class VoiceSession:
                 return SpeechOutcome(state=SpeechState.CANCELLED, played=False)
             rank = prio.rank
             seq = _identity_seq(request.identity)
+            seq_ns = _seq_namespace(request.identity)
             if self._active is not None and request.identity is not None:
                 if rank < self._active_rank:
                     return SpeechOutcome(
@@ -175,6 +208,11 @@ class VoiceSession:
                     rank == self._active_rank
                     and seq is not None
                     and self._active_seq is not None
+                    # Seq comparison ONLY within the same identity class:
+                    # SpeechIdentity.seq and ResponseIdentity.request_id are
+                    # unrelated counters — never compare across namespaces.
+                    and seq_ns is not None
+                    and seq_ns == self._active_seq_ns
                     and seq <= self._active_seq
                 ):
                     return SpeechOutcome(
@@ -185,9 +223,15 @@ class VoiceSession:
             self._active = request.identity
             self._active_rank = rank
             self._active_seq = seq
+            self._active_seq_ns = seq_ns
+            token = self._channel_token + 1
+            self._channel_token = token
             notify = self._transition_locked(SpeechState.SPEAKING)
         self._sink_speak(request.text)
         self._notify(notify)
+        # Release the channel when the sink finishes (or is proven done); the
+        # arbiter must return to IDLE so lower-priority speech can speak again.
+        self._arm_completion(token)
         return SpeechOutcome(state=SpeechState.SPEAKING, played=True)
 
     def stop_speaking(self, reason: str = "user") -> None:
@@ -198,6 +242,8 @@ class VoiceSession:
             self._active = None
             self._active_rank = -1
             self._active_seq = None
+            self._active_seq_ns = None
+            self._channel_token += 1  # invalidate any armed completion
             notify = self._transition_locked(SpeechState.IDLE)
         self._sink_stop()
         self._notify(notify)
@@ -230,7 +276,120 @@ class VoiceSession:
         with self._lock:
             self._listeners.append(callback)
 
+    def wait_for_idle(self, timeout: float = 30.0) -> bool:
+        """Block until the channel is released (state returns to IDLE).
+
+        Backed by the completion machinery: the release monitor or a sink
+        ``on_complete`` callback transitions SPEAKING → IDLE when the current
+        utterance finishes. Returns True on reaching IDLE, False on timeout.
+        Never blocks indefinitely: ``timeout`` bounds the wait, and any
+        ``stop_speaking`` in between releases immediately.
+        """
+        deadline = self._now() + max(0.0, float(timeout))
+        while True:
+            with self._lock:
+                if self._state == SpeechState.IDLE:
+                    return True
+            if self._now() >= deadline:
+                return False
+            time.sleep(0.02)
+
     # ── Internals ─────────────────────────────────────────────────────
+
+    def _release_channel(self, token: int) -> None:
+        """Clear the channel owned by ``token`` — the arbiter lifecycle core.
+
+        Called on a sink completion callback (finished audio) or, when the
+        sink exposes no completion signal, by the lightweight monitor once the
+        sink reports not-speaking (or never started). A token that is no
+        longer current means a newer request or stop took the channel first
+        and this release is a no-op. Idempotent: only the token's owner can
+        clear it.
+        """
+        with self._lock:
+            if token != self._channel_token:
+                return  # superseded by a newer speak/stop — leave the channel
+            self._active = None
+            self._active_rank = -1
+            self._active_seq = None
+            self._active_seq_ns = None
+            self._completion_callbacks.pop(token, None)
+            notify = self._transition_locked(SpeechState.IDLE)
+        self._notify(notify)
+
+    def _arm_completion(self, token: int) -> None:
+        """Detect when the just-spoken utterance finishes and release the channel.
+
+        Priority of completion mechanisms:
+        1. Sink exposes ``speak(text, on_complete=cb)`` — the callback was
+           armed by ``_sink_speak`` and fires exactly when playback ends.
+        2. Sink exposes ``is_speaking()`` — a daemon thread polls it and
+           releases once it turns False.
+        3. Neither exists — the sink cannot report state, so a short monitor
+           releases the channel after one poll interval (hand-off semantics;
+           stop_speaking remains authoritative for preemption).
+        """
+        output = self._output
+        if output is None:
+            self._release_channel(token)
+            return
+
+        with self._lock:
+            already_armed = token in self._completion_callbacks
+        if already_armed:
+            return
+
+        is_speaking = getattr(output, "is_speaking", None)
+        if callable(is_speaking):
+            self._start_release_monitor(token, use_is_speaking=True)
+            return
+
+        # No completion signal at all: release after one interval — the
+        # arbiter considers the utterance handed off (pipe-mode sinks are
+        # non-blocking on the conversation path).
+        self._start_release_monitor(token, use_is_speaking=False)
+
+    def _start_release_monitor(self, token: int, *, use_is_speaking: bool) -> None:
+        def monitor() -> None:
+            interval = max(0.005, float(self._release_poll_interval))
+            deadline = self._now() + max(0.0, float(self._release_max_wait))
+            while True:
+                with self._lock:
+                    if token != self._channel_token:
+                        return  # superseded; stop_speaking already handled IDLE
+                if use_is_speaking:
+                    output = self._output
+                    is_speaking = getattr(output, "is_speaking", None) if output else None
+                    if is_speaking is not None:
+                        try:
+                            # Support both a callable probe and a property.
+                            speaking = bool(is_speaking() if callable(is_speaking) else is_speaking)
+                        except Exception:
+                            logger.debug("sink is_speaking() failed", exc_info=True)
+                            self._release_channel(token)
+                            return
+                        if speaking:
+                            time.sleep(interval)
+                            continue
+                        # Finished (spoke then stopped) or never started
+                        # (muted/dropped) — either way the channel is free.
+                        self._release_channel(token)
+                        return
+                else:
+                    # No completion signal: hand-off semantics — release after
+                    # one poll interval so a superseding request (already
+                    # arbitrating) still wins the token race.
+                    time.sleep(interval)
+                    self._release_channel(token)
+                    return
+                if self._now() >= deadline:
+                    logger.debug("VoiceSession release monitor timed out; releasing channel")
+                    self._release_channel(token)
+                    return
+                time.sleep(interval)
+
+        thread = threading.Thread(target=monitor, daemon=True, name="voice-session-release")
+        thread.start()
 
     def _is_stale_locked(self, identity: Any) -> bool:
         """Staleness check; caller must hold the lock.
@@ -285,13 +444,20 @@ class VoiceSession:
             logger.warning("Voice sink has no callable speak(); dropping speech")
             return
         kwargs: dict[str, Any] = {}
+        on_complete: Callable[[], None] | None = None
         try:
-            for name, param in inspect.signature(speak).parameters.items():
-                if name == "blocking" and param.kind in (
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    inspect.Parameter.KEYWORD_ONLY,
-                ):
-                    kwargs["blocking"] = False
+            params = inspect.signature(speak).parameters
+            if "blocking" in params and params["blocking"].kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            ):
+                kwargs["blocking"] = False
+            if "on_complete" in params and params["on_complete"].kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            ):
+                on_complete = self._make_sink_completion_callback()
+                kwargs["on_complete"] = on_complete
         except (TypeError, ValueError):
             pass  # builtins/C sinks — call bare
         try:
@@ -302,6 +468,18 @@ class VoiceSession:
                 speak(text)
         except Exception:
             logger.exception("Voice sink speak() failed")
+
+    def _make_sink_completion_callback(self) -> Callable[[], None]:
+        """Build the ``on_complete`` callback handed to a completion-aware sink.
+
+        The returned callable is registered under the CURRENT channel token so
+        the release only clears the channel this utterance owns; a newer
+        speak/stop bumps the token first and the callback becomes a no-op.
+        """
+        with self._lock:
+            token = self._channel_token
+            self._completion_callbacks[token] = lambda: self._release_channel(token)
+        return lambda: self._release_channel(token)
 
     def _sink_stop(self) -> None:
         output = self._output

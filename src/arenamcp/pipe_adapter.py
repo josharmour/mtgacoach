@@ -626,6 +626,13 @@ class PipeAdapter:
                     if voice_output is not None and hasattr(voice_output, "stop"):
                         with contextlib.suppress(Exception):
                             voice_output.stop()
+                # UI-initiated stop also cancels in-flight conversation work:
+                # a pending question answer must not keep rendering (and later
+                # speak) after the user pressed stop.
+                conversation = getattr(coach, "conversation", None)
+                if conversation is not None and hasattr(conversation, "cancel_pending"):
+                    with contextlib.suppress(Exception):
+                        conversation.cancel_pending()
             else:
                 logger.warning("Unknown pipe command: %s", action)
         except Exception as e:
