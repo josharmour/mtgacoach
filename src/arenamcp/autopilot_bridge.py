@@ -612,9 +612,7 @@ class _BridgeSubmitMixin:
             logger.info(f"Bridge declare_attackers: pending is {req_class}, not DeclareAttacker")
             return None
 
-        # Build name→instanceId map from decision context
         game_state = self._get_game_state()
-        attacker_id_map = self._build_attacker_id_map(game_state)
         battlefield = game_state.get("battlefield", [])
         local_seat = next(
             (p.get("seat_id") for p in game_state.get("players", []) if p.get("is_local")),
@@ -624,9 +622,7 @@ class _BridgeSubmitMixin:
         # Resolve attacker names to instance IDs
         attacker_entries = []
         for name in action.attacker_names:
-            iid = attacker_id_map.get(name)
-            if iid is None:
-                iid = self._find_instance_id(name, battlefield, local_seat)
+            iid = self._find_instance_id(name, battlefield, local_seat)
             if iid is not None:
                 attacker_entries.append({"attackerInstanceId": iid})
             else:
@@ -851,7 +847,6 @@ class _BridgeSubmitMixin:
             return None
 
         game_state = self._get_game_state()
-        attacker_id_map = self._build_attacker_id_map(game_state)
         battlefield = game_state.get("battlefield", [])
         local_seat = None
         opp_seat = None
@@ -863,9 +858,7 @@ class _BridgeSubmitMixin:
 
         attacker_list = []
         for name in action.attacker_names:
-            instance_id = attacker_id_map.get(name)
-            if instance_id is None:
-                instance_id = self._find_instance_id(name, battlefield, local_seat)
+            instance_id = self._find_instance_id(name, battlefield, local_seat)
             if instance_id is None:
                 logger.warning(
                     f"GRE bridge attackers: can't resolve ID for '{name}', "

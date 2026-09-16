@@ -123,6 +123,14 @@ class MCTSTreePayload:
 
     def format_for_llm_prompt(self) -> str:
         """Format the lookahead search tree and opponent model into a rich context block for the LLM."""
+        experimental = 'experimental' in self.eval_source.lower()
+        score_label = 'Model score' if experimental else 'Win'
+        root_label = 'Root Model Score (uncalibrated)' if experimental else 'Root Win Expectancy'
+        def branch_score(branch):
+            if branch.score_provenance == 'prior_only':
+                return f'Policy weight: {branch.prior_probability:.1%}; outcome not evaluated'
+            label = score_label if branch.score_provenance == 'neural_afterstate' else 'Tactical score'
+            return f'{label}: {branch.normalized_score:.0%}, delta {branch.value_delta:+.1%}'
         root_pct = int(round(self.root_win_probability * 100))
         eval_desc = (
             f"{self.total_simulations} candidates · {self.eval_source}"
@@ -131,9 +139,14 @@ class MCTSTreePayload:
         )
         lines = [
             "=== ONE-PLY TACTICAL LOOKAHEAD (=== MCTS MULTI-PLY TACTICAL SEARCH ===) ===",
-            f"• Root Win Expectancy: {root_pct}% ({eval_desc} · T{self.turn_number} {self.phase})",
+            f"• {root_label}: {root_pct}% ({eval_desc} · T{self.turn_number} {self.phase})",
             f"• HERO: {self.hero_life} Life | OPP: {self.opp_life} Life | Mana Available: {self.available_mana}",
         ]
+        if experimental:
+            lines.append('Experimental model evidence: scores are not calibrated win probabilities. '
+                         'Use as supporting advice; preserve legal-action checks and distinguish '
+                         'evaluated one-ply states from policy-only preferences. '
+                         'Candidate order remains the tactical heuristic ranking, not a neural recommendation.')
         if self.format_summary:
             lines.append(f"• Format: {self.format_summary}")
         if self.expected_opponent_actions:
@@ -153,14 +166,8 @@ class MCTSTreePayload:
 
         if self.branches:
             best = self.branches[0]
-            b_pct = int(round(best.win_probability * 100))
-            delta_str = (
-                f"+{best.value_delta * 100:.1f}%"
-                if best.value_delta > 0
-                else f"{best.value_delta * 100:.1f}%"
-            )
             b_prov = prov_labels.get(best.score_provenance, best.score_provenance)
-            lines.append(f"⭐ BEST LINE [{b_prov}] (Win: {b_pct}%, Value Delta: {delta_str}):")
+            lines.append(f"⭐ BEST LINE [{b_prov}] ({branch_score(best)}):")
             if best.sequence_steps:
                 for idx, step in enumerate(best.sequence_steps, start=1):
                     lines.append(f"  {idx}. {step}")
@@ -182,23 +189,17 @@ class MCTSTreePayload:
             if len(self.branches) > 1:
                 lines.append("ALTERNATIVE LINES CONSIDERED:")
                 for b in self.branches[1:3]:
-                    alt_pct = int(round(b.win_probability * 100))
-                    alt_delta = (
-                        f"+{b.value_delta * 100:.1f}%" if b.value_delta > 0 else f"{b.value_delta * 100:.1f}%"
-                    )
                     alt_prov = prov_labels.get(b.score_provenance, b.score_provenance)
                     lines.append(
-                        f"  • [{b.tag}] {b.action} [{alt_prov}] (Win: {alt_pct}%, {alt_delta}): {b.outcome_summary}"
+                        f"  • [{b.tag}] {b.action} [{alt_prov}] ({branch_score(b)}): {b.outcome_summary}"
                     )
                 lines.append("")
 
         if self.blunder_traps:
             lines.append("⚠️ BLUNDER TRAP DETECTED:")
             for trap in self.blunder_traps[:2]:
-                trap_pct = int(round(trap.win_probability * 100))
-                trap_delta = f"{trap.value_delta * 100:.1f}%"
                 trap_prov = prov_labels.get(trap.score_provenance, trap.score_provenance)
-                lines.append(f"  • Line: {trap.action} [{trap_prov}] (Win: {trap_pct}%, {trap_delta})")
+                lines.append(f"  • Line: {trap.action} [{trap_prov}] ({branch_score(trap)})")
                 if trap.outcome_summary:
                     lines.append(f"  • Trap Warning: {trap.outcome_summary}")
             lines.append("")
@@ -1096,6 +1097,7 @@ class MCTSEvaluator:
             )
 
         # Check gating and apply 1-ply batched MageZero RL lookahead if in-distribution
+        tactical_scores = {id(branch): branch.win_probability for branch in branches}
         expected_opp_actions: list[str] = []
         base_val, eval_source, expected_opp_actions = cls._apply_magezero_lookahead(
             game_state=game_state,
@@ -1104,8 +1106,11 @@ class MCTSEvaluator:
             opp_profile=opp_profile,
         )
 
-        # Sort branches by win probability descending
-        branches.sort(key=lambda b: b.win_probability, reverse=True)
+        # Uncertified models supply evidence, not authority to reorder recommendations.
+        if 'experimental' in eval_source.lower():
+            branches.sort(key=lambda b: tactical_scores[id(b)], reverse=True)
+        else:
+            branches.sort(key=lambda b: b.win_probability, reverse=True)
 
         # Mark top branch as Best Line
         if branches:
@@ -1397,7 +1402,8 @@ class MCTSEvaluator:
                     "(stack/ETB/combat not representable reliably)"
                 )
 
-        batch_results = MageZeroClient.evaluate_batch(items, model_id=model_id)
+        batch_results = MageZeroClient.evaluate_batch(
+            items, model_id=model_id, checkpoint_hash=selection.model_spec.checkpoint_hash)
         n_rows = len(items)
         row_results = cls._validate_batch_rows(batch_results, n_rows)
         if row_results is None:
@@ -1456,19 +1462,22 @@ class MCTSEvaluator:
                     branch.score_provenance = "unsupported_fallback"
                     branch.details["afterstate_supported"] = False
             else:
-                p_diff = branch.prior_probability - (1.0 / len(branches) if branches else 1.0)
-                delta_p = round(p_diff * 0.12, 3)
-                branch.value_delta = delta_p
-                cand_win_p = round(max(0.02, min(0.98, base_val + delta_p)), 3)
-                branch.win_probability = cand_win_p
-                branch.normalized_score = cand_win_p
-                branch.raw_value = round((cand_win_p * 2.0) - 1.0, 3)
-                branch.raw_value_delta = round(delta_p * 2.0, 3)
+                # A policy weight is NOT an afterstate outcome improvement.
+                # Retain root placeholders for legacy consumers; provenance and
+                # presentation explicitly mark the unmeasured action outcome.
+                branch.value_delta = 0.0
+                branch.win_probability = round(base_val, 3)
+                branch.normalized_score = round(base_val, 3)
+                branch.raw_value = round(root_nn_val, 3)
+                branch.raw_value_delta = 0.0
                 branch.score_provenance = "prior_only"
                 branch.details["afterstate_supported"] = False
 
         # 5. Decode opponent threats
-        opp_threats = decode_opponent_threats(avg_policy_opp, top_k=3)
+        # Mixed-gauntlet slots are not deck-identified threat predictions.
+        # Do not present those decoded cards as evidence from an uncertified model.
+        opp_threats = (decode_opponent_threats(avg_policy_opp, top_k=3)
+                       if selection.model_spec.promotion_status == 'certified' else [])
 
         return base_val, eval_label, opp_threats
 

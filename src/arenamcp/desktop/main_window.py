@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import QPoint, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QGuiApplication
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QGuiApplication, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -27,7 +27,7 @@ from .performance_tab import PerformanceTab
 from .repair_tab import RepairTab
 from .runtime import open_url, read_version
 from .theme import apply_theme, available_themes, load_saved_theme, save_theme
-from .ui_watchdog import UiAnrWatchdog
+from .ui_watchdog import UiAnrWatchdog, WatchdogPingBridge
 
 logger = logging.getLogger(__name__)
 
@@ -62,11 +62,15 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(100, lambda: self._session.start())
 
         # ANR Watchdog
-        self._ui_watchdog = UiAnrWatchdog(
-            ping_fn=lambda cb: QTimer.singleShot(0, cb),
-            stall_threshold_s=1.5,
-        )
-        self._ui_watchdog.start()
+        if WatchdogPingBridge is not None:
+            self._watchdog_bridge = WatchdogPingBridge(self)
+            self._ui_watchdog = UiAnrWatchdog(
+                ping_fn=self._watchdog_bridge.ping_requested.emit,
+                stall_threshold_s=1.5,
+            )
+            self._ui_watchdog.start()
+        else:
+            self._ui_watchdog = None
 
     def _build_central_widget(self) -> None:
         """Construct the stacked widget (Compact HUD + Slide-over Repair & History)."""
@@ -192,10 +196,10 @@ class MainWindow(QMainWindow):
             self._settings.set(
                 self._WINDOW_GEOMETRY_KEY,
                 {
-                    "x": max(0, geom.x()),
-                    "y": max(0, geom.y()),
-                    "width": geom.width(),
-                    "height": geom.height(),
+                    "x": geom.x(),
+                    "y": geom.y(),
+                    "width": self.width(),
+                    "height": self.height(),
                 },
             )
 
@@ -225,6 +229,7 @@ class MainWindow(QMainWindow):
                 act.setChecked(name == self._current_theme)
 
     def _apply_window_geometry(self) -> None:
+        self.setMinimumWidth(240)
         saved = self._settings.get(self._WINDOW_GEOMETRY_KEY)
         if isinstance(saved, dict):
             pos_x = saved.get("x")
@@ -234,7 +239,7 @@ class MainWindow(QMainWindow):
             if w and h:
                 if pos_x is not None and pos_y is not None:
                     screen = (
-                        QGuiApplication.screenAt(QPoint(int(pos_x), max(0, int(pos_y))))
+                        QGuiApplication.screenAt(QPoint(int(pos_x), int(pos_y)))
                         or self.screen()
                         or QGuiApplication.primaryScreen()
                     )
@@ -245,12 +250,12 @@ class MainWindow(QMainWindow):
                     else:
                         clamped_x = max(0, int(pos_x))
                         clamped_y = max(0, int(pos_y))
-                    self.setGeometry(clamped_x, clamped_y, w, h)
+                    self.resize(w, h)
+                    self.move(clamped_x, clamped_y)
                 else:
                     self.resize(w, h)
                 return
 
-        self.setMinimumWidth(240)
         screen = self.screen() or QGuiApplication.primaryScreen()
         if screen is not None:
             avail = screen.availableGeometry()
@@ -261,16 +266,40 @@ class MainWindow(QMainWindow):
         else:
             self.resize(300, 900)
 
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._keep_window_on_screen)
+
+    def _keep_window_on_screen(self) -> None:
+        if self.isMaximized() or self.isMinimized():
+            return
+        frame = self.frameGeometry()
+        screen = QGuiApplication.screenAt(frame.topLeft()) or self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        border_width = frame.width() - self.width()
+        border_height = frame.height() - self.height()
+        self.resize(
+            min(self.width(), max(1, available.width() - border_width)),
+            min(self.height(), max(1, available.height() - border_height)),
+        )
+        frame = self.frameGeometry()
+        self.move(
+            max(available.left(), min(frame.x(), available.right() - frame.width() + 1)),
+            max(available.top(), min(frame.y(), available.bottom() - frame.height() + 1)),
+        )
+
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         if not self.isMaximized() and not self.isMinimized():
             geom = self.frameGeometry()
             self._settings.set(
                 self._WINDOW_GEOMETRY_KEY,
                 {
-                    "x": max(0, geom.x()),
-                    "y": max(0, geom.y()),
-                    "width": geom.width(),
-                    "height": geom.height(),
+                    "x": geom.x(),
+                    "y": geom.y(),
+                    "width": self.width(),
+                    "height": self.height(),
                 },
             )
 

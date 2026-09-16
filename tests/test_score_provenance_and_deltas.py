@@ -147,7 +147,7 @@ def test_mcts_evaluator_lookahead_score_provenance_integration(monkeypatch):
     # Mock evaluate_batch:
     # 8 root rows with value 0.20
     # 8 afterstate rows for Island with value 0.35
-    def mock_evaluate_batch(items, model_id):
+    def mock_evaluate_batch(items, model_id, checkpoint_hash=None):
         results = []
         for i, (st, hand) in enumerate(items):
             # Root items have 1 Island on battlefield
@@ -203,6 +203,10 @@ def test_mcts_evaluator_lookahead_score_provenance_integration(monkeypatch):
 
     tree = MCTSEvaluator.evaluate(state)
     assert tree is not None
+    for branch in tree.branches:
+        if branch.score_provenance == 'prior_only':
+            assert branch.value_delta == 0.0
+            assert branch.raw_value_delta == 0.0
     # Root win probability: (0.20 + 1.0) / 2.0 = 0.60
     assert abs(tree.root_win_probability - 0.60) < 1e-3
 

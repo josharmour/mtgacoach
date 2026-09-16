@@ -155,6 +155,9 @@ class GREBridge:
         self._server_started_at: float | None = None
         self._ever_connected = False
         self._no_plugin_warned = False
+        self._cached_game_state: dict[str, Any] | None = None
+        self._cached_game_state_time: float = 0.0
+        self._GAME_STATE_CACHE_TTL: float = 0.35  # seconds
 
     @property
     def connected(self) -> bool:
@@ -483,12 +486,17 @@ class GREBridge:
             raise GREBridgeError("Not connected to GRE bridge")
 
         try:
-            return self._send_command(cmd, timeout=timeout)
+            resp = self._send_command(cmd, timeout=timeout)
         except GREBridgeError:
             # One retry after reconnect
             if self.connect():
-                return self._send_command(cmd, timeout=timeout)
-            raise
+                resp = self._send_command(cmd, timeout=timeout)
+            else:
+                raise
+        action_name = str(cmd.get("action") or "")
+        if action_name.startswith("submit_") or action_name in ("cancel_action", "auto_respond"):
+            self.invalidate_game_state_cache()
+        return resp
 
     # -------------------------------------------------------------------
     # Public API
@@ -1247,7 +1255,12 @@ class GREBridge:
     # Phase 2: new game state commands
     # -------------------------------------------------------------------
 
-    def get_game_state(self) -> dict[str, Any] | None:
+    def invalidate_game_state_cache(self) -> None:
+        """Clear cached game state snapshot so the next query fetches fresh state."""
+        self._cached_game_state = None
+        self._cached_game_state_time = 0.0
+
+    def get_game_state(self, force: bool = False) -> dict[str, Any] | None:
         """Get full game state directly from MTGA's MtgGameState.
 
         Returns the complete game state including zones, cards, players,
@@ -1255,9 +1268,16 @@ class GREBridge:
 
         Returns None if not connected or game not active.
         """
+        now = time.monotonic()
+        if not force and self._cached_game_state is not None:
+            if now - self._cached_game_state_time < self._GAME_STATE_CACHE_TTL:
+                return self._cached_game_state
+
         try:
             resp = self._send_safe({"action": "get_game_state"})
             if resp.get("ok"):
+                self._cached_game_state = resp
+                self._cached_game_state_time = now
                 return resp
             else:
                 logger.debug(f"get_game_state: {resp.get('error')}")

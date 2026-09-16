@@ -268,10 +268,29 @@ class KokoroTTS:
             except ImportError as e:
                 raise ImportError("kokoro-onnx not installed. Run: pip install kokoro-onnx") from e
 
-            self._kokoro = Kokoro(
-                str(self._model_path),
-                str(self._voices_path),
-            )
+            # Cap intra-op threads so TTS inference does not saturate all CPU cores
+            # and starve Windows DWM / game render threads.
+            try:
+                import onnxruntime as rt
+                from kokoro_onnx.session import resolve_providers
+
+                opts = rt.SessionOptions()
+                cpu_count = os.cpu_count() or 1
+                opts.intra_op_num_threads = min(4, max(1, cpu_count // 2))
+                opts.inter_op_num_threads = 1
+                session = rt.InferenceSession(
+                    str(self._model_path), sess_options=opts, providers=resolve_providers()
+                )
+                self._kokoro = Kokoro.from_session(session, str(self._voices_path))
+                logger.debug(
+                    "Kokoro ONNX initialized with %d intra-op threads", opts.intra_op_num_threads
+                )
+            except Exception as exc:
+                logger.debug("Custom session init failed, falling back to default Kokoro: %s", exc)
+                self._kokoro = Kokoro(
+                    str(self._model_path),
+                    str(self._voices_path),
+                )
 
     def synthesize(self, text: str):
         """Synthesize text to audio samples.

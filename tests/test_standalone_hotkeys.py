@@ -19,3 +19,15 @@ def test_register_hotkeys_does_not_raise_nameerror(monkeypatch):
     # Execute synchronous hotkey registration logic
     coach._register_hotkeys()
     assert True
+
+
+def test_register_hotkeys_skips_when_disabled(monkeypatch):
+    """Verify _register_hotkeys does not hook keyboard when _register_keyboard is False."""
+    import sys
+    mock_keyboard = MagicMock()
+    monkeypatch.setattr("arenamcp.standalone_hotkeys.keyboard", mock_keyboard)
+    coach = DummyCoach()
+    coach._register_keyboard = False
+    coach._register_hotkeys()
+    mock_keyboard.on_press_key.assert_not_called()
+    mock_keyboard.add_hotkey.assert_not_called()

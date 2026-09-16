@@ -277,7 +277,7 @@ class ProxyBackend:
             if m_lower in ("glm53", "glm-5.3", "glm5.3", "glm-5.3-flash", "zai-org/glm-5.3-flash"):
                 resolved_model = "glm-5.3-flash"
             elif m_lower in ("dsv4", "deepseek-v4", "deepseek-v4-flash"):
-                resolved_model = "deepseek-v4-flash"
+                resolved_model = "glm-5.3-flash"
         return cls(
             model=resolved_model,
             base_url=ONLINE_BASE_URL,

@@ -1538,6 +1538,7 @@ class StandaloneCoach(
                     if self._coach:
                         self._coach.clear_deck_strategy()
                     self._match_boundary_ts = time.time()
+                    self._last_logged_deck_reconstruct_count = 0
                     logger.info("Cleared advice history for new match")
 
                 # Announce seat detection when game starts
@@ -1579,9 +1580,11 @@ class StandaloneCoach(
                                             seen_grp_ids.add(grp_id)
                                             deck_cards.append(grp_id)
                             if deck_cards:
-                                logger.info(
-                                    f"Reconstructed deck from visible zones: {len(deck_cards)} unique cards"
-                                )
+                                if len(deck_cards) != getattr(self, "_last_logged_deck_reconstruct_count", 0):
+                                    self._last_logged_deck_reconstruct_count = len(deck_cards)
+                                    logger.info(
+                                        f"Reconstructed deck from visible zones: {len(deck_cards)} unique cards"
+                                    )
 
                     # Require at least 20 cards so deck strategy does not run on partial hands
                     if len(deck_cards) >= 20:
@@ -2574,9 +2577,11 @@ class StandaloneCoach(
             self._init_llm()
             self.ui.log("LLM backend ready.")
             self._probe_backend_health_at_startup()
-            # Get actual model name from backend
             if self._coach and hasattr(self._coach, "_backend"):
                 actual_model = getattr(self._coach._backend, "model", self.model_name)
+                if actual_model and actual_model != self.model_name:
+                    self.model_name = actual_model
+                    self.settings.set("model", actual_model, save=True)
 
             if self._autopilot_enabled:
                 self._init_autopilot()

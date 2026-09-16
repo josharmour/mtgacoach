@@ -76,6 +76,47 @@ def test_compact_coach_renders_on_game_state(panel):
     assert "Your Turn" in panel.turn_strip.text()
 
 
+def test_experimental_policy_display_does_not_invent_outcome_score(panel):
+    panel._on_mcts_updated({
+        'eval_source': 'MageZero UWTempo v2 — experimental, uncalibrated',
+        'best_action': 'Pass', 'branches': [{
+            'action': 'Pass', 'score_provenance': 'prior_only',
+            'normalized_score': .9, 'prior_probability': .7,
+            'value_delta': 0.0,
+        }],
+    })
+    rendered = panel.mcts_pill_label.text()
+    assert 'Policy weight 70%' in rendered
+    assert 'outcome not evaluated' in rendered
+    assert 'Experimental' in rendered
+    assert '90%' not in rendered
+
+
+def test_controls_reflow_at_sidebar_width(panel, qapp):
+    from PySide6.QtWidgets import QPushButton
+
+    panel._on_game_state_changed(make_snapshot())
+    panel.voice_btn.setText("Voice: Shimmer")
+    panel.style_btn.setText("Concise")
+    panel._refresh_status_dots()
+    panel.resize(240, 900)
+    qapp.processEvents()
+
+    assert panel.width() == 240
+    buttons = panel.findChildren(QPushButton)
+    for button in buttons:
+        assert panel.rect().contains(button.geometry())
+        assert button.width() >= button.sizeHint().width()
+    for index, button in enumerate(buttons):
+        for other in buttons[index + 1 :]:
+            assert not button.geometry().intersects(other.geometry())
+    assert panel.mute_btn.y() > panel.voice_btn.y()
+
+    panel.resize(800, 900)
+    qapp.processEvents()
+    assert panel.mute_btn.y() == panel.voice_btn.y()
+
+
 def test_compact_coach_debug_report_triggers(panel, monkeypatch):
     called = []
     monkeypatch.setattr(panel.session, "trigger_debug_report", lambda: called.append(True))

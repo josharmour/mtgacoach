@@ -126,6 +126,9 @@ def _validate_result(
     served_meta: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Validate the decoded response synchronised to the request items."""
+    if expected_checkpoint_hash and (not served_meta or not (
+            served_meta.get('served_checkpoint_hash') or served_meta.get('checkpoint_hash'))):
+        return [], 'served-checkpoint-missing: cannot verify requested model identity'
     if served_meta:
         served_model = served_meta.get("served_model_id") or served_meta.get("model_id")
         if expected_model_id and served_model and served_model != expected_model_id:

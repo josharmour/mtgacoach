@@ -161,6 +161,8 @@ def _build_actions_available(
     saw_pass = False
     for i, action in enumerate(poll.get("actions") or []):
         atype = str(action.get("actionType") or "")
+        if atype and not atype.startswith("ActionType_"):
+            atype = f"ActionType_{atype}"
         grp_id = int(action.get("grpId") or 0)
         name = resolve_name(grp_id) if grp_id else ""
         payable: bool | None = None
@@ -168,8 +170,17 @@ def _build_actions_available(
             saw_pass = True
             options.append(DecisionOption("pass", "Pass"))
             continue
+        if atype in (
+            "ActionType_Activate_Mana",
+            "ActionType_ActivateMana",
+            "ActionType_FloatMana",
+        ):
+            # Mana abilities tap sources to float mana; MTGA automatically taps
+            # mana when casting spells or paying costs. Exposing them in
+            # ActionsAvailable causes autopilot to tap lands one by one for no spell.
+            continue
         if atype == "ActionType_Cast":
-            payable = action.get("autoTapSolution") is not None
+            payable = bool(action.get("hasAutoTap")) or action.get("autoTapSolution") is not None
             label = f"Cast {name or 'spell'}" + ("" if payable else " (cannot auto-pay)")
         elif atype == "ActionType_Play":
             label = f"Play land: {name or 'land'}"
@@ -522,6 +533,10 @@ def submit_option(
     """
     valid = decision.option_ids()
     chosen = [oid for oid in option_ids if oid in valid]
+    if decision.request_type == "ActionsAvailable" and any(
+        decision.find(oid).payable is False for oid in chosen
+    ):
+        return False
     if not chosen:
         logger.warning(
             "submit_option: none of %s are valid for %s (valid: %s)",

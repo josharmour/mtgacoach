@@ -20,6 +20,7 @@ Task 05 (wired discovery + honest residency):
 from __future__ import annotations
 
 import json
+import os
 import logging
 import math
 import re
@@ -372,7 +373,8 @@ class ModelSpec:
 
     @property
     def label(self) -> str:
-        return f"MageZero {self.deck} v{self.version}"
+        suffix = " — experimental, uncalibrated" if self.promotion_status == "uncertified" else ""
+        return f"MageZero {self.deck} v{self.version}{suffix}"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], is_resident: bool = False) -> ModelSpec:
@@ -887,8 +889,10 @@ class ModelZooClient:
             if not spec.is_resident:
                 # Do not select models the server has not confirmed as loaded.
                 continue
-            if spec.promotion_status != "certified":
-                # Uncertified and rejected models are never selected by default
+            experimental = os.environ.get('MAGEZERO_EXPERIMENTAL', '').strip().lower() in ('1', 'true', 'yes')
+            if spec.promotion_status != "certified" and not (
+                    experimental and spec.promotion_status == "uncertified"):
+                # Explicit personal-testing opt-in; rejected models stay excluded.
                 continue
             # 1. Format family and deck size must match
             if spec.format_family != profile.family:

@@ -141,6 +141,28 @@ def engine():
     return eng
 
 
+@pytest.mark.parametrize("method", ["_try_bridge_declare_attackers", "_try_gre_bridge_attackers"])
+def test_attacker_submission_resolves_battlefield_instance(engine, method):
+    state = _make_attacker_state(["Grizzly Bears"], no_blockers=True)
+    engine._get_game_state = lambda: state
+    engine._gre_bridge.get_pending_actions = lambda: {
+        "ok": True,
+        "has_pending": True,
+        "request_class": "DeclareAttackersRequest",
+    }
+    action = GameAction(action_type=ActionType.DECLARE_ATTACKERS, attacker_names=["Grizzly Bears"])
+
+    result = getattr(engine, method)(action)
+
+    assert result.success
+    submit = (
+        engine._gre_bridge.submit_attackers_raw
+        if method == "_try_bridge_declare_attackers"
+        else engine._gre_bridge.submit_attackers
+    )
+    assert submit.call_args.args[0][0]["attackerInstanceId"] == 100
+
+
 class TestBridgeDeclareAttackersClickButton:
     """Tests for the click_button done -> DeclareAttacker solver fix."""
 

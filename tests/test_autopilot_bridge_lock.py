@@ -1,4 +1,7 @@
 from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
 
 import arenamcp.autopilot as autopilot_module
 from arenamcp.action_planner import ActionPlan, ActionType, GameAction
@@ -118,6 +121,46 @@ def _make_engine(
     return engine, planner
 
 
+@pytest.mark.parametrize(
+    ("request_type", "option_id", "submit_method", "submit_args"),
+    [
+        ("Mulligan", "mull:keep", "submit_mulligan", (True,)),
+        ("ActionsAvailable", "pass", "submit_pass", ()),
+    ],
+)
+def test_process_trigger_submits_live_bridge_decision(
+    monkeypatch, request_type, option_id, submit_method, submit_args
+):
+    pending = {
+        "ok": True,
+        "has_pending": True,
+        "request_type": request_type,
+        "actions": [],
+        "can_pass": request_type == "ActionsAvailable",
+    }
+    bridge = _DummyBridge(pending)
+    submit = Mock(return_value=True)
+    monkeypatch.setattr(bridge, submit_method, submit)
+    state = {
+        "_bridge_connected": True,
+        "_bridge_has_pending": True,
+        "_bridge_request_type": request_type,
+        "pending_decision": request_type,
+        "turn": {"turn_number": 1},
+        "players": [{"seat_id": 1, "is_local": True}],
+    }
+    engine, planner = _make_engine(monkeypatch, lambda: dict(state), bridge)
+    engine._config.dry_run = False
+    planner.plan_decision_options = Mock(return_value=[option_id])
+
+    assert engine.process_trigger(state, "decision_required") is True
+
+    submit.assert_called_once_with(*submit_args)
+    assert engine._actions_executed == 1
+    assert engine._state == AutopilotState.IDLE
+    assert not engine._lock.locked()
+
+
 def test_get_game_state_clears_stale_pending_when_bridge_is_idle(monkeypatch):
     bridge = _DummyBridge({"ok": True, "has_pending": False})
     state = {
@@ -138,6 +181,28 @@ def test_get_game_state_clears_stale_pending_when_bridge_is_idle(monkeypatch):
     assert fresh["decision_context"] is None
     assert fresh["legal_actions"] == []
     assert fresh["_bridge_has_pending"] is False
+
+
+@pytest.mark.parametrize("submitted", [True, False])
+def test_empty_planner_pass_returns_bridge_submission_result(monkeypatch, submitted):
+    bridge = _DummyBridge({"ok": True, "has_pending": True, "request_type": "ActionsAvailable"})
+    state = {
+        "_bridge_connected": True,
+        "_bridge_has_pending": True,
+        "_bridge_request_type": "ActionsAvailable",
+        "turn": {"turn_number": 1},
+    }
+    engine, planner = _make_engine(monkeypatch, lambda: dict(state), bridge)
+    engine._config.dry_run = False
+    monkeypatch.setattr(engine, "_try_typed_decision_path", lambda *args: None)
+    execute = Mock(return_value=ClickResult(submitted))
+    monkeypatch.setattr(engine, "_execute_action", execute)
+
+    assert engine.process_trigger(state, "decision_required") is submitted
+
+    assert planner.plan_calls == 1
+    assert execute.call_args.args[0].action_type == ActionType.PASS_PRIORITY
+    assert not engine._lock.locked()
 
 
 def test_process_trigger_refuses_when_bridge_idle_and_no_log_data(monkeypatch):

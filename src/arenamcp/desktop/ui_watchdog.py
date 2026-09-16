@@ -11,6 +11,31 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+try:
+    from PySide6.QtCore import QObject, Qt, Signal
+
+    class WatchdogPingBridge(QObject):
+        """Thread-safe bridge allowing non-Qt background threads to ping the Qt GUI thread.
+
+        A queued Qt signal safely posts the callback to the main thread's event loop.
+        """
+
+        ping_requested = Signal(object)
+
+        def __init__(self, parent: QObject | None = None) -> None:
+            super().__init__(parent)
+            self.ping_requested.connect(self._handle_ping, Qt.ConnectionType.QueuedConnection)
+
+        def _handle_ping(self, callback: Callable[[], None]) -> None:
+            try:
+                callback()
+            except Exception as exc:
+                logger.debug("Watchdog ping callback error: %s", exc)
+
+except ImportError:
+    WatchdogPingBridge = None  # type: ignore[misc,assignment]
+
+
 
 class UiAnrWatchdog(threading.Thread):
     """Background OS thread that monitors Qt main event loop responsiveness.

@@ -68,7 +68,7 @@ def test_mcts_evaluator_gated_in_1ply_afterstates():
     MageZeroClient.reset_health_cache()
 
     # Dynamic mock evaluate_batch
-    def mock_eval_batch(items, model_id=None):
+    def mock_eval_batch(items, model_id=None, checkpoint_hash=None):
         results = []
         for g_state, opp_hand in items:
             # Check if land was played (i.e. battlefield has 2 Islands)

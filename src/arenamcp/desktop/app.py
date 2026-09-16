@@ -12,6 +12,7 @@ from pathlib import Path
 _LOG_HANDLE = None
 _INSTANCE_MUTEX = None
 _INSTANCE_LOCK_FILE = None
+RESTART_EXIT_CODE: int = 42
 
 
 def _log_path() -> Path:
@@ -152,6 +153,58 @@ def _release_single_instance_lock() -> None:
     _INSTANCE_LOCK_FILE = None
 
 
+def _restore_existing_instance_window() -> bool:
+    """Attempt to find and bring an already-running desktop window to the foreground."""
+    if os.name != "nt":
+        return False
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        SW_RESTORE = 9
+
+        from .. import __version__
+
+        candidates = [
+            f"mtgacoach v{__version__}",
+            "MTGA Coach",
+            "mtgacoach",
+            "mtgacoach (Compact)",
+        ]
+        for title in candidates:
+            hwnd = user32.FindWindowW(None, title)
+            if hwnd:
+                user32.ShowWindow(hwnd, SW_RESTORE)
+                user32.SetForegroundWindow(hwnd)
+                return True
+
+        found_hwnd = None
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def enum_proc(hwnd, _lparam):
+            nonlocal found_hwnd
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                title = buf.value.lower()
+                if title.startswith("mtgacoach") or title.startswith("mtga coach"):
+                    found_hwnd = hwnd
+                    return False
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(enum_proc), 0)
+        if found_hwnd:
+            user32.ShowWindow(found_hwnd, SW_RESTORE)
+            user32.SetForegroundWindow(found_hwnd)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def main() -> int:
     # CLI routing for frozen executable / command-line invocations
     if any(
@@ -179,21 +232,8 @@ def main() -> int:
     # Acquire singleton lock before initializing Qt or spawning background threads
     if not _acquire_single_instance_lock():
         _configure_logging()
-        _write_log("desktop start skipped: another instance is already running")
-        if os.name == "nt":
-            try:
-                import ctypes
-
-                user32 = ctypes.windll.user32
-                SW_RESTORE = 9
-                for title in ("MTGA Coach", "mtgacoach", "mtgacoach (Compact)"):
-                    hwnd = user32.FindWindowW(None, title)
-                    if hwnd:
-                        user32.ShowWindow(hwnd, SW_RESTORE)
-                        user32.SetForegroundWindow(hwnd)
-                        break
-            except Exception:
-                pass
+        restored = _restore_existing_instance_window()
+        _write_log(f"desktop start skipped: another instance is already running (window_restored={restored})")
         return 0
 
     try:

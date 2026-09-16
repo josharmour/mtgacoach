@@ -1752,10 +1752,6 @@ class AutopilotEngine(
                 self._pause_for_manual("Unmapped GRE interaction", game_state)
                 return False
 
-            # --- VISION PREFETCH: only in vision-heavy mode ---
-            if self._should_prefetch_vision(game_state, trigger):
-                self._scan_layout_if_needed(game_state)
-
             # --- TYPED-DECISION PATH (fable Phase B) ---
             # Interactive request families flow as structured options:
             # the planner picks option ids, submission is by id, and no
@@ -2456,9 +2452,11 @@ class AutopilotEngine(
                     ]
                     if not meaningful:
                         logger.info("Autopilot: auto-passing (planner empty, no meaningful actions)")
-                        self._exec_pass_priority()
+                        passed = self._run_bridge_action(
+                            GameAction(action_type=ActionType.PASS_PRIORITY), game_state
+                        )
                         self._state = AutopilotState.IDLE
-                        return True
+                        return passed
                     self._state = AutopilotState.IDLE
                     return False
 

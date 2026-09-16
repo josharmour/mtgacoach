@@ -2083,6 +2083,8 @@ class ActionPlanner(_ActionLegalityMixin):
         try:
             chosen = self._llm_decision_options(decision, game_state)
             valid = decision.option_ids()
+            if decision.request_type == "ActionsAvailable":
+                valid = {option.option_id for option in decision.options if option.payable is not False}
             chosen = [c for c in chosen if c in valid]
             if chosen and decision.request_type == "SelectTargets":
                 chosen = self._gate_harmful_llm_target_picks(decision, game_state, chosen)
@@ -2360,6 +2362,9 @@ class ActionPlanner(_ActionLegalityMixin):
         if not opts:
             return []
         if decision.request_type == "ActionsAvailable":
+            opts = [option for option in opts if option.payable is not False]
+            if not opts:
+                return []
             for o in opts:
                 if o.option_id.startswith("idx:") and o.payable:
                     return [o.option_id]

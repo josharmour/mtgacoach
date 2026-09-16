@@ -71,6 +71,67 @@ def test_actions_available_builds_options_with_payability():
     assert d.can_pass
 
 
+def test_live_bridge_cast_payability_is_enforced():
+    from arenamcp.action_planner import ActionPlanner
+
+    decision = build_pending_decision(
+        {
+            "has_pending": True,
+            "request_type": "ActionsAvailable",
+            "actions": [
+                {"actionType": "Cast", "grpId": 94899, "hasAutoTap": False},
+                {"actionType": "Cast", "grpId": 91644, "hasAutoTap": True},
+                {"actionType": "Pass"},
+            ],
+        },
+        resolve_name=_resolver,
+    )
+    assert decision.find("idx:0").payable is False
+    assert decision.find("idx:1").label == "Cast Ruthless Negotiation"
+    assert decision.find("idx:1").payable is True
+    bridge = _FakeBridge()
+    assert not submit_option(bridge, decision, ["idx:0"])
+    assert bridge.calls == []
+    assert ActionPlanner.deterministic_option_pick(decision) == ["idx:1"]
+    planner = ActionPlanner.__new__(ActionPlanner)
+    planner._llm_decision_options = lambda *args: ["idx:0"]
+    assert planner.plan_decision_options(decision, {}) == ["idx:1"]
+
+
+def test_actions_available_excludes_mana_abilities_and_passes_priority():
+    from arenamcp.action_planner import ActionPlanner
+
+    poll = {
+        "has_pending": True,
+        "request_type": "ActionsAvailable",
+        "can_pass": True,
+        "actions": [
+            {"actionType": "ActionType_Cast", "grpId": 94899, "hasAutoTap": False},  # Unpayable
+            {"actionType": "ActionType_Activate_Mana", "grpId": 75553, "instanceId": 444},
+            {"actionType": "ActionType_Activate_Mana", "grpId": 75553, "instanceId": 456},
+            {"actionType": "ActionType_FloatMana"},
+            {"actionType": "ActionType_Pass"},
+        ],
+    }
+    decision = build_pending_decision(poll, resolve_name=_resolver)
+    assert decision is not None
+    # Verify mana abilities were excluded: only idx:0 (Cast) and pass remain
+    option_ids = decision.option_ids()
+    assert "idx:1" not in option_ids
+    assert "idx:2" not in option_ids
+    assert "idx:3" not in option_ids
+    assert option_ids == {"idx:0", "pass"}
+    assert decision.find("idx:0").payable is False
+
+    # Deterministic pick should choose pass rather than unpayable or non-existent mana ability
+    assert ActionPlanner.deterministic_option_pick(decision) == ["pass"]
+
+    # Even if LLM erroneously hallucinates idx:1, plan_decision_options falls back to pass
+    planner = ActionPlanner.__new__(ActionPlanner)
+    planner._llm_decision_options = lambda *args: ["idx:1"]
+    assert planner.plan_decision_options(decision, {}) == ["pass"]
+
+
 def test_select_targets_builds_target_options():
     poll = {
         "has_pending": True,

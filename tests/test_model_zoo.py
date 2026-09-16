@@ -207,7 +207,8 @@ class TestStartsEmptyNoBundledDefaults:
         assert ModelZooClient.resident_model_ids() == set()
         assert ModelZooClient.active_endpoint() is None
 
-    def test_select_with_no_discovery_returns_none_with_reason(self):
+    def test_select_with_no_discovery_returns_none_with_reason(self, monkeypatch):
+        monkeypatch.setattr(MageZeroClient, "get_active_endpoint", lambda: None)
         # No endpoint wired at all: get_active_endpoint returns None.
         assert ModelZooClient.select(_uwtempo_profile(), ["Island", "Plains"]) is None
         assert ModelZooClient.last_fallback_reason() == "no-active-coaching-endpoint"
