@@ -633,3 +633,217 @@ class TestMemoryResetExtension:
         assert ctrl.memory.pending_questions == []
         assert ctrl.memory.discussed_topics == {}
         assert ctrl._last_topics == []
+
+
+# ---------------------------------------------------------------------------
+# Wave 5 — M2 threat spam + M3 pending-question recovery/TTL
+# ---------------------------------------------------------------------------
+
+
+class TestThreatSpamSuppression:
+    def test_threat_topic_suppressed_on_unchanged_board(self) -> None:
+        """M2 / SESSION F2 (repro: 4× identical Sheoldred commentary): across
+        repeated batches with an IDENTICAL threat set, exactly ONE threat
+        topic emerges."""
+        prev = make_state(battlefield=[])
+        cur = make_state(
+            battlefield=[
+                card("Sheoldred, the Apocalypse", 2, 70),
+                card("Farewell", 2, 71, type_line="Enchantment"),
+            ]
+        )
+        first = SELECTOR.select(prev, cur, [])
+        assert [t.key for t in first] == ["threat"]
+
+        selector_state = SELECTOR._threat_signature(cur)
+        # Subsequent identical batches (board unchanged, no new trigger):
+        with_baseline = SELECTOR.select(cur, dict(cur), [], None, threat_signature_prev=selector_state)
+        assert [t.key for t in with_baseline if t.key == "threat"] == []
+
+    def test_controller_suppresses_unchanged_threat_across_batches(self, monkeypatch) -> None:
+        """Controller-level: repeated identical batches produce exactly one
+        threat utterance (the review's 4-iteration repro)."""
+        ctrl, coach, voice, holder, inner = make_topic_controller()
+        prev = make_state(battlefield=[])
+        cur = make_state(battlefield=[card("Sheoldred, the Apocalypse", 2, 72)])
+
+        utterances = 0
+        for i in range(4):
+            ctrl.on_state(cur, cur if i else prev, [])
+            result = ctrl.speak_topic_if_any()
+            if result is not None:
+                utterances += 1
+        assert utterances == 1
+        assert voice.speak.call_count == 1
+
+    def test_urgent_threat_not_reannounced_within_window(self, monkeypatch) -> None:
+        """M2: the urgent bypass lifts the global cooldown but NOT the per-key
+        minimum spacing (3×cooldown) — a NEW threat trigger for a key already
+        discussed inside the window does not re-announce."""
+        ctrl, coach, voice, holder, inner = make_topic_controller()
+        prev = make_state(battlefield=[])
+        cur1 = make_state(battlefield=[card("Sheoldred, the Apocalypse", 2, 73)])
+        ctrl.on_state(cur1, prev, ["threat_detected"])
+        assert ctrl.speak_topic_if_any() is not None
+
+        # A second DIFFERENT threat arrives seconds later (new threat set —
+        # change detection passes), but the topic key was just spoken: the
+        # per-key window must suppress it.
+        cur2 = make_state(
+            battlefield=[
+                card("Sheoldred, the Apocalypse", 2, 73),
+                card("Atraxa, Grand Unifier", 2, 74),
+            ]
+        )
+        ctrl.on_state(cur2, cur1, ["threat_detected"])
+        assert ctrl.speak_topic_if_any() is None
+        assert voice.speak.call_count == 1
+
+    def test_new_threat_after_window_speaks(self, monkeypatch) -> None:
+        """The suppression is window-scoped, not permanent: with cooldown=0
+        the per-key window is 0 and a changed threat set speaks again."""
+        import arenamcp.conversation as conversation_mod
+
+        settings = MagicMock()
+        settings.get = MagicMock(side_effect=lambda key, default=None: 0)
+        monkeypatch.setattr(conversation_mod, "get_settings", lambda: settings)
+
+        voice = MagicMock()
+        voice.speak.return_value = MagicMock(played=True)
+        coach = MagicMock()
+        coach.voice_session = voice
+        coach._voice_output = None
+        coach._match_number = 1
+        coach.last_match_id = "m-1"
+        coach._mcp = None
+        coach._game_plan_mgr = None
+        inner = MagicMock()
+        inner.get_advice = MagicMock(return_value="Comment.")
+        inner._game_plan_mgr = None
+        coach._coach = inner
+
+        ctrl = conversation_mod.ConversationController(
+            coach, emit_event=None, snapshot_fn=lambda: make_state()
+        )
+        ctrl.set_mode(CONVERSATION, persist=False)
+
+        prev = make_state(battlefield=[])
+        cur1 = make_state(battlefield=[card("Sheoldred, the Apocalypse", 2, 75)])
+        ctrl.on_state(cur1, prev, [])
+        assert ctrl.speak_topic_if_any() is not None
+
+        cur2 = make_state(
+            battlefield=[
+                card("Sheoldred, the Apocalypse", 2, 75),
+                card("Atraxa, Grand Unifier", 2, 76),
+            ]
+        )
+        ctrl.on_state(cur2, cur1, [])
+        assert ctrl.speak_topic_if_any() is not None
+
+
+class TestPendingQuestionRecoveryWave5:
+    def test_recovered_question_does_not_preempt_urgent_topic(self, monkeypatch) -> None:
+        """M3: recovery starts only AFTER the urgent topic's speech completes
+        — a real VoiceSession that is still speaking must be waited on."""
+        import arenamcp.conversation as conversation_mod
+        from arenamcp.voice_session import VoiceSession
+
+        class GateSink:
+            def __init__(self) -> None:
+                self.spoken: list[str] = []
+                self.speaking = False
+
+            def speak(self, text: str, blocking: bool = True) -> None:
+                self.spoken.append(text)
+                self.speaking = True
+
+            def stop(self) -> None:
+                self.speaking = False
+
+            def is_speaking(self) -> bool:
+                return self.speaking
+
+        settings = MagicMock()
+        settings.get = MagicMock(side_effect=lambda key, default=None: 0)
+        monkeypatch.setattr(conversation_mod, "get_settings", lambda: settings)
+
+        sink = GateSink()
+        vs = VoiceSession(sink, release_poll_interval=0.005)
+        coach = MagicMock()
+        coach.voice_session = vs
+        coach._voice_output = None
+        coach._match_number = 1
+        coach.last_match_id = "m-1"
+        coach._mcp = None
+        coach._game_plan_mgr = None
+        inner = MagicMock()
+        inner.get_advice = MagicMock(return_value="Recovered answer.")
+        inner._game_plan_mgr = None
+        coach._coach = inner
+
+        ctrl = conversation_mod.ConversationController(
+            coach, emit_event=None, snapshot_fn=lambda: make_state()
+        )
+        ctrl.set_mode(CONVERSATION, persist=False)
+
+        # The pending question the urgent topic deferred.
+        with ctrl._lock:
+            ctrl._request_counter += 1
+            rid = ctrl._request_counter
+            ctrl._pending[rid] = ctrl.current_identity(request_id=rid)
+        ctrl.memory.append(
+            conversation_mod.ConversationTurn(role="user", text="Why not attack?")
+        )
+
+        identity = ctrl.current_identity()
+        topic = conversation_mod.TopicCandidate(
+            key="threat", priority=EventPriority.THREAT, evidence="x"
+        )
+        ctrl._speak_topic("Watch Sheoldred.", "urgent", identity, topic, match_id="m-1")
+
+        # The topic speech is SPEAKING (sink busy): while the sink is busy,
+        # the recovery answer must NOT have preempted it — no get_advice yet.
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not vs._completion_callbacks:
+            time.sleep(0.01)
+        time.sleep(0.15)
+        assert inner.get_advice.call_count == 0  # still waiting for completion
+
+        # Release the sink → the topic completes → recovery proceeds.
+        sink.speaking = False
+        for thread in list(ctrl._answer_threads):
+            thread.join(timeout=10)
+        assert inner.get_advice.call_count >= 1
+        assert ctrl.memory.pending_questions == []
+
+    def test_deferred_question_ttl_swept_without_urgent_topic(self, monkeypatch) -> None:
+        """M3: the TTL sweep in on_state expires deferred questions
+        unconditionally, unblocking topic speech — no urgent topic needed."""
+        import arenamcp.conversation as conversation_mod
+
+        ctrl, coach, voice, holder, inner = make_topic_controller()
+        old = conversation_mod.PendingQuestion(
+            text="stale question", ts=time.time() - conversation_mod.PENDING_QUESTION_TTL_SECONDS - 5, match_id="m-1"
+        )
+        ctrl.memory.pending_questions.append(old)
+
+        prev = make_state(battlefield=[])
+        cur = make_state(battlefield=[card("Bear", 2, 77)])
+        ctrl.on_state(cur, prev, [])
+
+        assert ctrl.memory.pending_questions == []
+        # Topic speech is unblocked again (previously blocked by has_deferred).
+        assert ctrl.speak_topic_if_any() is not None
+
+    def test_ttl_sweep_spares_fresh_questions(self) -> None:
+        ctrl, _, _, _, _ = make_topic_controller()
+        ctrl.memory.record_pending_question("fresh question", match_id="m-1")
+        ctrl.on_state(make_state(), None, [])
+        assert len(ctrl.memory.pending_questions) == 1
+
+    def test_reset_for_match_clears_threat_baseline(self) -> None:
+        ctrl, _, _, _, _ = make_topic_controller()
+        ctrl._threat_signature_prev = ("Sheoldred, the Apocalypse",)
+        ctrl.reset_for_match("m-2", 2)
+        assert ctrl._threat_signature_prev is None

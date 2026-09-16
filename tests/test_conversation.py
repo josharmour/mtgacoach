@@ -403,8 +403,10 @@ class TestBackendError:
         assert fields["text"].startswith(BACKEND_ERROR_PREFIX)
         assert fields["identity"]["request_id"] == 1
         assert voice.spoken == []
+        # Wave 5: backend-error text is transcript-only — it is NOT appended
+        # to memory turns (must never leak into later prompt digests).
         roles = [t.role for t in ctrl.memory.turns]
-        assert roles == ["user", "coach"]
+        assert roles == ["user"]
 
     def test_tagged_text_returned_not_spoken(self, monkeypatch) -> None:
         ctrl, coach, voice = make_controller()
@@ -569,3 +571,167 @@ class TestWave4EvidenceAugment:
         ctrl, _, _ = make_controller()
         ctrl.memory.last_evidence = None
         assert ctrl._augment_question("just this") == "just this"
+
+
+# ---------------------------------------------------------------------------
+# Wave 5 — M7 question-path grounding
+# ---------------------------------------------------------------------------
+
+
+class TestQuestionPathGrounding:
+    def test_augmented_question_carries_evidence_instructions(self) -> None:
+        """M7 / PRODUCT D4: whenever evidence is present, the augmented
+        question must carry the no-win-probability/one-ply/policy rules —
+        otherwise a direct 'what's my win chance?' can parrot the
+        uncalibrated score."""
+        from arenamcp.conversation import EvidenceBlock
+
+        ctrl, _, _ = make_controller()
+        ctrl.memory.last_evidence = EvidenceBlock(
+            model_id="uwtempo/ver2",
+            deck_supported=True,
+            deck_compatible=True,
+            similarity=0.9,
+            eval_source="MageZero UWTempo v2",
+        )
+        augmented = ctrl._augment_question("what's my win chance?")
+        assert "never state or imply a win probability" in augmented
+        assert "one-ply" in augmented
+        assert "evaluated outcome" in augmented
+        assert "MageZero evidence:" in augmented
+
+    def test_augmented_question_with_history_also_carries_instructions(self) -> None:
+        from arenamcp.conversation import EvidenceBlock
+
+        ctrl, _, _ = make_controller()
+        ctrl.memory.append(ConversationTurn(role="user", text="earlier"))
+        ctrl.memory.last_evidence = EvidenceBlock(model_id="m", provenance="prior_only")
+        augmented = ctrl._augment_question("explain the board")
+        assert "never state or imply a win probability" in augmented
+        assert "Recent conversation:" in augmented
+
+    def test_mock_backend_receives_instruction_line(self, monkeypatch) -> None:
+        """End-to-end through the answer thread (PRODUCT reviewer spec D4):
+        the mock backend's echoed question carries the instruction when
+        evidence exists."""
+        from arenamcp.conversation import EvidenceBlock
+
+        ctrl, coach, _ = make_controller()
+        ctrl.memory.last_evidence = EvidenceBlock(model_id="m", provenance="prior_only")
+        ctrl.on_user_question("what's my win chance?")
+        wait_thread(ctrl)
+        kwargs = coach._coach.get_advice.call_args.kwargs
+        assert "never state or imply a win probability" in kwargs["question"]
+        assert "MageZero evidence:" in kwargs["question"]
+
+    def test_no_evidence_raw_question_has_no_instruction(self) -> None:
+        ctrl, _, _ = make_controller()
+        ctrl.memory.last_evidence = None
+        assert ctrl._augment_question("just this") == "just this"
+
+
+# ---------------------------------------------------------------------------
+# Wave 5 — M6 status lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestStatusLifecycle:
+    def _states(self, ctrl: ConversationController) -> list[str]:
+        return [
+            f.get("state")
+            for c, f in ctrl._emit_event.calls
+            if c == "conversation_status"
+        ]
+
+    def test_convo_state_idle_on_stale_delivery(self, monkeypatch) -> None:
+        gate = threading.Event()
+
+        def slow_advice(snapshot, question=None, **kw):
+            gate.wait(timeout=5.0)
+            return "stale reply"
+
+        ctrl, coach, voice = make_controller()
+        coach._coach.get_advice.side_effect = slow_advice
+        monkeypatch.setattr(
+            "arenamcp.conversation.get_settings",
+            lambda: MagicMock(set=lambda k, v: None),
+        )
+        ctrl.on_user_question("hello")
+        TestStaleness()._block_until_pending(ctrl, 1)
+        ctrl.cancel_pending()  # stop during render
+        gate.set()
+        wait_thread(ctrl)
+
+        assert self._states(ctrl)[-1] == "idle"
+
+    def test_convo_state_idle_after_backend_topic(self, monkeypatch) -> None:
+        # persist=True would write 'conversation' into the REAL
+        # ~/.arenamcp/settings.json AND the process-wide singleton — the
+        # exact pollution that made test_mode_button_clicks_send_set_mode
+        # order-dependent (panel read conversation_mode='conversation' and
+        # toggled to turn_advice). Isolate like the other persist tests.
+        monkeypatch.setattr(
+            "arenamcp.conversation.get_settings",
+            lambda: MagicMock(set=lambda k, v: None),
+        )
+        ctrl, coach, voice = make_controller()
+        coach._coach.get_advice.return_value = "[BACKEND ERROR] gateway down"
+        ctrl.set_mode(CONVERSATION)
+        prev = {"turn": {"turn_number": 1}, "players": [], "battlefield": [], "hand": []}
+        cur = {
+            "turn": {"turn_number": 1},
+            "players": [],
+            "battlefield": [{"name": "Bear", "controller_seat_id": 2, "instance_id": 9}],
+            "hand": [],
+            "local_seat_id": 1,
+            "opponent_seat_id": 2,
+        }
+        ctrl.on_state(cur, prev, [])
+        assert ctrl.speak_topic_if_any() is None
+        assert self._states(ctrl)[-1] == "idle"
+
+    def test_convo_state_idle_after_stale_topic(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "arenamcp.conversation.get_settings",
+            lambda: MagicMock(set=lambda k, v: None),
+        )
+        ctrl, coach, voice = make_controller()
+        ctrl.set_mode(CONVERSATION)
+        prev = {"turn": {"turn_number": 1}, "players": [], "battlefield": [], "hand": []}
+        cur = {
+            "turn": {"turn_number": 1},
+            "players": [],
+            "battlefield": [{"name": "Bear", "controller_seat_id": 2, "instance_id": 9}],
+            "hand": [],
+            "local_seat_id": 1,
+            "opponent_seat_id": 2,
+        }
+        ctrl.on_state(cur, prev, [])
+
+        # Simulate the mode flipping MID-RENDER: the render side effect flips
+        # the mode, so the post-render staleness check fires.
+        original_render = ctrl._render_topic
+
+        def render_then_flip(topic):
+            ctrl.set_mode(TURN_ADVICE)
+            return original_render(topic)
+
+        ctrl._render_topic = render_then_flip  # type: ignore[method-assign]
+        assert ctrl._speak_topic_if_any(None, 0) is None
+        assert self._states(ctrl)[-1] == "idle"
+
+    def test_convo_state_idle_when_cancel_pending_had_pending(self) -> None:
+        ctrl, _, _ = make_controller()
+        ctrl._pending[7] = ctrl.current_identity(request_id=7)
+        ctrl.cancel_pending()
+        assert self._states(ctrl)[-1] == "idle"
+
+    def test_convo_state_idle_when_set_mode_had_pending(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "arenamcp.conversation.get_settings",
+            lambda: MagicMock(set=lambda k, v: None),
+        )
+        ctrl, _, _ = make_controller()
+        ctrl._pending[7] = ctrl.current_identity(request_id=7)
+        ctrl.set_mode(TURN_ADVICE)
+        assert self._states(ctrl)[-1] == "idle"

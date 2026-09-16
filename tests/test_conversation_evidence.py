@@ -292,7 +292,11 @@ class TestEvaluatedRows:
     def test_policy_preference_not_described_as_evaluated(self, monkeypatch) -> None:
         ev = self._collect(monkeypatch, FakePayload(["prior_only"]))
         text = format_evidence_lines(ev)
-        assert "not an evaluated outcome" in text
+        # Wave 5: prior_only maps to the "policy preference" label (never an
+        # evaluated-sounding one); heuristic/fallback classes get their own
+        # payload-style labels instead of the old blanket tag.
+        assert "policy preference" in text
+        assert "(evaluated" not in text
         # Never a bare win-probability number from uncalibrated evidence.
         assert "%" not in text or "similarity" in text
 

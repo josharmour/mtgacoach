@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -253,6 +254,133 @@ def test_listener_exceptions_do_not_break_arbiter() -> None:
     session.add_listener(boom)
     assert speak(session, "a", "advice", make_identity()).played is True
     assert sink.spoken == ["a"]
+
+
+# ── C1 arbiter lifecycle: completion release + namespace safety ──────────
+
+
+class CompletingSink:
+    """Sink exposing a callable is_speaking probe (duck-typed VoiceOutput)."""
+
+    def __init__(self) -> None:
+        self.spoken: list[str] = []
+        self._speaking = False
+
+    def speak(self, text: str, blocking: bool = True) -> None:
+        self.spoken.append(text)
+        self._speaking = True
+
+    def stop(self) -> None:
+        self._speaking = False
+
+    def is_speaking(self) -> bool:
+        return self._speaking
+
+
+def test_channel_released_after_sink_completion() -> None:
+    """After the sink finishes speaking, the arbiter must return to IDLE so
+    lower-priority speech can speak again (C1a)."""
+    sink = CompletingSink()
+    session = VoiceSession(sink, release_poll_interval=0.005)
+    assert speak(session, "utterance", "urgent", make_identity(seq=1)).played is True
+    assert session.state == SpeechState.SPEAKING
+
+    # Simulate playback finishing.
+    sink._speaking = False
+
+    deadline = time.monotonic() + 5.0
+    while session.state != SpeechState.IDLE and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert session.state == SpeechState.IDLE
+
+    # A lower-priority proactive request can now speak.
+    assert speak(session, "proactive topic", "proactive", make_identity(seq=2)).played is True
+
+
+def test_urgent_advice_after_question_answer_not_cancelled() -> None:
+    """The repro from the review: after a question answer completes, a later
+    urgent advice request must NOT be cancelled (C1c)."""
+    sink = CompletingSink()
+    session = VoiceSession(sink, release_poll_interval=0.005)
+
+    # 1. A question (conversation answer, request_id namespace) speaks.
+    class AnswerIdentity:
+        def __init__(self, request_id: int) -> None:
+            self.session_id = 1
+            self.match_id = "m1"
+            self.turn_number = 4
+            self.request_id = request_id
+
+    assert speak(session, "answer", "question", AnswerIdentity(1)).played is True
+
+    # 2. The answer completes → channel released.
+    sink._speaking = False
+    assert session.wait_for_idle(5.0) is True
+
+    # 3. Urgent advice (SpeechIdentity seq namespace) after the answer —
+    #    previously cancelled because _active was never cleared.
+    outcome = speak(session, "urgent advice", "urgent", make_identity(seq=2))
+    assert outcome.played is True
+    assert sink.spoken == ["answer", "urgent advice"]
+
+
+def test_seq_comparison_only_within_same_identity_class() -> None:
+    """seq (SpeechIdentity) and request_id (ResponseIdentity) are unrelated
+    counters — same-priority supersession must never compare across them
+    (C1b)."""
+    sink = CompletingSink()
+    session = VoiceSession(sink)
+
+    class AnswerIdentity:
+        def __init__(self, request_id: int) -> None:
+            self.session_id = 1
+            self.match_id = "m1"
+            self.turn_number = 5
+            self.request_id = request_id
+
+    # A request_id-namespace identity owns the channel at "urgent" rank with
+    # a HUGE request id. A seq-namespace identity with a small seq must NOT
+    # be cancelled by cross-namespace comparison (old behavior: 2 <= 10**9).
+    assert speak(session, "answer", "urgent", AnswerIdentity(10**9)).played is True
+    outcome = speak(session, "topic", "urgent", make_identity(seq=2))
+    assert outcome.played is True
+
+    # And the inverse: a request_id-namespace request must not be cancelled
+    # by a huge seq on the channel.
+    session2_sink = CompletingSink()
+    session2 = VoiceSession(session2_sink)
+    assert speak(session2, "topic", "urgent", make_identity(seq=10**9)).played is True
+    outcome2 = speak(session2, "answer", "urgent", AnswerIdentity(2))
+    assert outcome2.played is True
+
+
+def test_completion_release_does_not_clobber_newer_request() -> None:
+    """A late completion from an old utterance must not clear the channel of
+    a newer request (token guard)."""
+    sink = CompletingSink()
+    session = VoiceSession(sink, release_poll_interval=0.005)
+    assert speak(session, "first", "urgent", make_identity(seq=1)).played is True
+
+    # Second request takes the channel (preempts).
+    assert speak(session, "second", "question", make_identity(seq=2)).played is True
+    first_state = session.state
+    assert first_state == SpeechState.SPEAKING
+
+    # The first utterance's sink finishes (its monitor sees not-speaking, but
+    # its token is stale) — the second request must keep the channel.
+    sink._speaking = True  # second utterance is speaking
+    time.sleep(0.05)
+    assert session.state == SpeechState.SPEAKING
+
+    # Teardown hygiene: without a stop, the release-monitor daemon keeps
+    # polling is_speaking()==True until its 300s deadline. That spinning
+    # thread (a) burns ~200s of wall clock in later full-suite runs and
+    # (b) made test_turn_drop_resets_conversation order-dependent — its
+    # time.sleep() ticks inside a monkeypatched loop stopped that test's
+    # coaching loop early. stop_speaking() bumps the channel token, so the
+    # monitor exits immediately.
+    session.stop_speaking()
 
 
 # ── Sink-shape robustness ────────────────────────────────────────────────

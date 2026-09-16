@@ -4,10 +4,24 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
+from arenamcp import settings as settings_mod
 from arenamcp.standalone import StandaloneCoach
 
 
-def test_speak_advice_filtering():
+@pytest.fixture()
+def default_conversation_settings(monkeypatch, tmp_path):
+    # speak_advice behavior in the legacy path must not depend on a user's
+    # saved conversation_mode: isolate settings so the coach starts turn_advice.
+    monkeypatch.setattr(settings_mod, "SETTINGS_DIR", tmp_path)
+    monkeypatch.setattr(settings_mod, "SETTINGS_FILE", tmp_path / "settings.json")
+    fresh = settings_mod.Settings()
+    monkeypatch.setattr(settings_mod, "get_settings", lambda: fresh)
+    return fresh
+
+
+def test_speak_advice_filtering(default_conversation_settings):
     # Instantiate StandaloneCoach with register_hotkeys=False to avoid Linux keyboard root requirement
     coach = StandaloneCoach(register_hotkeys=False, backend="proxy")
     coach._voice_output = MagicMock()

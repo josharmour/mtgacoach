@@ -555,11 +555,14 @@ def test_game_end_event_resets_conversation(monkeypatch):
     finally:
         fake_gs.game_ended_event.clear()
 
-    assert reset_calls == [("m1", 0)]
+    # First call: the Wave-5 None->first-match reset at iteration 1 startup
+    # (pre-match memory is cleared even before the game-end event).
+    # Second call: the game-end event boundary.
+    assert reset_calls == [("m1", 0), ("m1", 0)]
     assert fake_gs.consumed == 1
-    # Memory cleared + session identity bumped by the boundary.
+    # Memory cleared + session identity bumped by both boundaries.
     assert coach.conversation.memory.turns == []
-    assert coach.conversation.current_identity().session_id == session_before + 1
+    assert coach.conversation.current_identity().session_id == session_before + 2
 
 
 def test_match_id_change_resets_conversation_and_bumps_session(monkeypatch):
@@ -588,11 +591,14 @@ def test_match_id_change_resets_conversation_and_bumps_session(monkeypatch):
 
     run_loop(monkeypatch, coach, iterations=2)
 
-    # Boundary fired with the NEW match id and the bumped match number.
-    assert reset_calls == [("m2", 1)]
+    # First call: the Wave-5 None->first-match reset (m1 was the first match
+    # id the loop ever saw); second: the m1->m2 boundary with the bumped
+    # match number.
+    assert reset_calls == [("m1", 0), ("m2", 1)]
     assert coach.last_match_id == "m2"
     assert coach.conversation.memory.turns == []
-    assert coach.conversation.current_identity().session_id == session_before + 1
+    # Both boundaries bumped the session identity.
+    assert coach.conversation.current_identity().session_id == session_before + 2
 
 
 def test_turn_drop_resets_conversation(monkeypatch):
@@ -625,8 +631,43 @@ def test_turn_drop_resets_conversation(monkeypatch):
 
     # Iteration 1 delivered advice (turn_advice legacy path), so
     # last_advice_turn=5; iteration 2's turn 3 < 5 fires the turn-drop
-    # boundary with the same match id and bumped match number.
+    # boundary with the same match id and bumped match number. The Wave-5
+    # None->first-match reset fired at iteration 1 startup before it.
     assert coach.speak_advice_calls == ["Cast your Lightning Bolt."]
-    assert reset_calls == [("m1", 1)]
+    assert reset_calls == [("m1", 0), ("m1", 1)]
     assert coach.conversation.memory.turns == []
-    assert coach.conversation.current_identity().session_id == session_before + 1
+    # Both boundaries bumped the session identity.
+    assert coach.conversation.current_identity().session_id == session_before + 2
+
+
+def test_pre_match_questions_do_not_leak_into_first_match_answers(monkeypatch):
+    """Wave-5 None->first-match boundary: questions typed BEFORE the match id
+    ever appears must not leak into first-match answers — the memory they
+    would be digested from is cleared when the first match id arrives."""
+    coach = make_loop_coach(mode="conversation", triggers=[], repeat_triggers=True)
+
+    # Pre-match: the loop has seen no match id yet, but a question was already
+    # answered (startup/transcript state) and lives in controller memory.
+    coach.conversation.on_user_question("what deck is my opponent on?")
+    for thread in list(coach.conversation._answer_threads):
+        thread.join(timeout=5)
+    assert any(t.text == "what deck is my opponent on?" for t in coach.conversation.memory.turns)
+
+    # First match id arrives on the 2nd poll (iteration 2's boundary check).
+    polls = {"n": 0}
+
+    def poll_hook():
+        polls["n"] += 1
+        if polls["n"] >= 2:
+            coach._mcp.state["match_id"] = "m1"
+
+    coach._mcp.poll_hooks.append(poll_hook)
+
+    run_loop(monkeypatch, coach, iterations=2)
+
+    # The None -> "m1" transition reset the memory: the pre-match question no
+    # longer leaks into first-match prompt digests.
+    assert coach.last_match_id == "m1"
+    assert all(
+        t.text != "what deck is my opponent on?" for t in coach.conversation.memory.turns
+    )

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import threading
+import time
 from typing import Any
 from unittest.mock import Mock
 
@@ -92,8 +94,16 @@ def test_set_verbosity_and_stop_speaking(session, monkeypatch):
     monkeypatch.setattr(session, "send_command", lambda cmd, *a: commands.append((cmd, a)))
     session.set_verbosity("detailed")
     session.stop_speaking()
-    assert commands == [("set_verbosity", ("detailed",))]
+    assert commands == [("set_verbosity", ("detailed",)), ("stop_speech", ())]
     assert stop_calls == [True]
+
+
+def test_stop_speaking_sends_stop_speech_command(session, monkeypatch):
+    commands: list[tuple[str, Any]] = []
+    monkeypatch.setattr(session._tts, "stop_speech", lambda: None)
+    monkeypatch.setattr(session, "send_command", lambda cmd, *a: commands.append((cmd, a)))
+    session.stop_speaking()
+    assert commands == [("stop_speech", ())]
 
 
 def test_speak_request_passes_priority_and_identity(session, monkeypatch):
@@ -115,6 +125,40 @@ def test_speak_request_passes_priority_and_identity(session, monkeypatch):
     assert captured["text"] == "consider blocking"
     assert captured["priority"] == "urgent"
     assert captured["identity"] == identity
+
+
+def test_speak_stop_event_halts_desktop_tts(session, monkeypatch):
+    """C2: the engine's speak_stop event (engine-initiated preemption —
+    typed question, urgent topic) must halt desktop TTS playback."""
+    stop_calls: list[bool] = []
+    monkeypatch.setattr(session._tts, "stop_speech", lambda: stop_calls.append(True))
+    session._handle_process_event({"type": "speak_stop"})
+    assert stop_calls == [True]
+    # Idempotent: repeated events are safe.
+    session._handle_process_event({"type": "speak_stop"})
+    assert stop_calls == [True, True]
+
+
+def test_speak_stop_event_holds_tts_generation_gate(qapp, monkeypatch):
+    """C2 + M4 interplay: a rendered-but-late request invalidated by a
+    speak_stop is discarded even if the worker renders it afterwards."""
+    manager = _ready_manager(monkeypatch)
+    manager.request_speech(
+        text="old utterance", voice_id="af_heart", voice_name="Heart", speed=1.0
+    )
+    generation = manager._generation
+    manager.stop_speech()  # engine-initiated preempt lands as a stop
+    assert manager._pending_request is None
+
+    play = Mock(return_value=True)
+    cleanup = Mock()
+    monkeypatch.setattr("arenamcp.desktop.tts_manager.AudioPlayback.play_file", play)
+    monkeypatch.setattr(manager, "_cleanup_path", cleanup)
+    manager._handle_stdout_line(
+        json.dumps({"type": "rendered", "generation": generation, "path": "late.wav"})
+    )
+    play.assert_not_called()
+    cleanup.assert_called_once()
 
 
 def test_speak_request_without_priority_is_legacy(session, monkeypatch):
@@ -339,6 +383,10 @@ class MockSession(QObject):
         super().__init__()
         self.commands: list[tuple[str, Any]] = []
         self.stopped_speech = 0
+        self.notices: list[str] = []
+
+    def emit_local_fallback_notice(self, message: str) -> None:
+        self.notices.append(message)
 
     def toggle_autopilot(self) -> None:
         self.commands.append(("toggle_autopilot", ()))
@@ -366,6 +414,8 @@ class MockSession(QObject):
 
     def stop_speaking(self) -> None:
         self.stopped_speech += 1
+        # Mirrors the real CoachSession: a stop also notifies the engine.
+        self.commands.append(("stop_speech", ()))
 
     def trigger_debug_report(self) -> None:
         self.commands.append(("debug_report", ()))
@@ -419,6 +469,28 @@ def test_mode_button_clicks_send_set_mode(panel):
     assert ("set_mode", "turn_advice") in panel.session.commands
 
 
+def test_panel_reads_isolated_settings_not_singleton(panel, isolated_settings):
+    """Regression: a controller persist call must write through the ISOLATED
+    Settings instance (tmp_path) and the panel must read that instance at
+    construction — never the process-wide singleton or the real
+    ~/.arenamcp/settings.json. Before the compact_coach call-time lookup fix,
+    the panel captured get_settings at import time, so the isolated_settings
+    patch never reached it and a polluted singleton leaked through here."""
+    from arenamcp.conversation import CONVERSATION
+
+    # Controller persist write under isolation (goes to tmp_path instance).
+    isolated_settings.set("conversation_mode", CONVERSATION)
+    assert isolated_settings.get("conversation_mode") == CONVERSATION
+
+    # A freshly constructed panel must see the isolated value.
+    p = CompactCoachPanel(session=panel.session)  # type: ignore[arg-type]
+    try:
+        assert p._conversation_mode == CONVERSATION
+    finally:
+        with contextlib.suppress(RuntimeError):
+            p.close()
+
+
 def test_mode_ack_updates_button_and_views(panel):
     panel.session.modeChanged.emit("conversation")
     assert panel.mode_btn.text() == "Turn Advice"
@@ -454,6 +526,73 @@ def test_verbosity_status_ack_updates_button(panel):
 def test_stop_speech_button_calls_session(panel):
     panel.stop_speech_btn.click()
     assert panel.session.stopped_speech == 1
+
+
+def test_desktop_stop_clears_engine_arbiter(session, monkeypatch):
+    """M1: UI stop must release the ENGINE arbiter channel (stop_speech
+    command), so subsequent proactive speech is not cancelled by a channel
+    that never freed."""
+    commands: list[tuple[str, Any]] = []
+    monkeypatch.setattr(session._tts, "stop_speech", lambda: None)
+    monkeypatch.setattr(session, "send_command", lambda cmd, *a: commands.append((cmd, a)))
+    session.stop_speaking()
+    assert ("stop_speech", ()) in commands
+
+
+def test_stop_button_cancels_engine_pending(monkeypatch):
+    """M1: engine-side stop_speech dispatch cancels pending conversation work
+    — no conversation_reply/speech after stop during a slow get_advice."""
+    from unittest.mock import MagicMock
+
+    from tests.test_conversation import make_controller, wait_thread
+
+    import arenamcp.conversation as conversation_mod
+    from arenamcp.conversation import CONVERSATION
+    from arenamcp.pipe_adapter import PipeAdapter
+
+    gate = threading.Event()
+
+    def slow_advice(snapshot, question=None, **kw):
+        gate.wait(timeout=5.0)
+        return "late answer that must never play"
+
+    ctrl, coach, voice = make_controller()
+    coach._coach.get_advice.side_effect = slow_advice
+    coach.conversation = ctrl  # the adapter must find the REAL controller
+    monkeypatch.setattr(
+        conversation_mod, "get_settings", lambda: MagicMock(set=lambda k, v: None)
+    )
+    ctrl.set_mode(CONVERSATION, persist=False)
+
+    adapter = PipeAdapter()
+    adapter._emit = lambda event: None  # type: ignore[method-assign]
+    adapter._coach = coach
+
+    ctrl.on_user_question("why not attack?")
+    # Wait until the answer thread registers the request as pending, then
+    # deliver the UI stop mid-render.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not ctrl._pending:
+        time.sleep(0.01)
+    adapter._dispatch({"cmd": "stop_speech"})
+    assert ctrl._pending == {}
+
+    gate.set()
+    wait_thread(ctrl)
+
+    reply_events = [c for c in ctrl._emit_event.calls if c[0] == "conversation_reply"]
+    assert reply_events == []
+    assert voice.spoken == []
+
+
+def test_ptt_press_sends_stop_speech_command(ptt_button, qapp):
+    """M1: a PTT press additionally notifies the engine (stop_speech)."""
+    session = MockSession()
+    recorder = FakeRecorder()
+    transcriber = FakeTranscriber()
+    PttController(ptt_button, session, recorder=recorder, transcriber=transcriber)
+    ptt_button.pressed.emit()
+    assert ("stop_speech", ()) in session.commands
 
 
 def test_conversation_reply_routes_to_transcript(panel):
@@ -583,8 +722,11 @@ def test_ptt_empty_transcription_not_sent(ptt_button, qapp):
     )
     ptt_button.pressed.emit()
     ptt_button.released.emit()
-    assert session.commands == []
-    assert not controller.listening
+    # Only the stop_speech notification happened — no chat send.
+    assert session.commands == [("stop_speech", ())]
+    # Empty transcription is an info-level notice on the transcript surface
+    # (not a chat send) — the user must know the press produced nothing.
+    assert "no speech detected" in session.notices[0]
 
 
 def test_ptt_silent_recording_not_sent(ptt_button, qapp):
@@ -597,5 +739,89 @@ def test_ptt_silent_recording_not_sent(ptt_button, qapp):
     PttController(ptt_button, session, recorder=SilentRecorder(), transcriber=FakeTranscriber())
     ptt_button.pressed.emit()
     ptt_button.released.emit()
-    assert session.commands == []
+    assert session.commands == [("stop_speech", ())]
+    assert "no speech detected" in session.notices[0]
+
+
+# ---------------------------------------------------------------------------
+# M5 — PTT failure notices ([LOCAL FALLBACK])
+# ---------------------------------------------------------------------------
+
+
+def test_ptt_transcribe_failure_emits_local_fallback_notice(ptt_button, qapp):
+    session = MockSession()
+
+    class BoomTranscriber:
+        def transcribe(self, wav_bytes: bytes) -> str:
+            raise RuntimeError("whisper exploded")
+
+    PttController(ptt_button, session, recorder=FakeRecorder(), transcriber=BoomTranscriber())
+    ptt_button.pressed.emit()
+    ptt_button.released.emit()
+
+    assert len(session.notices) == 1
+    assert "[LOCAL FALLBACK]" in session.notices[0]
+    assert "transcription failed" in session.notices[0]
+    assert session.commands == [("stop_speech", ())]
+
+
+def test_ptt_mic_failure_mid_press_recovers(ptt_button, qapp):
+    """recorder.start() failure emits a mic notice AND the button re-arms —
+    the next press works normally."""
+    session = MockSession()
+
+    class FlakyRecorder(FakeRecorder):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fail_first_start = True
+
+        def start(self) -> None:
+            if self.fail_first_start:
+                self.fail_first_start = False
+                raise RuntimeError("device busy")
+            self.started += 1
+
+    recorder = FlakyRecorder()
+    controller = PttController(ptt_button, session, recorder=recorder, transcriber=FakeTranscriber())
+
+    # First press fails with a user-visible mic notice.
+    ptt_button.pressed.emit()
+    assert not controller.listening
+    assert len(session.notices) == 1
+    assert "[LOCAL FALLBACK]" in session.notices[0]
+    assert "microphone" in session.notices[0]
+
+    # Button re-armed: the next press works end-to-end.
+    ptt_button.pressed.emit()
+    assert controller.listening
+    ptt_button.released.emit()
+    assert ("chat", "why not attack") in session.commands
+
+
+def test_ptt_recorder_stop_failure_emits_notice(ptt_button, qapp):
+    session = MockSession()
+
+    class BoomStopRecorder(FakeRecorder):
+        def stop(self) -> bytes:
+            raise RuntimeError("stream dead")
+
+    PttController(ptt_button, session, recorder=BoomStopRecorder(), transcriber=FakeTranscriber())
+    ptt_button.pressed.emit()
+    ptt_button.released.emit()
+
+    assert len(session.notices) == 1
+    assert "[LOCAL FALLBACK]" in session.notices[0]
+    assert "microphone" in session.notices[0]
+    assert session.commands == [("stop_speech", ())]
+
+
+def test_ptt_no_speech_info_differs_from_failure_notice(ptt_button, qapp):
+    """'no speech detected' is info-level (no 'failed' wording); a
+    transcription error is a distinct failure notice."""
+    session = MockSession()
+    PttController(ptt_button, session, recorder=FakeRecorder(), transcriber=FakeTranscriber(text=""))
+    ptt_button.pressed.emit()
+    ptt_button.released.emit()
+    assert "no speech detected" in session.notices[0]
+    assert "failed" not in session.notices[0]
 
