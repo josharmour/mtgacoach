@@ -208,8 +208,9 @@ class CompactCoachPanel(QWidget):
         self.bug_report_btn.clicked.connect(self._session.trigger_debug_report)
         ctrl_row1.addWidget(self.bug_report_btn)
 
-        # Conversation Mode switch: toggles turn_advice <-> conversation
-        self.mode_btn = QPushButton("Conversation")
+        # Conversation Mode switch: toggles turn_advice <-> conversation.
+        # Label shows the CURRENT mode (unambiguous), highlight shows on-state.
+        self.mode_btn = QPushButton("Mode: Turn Advice")
         self.mode_btn.setObjectName("modeButton")
         self.mode_btn.setProperty("convoOn", "false")
         self.mode_btn.setToolTip("Switch between Conversation mode and Turn Advice mode")
@@ -523,7 +524,7 @@ class CompactCoachPanel(QWidget):
             return
         self._conversation_mode = mode
         in_convo = mode == "conversation"
-        self.mode_btn.setText("Turn Advice" if in_convo else "Conversation")
+        self.mode_btn.setText("Mode: Conversation" if in_convo else "Mode: Turn Advice")
         self.mode_btn.setProperty("convoOn", "true" if in_convo else "false")
         self._repolish(self.mode_btn)
         self.conversation_transcript.setVisible(in_convo)
@@ -546,7 +547,7 @@ class CompactCoachPanel(QWidget):
             return
         if state == "thinking":
             self.conversation_transcript.set_pending(True)
-        elif state == "idle":
+        elif state in ("idle", "speaking"):
             self.conversation_transcript.set_pending(False)
         self.conversation_status_label.setText(f"⏺ {state.capitalize()}")
         self.conversation_status_label.setProperty("convoState", state)

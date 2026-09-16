@@ -493,13 +493,13 @@ def test_panel_reads_isolated_settings_not_singleton(panel, isolated_settings):
 
 def test_mode_ack_updates_button_and_views(panel):
     panel.session.modeChanged.emit("conversation")
-    assert panel.mode_btn.text() == "Turn Advice"
+    assert panel.mode_btn.text() == "Mode: Conversation"
     assert not panel.conversation_transcript.isHidden()
     assert panel.log_view.isHidden()
     assert panel.conversation_mode == "conversation"
 
     panel.session.modeChanged.emit("turn_advice")
-    assert panel.mode_btn.text() == "Conversation"
+    assert panel.mode_btn.text() == "Mode: Turn Advice"
     assert panel.conversation_transcript.isHidden()
     assert not panel.log_view.isHidden()
     assert panel.conversation_mode == "turn_advice"

@@ -1479,6 +1479,12 @@ class ConversationController:
                 except Exception:
                     logger.debug("voice_output.speak failed (topic)", exc_info=True)
 
+        # Speaking-state surfacing (deferred ledger item 3): the engine now
+        # emits 'speaking' when topic audio is accepted, reverting to idle via
+        # the existing lifecycle paths; desktop maps these to the status label.
+        if spoken:
+            self._emit("conversation_status", state="speaking")
+
         if speech_priority == "urgent" and spoken:
             # PENDING-QUESTION RECOVERY: after the urgent speech COMPLETES
             # (not when it starts — a recovery answer must never preempt the
@@ -1911,6 +1917,10 @@ class ConversationController:
         if vs is not None and hasattr(vs, "speak"):
             try:
                 vs.speak(spoken, priority="question", identity=identity)
+                # Speaking-state surfacing (deferred ledger item 3): accepted
+                # question speech flips the label to 'speaking'; the desktop
+                # clears it when the next reply/status event arrives.
+                self._emit("conversation_status", state="speaking")
                 return
             except Exception:
                 logger.debug("voice_session.speak failed", exc_info=True)
