@@ -1135,11 +1135,39 @@ class ConversationController:
         if had_pending:
             self._emit_idle()
 
+        # Mode transitions must be LOUD: conversation mode logs nothing on its
+        # success paths, so an unlogged switch made mode state undiscoverable
+        # from the log alone (2026-09-16 Mac session — mode flipped mid-match
+        # and the log could not prove which mode dispatched).
+        logger.info(f"Conversation mode set: {mode} (persist={persist})")
+
         if persist:
             try:
                 get_settings().set("conversation_mode", mode)
             except Exception:
                 logger.warning("Failed to persist conversation_mode", exc_info=True)
+
+        # Confirmation only for USER-initiated switches (persist=True).
+        # Boot-restore uses persist=False and must stay silent.
+        if persist:
+            self._speak_mode_confirmation(mode)
+
+    def _speak_mode_confirmation(self, mode: str) -> None:
+        """Short audible confirmation on user-initiated mode switches.
+
+        A silent switch made mode state undiscoverable in live play (the
+        2026-09-16 Mac session flipped mid-match unnoticed). Confirmation
+        speech is identification-priority, never stale-dropped identity
+        machinery — keep it tiny and unconditional except for mute.
+        """
+        phrase = "Conversation mode on." if mode == CONVERSATION else "Turn advice mode."
+        vo = getattr(self._coach, "_voice_output", None)
+        if vo is None or not hasattr(vo, "speak"):
+            return
+        try:
+            vo.speak(phrase)
+        except Exception:
+            logger.debug("mode confirmation speech failed", exc_info=True)
 
     def set_verbosity(self, verbosity: str) -> None:
         """Set commentary verbosity; behavior is reserved for Wave 3."""

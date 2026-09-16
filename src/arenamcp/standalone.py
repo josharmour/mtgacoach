@@ -221,6 +221,11 @@ class StandaloneCoach(
             # (persist=True is reserved for explicit user mode changes).
             with contextlib.suppress(Exception):
                 self.conversation.set_mode(saved_mode, persist=False)
+            logger.info(
+                f"Conversation mode restored from settings: {saved_mode}"
+            )
+        else:
+            logger.info("Conversation mode: turn_advice (default)")
 
         # Rolling in-match advice history (used for post-match analysis)
         self._advice_history: list[dict] = []
