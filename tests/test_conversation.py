@@ -533,3 +533,39 @@ class TestAugmentQuestion:
     def test_no_history_returns_raw(self, monkeypatch) -> None:
         ctrl, _, _ = make_controller()
         assert ctrl._augment_question("just this") == "just this"
+
+
+
+class TestWave4EvidenceAugment:
+    """Wave 4: evidence block is attached to the question prompt."""
+
+    def test_supported_evidence_included_with_caveat(self) -> None:
+        from arenamcp.conversation import EvidenceBlock
+
+        ctrl, _, _ = make_controller()
+        ctrl.memory.last_evidence = EvidenceBlock(
+            model_id="uwtempo/ver2",
+            deck_supported=True,
+            deck_compatible=True,
+            similarity=0.9,
+            eval_source="MageZero UWTempo v2",
+        )
+        augmented = ctrl._augment_question("how is my board?")
+        assert "MageZero evidence:" in augmented
+        assert "uwtempo/ver2" in augmented
+        assert "Deck support: supported" in augmented
+        # Uncertainty sentence rides along via prompt on rendered turns; the
+        # evidence block itself only adds it when provenance is present.
+
+    def test_unavailable_evidence_still_answers(self) -> None:
+        ctrl, _, _ = make_controller()
+        ctrl.memory.append(ConversationTurn(role="user", text="earlier q"))
+        ctrl.memory.last_evidence = None
+        augmented = ctrl._augment_question("why not attack?")
+        assert "User question: why not attack?" in augmented
+        assert "MageZero evidence is unavailable" in augmented
+
+    def test_no_history_no_evidence_returns_raw(self) -> None:
+        ctrl, _, _ = make_controller()
+        ctrl.memory.last_evidence = None
+        assert ctrl._augment_question("just this") == "just this"
