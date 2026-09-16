@@ -137,8 +137,16 @@ class TestResponseIdentity:
         assert a.is_stale_vs(b)
         c = ResponseIdentity(1, "other", 1, 2, None, None, TURN_ADVICE, 3)
         assert a.is_stale_vs(c)
-        d = ResponseIdentity(1, "m", 1, 3, None, None, TURN_ADVICE, 4)
+        d = ResponseIdentity(1, "m", 3, 2, None, None, TURN_ADVICE, 4)
         assert a.is_stale_vs(d)
+
+    def test_is_stale_vs_ignores_position_fields(self) -> None:
+        # Session-scope staleness (live-test fix 2026-09-16): turn/player/
+        # decision drift during the multi-second LLM render must NOT drop
+        # conversation speech — only session (mode/match) changes do.
+        a = ResponseIdentity(1, "m", 1, 2, 1, "sig-a", TURN_ADVICE, 1)
+        same_session = ResponseIdentity(1, "m", 1, 9, 2, "sig-b", TURN_ADVICE, 2)
+        assert not a.is_stale_vs(same_session)
 
 
 class TestMatchMemory:

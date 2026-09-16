@@ -34,6 +34,10 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
 
+# The recovery daemon's grace loop must survive tests that monkeypatch
+# ``time.sleep`` on the SHARED time module: keep a pristine handle.
+_tool_sleep = time.sleep
+
 from arenamcp.backend_health import is_backend_error_text, strip_health_tags
 from arenamcp.settings import get_settings
 
@@ -195,8 +199,17 @@ class ResponseIdentity:
         }
 
     def is_stale_vs(self, other: ResponseIdentity | None) -> bool:
-        # Position-bound fields additionally invalidate the response when the
-        # turn, active player, or pending decision changed underneath it.
+        # Session-scope staleness (Wave-2 contract): a conversational response
+        # is invalid when the SESSION (mode change or match boundary) or the
+        # match moved underneath it. Position fields (turn_number /
+        # active_player / decision_sig) are deliberately NOT compared: a live
+        # LLM render takes seconds while the game advances, so position
+        # equality can never hold at delivery time — every proactive topic and
+        # question answer was silently dropped (live report 2026-09-16 15:41,
+        # bug_20260916_154149). Position-bound gating belongs to the legacy
+        # advice path's own staleness logic (standalone.py "Discarding stale
+        # advice"); supersession of in-flight answers stays request-id-based
+        # at the _is_stale call site.
         if other is None:
             return False
         if self.session_id != other.session_id:
@@ -204,10 +217,6 @@ class ResponseIdentity:
         if self.match_id != other.match_id:
             return True
         if self.match_number != other.match_number:
-            return True
-        if self.decision_sig is not None and self.decision_sig != other.decision_sig:
-            return True
-        if self.turn_number != other.turn_number or self.active_player != other.active_player:
             return True
         return False
 
@@ -1560,6 +1569,12 @@ class ConversationController:
         by the C1 completion machinery); anything else degrades to a bounded
         grace wait so a recovery answer can never preempt the topic
         immediately. Thread-safety: called from the recovery daemon only.
+
+        The grace loop uses ``time.tool_sleep`` (aliased at import) rather
+        than ``time.sleep`` so tests that monkeypatch ``time.sleep`` on the
+        shared time module (run_loop in test_standalone_conversation.py)
+        cannot have a lingering recovery daemon consume their sleep budget
+        and cut their coaching loop short (2026-09-16 suite-order flake).
         """
         try:
             from arenamcp.voice_session import VoiceSession  # local import: avoids cycle
@@ -1572,7 +1587,7 @@ class ConversationController:
         # Non-arbiter sink: no completion signal — bounded grace period.
         grace_end = time.monotonic() + _RECOVERY_GRACE_SECONDS
         while time.monotonic() < grace_end:
-            time.sleep(0.05)
+            _tool_sleep(0.05)
 
     def _defer_pending_questions(self, match_id: str | None) -> None:
         """Snapshot pending user questions into memory for later recovery."""
@@ -1745,11 +1760,16 @@ class ConversationController:
         )
         vo = getattr(self._coach, "_voice_output", None)
         if vo is None or not hasattr(vo, "speak"):
+            logger.info(
+                "conversation-opener: no voice sink (voice_output=%r) — opener not spoken",
+                vo,
+            )
             return
         try:
             vo.speak(opener)
+            logger.info("conversation-opener spoken: %s", opener)
         except Exception:
-            logger.debug("match-opener speech failed", exc_info=True)
+            logger.warning("match-opener speech failed", exc_info=True)
 
     def cancel_pending(self) -> None:
         # Invalidate in-flight requests: their identities no longer match

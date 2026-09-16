@@ -5,8 +5,9 @@ other conversation suites:
 
 1.  Monotonic suppression clock (now_fn injection; backward wall-clock jump
     never freezes/expiries cooldown or per-topic repetition windows).
-2.  Topic delivery staleness gate uses the FULL identity.is_stale_vs — a
-    turn advance between the topic gate and delivery drops the topic.
+2.  Topic delivery staleness gate is session-scope identity.is_stale_vs — a
+    turn advance between the topic gate and delivery does NOT drop the
+    topic (position drift is normal during the live LLM render).
 4.  _evidence_signature is a CONTENT fingerprint: an identical re-created
     payload does NOT force a recompute; changed content does.
 5.  _refresh_evidence compare-and-set: a concurrent refresh can never regress
@@ -263,9 +264,12 @@ class TestMonotonicSuppressionClock:
 
 
 class TestTopicFullStalenessGate:
-    def test_turn_advance_between_gate_and_delivery_drops_topic(self) -> None:
-        """Same session, turn advances while the topic renders → the topic is
-        dropped (position-bound staleness, parity with the question path)."""
+    def test_turn_advance_between_gate_and_delivery_still_delivers(self) -> None:
+        """Same session, turn advances while the topic renders → the topic
+        STILL delivers (session-scope staleness, live-test fix 2026-09-16):
+        position drift during the multi-second render is normal in a live
+        game and must not silently drop conversation speech.
+        """
         ctrl, coach, voice, inner = make_controller(emit="capture")
         turn_holder = {"n": 5}
 
@@ -286,17 +290,24 @@ class TestTopicFullStalenessGate:
             )
         ]
         result = ctrl.speak_topic_if_any(match_id="m-1", match_number=1)
-        assert result is None
-        assert voice.speak.call_count == 0
-        # Topic not recorded as discussed — it can be re-selected later.
-        assert ctrl.memory.discussed_topics == {}
-        # Idle status restored (M6 lifecycle).
+        assert result is not None
+        assert voice.speak.call_count == 1
+        # Topic recorded as discussed — it was actually spoken.
+        assert "threat" in ctrl.memory.discussed_topics
+        # Speaking status emitted (M6 lifecycle). The final status may be
+        # 'idle' (urgent-recovery thread completes and returns to idle).
         statuses = [
             f.get("state")
             for c, f in _EMIT_CALLS  # type: ignore[name-defined]
             if c == "conversation_status"
         ]
-        assert statuses and statuses[-1] == "idle"
+        assert statuses and "speaking" in statuses
+        # Join the urgent-recovery daemon so its grace wait cannot leak into
+        # later tests that monkeypatch the shared time.sleep (suite-order
+        # flake, 2026-09-16).
+        for t in threading.enumerate():
+            if t.name == "convo-topic-recovery":
+                t.join(timeout=5.0)
 
     def test_same_session_no_drift_still_delivers(self) -> None:
         """No identity drift → the topic delivers normally (control)."""

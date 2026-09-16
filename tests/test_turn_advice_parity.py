@@ -687,8 +687,15 @@ def test_t5_mode_switch_back_restores_parity(monkeypatch):
     run_scripted_game(monkeypatch, b_coach, iterations=4)
 
     # Post-switch current dispatch == baseline's last two dispatch records.
+    # The conversation-mode match-start opener ("Conversation mode. Match
+    # underway...") is a mode indicator, not advice dispatch — it lands in
+    # the sink at the match boundary and must not count against parity.
     b_last2 = [(c["text"], c["blocking"]) for c in b_sink.calls][-2:]
-    c_all = [(c["text"], c["blocking"]) for c in c_sink.calls]
+    c_all = [
+        (c["text"], c["blocking"])
+        for c in c_sink.calls
+        if not str(c["text"]).startswith(("Conversation mode. Match underway.",))
+    ]
     assert b_last2 == [("ADVICE[land_played]", False), ("ADVICE[land_played]", False)]
     assert c_all == b_last2
     assert [c["trigger"] for c in c_llm.calls] == ["land_played", "land_played"]
