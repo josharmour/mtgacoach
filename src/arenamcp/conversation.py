@@ -1418,6 +1418,21 @@ class ConversationController:
                 threat_signature_prev=self._threat_signature_prev,
             )
             self._last_topics_ts = time.time()
+            _pb = prev_state or {}
+            _cb = curr_state or {}
+            _pi = {c.get("instance_id") for c in (_pb.get("battlefield") or []) if isinstance(c, dict)}
+            _ci = {c.get("instance_id") for c in (_cb.get("battlefield") or []) if isinstance(c, dict)}
+            logger.info(
+                "convo-diag: on_state topics=%s keys=%s | prev_bf=%s cur_bf=%s new_ids=%s local=%s opp=%s prev_empty=%s",
+                len(self._last_topics),
+                [t.key for t in self._last_topics],
+                len(_pb.get("battlefield") or []),
+                len(_cb.get("battlefield") or []),
+                len(_ci - _pi) if _pi else "all-new",
+                _local_seat(_cb),
+                _opponent_seat(_cb, _local_seat(_cb)),
+                not _pb,
+            )
             # Advance the threat baseline so the NEXT batch sees an unchanged
             # threat set as unchanged (not newly announced).
             self._threat_signature_prev = self._topic_selector._threat_signature(
@@ -1460,6 +1475,11 @@ class ConversationController:
         with self._lock:
             topics = list(self._last_topics)
             self._last_topics = []
+        logger.info(
+            "convo-diag: speak_topic_if_any drained=%s mode=%s",
+            len(topics),
+            self.mode,
+        )
         if not topics or self.mode != CONVERSATION:
             return None
 
@@ -1508,6 +1528,13 @@ class ConversationController:
                 # the cooldown — they interrupt in-flight speech by design —
                 # but not the per-key minimum spacing below (M2: a NEW threat
                 # is announced, then not re-announced 3× within one window).
+                logger.info(
+                    "convo-diag: gate topic=%s prio=%s elapsed=%s cooldown=%s",
+                    topic.key,
+                    int(topic.priority),
+                    now - self.memory.last_proactive_ts,
+                    cooldown,
+                )
                 if topic.priority < EventPriority.THREAT and now - self.memory.last_proactive_ts < cooldown:
                     return None
                 # PER-KEY MINIMUM SPACING (applies to ALL topics including
