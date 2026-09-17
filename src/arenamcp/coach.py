@@ -3126,6 +3126,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         trigger: str | None = None,
         style: str | None = None,
         threat: dict[str, Any] | None = None,
+        conversational: bool = False,
     ) -> str:
         """Get coaching advice for the current game state.
 
@@ -3134,6 +3135,13 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             question: Optional user question to answer
             trigger: Optional trigger name (e.g., "combat_attackers", "low_life")
             style: Advice style ("concise" or "verbose")
+            threat: Optional threat card dict for threat_detected triggers
+            conversational: Conversation-mode render (topic commentary or
+                question answer). Bypasses the legal-action sanitizer: the
+                output is broadcast-style commentary for the audience, not an
+                action for the player, so forcing it to "match a legal action"
+                replaced conversational prose with boilerplate like
+                "Wait (Opponent has priority)" (live report 2026-09-16 20:08).
 
         Returns:
             Advice string from the LLM
@@ -3456,7 +3464,16 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             response = self._build_threat_fallback(game_state, threat)
 
         # POST-PROCESSING: Validate and fix common LLM issues (especially for smaller models)
-        response = self._postprocess_advice(response, game_state, style=style_key)
+        # Conversational renders (topic commentary / question answers) are
+        # broadcast-style prose for the audience — they intentionally describe
+        # plays and strategy without being an executable action, so the
+        # legal-action sanitizer would misread them as "illegal advice" and
+        # replace them with boilerplate like "Wait (Opponent has priority)".
+        # Skip that filter; markdown/TTS cleanup still applies via the
+        # style-specific paths below.
+        response = self._postprocess_advice(
+            response, game_state, style=style_key, skip_legal_filter=conversational
+        )
 
         if trigger == "threat_detected" and threat:
             threat_name = str(threat.get("name", "") or "").strip()

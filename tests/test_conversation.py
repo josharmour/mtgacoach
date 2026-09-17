@@ -269,9 +269,12 @@ class TestUserQuestion:
         states = [f["state"] for c, f in ctrl._emit_event.calls if c == "conversation_status"]
         assert "thinking" in states and "idle" in states
 
-        # question was augmented with conversation digest
+        # question was augmented with conversation digest, framed by the
+        # broadcast-announcer voice (2026-09-16)
         kwargs = coach._coach.get_advice.call_args.kwargs
-        assert kwargs["question"].startswith("Recent conversation:")
+        assert kwargs.get("conversational") is True
+        assert kwargs["question"].startswith("You are the broadcast announcer")
+        assert "Recent conversation:" in kwargs["question"]
         assert "User question: Why not attack?" in kwargs["question"]
 
     def test_fallback_voice_output_when_no_session(self, monkeypatch) -> None:
@@ -541,8 +544,11 @@ class TestAugmentQuestion:
         assert "User question: why not attack?" in augmented
 
     def test_no_history_returns_raw(self, monkeypatch) -> None:
+        # Broadcast voice (2026-09-16): the question text survives verbatim,
+        # prefixed with the announcer frame.
         ctrl, _, _ = make_controller()
-        assert ctrl._augment_question("just this") == "just this"
+        assert ctrl._augment_question("just this").endswith("User question: just this")
+        assert "broadcast announcer" in ctrl._augment_question("just this")
 
 
 
@@ -578,7 +584,12 @@ class TestWave4EvidenceAugment:
     def test_no_history_no_evidence_returns_raw(self) -> None:
         ctrl, _, _ = make_controller()
         ctrl.memory.last_evidence = None
-        assert ctrl._augment_question("just this") == "just this"
+        # Broadcast voice (2026-09-16): verbatim question + announcer frame,
+        # no evidence block or instructions when MageZero has nothing.
+        augmented = ctrl._augment_question("just this")
+        assert augmented.endswith("User question: just this")
+        assert "MageZero evidence" not in augmented
+        assert "broadcast announcer" in augmented
 
 
 # ---------------------------------------------------------------------------
@@ -635,7 +646,12 @@ class TestQuestionPathGrounding:
     def test_no_evidence_raw_question_has_no_instruction(self) -> None:
         ctrl, _, _ = make_controller()
         ctrl.memory.last_evidence = None
-        assert ctrl._augment_question("just this") == "just this"
+        # Question survives verbatim; evidence instructions absent (no
+        # MageZero block to govern), announcer frame present.
+        augmented = ctrl._augment_question("just this")
+        assert augmented.endswith("User question: just this")
+        assert "MageZero evidence" not in augmented
+        assert "broadcast announcer" in augmented
 
 
 # ---------------------------------------------------------------------------

@@ -97,13 +97,27 @@ def _mulligan_hand_call(game_state: dict[str, Any]) -> str:
 
 
 class _AdvicePostprocessMixin:
-    def _postprocess_advice(self, advice: str, game_state: dict[str, Any], style: str = "quick") -> str:
+    def _postprocess_advice(
+        self,
+        advice: str,
+        game_state: dict[str, Any],
+        style: str = "quick",
+        skip_legal_filter: bool = False,
+    ) -> str:
         """Post-process LLM advice to fix common issues with smaller models.
 
         1. Strip markdown formatting (headers, bold, bullets) for spoken output
         2. Truncate overly long responses when style is concise
         3. Remove 'Play [Land]' suggestions when no land is in hand
         4. Fix typos in card names using fuzzy matching against the game state
+
+        ``skip_legal_filter``: conversation-mode renders (topic commentary,
+        question answers) are broadcast-style prose for the audience, not an
+        executable action for the player — the "must match a legal action"
+        enforcement would replace conversational commentary with boilerplate
+        like "Wait (Opponent has priority)" whenever the opponent holds
+        priority (live report 2026-09-16 20:08). Markdown/TTS cleanup and the
+        backend-error surfacing still run.
 
         This is a band-aid layer over freeform LLM prose. The cleaner long-term
         fix is to switch the coach to structured JSON output (action + say
@@ -590,8 +604,9 @@ class _AdvicePostprocessMixin:
             try:
                 from arenamcp.rules_engine import RulesEngine
 
-                legal_actions = RulesEngine.get_legal_actions(game_state) or []
-                legal_actions = _augment_legal_actions_from_decision_context(legal_actions)
+                legal_actions = [] if skip_legal_filter else (RulesEngine.get_legal_actions(game_state) or [])
+                if not skip_legal_filter:
+                    legal_actions = _augment_legal_actions_from_decision_context(legal_actions)
             except Exception as e:
                 logger.warning(f"RulesEngine error in postprocess: {e}")
                 legal_actions = []

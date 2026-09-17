@@ -98,14 +98,30 @@ URGENT_TOPIC_KEYS: frozenset[str] = frozenset({"threat", "urgent_decision", "low
 # than in any semantic analyzer: statements about the opponent's hidden
 # hand/library must be phrased as hypotheses.
 TOPIC_PROMPT_PREFIX = (
-    "You are a Magic: The Gathering coach commenting proactively on how the "
-    "game is developing. Keep it under two short sentences. Never state or "
-    "imply a win probability. Any statement about the opponent's hidden hand "
-    'or library must be phrased as a hypothesis ("they might have..."), '
-    "never as an observed fact. MageZero model evidence, when present below, "
-    "is supporting context only: never state a win probability from it, do "
-    "not imply a one-ply estimate is full rules-engine search, and never "
-    "describe a policy preference as an evaluated outcome."
+    "You are the play-by-play announcer for a Magic: The Gathering broadcast, "
+    "calling the game for laymen and observers. Keep it under two short "
+    "sentences. Describe what is happening and why it matters: narrate the "
+    "plays, board shifts, and the strategy behind them, and add brief tidbits "
+    "about the cards involved when they are interesting. Your commentary is "
+    "for an audience, never instructions to the player — never tell anyone "
+    "what to do next. Never state or imply a win probability. Any statement "
+    "about the opponent's hidden hand or library must be phrased as a "
+    'hypothesis ("they might have..."), never as an observed fact. MageZero '
+    "model evidence, when present below, is supporting context only: never "
+    "state a win probability from it, do not imply a one-ply estimate is full "
+    "rules-engine search, and never describe a policy preference as an "
+    "evaluated outcome."
+)
+
+# Question path (typed/PTT): same broadcast voice, but the viewer asked a
+# direct question — recommendations are delivered as commentary on the best
+# line, never as commands.
+ANNOUNCER_QUESTION_PREFIX = (
+    "You are the broadcast announcer calling this Magic: The Gathering game "
+    "for observers. Answer the viewer's question in plain language, the way a "
+    "commentator would explain the situation. When they ask what to do, give "
+    "your read on the best line as commentary — never as an instruction to "
+    "the player."
 )
 
 # Wave 4 — the standing caveat for uncalibrated model evidence, mirrored from
@@ -1477,7 +1493,7 @@ class ConversationController:
             return "[BACKEND ERROR] coach engine unavailable"
         snapshot = self._snapshot()
         try:
-            return str(inner.get_advice(snapshot, question=question))
+            return str(inner.get_advice(snapshot, question=question, conversational=True))
         except Exception as exc:
             logger.warning("topic get_advice failed: %s", exc, exc_info=True)
             return f"[BACKEND ERROR] {type(exc).__name__}: {exc}"
@@ -1902,11 +1918,13 @@ class ConversationController:
 
         if not lines and not evidence_useful:
             # No history and nothing meaningful from MageZero: keep the raw
-            # question (conversation remains useful without MageZero).
-            return str(text)
+            # question (conversation remains useful without MageZero), framed
+            # with the broadcast-announcer voice.
+            return f"{ANNOUNCER_QUESTION_PREFIX}\n\nUser question: {text}"
 
         if not lines:
             return (
+                f"{ANNOUNCER_QUESTION_PREFIX}\n\n"
                 f"{QUESTION_EVIDENCE_INSTRUCTIONS}\n"
                 f"MageZero evidence:\n{evidence_block}\n\n"
                 f"User question: {text}"
@@ -1914,6 +1932,7 @@ class ConversationController:
 
         digest = "\n".join(lines)
         return (
+            f"{ANNOUNCER_QUESTION_PREFIX}\n\n"
             f"Recent conversation:\n{digest}\n\n"
             f"{QUESTION_EVIDENCE_INSTRUCTIONS}\n"
             f"MageZero evidence:\n{evidence_block}\n\n"
@@ -1956,7 +1975,7 @@ class ConversationController:
                 reply = "[BACKEND ERROR] coach engine unavailable"
             else:
                 try:
-                    reply = inner.get_advice(snapshot, question=augmented)
+                    reply = inner.get_advice(snapshot, question=augmented, conversational=True)
                 except Exception as exc:
                     logger.warning("get_advice failed: %s", exc, exc_info=True)
                     reply = f"[BACKEND ERROR] {type(exc).__name__}: {exc}"
