@@ -927,10 +927,38 @@ class StandaloneCoach(
         match-start boundaries speak the conversation-mode opener — announcing
         "Match underway" when the match just ENDED was wrong and confusing
         (live report 2026-09-16 10:09).
+
+        Re-detection guard (live report 2026-09-16 21:18): the log watcher
+        can re-surface a JUST-finalized match id (game over → watcher sees
+        the match message again → match_id None -> id boundary), which fired
+        a phantom "Match underway" opener seconds AFTER the result line.
+        ``match_packets`` already refuses to restart recording for finalized
+        ids; the conversation opener must refuse the same way.
         """
         conversation = getattr(self, "conversation", None)
         if conversation is None or not hasattr(conversation, "reset_for_match"):
             return
+        # A match-start boundary for an id the packet layer already finalized
+        # is a phantom re-detection of a finished match — reset silently.
+        if match_id is not None:
+            try:
+                from arenamcp.match_packets import _finalized_match_ids
+
+                if match_id in _finalized_match_ids:
+                    logger.info(
+                        "Skipping conversation reset opener: match %s already finalized "
+                        "(phantom re-detection)",
+                        match_id,
+                    )
+                    try:
+                        conversation.reset_for_match(
+                            match_id, self._match_number, match_start=False
+                        )
+                    except Exception as e:
+                        logger.debug(f"conversation.reset_for_match failed: {e}")
+                    return
+            except ImportError:
+                pass
         try:
             conversation.reset_for_match(
                 match_id, self._match_number, match_start=match_id is not None

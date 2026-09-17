@@ -83,6 +83,51 @@ SELECTOR = TopicSelector()
 # ---------------------------------------------------------------------------
 
 
+class TestLocalPlayTopics:
+    """Play-by-play coverage (2026-09-16): your own notable resolves and
+    combo synergies become commentary topics."""
+
+    def test_your_new_creature_resolves_becomes_topic(self) -> None:
+        prev = make_state(battlefield=[card("Forest", 1, 1, "Land")])
+        cur = make_state(
+            battlefield=[
+                card("Forest", 1, 1, "Land"),
+                card("Vorinclex, Voice of Hunger", 1, 2),
+            ]
+        )
+        topics = SELECTOR.select(prev, cur, [])
+        keys = {t.key for t in topics}
+        assert "local_play" in keys
+        play = next(t for t in topics if t.key == "local_play")
+        assert "Vorinclex" in play.evidence
+
+    def test_no_new_entries_no_topic(self) -> None:
+        prev = make_state(battlefield=[card("Llanowar Elves", 1, 1)])
+        cur = make_state(battlefield=[card("Llanowar Elves", 1, 1)])
+        assert all(t.key != "local_play" for t in SELECTOR.select(prev, cur, []))
+
+    def test_lands_do_not_produce_play_topics(self) -> None:
+        prev = make_state(battlefield=[])
+        cur = make_state(battlefield=[card("Forest", 1, 1, "Land")])
+        assert all(t.key != "local_play" for t in SELECTOR.select(prev, cur, []))
+
+    def test_shared_subtype_combo_tidbit(self) -> None:
+        prev = make_state(battlefield=[])
+        cur = make_state(
+            battlefield=[card("Notary Hobbits", 1, 1), card("Lathiel, the Bounteous Dawn", 1, 2)]
+        )
+        cur["battlefield"][0]["subtypes"] = ["Halfling", "Citizen"]
+        cur["battlefield"][1]["subtypes"] = ["Halfling", "Citizen"]
+        topics = SELECTOR.select(prev, cur, [])
+        keys = {t.key for t in topics}
+        assert "combo_tidbit" in keys
+        combo = next(t for t in topics if t.key == "combo_tidbit")
+        # Label preserves original casing of the shared subtype (one deduped
+        # pair — A+B and B+A are the same fact).
+        assert "share Halfling" in combo.evidence or "share Citizen" in combo.evidence
+        assert combo.evidence.count("+") == 1
+
+
 class TestRoleShiftDetection:
     def test_shift_to_offense_fires_once(self) -> None:
         prev = make_state(battlefield=[card("Bear", 1, 10)])

@@ -699,6 +699,27 @@ def _is_creature(card: dict[str, Any]) -> bool:
     return "Creature" in str(card.get("type_line", ""))
 
 
+def _subtype_set(card: dict[str, Any]) -> set[str]:
+    """Lowercase subtype tokens for comparison (see _subtype_values)."""
+    return {t.lower() for t in _subtype_values(card)}
+
+
+def _subtype_values(card: dict[str, Any]) -> list[str]:
+    """Normalize MTGA-style subtype values to a list of original-casing strings.
+
+    Values arrive either as a list (["Halfling", "Citizen"]) or as a
+    stringified list ("['Halfling', 'Citizen']") — tolerate both without
+    leaving bracket tokens behind.
+    """
+    raw = card.get("subtypes")
+    if isinstance(raw, str):
+        cleaned = raw.replace("[", "").replace("]", "").replace("'", "")
+        return [t.strip() for t in cleaned.split(",") if t.strip()]
+    if isinstance(raw, (list, tuple)):
+        return [str(t).strip() for t in raw if str(t).strip()]
+    return []
+
+
 def _is_land(card: dict[str, Any]) -> bool:
     return "Land" in str(card.get("type_line", ""))
 
@@ -778,6 +799,9 @@ class TopicSelector:
         # "revealed" (the sharper observed fact) rather than "board includes".
         candidates: list[TopicCandidate] = []
         candidates.extend(self._opponent_development_topics(prev_state, curr_state, triggers))
+        # Play-by-play coverage (2026-09-16): announce YOUR notable resolves
+        # and combo synergies alongside the opponent developments.
+        candidates.extend(self._local_play_topics(prev_state, curr_state))
         # M2 spam fix: the board-scan threat topic only fires when the threat
         # set is NEWLY detected (the trigger path already has its own
         # instance-id change detection). An unchanged threat set re-listed on
@@ -887,6 +911,94 @@ class TopicSelector:
                 ),
             )
         ]
+
+    # -- (a2) your own plays: key card entries + combo spotting ----------------
+
+    def _local_play_topics(
+        self,
+        prev_state: dict[str, Any] | None,
+        curr_state: dict[str, Any],
+    ) -> list[TopicCandidate]:
+        """Announce YOUR notable plays (play-by-play request 2026-09-16):
+        a creature/planeswalker/artifact you just resolved by name, or a
+        hand-drawn combo pair among your creatures (synergy tidbits).
+        """
+        if not prev_state:
+            return []
+        local_seat = _local_seat(curr_state) or _local_seat(prev_state)
+        if local_seat is None:
+            return []
+        prev_ids = _instance_ids(prev_state)
+        curr_ids = _instance_ids(curr_state)
+        new_mine = [
+            card
+            for card in _cards_for_seat(curr_state, local_seat, lambda c: not _is_land(c))
+            if isinstance(card.get("instance_id"), int)
+            and card["instance_id"] not in prev_ids
+            and card.get("name")
+        ]
+        if not new_mine:
+            return []
+
+        # Resolution disclosure gate: a card is only announced once its zone
+        # (as surfaced by the snapshot) makes it public. Battlefield entries
+        # in the snapshot are public — that is the gate.
+        names = sorted({str(c.get("name")) for c in new_mine})
+        topics: list[TopicCandidate] = [
+            TopicCandidate(
+                key="local_play",
+                priority=EventPriority.STATE_SHIFT,
+                evidence=(
+                    f"You resolved: {', '.join(names[:3])} (observed). "
+                    "Announce it play-by-play, with a brief card tidbit if interesting."
+                ),
+            )
+        ]
+
+        # Combo tidbit: creatures sharing a subtype among your NEW entries
+        # and your board (synergy framing for the audience). Subtype values
+        # arrive as MTGA-style stringified lists — normalize before set ops.
+        # Pairs are canonicalized (name-sorted) so A+B and B+A dedupe.
+        mine = _cards_for_seat(curr_state, local_seat, _is_creature)
+        combo_pairs: list[str] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for a in new_mine:
+            if not _is_creature(a):
+                continue
+            a_subs = _subtype_set(a)
+            for b in mine:
+                if b is a or not b.get("name"):
+                    continue
+                pair = (str(a.get("name")), str(b.get("name")))
+                pair = (min(pair), max(pair))
+                if pair in seen_pairs:
+                    continue
+                shared = a_subs & _subtype_set(b)
+                if shared:
+                    seen_pairs.add(pair)
+                    shared_lower = sorted(shared)[0]
+                    # Preserve the card's original casing for the spoken label.
+                    label = next(
+                        (v for v in _subtype_values(b) if v.lower() == shared_lower),
+                        shared_lower,
+                    )
+                    combo_pairs.append(f"{pair[0]} + {pair[1]} share {label}")
+                if len(combo_pairs) >= 2:
+                    break
+            if len(combo_pairs) >= 2:
+                break
+        if combo_pairs:
+            topics.append(
+                TopicCandidate(
+                    key="combo_tidbit",
+                    priority=EventPriority.STATE_SHIFT,
+                    evidence=(
+                        "Observed synergy: " + "; ".join(dict.fromkeys(combo_pairs)) + ". "
+                        "Frame it as an interesting combination for the audience."
+                    ),
+                )
+            )
+        return topics
 
     # -- (b) role shifts: attacking vs defending ------------------------------
 

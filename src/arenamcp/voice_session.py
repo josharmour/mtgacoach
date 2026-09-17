@@ -395,6 +395,16 @@ class VoiceSession:
         """Staleness check; caller must hold the lock.
 
         ``identity=None`` (legacy path) is never stale.
+
+        Session-scope staleness (live reports 2026-09-16 15:41 and 21:31):
+        the floor's turn_number must NOT gate same-session speech. Every
+        ~12s advice utterance advances the floor's turn, so a booth topic
+        rendered for turn N that reaches the arbiter during turn N+1 was
+        silently cancelled — conversation speech died for a whole match
+        while actionable advice kept flowing. Only session (mode/match
+        boundary) regressions prove staleness here; per-position freshness
+        is the controller's delivery-gate job, and the seq/request-id
+        ordering below still supersedes genuinely superseded utterances.
         """
         if identity is None or self._floor is None:
             return False
@@ -406,6 +416,8 @@ class VoiceSession:
                 return False
             if session_id < floor_session:
                 return True
+            # A HIGHER session_id is a fresh mode/match session — never
+            # stale, and it must also invalidate the old floor's match_id.
             if session_id != floor_session:
                 return False
             match_id = _attr(identity, "match_id")
@@ -414,10 +426,10 @@ class VoiceSession:
             # known; unknown values cannot be ordered.
             if match_id is not None and floor_match is not None and match_id != floor_match:
                 return True
-            turn_number = _attr(identity, "turn_number")
-            floor_turn = _attr(floor, "turn_number")
-            if turn_number is not None and floor_turn is not None and turn_number < floor_turn:
-                return True
+            # NOTE: turn_number is deliberately not compared — the floor's
+            # turn advances with every advice utterance, so an older-turn
+            # identity is the NORMAL case for commentary rendered mid-turn,
+            # not evidence of staleness.
         except TypeError:
             return False
         return False

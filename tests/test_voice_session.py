@@ -161,8 +161,6 @@ def test_request_id_attribute_used_when_seq_absent() -> None:
         ({"session_id": 2}, {"session_id": 1}),
         # Same session, different match.
         ({"session_id": 1, "match_id": "m2"}, {"session_id": 1, "match_id": "m1"}),
-        # Same session + match, older turn.
-        ({"session_id": 1, "turn_number": 6}, {"session_id": 1, "turn_number": 5}),
     ],
 )
 def test_stale_requests_cancelled(floor_kwargs: dict, incoming_kwargs: dict) -> None:
@@ -177,6 +175,27 @@ def test_stale_requests_cancelled(floor_kwargs: dict, incoming_kwargs: dict) -> 
     assert outcome.state == SpeechState.CANCELLED
     assert outcome.played is False
     assert sink.spoken == ["floor"]  # audio never touched
+
+
+def test_older_turn_same_session_still_speaks() -> None:
+    """Session-scope staleness (live reports 2026-09-16 15:41 + 21:31): the
+    floor's turn advances with every ~12s advice utterance, so commentary
+    rendered for turn N reaching the arbiter during turn N+1 must STILL
+    speak — turn regression vs the floor is the normal case, not staleness.
+    (Rank preemption is separate: a proactive request while advice OWNS the
+    channel still cancels — clear the channel first, as happens live when
+    advice audio completes before the topic render reaches the arbiter.)"""
+    sink = RecordingSink()
+    session = VoiceSession(sink)
+    floor = make_identity(seq=10, turn_number=9)
+    assert speak(session, "floor", "advice", floor).played is True
+    session.stop_speaking(reason="audio-complete")
+
+    older_turn = make_identity(seq=50, turn_number=5)
+    outcome = speak(session, "booth", "proactive", older_turn)
+    assert outcome.state == SpeechState.SPEAKING
+    assert outcome.played is True
+    assert sink.spoken == ["floor", "booth"]
 
 
 def test_newer_session_not_stale() -> None:

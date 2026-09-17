@@ -671,3 +671,49 @@ def test_pre_match_questions_do_not_leak_into_first_match_answers(monkeypatch):
     assert all(
         t.text != "what deck is my opponent on?" for t in coach.conversation.memory.turns
     )
+
+
+def test_phantom_redetection_of_finalized_match_does_not_speak_opener(monkeypatch):
+    """Live report 2026-09-16 21:18: seconds AFTER 'Match packet recorded
+    ... result=loss', the watcher re-surfaced the finalized match id — the
+    None -> id boundary fired a phantom 'Match underway' opener for a dead
+    game. The packet layer refuses to restart recording for finalized ids;
+    the conversation reset must skip the opener the same way (memory still
+    resets, but as a match-END boundary)."""
+    from arenamcp import match_packets
+
+    coach = make_loop_coach(mode="conversation", triggers=[], repeat_triggers=True)
+    seed_memory(coach, trigger="land_played")
+    session_before = coach.conversation.current_identity().session_id
+
+    match_start_calls: list[str] = []
+    original_reset = coach.conversation.reset_for_match
+
+    def spy_reset(match_id, match_number, match_start=True):
+        if match_start:
+            match_start_calls.append(match_id or "")
+        return original_reset(match_id, match_number, match_start=match_start)
+
+    coach.conversation.reset_for_match = spy_reset  # type: ignore[method-assign]
+
+    # Mark the match the watcher will re-surface as already finalized.
+    match_packets.mark_match_finalized("m1")
+
+    polls = {"n": 0}
+
+    def poll_hook():
+        polls["n"] += 1
+        if polls["n"] >= 2:
+            coach._mcp.state["match_id"] = "m1"
+
+    coach._mcp.poll_hooks.append(poll_hook)
+
+    run_loop(monkeypatch, coach, iterations=2)
+
+    # The finalized-match guard downgraded the phantom boundary to a silent
+    # match-END reset BEFORE reset_for_match — no match_start=True call, so
+    # no opener.
+    assert match_start_calls == []
+    # Memory was still reset and the session identity bumped once.
+    assert coach.conversation.memory.turns == []
+    assert coach.conversation.current_identity().session_id == session_before + 1
