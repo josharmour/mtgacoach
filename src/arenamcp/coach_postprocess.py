@@ -380,6 +380,17 @@ class _AdvicePostprocessMixin:
         potential_mana_pool["_sources"] = potential_sources
         potential_mana = potential_mana_pool["total"]
 
+        # GRE's [OK] tag means MTGA itself found an autotap solution — that is
+        # authoritative and beats the local pool estimate below, which misses
+        # alternative costs, cost reducers and mana creatures. Stripping
+        # "Cast X" here left decapitated advice ("— it's your win condition")
+        # that the legality check then replaced with a guess (2026-09-16 log).
+        gre_affordable = {
+            re.sub(r"\s*\[[^\]]+\]", "", str(a))[5:].strip().lower()
+            for a in legal_actions
+            if str(a).lower().startswith("cast ") and "[ok]" in str(a).lower()
+        }
+
         # Check each card in hand for mana cost / color violations
         seen_card_names = set()
         for card in hand_cards:
@@ -393,6 +404,8 @@ class _AdvicePostprocessMixin:
             if card_name in seen_card_names or not card_name:
                 continue
             seen_card_names.add(card_name)
+            if card_name.lower() in gre_affordable:
+                continue
 
             # If mana_cost is missing from hand card dict, try looking up in RulesEngine database
             if not mana_cost and grp_id:
@@ -1083,6 +1096,36 @@ class _AdvicePostprocessMixin:
                         if has_block_intent and not is_negative:
                             matches = True
                             break
+
+            # Combat plans spoken before the combat window opens. "Attack with
+            # everything" in Main 1 has no matching legal action yet (attacks
+            # aren't declared until the combat step), so the forced
+            # replacement below used to turn it into "Cast Kogla" / "Pass" /
+            # "Play Land: Forest". Likewise "keep both back" at declare
+            # attackers became "Declare Attackers: X" — the opposite advice.
+            if not matches and not is_backend_error_text(advice):
+                holds_back = bool(
+                    re.search(r"\b(?:hold|keep)\b[\w\s,']{0,40}?\bback\b", advice_lower)
+                )
+                attack_intent = bool(re.search(r"\b(?:attack|swing)\b", advice_lower))
+                block_intent = bool(re.search(r"\b(?:block|chump)\b", advice_lower))
+                turn_info = game_state.get("turn") or {}
+                phase_now = str(turn_info.get("phase", "") or "").lower()
+                my_turn = turn_info.get("active_player") == local_seat
+                pre_combat = my_turn and ("main1" in phase_now or "beginning" in phase_now)
+                opp_turn_pre_blocks = (not my_turn) and "combat" not in dec_type and (
+                    "main1" in phase_now or "combat" in phase_now or "beginning" in phase_now
+                )
+                if holds_back and not attack_intent:
+                    if dec_type == "declare_attackers":
+                        rest = re.sub(r"(?i)^done\b[\s—\-,:.]*", "", advice).strip()
+                        advice = f"Don't attack — {rest[:1].lower()}{rest[1:]}" if rest else "Don't attack"
+                        advice_lower = advice.lower()
+                    matches = True
+                elif attack_intent and pre_combat:
+                    matches = True
+                elif block_intent and opp_turn_pre_blocks:
+                    matches = True
 
             if not matches and is_backend_error_text(advice):
                 # Transport/auth failure — NEVER mask it as coaching. On
