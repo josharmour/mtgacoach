@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-import html
 from typing import Any
 
 from PySide6.QtGui import QTextBlockUserData, QTextCursor
 from PySide6.QtWidgets import QTextEdit
 
+from . import theme
+
 MAX_BLOCKS = 500
+
+# role → (tone, size) from the theme's token set.
+_ROLE_STYLE = {
+    "user": ("you", "body"),
+    "coach": ("convo", "body"),
+    "system": ("muted", "caption"),
+}
 
 
 class ConversationTranscript(QTextEdit):
@@ -16,41 +24,27 @@ class ConversationTranscript(QTextEdit):
     "system" (status notices such as fallback / error tags).
     """
 
-    _ROLE_COLORS_DARK = {
-        "user": "#a6e3a1",
-        "coach": "#89b4fa",
-        "system": "#9399b2",
-    }
-
-    _ROLE_COLORS_LIGHT = {
-        "user": "#1b7e2c",
-        "coach": "#1e66f5",
-        "system": "#6c6f85",
-    }
-
     def __init__(self, parent: Any = None) -> None:
         super().__init__(parent)
         self.setReadOnly(True)
-
-    def _colors(self) -> dict[str, str]:
-        from .theme import get_theme_tokens
-
-        tokens = get_theme_tokens(self)
-        return self._ROLE_COLORS_DARK if tokens["is_dark"] else self._ROLE_COLORS_LIGHT
+        self._entries: list[tuple[str, str]] = []
+        self._pending = False
+        theme.on_theme_changed(self.restyle)
 
     def _entry_html(self, role: str, text: str) -> str:
-        color = self._colors().get(role, self._colors()["system"])
-        prefix = {"user": "You", "coach": "Coach", "system": ""}.get(role, "")
-        escaped = html.escape(text).replace("\n", "<br>")
-        label = f"<b>{prefix}:</b> " if prefix else ""
-        return (
-            f"<div style='color:{color}; font-size:12px; margin-bottom:4px;'>{label}{escaped}</div>"
-        )
+        tone, size = _ROLE_STYLE.get(role, _ROLE_STYLE["system"])
+        prefix = {"user": "You", "coach": "Coach"}.get(role, "")
+        label = theme.span(f"{prefix}: ", tone, size=size, weight=700) if prefix else ""
+        return theme.block(label + theme.span(text, tone, size=size), gap=4)
 
     def add_entry(self, role: str, text: str) -> None:
         """Append an entry and autoscroll to the newest line (bottom)."""
         if not text:
             return
+        self._entries.append((role, text))
+        if len(self._entries) > MAX_BLOCKS:
+            del self._entries[: len(self._entries) - MAX_BLOCKS]
+
         doc = self.document()
         sb = self.verticalScrollBar()
         stick_to_bottom = sb.value() >= sb.maximum() - 10
@@ -78,6 +72,7 @@ class ConversationTranscript(QTextEdit):
 
     def set_pending(self, pending: bool) -> None:
         """Show/clear the thinking placeholder line."""
+        self._pending = pending
         doc = self.document()
         for block in _iter_blocks(doc):
             if block.userData() is not None and getattr(block.userData(), "pending", False):
@@ -87,16 +82,28 @@ class ConversationTranscript(QTextEdit):
                 cursor.removeSelectedText()
                 break
         if pending:
-            color = self._colors()["system"]
             cursor = QTextCursor(doc)
             cursor.movePosition(QTextCursor.MoveOperation.End)
             if not doc.isEmpty():
                 cursor.insertBlock()
-            cursor.insertHtml(
-                f"<div style='color:{color}; font-style:italic; font-size:11px;'>…thinking</div>"
-            )
+            cursor.insertHtml(theme.block(theme.span("…thinking", "muted", size="caption", italic=True)))
             cursor.block().setUserData(_PendingBlockData())
             sb = self.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
+    def restyle(self) -> None:
+        """Re-render every entry with the active theme's colours."""
+        sb = self.verticalScrollBar()
+        at_bottom = sb.value() >= sb.maximum() - 10
+        entries = list(self._entries)
+        pending = self._pending
+        self.clear()
+        self._entries = []
+        for role, text in entries:
+            self.add_entry(role, text)
+        if pending:
+            self.set_pending(True)
+        if at_bottom:
             sb.setValue(sb.maximum())
 
 

@@ -370,8 +370,6 @@ class MockSession(QObject):
     adviceReceived = CoachSession.adviceReceived
     logEmitted = CoachSession.logEmitted
     errorOccurred = CoachSession.errorOccurred
-    telemetryUpdated = CoachSession.telemetryUpdated
-    reasoningChunk = CoachSession.reasoningChunk
     mctsUpdated = CoachSession.mctsUpdated
     bugReportSaved = CoachSession.bugReportSaved
     modeChanged = CoachSession.modeChanged
@@ -462,10 +460,10 @@ _PTT_BUTTONS: list[Any] = []
 
 
 def test_mode_button_clicks_send_set_mode(panel):
-    panel.mode_btn.click()
+    panel.chat_mode_btn.click()
     assert ("set_mode", "conversation") in panel.session.commands
     panel._on_mode_changed("conversation")
-    panel.mode_btn.click()
+    panel.advice_mode_btn.click()
     assert ("set_mode", "turn_advice") in panel.session.commands
 
 
@@ -493,13 +491,15 @@ def test_panel_reads_isolated_settings_not_singleton(panel, isolated_settings):
 
 def test_mode_ack_updates_button_and_views(panel):
     panel.session.modeChanged.emit("conversation")
-    assert panel.mode_btn.text() == "Mode: Conversation"
+    assert panel.chat_mode_btn.isChecked()
+    assert not panel.mode_chip.isHidden()
     assert not panel.conversation_transcript.isHidden()
     assert panel.log_view.isHidden()
     assert panel.conversation_mode == "conversation"
 
     panel.session.modeChanged.emit("turn_advice")
-    assert panel.mode_btn.text() == "Mode: Turn Advice"
+    assert panel.advice_mode_btn.isChecked()
+    assert panel.mode_chip.isHidden()
     assert panel.conversation_transcript.isHidden()
     assert not panel.log_view.isHidden()
     assert panel.conversation_mode == "turn_advice"
@@ -513,14 +513,14 @@ def test_mode_ack_ignores_unknown_mode(panel):
 def test_verbosity_button_cycles(panel):
     panel.verbosity_btn.click()
     assert ("set_verbosity", "detailed") in panel.session.commands
-    assert panel.verbosity_btn.text() == "Detail: Detailed"
+    assert panel.verbosity_btn.text() == "Chat detail: Detailed"
     panel.verbosity_btn.click()
     assert ("set_verbosity", "quiet") in panel.session.commands
 
 
 def test_verbosity_status_ack_updates_button(panel):
     panel.session.statusChanged.emit("VERBOSITY", "quiet")
-    assert panel.verbosity_btn.text() == "Detail: Quiet"
+    assert panel.verbosity_btn.text() == "Chat detail: Quiet"
 
 
 def test_stop_speech_button_calls_session(panel):

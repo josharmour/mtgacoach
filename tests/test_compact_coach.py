@@ -68,12 +68,27 @@ def panel(qapp):
 def test_compact_coach_renders_on_game_state(panel):
     snap = make_snapshot()
     panel._on_game_state_changed(snap)
-    html = panel.game_state_view.toHtml()
-    assert "OPPONENT" in html
-    assert "YOU" in html
+    html = panel.game_state_view.text()
+    assert "Opponent" in html
+    assert "You" in html
     assert "Lightning Bolt" in html
     assert "Grizzly Bears" in html
-    assert "Your Turn" in panel.turn_strip.text()
+    assert panel.turn_strip.text() == "Your turn · T3 · Main 1"
+
+
+def test_board_lists_opponent_creatures_and_groups_lands(panel):
+    snap = make_snapshot()
+    snap["battlefield"] += [
+        {"name": "Forest", "controller_seat_id": 2, "type_line": "Basic Land — Forest"},
+        {"name": "Forest", "controller_seat_id": 2, "type_line": "Basic Land — Forest"},
+        {"name": "Serra Angel", "controller_seat_id": 1, "owner_seat_id": 1,
+         "type_line": "Creature — Angel", "power": 4, "toughness": 4},
+    ]
+    panel._on_game_state_changed(snap)
+    html = panel.game_state_view.text()
+    assert "Forest ×2" in html
+    assert "Serra Angel 4/4" in html
+    assert "1 card in hand" in html
 
 
 def test_tactical_pill_renders_best_line_score(panel):
@@ -85,35 +100,53 @@ def test_tactical_pill_renders_best_line_score(panel):
         }],
     })
     rendered = panel.mcts_pill_label.text()
-    assert 'Tactical Line' in rendered
+    assert 'Tactical line' in rendered
     assert '62%' in rendered
     assert '+4.0%' in rendered
     assert 'Play Land: Island' in rendered
 
 
 def test_controls_reflow_at_sidebar_width(panel, qapp):
+    from PySide6.QtCore import QRect
     from PySide6.QtWidgets import QPushButton
 
+    from arenamcp.desktop import theme
+
+    # Measure with the real app stylesheet, not Qt's default 80px buttons.
+    theme.apply_theme(qapp, theme.THEME_DARK)
     panel._on_game_state_changed(make_snapshot())
-    panel.voice_btn.setText("Voice: Shimmer")
-    panel.style_btn.setText("Concise")
     panel._refresh_status_dots()
     panel.resize(240, 900)
     qapp.processEvents()
 
     assert panel.width() == 240
-    buttons = panel.findChildren(QPushButton)
-    for button in buttons:
-        assert panel.rect().contains(button.geometry())
+    buttons = [b for b in panel.findChildren(QPushButton) if b.isVisible()]
+    assert panel.ap_btn in buttons and panel.ptt_btn in buttons and panel.more_btn in buttons
+    rects = [QRect(b.mapTo(panel, b.rect().topLeft()), b.size()) for b in buttons]
+    for button, rect in zip(buttons, rects, strict=True):
+        assert panel.rect().contains(rect)
         assert button.width() >= button.sizeHint().width()
-    for index, button in enumerate(buttons):
-        for other in buttons[index + 1 :]:
-            assert not button.geometry().intersects(other.geometry())
-    assert panel.mute_btn.y() > panel.voice_btn.y()
+    for index, rect in enumerate(rects):
+        for other in rects[index + 1 :]:
+            assert not rect.intersects(other)
+    # At 240px the three primary controls wrap onto a second row.
+    assert panel.stop_speech_btn.y() > panel.ap_btn.y()
 
     panel.resize(800, 900)
     qapp.processEvents()
-    assert panel.mute_btn.y() == panel.voice_btn.y()
+    assert panel.stop_speech_btn.y() == panel.ap_btn.y()
+
+
+def test_voice_style_settings_live_in_popover(panel, qapp):
+    for button in (panel.voice_btn, panel.speed_btn, panel.style_btn, panel.verbosity_btn,
+                   panel.mute_btn, panel.bug_report_btn):
+        assert button.parent() is panel.voice_style_popover
+        assert not button.isVisible()
+    panel.more_btn.click()
+    qapp.processEvents()
+    assert panel.voice_style_popover.isVisible()
+    assert panel.voice_btn.isVisible()
+    panel.voice_style_popover.hide()
 
 
 def test_compact_coach_debug_report_triggers(panel, monkeypatch):
@@ -135,7 +168,7 @@ def test_compact_coach_debug_report_triggers(panel, monkeypatch):
 
 def test_compact_coach_toolbar_buttons(panel):
     assert panel.ap_btn is not None
-    assert panel.brain_stream_btn is not None
+    assert not hasattr(panel, "brain_stream_btn")
     assert panel.bug_report_btn is not None
     assert panel.voice_btn is not None
     assert panel.style_btn is not None
@@ -157,7 +190,7 @@ def test_compact_coach_bug_report_saved_updates_clipboard_and_ui(panel, tmp_path
 
     clipboard_text = qapp.clipboard().text()
     assert str(report_file) in clipboard_text or report_file.as_uri() in clipboard_text
-    assert panel.bug_report_btn.text() == "🐞 Copied!"
+    assert panel.bug_report_btn.text() == "Report saved — link copied"
     log_text = panel.log_view.toPlainText()
     assert "Bug report saved" in log_text
 
@@ -176,7 +209,7 @@ def test_compact_coach_voice_status_updates(panel):
     assert panel.voice_btn.text() == "Voice: Nova"
 
 
-def test_compact_coach_log_view_newest_on_top(panel):
+def test_compact_coach_feed_is_chronological(panel):
     panel.append_log("First advice: Cast Lightning Bolt", role="spoken")
     panel.append_log("Second advice: Attack with Grizzly Bears", role="spoken")
     panel.append_log("Third advice: Pass the turn", role="spoken")
@@ -184,7 +217,25 @@ def test_compact_coach_log_view_newest_on_top(panel):
     plain_text = panel.log_view.toPlainText().strip()
     lines = [line.strip() for line in plain_text.splitlines() if line.strip()]
 
-    assert lines[0] == "Third advice: Pass the turn"
-    assert lines[1] == "Second advice: Attack with Grizzly Bears"
-    assert lines[2] == "First advice: Cast Lightning Bolt"
-    assert panel.log_view.verticalScrollBar().value() == 0
+    # Same direction as the conversation transcript: newest at the bottom.
+    assert lines[0].endswith("First advice: Cast Lightning Bolt")
+    assert lines[1].endswith("Second advice: Attack with Grizzly Bears")
+    assert lines[2].endswith("Third advice: Pass the turn")
+
+
+def test_spoken_line_fills_now_card(panel):
+    assert panel.now_text.property("empty") is True
+    panel.session.spokenLine.emit("Bolt the attacker.")
+    assert panel.now_text.text() == "Bolt the attacker."
+    assert panel.now_text.property("empty") is False
+    assert "Bolt the attacker." in panel.log_view.toPlainText()
+
+
+def test_theme_switch_rerenders_feed_colours(panel, qapp):
+    from arenamcp.desktop import theme
+
+    panel.append_log("Something failed", role="error")
+    theme.apply_theme(qapp, theme.THEME_LIGHT)
+    assert theme.tokens().bad in panel.log_view.toHtml()
+    theme.apply_theme(qapp, theme.THEME_DARK)
+    assert theme.tokens().bad in panel.log_view.toHtml()

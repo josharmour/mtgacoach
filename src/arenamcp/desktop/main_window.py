@@ -5,13 +5,14 @@ from __future__ import annotations
 import logging
 import sys
 
-from PySide6.QtCore import QPoint, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QGuiApplication, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
     QInputDialog,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -29,10 +30,36 @@ from .hotkeys import HotkeyManager
 from .performance_tab import PerformanceTab
 from .repair_tab import RepairTab
 from .runtime import open_url, read_version
-from .theme import apply_theme, available_themes, load_saved_theme, save_theme
+from .theme import apply_theme, available_themes, load_saved_theme, save_theme, span
 from .ui_watchdog import UiAnrWatchdog, WatchdogPingBridge
 
 logger = logging.getLogger(__name__)
+
+
+def _build_page(title: str, body: QWidget, on_back) -> QWidget:
+    """A secondary page: shared header (back + title) above a scrolling body."""
+    page = QWidget()
+    layout = QVBoxLayout(page)
+    layout.setContentsMargins(8, 8, 8, 8)
+    layout.setSpacing(8)
+
+    header = QHBoxLayout()
+    header.setSpacing(8)
+    back = QPushButton("← Back")
+    back.setToolTip("Back to the coach")
+    back.clicked.connect(on_back)
+    header.addWidget(back)
+    heading = QLabel(title)
+    heading.setProperty("role", "title")
+    header.addWidget(heading, 1)
+    layout.addLayout(header)
+
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.NoFrame)
+    scroll.setWidget(body)
+    layout.addWidget(scroll, 1)
+    return page
 
 
 class MainWindow(QMainWindow):
@@ -61,8 +88,10 @@ class MainWindow(QMainWindow):
         self._apply_window_geometry()
         self._setup_hotkeys()
 
-        # Start coach process automatically
-        QTimer.singleShot(100, lambda: self._session.start())
+        # Start coach process automatically — unless the window was already
+        # closed (a start after shutdown would orphan a coach process).
+        self._closed = False
+        QTimer.singleShot(100, self._start_session)
 
         # ANR Watchdog
         if WatchdogPingBridge is not None:
@@ -76,93 +105,58 @@ class MainWindow(QMainWindow):
             self._ui_watchdog = None
 
     def _build_central_widget(self) -> None:
-        """Construct the stacked widget (Compact HUD + Slide-over Repair & History)."""
+        """Stacked pages: the coach sidebar, then Setup & Repair and Match History."""
         self.coach_panel = CompactCoachPanel(session=self._session, parent=self)
         self.coach_panel.repair_requested.connect(self._show_repair_view)
         self.coach_panel.performance_requested.connect(self._show_performance_view)
         self.coach_panel.restart_requested.connect(self._restart_coach)
 
-        # Slide-over Setup & Repair Page
-        repair_page = QWidget()
-        repair_layout = QVBoxLayout(repair_page)
-        repair_layout.setContentsMargins(6, 6, 6, 6)
-        repair_layout.setSpacing(6)
-
-        repair_header = QHBoxLayout()
-        back_from_repair = QPushButton("← Back to Coach")
-        back_from_repair.clicked.connect(self._show_coach_view)
-        repair_header.addWidget(back_from_repair)
-        repair_header.addStretch()
-        repair_layout.addLayout(repair_header)
-
-        repair_scroll = QScrollArea()
-        repair_scroll.setWidgetResizable(True)
-        repair_scroll.setFrameShape(QFrame.NoFrame)
-        repair_scroll.setWidget(self.repair_tab)
-        repair_layout.addWidget(repair_scroll)
-
-        # Slide-over Match History Page
-        perf_page = QWidget()
-        perf_layout = QVBoxLayout(perf_page)
-        perf_layout.setContentsMargins(6, 6, 6, 6)
-        perf_layout.setSpacing(6)
-
-        perf_header = QHBoxLayout()
-        back_from_perf = QPushButton("← Back to Coach")
-        back_from_perf.clicked.connect(self._show_coach_view)
-        perf_header.addWidget(back_from_perf)
-        perf_header.addStretch()
-        perf_layout.addLayout(perf_header)
-
-        perf_scroll = QScrollArea()
-        perf_scroll.setWidgetResizable(True)
-        perf_scroll.setFrameShape(QFrame.NoFrame)
-        perf_scroll.setWidget(PerformanceTab())
-        perf_layout.addWidget(perf_scroll)
-
-        # Stacked Widget Root
         self._stack = QStackedWidget()
         self._stack.addWidget(self.coach_panel)  # Index 0
-        self._stack.addWidget(repair_page)  # Index 1
-        self._stack.addWidget(perf_page)  # Index 2
+        self._stack.addWidget(_build_page("Setup & Repair", self.repair_tab, self._show_coach_view))  # 1
+        self._stack.addWidget(_build_page("Match History", PerformanceTab(), self._show_coach_view))  # 2
         self.setCentralWidget(self._stack)
 
     def _build_menus(self) -> None:
         menu_bar = self.menuBar()
+        is_mac = sys.platform == "darwin"
 
-        # Tools Menu
+        # Tools Menu. Shortcuts are registered app-wide by HotkeyManager, so the
+        # menus only *display* them (text after a tab lands in the shortcut
+        # column) instead of registering a second, ambiguous QAction shortcut.
         tools_menu = menu_bar.addMenu("Tools")
         repair_act = tools_menu.addAction("Setup && Repair…")
         repair_act.triggered.connect(self._show_repair_view)
         perf_act = tools_menu.addAction("Match History…")
         perf_act.triggered.connect(self._show_performance_view)
         tools_menu.addSeparator()
+        advice_act = tools_menu.addAction("Get Advice Now\tF5")
+        advice_act.triggered.connect(lambda: self._session.send_command("force_advice"))
+        replay_act = tools_menu.addAction("Repeat Last Advice\tF10")
+        replay_act.triggered.connect(lambda: self._session.send_command("replay_advice"))
         restart_act = tools_menu.addAction("Restart Coach")
         restart_act.triggered.connect(self._restart_coach)
-        if sys.platform == "darwin":
+        if is_mac:
+            tools_menu.addSeparator()
             vision_act = tools_menu.addAction("Autoplay Vision Model…")
             vision_act.triggered.connect(self._choose_autoplay_vision_model)
             permissions_act = tools_menu.addAction("Autoplay Permissions…")
             permissions_act.triggered.connect(self._check_autoplay_permissions)
-            stop_autoplay_act = tools_menu.addAction("Stop Autoplay (F11)")
+            stop_autoplay_act = tools_menu.addAction("Stop Autoplay\tF11")
             stop_autoplay_act.triggered.connect(lambda: self._session.send_command("force_stop"))
-        debug_act = tools_menu.addAction("Submit Bug Report (Ctrl+Shift+D)")
+        tools_menu.addSeparator()
+        debug_act = tools_menu.addAction("Report a Bug\tF12")
         debug_act.triggered.connect(self._session.trigger_debug_report)
 
         # View Menu
         view_menu = menu_bar.addMenu("View")
-        bs_act = view_menu.addAction("Brain Stream Inspector")
-        bs_act.setShortcut("Ctrl+B")
-        bs_act.triggered.connect(self.coach_panel.toggle_brain_stream)
-
         debug_logging_act = view_menu.addAction("Show Debug Logging")
         debug_logging_act.setCheckable(True)
         debug_logging_act.setChecked(bool(self._settings.get("desktop_debug_logging", False)))
         debug_logging_act.toggled.connect(self.coach_panel.set_debug_logging)
         self._debug_logging_action = debug_logging_act
 
-        # Theme Menu
-        theme_menu = menu_bar.addMenu("Theme")
+        theme_menu = view_menu.addMenu("Theme")
         action_group = QActionGroup(self)
         action_group.setExclusive(True)
         for theme_name, theme_label in available_themes():
@@ -177,10 +171,32 @@ class MainWindow(QMainWindow):
 
         # Help Menu
         help_menu = menu_bar.addMenu("Help")
+        keys_act = help_menu.addAction("Keyboard Shortcuts")
+        keys_act.triggered.connect(self._show_shortcuts)
         docs_act = help_menu.addAction("Online Documentation")
         docs_act.triggered.connect(lambda: open_url("https://mtgacoach.com"))
-        diag_act = help_menu.addAction("Run Diagnostics")
-        diag_act.triggered.connect(self._show_repair_view)
+
+    def _shortcut_rows(self) -> list[tuple[str, str]]:
+        rows = [
+            ("F5", "Get advice now"),
+            ("F10", "Repeat the last advice"),
+            ("F12 or Ctrl+Shift+D", "Report a bug (snapshot + link on the clipboard)"),
+        ]
+        if sys.platform == "darwin":
+            rows.insert(2, ("F11", "Stop autoplay"))
+        return rows
+
+    def _show_shortcuts(self) -> None:
+        rows = "".join(
+            f"<tr><td style='padding:3px 16px 3px 0'>{span(key, weight=700)}</td>"
+            f"<td style='padding:3px 0'>{span(action)}</td></tr>"
+            for key, action in self._shortcut_rows()
+        )
+        box = QMessageBox(self)
+        box.setWindowTitle("Keyboard Shortcuts")
+        box.setTextFormat(Qt.RichText)
+        box.setText(f"<table>{rows}</table>")
+        box.exec()
 
     def _choose_autoplay_vision_model(self) -> None:
         model, accepted = QInputDialog.getText(
@@ -323,7 +339,12 @@ class MainWindow(QMainWindow):
             max(available.top(), min(frame.y(), available.bottom() - frame.height() + 1)),
         )
 
+    def _start_session(self) -> None:
+        if not self._closed:
+            self._session.start()
+
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
+        self._closed = True
         if not self.isMaximized() and not self.isMinimized():
             geom = self.frameGeometry()
             self._settings.set(

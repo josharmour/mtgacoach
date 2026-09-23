@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from . import theme
 
 # Heuristic step plan: (elapsed_seconds_start, percent_start, label).
 # The progress bar interpolates between consecutive entries based on the
@@ -137,17 +139,11 @@ class SetupSplashWindow(QMainWindow):
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
         title = QLabel("mtgacoach")
-        title_font = QFont()
-        title_font.setPointSize(22)
-        title_font.setBold(True)
-        title.setFont(title_font)
+        title.setProperty("role", "display")
         title_box.addWidget(title)
 
-        subtitle = QLabel("Setting up your environment...")
-        subtitle_font = QFont()
-        subtitle_font.setPointSize(11)
-        subtitle.setFont(subtitle_font)
-        subtitle.setStyleSheet("color: palette(mid);")
+        subtitle = QLabel("Setting up your environment…")
+        subtitle.setProperty("role", "muted")
         title_box.addWidget(subtitle)
         header.addLayout(title_box, 1)
         root.addLayout(header)
@@ -155,13 +151,10 @@ class SetupSplashWindow(QMainWindow):
         # Status line + elapsed.
         status_row = QHBoxLayout()
         self.status_label = QLabel("Preparing...")
-        status_font = QFont()
-        status_font.setPointSize(11)
-        self.status_label.setFont(status_font)
         status_row.addWidget(self.status_label, 1)
 
         self.elapsed_label = QLabel("")
-        self.elapsed_label.setStyleSheet("color: palette(mid);")
+        self.elapsed_label.setProperty("role", "muted")
         status_row.addWidget(self.elapsed_label, 0, Qt.AlignRight)
         root.addLayout(status_row)
 
@@ -169,22 +162,19 @@ class SetupSplashWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        self.progress.setTextVisible(True)
+        self.progress.setTextVisible(False)
         root.addWidget(self.progress)
 
         # Details toggle + pane.
         self.details_toggle = QPushButton("Show details")
         self.details_toggle.setCheckable(True)
-        self.details_toggle.setFlat(True)
+        self.details_toggle.setProperty("variant", "flat")
         self.details_toggle.toggled.connect(self._on_details_toggled)
         root.addWidget(self.details_toggle, 0, Qt.AlignLeft)
 
         self.details = QPlainTextEdit()
         self.details.setReadOnly(True)
-        mono = QFont("monospace")
-        mono.setStyleHint(QFont.Monospace)
-        mono.setPointSize(9)
-        self.details.setFont(mono)
+        self.details.setFont(theme.mono_font())
         self.details.setVisible(False)
         root.addWidget(self.details, 1)
 
@@ -194,10 +184,7 @@ class SetupSplashWindow(QMainWindow):
         button_row = QHBoxLayout()
         if self._app_version:
             version_label = QLabel(f"v{self._app_version}")
-            version_label.setStyleSheet("color: palette(mid);")
-            version_font = QFont()
-            version_font.setPointSize(9)
-            version_label.setFont(version_font)
+            version_label.setProperty("role", "small")
             button_row.addWidget(version_label, 0, Qt.AlignLeft)
         button_row.addStretch(1)
 

@@ -6,19 +6,11 @@ A prioritized list of suggested tasks, feature enhancements, and technical debt 
 
 ## 🎯 High Priority
 
-### 1. Audio-Primary UI Overhaul & Live "Brain / Context" Stream Inspector
-- **Goal**: Redesign the PySide desktop UI to be **Audio-Primary** with a sleek, minimal main dashboard (focused on voice input/output status, advice corner, and minimal essential controls), accompanied by a expandable **Full Live Debug Stream** window displaying the coach's real-time "brain" context.
-- **Context**: Users want an uncluttered, voice-driven main view during gameplay, with the ability to pop open a detailed streaming inspector for complete transparency into what the LLM sees and thinks.
-- **Target Files**: [main_window.py](file:///Volumes/repos/mtgacoach/src/arenamcp/desktop/main_window.py), [coach_tab.py](file:///Volumes/repos/mtgacoach/src/arenamcp/desktop/coach_tab.py), [hud.py](file:///Volumes/repos/mtgacoach/src/arenamcp/desktop/hud.py), new `desktop/brain_stream_window.py`.
-- **UI Architecture & Layout**:
-  - **Minimal Audio-Primary View**:
-    - Clean glassmorphism dark theme with audio waveform / PTT voice indicator.
-    - Minimal essential controls: PTT / Mute button, Quick/Chatty toggle, AP toggle, and "Suggest Deck" button.
-    - Floating click-through in-game HUD overlay for hands-free MTGA play.
-  - **Expandable "Brain & Context Stream" Inspector**:
-    - **Live Prompt Stream**: Full text of the exact prompt sent to the LLM (raw GRE state, hand, battlefield, library draw odds, turn memory).
-    - **Live Reasoning Stream**: Real-time token streaming of LLM reasoning traces (e.g. DeepSeek reasoning content / Gemma thinking).
-    - **Engine Telemetry**: Live latency counter (e.g. `129ms vLLM`), trigger event log, and bridge connection health.
+### 1. Audio-Primary UI Overhaul
+- **Goal**: Redesign the PySide desktop UI to be **Audio-Primary** with a sleek, minimal main dashboard (focused on voice input/output status, advice corner, and minimal essential controls).
+- **Status (2026-09-23)**: The sidebar was re-laid out around a "Now" advice card with three primary controls (Autoplay, Hold to talk, Stop), and voice/style settings moved behind a ⋯ popover. All colours and type sizes now come from `desktop/theme.py`.
+- **Removed**: The "Brain Stream Inspector" window was deleted on 2026-09-23. The backend never emitted its telemetry or reasoning events, so most panes stayed empty and its "LLM Traces" pane showed synthetic rollout lines. Don't rebuild it unless the backend actually emits prompt, reasoning and telemetry events first.
+- **Still open**: A floating click-through in-game HUD overlay for hands-free MTGA play, and a "Suggest Deck" button.
 
 ### 2. "Suggest Compatible Deck" Feature (Inventory & Wildcard Aware)
 - **Goal**: Offer a dedicated "Suggest Compatible Deck" action any time a player is viewing or preparing to join an MTGA match/event (Standard, Historic, Brawl, Timeless, Explorer, Pauper, Artisan, etc.).

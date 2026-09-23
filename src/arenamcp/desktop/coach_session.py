@@ -28,9 +28,7 @@ class CoachSession(QObject):
     bugReportSaved = Signal(str, str)  # path, error
     errorOccurred = Signal(str)
 
-    # Telemetry & BrainStream signals
-    telemetryUpdated = Signal(dict)
-    reasoningChunk = Signal(str)
+    # Tactical-search result for the sidebar's tactical line
     mctsUpdated = Signal(object)
 
     # Conversation Mode signals
@@ -345,16 +343,6 @@ class CoachSession(QObject):
             role = str(event.get("role") or "info")
             if msg:
                 self.logEmitted.emit(msg, role)
-
-        elif ev_type in ("telemetry", "emit_telemetry"):
-            data = event.get("data") if "data" in event else event.get("telemetry", {})
-            if isinstance(data, dict):
-                self.telemetryUpdated.emit(data)
-
-        elif ev_type in ("reasoning", "emit_reasoning"):
-            chunk = str(event.get("chunk") or event.get("text") or "")
-            if chunk:
-                self.reasoningChunk.emit(chunk)
 
         elif ev_type in ("mcts_tree", "emit_mcts"):
             payload = event.get("data") if "data" in event else event.get("mcts")

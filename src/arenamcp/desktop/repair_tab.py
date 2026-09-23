@@ -33,16 +33,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from arenamcp.desktop import theme
 from arenamcp.desktop.runtime import RuntimeState, detect_runtime_state
 from arenamcp.repair_engine import RepairEngine, RepairReport, set_license_key
 
 logger = logging.getLogger(__name__)
 
+# status → (glyph, theme tone)
 _STATUS_GLYPH = {
-    "ok": ("✓", "#3fb950"),
-    "fixed": ("✦", "#58a6ff"),
-    "action_needed": ("⚠", "#d29922"),
-    "error": ("✗", "#f85149"),
+    "ok": ("✓", "good"),
+    "fixed": ("✦", "accent"),
+    "action_needed": ("⚠", "warn"),
+    "error": ("✗", "bad"),
 }
 
 
@@ -61,18 +63,18 @@ class RepairTab(QWidget):
         self._running = False
         self._guided = False
         self._auto_ran = False
+        self._last_report: RepairReport | None = None
         self._build_ui()
         self._report_ready.connect(self._render_report)
         self._progress.connect(self._on_progress)
+        theme.on_theme_changed(self._restyle_rows)
 
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setAlignment(Qt.AlignTop)
-
-        title = QLabel("Repair")
-        title.setStyleSheet("font-size: 18px; font-weight: bold;")
-        root.addWidget(title)
+        root.setContentsMargins(2, 0, 2, 8)
+        root.setSpacing(8)
 
         self._summary = QLabel(
             "Checks your whole setup — runtime, license, MTGA, and the bridge — and fixes what it safely can."
@@ -81,8 +83,8 @@ class RepairTab(QWidget):
         root.addWidget(self._summary)
 
         buttons = QHBoxLayout()
-        self._run_btn = QPushButton("Check & Repair")
-        self._run_btn.setStyleSheet("font-weight: bold; padding: 8px 18px;")
+        self._run_btn = QPushButton("Check && Repair")
+        self._run_btn.setProperty("variant", "primary")
         self._run_btn.clicked.connect(self.run_checks)
         buttons.addWidget(self._run_btn)
 
@@ -94,7 +96,7 @@ class RepairTab(QWidget):
         root.addLayout(buttons)
 
         self._rows = QVBoxLayout()
-        self._rows.setSpacing(4)
+        self._rows.setSpacing(6)
         root.addLayout(self._rows)
 
         # License entry — hidden until the license check demands it.
@@ -113,12 +115,13 @@ class RepairTab(QWidget):
         root.addWidget(self._license_box)
 
         self._details_btn = QPushButton("Show details")
-        self._details_btn.setFlat(True)
+        self._details_btn.setProperty("variant", "flat")
         self._details_btn.clicked.connect(self._toggle_details)
         root.addWidget(self._details_btn, alignment=Qt.AlignLeft)
 
         self._details = QPlainTextEdit()
         self._details.setReadOnly(True)
+        self._details.setFont(theme.mono_font())
         self._details.setMaximumHeight(180)
         self._details.hide()
         root.addWidget(self._details)
@@ -172,25 +175,13 @@ class RepairTab(QWidget):
     def _render_report(self, report: RepairReport) -> None:
         self._running = False
         self._run_btn.setEnabled(True)
-        self._run_btn.setText("Check & Repair")
-        self._clear_rows()
+        self._run_btn.setText("Check && Repair")
+        self._last_report = report
+        self._render_rows(report)
 
         needs_license = False
         fixed_anything = False
         for r in report.results:
-            glyph, color = _STATUS_GLYPH.get(r.status, ("•", "#8b949e"))
-            row = QLabel(
-                f"<span style='color:{color}; font-weight:bold;'>{glyph}</span> "
-                f"<b>{r.label}</b> — {r.detail}"
-                + (
-                    f"<br/><span style='color:#8b949e;'>&nbsp;&nbsp;→ {r.action_hint}</span>"
-                    if r.action_hint
-                    else ""
-                )
-            )
-            row.setWordWrap(True)
-            row.setTextFormat(Qt.RichText)
-            self._rows.addWidget(row)
             self._details.appendPlainText(f"[{r.status}] {r.label}: {r.detail} {r.action_hint}".strip())
             if r.key == "license" and r.status == "action_needed":
                 needs_license = True
@@ -216,6 +207,28 @@ class RepairTab(QWidget):
         self._summary.setText(f"{result.label}: {result.detail}")
         # Re-run so the checklist and provisioning signal reflect reality.
         self.run_checks()
+
+    def _render_rows(self, report: RepairReport) -> None:
+        self._clear_rows()
+        for r in report.results:
+            glyph, tone = _STATUS_GLYPH.get(r.status, ("•", "muted"))
+            text = (
+                theme.span(glyph, tone, weight=700)
+                + "&nbsp;"
+                + theme.span(r.label, weight=700)
+                + " — "
+                + theme.span(r.detail)
+            )
+            if r.action_hint:
+                text += "<br>" + theme.span(f"→ {r.action_hint}", "muted")
+            row = QLabel(text)
+            row.setWordWrap(True)
+            row.setTextFormat(Qt.RichText)
+            self._rows.addWidget(row)
+
+    def _restyle_rows(self) -> None:
+        if self._last_report is not None and not self._running:
+            self._render_rows(self._last_report)
 
     # ------------------------------------------------------------------
     def _toggle_details(self) -> None:
