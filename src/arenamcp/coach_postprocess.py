@@ -103,6 +103,7 @@ class _AdvicePostprocessMixin:
         game_state: dict[str, Any],
         style: str = "quick",
         skip_legal_filter: bool = False,
+        verified_action: str | None = None,
     ) -> str:
         """Post-process LLM advice to fix common issues with smaller models.
 
@@ -118,6 +119,11 @@ class _AdvicePostprocessMixin:
         like "Wait (Opponent has priority)" whenever the opponent holds
         priority (live report 2026-09-16 20:08). Markdown/TTS cleanup and the
         backend-error surfacing still run.
+
+        ``verified_action``: the legal action the model picked by number in a
+        structured reply (see coach_structured). It is legal by construction,
+        so the text-matching/replacement block is skipped; cleanup and safety
+        filters still run.
 
         This is a band-aid layer over freeform LLM prose. The cleaner long-term
         fix is to switch the coach to structured JSON output (action + say
@@ -624,7 +630,10 @@ class _AdvicePostprocessMixin:
                 logger.warning(f"RulesEngine error in postprocess: {e}")
                 legal_actions = []
 
-        if legal_actions:
+        if verified_action:
+            # Structured pick: legal by construction — no matching/replacement.
+            pass
+        elif legal_actions:
 
             def _score_action(action: str) -> int:
                 """Heuristic score for legal actions (higher is better)."""

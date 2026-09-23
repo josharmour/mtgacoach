@@ -32,6 +32,13 @@ from arenamcp.coach_backends import (
     pick_thinking_model,
 )
 from arenamcp.coach_postprocess import _AdvicePostprocessMixin
+from arenamcp.coach_structured import (
+    build_choices,
+    format_choices,
+    is_verified,
+    parse_structured_advice,
+    structured_advice_enabled,
+)
 from arenamcp.coach_prompt_utils import (
     _ACTIONS_AVAILABLE_BRIDGE_REQUESTS,
     _build_bridge_context_lines,
@@ -96,6 +103,10 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         self._deck_strategy: str | None = None
         self._deck_strategy_pending = False
         self._rules_db: RulesDB | None = None
+        # Last structured pick from get_advice ({"index", "action", "verified",
+        # "trigger"}), for autopilot/UI to consume; None when the reply was
+        # free text or structured advice is off.
+        self.last_structured_choice: dict[str, Any] | None = None
         # Persistent, adaptive strategic plan. Lazily constructed (game_plan.py
         # imports CoachEngine, so a module-level import here would cycle).
         self._game_plan_mgr = None
@@ -3265,6 +3276,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             else:
                 user_message = f"{context}\n\nWhat's the best play right now?"
 
+        # Structured answer: number the legal actions and ask for
+        # {"action": N, "say": ...} so the pick is legal by construction.
+        # Questions and conversation-mode renders stay free text.
+        structured_choices: list[str] = []
+        if not conversational and not question and structured_advice_enabled():
+            structured_choices = build_choices(game_state)
+            if structured_choices:
+                user_message += "\n\n" + format_choices(structured_choices)
+
         # OPTIMIZATION: Log prompt size with token estimate
         prompt_chars = len(system_prompt) + len(user_message)
         prompt_tokens_est = self._estimate_tokens(system_prompt + user_message)
@@ -3471,8 +3491,36 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         # replace them with boilerplate like "Wait (Opponent has priority)".
         # Skip that filter; markdown/TTS cleanup still applies via the
         # style-specific paths below.
+        verified_action: str | None = None
+        self.last_structured_choice = None
+        if structured_choices and response and not is_backend_error_text(response):
+            parsed = parse_structured_advice(response, structured_choices)
+            if parsed is not None:
+                response = parsed.say
+                if is_verified(parsed, game_state):
+                    verified_action = parsed.action
+                self.last_structured_choice = {
+                    "index": parsed.index,
+                    "action": parsed.action,
+                    "verified": verified_action is not None,
+                    "trigger": trigger,
+                }
+                logger.info(
+                    f"[STRUCTURED] choice={parsed.index} action={parsed.action!r} "
+                    f"verified={verified_action is not None}"
+                )
+            else:
+                logger.info("[STRUCTURED] unparseable reply — free-text path")
+                if response.lstrip().startswith("{"):
+                    # Never speak raw JSON punctuation.
+                    response = re.sub(r'[{}"]|\b(?:action|say)\b\s*:', " ", response)
+
         response = self._postprocess_advice(
-            response, game_state, style=style_key, skip_legal_filter=conversational
+            response,
+            game_state,
+            style=style_key,
+            skip_legal_filter=conversational,
+            verified_action=verified_action,
         )
 
         if trigger == "threat_detected" and threat:
