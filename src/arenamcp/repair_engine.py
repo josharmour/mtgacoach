@@ -143,8 +143,8 @@ class RepairEngine:
             label,
             "ok",
             "Not applicable: native Mac client cannot host the bridge "
-            "(coaching works from the log; autopilot requires the Windows "
-            "build under Wine/CrossOver — see docs/PLATFORM_PARITY.md).",
+            "(coaching uses the log; native Mac autoplay uses screenshots "
+            "and macOS input — see NATIVE_MAC_AUTOPLAY.md).",
         )
 
     # ------------------------------------------------------------------

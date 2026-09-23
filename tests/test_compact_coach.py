@@ -76,20 +76,19 @@ def test_compact_coach_renders_on_game_state(panel):
     assert "Your Turn" in panel.turn_strip.text()
 
 
-def test_experimental_policy_display_does_not_invent_outcome_score(panel):
+def test_tactical_pill_renders_best_line_score(panel):
     panel._on_mcts_updated({
-        'eval_source': 'MageZero UWTempo v2 — experimental, uncalibrated',
-        'best_action': 'Pass', 'branches': [{
-            'action': 'Pass', 'score_provenance': 'prior_only',
-            'normalized_score': .9, 'prior_probability': .7,
-            'value_delta': 0.0,
+        'eval_source': 'Tactical Heuristic Lookahead',
+        'best_action': 'Play Land: Island', 'branches': [{
+            'action': 'Play Land: Island', 'score_provenance': 'heuristic_lookahead',
+            'normalized_score': .62, 'value_delta': .04,
         }],
     })
     rendered = panel.mcts_pill_label.text()
-    assert 'Policy weight 70%' in rendered
-    assert 'outcome not evaluated' in rendered
-    assert 'Experimental' in rendered
-    assert '90%' not in rendered
+    assert 'Tactical Line' in rendered
+    assert '62%' in rendered
+    assert '+4.0%' in rendered
+    assert 'Play Land: Island' in rendered
 
 
 def test_controls_reflow_at_sidebar_width(panel, qapp):

@@ -867,7 +867,15 @@ class RulesEngine:
             return legal_attackers
 
         local_seat = local_player.get("seat_id")
-        turn_num = game_state.get("turn", {}).get("turn_number", 0)
+        turn = game_state.get("turn", {}) or {}
+        turn_num = turn.get("turn_number", 0)
+        # In our own live declare-attackers step GRE's list is fresh and
+        # authoritative. The local tapped/sick checks exist for stale
+        # contexts; inside the step they misfire — an attacker being declared
+        # reads is_tapped=True, which dropped a 12/10 lethal attacker from the
+        # menu with the opponent at 3 (bug_20260920_221251).
+        if turn.get("step") == "Step_DeclareAttack" and turn.get("active_player") == local_seat:
+            return list(legal_attackers)
         valid_name_counts: dict[str, int] = {}
         saw_local_creature = False
 
@@ -929,6 +937,7 @@ class RulesEngine:
                         local_seat = p.get("seat_id")
                         break
                 turn_num = game_state.get("turn", {}).get("turn_number", 0)
+                in_live_step = (game_state.get("turn", {}) or {}).get("step") == "Step_DeclareAttack"
                 candidates_by_name: dict[str, list[dict[str, Any]]] = {}
                 for card in game_state.get("battlefield", []):
                     controller = card.get("controller_seat_id")
@@ -938,7 +947,9 @@ class RulesEngine:
                     type_line = (card.get("type_line") or "").lower()
                     if "creature" not in type_line:
                         continue
-                    if card.get("is_tapped"):
+                    # (P/T lookup only.) Inside the live step, tapped means
+                    # "being declared", so keep it for the P/T annotation.
+                    if card.get("is_tapped") and not in_live_step:
                         continue
                     if (
                         card.get("turn_entered_battlefield", -1) == turn_num
@@ -1022,6 +1033,9 @@ class RulesEngine:
             return ["Select replacement effect order", "Done"]
 
         if dec_type == "casting_time_options":
+            x_options = RulesEngine._choose_x_options(game_state, decision_context)
+            if x_options:
+                return x_options
             return ["Cast normally", "Use alternative cost (Foretell/Flashback/Escape)"]
 
         if dec_type == "select_counters":
@@ -1043,6 +1057,63 @@ class RulesEngine:
             return ["Accept (yes)", "Decline (no)"]
 
         return []
+
+    @staticmethod
+    def _choose_x_options(game_state: dict[str, Any], decision_context: dict[str, Any]) -> list[str]:
+        """Log-derived "X = n" entries for a ChooseX casting-time request.
+
+        Without the bridge (which enumerates SubmitX values) every casting-time
+        request got the generic "Cast normally / Use alternative cost" menu, so
+        an X prompt had no X choices: the planner's correct "X = 5" answer was
+        dropped as illegal (6 of 18 planner parse failures in the live log).
+        The log carries the ChooseX request, the spell's cost and our untapped
+        mana, which bounds X. Values use the "X = n" form the planner already
+        maps to a numeric submission.
+        """
+        raw = decision_context.get("raw") or {}
+        reqs = raw.get("castingTimeOptionReq") or []
+        choose_x = next(
+            (
+                r
+                for r in reqs
+                if isinstance(r, dict)
+                and (
+                    str(r.get("castingTimeOptionType", "")).endswith("ChooseX")
+                    or str((r.get("numericInputReq") or {}).get("numericInputType", "")).endswith("ChooseX")
+                )
+            ),
+            None,
+        )
+        if choose_x is None:
+            return []
+        numeric = choose_x.get("numericInputReq") or {}
+        affected = choose_x.get("affectedId") or numeric.get("sourceId")
+        card = None
+        for zone in ("stack", "hand", "command", "battlefield"):
+            card = next(
+                (c for c in game_state.get(zone) or [] if isinstance(c, dict) and c.get("instance_id") == affected),
+                None,
+            )
+            if card:
+                break
+        mana_cost = str((card or {}).get("mana_cost") or "")
+        x_count = max(1, mana_cost.upper().count("{X}"))
+        local_seat = next(
+            (p.get("seat_id") for p in game_state.get("players", []) if p.get("is_local")),
+            game_state.get("local_seat_id"),
+        )
+        try:
+            available = int(RulesEngine._get_mana_pool(game_state, local_seat).get("total") or 0)
+        except Exception:
+            available = 0
+        max_x = max(0, (available - RulesEngine._parse_cmc(mana_cost)) // x_count)
+        min_x = int(numeric.get("minValue") or 0)
+        try:
+            max_x = min(max_x, int(numeric.get("maxValue")))
+        except (TypeError, ValueError):
+            pass
+        max_x = min(max(max_x, min_x), min_x + 20)
+        return [f"X = {value}" for value in range(min_x, max_x + 1)]
 
     @staticmethod
     def get_legal_actions(game_state: dict[str, Any]) -> list[str]:

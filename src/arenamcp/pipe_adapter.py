@@ -495,6 +495,9 @@ class PipeAdapter:
                         "autopilot_enabled": bool(getattr(coach, "_autopilot_enabled", False)),
                         "autopilot_initialized": ap is not None,
                         "autopilot_state": str(getattr(ap, "_state", "") or ""),
+                        "autopilot_execution_backend": "native-mac-desktop"
+                        if getattr(ap, "requires_desktop_poll", False)
+                        else "gre-bridge",
                         "bridge_connected": bridge_connected,
                         "model_alias": str(getattr(backend, "model", "") or ""),
                         "served_model": str(getattr(backend, "last_served_model", "") or ""),
@@ -647,6 +650,9 @@ class PipeAdapter:
 
     def _handle_toggle_fallback_mode(self) -> None:
         """Bridge-only mode is fixed on; legacy fallback toggles do nothing."""
+        if getattr(getattr(self._coach, "_autopilot", None), "requires_desktop_poll", False):
+            self.log("Native Mac autoplay uses screenshots and macOS input; no bridge is required.")
+            return
         self.log("Bridge-only autopilot is always on. Mouse fallback has been removed.")
 
     def _handle_debug_report(self, screenshots: dict[str, str] | None = None) -> None:

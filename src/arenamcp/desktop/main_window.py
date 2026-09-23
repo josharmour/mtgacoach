@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 from PySide6.QtCore import QPoint, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QGuiApplication, QShowEvent
@@ -10,7 +11,9 @@ from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QStackedWidget,
@@ -136,6 +139,13 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         restart_act = tools_menu.addAction("Restart Coach")
         restart_act.triggered.connect(self._restart_coach)
+        if sys.platform == "darwin":
+            vision_act = tools_menu.addAction("Autoplay Vision Model…")
+            vision_act.triggered.connect(self._choose_autoplay_vision_model)
+            permissions_act = tools_menu.addAction("Autoplay Permissions…")
+            permissions_act.triggered.connect(self._check_autoplay_permissions)
+            stop_autoplay_act = tools_menu.addAction("Stop Autoplay (F11)")
+            stop_autoplay_act.triggered.connect(lambda: self._session.send_command("force_stop"))
         debug_act = tools_menu.addAction("Submit Bug Report (Ctrl+Shift+D)")
         debug_act.triggered.connect(self._session.trigger_debug_report)
 
@@ -172,12 +182,35 @@ class MainWindow(QMainWindow):
         diag_act = help_menu.addAction("Run Diagnostics")
         diag_act.triggered.connect(self._show_repair_view)
 
+    def _choose_autoplay_vision_model(self) -> None:
+        model, accepted = QInputDialog.getText(
+            self,
+            "Native Mac Autoplay",
+            "Image-capable model ID served by your endpoint (blank uses the coach model).\n"
+            "Autoplay sends Arena window screenshots to this model. Restart the coach after changing it.",
+            text=str(self._settings.get("autopilot_vision_model") or ""),
+        )
+        if accepted:
+            self._settings.set("autopilot_vision_model", model.strip() or None)
+
+    def _check_autoplay_permissions(self) -> None:
+        from arenamcp.native_mac_input import NativeMacInput
+
+        try:
+            NativeMacInput().check_permissions(request=True)
+            message = "Accessibility and Screen Recording are allowed. This check does not send game input."
+        except RuntimeError as exc:
+            message = str(exc)
+        QMessageBox.information(self, "Autoplay Permissions", message)
+
     def _setup_hotkeys(self) -> None:
         self._hotkeys = HotkeyManager(self)
         self._hotkeys.register("F5", lambda: self._session.send_command("force_advice"))
         self._hotkeys.register("F10", lambda: self._session.send_command("replay_advice"))
         self._hotkeys.register("F12", self._session.trigger_debug_report)
         self._hotkeys.register("Ctrl+Shift+D", self._session.trigger_debug_report)
+        if sys.platform == "darwin":
+            self._hotkeys.register("F11", lambda: self._session.send_command("force_stop"))
 
     def _show_coach_view(self) -> None:
         self._stack.setCurrentIndex(0)

@@ -57,6 +57,9 @@ def _make_coach(ui: _DraftHudUI, mcp: _DraftMcp) -> standalone.StandaloneCoach:
     coach._mcp = mcp
     coach._voice_output = None
     coach._running = True
+    # __init__ sets these; the coaching loop reads them every tick.
+    coach._autopilot = None
+    coach._autopilot_enabled = False
     coach.draft_mode = False
     coach.set_code = None
     coach.spoken: list[str] = []

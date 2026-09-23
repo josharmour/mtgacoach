@@ -16,6 +16,7 @@ classifiers = [
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: MIT License",
     "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS :: MacOS X",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Topic :: Games/Entertainment",
@@ -42,7 +43,9 @@ dependencies = [
     "kokoro-onnx",         # TTS (spoken advice)
     "soundfile>=0.12.0",   # audio I/O for TTS
     "Pillow>=10.0.0",      # screenshot capture for debug reports
-    "msgpack>=1.0.0",       # fast binary serialization for MageZero RL evaluations
+    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-ApplicationServices>=10.0; sys_platform == 'darwin'",
 ]
 
 [project.urls]
@@ -65,7 +68,7 @@ llm = [
 ]
 autopilot = [
     "pyautogui>=0.9.54",
-    "pydirectinput-rgx>=1.0.0",
+    "pydirectinput-rgx>=1.0.0; sys_platform == 'win32'",
 ]
 scraping = [
     "beautifulsoup4>=4.12.0",

@@ -146,11 +146,10 @@ class ActionPlan:
     trigger: str = ""
     turn_number: int = 0
     # WP-0.4: why this plan did NOT come from the model ("" = the model decided).
-    # Until now the only signal was an "[auto-pick]" / "[land-drop-first]" prefix
-    # sniffed out of overall_strategy by self_play.plan_fallback_reason(). That
-    # coupling fails silently: reword a strategy string and every fallback stops
-    # being tagged, and untagged fallbacks are trained on as if the model had
-    # chosen them — teaching the model to imitate its own deterministic crutch.
+    # The old signal was an "[auto-pick]" / "[land-drop-first]" prefix sniffed
+    # out of overall_strategy, which fails silently: reword a strategy string
+    # and fallbacks stop being identified. Bug reports and logs rely on this
+    # structured tag to tell model decisions from deterministic ones.
     fallback_reason: str = ""
 
     @property
@@ -1852,6 +1851,21 @@ class ActionPlanner(_ActionLegalityMixin):
             logger.error(f"Failed to parse action plan JSON: {e}")
             logger.debug(f"Raw response: {response[:500]}")
             return plan
+
+        # Accept the two shapes models emit besides {"actions": [...]}: a bare
+        # list of actions, and a single top-level action ({"pick": 1,
+        # "reasoning": ...}). glm-5.3-flash does the latter; with only the
+        # wrapper accepted, a correct pick parsed as 0 actions and the
+        # fallback heuristic passed the turn with castable spells in hand
+        # (bug_20260920_231337 replay, 2026-09-22).
+        if isinstance(data, list):
+            data = {"actions": data}
+        elif not isinstance(data, dict):
+            data = {}
+        elif "actions" not in data and ("pick" in data or "action_type" in data):
+            data = {**data, "actions": [data]}
+            if not data.get("overall_strategy"):
+                data["overall_strategy"] = str(data.get("reasoning", "") or "")
 
         # Extract overall strategy and voice advice
         plan.overall_strategy = data.get("overall_strategy", "")

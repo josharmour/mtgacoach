@@ -4,55 +4,14 @@ Handles both online (mtgacoach.com) and local (Ollama/LM Studio) modes
 through the same OpenAI-compatible chat completions interface.
 """
 
-import json
 import logging
-import os
 import re
 import threading
-import time
 
 from arenamcp.backend_health import BACKEND_ERROR_PREFIX, BackendHealth
 from arenamcp.client_metadata import get_client_headers
 
 logger = logging.getLogger(__name__)
-
-
-# Prompt capture hook for the eval harness (tools/eval). Always-off unless
-# MTGACOACH_PROMPT_DUMP_PATH points at a writable JSONL file. Each .complete()
-# call appends one line: {"ts","model","system","user","max_tokens","temperature"}.
-# Zero overhead when the env var is unset.
-_CAPTURE_LOCK = threading.Lock()
-
-
-def _maybe_capture_prompt(
-    model: str,
-    system_prompt: str,
-    user_message: str,
-    max_tokens: int,
-    temperature: float,
-) -> None:
-    path = os.environ.get("MTGACOACH_PROMPT_DUMP_PATH", "")
-    if not path:
-        return
-    try:
-        record = {
-            "ts": time.time(),
-            "model": model,
-            "system": system_prompt,
-            "user": user_message,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            # Record which prompt variant produced this capture so the
-            # eval-side ablation can split captures by variant later.
-            # See coach.py: _build_context.
-            "prompt_variant": os.environ.get("MTGACOACH_PROMPT_VARIANT", "default").lower(),
-        }
-        line = json.dumps(record, ensure_ascii=False)
-        with _CAPTURE_LOCK, open(path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception as e:
-        # Capture must never break a real coach call.
-        logger.debug(f"prompt-capture write failed: {e}")
 
 
 # Closed think-tag blocks inside reasoning text (DeepSeek/Qwen style).
@@ -396,8 +355,6 @@ class ProxyBackend:
         """
         import time
 
-        _maybe_capture_prompt(self.model, system_prompt, user_message, max_tokens, temperature)
-
         try:
             client = self._get_client()
             if request_timeout_s is not None:
@@ -661,12 +618,19 @@ class ProxyBackend:
     # watchdog burned a failing call pair every ~40s all match.
     _VISION_DISABLE_AFTER = 3
 
+    def reset_vision_failures(self) -> None:
+        """Allow a new attempt after the user explicitly resumes visual autoplay."""
+        self._vision_dead = False
+        self._vision_fail_count = 0
+
     def complete_with_image(
         self,
         system_prompt: str,
         user_message: str,
         image_bytes: bytes,
         request_timeout_s: float | None = None,
+        *,
+        json_mode: bool = False,
     ) -> str:
         """Get completion with an image via the OpenAI multimodal message format."""
         import base64
@@ -696,11 +660,15 @@ class ProxyBackend:
                 "max_completion_tokens": 600,
                 "temperature": 0.3,
             }
+            if json_mode:
+                params["response_format"] = {"type": "json_object"}
 
             model_lower = self.model.lower()
             extra = {}
             is_gpt5 = "gpt-5" in model_lower or "gpt5" in model_lower
             is_gemini = "gemini" in model_lower
+            if "glm" in model_lower:
+                extra["chat_template_kwargs"] = {"thinking": True, "reasoning_effort": "low"}
             if "claude" in model_lower:
                 extra["thinking"] = {"type": "disabled"}
             if is_gemini:

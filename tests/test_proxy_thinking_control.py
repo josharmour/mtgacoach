@@ -22,6 +22,9 @@ bug — see test file history); re-gate on the served engine then.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import Mock
+
 import pytest
 
 from arenamcp.backends.proxy import ProxyBackend
@@ -98,3 +101,38 @@ def test_claude_thinking_config_unaffected(captured):
     assert extra.get("thinking") == {"type": "enabled", "budget_tokens": 8000}
     # ...and the vLLM key rides along harmlessly for gateway-routed Claude.
     assert extra["chat_template_kwargs"]["thinking"] is True
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_glm_vision_uses_low_effort_separated_reasoning(monkeypatch, json_mode):
+    monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
+    backend = ProxyBackend(model="glm-5.3-flash", base_url="http://127.0.0.1:9/v1", api_key="test")
+    client = Mock()
+    client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"kind":"wait"}'))]
+    )
+    backend._client = client
+    assert backend.complete_with_image("system", "user", b"image", json_mode=json_mode) == '{"kind":"wait"}'
+    params = client.chat.completions.create.call_args.kwargs
+    assert params["extra_body"]["chat_template_kwargs"] == {"thinking": True, "reasoning_effort": "low"}
+    if json_mode:
+        assert params["response_format"] == {"type": "json_object"}
+    else:
+        assert "response_format" not in params
+
+
+def test_explicit_vision_resume_reenables_failed_endpoint(monkeypatch):
+    monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
+    backend = ProxyBackend(model="test", base_url="http://127.0.0.1:9/v1", api_key="test")
+    backend._vision_dead = True
+    backend._vision_fail_count = 3
+    client = Mock()
+    client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"kind":"wait"}'))]
+    )
+    backend._client = client
+    assert "disabled" in backend.complete_with_image("system", "user", b"image")
+    client.chat.completions.create.assert_not_called()
+    backend.reset_vision_failures()
+    assert backend.complete_with_image("system", "user", b"image") == '{"kind":"wait"}'
+    client.chat.completions.create.assert_called_once()

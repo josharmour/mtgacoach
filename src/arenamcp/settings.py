@@ -55,8 +55,8 @@ DEFAULTS = {
     "model": None,  # None = use backend default
     # Subscription license key for online mode
     "license_key": "",
-    # Local endpoint config — used only by dev tooling (eval harness,
-    # self-play), not by the app.
+    # Local endpoint config — dev use only (local-backend detection in
+    # backend_detect/coach_backends); customers are online-only.
     "local_url": "http://localhost:8000/v1",  # Default: vLLM (Ollama is at :11434)
     "local_model": None,  # None = auto-detect first available
     "local_api_key": "vllm",  # vLLM/Ollama ignore this; LM Studio needs "lm-studio"
@@ -64,6 +64,9 @@ DEFAULTS = {
     "last_seen_message_id": None,
     # Autopilot persistent toggle state
     "autopilot_enabled": False,
+    "autopilot_vision_model": None,
+    "autopilot_vision_url": None,
+    "autopilot_vision_api_key": None,
     # Conversation Mode session mode ("turn_advice" | "conversation"),
     # commentary verbosity ("quiet" | "balanced" | "detailed"), and the
     # minimum seconds between proactive topic utterances (Wave 3).

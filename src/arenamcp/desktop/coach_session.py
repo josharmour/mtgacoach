@@ -289,7 +289,7 @@ class CoachSession(QObject):
             if key:
                 self._statuses[key] = val
                 if key == "AUTOPILOT":
-                    self._autopilot_active = "ON" in val
+                    self._autopilot_active = "ON" in val or "PAUSED" in val
                 elif key == "MUTE":
                     self._muted = "ON" in val
                 self.statusChanged.emit(key, val)

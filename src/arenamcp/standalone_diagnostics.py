@@ -45,6 +45,18 @@ class _DiagnosticsMixin:
             )
             report["reason"] = reason
 
+            autopilot = getattr(self, "_autopilot", None)
+            screenshot_fn = getattr(autopilot, "get_debug_screenshot", None)
+            if callable(screenshot_fn):
+                try:
+                    screenshot = screenshot_fn()
+                    if isinstance(screenshot, bytes):
+                        screenshot_path = bug_dir / f"bug_{timestamp}_autoplay.png"
+                        screenshot_path.write_bytes(screenshot)
+                        report.setdefault("screenshots", {})["autoplay"] = str(screenshot_path)
+                except Exception:
+                    logger.exception("Could not attach autoplay's last model screenshot")
+
             with open(bug_file, "w") as f:
                 json.dump(report, f, indent=2, default=str)
 

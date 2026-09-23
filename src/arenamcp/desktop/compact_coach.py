@@ -194,7 +194,7 @@ class CompactCoachPanel(QWidget):
         self.ap_btn = QPushButton("AP: OFF")
         self.ap_btn.setObjectName("apButton")
         self.ap_btn.setProperty("apOn", "false")
-        self.ap_btn.setToolTip("Toggle autopilot — plays actions via GRE named pipe")
+        self.ap_btn.setToolTip("Toggle autoplay — automatically plays the current match")
         self.ap_btn.clicked.connect(self._session.toggle_autopilot)
         ctrl_row1.addWidget(self.ap_btn)
         self._buttons["toggle_autopilot"] = self.ap_btn
@@ -345,43 +345,15 @@ class CompactCoachPanel(QWidget):
         branches = data.get("branches") or []
         blunders = data.get("blunder_traps") or []
         best_action = data.get("best_action") or ""
-        eval_src = str(data.get("eval_source") or "MCTS")
 
         if not branches and not best_action:
             self.mcts_pill_label.hide()
             return
 
-        is_rl = ("MageZero" in eval_src or "Neural" in eval_src or "RL" in eval_src) and "Heuristic" not in eval_src
-
         best_branch = branches[0] if branches else None
-        provenance = (
-            best_branch.get("score_provenance")
-            if best_branch
-            else ("neural_afterstate" if is_rl else "heuristic_lookahead")
-        )
-        if provenance == "neural_afterstate":
-            src_tag = "Neural 1-Ply"
-            src_color = "#89b4fa"
-            line_title = "🧠 Neural Line"
-        elif provenance == "prior_only":
-            src_tag = "Policy Prior"
-            src_color = "#cba6f7"
-            line_title = "📋 Prior Line"
-        elif provenance == "unsupported_fallback":
-            src_tag = "Approx Lookahead"
-            src_color = "#a6adc8"
-            line_title = "🌳 Approx Line"
-        else:
-            src_tag = "Lookahead"
-            src_color = "#a6adc8"
-            line_title = "🌳 Tactical Line"
-
-        if 'experimental' in eval_src.lower():
-            src_tag = 'Experimental / ' + src_tag
-            line_title = '🧪 Model Score'
-            self.mcts_pill_label.setToolTip('Experimental model score; not a calibrated probability of winning.')
-        else:
-            self.mcts_pill_label.setToolTip('')
+        src_tag = "Lookahead"
+        src_color = "#a6adc8"
+        line_title = "🌳 Tactical Line"
 
         if best_branch:
             win_p = float(best_branch.get("normalized_score", best_branch.get("win_probability", 0.5)))
@@ -401,10 +373,6 @@ class CompactCoachPanel(QWidget):
             action_text = str(best_action)
 
         score_text = f"{win_pct}%"
-        if best_branch and provenance == "prior_only":
-            score_text = f"Policy weight {float(best_branch.get('prior_probability', 0.0)):.0%}"
-            delta_str = "outcome not evaluated"
-
         win_color = "#a6e3a1" if win_pct >= 55 else ("#f9e2af" if win_pct >= 45 else "#f38ba8")
 
         html_lines = [
@@ -423,12 +391,6 @@ class CompactCoachPanel(QWidget):
                 html_lines.append(
                     f"<div style='color:#f38ba8; font-size:10px; margin-top:2px;'>⚠️ <b>Trap:</b> Avoid {html.escape(trap_txt[:45])}</div>"
                 )
-
-        expected_opp = data.get("expected_opponent_actions") or []
-        if expected_opp:
-            html_lines.append(
-                f"<div style='color:#fab387; font-size:10px; margin-top:2px;'>🎯 <b>Hypothesized Threats:</b> {html.escape(', '.join(str(x) for x in expected_opp[:2]))}</div>"
-            )
 
         self.mcts_pill_label.setText("".join(html_lines))
         self.mcts_pill_label.show()
@@ -467,8 +429,13 @@ class CompactCoachPanel(QWidget):
         self._refresh_status_dots()
 
         if key == "AUTOPILOT":
-            ap_on = "ON" in val
-            self.ap_btn.setText("AP: ON" if ap_on else "AP: OFF")
+            paused = "PAUSED" in val
+            ap_on = "ON" in val or paused
+            self.ap_btn.setText("AP: PAUSED" if paused else "AP: ON" if ap_on else "AP: OFF")
+            self.ap_btn.setToolTip(
+                "Paused: see the latest autoplay notice. Toggle off/on to retry."
+                if paused else "Toggle autoplay"
+            )
             self.ap_btn.setProperty("apOn", "true" if ap_on else "false")
             self._repolish(self.ap_btn)
         elif key == "MODE":
