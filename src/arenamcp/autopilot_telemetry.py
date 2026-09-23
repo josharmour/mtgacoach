@@ -10,7 +10,7 @@ import threading
 import time
 from typing import Any
 
-from arenamcp.action_planner import ActionPlan, ActionType, GameAction
+from arenamcp.action_planner import ActionType, GameAction
 
 logger = logging.getLogger(__name__)
 
@@ -125,41 +125,6 @@ class _AutopilotTelemetryMixin:
             )
         except Exception as e:
             logger.debug(f"_record_autopilot_decision failed: {e}")
-
-    def _maybe_record_trajectory(
-        self,
-        game_state: dict[str, Any],
-        trigger: str,
-        legal_actions: list[str] | None,
-        decision_context: dict[str, Any] | None,
-        plan: ActionPlan | None,
-        latency_ms: float,
-    ) -> None:
-        """Record this planning decision to an attached TrajectoryRecorder."""
-        recorder = getattr(self, "_trajectory_recorder", None)
-        if recorder is None:
-            return
-        try:
-            from arenamcp.action_planner import AUTOPILOT_SYSTEM_PROMPT, plan_fallback_reason
-
-            prompt_user = self._planner._build_action_prompt(
-                game_state, trigger, legal_actions, decision_context
-            )
-            planned = plan.actions[0] if (plan and plan.actions) else None
-            request_type = (
-                game_state.get("_bridge_request_type") or game_state.get("_bridge_request_class") or trigger
-            )
-            recorder.record_decision(
-                game_state=game_state,
-                prompt_system=AUTOPILOT_SYSTEM_PROMPT,
-                prompt_user=prompt_user,
-                planned_action=planned,
-                request_type=request_type,
-                latency_ms=latency_ms,
-                fallback_reason=plan_fallback_reason(plan),
-            )
-        except Exception as e:
-            logger.debug(f"_maybe_record_trajectory failed (ignored): {e}")
 
     def _report_fallback_bug(
         self,

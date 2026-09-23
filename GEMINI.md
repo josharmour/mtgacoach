@@ -6,9 +6,7 @@
 - **Python Core (`src/arenamcp/`)**: Headless coaching engine driving the pipeline.
 - **Desktop UI (`src/arenamcp/desktop/`)**: PySide6-based frontend providing the dashboard, coaching log, repair tools, and transparent, click-through HUD overlay.
 - **BepInEx Plugin (`bepinex-plugin/MtgaCoachBridge/`)**: C# plugin injected into MTGA for direct GRE state access, action submission, and automation.
-- **Proxy Server (`website/`)**: FastAPI gateway at `api.mtgacoach.com` routing subscriber LLM requests, tracking usage, and providing an eval dashboard.
-- **LLM Evaluation Harness (`tools/eval/`)**: Harness for scoring local model quality (mulligans, turn-actions, replays) using real play prompts.
-- **Sister RL Engine (`~/repos/magezero/`)**: Independent AlphaZero-style MCTS self-play training pipeline running in XMage on `blackwell` (`10.0.0.10`). Run `2026-08-16_00-24-17` active at Gen 13 (attempt `recoveryB20260906_gen13`). Telemetry via `python3 ~/repos/magezero/tools/rl_status.py`. Refer to `~/repos/magezero/AGENTS.md`, `~/repos/magezero/memory/recovery-status-20260906.md`, and `~/repos/magezero/docs/PLAN_OF_RECORD.md`.
+- **Proxy Server (`website/`)**: FastAPI gateway at `api.mtgacoach.com` routing subscriber LLM requests, tracking usage, and providing an admin dashboard.
 
 ## Core Direction & Architecture
 
@@ -16,14 +14,6 @@
 - **Log Parsing as Fallback**: `Player.log` is parsed via a log watcher only as a fallback and for out-of-match/metadata diagnostics.
 - **File System Separation**: Installed files live read-only under `Program Files\mtgacoach`, while mutable runtime files (venv, settings, logs) belong under `%LOCALAPPDATA%\mtgacoach` and `%USERPROFILE%\.arenamcp`.
 - **Local LLM Default**: Default local backend is **vLLM** (`http://localhost:8000/v1`) running `google/gemma-4-E2B-it` (aliased as `gemma4:e2b`), with fallback to Ollama (`localhost:11434`) or LM Studio.
-
-## LLM Evaluation Harness (`tools/eval/`)
-
-- Runs idempotent evaluation pipelines using captured prompts (`prompts.jsonl`).
-- **Replay Scorer (`tools/eval/replay/`)**: Replays prompts through backends (`run.py`) and scores them against judge models on **contested decisions** (decisions where the player had a choice, to prevent easy moves from inflating match rate).
-- **Mulligan Scorer**: Uses balanced accuracy (`balanced_higher_wr_rate`) to avoid keep-rate bias. Skips buckets within `MARGIN_THRESHOLD=0.05`.
-- **Turn-action Scorer**: Uses Mean Jaccard (set overlap) as the headline metric.
-- Supports WSL paths to allow running WSL evaluators against Windows MTGA paths.
 
 ## Installer & Repair UX
 
@@ -74,21 +64,19 @@ cd bepinex-plugin/MtgaCoachBridge && dotnet build -c Release
 p=$(wslpath -w /home/joshu/repos/mtgacoach/installer) && powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "\$p='${p}'; Set-Location -LiteralPath \$p; .\build-installer.ps1"
 ```
 
-### Verification & Eval
+### Verification
 ```powershell
 # Verify local vLLM endpoint
 C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe tools/verify_vllm.py
 
-# Run replay evaluation harness
-C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe tools/eval/replay/run.py
 ```
 ## Repository Directory & File Map
 
 ### Top-Level Layout
 * **`src/`**: The core Python codebase (`arenamcp`). This is the heart of the backend coaching loop, logs, game-state logic, Named Pipe GRE bridge server, and PySide6 desktop UI.
 * **`bepinex-plugin/`**: The C# Unity plugin injected into Magic: The Gathering Arena. It intercepts internal game states and acts as a Named Pipe client connecting directly to Python.
-* **`website/`**: A FastAPI application running on `api.mtgacoach.com` (under Synology/Docker) that validates licenses, routes LLM requests to the LiteLLM gateway (self-hosted models only; the legacy Azure/OpenAI path is decommissioned), and serves the admin evaluation dashboard.
-* **`tools/`**: Diagnostic scripts, vLLM verification tools, and the comprehensive evaluation harness (`tools/eval/`) for measuring LLM output quality.
+* **`website/`**: A FastAPI application running on `api.mtgacoach.com` (under Synology/Docker) that validates licenses, routes LLM requests to the LiteLLM gateway (self-hosted models only; the legacy Azure/OpenAI path is decommissioned), and serves the admin dashboard.
+* **`tools/`**: Diagnostic scripts and vLLM verification tools.
 * **`installer/`**: Inno Setup script (`mtgacoach.iss`) and build automation scripts (`build-installer.ps1`) to generate the lightweight Windows setup executable.
 * **`dist/`** *(Generated)*: Where release builds of the app and final installer packages are staged.
 * **`venv/`** / **`.venv/`** *(Gitignored)*: Local Python virtual environments used during WSL/Windows development.
@@ -138,13 +126,7 @@ C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe tools/eval/replay
 * [app.py](file:///Z:/mtgacoach/website/app.py) — FastAPI server routing LLM requests, validating client keys, and exposing admin portals.
 * [providers.py](file:///Z:/mtgacoach/website/providers.py) — Provider wrappers with priority-based route fallbacks and backoff logic.
 * [db.py](file:///Z:/mtgacoach/website/db.py) — SQLite wrapper tracking client license tokens and server metrics.
-* [templates/admin.html](file:///Z:/mtgacoach/website/templates/admin.html) — Cloud admin evaluation dashboard, displaying real-time latencies, charts, and metrics tables.
-
-### Evaluation Harness ([tools/eval/](file:///Z:/mtgacoach/tools/eval))
-* [run.py](file:///Z:/mtgacoach/tools/eval/run.py) & [judge.py](file:///Z:/mtgacoach/tools/eval/judge.py) — Replays prompt sets through custom backends and uses a self-hosted judge model to grade model output.
-* [report.py](file:///Z:/mtgacoach/tools/eval/report.py) — Generates accuracy tables and markdown report summaries.
-* [replay/run.py](file:///Z:/mtgacoach/tools/eval/replay/run.py) & [replay/score.py](file:///Z:/mtgacoach/tools/eval/replay/score.py) — Runs and scores model outputs on real-game replay prompts, focusing on contested decisions to filter out easy play bias.
-* [seventeenlands/score_mulligan.py](file:///Z:/mtgacoach/tools/eval/seventeenlands/score_mulligan.py) & [seventeenlands/score_turn_actions.py](file:///Z:/mtgacoach/tools/eval/seventeenlands/score_turn_actions.py) — Scores decisions against 17lands data using balanced accuracy and Jaccard metrics.
+* [templates/admin.html](file:///Z:/mtgacoach/website/templates/admin.html) — Cloud admin dashboard, displaying real-time latencies, charts, and metrics tables.
 
 ## Hygiene
 

@@ -97,7 +97,6 @@ hiddenimports = [
     "arenamcp.standalone_windows",
     "arenamcp.subscription",
     "arenamcp.synergy",
-    "arenamcp.trajectory_recorder",
     "arenamcp.tts",
     "arenamcp.updater",
     "arenamcp.voice",

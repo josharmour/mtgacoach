@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from arenamcp.magezero_client import MageZeroClient
 from arenamcp.mcts_evaluator import MCTSEvaluator, MCTSTreePayload
 from arenamcp.opponent_model import OpponentModel, OpponentProfile
 
@@ -323,12 +322,6 @@ def test_opponent_model_uw_control_sweeper():
     assert "Sunfall" in profile.sweeper_warning or "sweeper" in profile.sweeper_warning.lower()
 
 
-def test_magezero_client_graceful():
-    # Should safely return a boolean or handle offline state without raising
-    is_avail = MageZeroClient.is_available()
-    assert isinstance(is_avail, bool)
-
-
 def test_mcts_evaluator_empty_state_graceful():
     MCTSEvaluator.reset_cache()
     tree = MCTSEvaluator.evaluate({})
@@ -350,13 +343,4 @@ def test_mcts_evaluator_state_signature_caching():
     tree1 = MCTSEvaluator.evaluate(state)
     tree2 = MCTSEvaluator.evaluate(state)
     assert tree1 is tree2  # Must return identical cached object
-
-
-def test_magezero_client_negative_health_cache():
-    MageZeroClient.reset_health_cache()
-    # Force negative state
-    MageZeroClient._is_healthy = False
-    MageZeroClient._last_health_check = 9999999999.0  # Far in the future
-    # Should instantly return False without network probing
-    assert MageZeroClient.check_health() is False
 

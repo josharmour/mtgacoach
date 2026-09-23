@@ -2439,8 +2439,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         annotate: bool = bool(legacy_render)
         strict: bool = legacy_render is False
 
-        # Observation-fact declaration (task 11): the offline bridge declares
-        # the fields the MageZero log cannot establish. Only four render
+        # Observation-fact declaration (task 11): offline builders declare
+        # the fields their source log cannot establish. Only four render
         # opinions exist (coach.py render, unknown-managed, unknown-owned,
         # fail hard) — anything else is a builder contract violation.
         fact_meta = game_state.get("_render_unknown") or {}

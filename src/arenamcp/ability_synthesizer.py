@@ -1,8 +1,8 @@
 """On-the-Fly Scryfall Ability Synthesizer for MTGA Coach.
 
 Parses card oracle text into an Intermediate Representation (IR) of abilities,
-triggers, costs, and effects to power the 1-ply synergy afterstate engine and
-produce structural XMage features on the fly without manual templates.
+triggers, costs, and effects to power the 1-ply synergy afterstate engine
+without manual templates.
 """
 
 from __future__ import annotations
@@ -257,19 +257,6 @@ class CardAbilities:
     def to_afterstate_ops(self) -> list[Ability]:
         """Return abilities as executable operations for the afterstate simulator."""
         return list(self.abilities)
-
-    def to_xmage_features(self, zone: str = "Battlefield#1") -> list[str]:
-        """Emit structural XMage feature strings for this card."""
-        feats = []
-        for ab in self.abilities:
-            if isinstance(ab, StaticAbility):
-                for kw in ab.keywords:
-                    feats.append(f"{kw.lower()}#1")
-            elif isinstance(ab, ActivatedAbility):
-                feats.append("CanActivate#1")
-                if ab.mana_ability:
-                    feats.append("ManaAbility#1")
-        return feats
 
 
 # ── Ability Parser & Grammar ──

@@ -2,7 +2,7 @@
 
 MTGA on Linux runs under Steam (Flatpak or native) via Proton. This module is
 stdlib-only (no third-party deps) so it can be imported from setup/repair flows
-and the headless self-play orchestrator without pulling the full app stack.
+without pulling the full app stack.
 
 Responsibilities:
 - Locate the MTGA install (game dir + Proton prefix + log files).

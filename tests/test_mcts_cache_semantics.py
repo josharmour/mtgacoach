@@ -4,7 +4,7 @@ The old cache signature contained only zone *lengths* and life totals: swapping
 a Forest for an Island at the same hand size reproduced reuse of the same
 payload object. These tests exercise that failure mode: equal snapshots must
 reuse work, and semantic changes (card swap at equal size, mana change, tap
-change, controller change, different match, model change) must recompute.
+change, controller change, different match) must recompute.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from typing import Any
 
 import pytest
 
-from arenamcp.magezero_client import MageZeroClient
 from arenamcp.mcts_evaluator import MCTSEvaluator
 
 
@@ -44,17 +43,7 @@ def _base_state() -> dict[str, Any]:
 
 
 @pytest.fixture(autouse=True)
-def _offline_and_clean(monkeypatch: pytest.MonkeyPatch):
-    """Force the heuristic path HERMETICALLY.
-
-    Discovery is mocked out, never invoked: check_health returns False without
-    touching any socket, so results are independent of ambient servers, proxy
-    env, or fleet state (the standalone 50052 self-play server runs on the
-    validation host and must never be contacted by these tests).
-    """
-    monkeypatch.setattr(
-        MageZeroClient, "check_health", classmethod(lambda cls, *a, **kw: False)
-    )
+def _clean_cache():
     MCTSEvaluator.reset_cache()
     yield
     MCTSEvaluator.reset_cache()
@@ -181,19 +170,6 @@ def test_stack_card_identity_recomputes():
          "owner_seat_id": 2, "type_line": "Instant"}
     ]
     second = MCTSEvaluator.evaluate(other_spell)
-    assert second is not first
-
-
-def test_model_identity_change_recomputes():
-    """A model/checkpoint identity change must recompute (task04 hooks this)."""
-    state = _base_state()
-    state["magezero_model_id"] = "UWTempo/ver2"
-    first = MCTSEvaluator.evaluate(state)
-
-    other_model = _base_state()
-    other_model["magezero_model_id"] = "UWTempo/ver3"
-
-    second = MCTSEvaluator.evaluate(other_model)
     assert second is not first
 
 

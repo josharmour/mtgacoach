@@ -103,10 +103,6 @@ class AutopilotEngine(
         # Optional callback to record autopilot-driven decisions into the
         # app's advice_history. Set by standalone after construction.
         self._advice_recorder: Any | None = None
-        # Optional TrajectoryRecorder for real-match data collection. When set
-        # (by play_real_matches), each planning decision is logged in the
-        # self-play JSONL format. None by default => zero overhead.
-        self._trajectory_recorder: Any | None = None
         # Buffer of fallback bug events collected during the current match.
         # On match end, we sample up to `_max_fallback_bugs_per_match` at
         # random and dispatch those. Rest are discarded — goal is
@@ -2357,16 +2353,6 @@ class AutopilotEngine(
                 plan.voice_advice or plan.overall_strategy or "",
                 time.time(),
             )
-            # Opt-in trajectory capture for real-match data collection. No-op
-            # unless a recorder was attached (engine._trajectory_recorder).
-            self._maybe_record_trajectory(
-                game_state,
-                trigger,
-                legal_actions,
-                decision_context,
-                plan,
-                (time.perf_counter() - _plan_started_at) * 1000.0,
-            )
 
             # Surface any newly-built turn plan to the UI immediately so the
             # static panel populates before the first action lands. Safe to
@@ -3231,21 +3217,6 @@ class AutopilotEngine(
                 # Answered MAX times without the game advancing — a human
                 # is needed. Declare once (sets the given-up window) and
                 # own the trigger so coaching doesn't replan it either.
-                try:
-                    from arenamcp.stall_corpus import record_stall
-
-                    record_stall(
-                        decision,
-                        None,
-                        "exhausted",
-                        {
-                            "turn": (game_state.get("turn") or {}).get("turn_number"),
-                            "phase": (game_state.get("turn") or {}).get("phase"),
-                            "rejections": self._request_tracker.rejections(fp),
-                        },
-                    )
-                except Exception:
-                    pass
                 self._pause_for_manual(
                     f"{decision.request_type} not accepted after "
                     f"{self._request_tracker.MAX_SUBMISSIONS_PER_REQUEST} "
@@ -3335,17 +3306,6 @@ class AutopilotEngine(
             self._last_exec_success_ts = time.time()
             self._state = AutopilotState.IDLE
             return True
-        try:
-            from arenamcp.stall_corpus import record_stall
-
-            record_stall(
-                decision,
-                option_ids,
-                "submit_failed",
-                {"turn": (game_state.get("turn") or {}).get("turn_number")},
-            )
-        except Exception:
-            pass
         logger.info(
             "typed-decision submit failed for %s (%s); falling back to legacy path",
             decision.request_type,

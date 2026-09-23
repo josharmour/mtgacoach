@@ -14,19 +14,6 @@ Python package `arenamcp` under `src/arenamcp/`, desktop PySide6 GUI at `src/are
 - **`src/arenamcp/autopilot.py`** — AI autoplay engine
 - **`tests/`** — pytest test suite (600+ tests)
 
-## Sister Repository: MageZero RL Training (`~/repos/magezero`)
-`mtgacoach` is paired with **`magezero`**, an AlphaZero-style MCTS reinforcement learning engine running inside an instrumented XMage simulator on `blackwell` (`10.0.0.10`).
-- **Role Split**: `mtgacoach` handles live MTG Arena coaching, GRE state extraction, and HUD overlay. `magezero` trains deck-specific policy/value neural networks via consolidated local self-play on Blackwell.
-- **Inference Topology**:
-  - `http://10.0.0.10:50054` — Dedicated live in-game inference server on R9700 for `mtgacoach` (<10ms).
-  - `http://10.0.0.10:50052` — Dedicated self-play training worker inference server on R9700.
-- **Canonical RL Docs**: For RL architecture, hardware topology (R9700 vs RTX 6000s), live training status, and strategy, refer directly to `~/repos/magezero/AGENTS.md`, `~/repos/magezero/memory/recovery-status-20260906.md`, and `~/repos/magezero/docs/PLAN_OF_RECORD.md`.
-- **Live Run Status (Consolidated Blackwell Topology)**: Active run `2026-08-16_00-24-17`, Gen 14 in flight. Remote workers (`mac` and `nuc12`) have been retired; all self-play runs locally on Blackwell in 2 clean waves of 5 arms (`max_concurrent_arms: 5`) to eliminate network latency and cross-platform sync overhead.
-- **Telemetry Command**: Inspect the live training run and health on blackwell via:
-  ```bash
-  ssh joshu@10.0.0.10 'python3 ~/repos/magezero/tools/rl_status.py --summary'
-  ```
-
 ## Developer Commands
 ```bash
 # Install (editable, with all extras)

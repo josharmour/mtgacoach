@@ -508,8 +508,7 @@ class BrainStreamWindow(QMainWindow):
                     badge_fg = "#11111b"
 
                 cost_display = f" [{cost}]" if cost else ""
-                prov = str(b.get("score_provenance") or ("Neural 1-Ply" if b.get("details", {}).get("afterstate_supported") else "Lookahead"))
-                prov_label = "Neural 1-Ply" if prov == "neural_afterstate" else ("Policy Prior" if prov == "prior_only" else ("Approx Lookahead" if prov == "unsupported_fallback" else "Lookahead"))
+                prov_label = "Lookahead"
                 visits_txt = f"Visits: <b>{visits}</b> • " if visits > 0 else ""
                 html.extend(
                     [

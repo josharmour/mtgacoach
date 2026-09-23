@@ -106,11 +106,7 @@ TOPIC_PROMPT_PREFIX = (
     "for an audience, never instructions to the player — never tell anyone "
     "what to do next. Never state or imply a win probability. Any statement "
     "about the opponent's hidden hand or library must be phrased as a "
-    'hypothesis ("they might have..."), never as an observed fact. MageZero '
-    "model evidence, when present below, is supporting context only: never "
-    "state a win probability from it, do not imply a one-ply estimate is full "
-    "rules-engine search, and never describe a policy preference as an "
-    "evaluated outcome."
+    'hypothesis ("they might have..."), never as an observed fact.'
 )
 
 # Question path (typed/PTT): same broadcast voice, but the viewer asked a
@@ -122,34 +118,6 @@ ANNOUNCER_QUESTION_PREFIX = (
     "commentator would explain the situation. When they ask what to do, give "
     "your read on the best line as commentary — never as an instruction to "
     "the player."
-)
-
-# Wave 4 — the standing caveat for uncalibrated model evidence, mirrored from
-# the codebase's own claim in ``MCTSTreePayload.format_for_llm_prompt``
-# ("scores are not calibrated win probabilities ... preserve legal-action
-# checks ... Candidate order remains the tactical heuristic ranking, not a
-# neural recommendation"). The two tail clauses mirror
-# ``mcts_evaluator.py``'s experimental-evidence wording verbatim in meaning —
-# do not strengthen or weaken this wording in prompts: it must match what the
-# code itself asserts.
-UNCALIBRATED_EVIDENCE_CAVEAT = (
-    "Model scores are not calibrated win probabilities: use them as "
-    "supporting evidence only, distinguish evaluated one-ply states from "
-    "policy-only preferences, never present a policy preference as an "
-    "evaluated outcome, preserve legal-action checks, and treat candidate "
-    "order as the tactical heuristic ranking, not a neural recommendation."
-)
-
-
-# Standing instruction for the QUESTION path whenever MageZero evidence is
-# present: mirrors the topic-path rules (TOPIC_PROMPT_PREFIX) so a direct
-# question ("what's my win chance?") can never parrot the uncalibrated model
-# score as a real win probability (M7 grounding fix).
-QUESTION_EVIDENCE_INSTRUCTIONS = (
-    "Rules for using the MageZero evidence below: it is supporting context "
-    "only — never state or imply a win probability from it, do not imply a "
-    "one-ply estimate is full rules-engine search, and never describe a "
-    "policy preference as an evaluated outcome."
 )
 
 
@@ -243,332 +211,6 @@ class ResponseIdentity:
 
 
 @dataclass
-class EvidenceBlock:
-    """Wave-4 MageZero evidence attached to prompts and stored on memory.
-
-    Populated ONLY from real sources (deck gating, the evaluated tactical
-    payload, client fallback/reject reasons). Every field degrades to
-    None/False when the source is missing — never invented.
-
-    Uncalibrated-by-construction: ``root_win_probability`` is set only when an
-    evaluated row actually exists, and ``calibrated`` stays False (the
-    codebase's own claim in ``MCTSTreePayload.format_for_llm_prompt`` is that
-    these scores are NOT calibrated win probabilities).
-    """
-
-    # Model/checkpoint identity from the active MageZero selection.
-    model_id: str | None = None
-    checkpoint_hash: str | None = None
-    # Deck gating result (``magezero_gating.is_hero_deck_gated``).
-    deck_supported: bool = False
-    deck_compatible: bool = False  # legacy alias of deck_supported
-    similarity: float | None = None
-    eval_source: str | None = None
-    evaluated: bool = False  # a real evaluated row was present in the payload
-    provenance: str | None = None  # e.g. MCTSBranch.score_provenance
-    # Fallback/reject reasons (MageZeroClient / ModelZooClient).
-    fallback_reason: str | None = None
-    # Win probability ONLY when actually present in an evaluated result.
-    root_win_probability: float | None = None
-    calibrated: bool = False
-    uncertainty_reason: str | None = None
-    # Extra provenance carried alongside (kept for prompt reuse/debug).
-    payload: dict[str, Any] = field(default_factory=dict)
-
-    def is_supported(self) -> bool:
-        return bool(self.deck_supported and self.deck_compatible)
-
-
-# ---------------------------------------------------------------------------
-# Wave 4 — MageZero evidence collection (guarded, real sources only)
-# ---------------------------------------------------------------------------
-
-# MCTSBranch.score_provenance values, strongest first for selection.
-_PROVENANCE_RANK: dict[str, int] = {
-    "neural_afterstate": 3,
-    "prior_only": 2,
-    "unsupported_fallback": 1,
-    "heuristic_lookahead": 0,
-}
-_EVALUATED_PROVENANCE = "neural_afterstate"
-_HEURISTIC_EVAL_SOURCE = "Tactical Heuristic Lookahead"
-
-# Wave 5: payload-style labels for ``MCTSBranch.score_provenance`` values,
-# mirroring ``mcts_evaluator.py``'s own provenance label map — used instead of
-# a blanket "policy preference" tag so each provenance class reads as what it
-# actually is. Unknown values degrade to the conservative policy-preference
-# label (never an evaluated-sounding one).
-_PROVENANCE_LABELS: dict[str, str] = {
-    "neural_afterstate": "evaluated",
-    "prior_only": "policy preference",
-    "heuristic_lookahead": "heuristic",
-    "unsupported_fallback": "approx lookahead",
-}
-
-
-def _mcts_last_payload() -> Any:
-    """Read the tactical evaluator's cached payload via a guarded getattr chain.
-
-    Read-only: never imports-fails loudly, never mutates the evaluator, and
-    treats an expired cache as no payload. Returns ``None`` when MageZero /
-    MCTS evaluation machinery is absent entirely.
-    """
-    try:
-        from arenamcp.mcts_evaluator import MCTSEvaluator  # local import: optional dependency
-
-        payload = getattr(MCTSEvaluator, "_last_payload", None)
-        if payload is None:
-            return None
-        try:
-            if not MCTSEvaluator._cache_fresh():
-                return None
-        except Exception:  # pragma: no cover - defensive
-            pass
-        return payload
-    except Exception:
-        return None
-
-
-def _magezero_reasons() -> tuple[str | None, str | None]:
-    """(fallback_reason, reject_reason) from MageZeroClient, guarded."""
-    try:
-        from arenamcp.magezero_client import MageZeroClient  # local import: optional dependency
-
-        return (
-            getattr(MageZeroClient, "last_fallback_reason", lambda: None)(),
-            getattr(MageZeroClient, "last_reject_reason", lambda: None)(),
-        )
-    except Exception:
-        return (None, None)
-
-
-def _selection_identity(game_state: dict[str, Any]) -> tuple[str | None, str | None]:
-    """model_id + checkpoint_hash of the active MageZero selection.
-
-    Uses the same read-only selection path the evaluator uses, but with
-    ``refresh=False`` so this never triggers model discovery on the
-    conversation path. Returns ``(None, None)`` when unavailable.
-    """
-    try:
-        from arenamcp.format_profile import detect_format_profile
-        from arenamcp.magezero_gating import extract_hero_deck
-        from arenamcp.model_zoo import ModelZooClient  # local import: optional dependency
-
-        extraction = extract_hero_deck(game_state)
-        if not extraction.is_compatible or not extraction.cards:
-            return (None, None)
-        selection = ModelZooClient.select(detect_format_profile(game_state), extraction.cards, refresh=False)
-        spec = getattr(selection, "model_spec", None)
-        if spec is None:
-            return (None, None)
-        model_id = getattr(spec, "model_id", None) or None
-        checkpoint_hash = getattr(spec, "checkpoint_hash", None) or None
-        return (model_id, checkpoint_hash)
-    except Exception:
-        return (None, None)
-
-
-def _evidence_signature(state: dict[str, Any] | None) -> tuple[Any, ...] | None:
-    """Cheap change-detection key so evidence is recomputed only when the
-    inputs that could change it changed (board/hand shape, payload CONTENT,
-    client fallback/reject reasons).
-
-    Wave 5: the payload contributes a CONTENT fingerprint (eval_source +
-    per-branch/trap provenance counts + score/eval reasons), not ``id()``
-    which is meaningless across re-created payload objects and stable across
-    real content changes.
-    """
-    if not isinstance(state, dict):
-        return None
-    battlefield = [c for c in (state.get("battlefield") or []) if isinstance(c, dict)]
-    hand = [c for c in (state.get("hand") or []) if isinstance(c, dict)]
-    try:
-        iids = tuple(sorted(c["instance_id"] for c in battlefield if isinstance(c.get("instance_id"), int)))
-    except Exception:  # pragma: no cover - defensive
-        iids = ()
-    zones_raw = state.get("zones")
-    zones: dict[str, Any] = zones_raw if isinstance(zones_raw, dict) else {}
-    try:
-        payload = _mcts_last_payload()
-        fb, rej = _magezero_reasons()
-    except Exception:  # pragma: no cover - defensive
-        payload, fb, rej = None, None, None
-
-    payload_fp: tuple[Any, ...] | None = None
-    if payload is not None:
-        try:
-            branches = [
-                getattr(b, "score_provenance", "") or "" for b in list(getattr(payload, "branches", []) or [])
-            ]
-            traps = [
-                getattr(b, "score_provenance", "") or ""
-                for b in list(getattr(payload, "blunder_traps", []) or [])
-            ]
-            payload_fp = (
-                str(getattr(payload, "eval_source", "") or ""),
-                len(branches),
-                len(traps),
-                tuple(sorted(branches)),
-                tuple(sorted(traps)),
-                str(getattr(payload, "root_win_probability", None)),
-            )
-        except Exception:  # pragma: no cover - defensive
-            payload_fp = None
-    return (
-        len(hand),
-        len(battlefield),
-        iids,
-        zones.get("opponent_hand_count"),
-        payload_fp,
-        fb,
-        rej,
-    )
-
-
-def collect_evidence_block(game_state: dict[str, Any] | None) -> EvidenceBlock:
-    """Build an :class:`EvidenceBlock` from real MageZero sources.
-
-    Never raises; every source degrades to None/False when missing, so the
-    conversation keeps working with MageZero fully absent.
-    """
-    ev = EvidenceBlock()
-    try:
-        fb, rej = _magezero_reasons()
-    except Exception:  # pragma: no cover - defensive
-        fb, rej = None, None
-    ev.eval_source = _HEURISTIC_EVAL_SOURCE
-
-    if not isinstance(game_state, dict):
-        ev.fallback_reason = fb or rej
-        ev.uncertainty_reason = _unavailable_sentence(fb or rej)
-        return ev
-
-    # Deck gating: (is_active, similarity, eval_source_label)
-    deck_active = False
-    similarity: float | None = None
-    try:
-        from arenamcp.magezero_gating import is_hero_deck_gated  # local import: optional dependency
-
-        deck_active, similarity, label = is_hero_deck_gated(game_state)
-        if label:
-            ev.eval_source = str(label)
-    except Exception:
-        logger.debug("hero-deck gating unavailable for evidence", exc_info=True)
-    ev.deck_supported = bool(deck_active)
-    ev.deck_compatible = bool(deck_active)
-    ev.similarity = float(similarity) if isinstance(similarity, (int, float)) else None
-
-    # Provenance / evaluated-row detection from the cached tactical payload.
-    try:
-        payload = _mcts_last_payload()
-    except Exception:  # pragma: no cover - defensive
-        payload = None
-    provenance: str | None = None
-    if payload is not None:
-        provs = [
-            str(getattr(branch, "score_provenance", "") or "")
-            for branch in list(getattr(payload, "branches", []) or [])
-            + list(getattr(payload, "blunder_traps", []) or [])
-        ]
-        provs = [p for p in provs if p]
-        if provs:
-            provenance = max(provs, key=lambda p: _PROVENANCE_RANK.get(p, -1))
-        ev.provenance = provenance
-        # ``evaluated`` requires a real neural afterstate row, not just an
-        # experimental label: policy-only/heuristic branches never count.
-        ev.evaluated = (
-            provenance == _EVALUATED_PROVENANCE
-            and str(getattr(payload, "eval_source", "") or "") != _HEURISTIC_EVAL_SOURCE
-        )
-        if ev.evaluated:
-            try:
-                ev.root_win_probability = float(payload.root_win_probability)
-            except (TypeError, ValueError):
-                ev.root_win_probability = None
-
-    # Model identity only when the deck passes the gate (selection exists).
-    if ev.deck_supported:
-        try:
-            ev.model_id, ev.checkpoint_hash = _selection_identity(game_state)
-        except Exception:  # pragma: no cover - defensive
-            ev.model_id, ev.checkpoint_hash = None, None
-
-    ev.fallback_reason = fb or rej
-    if ev.fallback_reason and not (ev.evaluated or ev.provenance):
-        # An active fallback/reject reason explains WHY model evidence is
-        # absent — surface it as the uncertainty reason.
-        ev.uncertainty_reason = _unavailable_sentence(ev.fallback_reason)
-    elif ev.evaluated or ev.provenance:
-        ev.uncertainty_reason = UNCALIBRATED_EVIDENCE_CAVEAT
-    elif ev.is_supported():
-        ev.uncertainty_reason = (
-            "No evaluated model evidence for this position yet; coaching continues from observed board facts."
-        )
-    else:
-        ev.uncertainty_reason = _unavailable_sentence(None)
-    ev.payload = {"similarity": ev.similarity, "fallback_reason": fb, "reject_reason": rej}
-    return ev
-
-
-def _unavailable_sentence(reason: str | None) -> str:
-    suffix = f" ({reason})" if reason else ""
-    return f"MageZero evidence is unavailable{suffix}; coaching continues from observed board facts alone."
-
-
-def format_evidence_lines(evidence: EvidenceBlock | None) -> str:
-    """Render the compact evidence block for prompts (identity, support,
-    provenance, uncertainty). Plain and useful when MageZero is absent."""
-    if evidence is None:
-        return _unavailable_sentence(None)
-    lines: list[str] = []
-    identity: list[str] = []
-    if evidence.model_id:
-        identity.append(f"model={evidence.model_id}")
-    if evidence.checkpoint_hash:
-        identity.append(f"checkpoint={evidence.checkpoint_hash}")
-    if identity:
-        lines.append("MageZero evidence identity: " + ", ".join(identity))
-    if evidence.is_supported():
-        sim_txt = (
-            f" (similarity {evidence.similarity:.0%})"
-            if isinstance(evidence.similarity, (int, float))
-            else ""
-        )
-        lines.append(f"Deck support: supported{sim_txt}, source: {evidence.eval_source or 'MageZero'}")
-    else:
-        lines.append(
-            "Deck support: not supported — "
-            f"{evidence.eval_source or _HEURISTIC_EVAL_SOURCE} remains the basis; "
-            "coaching continues usefully without MageZero."
-        )
-    if evidence.provenance:
-        label = _PROVENANCE_LABELS.get(evidence.provenance)
-        if evidence.evaluated:
-            score_txt = ""
-            if evidence.root_win_probability is not None:
-                pct = int(round(evidence.root_win_probability * 100))
-                score_txt = f"; model score (uncalibrated): {pct}%"
-            lines.append(
-                f"Provenance: {evidence.provenance} "
-                f"(evaluated one-ply afterstates, not full rules-engine search{score_txt})"
-            )
-        elif label is not None and label != "evaluated":
-            # Wave 5: payload-style label per provenance class instead of a
-            # blanket "policy preference" tag. The "evaluated" label is
-            # reserved for actually-evaluated rows (branch above) so a
-            # neural_afterstate provenance with a heuristic eval_source can
-            # never read as an evaluated outcome.
-            lines.append(f"Provenance: {evidence.provenance} ({label})")
-        else:
-            lines.append(f"Provenance: {evidence.provenance} (policy preference, not an evaluated outcome)")
-    if evidence.uncertainty_reason:
-        lines.append(f"Uncertainty: {evidence.uncertainty_reason}")
-    elif evidence.fallback_reason:
-        lines.append(f"Fallback/reject reason: {evidence.fallback_reason}")
-    return "\n".join(lines) if lines else _unavailable_sentence(None)
-
-
-@dataclass
 class ConversationTurn:
     role: str
     text: str
@@ -603,7 +245,6 @@ class MatchMemory:
     discussed_topics: dict[str, float] = field(default_factory=dict)
     revealed_opponent_cards: list[str] = field(default_factory=list)
     plan_summary: str = ""
-    last_evidence: EvidenceBlock | None = None
     # Wave 3: last proactive topic utterance (monotonic-free wall clock) and
     # questions deferred by urgent interrupts, newest last, capped.
     last_proactive_ts: float = 0.0
@@ -812,7 +453,6 @@ class TopicSelector:
             candidates.extend(self._threat_topics(curr_state, triggers))
         candidates.extend(self._role_shift_topics(prev_state, curr_state))
         candidates.extend(self._material_shift_topics(prev_state, curr_state))
-        candidates.extend(self._material_assessment_topics(prev_state, curr_state, memory))
         candidates.extend(self._plan_drift_topics(memory))
         # Dedupe by topic key (a board threat also matches development) and
         # sort highest priority first; stable within a tier (detection order).
@@ -1128,49 +768,6 @@ class TopicSelector:
             ]
         return []
 
-    # -- Wave 4: material assessment (MageZero evidence gate) -----------------
-
-    def _material_assessment_topics(
-        self,
-        prev_state: dict[str, Any] | None,
-        curr_state: dict[str, Any] | None,
-        memory: MatchMemory | None,
-    ) -> list[TopicCandidate]:
-        """Material-assessment commentary ONLY under full evidence support.
-
-        Requires: deck-supported evidence AND neural_afterstate provenance AND
-        a valid comparison (a real evaluated row — ``evaluated`` True with a
-        present root score) AND an actual material change this cycle (a score
-        moving by itself NEVER triggers speech). The existing tactical
-        ``material_shift`` ranking is untouched; this topic adds
-        model-evidence framing and always carries the uncertainty sentence.
-        """
-        if not prev_state or not isinstance(curr_state, dict):
-            return []
-        if not self._material_shift_topics(prev_state, curr_state):
-            return []
-        evidence = getattr(memory, "last_evidence", None) if memory is not None else None
-        if evidence is None:
-            return []
-        if not evidence.is_supported():
-            return []
-        if evidence.provenance != _EVALUATED_PROVENANCE:
-            return []
-        if not evidence.evaluated or evidence.root_win_probability is None:
-            return []
-        return [
-            TopicCandidate(
-                key="material_assessment",
-                priority=EventPriority.STATE_SHIFT,
-                evidence=(
-                    f"Model evidence ({evidence.eval_source or 'MageZero'}, "
-                    f"similarity {evidence.similarity:.0%}) supports assessing "
-                    "how the material balance is trending. "
-                    f"{UNCALIBRATED_EVIDENCE_CAVEAT}"
-                ),
-            )
-        ]
-
 
 def _threat_card_name(card: dict[str, Any]) -> str | None:
     name = card.get("name")
@@ -1219,10 +816,6 @@ class ConversationController:
         self._topic_selector = TopicSelector()
         self._last_topics: list[TopicCandidate] = []
         self._last_topics_ts: float = 0.0
-        # Wave 4: evidence pipeline state — the refreshed block lives on
-        # memory.last_evidence; this signature detects actual input change so
-        # evidence is recomputed (and prompt text rewritten) only when needed.
-        self._last_evidence_sig: tuple[Any, ...] | None = None
         # Wave 5 (M2): last seen threat-card signature — a threat set that
         # does not change between batches never re-announces.
         self._threat_signature_prev: tuple[str, ...] | None = None
@@ -1322,38 +915,6 @@ class ConversationController:
 
     # -- state hook ---------------------------------------------------------
 
-    def _refresh_evidence(self, curr_state: dict[str, Any] | None) -> None:
-        """Refresh ``memory.last_evidence`` only when evidence inputs changed.
-
-        Cheap guard: the change signature covers board/hand shape, the cached
-        tactical payload CONTENT, and client fallback/reject reasons — the
-        things that can actually alter an EvidenceBlock. Never raises.
-
-        Thread safety (Wave 5 TOCTOU fix): the shared signature field is
-        re-read inside the write lock (compare-and-set) and the write is
-        skipped when another refresh advanced it while our (potentially slow)
-        evidence collection ran, so a concurrent refresh can never regress
-        ``memory.last_evidence`` to an older snapshot.
-        """
-        try:
-            sig = _evidence_signature(curr_state)
-            with self._lock:
-                if sig is not None and sig == self._last_evidence_sig:
-                    return
-                prior_sig = self._last_evidence_sig
-            evidence = collect_evidence_block(curr_state)
-            with self._lock:
-                # Compare-and-set: if another refresh advanced the shared
-                # signature while we were collecting, our snapshot is stale —
-                # skip the write (the newer refresh owns the field, or the
-                # next on_state will write).
-                if self._last_evidence_sig != prior_sig:
-                    return
-                self.memory.last_evidence = evidence
-                self._last_evidence_sig = sig
-        except Exception:
-            logger.debug("evidence refresh failed", exc_info=True)
-
     def _sweep_expired_pending_questions(self) -> None:
         """TTL sweep of deferred questions (M3) — expire unconditionally.
 
@@ -1404,7 +965,6 @@ class ConversationController:
                 )
 
         self._refresh_plan_summary()
-        self._refresh_evidence(curr_state)
         # M3: expire stale deferred questions on every state batch so they
         # unblock topic speech and can never recover stale answers.
         self._sweep_expired_pending_questions()
@@ -1614,14 +1174,10 @@ class ConversationController:
             plan = self.memory.plan_summary or ""
 
         evidence = topic.evidence
-        with self._lock:
-            memory_evidence = self.memory.last_evidence
-        evidence_block = format_evidence_lines(memory_evidence)
         question = (
             f"{TOPIC_PROMPT_PREFIX}\n"
             f"Topic: {topic.key}\n"
             f"Evidence: {evidence}\n"
-            f"MageZero evidence:\n{evidence_block}\n"
             f"Current plan: {plan or '(not yet formed)'}\n"
             f"Recent conversation:\n{digest}\n"
             "Respond with at most two short sentences of commentary."
@@ -1881,7 +1437,6 @@ class ConversationController:
             self._session_id += 1
             self._pending.clear()
             self._last_topics = []
-            self._last_evidence_sig = None  # Wave 4: force evidence re-collection
             self._threat_signature_prev = None  # Wave 5 (M2): new board baseline
         # Status lifecycle (M6): see set_mode — orphaned answers must clear
         # the UI's "thinking" status.
@@ -2036,18 +1591,10 @@ class ConversationController:
 
     def _augment_question(self, text: str) -> str:
         # Replay the recent conversation as a compact digest so the coaching
-        # LLM can answer follow-ups without a second stateful channel, plus
-        # the compact MageZero evidence block (Wave 4): identity/support/
-        # uncertainty lines only — never an uncalibrated win-probability claim.
+        # LLM can answer follow-ups without a second stateful channel.
         with self._lock:
             recent = list(self.memory.turns[-6:])
-            memory_evidence = self.memory.last_evidence
 
-        evidence_block = format_evidence_lines(memory_evidence)
-        evidence_useful = bool(
-            memory_evidence is not None
-            and (memory_evidence.is_supported() or memory_evidence.provenance or memory_evidence.model_id)
-        )
         lines: list[str] = []
         for turn in recent:
             if turn.role == "user":
@@ -2055,26 +1602,15 @@ class ConversationController:
             elif turn.role == "coach":
                 lines.append(f"coach: {turn.text}")
 
-        if not lines and not evidence_useful:
-            # No history and nothing meaningful from MageZero: keep the raw
-            # question (conversation remains useful without MageZero), framed
-            # with the broadcast-announcer voice.
-            return f"{ANNOUNCER_QUESTION_PREFIX}\n\nUser question: {text}"
-
         if not lines:
-            return (
-                f"{ANNOUNCER_QUESTION_PREFIX}\n\n"
-                f"{QUESTION_EVIDENCE_INSTRUCTIONS}\n"
-                f"MageZero evidence:\n{evidence_block}\n\n"
-                f"User question: {text}"
-            )
+            # No history: keep the raw question, framed with the
+            # broadcast-announcer voice.
+            return f"{ANNOUNCER_QUESTION_PREFIX}\n\nUser question: {text}"
 
         digest = "\n".join(lines)
         return (
             f"{ANNOUNCER_QUESTION_PREFIX}\n\n"
             f"Recent conversation:\n{digest}\n\n"
-            f"{QUESTION_EVIDENCE_INSTRUCTIONS}\n"
-            f"MageZero evidence:\n{evidence_block}\n\n"
             f"User question: {text}"
         )
 
@@ -2104,9 +1640,6 @@ class ConversationController:
         # Daemon answer thread body: never raises out of the thread.
         try:
             snapshot = self._snapshot()
-            # Wave 4: ensure the evidence block reflects the live state at
-            # answer time (guarded + change-gated; no-op when unchanged).
-            self._refresh_evidence(snapshot)
             augmented = self._augment_question(text)
 
             inner = getattr(self._coach, "_coach", None)

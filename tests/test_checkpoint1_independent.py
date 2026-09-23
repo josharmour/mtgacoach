@@ -1,12 +1,10 @@
 from copy import deepcopy
 import pytest
-from arenamcp.magezero_client import _validate_result, MageZeroClient
 from arenamcp.mcts_evaluator import MCTSEvaluator
 from test_mcts_cache_semantics import _base_state
 
 @pytest.fixture(autouse=True)
-def offline(monkeypatch):
-    monkeypatch.setattr(MageZeroClient, 'check_health', classmethod(lambda cls, **kw: False))
+def clean_cache():
     MCTSEvaluator.reset_cache()
     yield
     MCTSEvaluator.reset_cache()
@@ -34,12 +32,6 @@ def test_oracle_text_invalidates():
     first = MCTSEvaluator.evaluate(state)
     state['battlefield'][1]['oracle_text'] = 'Flying. Haste.'
     assert MCTSEvaluator.evaluate(state) is not first
-
-def test_mixed_index_echo_rejected():
-    rows = [{'value': .2, 'policy_player': [0.]*128, 'policy_opponent': [0.]*128} for _ in range(2)]
-    rows[0]['request_index'] = 0
-    result, reason = _validate_result(rows, 2, 128)
-    assert reason is not None and not result
 
 def test_stack_order_invalidates():
     state = _base_state()

@@ -4,8 +4,6 @@
 tmpclaude-*
 __pycache__/
 .venv/
-tools/training/wp3/scryfall_cache.json
-tools/training/data/wp3/
 *.pyc
 debug_log.txt
 log_tail.txt
@@ -31,16 +29,10 @@ data/
 !website/config.yaml
 !website/docker-compose.yml
 # Dev-only (not for public repo)
-rl-pipeline-fix.md
 tools/*
-!tools/training/
 !tools/monitoring/
 tools/monitoring/*
 !tools/monitoring/grafana/
-tools/training/checkpoints/
-tools/training/data/
-!tools/eval/
-tools/eval/data/
 !tools/monitoring/
 docs/
 CLAUDE.md
@@ -65,6 +57,4 @@ models/
 launch.sh
 run_update.py
 
-# Local grading worksheet (contains replay-derived game states; not for the public repo)
-tripwire_review_v2.md
 .__smb*

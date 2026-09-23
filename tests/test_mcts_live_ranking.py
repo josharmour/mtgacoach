@@ -16,13 +16,11 @@ from typing import Any
 
 import pytest
 
-from arenamcp.magezero_client import MageZeroClient
 from arenamcp.mcts_evaluator import MCTSEvaluator
 
 
 @pytest.fixture(autouse=True)
-def _heuristic_only(monkeypatch):
-    monkeypatch.setattr(MageZeroClient, "check_health", classmethod(lambda cls, *a, **k: False))
+def _clean_cache():
     MCTSEvaluator.reset_cache()
     yield
     MCTSEvaluator.reset_cache()

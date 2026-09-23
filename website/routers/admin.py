@@ -153,52 +153,6 @@ async def admin_usage(request: Request, _=Depends(_require_admin)):
     return _get_db().get_all_usage_summary(30)
 
 
-@router.get("/admin/api/eval")
-async def admin_eval(request: Request, _=Depends(_require_admin)):
-    """Return the latest eval-results payload per target plus recent history."""
-    return _get_db().get_latest_eval_results()
-
-
-@router.get("/admin/api/eval/history")
-async def admin_eval_history(request: Request, _=Depends(_require_admin)):
-    """Return the last N eval payloads for a single target (oldest first).
-
-    Query params:
-      - target: required (e.g. 'general' or '17lands_mulligan')
-      - limit:  default 30, max 200
-    """
-    target = (request.query_params.get("target") or "").strip()
-    if not target:
-        raise HTTPException(status_code=400, detail="missing 'target' query param")
-    try:
-        limit = max(1, min(200, int(request.query_params.get("limit", "30"))))
-    except ValueError:
-        limit = 30
-    return {"target": target, "history": _get_db().get_eval_results_history(target, limit)}
-
-
-@router.post("/admin/api/eval/results")
-async def admin_eval_upload(request: Request, _=Depends(_require_admin)):
-    """Accept an eval-results upload from `tools/eval/upload_results.py`.
-
-    Body must be a JSON object with at least a ``target`` field. Stored
-    verbatim under ``eval_results``; the ``ts`` field is honored if present.
-    """
-    try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="invalid JSON")
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="payload must be an object")
-    target = (payload.get("target") or "").strip()
-    if not target:
-        raise HTTPException(status_code=400, detail="missing 'target' field")
-    if len(target) > 64 or any(c.isspace() for c in target):
-        raise HTTPException(status_code=400, detail="invalid 'target' (no whitespace, â‰¤64 chars)")
-    row_id = _get_db().insert_eval_result(target, payload)
-    return {"ok": True, "id": row_id, "target": target}
-
-
 @router.get("/admin/api/activity")
 async def admin_activity(request: Request, _=Depends(_require_admin)):
     """Time-bucketed activity series for the dashboard chart.

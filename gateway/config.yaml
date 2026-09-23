@@ -2,8 +2,7 @@
 model_list:
   # 2026-07-30: CUTOVER to Qwen3.6-27B-FP8 single-card (card 1, qwen36-coach,
   # recreate-qwen36-coach.sh). ds4-v9 is STOPPED but intact; DeepSeek needs
-  # both cards at 0.95 and the second card now belongs to MageZero + gemma
-  # QLoRA. Rollback: docker stop qwen36-coach && docker start ds4-v9, then
+  # both cards at 0.95 and the second card was reassigned. Rollback: docker stop qwen36-coach && docker start ds4-v9, then
   # revert this entry to model: openai/deepseek-v4-flash.
   # canonical entry — new clients should ask for this name
   - model_name: qwen3.6-fp8

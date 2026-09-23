@@ -6,7 +6,6 @@ from arenamcp.format_profile import (
     detect_format_profile,
 )
 from arenamcp.gamestate import GameObject, GameState, Zone, ZoneType
-from arenamcp.magezero_gating import is_hero_deck_gated
 
 
 def test_detect_format_brawl_from_connect_resp():
@@ -116,19 +115,3 @@ def test_live_commander_cast_tracking():
     gs._update_game_object({"instanceId": 101, "grpId": 55555, "zoneId": 20})
 
     assert gs.commander_casts[55555] == 2
-
-
-def test_magezero_gating_blocks_brawl():
-    # Even if hero plays Malcolm and Island, if format is Brawl, gate stays heuristic
-    state = {
-        "local_seat_id": 1,
-        "format": {"family": "brawl", "deck_size": 99},
-        "hand": [
-            {"name": "Malcolm, Alluring Scoundrel"},
-            {"name": "Island"},
-            {"name": "Spell Pierce"},
-        ],
-    }
-    is_active, sim, label = is_hero_deck_gated(state)
-    assert is_active is False
-    assert label == "Tactical Heuristic Lookahead"

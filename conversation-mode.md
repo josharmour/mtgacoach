@@ -20,7 +20,7 @@ This document is an implementation plan; it does not indicate that Conversation 
 | Nothing meaningful changes | Stays quiet instead of narrating every event. |
 | User switches to Turn Advice | Cancels conversational speech and resumes the existing advice flow. |
 
-MageZero supplies supporting position evidence where compatible. The coaching LLM handles conversation and explanations. Unverified model scores remain explicitly uncalibrated.
+The coaching LLM handles conversation and explanations, grounded in observed board facts and the tactical heuristic lookahead. (MageZero model evidence was part of the original plan; MageZero was retired on 2026-09-22 and Wave 4 below was removed from the code.)
 
 ## Swarm implementation approach
 
@@ -81,7 +81,11 @@ Add a speaking cooldown, repetition suppression, and **Quiet / Balanced / Detail
 
 Maintain a compact match memory containing the current plan, recently discussed topics, user questions, and relevant revealed information. Reset match-specific memory at match boundaries. Distinguish observed facts from hypotheses about hidden information.
 
-### Wave 4: Integrate MageZero evidence
+### Wave 4: Integrate MageZero evidence (RETIRED 2026-09-22)
+
+> MageZero was deprecated and deleted; the evidence block, the
+> `material_assessment` topic and the evidence prompt instructions were
+> removed from `conversation.py`. Kept below for history only.
 
 Provide structured evidence to the conversation controller:
 

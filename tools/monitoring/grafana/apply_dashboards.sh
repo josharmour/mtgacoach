@@ -10,7 +10,7 @@
 set -euo pipefail
 
 GRAFANA_URL="${1:-http://localhost:3001}"
-AUTH="${2:-admin:P8CvD1JQBOFP2UuPLnSvf7LhJyPV}"
+AUTH="${2:-${GRAFANA_AUTH:?pass credentials as arg 2 or set GRAFANA_AUTH=user:pass}}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 PROVISIONING_DIR="/home/joshu/vllm-monitoring/grafana/dashboards"
 
@@ -71,7 +71,7 @@ echo "=== Grafana Dashboard Apply Script ==="
 echo "Target: $GRAFANA_URL"
 echo ""
 
-for file in "$DIR/vllm-gemma.json" "$DIR/gpu-fleet.json"; do
+for file in "$DIR/vllm-gemma.json"; do
   if [ ! -f "$file" ]; then
     echo "✗ File not found: $file"
     continue

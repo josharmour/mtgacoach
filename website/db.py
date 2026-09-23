@@ -101,13 +101,6 @@ def init_db():
                 expires_at TEXT
             );
 
-            CREATE TABLE IF NOT EXISTS eval_results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                target TEXT NOT NULL,
-                ts REAL NOT NULL,
-                payload_json TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_eval_target_ts ON eval_results(target, ts DESC);
             CREATE INDEX IF NOT EXISTS idx_client_installs_key ON client_installs(license_key);
             CREATE INDEX IF NOT EXISTS idx_client_installs_last_seen ON client_installs(last_seen);
         """)
@@ -414,100 +407,6 @@ def get_all_usage_summary(days: int = 30) -> list[dict]:
             (since,),
         ).fetchall()
     return [dict(r) for r in rows]
-
-
-def insert_eval_result(target: str, payload: dict) -> int:
-    """Persist an eval-results upload. ``ts`` taken from payload if present,
-    otherwise wall-clock now. Returns the inserted row id.
-    """
-    import json as _json
-    ts = float(payload.get("ts") or time.time())
-    with get_db() as conn:
-        cur = conn.execute(
-            "INSERT INTO eval_results (target, ts, payload_json) VALUES (?, ?, ?)",
-            (target, ts, _json.dumps(payload)),
-        )
-        return int(cur.lastrowid)
-
-
-def get_eval_results_history(target: str, limit: int = 30) -> list[dict]:
-    """Return the last N full payloads for a target, oldest first.
-
-    Used by the trend-over-time chart. Each row's stored payload is parsed
-    and augmented with ``id`` and ``ts`` from the row metadata.
-    """
-    import json as _json
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT id, ts, payload_json FROM eval_results "
-            "WHERE target = ? ORDER BY ts DESC LIMIT ?",
-            (target, int(limit)),
-        ).fetchall()
-    out: list[dict] = []
-    for r in rows:
-        payload = _json.loads(r["payload_json"])
-        payload["id"] = int(r["id"])
-        payload["ts"] = float(r["ts"])
-        out.append(payload)
-    out.reverse()  # oldest first for charts
-    return out
-
-
-def get_latest_eval_results(targets: list[str] | None = None) -> dict:
-    """Return the latest payload per target, plus per-set latest and history.
-
-    Shape:
-        {
-            target: {
-                "latest": {payload dict, with 'id' and 'ts'},
-                "by_set": {
-                    "<SET_CODE>": {payload dict},   # latest run for that set
-                    ...
-                    "_unset": {payload dict},       # most recent untagged run
-                },
-                "history": [{"id", "ts"}, ...]   (recent N for trend lines)
-            },
-            ...
-        }
-
-    ``by_set`` lets the dashboard compare sets side-by-side without each
-    set's data point clobbering the others on the trend chart.
-    """
-    import json as _json
-    with get_db() as conn:
-        if targets:
-            placeholders = ",".join("?" * len(targets))
-            rows = conn.execute(
-                f"SELECT id, target, ts, payload_json FROM eval_results "
-                f"WHERE target IN ({placeholders}) "
-                f"ORDER BY target ASC, ts DESC",
-                targets,
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT id, target, ts, payload_json FROM eval_results "
-                "ORDER BY target ASC, ts DESC"
-            ).fetchall()
-    out: dict[str, dict] = {}
-    for r in rows:
-        slot = out.setdefault(r["target"], {"latest": None, "by_set": {}, "history": []})
-        payload_loaded = None
-        if slot["latest"] is None:
-            payload_loaded = _json.loads(r["payload_json"])
-            payload_loaded["id"] = int(r["id"])
-            payload_loaded["ts"] = float(r["ts"])
-            slot["latest"] = payload_loaded
-        if len(slot["history"]) < 30:
-            slot["history"].append({"id": int(r["id"]), "ts": float(r["ts"])})
-        # First (newest) row per (target, set_code) wins.
-        if payload_loaded is None:
-            payload_loaded = _json.loads(r["payload_json"])
-            payload_loaded["id"] = int(r["id"])
-            payload_loaded["ts"] = float(r["ts"])
-        set_code = (payload_loaded.get("set_code") or "_unset").strip().upper()
-        if set_code and set_code not in slot["by_set"]:
-            slot["by_set"][set_code] = payload_loaded
-    return out
 
 
 def get_activity_series(days: int = 7, bucket_seconds: int = 3600) -> dict:
