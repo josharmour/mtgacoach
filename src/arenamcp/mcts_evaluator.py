@@ -663,13 +663,22 @@ class MCTSEvaluator:
         legal_actions = (
             game_state.get("legal_actions") or game_state.get("raw_legal_actions") or []
         )
+        # GRE lists every card it would let you *start* casting; only the
+        # "[OK]" tag means MTGA found an autotap payment (or the rules engine
+        # did). Treating a bare "Cast X" as confirmed let the search rank a
+        # 5-mana commander as BEST LINE with 1 mana open (bug_20260905_220901),
+        # which the prompt then told the LLM to follow.
         legal_cast_names: set[str] = set()
+        payable_cast_names: set[str] = set()
         for act in legal_actions:
             act_str = str(act.get("name") if isinstance(act, dict) else act).strip()
             if act_str.startswith("Cast "):
                 clean_name = act_str[5:].split("[")[0].strip().lower()
                 if clean_name:
                     legal_cast_names.add(clean_name)
+                    if "[ok]" in act_str.lower():
+                        payable_cast_names.add(clean_name)
+        gre_lists_casts = bool(legal_cast_names)
 
         all_candidate_cards = [(c, False) for c in hand] + [(c, True) for c in command_spells]
         for card, is_commander in all_candidate_cards:
@@ -689,7 +698,12 @@ class MCTSEvaluator:
                     casts = int(card.get("commander_casts") or 0)
                     cmc += casts * fmt_config.commander_tax_step
 
-                is_gre_legal = name.lower() in legal_cast_names
+                is_gre_legal = name.lower() in payable_cast_names
+                # With a live GRE cast list, a spell GRE doesn't offer at all
+                # (wrong timing, no targets, commander in library...) is not a
+                # candidate no matter what the local cmc estimate says.
+                if gre_lists_casts and name.lower() not in legal_cast_names:
+                    continue
                 playable_spells.append(
                     {
                         "card": card,
@@ -697,6 +711,8 @@ class MCTSEvaluator:
                         "cost_str": cost_str,
                         "is_commander": is_commander,
                         "is_gre_legal": is_gre_legal,
+                        # Listed by GRE but no payment found right now.
+                        "gre_unpayable": name.lower() in legal_cast_names and not is_gre_legal,
                     }
                 )
 
@@ -810,6 +826,32 @@ class MCTSEvaluator:
 
         board_view = BoardState.from_game_state(game_state, config=fmt_config)
 
+        # Afterstates are scored by score_board_state while the root (and the
+        # Pass branch) use base_val, a different formula. Comparing them
+        # directly turned any offset between the two into a fake gain or loss
+        # for every action (a land drop scored -6.7% vs Pass). Score each
+        # afterstate as base_val + its change under ONE function.
+        root_board_val = score_board_state(board_view)
+
+        def _afterstate_val(board: BoardState) -> float:
+            return max(0.05, min(0.95, base_val + score_board_state(board) - root_board_val))
+
+        def _effect_bonus(t_line: str, oracle: str, is_cmd: bool) -> float:
+            """Value the 1-ply simulator can't see (it models bodies, not effects).
+
+            Shared by single casts and land->cast sequences so both stay on
+            one scale — previously single casts discarded the simulated value
+            for a flat guess, so "Cast Birds" outscored "Play Forest -> Cast Birds".
+            """
+            o = oracle.lower()
+            if "creature" in t_line:
+                return 0.08 if is_cmd else 0.0
+            if any(w in o for w in ("destroy", "exile", "deals", "return target")):
+                return 0.12
+            if "counter target" in o:
+                return 0.09
+            return 0.05
+
         # 2. Evaluate Multi-Step Sequences (Land Drop + Primary Spell + Interaction Hold)
         for land in playable_lands:
             land_name = land.get("name") or "Land"
@@ -850,7 +892,11 @@ class MCTSEvaluator:
                         oracle_text=oracle,
                     )
                     seq_after = AfterstateSimulator.apply(land_after.board, spell_act)
-                    seq_val = score_board_state(seq_after.board)
+                    seq_val = _afterstate_val(seq_after.board)
+                    seq_val = max(
+                        0.05,
+                        min(0.95, seq_val + _effect_bonus(str(top_spell.get("type_line") or "").lower(), oracle, is_cmd)),
+                    )
                     v_delta = seq_val - base_val
                     power_add = seq_after.delta.power_added or power_add
 
@@ -901,7 +947,7 @@ class MCTSEvaluator:
             # Standalone land drop candidate
             land_act = PlayLand(land_name=land_name)
             land_after = AfterstateSimulator.apply(board_view, land_act)
-            land_val = score_board_state(land_after.board)
+            land_val = _afterstate_val(land_after.board)
             land_delta = land_val - base_val
             branches.append(
                 MCTSBranch(
@@ -935,7 +981,7 @@ class MCTSEvaluator:
             t_line = str(card.get("type_line") or "").lower()
             oracle = str(card.get("oracle_text") or "")
 
-            if cmc <= available_mana or is_gre_legal:
+            if is_gre_legal or (cmc <= available_mana and not entry["gre_unpayable"]):
                 power_add = int(card.get("power") or 0)
                 tough_add = int(card.get("toughness") or 0)
 
@@ -948,7 +994,7 @@ class MCTSEvaluator:
                     oracle_text=oracle,
                 )
                 spell_after = AfterstateSimulator.apply(board_view, spell_act)
-                spell_val = score_board_state(spell_after.board)
+                spell_val = _afterstate_val(spell_after.board)
                 v_delta = spell_val - base_val
                 power_add = spell_after.delta.power_added or power_add
 
@@ -961,22 +1007,15 @@ class MCTSEvaluator:
                 is_counter = "counter target" in oracle.lower()
 
                 if "creature" in t_line:
-                    card_impact = (power_add + tough_add) * 0.03
-                    if is_cmd:
-                        card_impact += 0.08
                     outcome_msg = f"Adds {power_add}/{tough_add} creature presence; leaves {max(0, available_mana - cmc)} mana open"
                 elif is_removal:
-                    card_impact = 0.12
                     outcome_msg = "Removes top opponent threat; swings board power delta"
                 elif is_counter:
-                    card_impact = 0.09
                     outcome_msg = "Holds counterspell permission for opponent's key threat"
                 else:
-                    card_impact = 0.05
                     outcome_msg = f"Resolves spell effect; utilizes {cmc} mana"
 
-                spell_val = base_val + card_impact
-                spell_val = max(0.05, min(0.95, spell_val))
+                spell_val = max(0.05, min(0.95, spell_val + _effect_bonus(t_line, oracle, is_cmd)))
                 v_delta = spell_val - base_val
 
                 # Check if tapping out creates a blunder trap
@@ -1029,7 +1068,7 @@ class MCTSEvaluator:
         if board_view.token_counts.get("Food", 0) > 0 and available_mana >= 2:
             food_act = ActivateAbility(permanent_name="Food", is_food_sacrifice=True)
             food_after = AfterstateSimulator.apply(board_view, food_act)
-            food_val = score_board_state(food_after.board)
+            food_val = _afterstate_val(food_after.board)
             food_delta = food_val - base_val
             branches.append(
                 MCTSBranch(

@@ -93,6 +93,7 @@ class Permanent:
     subtypes: tuple[str, ...] = ()
     abilities: tuple[Any, ...] = ()
     oracle_text: str = ""
+    is_land: bool = False
 
 
 @dataclass
@@ -195,6 +196,7 @@ class BoardState:
                         subtypes=subtypes,
                         abilities=parsed_abs.abilities,
                         oracle_text=oracle,
+                        is_land="land" in str(c.get("type_line") or "").lower(),
                     )
                 )
 
@@ -253,7 +255,14 @@ def score_board_state(board: BoardState, config: FormatEvaluatorConfig | None = 
     # 4. Hand advantage
     hand_adv = max(-0.15, min(0.15, (len(board.hand) - 3) * 0.04))
 
-    val = 0.50 + life_adv + board_adv + food_reserve + hand_adv
+    # 5. Mana development. Without it a land drop only registered as a card
+    # leaving hand (-0.04), so "Pass" outscored "Play Forest" every turn.
+    # Worth more than a hand card up to ~6 lands, then flattens (flood).
+    land_count = sum(1 for p in board.permanents if p.is_land)
+    # Centred on 3 lands so absolute values don't saturate the 0.95 clip.
+    mana_dev = (min(land_count, 6) - 3) * 0.05 + max(0, land_count - 6) * 0.01
+
+    val = 0.50 + life_adv + board_adv + food_reserve + hand_adv + mana_dev
     return max(0.05, min(0.95, round(val, 3)))
 
 
@@ -290,7 +299,7 @@ class AfterstateSimulator:
                 new_hand.remove(action.land_name)
             lands_played += 1
             mana_left += 1  # Land drops provide mana for the turn
-            land_perm = Permanent(name=action.land_name, is_tapped=False, subtypes=("Land",))
+            land_perm = Permanent(name=action.land_name, is_tapped=False, subtypes=("Land",), is_land=True)
             new_perms.append(land_perm)
             delta.bodies_added += 1
             trigger_trace.append(f"Play {action.land_name} (mana +1)")
