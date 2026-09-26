@@ -67,6 +67,10 @@ DEFAULTS = {
     "autopilot_vision_model": None,
     "autopilot_vision_url": None,
     "autopilot_vision_api_key": None,
+    # Where MTGA runs: "desktop" (this computer) or "android" (a phone tethered
+    # over adb with the mtgacoach probe injected; see arenamcp.android_link).
+    # MTGACOACH_GAME_DEVICE overrides it.
+    "game_device": "desktop",
     # Conversation Mode session mode ("turn_advice" | "conversation"),
     # commentary verbosity ("quiet" | "balanced" | "detailed"), and the
     # minimum seconds between proactive topic utterances (Wave 3).

@@ -137,20 +137,17 @@ def _find_mtga_linux() -> MtgaInstall | None:
     return None
 
 
-def proton_launch_options_ok(install: MtgaInstall) -> bool | None:
-    """Linux: do MTGA's Steam launch options let BepInEx inject?
+def _mtga_steam_launch_options(install: MtgaInstall) -> list[str] | None:
+    """Every LaunchOptions string Steam stores for MTGA (unescaped).
 
-    BepInEx's winhttp.dll doorstop silently does not load under Proton
-    without ``WINEDLLOVERRIDES="winhttp=n,b"`` in the launch options —
-    the documented cause of a whole 'bridge never connects' failure
-    class. Returns None when undetermined (localconfig.vdf unreadable).
+    None when undetermined (no Steam root or unreadable userdata).
     """
     if install.steam_root is None:
         return None
     userdata = install.steam_root / "userdata"
     if not userdata.is_dir():
         return None
-    verdict: bool | None = None
+    options: list[str] = []
     for cfg in userdata.glob("*/config/localconfig.vdf"):
         try:
             text = cfg.read_text(errors="replace")
@@ -161,18 +158,54 @@ def proton_launch_options_ok(install: MtgaInstall) -> bool | None:
         # tickets, playtime) and nesting depth varies by Steam version —
         # so scan a window after EVERY occurrence and judge from whichever
         # windows actually contain a LaunchOptions entry.
-        saw_launch_options = False
         for m in re.finditer(re.escape(f'"{MTGA_STEAM_APPID}"'), text):
             window = text[m.end() : m.end() + 4000]
             lo = re.search(r'"LaunchOptions"\s+"((?:\\.|[^"\\])*)"', window)
-            if not lo:
-                continue
-            saw_launch_options = True
-            if "winhttp=n,b" in lo.group(1).replace("\\", ""):
-                return True
-        if saw_launch_options:
-            verdict = False
-    return verdict
+            if lo:
+                options.append(lo.group(1).replace("\\", ""))
+    return options
+
+
+def proton_launch_options_ok(install: MtgaInstall) -> bool | None:
+    """Linux: do MTGA's Steam launch options let BepInEx inject?
+
+    BepInEx's winhttp.dll doorstop silently does not load under Proton
+    without ``WINEDLLOVERRIDES="winhttp=n,b"`` in the launch options —
+    the documented cause of a whole 'bridge never connects' failure
+    class. Returns None when undetermined (localconfig.vdf unreadable).
+    """
+    options = _mtga_steam_launch_options(install)
+    if not options:
+        return None
+    return any("winhttp=n,b" in option for option in options)
+
+
+# Native macOS client: the injected IL2CPP bridge library (spikes/mac-il2cpp,
+# docs/DECISIONS.md 2026-09-23). build.sh stages it here.
+MAC_BRIDGE_LIBRARY = Path.home() / ".arenamcp" / "probe" / "libmtgacoach_probe.dylib"
+
+
+def mac_bridge_installed() -> bool:
+    """Whether the native-Mac bridge library is staged for injection."""
+    return MAC_BRIDGE_LIBRARY.is_file()
+
+
+def mac_bridge_launch_option() -> str:
+    """The Steam launch option that loads the native-Mac bridge into MTGA.
+
+    Steam runs launch options through a shell, which passes DYLD_* to the
+    game. Wrapping the game in a SIP-protected binary (nohup, env) would
+    strip it.
+    """
+    return f'DYLD_INSERT_LIBRARIES="{MAC_BRIDGE_LIBRARY}" %command%'
+
+
+def mac_bridge_launch_options_ok(install: MtgaInstall) -> bool | None:
+    """macOS: do MTGA's Steam launch options inject the bridge library?"""
+    options = _mtga_steam_launch_options(install)
+    if not options:
+        return None
+    return any("DYLD_INSERT_LIBRARIES" in option and MAC_BRIDGE_LIBRARY.name in option for option in options)
 
 
 # ---------------------------------------------------------------------------

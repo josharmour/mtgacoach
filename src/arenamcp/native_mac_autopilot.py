@@ -8,7 +8,7 @@ import re
 import threading
 import time
 from collections import Counter, deque
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any
 
 from arenamcp.autopilot_models import AutopilotConfig, AutopilotState
@@ -83,7 +83,7 @@ def ground_desktop_action(content: str, action: DesktopAction, image_size: tuple
     if type(confidence) not in (int, float) or not 0 <= confidence <= 1:
         raise ValueError("Invalid target confidence")
     if confidence < 0.8:
-        return DesktopAction.from_dict({**asdict(action), "confidence": confidence})
+        return replace(action, confidence=float(confidence))
 
     def coordinate(key: str) -> list[float]:
         point = payload.get(key)
@@ -145,13 +145,42 @@ def parse_desktop_action(content: str) -> DesktopAction:
 
 
 def use_native_mac_autopilot() -> bool:
+    """Screen/input autoplay only on native Mac without the GRE bridge.
+
+    With the native-Mac bridge library installed, autoplay goes through GRE
+    and reports "Bridge offline" when MTGA was started without it, instead
+    of silently falling back to screenshots and clicks.
+    """
     import sys
 
     if sys.platform != "darwin":
         return False
-    from arenamcp.platform_integration import bridge_capable
+    from arenamcp.platform_integration import bridge_capable, mac_bridge_installed
 
-    return not bridge_capable()
+    if bridge_capable():
+        return False
+    return not (mac_bridge_installed() or mac_gre_bridge_connected())
+
+
+def mac_gre_bridge_connected(wait_s: float = 3.0) -> bool:
+    """Whether the native-Mac IL2CPP bridge library is connected to the coach.
+
+    The injected library reconnects at most every 2 s, so a short wait covers
+    toggling autoplay right after the coach starts.
+    """
+    try:
+        from arenamcp.gre_bridge import get_bridge
+
+        bridge = get_bridge()
+        deadline = time.monotonic() + wait_s
+        while not (bridge.connected or bridge.connect()):
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.2)
+        return getattr(bridge, "_mac_adapter", None) is not None
+    except Exception:
+        logger.debug("mac GRE bridge probe failed", exc_info=True)
+        return False
 
 
 class NativeMacAutopilot:
@@ -200,9 +229,11 @@ class NativeMacAutopilot:
         self._match_id: str | None = None
         self._next_poll = 0.0
         self._paused_reason = ""
+        self._paused_signature: str | None = None
         self._last_notice = ""
         self._inputs_sent = 0
         self._vision_failures = 0
+        self._uncertain_frames = 0
         self._last_frame = None
         self._last_proposal = None
         self._afk = self._config.afk_mode
@@ -223,10 +254,19 @@ class NativeMacAutopilot:
         if self._ui_advice_fn:
             self._ui_advice_fn(message, "AUTOPILOT")
 
-    def _pause(self, message: str) -> None:
+    def _pause(self, message: str, *, recover_on_state_change: bool = False) -> None:
         self._paused_reason = message
+        self._paused_signature = self._last_signature if recover_on_state_change else None
         self._state = AutopilotState.PAUSED
         self._notify(message + " Toggle autoplay off/on to retry.")
+
+    def _retry_uncertain_input(self, message: str) -> None:
+        self._uncertain_frames += 1
+        if self._uncertain_frames >= 3:
+            self._pause(message, recover_on_state_change=True)
+        else:
+            self._notify("Input target is no longer clear; observing Arena again.")
+            self._next_poll = time.monotonic() + 1.5
 
     def on_abort(self) -> None:
         self._abort_event.set()
@@ -245,10 +285,12 @@ class NativeMacAutopilot:
         if callable(reset_vision):
             reset_vision()
         self._vision_failures = 0
+        self._uncertain_frames = 0
         self._abort_event.clear()
         self._history.clear()
         self._attempts.clear()
         self._paused_reason = ""
+        self._paused_signature = None
         self._last_signature = None
         self._last_notice = ""
         self._next_poll = 0.0
@@ -376,11 +418,18 @@ class NativeMacAutopilot:
                 self._state = AutopilotState.IDLE
                 self._next_poll = 0
                 self._match_id = match_id
+            signature = state_signature(state)
+            if self._paused_signature is not None and signature != self._paused_signature:
+                self._paused_reason = ""
+                self._paused_signature = None
+                self._next_poll = 0
+                self._plan_cache = None
+                self._notify("Game state advanced; resuming autoplay with a fresh decision.")
             if self._paused_reason or time.monotonic() < self._next_poll:
                 return False
-            signature = state_signature(state)
             if signature != self._last_signature:
                 self._attempts.clear()
+                self._uncertain_frames = 0
                 self._last_signature = signature
             self._state = AutopilotState.PLANNING
             committed = self._committed_play(state, signature, trigger)
@@ -400,7 +449,10 @@ class NativeMacAutopilot:
                 frame = self._controller.capture()
                 self._last_frame = frame
                 action = DesktopAction(
-                    kind="key", key="space", confidence=1.0, reason=f"Pass priority ({committed.reasoning or 'log plan'})"
+                    kind="key",
+                    key="space",
+                    confidence=1.0,
+                    reason=f"Pass priority ({committed.reasoning or 'log plan'})",
                 )
                 self._last_proposal = asdict(action)
                 return self._send(frame, action)
@@ -432,6 +484,9 @@ class NativeMacAutopilot:
             )
             logger.info("Native Mac autoplay: vision returned in %.2fs", time.monotonic() - analysis_started)
             if self._abort_event.is_set():
+                return False
+            if state_signature(self._game_state_fn() or {}) != signature:
+                self._notify("Game state advanced; observing Arena again.")
                 return False
             if not isinstance(response, str) or is_backend_error_text(response):
                 self._vision_failures += 1
@@ -473,15 +528,19 @@ class NativeMacAutopilot:
                 self._next_poll = time.monotonic() + 1.5
                 return True
             if action.kind == "stop" or action.confidence < 0.8:
-                self._pause("Manual input needed: " + action.reason)
+                self._retry_uncertain_input("Cannot confidently choose an input: " + action.reason)
                 return False
             action = self._ground_action(frame, action)
             self._last_proposal = asdict(action)
             if self._abort_event.is_set():
                 return False
-            if action.confidence < 0.8:
-                self._pause("Cannot confidently locate the input target: " + action.reason)
+            if state_signature(self._game_state_fn() or {}) != signature:
+                self._notify("Game state advanced; observing Arena again.")
                 return False
+            if action.confidence < 0.8:
+                self._retry_uncertain_input("Cannot confidently locate the input target: " + action.reason)
+                return False
+            self._uncertain_frames = 0
             if time.monotonic() - frame.captured_at > 20:
                 self._notify("Visual decision expired; observing Arena again.")
                 return False

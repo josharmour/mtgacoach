@@ -1109,6 +1109,45 @@ def launch_mtga(mtga_dir: str) -> str:
     if sys.platform == "darwin":
         app_bundle = _find_mac_app_bundle(mtga_dir)
         if app_bundle is not None:
+            from arenamcp.platform_integration import MAC_BRIDGE_LIBRARY, mac_bridge_installed
+
+            if mac_bridge_installed():
+                if is_mtga_running():
+                    return str(app_bundle)
+                executable = app_bundle / "Contents" / "MacOS" / "MTGA"
+                if not executable.is_file():
+                    raise FileNotFoundError(f"MTGA executable not found: {executable}")
+                subprocess.run(["/usr/bin/open", "-a", "Steam"], check=True, timeout=10)
+                for attempt in range(30):
+                    steam = subprocess.run(
+                        ["/usr/bin/pgrep", "-x", "steam_osx"], capture_output=True, timeout=5
+                    )
+                    if steam.returncode == 0:
+                        break
+                    time.sleep(1)
+                else:
+                    raise RuntimeError("Steam is still starting. Open Steam and try launching MTGA again.")
+                _invalidate_mtga_running_cache()
+                if is_mtga_running():
+                    return str(app_bundle)
+                env = os.environ.copy()
+                env["SteamAppId"] = "2141910"
+                env["SteamGameId"] = "2141910"
+                env["DYLD_INSERT_LIBRARIES"] = str(MAC_BRIDGE_LIBRARY)
+                log_path = Path(get_runtime_root()) / "mtga-launch.log"
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                with log_path.open("ab") as launch_log:
+                    subprocess.Popen(
+                        [str(executable)],
+                        cwd=str(app_bundle.parent),
+                        env=env,
+                        stdin=subprocess.DEVNULL,
+                        stdout=launch_log,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                _invalidate_mtga_running_cache()
+                return str(app_bundle)
             subprocess.Popen(["/usr/bin/open", str(app_bundle)])
             return str(app_bundle)
         # No native bundle (e.g. Steam-managed install elsewhere, or a Wine/
@@ -1133,6 +1172,20 @@ def launch_mtga(mtga_dir: str) -> str:
         else:
             subprocess.Popen([str(executable)])
     return str(executable)
+
+
+def launch_native_mac_session() -> str | None:
+    """Start bridge-enabled MTGA with the coach, leaving existing games alone."""
+    if sys.platform != "darwin":
+        return None
+    from arenamcp.platform_integration import mac_bridge_installed
+
+    if not mac_bridge_installed() or is_mtga_running():
+        return None
+    mtga_dir, _source = find_mtga_install_dir()
+    if not mtga_dir or _find_mac_app_bundle(mtga_dir) is None:
+        return None
+    return launch_mtga(mtga_dir)
 
 
 def restart_mtga(mtga_dir: str) -> str:

@@ -86,7 +86,38 @@ def test_uncertain_localization_never_clicks(monkeypatch):
     ]
     assert not engine.process_trigger(state, "desktop_poll")
     controller.execute.assert_not_called()
+    assert engine.state == AutopilotState.IDLE
+    backend.complete_with_image.side_effect = [
+        json.dumps(command()),
+        json.dumps({"point": [720, 540], "confidence": 0.95}),
+    ]
+    engine._next_poll = 0
+    assert engine.process_trigger(state, "desktop_poll")
+    assert controller.execute.call_count == 1
+
+
+@pytest.mark.parametrize("kind", ["click", "double_click", "drag"])
+def test_uncertain_grounding_preserves_validated_coordinates(kind):
+    action = DesktopAction.from_dict(command(kind, end=[0.5, 0.3]))
+    grounded = ground_desktop_action(json.dumps({"point": None, "confidence": 0.4}), action, (1600, 935))
+    assert grounded.confidence == 0.4
+    assert grounded.point == action.point
+    assert grounded.end == action.end
+
+
+def test_repeated_uncertain_localization_is_bounded(monkeypatch):
+    engine, controller, backend, state, _ = make_engine(monkeypatch)
+    del engine._ground_action
+    backend.complete_with_image.side_effect = [
+        json.dumps(command()),
+        json.dumps({"point": None, "confidence": 0.4}),
+    ] * 3
+    for _ in range(4):
+        engine._next_poll = 0
+        assert not engine.process_trigger(state, "desktop_poll")
     assert engine.state == AutopilotState.PAUSED
+    assert backend.complete_with_image.call_count == 6
+    controller.execute.assert_not_called()
 
 
 @pytest.mark.parametrize("point", [[0.4, 0.8], [1600, 700], [-1, 20], [True, 700], None])
@@ -99,7 +130,9 @@ def test_grounding_rejects_ambiguous_or_invalid_pixel_coordinates(point):
 
 def test_new_match_clears_previous_match_pause_but_not_abort(monkeypatch):
     engine, controller, backend, state, _ = make_engine(monkeypatch, response=command(confidence=0.3))
-    assert not engine.process_trigger(state, "desktop_poll")
+    for _ in range(3):
+        engine._next_poll = 0
+        assert not engine.process_trigger(state, "desktop_poll")
     assert engine.state == AutopilotState.PAUSED
     state["match_id"] = "new-match"
     state["pending_decision"] = "Mulligan"
@@ -160,16 +193,18 @@ def test_stop_during_model_request_never_clicks(monkeypatch):
     assert not engine._lock.locked()
 
 
-def test_new_log_state_during_model_request_discards_action(monkeypatch):
+@pytest.mark.parametrize("payload", [command(), command(confidence=0.3), command("stop")])
+def test_new_log_state_during_model_request_discards_action(monkeypatch, payload):
     engine, controller, backend, state, _ = make_engine(monkeypatch)
 
     def respond(*args, **kwargs):
         state["pending_decision"] = "Priority (Pass Only)"
-        return json.dumps(command())
+        return json.dumps(payload)
 
     backend.complete_with_image.side_effect = respond
     assert not engine.process_trigger(state, "desktop_poll")
     controller.execute.assert_not_called()
+    assert engine.state == AutopilotState.IDLE
 
 
 @pytest.mark.parametrize(
@@ -205,11 +240,55 @@ def test_debug_report_retains_exact_model_image_and_proposal(monkeypatch):
 
 
 @pytest.mark.parametrize("payload", [command(confidence=0.3), command("stop")])
-def test_uncertain_action_pauses(monkeypatch, payload):
+def test_uncertain_action_retries_then_pauses(monkeypatch, payload):
     engine, controller, _, state, _ = make_engine(monkeypatch, response=payload)
-    assert not engine.process_trigger(state, "desktop_poll")
+    for _ in range(3):
+        engine._next_poll = 0
+        assert not engine.process_trigger(state, "desktop_poll")
     controller.execute.assert_not_called()
     assert engine.state == AutopilotState.PAUSED
+
+
+def test_uncertain_decision_pause_recovers_when_turn_advances(monkeypatch):
+    engine, controller, backend, state, _ = make_engine(monkeypatch, response=command(confidence=0.3))
+    for _ in range(3):
+        engine._next_poll = 0
+        assert not engine.process_trigger(state, "desktop_poll")
+    assert engine.state == AutopilotState.PAUSED
+    assert not engine.process_trigger(state, "desktop_poll")
+    assert backend.complete_with_image.call_count == 3
+    state["pending_decision"] = "Priority"
+    state["turn"] = {"turn_number": 3}
+    backend.complete_with_image.return_value = json.dumps(command("double_click"))
+    assert engine.process_trigger(state, "desktop_poll")
+    controller.execute.assert_called_once()
+    assert engine.state == AutopilotState.IDLE
+
+
+def test_uncertain_decision_pause_never_overrides_user_abort(monkeypatch):
+    engine, controller, backend, state, _ = make_engine(monkeypatch, response=command(confidence=0.3))
+    for _ in range(3):
+        engine._next_poll = 0
+        engine.process_trigger(state, "desktop_poll")
+    engine.on_abort()
+    state["pending_decision"] = "Priority"
+    backend.complete_with_image.return_value = json.dumps(command())
+    assert not engine.process_trigger(state, "desktop_poll")
+    controller.execute.assert_not_called()
+
+
+def test_stale_uncertain_grounding_does_not_pause_new_decision(monkeypatch):
+    engine, controller, _, state, _ = make_engine(monkeypatch)
+    engine._uncertain_frames = 2
+
+    def stale_grounding(frame, action):
+        state["pending_decision"] = "Priority"
+        return DesktopAction.from_dict(command(confidence=0.3))
+
+    engine._ground_action.side_effect = stale_grounding
+    assert not engine.process_trigger(state, "desktop_poll")
+    controller.execute.assert_not_called()
+    assert engine.state == AutopilotState.IDLE
 
 
 def test_repeated_no_progress_inputs_are_bounded(monkeypatch):
@@ -509,15 +588,18 @@ def test_unverifiable_input_target_blocks_click(hit_result, pid_result):
 
 
 @pytest.mark.parametrize(
-    ("platform", "bridge_capable", "expected"),
+    ("platform", "bridge_capable", "mac_bridge", "expected"),
     [
-        ("darwin", False, True),
-        ("darwin", True, False),
-        ("linux", True, False),
-        ("win32", True, False),
+        ("darwin", False, False, True),
+        ("darwin", False, True, False),  # native-Mac IL2CPP bridge connected: GRE engine
+        ("darwin", True, False, False),
+        ("linux", True, False, False),
+        ("win32", True, False, False),
     ],
 )
-def test_select_native_engine_only_for_native_mac(monkeypatch, platform, bridge_capable, expected):
+def test_select_native_engine_only_for_native_mac(monkeypatch, platform, bridge_capable, mac_bridge, expected):
     monkeypatch.setattr("sys.platform", platform)
     monkeypatch.setattr("arenamcp.platform_integration.bridge_capable", lambda: bridge_capable)
+    monkeypatch.setattr("arenamcp.platform_integration.mac_bridge_installed", lambda: False)
+    monkeypatch.setattr("arenamcp.native_mac_autopilot.mac_gre_bridge_connected", lambda: mac_bridge)
     assert use_native_mac_autopilot() is expected

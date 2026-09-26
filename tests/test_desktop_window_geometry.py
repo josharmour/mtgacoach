@@ -71,5 +71,42 @@ def test_coach_stack_can_resize_to_sidebar_width(qapp):
 
     assert window.width() == 240
     assert window.coach_panel.width() <= 240
+    window.coach_panel.restart_btn.click()
+    window._restart_coach.assert_called_once()
     window._session.shutdown()
+    window.close()
+
+
+def test_restart_stops_coach_once_and_blocks_delayed_start(qapp, monkeypatch):
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QPushButton
+
+    from arenamcp.desktop import main_window
+    from arenamcp.desktop.app import RESTART_EXIT_CODE
+
+    window = QMainWindow()
+    window._closed = False
+    window._settings = Mock()
+    window._WINDOW_GEOMETRY_KEY = MainWindow._WINDOW_GEOMETRY_KEY
+    window._session = Mock()
+    window._session.shutdown.side_effect = lambda: MainWindow._start_session(window)
+    window._hotkeys = Mock()
+    window._ui_watchdog = Mock()
+    window.coach_panel = SimpleNamespace(restart_btn=QPushButton("Restart Coach", window))
+    app = Mock()
+    monkeypatch.setattr(main_window, "QApplication", SimpleNamespace(instance=lambda: app))
+
+    MainWindow._restart_coach(window)
+    MainWindow._restart_coach(window)
+
+    assert window._closed
+    assert not window.coach_panel.restart_btn.isEnabled()
+    assert window.coach_panel.restart_btn.text() == "Restarting…"
+    window._session.shutdown.assert_called_once()
+    window._session.start.assert_not_called()
+    window._hotkeys.unregister_all.assert_called_once()
+    window._ui_watchdog.stop.assert_called_once()
+    window._settings.set.assert_called_once()
+    app.exit.assert_called_once_with(RESTART_EXIT_CODE)
     window.close()

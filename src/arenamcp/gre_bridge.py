@@ -128,6 +128,8 @@ class GREBridge:
     Thread-safe for single-command-at-a-time use.
     """
 
+    _mac_adapter: Any = None
+
     def __init__(self):
         self._connected = False
         # Keepalive thread — proactively reconnects after disconnect and
@@ -148,6 +150,12 @@ class GREBridge:
         # lock is already held), so the lock stays non-reentrant.
         self._pipe_lock = threading.Lock()  # Serialize socket I/O across threads
         self._keepalive_lock = threading.Lock()  # Guards _keepalive_thread lifecycle
+        # Set when the connected client is the native-Mac IL2CPP library, which
+        # speaks generic reflection; the adapter answers plugin commands on it.
+        self._mac_adapter = None
+        # Runtime the connected client reported ("il2cpp-android", "il2cpp-macos",
+        # "bepinex"), for the UI; None when disconnected.
+        self.client_runtime: str | None = None
         # No-plugin diagnostics: when the server listens but nothing ever
         # connects, the plugin isn't running (most often BepInEx isn't
         # injected). Warn once with an actionable hint instead of staying
@@ -208,6 +216,26 @@ class GREBridge:
                 resp = self._send_command({"action": "ping"})
                 if resp.get("ok"):
                     logger.info(f"GRE bridge connected (plugin v{resp.get('version', '?')})")
+                    self._mac_adapter = None
+                    runtime = resp.get("runtime")
+                    from arenamcp.android_link import ANDROID_RUNTIME, game_device
+
+                    if game_device() == "android" and runtime != ANDROID_RUNTIME:
+                        # Playing on the phone: a desktop client (native-Mac library or
+                        # BepInEx) must not take the single bridge slot, or autoplay
+                        # would act on the wrong game (2026-09-24).
+                        logger.warning(
+                            "GRE bridge: rejecting %s client; this coach plays on the Android phone",
+                            runtime or "BepInEx",
+                        )
+                        self.disconnect()
+                        return False
+                    self.client_runtime = runtime or "bepinex"
+                    if runtime in ("il2cpp-macos", ANDROID_RUNTIME) and "reflect-1" in (resp.get("protocols") or []):
+                        from arenamcp.mac_bridge_adapter import MacBridgeAdapter
+
+                        self._mac_adapter = MacBridgeAdapter(self._send_command_raw, runtime)
+                        logger.info(f"GRE bridge: {runtime} client; plugin commands run via reflection")
                     return True
                 else:
                     logger.warning(f"GRE bridge ping failed: {resp}")
@@ -241,6 +269,7 @@ class GREBridge:
         daemon reader thread spawned by ``_send_command``.
         """
         self._connected = False
+        self.client_runtime = None
         try:
             if self._pipe_file:
                 self._pipe_file.close()
@@ -373,6 +402,17 @@ class GREBridge:
     _DEFAULT_READ_TIMEOUT_S: float = 5.0
 
     def _send_command(
+        self,
+        cmd: dict[str, Any],
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Send a plugin command; on native Mac the adapter translates it."""
+        adapter = self._mac_adapter
+        if adapter is not None and adapter.handles(cmd):
+            return adapter.handle(cmd, timeout)
+        return self._send_command_raw(cmd, timeout)
+
+    def _send_command_raw(
         self,
         cmd: dict[str, Any],
         timeout: float | None = None,
@@ -633,24 +673,41 @@ class GREBridge:
         self,
         action_index: int,
         auto_pass: bool = False,
+        expected: dict[str, Any] | None = None,
     ) -> bool:
         """Submit an action by its index in the pending actions list.
 
         Args:
             action_index: Index into the actions array from get_pending_actions.
             auto_pass: Whether to auto-pass priority after this action.
+            expected: The action dict the index was chosen from. Its identity
+                travels with the command so a client that checks it (the native
+                Mac bridge) refuses a stale index instead of submitting whatever
+                now sits at that position. The Windows plugin ignores it.
 
         Returns:
             True if the action was submitted successfully.
         """
+        command: dict[str, Any] = {
+            "action": "submit_action",
+            "action_index": action_index,
+            "auto_pass": auto_pass,
+        }
+        if expected:
+            if expected.get("choiceKind"):
+                command["expected_choice_kind"] = expected["choiceKind"]
+                if expected.get("optionIndex") is not None:
+                    command["expected_option_index"] = expected["optionIndex"]
+            else:
+                for key, source in (
+                    ("expected_instance_id", "instanceId"),
+                    ("expected_grp_id", "grpId"),
+                    ("expected_action_type", "actionType"),
+                ):
+                    if expected.get(source) is not None:
+                        command[key] = expected[source]
         try:
-            resp = self._send_safe(
-                {
-                    "action": "submit_action",
-                    "action_index": action_index,
-                    "auto_pass": auto_pass,
-                }
-            )
+            resp = self._send_safe(command)
             if resp.get("ok"):
                 logger.info(
                     f"GRE bridge submitted action [{action_index}]: "
@@ -707,7 +764,7 @@ class GREBridge:
             )
             return False
 
-        return self.submit_action_by_index(best_idx, auto_pass=auto_pass)
+        return self.submit_action_by_index(best_idx, auto_pass=auto_pass, expected=actions[best_idx])
 
     def submit_pass(self) -> bool:
         """Submit a pass action.
@@ -1901,6 +1958,7 @@ def _stamp_bridge_fields(
     snapshot["_bridge_allow_undo"] = poll.get("allow_undo", False)
     request_payload = normalized["request_payload"]
     snapshot["_bridge_request_payload"] = request_payload if has_pending and request_payload else None
+    snapshot["_bridge_target_candidates"] = poll.get("target_candidates") if has_pending else None
 
     # X-cost constraints from the CastingTimeOption numeric child. The planner
     # prompt tells the model to pick a value "within shown min/max", but until

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from arenamcp import platform_integration
 from arenamcp.desktop import app as desktop_app
 from arenamcp.desktop import runtime
 
@@ -18,6 +19,7 @@ from arenamcp.desktop import runtime
 def _clean_runtime_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("MTGACOACH_RUNTIME_ROOT", raising=False)
     monkeypatch.delenv("MTGA_DIR", raising=False)
+    monkeypatch.setattr(platform_integration, "mac_bridge_installed", lambda: False)
     runtime._invalidate_mtga_running_cache()
     yield
     runtime._invalidate_mtga_running_cache()
@@ -251,6 +253,83 @@ def test_launch_mtga_darwin_opens_app_bundle(monkeypatch, tmp_path: Path) -> Non
 
     assert calls == [["/usr/bin/open", str(bundle)]]
     assert result == str(bundle)
+
+
+def test_mac_bridge_launch_executes_game_directly(monkeypatch, tmp_path):
+    bundle = tmp_path / "MTGA.app"
+    executable = bundle / "Contents" / "MacOS" / "MTGA"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    calls = []
+    monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(platform_integration, "mac_bridge_installed", lambda: True)
+    monkeypatch.setattr(runtime, "is_mtga_running", lambda: False)
+    monkeypatch.setattr(runtime, "get_runtime_root", lambda: str(tmp_path / "runtime"))
+    monkeypatch.setattr(runtime.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(runtime.subprocess, "Popen", lambda args, **kwargs: calls.append((args, kwargs)))
+
+    assert runtime.launch_mtga(str(bundle)) == str(bundle)
+    args, kwargs = calls[0]
+    assert args == [str(executable)]
+    assert kwargs["env"]["DYLD_INSERT_LIBRARIES"] == str(platform_integration.MAC_BRIDGE_LIBRARY)
+    assert kwargs["env"]["SteamAppId"] == "2141910"
+    assert kwargs["cwd"] == str(tmp_path)
+    assert kwargs["start_new_session"] is True
+
+
+def test_mac_bridge_launch_leaves_running_match_alone(monkeypatch, tmp_path):
+    bundle = tmp_path / "MTGA.app"
+    bundle.mkdir()
+    monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(platform_integration, "mac_bridge_installed", lambda: True)
+    monkeypatch.setattr(runtime, "is_mtga_running", lambda: True)
+    monkeypatch.setattr(
+        runtime.subprocess, "run", lambda *args, **kwargs: pytest.fail("game already running")
+    )
+    monkeypatch.setattr(runtime.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("duplicate game"))
+    assert runtime.launch_mtga(str(bundle)) == str(bundle)
+
+
+@pytest.mark.parametrize(
+    "installed,running,expected", [(True, False, True), (True, True, False), (False, False, False)]
+)
+def test_native_mac_session_auto_launch(monkeypatch, tmp_path, installed, running, expected):
+    bundle = tmp_path / "MTGA.app"
+    bundle.mkdir()
+    calls = []
+    monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(platform_integration, "mac_bridge_installed", lambda: installed)
+    monkeypatch.setattr(runtime, "is_mtga_running", lambda: running)
+    monkeypatch.setattr(runtime, "find_mtga_install_dir", lambda: (str(tmp_path), "test"))
+    monkeypatch.setattr(runtime, "launch_mtga", lambda path: calls.append(path) or str(bundle))
+    result = runtime.launch_native_mac_session()
+    assert calls == ([str(tmp_path)] if expected else [])
+    assert result == (str(bundle) if expected else None)
+
+
+def test_mac_auto_launch_failure_does_not_close_coach(monkeypatch):
+    messages = []
+
+    def fail_launch():
+        raise OSError("Steam unavailable")
+
+    monkeypatch.setenv("MTGACOACH_GAME_DEVICE", "desktop")  # independent of the user's settings.json
+    monkeypatch.setattr(runtime, "launch_native_mac_session", fail_launch)
+    monkeypatch.setattr(desktop_app, "_write_log", messages.append)
+    desktop_app._launch_native_mac_session()
+    assert messages == ["MTGA automatic launch failed: Steam unavailable"]
+
+
+def test_android_mode_does_not_start_mtga_on_the_mac(monkeypatch):
+    # A Mac client would take the coach's single bridge slot from the phone (2026-09-24).
+    messages = []
+    launched = []
+    monkeypatch.setenv("MTGACOACH_GAME_DEVICE", "android")
+    monkeypatch.setattr(runtime, "launch_native_mac_session", lambda: launched.append(True))
+    monkeypatch.setattr(desktop_app, "_write_log", messages.append)
+    desktop_app._launch_native_mac_session()
+    assert launched == []
+    assert messages == ["game_device=android: not starting MTGA on this Mac"]
 
 
 def test_launch_mtga_darwin_accepts_bundle_path_itself(monkeypatch, tmp_path: Path) -> None:

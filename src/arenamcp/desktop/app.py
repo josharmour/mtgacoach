@@ -205,6 +205,23 @@ def _restore_existing_instance_window() -> bool:
     return False
 
 
+def _launch_native_mac_session() -> None:
+    try:
+        from arenamcp.android_link import game_device
+
+        if game_device() == "android":
+            # Playing on the phone: a Mac client would take the coach's bridge.
+            _write_log("game_device=android: not starting MTGA on this Mac")
+            return
+        from .runtime import launch_native_mac_session
+
+        launched = launch_native_mac_session()
+        if launched:
+            _write_log(f"started MTGA with native autoplay bridge: {launched}")
+    except Exception as exc:
+        _write_log(f"MTGA automatic launch failed: {exc}")
+
+
 def main() -> int:
     # CLI routing for frozen executable / command-line invocations
     if any(
@@ -277,6 +294,8 @@ def main() -> int:
     # its own failure text says "open the Repair tab", which only exists
     window = MainWindow()
     window.show()
+    if sys.platform == "darwin":
+        threading.Thread(target=_launch_native_mac_session, name="mtga-launch", daemon=True).start()
     exit_code = app.exec()
     if exit_code == RESTART_EXIT_CODE:
         relaunch_application()
@@ -287,14 +306,18 @@ def relaunch_application() -> None:
     """Relaunch the desktop application process cleanly."""
     _release_single_instance_lock()
     python = sys.executable
-    _write_log(f"relaunching desktop process: {python} with argv={sys.argv}")
+    if getattr(sys, "frozen", False):
+        command = [python, *sys.argv[1:]]
+    else:
+        command = [python, "-m", "arenamcp.desktop", *sys.argv[1:]]
+    _write_log(f"relaunching desktop process: {command}")
     if sys.platform == "win32":
         import subprocess
 
-        subprocess.Popen([python] + sys.argv)
+        subprocess.Popen(command)
         sys.exit(0)
     else:
-        os.execv(python, [python] + sys.argv)
+        os.execv(python, command)
 
 
 def _run_first_run_setup(app) -> bool:

@@ -239,6 +239,11 @@ class MainWindow(QMainWindow):
 
     def _restart_coach(self, *args, **kwargs) -> None:
         """Perform a full UI restart, cleanly shutting down and relaunching the entire desktop app."""
+        if self._closed:
+            return
+        self._closed = True
+        self.coach_panel.restart_btn.setEnabled(False)
+        self.coach_panel.restart_btn.setText("Restarting…")
         logger.info("Restart Coach requested: closing and relaunching desktop UI...")
         if not self.isMaximized() and not self.isMinimized():
             geom = self.frameGeometry()
@@ -260,7 +265,9 @@ class MainWindow(QMainWindow):
 
         app = QApplication.instance()
         if app is not None:
-            app.exit(42)
+            from .app import RESTART_EXIT_CODE
+
+            app.exit(RESTART_EXIT_CODE)
         else:
             from .app import relaunch_application
 
