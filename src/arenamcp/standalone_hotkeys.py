@@ -160,9 +160,17 @@ class _StandaloneHotkeysMixin:
             # to instant turn-opening tactical advice
             time.sleep(3.0)
 
-            from arenamcp.coach import ProxyBackend
+            from arenamcp.coach import create_backend
 
-            thinking_backend = ProxyBackend(model=self._thinking_model, enable_thinking=True)
+            # Same factory as the coach and autopilot: a bare ProxyBackend()
+            # has no URL or license key and falls back to localhost:8000
+            # (2026-09-24: every win-in-2/3 request failed with "Connection
+            # error" and flipped backend health to degraded each turn).
+            thinking_backend = create_backend(
+                getattr(self, "_backend_name", None) or "online", model=self._thinking_model
+            )
+            if hasattr(thinking_backend, "enable_thinking"):
+                thinking_backend.enable_thinking = True
 
             library_summary = self._compute_library_summary(game_state)
             turn_num = game_state.get("turn", {}).get("turn_number", 0)

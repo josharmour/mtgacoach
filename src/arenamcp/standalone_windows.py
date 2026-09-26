@@ -380,11 +380,12 @@ class _StandaloneWindowsMixin:
     @classmethod
     def _is_pass_narration(cls, text: str) -> bool:
         """True for advice whose substance is "I'm passing priority"."""
+        # Passing is the whole message: no action verb anywhere. Long lines
+        # count too — "Nothing to do here — pass priority and let their
+        # Swordsman's Steel resolve." (2026-09-24) was spoken every window.
         clean = (text or "").lower().strip(" .!")
-        if clean.startswith(("pass priority", "passing priority", "pass the priority")):
-            return True
-        return clean.endswith(
-            ("pass priority", "passing priority", "pass priority now", "passing priority now")
+        return bool(re.search(r"\bpass(ing)? (the )?priority\b", clean)) and not any(
+            re.search(rf"\b{re.escape(v)}", clean) for v in cls._ACTION_VERBS
         )
 
     @classmethod

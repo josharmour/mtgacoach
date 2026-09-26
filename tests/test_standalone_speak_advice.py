@@ -67,3 +67,15 @@ def test_is_passive_advice():
     # Empty / None
     assert p("") is False
     assert p(None) is False
+
+
+def test_is_pass_narration():
+    n = StandaloneCoach._is_pass_narration
+    # 2026-09-24: long "nothing to do" lines spoken at every opponent spell.
+    assert n("Nothing to do here — pass priority and let their Swordsman's Steel resolve.") is True
+    assert n("Just let your own trigger resolve — pass priority.") is True
+    assert n("Passing priority to let their spell resolve.") is True
+    # Passing alongside a real instruction is advice, not narration.
+    assert n("Decline the optional action and pass priority.") is False
+    assert n("Pass priority, then cast Lightning Bolt at end of turn.") is False
+    assert n("Attack with Fanatic of Rhonas.") is False
