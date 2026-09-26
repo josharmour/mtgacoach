@@ -7,6 +7,82 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-09-23 — Native-macOS GRE bridge via the IL2CPP C API (logs stay the eyes)
+
+### The decision
+
+- **Autopilot on native Mac submits through the game's own GRE request objects**,
+  like the Windows BepInEx plugin, instead of screenshots and synthetic clicks.
+  No Wine/CrossOver. Vision autoplay remains only as the fallback when the bridge
+  is not connected.
+- **Observation stays log-first.** Player.log remains the primary source of what
+  is going on; the bridge is the hands. The Mac adapter deliberately answers
+  `get_game_state` as unsupported so the coach keeps its log-derived board
+  (a connected bridge's `get_game_state` otherwise *replaces* battlefield, hand
+  and graveyards in `server._get_bridge_overlay`).
+- **Architecture:** a small injected arm64 library (`spikes/mac-il2cpp/probe.cpp`)
+  exposes generic main-thread reflection (`reflect_batch`: pending, get, call,
+  new, set, expect, expect_pending) over the existing bridge socket. The
+  BepInEx plugin's command handlers are re-implemented in Python
+  (`arenamcp/mac_bridge_adapter.py`) on top of it, returning the plugin's
+  response shapes, so `GREBridge` and `AutopilotEngine` run unchanged. The
+  Windows plugin is not replaced: Windows and Linux (Proton) run the Mono build,
+  where BepInEx stays the right tool.
+- Supersedes the 2026-07-16 "no native-macOS bridge" line and its rejected
+  alternatives below (BepInEx 6/Il2CppInterop, direct memory access).
+
+### Why (rationale chain)
+
+1. The 2026-09-23 native-Mac vision autopilot match made two inputs (Keep, one
+   Pass) and zero card plays; seconds per vision call, focus dependence and
+   pause-forever handling made it unusable (standalone.log from 21:41).
+2. The Mac client exports the IL2CPP runtime API, so an injected library can
+   find classes and call methods by name. That needs no Cpp2IL/Il2CppInterop,
+   no .NET hosting and no Rosetta, and it does not depend on the metadata format.
+3. BepInEx's IL2CPP macOS build is x64-only (Rosetta, which Apple retires for
+   general apps after macOS 27), and its metadata support lags Unity upgrades
+   (v39 landed March 2026, #1284; v107 unsupported, #1395).
+4. MTGA-specific logic in Python can be fixed and re-tested during a live match
+   without restarting the game; the injected library stays generic and small.
+
+### Verified facts (2026-09-23, MTGA 2026.63.0 Steam, Unity 6000.3.14f1, macOS 26.6.2 arm64)
+
+| Claim | How verified |
+|---|---|
+| App not hardened-runtime signed | `codesign -dv` → `flags=0x0(none)`, no entitlements |
+| Metadata v39, standard format | `global-metadata.dat` magic `0xFAB11BAF`, version 39 |
+| IL2CPP C API exported | 241 `il2cpp_*` exports in the arm64 slice of `GameAssembly.dylib` |
+| Main-thread access without code patching | Swapping `PAPA.Update`'s `MethodInfo->methodPointer` (name at slot 3) runs our job queue every frame; ~120 ticks/s observed |
+| GRE submission works | Bot Match: `ChooseStartingPlayer`, `KeepHand`, `SubmitAction(Play #160)`; server replied `ObjectIdChanged 160→279`, `ZoneTransfer` category `PlayLand` (`spikes/mac-il2cpp/RESULTS.md`) |
+| Reflection layer | 10-op batch 6 ms; 200-batch handle stress: worst batch 0.6 ms |
+| Player.log records outgoing client responses | `ClientMessageType_*` blocks with `gameStateId`/`respId`/`actionType`/`instanceId`; the coach does not consume them yet |
+| Opponent hand is never sent in ranked | Brawl_Ladder log: only the local hand's identities. Bot matches differ: the bot runs inside the client, so its hand appears in the log |
+
+### Corrections / lessons (accuracy log)
+
+1. **GC handles are pointer-sized** in this IL2CPP (since 2021.2). Storing them
+   as `uint32_t` crashed MTGA on the first handle free (2026-09-23 23:50,
+   `MTGA-2026-09-23-235020.ips`, fault in `il2cpp_gchandle_free` at a truncated
+   address). Fixed; the library now self-tests a handle round trip at startup
+   and disables handles instead of crashing.
+2. **SIP strips `DYLD_*`** when launching through protected binaries
+   (`/usr/bin/nohup`, `/usr/bin/env`): the first live launch ran without the
+   library. Exec MTGA directly.
+3. Protobuf `RepeatedField<T>` has both `Add(T)` and `Add(IEnumerable<T>)`;
+   overload resolution for object arguments must check real assignability.
+4. Never overwrite a dylib that a running process has mapped; install by rename.
+
+### Falsifiable claims worth re-checking
+
+- After each MTGA update: codesign flags still `0x0`; `global-metadata.dat`
+  version; the probe log shows `reflection ready: ... handles=1` and
+  `hooked PAPA.Update ... name_slot=3`.
+- `tests/test_mac_bridge_adapter.py` pins the adapter's plugin-compatible shapes
+  and op sequences; the member names it uses were checked against the
+  2026-08-26 decompile (`re-output/`).
+
+---
+
 ## 2026-07-22 — Sub-Second Inference, Dual Blackwell Telemetry & Ground-Truth Decision Pipeline
 
 ### The decision
