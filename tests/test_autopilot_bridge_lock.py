@@ -448,9 +448,11 @@ def test_execute_action_no_mouse_when_bridge_submit_fails(monkeypatch):
 def test_execute_action_classifies_stale_play_land_as_planner_action_stale(monkeypatch):
     """Planner picks play_land but bridge has no Play action → stale state.
 
-    Should still surface MANUAL REQUIRED, but must NOT auto-file a bug —
-    this is a self-inflicted state mismatch (lands_played already 1, etc.),
-    not a real bridge failure. See issues #136 #137 #139 #140.
+    Skipped for a re-plan rather than MANUAL REQUIRED (2026-09-24: that
+    escalation auto-passed priority and threw away main phase 1), and never
+    an auto-filed bug — a self-inflicted state mismatch (issues #136 #137
+    #139 #140). The plan loop blocks the skipped play for the window, so
+    planning it again hits "Blocked action repeated" instead of looping.
     """
     bridge = _DummyBridge(
         {
@@ -488,9 +490,10 @@ def test_execute_action_classifies_stale_play_land_as_planner_action_stale(monke
 
     result = engine._execute_action(action, state)
 
-    assert result.success is False
+    assert result.success is True
+    assert "stale-skip" in result.error
     assert controller.calls == [], f"expected zero mouse calls, got {controller.calls}"
-    assert any("MANUAL REQUIRED" in n for n in notifications)
+    assert not any("MANUAL REQUIRED" in n for n in notifications)
     # Critical: no auto-bug filed for stale state mismatches
     assert bug_calls == [], f"expected no auto-bug for planner_action_stale, got {bug_calls}"
 

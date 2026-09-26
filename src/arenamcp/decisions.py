@@ -197,6 +197,8 @@ def _build_actions_available(
                     "actionType": atype,
                     "grpId": grp_id,
                     "instanceId": int(action.get("instanceId") or 0),
+                    "abilityGrpId": int(action.get("abilityGrpId") or 0),
+                    "manaCost": action.get("manaCost"),
                 },
             )
         )
@@ -557,7 +559,15 @@ def submit_option(
     if first.startswith("mull:"):
         return bool(bridge.submit_mulligan(first == "mull:keep"))
     if first.startswith("idx:"):
-        return bool(bridge.submit_action_by_index(int(first.split(":", 1)[1])))
+        # Identity travels with the index so a bridge that checks it (the
+        # native Mac bridge) refuses a stale index instead of submitting
+        # whatever now sits at that position.
+        meta = decision.find(first).meta
+        expected = {k: meta[k] for k in ("instanceId", "grpId") if meta.get(k)}
+        index = int(first.split(":", 1)[1])
+        if expected:
+            return bool(bridge.submit_action_by_index(index, expected=expected))
+        return bool(bridge.submit_action_by_index(index))
     if first.startswith("tgt:"):
         # Cover every required slot, not just the first chosen target.
         target_ids = expand_target_selection(decision, chosen)

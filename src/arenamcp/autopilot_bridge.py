@@ -149,8 +149,15 @@ class _BridgeSubmitMixin:
         # accepts a standalone NumericInputRequest, making it a superset;
         # submit_numeric stays as a fallback for plugin builds predating the
         # submit_x command.
-        if action.action_type == ActionType.NUMERIC_INPUT and action.numeric_value:
+        # X=0 is a real answer (2026-09-24: Green Sun's Zenith for X=0 went to
+        # MANUAL REQUIRED three times because 0 was read as "no value").
+        if action.action_type == ActionType.NUMERIC_INPUT and action.numeric_value is not None:
             value = int(action.numeric_value)
+            from arenamcp.play_safety import pending_x_source, useful_tutor_x
+
+            if not useful_tutor_x(game_state, pending_x_source(game_state), value):
+                self._pause_for_manual("X value has no useful tutor target", game_state)
+                return ClickResult(False, 0, 0, f"X={value}", "No useful tutor target")
             if self._gre_bridge.submit_x(value) or self._gre_bridge.submit_numeric(value):
                 self._log_execution_path(ExecutionPath.GRE_AWARE, f"numeric_input: X={value} via GRE bridge")
                 return ClickResult(True, 0, 0, f"X={value}", "GRE bridge")
@@ -427,7 +434,7 @@ class _BridgeSubmitMixin:
 
                 if best_idx is not None:
                     if self._gre_bridge.submit_action_by_index(
-                        best_idx, auto_pass=self._config.auto_pass_priority
+                        best_idx, auto_pass=self._config.auto_pass_priority, expected=bridge_actions[best_idx]
                     ):
                         self._log_execution_path(
                             ExecutionPath.GRE_AWARE,
@@ -483,7 +490,7 @@ class _BridgeSubmitMixin:
             # Prefer "done" entries, then fall back to first entry
             for idx, ba in casting_entries:
                 if ba.get("choiceKind") == "done" and self._gre_bridge.submit_action_by_index(
-                    idx, auto_pass=self._config.auto_pass_priority
+                    idx, auto_pass=self._config.auto_pass_priority, expected=ba
                 ):
                     self._log_execution_path(
                         ExecutionPath.GRE_AWARE,
@@ -496,7 +503,9 @@ class _BridgeSubmitMixin:
         # modal_choice: find the entry with matching optionIndex
         for idx, ba in casting_entries:
             if ba.get("choiceKind") == "modal" and ba.get("optionIndex", -1) == modal_index:
-                if self._gre_bridge.submit_action_by_index(idx, auto_pass=self._config.auto_pass_priority):
+                if self._gre_bridge.submit_action_by_index(
+                    idx, auto_pass=self._config.auto_pass_priority, expected=ba
+                ):
                     self._log_execution_path(
                         ExecutionPath.GRE_AWARE,
                         f"modal_choice: '{action.card_name}' option {modal_index} via GRE bridge",
@@ -592,6 +601,108 @@ class _BridgeSubmitMixin:
         logger.info(f"Combat solver attack fallback: {plan.explanation} (score={plan.score:.1f})")
         return [n for n in plan.attacker_names if n in legal_names]
 
+    # Solver score gap at which the planner's attack is replaced.
+    _ATTACK_OVERRIDE_MARGIN = 3.0
+
+    def _attack_override(self, names: list[str], game_state: dict[str, Any]) -> list[str] | None:
+        """Solver attackers to declare instead of the planner's, or None to keep them.
+
+        2026-09-24, two real matches: the planner swung three 1/1 Hobbits into
+        three untapped blockers "for lethal pressure" (all died), and swung a
+        lone 11/10 Spider when all three attackers would also have killed both
+        blockers and dealt 2. Under the solver's worst-case model an attack is
+        replaced when it only feeds creatures to blockers (0 through, more
+        material lost than killed) or scores clearly below the solver's best.
+        """
+        try:
+            from arenamcp.combat_solver import evaluate_attack, optimal_attacks
+        except Exception:
+            return None
+        local_seat = next(
+            (p.get("seat_id") for p in game_state.get("players", []) or [] if p.get("is_local")),
+            None,
+        )
+        if local_seat is None:
+            return None
+
+        def _is_creature(c: dict) -> bool:
+            return "creature" in str(c.get("type_line") or "").lower() or "CardType_Creature" in (
+                c.get("card_types") or []
+            )
+
+        battlefield = [c for c in game_state.get("battlefield", []) or [] if isinstance(c, dict)]
+        yours = [c for c in battlefield if c.get("controller_seat_id") == local_seat and _is_creature(c)]
+        theirs = [
+            c for c in battlefield if c.get("controller_seat_id") not in (None, local_seat) and _is_creature(c)
+        ]
+        ctx = game_state.get("decision_context") or {}
+        legal_ids = {int(i) for i in ctx.get("legal_attacker_ids") or [] if i}
+        legal_names = {str(n) for n in ctx.get("legal_attackers") or [] if n}
+        candidates = [
+            c
+            for c in yours
+            if (int(c.get("instance_id") or 0) in legal_ids if legal_ids else str(c.get("name") or "") in legal_names)
+        ]
+        by_iid = {int(c.get("instance_id") or 0): c for c in candidates}
+        chosen: list[dict] = []
+        for name in names:
+            card = by_iid.get(int(self._find_instance_id(name, battlefield, local_seat) or 0))
+            if card is None or card in chosen:
+                return None  # can't model the planned attack; don't second-guess it
+            chosen.append(card)
+        if not candidates:
+            return None
+
+        your_life, opp_life = 20, 20
+        for p in game_state.get("players", []) or []:
+            if p.get("is_local"):
+                your_life = int(p.get("life_total") or 0)
+            else:
+                opp_life = int(p.get("life_total") or 0)
+        opp_blockers = [c for c in theirs if not c.get("is_tapped")]
+        spare = [c for c in yours if c not in candidates and not c.get("is_tapped")]
+        try:
+            planned = evaluate_attack(
+                chosen,
+                [c for c in candidates if c not in chosen] + spare,
+                opp_blockers,
+                opp_life,
+                your_life,
+                theirs,
+            )
+            best = optimal_attacks(candidates, opp_blockers, opp_life, your_life, theirs, spare)
+        except Exception as e:
+            logger.debug(f"attack override solver failed: {e}")
+            return None
+        if best is None or set(best.attacker_ids) == {int(c.get("instance_id") or 0) for c in chosen}:
+            return None
+        feeds_blockers = (
+            bool(chosen)
+            and planned.damage_through == 0
+            and planned.attackers_lost_material > planned.blockers_killed_material
+        )
+        if not feeds_blockers and best.score - planned.score < self._ATTACK_OVERRIDE_MARGIN:
+            return None
+
+        # Name each pick the way _find_instance_id resolves it ("Name #2").
+        def _label(card: dict) -> str:
+            name = str(card.get("name") or "")
+            twins = sorted(
+                int(c.get("instance_id") or 0)
+                for c in battlefield
+                if c.get("owner_seat_id") == local_seat and str(c.get("name") or "").strip().lower() == name.lower()
+            )
+            iid = int(card.get("instance_id") or 0)
+            return f"{name} #{twins.index(iid) + 1}" if len(twins) > 1 and iid in twins else name
+
+        replacement = [_label(by_iid[i]) for i in best.attacker_ids if i in by_iid]
+        logger.warning(
+            f"Attack override: planned {names or 'no attack'} scores {planned.score:.1f} "
+            f"({planned.explanation}); solver best {best.score:.1f} ({best.explanation}) — "
+            f"attacking with {replacement or 'nobody'}"
+        )
+        return replacement
+
     def _try_bridge_declare_attackers(self, action: GameAction) -> ClickResult | None:
         """Submit attacker declarations via GRE bridge (two-step NPE handler pattern).
 
@@ -619,9 +730,14 @@ class _BridgeSubmitMixin:
             None,
         )
 
+        attacker_names = list(action.attacker_names)
+        override = self._attack_override(attacker_names, game_state)
+        if override is not None:
+            attacker_names = override
+
         # Resolve attacker names to instance IDs
         attacker_entries = []
-        for name in action.attacker_names:
+        for name in attacker_names:
             iid = self._find_instance_id(name, battlefield, local_seat)
             if iid is not None:
                 attacker_entries.append({"attackerInstanceId": iid})
@@ -634,10 +750,10 @@ class _BridgeSubmitMixin:
             # This is correct when the user has no legal attackers (summoning-sick
             # or no creatures) or when auto-confirm fires after the LLM didn't
             # pick any attackers (action.attacker_names was [] from auto-confirm).
-            if action.attacker_names:
+            if attacker_names:
                 logger.warning(
                     "Bridge declare_attackers: requested attackers "
-                    f"{action.attacker_names} could not be resolved, surfacing "
+                    f"{attacker_names} could not be resolved, surfacing "
                     "manual-required to caller"
                 )
                 return None
@@ -669,7 +785,7 @@ class _BridgeSubmitMixin:
             else:
                 logger.info("Bridge declare_attackers: finalized successfully")
 
-        names_str = ", ".join(action.attacker_names)
+        names_str = ", ".join(attacker_names)
         self._log_execution_path(ExecutionPath.GRE_AWARE, f"declare_attackers: [{names_str}] via GRE bridge")
         return ClickResult(True, 0, 0, "attackers", "GRE bridge")
 
@@ -1620,6 +1736,12 @@ class _BridgeSubmitMixin:
         btype = str(game_state.get("_bridge_request_type") or pending.get("request_type") or "")
         bclass = str(game_state.get("_bridge_request_class") or pending.get("request_class") or "")
         label = btype or bclass or dec_type or "interactive"
+        from arenamcp.play_safety import pending_x_source, useful_tutor_x
+        from arenamcp.rules_engine import RulesEngine
+
+        x_choices = RulesEngine._choose_x_options(game_state, game_state.get("decision_context") or {})
+        if x_choices == ["No useful X values"]:
+            return False
 
         def _ok(detail: str) -> bool:
             self._log_execution_path(ExecutionPath.GRE_AWARE, f"{label}: safe-default submission ({detail})")
@@ -1654,14 +1776,27 @@ class _BridgeSubmitMixin:
         # NumericInput: min (or first suggested) legal value.
         if dec_type == "numeric_input" or "Numeric" in btype or "Numeric" in bclass:
             value = self._safe_default_numeric(pending)
+            if not useful_tutor_x(game_state, pending_x_source(game_state), value):
+                return False
             if self._gre_bridge.submit_numeric(value):
                 return _ok(f"numeric={value}")
 
-        # SelectTargets: first legal candidate.
         if dec_type == "target_selection" or "SelectTargets" in btype or "SelectTargets" in bclass:
-            tid = self._first_target_candidate(pending)
-            if tid is not None and self._gre_bridge.submit_targets(tid):
-                return _ok(f"first target {tid}")
+            from arenamcp.action_planner import DECLINE_DECISION, ActionPlanner
+            from arenamcp.decisions import build_pending_decision, submit_option
+
+            decision = build_pending_decision(pending)
+            if decision is None:
+                return False
+            target_planner = ActionPlanner.__new__(ActionPlanner)
+            selected = target_planner._targeting_fallback_pick(decision, game_state)
+            if selected == [DECLINE_DECISION]:
+                if decision.can_cancel and self._gre_bridge.cancel_action():
+                    return _ok("cancelled unsafe targeting")
+                return False
+            if selected and submit_option(self._gre_bridge, decision, selected):
+                return _ok("controller-aware target selection")
+            return False
 
         # SelectReplacement: first replacement.
         if dec_type == "select_replacement" or "SelectReplacement" in btype or "SelectReplacement" in bclass:

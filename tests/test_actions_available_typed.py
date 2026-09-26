@@ -84,5 +84,6 @@ def test_try_typed_decision_path():
     result = engine._try_typed_decision_path({}, "decision_required")
     # Autopilot handles it, submits option, and returns True
     assert result is True
-    # The bridge should have been called to submit the option (idx:0)
-    mock_bridge.submit_action_by_index.assert_called_once_with(0)
+    # The bridge should have been called to submit the option (idx:0),
+    # with the action's identity for bridges that check it.
+    mock_bridge.submit_action_by_index.assert_called_once_with(0, expected={"grpId": 123})

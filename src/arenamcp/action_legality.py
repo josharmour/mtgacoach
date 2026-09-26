@@ -339,6 +339,24 @@ class _ActionLegalityMixin:
         the handler that needs it. See `_is_legal_decision_passthrough` /
         `_is_legal_combat_declaration` / `_is_legal_default`.
         """
+        if action.action_type == ActionType.NUMERIC_INPUT:
+            x_values = [int(match.group(1)) for entry in legal_actions
+                        if (match := re.fullmatch(r"X = (\d+)", entry))]
+            if "No useful X values" in legal_actions or (x_values and action.numeric_value not in x_values):
+                return False
+        if action.action_type == ActionType.SELECT_TARGET:
+            offered = [entry.split(":", 1)[1].strip().casefold() for entry in legal_actions
+                       if entry.lower().startswith("select target:")]
+            if "No legal targets" in legal_actions:
+                return False
+            if offered:
+                def target_matches(name: str) -> bool:
+                    name = name.strip().casefold()
+                    return any(name == entry or name == re.sub(r"\s*\((?:yours|opp)\)", "", entry)
+                               for entry in offered)
+
+                if not action.target_names or not all(target_matches(name) for name in action.target_names):
+                    return False
         if self._is_legal_decision_passthrough(action, decision_context, bridge_request):
             return True
 

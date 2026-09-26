@@ -61,6 +61,22 @@ def test_opponent_stack_objects_ignored(monkeypatch):
     assert eng._detect_manual_play(state) is False
 
 
+def test_triggered_abilities_are_not_manual_plays(monkeypatch):
+    # 2026-09-24: an Aura's ETB trigger ("ability (id: 176387)") stood the
+    # autopilot down in the middle of its own targeting.
+    eng = _engine(monkeypatch)
+    eng._detect_manual_play(_state([]))
+    state = {
+        "local_seat_id": 1,
+        "stack": [
+            {"name": "ability (id: 176387)", "controller_seat_id": 1},
+            {"name": "Sheltered by Ghosts ability", "controller_seat_id": 1, "object_kind": "ABILITY"},
+        ],
+    }
+    assert eng._detect_manual_play(state) is False
+    assert eng.in_manual_play_cooldown() is False
+
+
 def test_stale_bot_submission_does_not_explain(monkeypatch):
     eng = _engine(monkeypatch)
     eng._detect_manual_play(_state([]))

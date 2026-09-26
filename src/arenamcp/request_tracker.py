@@ -25,6 +25,7 @@ Rules enforced:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -36,7 +37,7 @@ Fingerprint = tuple
 
 
 def decision_fingerprint(decision: Any) -> Fingerprint:
-    """Content-addressed identity for a PendingDecision.
+    """Identity from options, action identities, costs and selection constraints.
 
     Static-option families (Mulligan: always keep/mull) are content-
     identical across rounds, so for them the GRE request identity is
@@ -45,9 +46,35 @@ def decision_fingerprint(decision: Any) -> Fingerprint:
     """
     base = (
         decision.request_type,
-        tuple(sorted(o.option_id for o in decision.options)),
+        tuple(
+            sorted(
+                (
+                    option.option_id,
+                    option.payable,
+                    str(option.meta.get("actionType") or ""),
+                    int(option.meta.get("instanceId") or 0),
+                    int(option.meta.get("grpId") or 0),
+                    int(option.meta.get("abilityGrpId") or 0),
+                    json.dumps(option.meta.get("manaCost"), sort_keys=True),
+                )
+                for option in decision.options
+            )
+        ),
         int(decision.min_select or 0),
         int(decision.max_select or 0),
+        decision.can_pass,
+        decision.can_cancel,
+        decision.source_label,
+        tuple(
+            (
+                slot.target_idx,
+                slot.min_targets,
+                slot.max_targets,
+                slot.selected,
+                tuple(sorted(slot.candidate_ids)),
+            )
+            for slot in decision.slots
+        ),
     )
     if decision.request_type == "Mulligan":
         rid = tuple(getattr(decision, "request_id", (0, 0)) or (0, 0))
@@ -105,6 +132,14 @@ class RequestTracker:
         if fp != flight:
             rec.in_flight = False
             self._in_flight = None
+            # The cap counts answers that did NOT advance the game. Identity is
+            # content-based, so a later request with the same content is a new
+            # window (2026-09-24: a fourth aura onto the same creature was
+            # refused — "SelectTargets not accepted after 3 submissions" —
+            # after five accepted ones; same for same-shaped priority windows).
+            rec.submissions = 0
+            rec.rejected = 0
+            rec.rolled_back = 0
             logger.debug(f"request {flight[0]}: ADVANCED after submit")
             try:
                 from arenamcp.match_packets import get_current_packet

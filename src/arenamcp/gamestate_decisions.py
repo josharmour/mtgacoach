@@ -130,6 +130,9 @@ def _resolve_request_source_context(game_state: "GameState", source_id: int) -> 
         source_name = str(source_info.get("name", "") or "")
         source_type = str(source_info.get("type_line", "") or "")
         source_oracle = str(source_info.get("oracle_text", "") or "")
+        if stack_obj.object_kind.name == "ABILITY" and source_type.lower() != "ability":
+            source_name = ""
+            source_oracle = resolved.get("source_card_oracle_text", "")
 
         if source_oracle:
             resolved["source_oracle_text"] = source_oracle
@@ -530,20 +533,40 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         return False
 
     elif msg_type == "GREMessageType_OptionalActionMessage":
-        opt = msg.get("optionalActionMessage", msg.get("prompt", {}))
-        prompt_text = ""
-        if isinstance(opt, dict):
-            prompt_text = (
-                opt.get("prompt", {}).get("text", "")
-                if isinstance(opt.get("prompt"), dict)
-                else str(opt.get("prompt", ""))
+        opt = msg.get("optionalActionMessage") or {}
+        prompt = msg.get("prompt") or opt.get("prompt") or {}
+        prompt_text = str(prompt.get("text", "")) if isinstance(prompt, dict) else str(prompt)
+        prompt_id = _coerce_int(prompt.get("promptId", 0), 0) if isinstance(prompt, dict) else 0
+        recipient_ids = _ensure_int_list(opt.get("recipientIds", []))
+        action_types = _coerce_str_list(opt.get("optionalActionTypes", []))
+        recipients = [game_state.game_objects.get(instance_id) for instance_id in recipient_ids]
+        commander_return = bool(
+            prompt_id == 144
+            and "CardMechanicType_ZoneTransfer" in action_types
+            and game_state.local_seat_id
+            and recipients
+            and all(
+                card is not None
+                and card.owner_seat_id == game_state.local_seat_id
+                and card.object_kind.value != "GameObjectType_Token"
+                for card in recipients
             )
+        )
+        recipient_names = [game_state._resolve_card_name(card.grp_id) for card in recipients if card]
+        if commander_return:
+            prompt_text = f"Return {', '.join(recipient_names)} to the command zone?"
         logger.info(f"Captured Decision: Optional Action ({prompt_text[:60]})")
         game_state.pending_decision = "Optional Action"
+        game_state.decision_seat_id = game_state.local_seat_id
         game_state.decision_timestamp = _time.time()
         game_state.decision_context = {
             "type": "optional_action",
             "prompt": prompt_text,
+            "prompt_id": prompt_id,
+            "recipient_ids": recipient_ids,
+            "recipient_names": recipient_names,
+            "optional_action_types": action_types,
+            "commander_return": commander_return,
             "raw": {k: v for k, v in msg.items() if k != "type"},
         }
         return False

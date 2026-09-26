@@ -229,7 +229,7 @@ def test_single_rollback_does_not_suppress(monkeypatch):
 def test_auto_respond_escape_budget_per_turn(monkeypatch):
     bridge = _DummyBridge()
     eng = _engine(monkeypatch, bridge)
-    gs = _state(5, _bridge_request_type="SelectTargets")
+    gs = _state(5, _bridge_request_type="Group")
 
     assert eng._try_auto_respond_escape(gs, "test 1") is True
     assert eng._try_auto_respond_escape(gs, "test 2") is True
@@ -238,7 +238,7 @@ def test_auto_respond_escape_budget_per_turn(monkeypatch):
     assert bridge.auto_respond_calls == 2
 
     # New turn resets the budget.
-    gs6 = _state(6, _bridge_request_type="SelectTargets")
+    gs6 = _state(6, _bridge_request_type="Group")
     assert eng._try_auto_respond_escape(gs6, "test 4") is True
 
 
@@ -246,7 +246,7 @@ def test_escape_on_casting_window_counts_as_cast_rollback(monkeypatch):
     eng = _engine(monkeypatch)
     eng._last_cast_submitted = (5, "ruthless negotiation")
     eng._last_cast_submitted_ts = time.monotonic()
-    gs = _state(5, _bridge_request_type="SelectTargets")
+    gs = _state(5, _bridge_request_type="PayCosts")
     eng._try_auto_respond_escape(gs, "test")
     assert eng._cast_rollback_counts.get((5, "ruthless negotiation")) == 1
 
@@ -261,7 +261,7 @@ def test_escape_blocked_on_young_window(monkeypatch):
     eng._window_repeat_sig = ("sig",)
     eng._window_repeat_count = 50  # trigger spam
     eng._window_first_seen_at = time.monotonic()  # window just appeared
-    gs = _state(5, _bridge_request_type="SelectTargets")
+    gs = _state(5, _bridge_request_type="Group")
     assert eng._maybe_escape_stuck_window(gs) is False
     assert bridge.auto_respond_calls == 0
 

@@ -60,7 +60,7 @@ class RulesEngine:
         sources: list[frozenset] = []
         turn_num = game_state.get("turn", {}).get("turn_number", 0)
         creature_mana_source_count = 0
-        your_cards = [c for c in battlefield if c.get("owner_seat_id") == local_seat]
+        your_cards = [c for c in battlefield if (c.get("controller_seat_id") or c.get("owner_seat_id")) == local_seat]
         for card in your_cards:
             if card.get("is_tapped"):
                 continue
@@ -361,6 +361,7 @@ class RulesEngine:
             "planeswalker_target": False,
             "permanent_target": False,
             "nonland_only": False,
+            "noncreature_types": set(),
             "must_control": None,  # "you" | "opponent" | None
             "zones": set(),  # battlefield, stack, graveyard
             "target_spell": False,
@@ -441,6 +442,10 @@ class RulesEngine:
         # list and left the player choosing between two irrelevant artifacts
         # (issue #482).
         req["types"].update(RulesEngine._infer_chained_target_types(text))
+        req["noncreature_types"].update(re.findall(r"\bnoncreature (artifact|enchantment|permanent)\b", text))
+        req["types"].update(req["noncreature_types"] - {"permanent"})
+        if "permanent" in req["noncreature_types"]:
+            req["permanent_target"] = True
 
         if "graveyard" in text:
             req["zones"].add("graveyard")
@@ -501,9 +506,15 @@ class RulesEngine:
 
             if req["types"]:
                 # Allow "permanent" without narrowing types
-                type_match = any(t in type_line for t in req["types"])
+                type_match = any(
+                    target_type in type_line
+                    and not (target_type in req.get("noncreature_types", set()) and "creature" in type_line)
+                    for target_type in req["types"]
+                )
                 if not type_match:
                     continue
+            elif "permanent" in req.get("noncreature_types", set()) and "creature" in type_line:
+                continue
 
             if req["must_be_attacking"] and not card.get("is_attacking"):
                 continue
@@ -664,7 +675,7 @@ class RulesEngine:
                     if isinstance(raw, int):
                         ids.append(raw)
                         return
-                for key in ("target", "card", "object"):
+                for key in ("target", "card", "object", "targets", "validTargets", "qualifiedTargets", "targetsToSelect", "raw"):
                     child = value.get(key)
                     if isinstance(child, (dict, list, int)):
                         _collect(child)
@@ -725,6 +736,43 @@ class RulesEngine:
         decision_context = game_state.get("decision_context") or {}
         if decision_context.get("type") != "target_selection":
             return []
+
+        explicit_context = decision_context
+        if game_state.get("_bridge_target_candidates") is not None:
+            explicit_context = {"targets": game_state["_bridge_target_candidates"]}
+        explicit_ids = RulesEngine._extract_explicit_target_instance_ids(explicit_context)
+        target_keys = {"validTargets", "qualifiedTargets", "targetsToSelect", "targets"}
+        raw = explicit_context.get("raw") or {}
+        has_explicit = bool(explicit_ids) or bool(target_keys.intersection(explicit_context)) or (
+            isinstance(raw, dict) and bool(target_keys.intersection(raw))
+        )
+        if has_explicit:
+            local_seat = game_state.get("local_seat_id") or next(
+                (player.get("seat_id") for player in game_state.get("players", []) if player.get("is_local")), None
+            )
+            cards = {
+                card["instance_id"]: card
+                for card in RulesEngine._lookup_target_cards_by_instance_ids(game_state, explicit_ids)
+            }
+            players_by_seat = {player.get("seat_id"): player for player in game_state.get("players", [])}
+            actions = []
+            for instance_id in explicit_ids:
+                if instance_id in players_by_seat:
+                    label = "You" if instance_id == local_seat else "Opponent"
+                else:
+                    card = cards.get(instance_id, {})
+                    controller = card.get("controller_seat_id") or card.get("owner_seat_id")
+                    label = card.get("name") or f"Object #{instance_id}"
+                    if controller is not None and local_seat is not None:
+                        label += " (YOURS)" if controller == local_seat else " (OPP)"
+                actions.append(f"Select target: {label}")
+            counts = {action: actions.count(action) for action in actions}
+            seen: dict[str, int] = {}
+            result = []
+            for action in actions:
+                seen[action] = seen.get(action, 0) + 1
+                result.append(f"{action} #{seen[action]}" if counts[action] > 1 else action)
+            return result or ["No legal targets"]
 
         source_id = decision_context.get("source_id")
         source_card = decision_context.get("source_card") or "spell"
@@ -1113,7 +1161,10 @@ class RulesEngine:
         except (TypeError, ValueError):
             pass
         max_x = min(max(max_x, min_x), min_x + 20)
-        return [f"X = {value}" for value in range(min_x, max_x + 1)]
+        from arenamcp.play_safety import useful_tutor_x
+
+        return [f"X = {value}" for value in range(min_x, max_x + 1)
+                if useful_tutor_x(game_state, card or {}, value)] or ["No useful X values"]
 
     @staticmethod
     def get_legal_actions(game_state: dict[str, Any]) -> list[str]:

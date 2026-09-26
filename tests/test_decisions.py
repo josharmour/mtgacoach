@@ -29,8 +29,9 @@ class _FakeBridge:
         self.calls.append(("mulligan", keep))
         return True
 
-    def submit_action_by_index(self, idx):
+    def submit_action_by_index(self, idx, expected=None):
         self.calls.append(("action", idx))
+        self.expected = expected
         return True
 
     def submit_targets(self, iid):
@@ -92,10 +93,10 @@ def test_live_bridge_cast_payability_is_enforced():
     bridge = _FakeBridge()
     assert not submit_option(bridge, decision, ["idx:0"])
     assert bridge.calls == []
-    assert ActionPlanner.deterministic_option_pick(decision) == ["idx:1"]
+    assert ActionPlanner.deterministic_option_pick(decision) == ["pass"]
     planner = ActionPlanner.__new__(ActionPlanner)
     planner._llm_decision_options = lambda *args: ["idx:0"]
-    assert planner.plan_decision_options(decision, {}) == ["idx:1"]
+    assert planner.plan_decision_options(decision, {}) == ["pass"]
 
 
 def test_actions_available_excludes_mana_abilities_and_passes_priority():

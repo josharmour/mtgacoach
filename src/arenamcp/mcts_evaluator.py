@@ -117,18 +117,19 @@ class MCTSTreePayload:
         }
 
     def format_for_llm_prompt(self) -> str:
-        """Format the lookahead search tree and opponent model into a rich context block for the LLM."""
-        def branch_score(branch):
-            return f'Tactical score: {branch.normalized_score:.0%}, delta {branch.value_delta:+.1%}'
-        root_pct = int(round(self.root_win_probability * 100))
-        eval_desc = (
-            f"{self.total_simulations} candidates · {self.eval_source}"
-            if self.total_simulations > 0
-            else self.eval_source
-        )
+        """Render the hints for the LLM as what they are: rules of thumb.
+
+        2026-09-24: this block was headed "MCTS MULTI-PLY TACTICAL SEARCH" with
+        a "Root Win Expectancy" and per-line "tactical score" percentages, and
+        the system prompts told the model to base its action on it. Nothing
+        here is simulated: the position score is a weighted life/power/hand
+        difference and the lines are ranked by fixed bonuses.
+        """
+        root = self.root_win_probability
+        position = "favorable" if root >= 0.6 else ("unfavorable" if root <= 0.4 else "even")
         lines = [
-            "=== ONE-PLY TACTICAL LOOKAHEAD (=== MCTS MULTI-PLY TACTICAL SEARCH ===) ===",
-            f"• Root Win Expectancy: {root_pct}% ({eval_desc} · T{self.turn_number} {self.phase})",
+            "=== HEURISTIC HINTS (rules of thumb, not a simulation) ===",
+            f"• Board position: {position} · T{self.turn_number} {self.phase}",
             f"• HERO: {self.hero_life} Life | OPP: {self.opp_life} Life | Mana Available: {self.available_mana}",
         ]
         if self.format_summary:
@@ -139,50 +140,54 @@ class MCTSTreePayload:
             lines.append(f"• Opponent Threat Candidates (Hypothesized Pool): {self.opponent_threat_summary}")
         lines.append("")
 
-        prov_labels = {"heuristic_lookahead": "Heuristic"}
-
         if self.branches:
             best = self.branches[0]
-            b_prov = prov_labels.get(best.score_provenance, best.score_provenance)
-            lines.append(f"⭐ BEST LINE [{b_prov}] ({branch_score(best)}):")
+            lines.append("Suggested line:")
             if best.sequence_steps:
                 for idx, step in enumerate(best.sequence_steps, start=1):
                     lines.append(f"  {idx}. {step}")
             else:
                 lines.append(f"  • {best.action}")
             if best.outcome_summary:
-                lines.append(f"  ↳ Tactical Rationale: {best.outcome_summary}")
-            if best.simulated_counterplay:
-                lines.append(f"  ↳ Anticipated Counterplay: {best.simulated_counterplay}")
-            if best.projected_state:
-                p = best.projected_state
-                lines.append(
-                    f"  ↳ Projected State Next Turn: Hero {p.get('hero_life', self.hero_life)} Life, "
-                    f"Opp {p.get('opp_life', self.opp_life)} Life, Hero Power {p.get('hero_power', 0)}"
-                )
+                lines.append(f"  ↳ Why: {best.outcome_summary}")
             lines.append("")
 
-            # Additional candidate alternatives (ranks 2-3)
             if len(self.branches) > 1:
-                lines.append("ALTERNATIVE LINES CONSIDERED:")
+                lines.append("Other candidates:")
                 for b in self.branches[1:3]:
-                    alt_prov = prov_labels.get(b.score_provenance, b.score_provenance)
-                    lines.append(
-                        f"  • [{b.tag}] {b.action} [{alt_prov}] ({branch_score(b)}): {b.outcome_summary}"
-                    )
+                    lines.append(f"  • {b.action}: {b.outcome_summary}")
                 lines.append("")
 
         if self.blunder_traps:
-            lines.append("⚠️ BLUNDER TRAP DETECTED:")
+            lines.append("⚠️ BLUNDER TRAP (combat solver):")
             for trap in self.blunder_traps[:2]:
-                trap_prov = prov_labels.get(trap.score_provenance, trap.score_provenance)
-                lines.append(f"  • Line: {trap.action} [{trap_prov}] ({branch_score(trap)})")
+                lines.append(f"  • Line: {trap.action}")
                 if trap.outcome_summary:
                     lines.append(f"  • Trap Warning: {trap.outcome_summary}")
             lines.append("")
 
         lines.append("======================================")
         return "\n".join(lines)
+
+
+# Open priority windows: the only place these hints apply. Attacks, blocks,
+# targets and selections have their own exact sections — 2026-09-24 the
+# block offered "Pass Priority" as its best line at a declare-attackers
+# decision, because the attack branch only ran when the phase name held
+# "main" or "attack" (combat is Phase_Combat / Step_DeclareAttack).
+_OPEN_PRIORITY_DECISIONS = {"", "Action Required", "Priority", "Priority (Pass Only)", "Choose Action"}
+
+
+def _hints_apply(game_state: dict[str, Any], local_seat: Any, phase: str) -> bool:
+    """Our own main phase, with priority open (no structured decision)."""
+    if phase not in ("Main1", "Main2"):
+        return False
+    active = (game_state.get("turn") or {}).get("active_player")
+    if active not in (None, 0) and active != local_seat:
+        return False
+    pending = game_state.get("pending_decision")
+    # Live states carry a label string (or None); other shapes aren't gated.
+    return not isinstance(pending, str) or pending in _OPEN_PRIORITY_DECISIONS
 
 
 class MCTSEvaluator:
@@ -451,6 +456,9 @@ class MCTSEvaluator:
         if local_seat is None:
             local_seat = 1
 
+        if not _hints_apply(game_state, local_seat, phase):
+            return MCTSTreePayload(turn_number=int(turn_num or 0), phase=phase)
+
         hand = game_state.get("hand") or []
         battlefield = game_state.get("battlefield") or []
         stack = game_state.get("stack") or []
@@ -677,8 +685,9 @@ class MCTSEvaluator:
                     }
                 )
 
-        # 1. Evaluate Combat Attacks (with 2-ply crackback lookahead)
-        if "main" in phase.lower() or "attack" in phase.lower():
+        # 1. Evaluate Combat Attacks (with 2-ply crackback lookahead) — before
+        # combat only; after it (Main2) there is nothing left to declare.
+        if phase == "Main1":
             ready_attackers = [
                 c for c in hero_creatures if not c.get("is_tapped") and not c.get("has_summoning_sickness")
             ]

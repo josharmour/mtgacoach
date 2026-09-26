@@ -1291,6 +1291,35 @@ def _normalize_bridge_timer_state(bridge_timer_state: dict[str, Any]) -> dict[in
     return normalized
 
 
+def controlled_turn_state(players: list[dict], turn: dict, local_seat_id: int | None) -> dict[str, bool]:
+    """Who is controlling whose turn (Emrakul, the Promised End / Mindslaver).
+
+    Player.log's PlayerInfo.controllerSeatId names another seat while that
+    seat controls this player's turn, and turnInfo.decisionPlayer names
+    whose decision the pending request is.
+    """
+    opponent_controlled = False
+    local_controlled = False
+    opponent_seats: set[int] = set()
+    for p in players or []:
+        seat = p.get("seat_id")
+        controller = p.get("controller_seat_id")
+        if seat != local_seat_id:
+            opponent_seats.add(seat)
+        if controller in (None, 0, seat):
+            continue
+        if seat == local_seat_id:
+            local_controlled = True
+        elif controller == local_seat_id:
+            opponent_controlled = True
+    decider = (turn or {}).get("decision_player") or (turn or {}).get("priority_player")
+    return {
+        "opponent_controlled_by_you": opponent_controlled,
+        "you_controlled_by_opponent": local_controlled,
+        "deciding_for_opponent": opponent_controlled and decider in opponent_seats,
+    }
+
+
 def _build_public_zones(
     *,
     battlefield: list[dict[str, Any]],
@@ -1483,6 +1512,7 @@ def get_game_state() -> dict[str, Any]:
         "priority_player": turn_info.get("priority_player", 0),
         "phase": turn_info.get("phase", ""),
         "step": turn_info.get("step", ""),
+        "decision_player": turn_info.get("decision_player", 0),
         "pending_combat_steps": list(snap.get("pending_combat_steps", [])),
     }
 
@@ -1523,6 +1553,7 @@ def get_game_state() -> dict[str, Any]:
         "command": command,
         "local_seat_id": local_seat_id,
         "opponent_seat_id": opponent_seat_id,
+        "controlled_turn": controlled_turn_state(players, turn, local_seat_id),
         "zones": _build_public_zones(
             battlefield=battlefield,
             hand=hand,
@@ -1564,6 +1595,7 @@ def get_game_state() -> dict[str, Any]:
         "_bridge_allow_undo": snap.get("_bridge_allow_undo"),
         "_bridge_request_payload": copy.deepcopy(snap.get("_bridge_request_payload")),
         "_bridge_game_state_id": snap.get("_bridge_game_state_id", 0),
+        "_log_game_state_id": snap.get("_log_game_state_id", 0),
     }
 
     bridge_overlay = _get_bridge_overlay(

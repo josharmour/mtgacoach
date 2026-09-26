@@ -36,6 +36,14 @@ logger = logging.getLogger(__name__)
 
 CONVERSATION_MODES = ("turn_advice", "conversation")
 VERBOSITY_LEVELS = ("quiet", "balanced", "detailed")
+# Where MTGA runs; "android" = a phone tethered over adb (arenamcp.android_link).
+GAME_DEVICES = ("desktop", "android")
+
+
+def _device_label(device: str) -> str:
+    if device == "android":
+        return "Android phone"
+    return "This Mac" if sys.platform == "darwin" else "This PC"
 _CONVO_STATES = ("idle", "listening", "thinking", "speaking")
 MAX_FEED_LINES = 500
 
@@ -50,7 +58,7 @@ _FEED_STYLE = {
 }
 
 _NOW_EMPTY = "Advice shows up here when you have a decision to make."
-_BUG_REPORT_LABEL = "Report a bug  ·  F12"
+_BUG_REPORT_LABEL = "Debug report  ·  F12"
 
 
 def _str_value(value: Any, default: str = "") -> str:
@@ -232,7 +240,7 @@ class CompactCoachPanel(QWidget):
         self.mcts_pill_label.setObjectName("mctsPillLabel")
         self.mcts_pill_label.setWordWrap(True)
         self.mcts_pill_label.setTextFormat(Qt.RichText)
-        self.mcts_pill_label.setToolTip("Best line from the heuristic tactical search, with its score")
+        self.mcts_pill_label.setToolTip("Rule-of-thumb suggestion from the heuristic hints (not a simulation)")
         self.mcts_pill_label.hide()
         now_layout.addWidget(self.mcts_pill_label)
 
@@ -305,7 +313,7 @@ class CompactCoachPanel(QWidget):
         mode_row.addSpacing(6)
         self.more_btn = QPushButton("⋯")
         self.more_btn.setObjectName("moreButton")
-        self.more_btn.setToolTip("Voice & style: voice, speed, advice length, chat detail, mute, bug report")
+        self.more_btn.setToolTip("Voice & style: voice, speed, advice length, chat detail, mute")
         self.more_btn.clicked.connect(self._show_voice_style)
         mode_row.addWidget(self.more_btn)
         root.addLayout(mode_row)
@@ -349,6 +357,23 @@ class CompactCoachPanel(QWidget):
         chat_layout.addWidget(send_btn)
         root.addLayout(chat_layout)
 
+        # UI invariant: Debug report and Restart Coach must always remain visible
+        # in redesigns, in both Advice and Chat. Never bury them in a menu/popover.
+        recovery_controls = FlowLayout()
+        recovery_controls.setSpacing(6)
+        self.bug_report_btn = QPushButton(_BUG_REPORT_LABEL)
+        self.bug_report_btn.setObjectName("bugReportButton")
+        self.bug_report_btn.setToolTip("Save a debug-report snapshot and copy its link (F12 or Ctrl+Shift+D)")
+        self.bug_report_btn.clicked.connect(self._on_bug_report_clicked)
+        recovery_controls.addWidget(self.bug_report_btn)
+
+        self.restart_btn = QPushButton("Restart Coach")
+        self.restart_btn.setObjectName("restartCoachButton")
+        self.restart_btn.setToolTip("Reload the Coach app and coaching engine. MTGA stays open.")
+        self.restart_btn.clicked.connect(self.restart_requested.emit)
+        recovery_controls.addWidget(self.restart_btn)
+        root.addLayout(recovery_controls)
+
         self._build_voice_style_popover()
         self._refresh_status_dots()
         self._render_board({})
@@ -391,11 +416,13 @@ class CompactCoachPanel(QWidget):
         pop.add_button(self.mute_btn)
 
         pop.add_divider()
-        self.bug_report_btn = QPushButton(_BUG_REPORT_LABEL)
-        self.bug_report_btn.setObjectName("bugReportButton")
-        self.bug_report_btn.setToolTip("Save a bug-report snapshot and copy its link (F12 or Ctrl+Shift+D)")
-        self.bug_report_btn.clicked.connect(self._on_bug_report_clicked)
-        pop.add_button(self.bug_report_btn)
+        self.device_btn = QPushButton(f"Play on: {_device_label(self._game_device())}")
+        self.device_btn.setObjectName("deviceButton")
+        self.device_btn.setToolTip(
+            "Where MTGA runs: this computer, or an Android phone tethered over adb. Restarts the coach."
+        )
+        self.device_btn.clicked.connect(self._cycle_game_device)
+        pop.add_button(self.device_btn)
 
     @staticmethod
     def _make_chip() -> QLabel:
@@ -468,30 +495,25 @@ class CompactCoachPanel(QWidget):
 
         best_branch = branches[0] if branches else None
         if best_branch:
-            win_p = float(best_branch.get("normalized_score", best_branch.get("win_probability", 0.5)))
-            win_pct = int(round(win_p * 100))
-            delta = float(best_branch.get("value_delta", 0.0))
-            delta_str = (
-                f"+{delta * 100:.1f}%" if delta > 0 else (f"{delta * 100:.1f}%" if delta != 0 else "0%")
-            )
             steps = best_branch.get("sequence_steps") or []
             if steps:
                 action_text = " → ".join(str(s) for s in steps[:3])
             else:
                 action_text = str(best_branch.get("action") or best_action)
         else:
-            win_pct = int(round(float(payload.get("root_win_probability", 0.5)) * 100))
-            delta_str = "0%"
             action_text = str(best_action)
 
-        score_tone = "good" if win_pct >= 55 else ("warn" if win_pct >= 45 else "bad")
+        # The score is a weighted life/power/hand difference, not a win
+        # chance — show a word, not a percentage.
+        root = float(payload.get("root_win_probability", 0.5))
+        position, score_tone = (
+            ("favorable", "good") if root >= 0.6 else (("unfavorable", "bad") if root <= 0.4 else ("even", "warn"))
+        )
         lines = [
             block(
-                span("Tactical line", "muted", weight=700)
+                span("Heuristic hint", "muted", weight=700)
                 + "&nbsp;&nbsp;"
-                + span(f"{win_pct}%", score_tone, weight=700)
-                + "&nbsp;"
-                + span(f"({delta_str})", "muted"),
+                + span(f"board {position}", score_tone, weight=700),
                 size="caption",
                 gap=2,
             ),
@@ -613,6 +635,21 @@ class CompactCoachPanel(QWidget):
         self.verbosity_btn.setText(f"Chat detail: {next_verbosity.capitalize()}")
         self._session.set_verbosity(next_verbosity)
         self._settings.set("conversation_verbosity", next_verbosity)
+
+    def _game_device(self) -> str:
+        device = str(self._settings.get("game_device", "desktop") or "desktop")
+        return device if device in GAME_DEVICES else "desktop"
+
+    def _cycle_game_device(self) -> None:
+        current = self._game_device()
+        next_device = GAME_DEVICES[(GAME_DEVICES.index(current) + 1) % len(GAME_DEVICES)]
+        self._settings.set("game_device", next_device)
+        self.device_btn.setText(f"Play on: {_device_label(next_device)}")
+        # The coach links the phone (or stops mirroring it) only at start.
+        self._dot_values.pop("DEVICE", None)
+        self._refresh_status_dots()
+        self.voice_style_popover.hide()
+        self.restart_requested.emit()
 
     def _on_mode_changed(self, mode: str) -> None:
         mode = str(mode).strip()
@@ -800,8 +837,10 @@ class CompactCoachPanel(QWidget):
 
     def _refresh_status_dots(self) -> None:
         model = self._dot_values.get("MODEL") or "Model pending"
-        bridge_val = self._dot_values.get("BRIDGE")
-        bridge_on = bridge_val is not None and bridge_val != "OFF"
+        bridge_val = self._dot_values.get("BRIDGE") or ""
+        # "Connected (<runtime>)" | "Disconnected" | "Log mode"; "ON" from older builds.
+        bridge_on = bridge_val.startswith("Connected") or bridge_val == "ON"
+        bridge_runtime = bridge_val[bridge_val.find("(") + 1 : bridge_val.rfind(")")] if "(" in bridge_val else ""
         seat = self._dot_values.get("SEAT") or "?"
         in_game = seat != "?" or self._dot_values.get("GAME") == "IN_MATCH"
 
@@ -809,7 +848,34 @@ class CompactCoachPanel(QWidget):
         self.model_chip.setText(span("●", model_tone) + "&nbsp;" + span(model, "text", weight=600))
         self.model_chip.setToolTip("Model serving your advice")
 
-        if bridge_on:
+        device = self._dot_values.get("DEVICE") or ""
+        if device.startswith("ANDROID"):
+            phone = device.split(":", 1)[1] if ":" in device else ""
+            if not phone:
+                self.source_chip.setText(span("●", "bad") + "&nbsp;Android · no phone")
+                self.source_chip.setToolTip(
+                    "No phone with MTGA found over adb. Plug it in with USB debugging on, then restart the "
+                    "coach; Setup & Repair checks the phone."
+                )
+            else:
+                phone_bridge = bridge_on and bridge_runtime in ("", "il2cpp-android")
+                self.source_chip.setText(
+                    span("●", "good" if phone_bridge else "warn") + "&nbsp;" + span(f"Android · {phone}")
+                )
+                if phone_bridge:
+                    tip = ", actions through the bridge in MTGA."
+                elif bridge_on:
+                    tip = (
+                        ". The bridge is held by MTGA on this computer, not the phone; close MTGA here so "
+                        "autoplay can act on the phone."
+                    )
+                else:
+                    tip = (
+                        ". The bridge isn't connected, so autoplay can't act: start MTGA on the phone. After an "
+                        "MTGA update, re-run spikes/android-il2cpp/install.sh."
+                    )
+                self.source_chip.setToolTip(f"MTGA on {phone}: game log mirrored over adb{tip}")
+        elif bridge_on:
             self.source_chip.setText(span("●", "good") + "&nbsp;Bridge")
             self.source_chip.setToolTip("Game state from Player.log, enriched by the GRE bridge")
         else:

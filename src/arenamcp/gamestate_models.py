@@ -197,6 +197,9 @@ class Player:
     mana_pool: dict[str, int] = field(default_factory=dict)
     team_id: int | None = None
     status: str = ""
+    # PlayerInfo.controllerSeatId: another seat while that player controls
+    # this one's turn (Emrakul, the Promised End / Mindslaver).
+    controller_seat_id: int | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -206,6 +209,7 @@ class Player:
             "mana_pool": self.mana_pool,
             "team_id": self.team_id,
             "status": self.status,
+            "controller_seat_id": self.controller_seat_id,
         }
 
 
@@ -218,6 +222,9 @@ class TurnInfo:
     priority_player: int = 0
     phase: str = ""
     step: str = ""
+    # turnInfo.decisionPlayer: whose decision the pending request is — the
+    # opponent's seat when we answer for them during a controlled turn.
+    decision_player: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -226,6 +233,7 @@ class TurnInfo:
             "priority_player": self.priority_player,
             "phase": self.phase,
             "step": self.step,
+            "decision_player": self.decision_player,
         }
 
 

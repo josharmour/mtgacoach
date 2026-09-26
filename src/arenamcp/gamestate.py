@@ -278,6 +278,7 @@ class GameState(_GameStateAnnotationsMixin):
         """
         logger.info("Resetting GameState for new match")
         self._apply_field_defaults()
+        self.log_game_state_id = 0  # gameStateIds restart every game
         self.turn_info = TurnInfo()
         self._raw_gre_sequence = 0
         self.publish_snapshot()
@@ -453,6 +454,7 @@ class GameState(_GameStateAnnotationsMixin):
                         priority_player=_coerce_int(turn_info.get("priority_player", 0), 0),
                         phase=str(turn_info.get("phase", "") or ""),
                         step=str(turn_info.get("step", "") or ""),
+                        decision_player=_coerce_int(turn_info.get("decision_player", 0), 0),
                     )
 
                 self.players = {}
@@ -475,6 +477,7 @@ class GameState(_GameStateAnnotationsMixin):
                         mana_pool=mana_pool,
                         team_id=_coerce_optional_int(player_data.get("team_id")),
                         status=str(player_data.get("status", "") or ""),
+                        controller_seat_id=_coerce_optional_int(player_data.get("controller_seat_id")),
                     )
 
                 self.game_objects = {}
@@ -1140,6 +1143,7 @@ class GameState(_GameStateAnnotationsMixin):
                 else "?",
             },
             "pending_decision": self.pending_decision,
+            "_log_game_state_id": getattr(self, "log_game_state_id", 0),
             "decision_seat_id": self.decision_seat_id,
             "decision_context": self.decision_context,
             "last_cleared_decision": self.last_cleared_decision,
@@ -1209,6 +1213,12 @@ class GameState(_GameStateAnnotationsMixin):
                     enriched["type_line"] = card_info.get("type_line", "")
                     enriched["mana_cost"] = card_info.get("mana_cost", "")
                     enriched["oracle_text"] = card_info.get("oracle_text", "")
+                    is_ability = enriched.get("object_kind") == "ABILITY"
+                    if is_ability and enriched["type_line"] != "Ability":
+                        enriched["name"] = f"Ability (ID: {grp_id})"
+                        enriched["type_line"] = "Ability"
+                        enriched["mana_cost"] = ""
+                        enriched["oracle_text"] = ""
 
                     parent_instance_id = enriched.get("parent_instance_id")
                     if parent_instance_id is not None:
@@ -1226,6 +1236,7 @@ class GameState(_GameStateAnnotationsMixin):
                                 "Ability (ID:"
                             ):
                                 enriched["name"] = f"{source_name} ability"
+                                enriched["oracle_text"] = enriched["oracle_text"] or source_info.get("oracle_text", "")
                 except Exception as e:
                     logger.debug(f"Card info lookup failed for grp_id={grp_id}: {e}")
                     enriched["name"] = f"Unknown ({grp_id})"
@@ -1395,6 +1406,12 @@ class GameState(_GameStateAnnotationsMixin):
             # Extract type (full vs diff) - not currently used but logged
             msg_type = message.get("type", "Unknown")
             logger.debug(f"Processing GameStateMessage type: {msg_type}")
+
+            # Newest gameStateId this log has applied: lets the autopilot tell when
+            # the bridge's live request is ahead of the board it would plan on.
+            gsid = message.get("gameStateId")
+            if isinstance(gsid, int) and gsid > getattr(self, "log_game_state_id", 0):
+                self.log_game_state_id = gsid
 
             # Update turn info FIRST so that zone updates use the correct turn number
             turn_info = message.get("turnInfo")
@@ -1852,6 +1869,13 @@ class GameState(_GameStateAnnotationsMixin):
         else:
             status = ""
 
+        if "controllerSeatId" in player_data:
+            controller_seat_id = _coerce_optional_int(player_data["controllerSeatId"])
+        elif existing:
+            controller_seat_id = existing.controller_seat_id
+        else:
+            controller_seat_id = None
+
         player = Player(
             seat_id=seat_id,
             life_total=life_total,
@@ -1859,6 +1883,7 @@ class GameState(_GameStateAnnotationsMixin):
             mana_pool=mana_pool,
             team_id=team_id,
             status=status,
+            controller_seat_id=controller_seat_id,
         )
 
         self.players[seat_id] = player
@@ -2014,7 +2039,9 @@ class GameState(_GameStateAnnotationsMixin):
         player actually recognises, so name it after that.
         """
         name = self._resolve_card_name(obj.grp_id)
-        if not name.startswith("Card#") and not name.startswith("Unknown"):
+        if obj.object_kind == GameObjectKind.ABILITY:
+            name = f"Ability (ID: {obj.grp_id})"
+        elif not name.startswith("Card#") and not name.startswith("Unknown"):
             return name
         parent_id = getattr(obj, "parent_instance_id", None)
         if parent_id is None:
@@ -2208,6 +2235,9 @@ class GameState(_GameStateAnnotationsMixin):
         self.turn_info.turn_number = new_turn
         self.turn_info.active_player = new_active
         self.turn_info.priority_player = new_priority
+        self.turn_info.decision_player = _coerce_int(
+            turn_data.get("decisionPlayer", self.turn_info.decision_player), 0
+        )
         if turn_changed:
             # Clear stale stack entries on turn change (forced — stack is always
             # empty at turn boundaries in Magic).

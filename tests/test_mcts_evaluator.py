@@ -224,9 +224,12 @@ def test_mcts_decision_packet_format_for_llm_prompt():
 
     tree = MCTSEvaluator.evaluate(state)
     prompt_text = tree.format_for_llm_prompt()
-    assert "=== MCTS MULTI-PLY TACTICAL SEARCH ===" in prompt_text
-    assert "Root Win Expectancy:" in prompt_text
-    assert "BEST LINE" in prompt_text
+    # Labelled as what it is (2026-09-24): no simulation claims, no odds.
+    assert "=== HEURISTIC HINTS (rules of thumb, not a simulation) ===" in prompt_text
+    assert "Suggested line:" in prompt_text
+    assert "MCTS" not in prompt_text
+    assert "Win Expectancy" not in prompt_text
+    assert "Tactical score" not in prompt_text
     assert "======================================" in prompt_text
 
 
@@ -344,3 +347,46 @@ def test_mcts_evaluator_state_signature_caching():
     tree2 = MCTSEvaluator.evaluate(state)
     assert tree1 is tree2  # Must return identical cached object
 
+
+
+def _real_attack_board(phase: str, step: str = "", pending=None, active: int = 2) -> dict:
+    """2026-09-24 turn 12: Emrakul 13/13 and Vorinclex 7/6 vs 11 life."""
+    def creature(iid, name, seat, power, toughness, oracle=""):
+        return {"instance_id": iid, "name": name, "power": power, "toughness": toughness, "oracle_text": oracle,
+                "type_line": "Creature", "controller_seat_id": seat, "owner_seat_id": seat, "is_tapped": False}
+
+    return {
+        "turn": {"turn_number": 12, "phase": phase, "step": step, "active_player": active, "priority_player": active},
+        "local_seat_id": 2,
+        "players": [{"seat_id": 2, "is_local": True, "life_total": 25}, {"seat_id": 1, "is_local": False, "life_total": 11}],
+        "battlefield": [
+            creature(510, "Emrakul, the Promised End", 2, 13, 13, "Flying, trample"),
+            creature(503, "Vorinclex, Voice of Hunger", 2, 7, 6, "Trample"),
+            creature(609, "Weapons Vendor", 1, 5, 3),
+            creature(495, "Mabel, Heir to Cragflame", 1, 3, 3),
+        ],
+        "hand": [], "stack": [], "graveyard": [], "legal_actions": [],
+        "pending_decision": pending,
+    }
+
+
+def test_no_hints_outside_our_open_main_phase_windows():
+    # At the real declare-attackers decision the block's best line was
+    # "Pass Priority" (the attack branch never ran in Phase_Combat).
+    MCTSEvaluator.reset_cache()
+    for state in (
+        _real_attack_board("Phase_Combat", "Step_DeclareAttack", "Declare Attackers"),
+        _real_attack_board("Phase_Main1", pending="Select Targets"),
+        _real_attack_board("Phase_Main1", active=1),  # opponent's turn
+    ):
+        tree = MCTSEvaluator.evaluate(state, force=True)
+        assert not tree.branches and not tree.blunder_traps
+
+
+def test_precombat_hint_plans_the_attack():
+    MCTSEvaluator.reset_cache()
+    tree = MCTSEvaluator.evaluate(_real_attack_board("Phase_Main1", pending="Action Required"), force=True)
+    assert tree.branches
+    assert tree.branches[0].action_type == "attack"
+    main2 = MCTSEvaluator.evaluate(_real_attack_board("Phase_Main2"), force=True)
+    assert all(b.action_type != "attack" for b in main2.branches)

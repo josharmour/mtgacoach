@@ -37,6 +37,7 @@ _load_dotenv()
 
 import argparse
 import contextlib
+import copy
 import logging
 import os
 import signal
@@ -185,6 +186,8 @@ class StandaloneCoach(
         # Threads
         self._coaching_thread: threading.Thread | None = None
         self._voice_thread: threading.Thread | None = None
+        # monotonic time the coaching loop last started an iteration
+        self._loop_heartbeat: float | None = None
 
         # Background win plan
         self._win_plan_turn = 0  # Last turn a win plan was launched
@@ -405,6 +408,10 @@ class StandaloneCoach(
                 logger.info(f"Muting repeated pass narration: {text[:60]!r}")
                 return
             self._last_pass_narration_at = now
+
+        # What was said and when: the only record of speech (2026-09-24
+        # "advice way late" report had nothing to go on).
+        logger.info(f"SPEAK: {text[:160]!r}")
 
         # Use local Kokoro TTS
         if self._voice_output:
@@ -702,6 +709,22 @@ class StandaloneCoach(
             self.ui.log(f"[red]Autopilot init failed: {e}[/]")
             logger.error(f"Autopilot init failed: {e}", exc_info=True)
             self._autopilot_enabled = False
+
+    def _bridge_judged_state(self, curr_state: dict[str, Any], bridge_up: bool) -> dict[str, Any]:
+        """The snapshot to arbitrate a decision from while the bridge is up.
+
+        The loop overlays bridge fields only when poll() reports a NEW
+        decision, so a decision that is still pending (re-forced by the
+        backstop) reads as "bridge connected and idle" and gets dropped. Judge
+        from a copy carrying the poller's latest result instead; the live
+        snapshot itself stays un-overlaid (#205: stale bridge actions).
+        """
+        if not bridge_up or self._bridge_poller is None or curr_state.get("_bridge_request_class"):
+            return curr_state
+        judged = copy.deepcopy(curr_state)
+        with contextlib.suppress(Exception):
+            self._bridge_poller.enrich_snapshot(judged)
+        return judged
 
     def _poll_desktop_autopilot(self) -> bool:
         engine = self._autopilot
@@ -1244,6 +1267,36 @@ class StandaloneCoach(
                 self.ui.status("MANUAL", f"Select target for {name} in MTGA")
         return True
 
+    _LOOP_STALL_WARN_S = 15.0
+    _LOOP_STALL_POLL_S = 2.0
+
+    def _coaching_stall_watchdog(self) -> None:
+        """Log where the coaching thread is stuck when the loop stops cycling.
+
+        2026-09-24: the loop froze twice for ~70s inside the attack solver and
+        the log showed only a silent gap. Every trigger, bridge poll and
+        spoken line waits on this thread, so a stall must name its cause.
+        """
+        stalled_since: float | None = None
+        while self._running:
+            time.sleep(self._LOOP_STALL_POLL_S)
+            beat = self._loop_heartbeat
+            thread = self._coaching_thread
+            if beat is None or thread is None or not thread.is_alive():
+                continue
+            now = time.monotonic()
+            if now - beat < self._LOOP_STALL_WARN_S:
+                if stalled_since is not None:
+                    logger.warning(f"Coaching loop resumed after ~{beat - stalled_since:.0f}s stalled")
+                    stalled_since = None
+                continue
+            if stalled_since == beat:
+                continue
+            stalled_since = beat
+            frame = sys._current_frames().get(thread.ident)
+            stack = "".join(traceback.format_stack(frame)[-15:]) if frame else "(no frame)\n"
+            logger.warning(f"Coaching loop stalled for {now - beat:.0f}s; coaching thread is at:\n{stack}")
+
     def _coaching_loop(self) -> None:
         """Poll MCP for game state and provide coaching, with auto-draft detection."""
         logger.info("Coaching loop started")
@@ -1303,6 +1356,7 @@ class StandaloneCoach(
         draft_inactive_grace_seconds = 5.0
 
         while self._running:
+            self._loop_heartbeat = time.monotonic()
             try:
                 # Poll for new log content (watchdog backup - Windows often misses events)
                 self._mcp.poll_log()
@@ -1937,12 +1991,15 @@ class StandaloneCoach(
                         # alarming red "Disconnected" for something that was
                         # never going to connect.
                         _bridge_now = self._bridge_poller.connected
+                        # Which client holds the bridge matters when the game can be
+                        # on this computer or the phone; the UI shows it.
+                        _bridge_runtime = getattr(self._bridge_poller, "client_runtime", None)
                         if not hasattr(self, "_last_bridge_ui_status"):
                             self._last_bridge_ui_status = None
-                        if _bridge_now != self._last_bridge_ui_status:
-                            self._last_bridge_ui_status = _bridge_now
+                        if (_bridge_now, _bridge_runtime) != self._last_bridge_ui_status:
+                            self._last_bridge_ui_status = (_bridge_now, _bridge_runtime)
                             if _bridge_now:
-                                self.ui.status("BRIDGE", "Connected")
+                                self.ui.status("BRIDGE", f"Connected ({_bridge_runtime})" if _bridge_runtime else "Connected")
                             elif self._bridge_capable_install():
                                 self.ui.status("BRIDGE", "Disconnected")
                             else:
@@ -2004,17 +2061,32 @@ class StandaloneCoach(
                     # pending decision that hasn't been handled yet.
                     if self._autopilot_enabled and self._autopilot and pending_now:
                         if "decision_required" not in triggers:
+                            # The loop only overlays bridge fields when poll()
+                            # reports a NEW decision, so judge this window from a
+                            # copy carrying the poller's latest result. Without
+                            # it the arbiter read a still-pending decision as
+                            # "bridge idle" (never re-forced after a stand-down),
+                            # and the given-up check below compared the
+                            # autopilot's bridge-stamped window signature with
+                            # an unstamped one (never matched → MANUAL REQUIRED
+                            # plus an LLM call every ~2s). 2026-09-24.
+                            _arb_state = self._bridge_judged_state(curr_state, bool(bridge_active))
                             # Don't re-force a window the autopilot has already
-                            # handed to the user (MANUAL REQUIRED). Re-forcing
+                            # handed to the user (MANUAL REQUIRED), nor while it
+                            # stands by for the user's own play. Re-forcing
                             # replans + re-speaks the same advice every ~2s
                             # against a window only the user can resolve.
                             _given_up = False
                             with contextlib.suppress(Exception):
-                                _given_up = self._autopilot.is_window_given_up(curr_state)
+                                _cooling = getattr(self._autopilot, "in_manual_play_cooldown", None)
+                                _given_up = bool(
+                                    self._autopilot.is_window_given_up(_arb_state)
+                                    or (callable(_cooling) and _cooling())
+                                )
                             # Arbiter: never force a decision the bridge says
                             # doesn't exist (connected + idle ⇒ pending_now is
                             # stale log state).
-                            _arb = arbitrate(curr_state, bridge_connected=bool(bridge_active))
+                            _arb = arbitrate(_arb_state, bridge_connected=bool(bridge_active))
                             dec_ctx = curr_state.get("decision_context") or {}
                             dec_type = dec_ctx.get("type", "")
                             legal = curr_state.get("legal_actions", []) or []
@@ -2149,7 +2221,7 @@ class StandaloneCoach(
                             # pending decision is stale — drop the trigger
                             # before it reaches autopilot OR coaching/TTS.
                             _bridge_up = bool(self._bridge_poller and self._bridge_poller.connected)
-                            if arbitrate(curr_state, bridge_connected=_bridge_up) is None:
+                            if arbitrate(self._bridge_judged_state(curr_state, _bridge_up), bridge_connected=_bridge_up) is None:
                                 # Bridge idle — but if a spell is wedged on the
                                 # stack waiting for a target, reconcile before
                                 # dropping (multi-target wedge recovery).
@@ -2559,6 +2631,26 @@ class StandaloneCoach(
                             )
                             continue
 
+                        # Emrakul, the Promised End / Mindslaver: the LLM
+                        # would advise playing the opponent's cards for them.
+                        controlled = curr_state.get("controlled_turn") or {}
+                        if controlled.get("deciding_for_opponent") or controlled.get("you_controlled_by_opponent"):
+                            if getattr(self, "_controlled_turn_advised", None) != turn_num:
+                                self._controlled_turn_advised = turn_num
+                                advice = (
+                                    "You control your opponent's turn. Waste it: don't play their land "
+                                    "or cast their spells, don't attack, decline anything optional."
+                                    if controlled.get("deciding_for_opponent")
+                                    else "Your opponent controls this turn. Nothing to do until it ends."
+                                )
+                                logger.info(f"ADVICE: {advice}")
+                                self._record_advice(advice, trigger, game_state=curr_state)
+                                self.ui.advice(advice, "CONTROLLED TURN")
+                                self.speak_advice(advice, blocking=False)
+                            last_advice_turn = turn_num
+                            last_advice_phase = phase
+                            continue
+
                         if self._coach:
                             # Snapshot turn state BEFORE the (slow) LLM call
                             pre_advice_turn = turn_num
@@ -2615,13 +2707,7 @@ class StandaloneCoach(
                                     plan = self._autopilot._planner.plan_actions(
                                         curr_state, trigger, legal_actions, decision_context
                                     )
-                                    advice = plan.voice_advice or plan.overall_strategy
-                                if not advice and plan is not None and plan.actions:
-                                    advice = str(plan.actions[0])
-                                if not advice:
-                                    advice = self._coach.get_advice(
-                                        curr_state, trigger=trigger, style=self.advice_style
-                                    )
+                                    advice = plan.spoken_actions()
                                 if advice and advice.strip().lower().rstrip(".").startswith(
                                     "no actionable play"
                                 ):
@@ -2770,7 +2856,7 @@ class StandaloneCoach(
                                 not is_critical
                                 and trigger in self._MEANINGFUL_GATE_TRIGGERS
                                 and not has_pending_decision
-                                and self._is_passive_advice(advice)
+                                and (self._is_passive_advice(advice) or self._is_pass_narration(advice))
                             ):
                                 # The meaningful-window gate let this filler
                                 # window through (e.g. an instant was technically
@@ -2849,6 +2935,19 @@ class StandaloneCoach(
         self._running = True
 
         # Initialize components — emit progress to pipe so GUI shows what's happening
+        # Android: MTGA runs on an adb-tethered phone. Mirror its log before the
+        # watcher starts, since the watcher reads MTGA_LOG_PATH once.
+        if (os.environ.get("MTGACOACH_GAME_DEVICE") or self.settings.get("game_device")) == "android":
+            from arenamcp.android_link import start_android_link
+
+            self.ui.log("Linking Android phone...")
+            self._android_link = start_android_link()
+            if self._android_link is None:
+                self.ui.log("[yellow]Android: no phone with MTGA over adb; using this computer's MTGA log[/]")
+                self.ui.status("DEVICE", "ANDROID_NONE")
+            else:
+                self.ui.log(f"Android: linked {self._android_link.device_name}")
+                self.ui.status("DEVICE", f"ANDROID:{self._android_link.device_name}")
         self.ui.log("Initializing game state tracker...")
         self._init_mcp()
         self.ui.log("Initializing voice (background)...")
@@ -2890,6 +2989,7 @@ class StandaloneCoach(
             logger.info(f"Starting coaching thread for backend: {self.backend_name}")
             self._coaching_thread = threading.Thread(target=self._coaching_loop, daemon=True, name="coaching")
             self._coaching_thread.start()
+            threading.Thread(target=self._coaching_stall_watchdog, daemon=True, name="coaching-watchdog").start()
 
         # Register hotkeys in a background thread (the keyboard module's
         # low-level Windows hook install can take a few seconds).

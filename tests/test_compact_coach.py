@@ -91,18 +91,19 @@ def test_board_lists_opponent_creatures_and_groups_lands(panel):
     assert "1 card in hand" in html
 
 
-def test_tactical_pill_renders_best_line_score(panel):
+def test_tactical_pill_renders_hint_without_fake_odds(panel):
+    # The score is a life/power/hand heuristic, not a win chance (2026-09-24).
     panel._on_mcts_updated({
-        'eval_source': 'Tactical Heuristic Lookahead',
+        'eval_source': 'Tactical Heuristic Lookahead', 'root_win_probability': .62,
         'best_action': 'Play Land: Island', 'branches': [{
             'action': 'Play Land: Island', 'score_provenance': 'heuristic_lookahead',
             'normalized_score': .62, 'value_delta': .04,
         }],
     })
     rendered = panel.mcts_pill_label.text()
-    assert 'Tactical line' in rendered
-    assert '62%' in rendered
-    assert '+4.0%' in rendered
+    assert 'Heuristic hint' in rendered
+    assert 'board favorable' in rendered
+    assert '%' not in rendered
     assert 'Play Land: Island' in rendered
 
 
@@ -122,6 +123,7 @@ def test_controls_reflow_at_sidebar_width(panel, qapp):
     assert panel.width() == 240
     buttons = [b for b in panel.findChildren(QPushButton) if b.isVisible()]
     assert panel.ap_btn in buttons and panel.ptt_btn in buttons and panel.more_btn in buttons
+    assert panel.bug_report_btn in buttons and panel.restart_btn in buttons
     rects = [QRect(b.mapTo(panel, b.rect().topLeft()), b.size()) for b in buttons]
     for button, rect in zip(buttons, rects, strict=True):
         assert panel.rect().contains(rect)
@@ -139,7 +141,7 @@ def test_controls_reflow_at_sidebar_width(panel, qapp):
 
 def test_voice_style_settings_live_in_popover(panel, qapp):
     for button in (panel.voice_btn, panel.speed_btn, panel.style_btn, panel.verbosity_btn,
-                   panel.mute_btn, panel.bug_report_btn):
+                   panel.mute_btn):
         assert button.parent() is panel.voice_style_popover
         assert not button.isVisible()
     panel.more_btn.click()
@@ -170,6 +172,7 @@ def test_compact_coach_toolbar_buttons(panel):
     assert panel.ap_btn is not None
     assert not hasattr(panel, "brain_stream_btn")
     assert panel.bug_report_btn is not None
+    assert panel.restart_btn is not None
     assert panel.voice_btn is not None
     assert panel.style_btn is not None
     assert panel.mute_btn is not None
@@ -180,6 +183,39 @@ def test_compact_coach_bug_report_button_click(panel, monkeypatch):
     monkeypatch.setattr(panel.session, "trigger_debug_report", lambda: called.append(True))
     panel.bug_report_btn.click()
     assert len(called) == 1
+
+
+@pytest.mark.parametrize("mode", ["turn_advice", "conversation"])
+@pytest.mark.parametrize("theme_name", ["dark", "light", "high-contrast"])
+def test_recovery_buttons_always_visible_without_opening_a_menu(panel, qapp, mode, theme_name):
+    from PySide6.QtCore import QRect
+
+    from arenamcp.desktop import theme
+
+    theme.apply_theme(qapp, theme_name)
+    panel._on_game_state_changed(make_snapshot())
+    panel._on_mode_changed(mode)
+    panel._on_status_changed("AUTOPILOT", "PAUSED")
+    panel.resize(240, 600)
+    qapp.processEvents()
+
+    assert not panel.voice_style_popover.isVisible()
+    assert panel.size().width() == 240
+    assert panel.size().height() == 600
+    for button in (panel.bug_report_btn, panel.restart_btn):
+        assert button.parent() is panel
+        assert button.isVisible()
+        assert button.isEnabled()
+        rect = QRect(button.mapTo(panel, button.rect().topLeft()), button.size())
+        assert panel.rect().contains(rect)
+        assert button.width() >= button.sizeHint().width()
+
+
+def test_restart_button_requests_full_app_restart(panel):
+    requested = []
+    panel.restart_requested.connect(lambda: requested.append(True))
+    panel.restart_btn.click()
+    assert requested == [True]
 
 
 def test_compact_coach_bug_report_saved_updates_clipboard_and_ui(panel, tmp_path, qapp):
@@ -239,3 +275,52 @@ def test_theme_switch_rerenders_feed_colours(panel, qapp):
     assert theme.tokens().bad in panel.log_view.toHtml()
     theme.apply_theme(qapp, theme.THEME_DARK)
     assert theme.tokens().bad in panel.log_view.toHtml()
+
+
+class _FakeSettings:
+    def __init__(self, **data: Any) -> None:
+        self.data = dict(data)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.data.get(key, default)
+
+    def set(self, key: str, value: Any, save: bool = True) -> None:
+        self.data[key] = value
+
+
+def test_source_chip_shows_the_android_phone_and_bridge_state(panel):
+    panel.session.statusChanged.emit("DEVICE", "ANDROID:Pixel 10 Pro")
+    assert "Android · Pixel 10 Pro" in panel.source_chip.text()
+    assert "isn't connected" in panel.source_chip.toolTip()
+
+    panel.session.statusChanged.emit("BRIDGE", "Connected (il2cpp-android)")
+    assert "Android · Pixel 10 Pro" in panel.source_chip.text()
+    assert "actions through the bridge" in panel.source_chip.toolTip()
+
+    # The Mac client grabbed the bridge: the chip must not claim the phone has it.
+    panel.session.statusChanged.emit("BRIDGE", "Connected (il2cpp-macos)")
+    assert "held by MTGA on this computer" in panel.source_chip.toolTip()
+
+    panel.session.statusChanged.emit("BRIDGE", "Disconnected")
+    assert "isn't connected" in panel.source_chip.toolTip()
+
+    panel.session.statusChanged.emit("DEVICE", "ANDROID_NONE")
+    assert "no phone" in panel.source_chip.text()
+
+
+def test_play_on_cycles_the_device_and_restarts_the_coach(panel):
+    panel._settings = _FakeSettings(game_device="desktop")  # never touch the real settings file
+    restarts: list[bool] = []
+    panel.restart_requested.connect(lambda: restarts.append(True))
+    panel._dot_values["DEVICE"] = "ANDROID:Old Phone"
+
+    panel.device_btn.click()
+    assert panel._settings.data["game_device"] == "android"
+    assert panel.device_btn.text() == "Play on: Android phone"
+    assert restarts == [True]
+    assert "DEVICE" not in panel._dot_values  # the restarted coach reports afresh
+
+    panel.device_btn.click()
+    assert panel._settings.data["game_device"] == "desktop"
+    assert panel.device_btn.text().startswith("Play on: This ")
+    assert restarts == [True, True]

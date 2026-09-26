@@ -13,8 +13,17 @@ from enum import Enum
 from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
+from arenamcp.play_safety import filter_play_options, find_source, unsafe_play_reason
 
 logger = logging.getLogger(__name__)
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
 
 # Sentinel returned by plan_decision_options when the safe move is to
 # DECLINE the pending window (cancel / pause for manual) rather than pick
@@ -84,6 +93,7 @@ class GameAction:
     # the matcher must resolve it to the raw PlayMDFC action, not a plain
     # Play (#39, live 2026-07-06).
     mdfc: bool = False
+    commander_return: bool = False
 
     def __str__(self) -> str:
         parts = [self.action_type.value]
@@ -151,6 +161,58 @@ class ActionPlan:
     # and fallbacks stop being identified. Bug reports and logs rely on this
     # structured tag to tell model decisions from deterministic ones.
     fallback_reason: str = ""
+
+    def spoken_actions(self) -> str:
+        """Describe validated actions, never a separate model-generated recommendation."""
+        lines = []
+        for action in self.actions:
+            kind = action.action_type
+            if kind == ActionType.CAST_SPELL:
+                line = f"Cast {action.card_name}"
+            elif kind == ActionType.PLAY_LAND:
+                line = f"Play {action.card_name}"
+            elif kind == ActionType.ACTIVATE_ABILITY:
+                line = f"Activate {action.card_name}"
+            elif kind == ActionType.SELECT_TARGET:
+                line = f"Target {', '.join(action.target_names)}"
+            elif kind == ActionType.DECLARE_ATTACKERS:
+                line = (
+                    f"Attack with {', '.join(action.attacker_names)}"
+                    if action.attacker_names
+                    else "Don't attack"
+                )
+            elif kind == ActionType.DECLARE_BLOCKERS:
+                line = (
+                    "; ".join(
+                        f"Block {attacker} with {blocker}"
+                        for blocker, attacker in action.blocker_assignments.items()
+                    )
+                    or "Don't block"
+                )
+            elif kind == ActionType.NUMERIC_INPUT:
+                line = f"Choose {action.numeric_value}"
+            elif kind == ActionType.PASS_PRIORITY:
+                line = "Pass"
+            elif kind == ActionType.SELECT_N:
+                line = (
+                    f"Select {', '.join(action.select_card_names)}"
+                    if action.select_card_names
+                    else "Confirm selection"
+                )
+            elif kind == ActionType.MULLIGAN_KEEP:
+                line = "Keep this hand"
+            elif kind == ActionType.MULLIGAN_MULL:
+                line = "Mulligan"
+            elif kind == ActionType.CLICK_BUTTON:
+                if action.commander_return and action.card_name.lower() == "accept":
+                    names = ", ".join(action.target_names) or "your commander"
+                    line = f"Return {names} to the command zone"
+                else:
+                    line = f"Click {action.card_name or 'button'}"
+            else:
+                line = kind.value.replace("_", " ").capitalize()
+            lines.append(f"{line}.")
+        return " ".join(lines)
 
     @property
     def fallback(self) -> bool:
@@ -369,6 +431,7 @@ TURN_PLAN_SYSTEM_PROMPT = """You are an MTG Arena turn planner. Given the game s
 
 RULES:
 - TRUST [OK] tags: MTGA's mana solver already verified those costs are payable.
+- Payable does not mean useful: budget X beyond the fixed cost and identify an eligible remaining tutor target before casting. Do not spend removal or sacrifice an ability source when its only targets are your own permanents.
 - LAND PLAY PRIORITY: On Precombat Main (Main1), if you hold an unplayed land in hand, playing your land MUST be Step 1 of your turn plan before casting spells.
 - Skip mana abilities, casting-time sub-decisions, and search prompts — list only user-visible plays (Play Land, Cast X, Activate X, Attack).
 - Output ONLY a JSON object of this exact shape (no prose, no markdown):
@@ -487,8 +550,31 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         start = time.perf_counter()
         effective_legal_actions = self._filter_legal_actions_for_planning(game_state, legal_actions or [])
+        if legal_actions and (
+            not effective_legal_actions
+            or effective_legal_actions in (["No legal targets"], ["No useful X values"])
+        ):
+            return ActionPlan(trigger=trigger, fallback_reason=FALLBACK_NO_ACTIONS)
         dec_ctx = decision_context or game_state.get("decision_context") or {}
         dec_type = str(dec_ctx.get("type") or "").lower()
+        if dec_type == "optional_action" and dec_ctx.get("commander_return"):
+            plan = ActionPlan(
+                actions=[
+                    GameAction(
+                        ActionType.CLICK_BUTTON,
+                        card_name="accept",
+                        target_names=list(dec_ctx.get("recipient_names") or []),
+                        commander_return=True,
+                        reasoning="Preserve access to the commander by returning it to the command zone.",
+                    )
+                ],
+                overall_strategy="Return the commander to the command zone.",
+                trigger=trigger,
+                turn_number=game_state.get("turn", {}).get("turn_number", 0),
+                fallback_reason="planner_commander_return",
+            )
+            plan.voice_advice = plan.spoken_actions()
+            return plan
         if not effective_legal_actions and dec_type == "discard":
             option_cards = dec_ctx.get("option_cards") or []
             if not option_cards:
@@ -1251,6 +1337,28 @@ class ActionPlanner(_ActionLegalityMixin):
 
         for legal_action in legal_actions:
             lower = legal_action.lower()
+            if lower.startswith("select target:") and "(yours)" in lower:
+                if self._decision_source_is_harmful(None, game_state) is True:
+                    logger.info("Withholding harmful friendly target: %s", legal_action)
+                    continue
+            play_match = re.match(r"(cast |activate(?: ability)?\s*:\s*|activate )(.+)", legal_action, re.I)
+            if play_match:
+                name = self._normalize_action_text(play_match.group(2))
+                action_type = "Cast" if lower.startswith("cast ") else "Activate"
+                card = find_source(game_state, {}, name)
+                metadata = next(
+                    (
+                        entry
+                        for entry in game_state.get("_bridge_actions") or []
+                        if entry.get("instanceId") == card.get("instance_id")
+                        and str(entry.get("actionType", "")).removeprefix("ActionType_") == action_type
+                    ),
+                    {},
+                )
+                reason = unsafe_play_reason(game_state, card, action_type, metadata)
+                if reason:
+                    logger.info("Withholding %s: %s", legal_action, reason)
+                    continue
             if lower.startswith("cast "):
                 has_ok = "[ok]" in lower
 
@@ -1381,7 +1489,7 @@ class ActionPlanner(_ActionLegalityMixin):
 
             filtered.append(legal_action)
 
-        return filtered or legal_actions
+        return filtered
 
     _ACTIONS_AVAILABLE_PREFLIGHT_REQUESTS: frozenset[str] = frozenset(
         {
@@ -1486,74 +1594,11 @@ class ActionPlanner(_ActionLegalityMixin):
         "damage to any target",
     )
 
-    def _removal_lacks_opponent_target(
-        self,
-        card: dict[str, Any],
-        game_state: dict[str, Any],
-    ) -> bool:
-        """Is this card removal whose only legal targets are friendly?
+    def _removal_lacks_opponent_target(self, card: dict[str, Any], game_state: dict[str, Any]) -> bool:
+        """Use the same removal preflight as typed options and execution fallback."""
+        from arenamcp.play_safety import removal_lacks_opponent_target
 
-        Returns True only when:
-          - Oracle text reads like removal / harmful targeting, AND
-          - The battlefield has no opponent permanent matching any
-            plausible target type mentioned in the oracle.
-        Conservative by design — returns False whenever we can't confirm
-        both conditions, so non-removal spells (auras, buffs, fight
-        spells with any viable target) keep the fast path.
-        """
-        oracle = (card.get("oracle_text") or "").lower()
-        if not oracle:
-            return False
-
-        is_removal = any(phrase in oracle for phrase in self._REMOVAL_ORACLE_PHRASES)
-        if not is_removal:
-            return False
-
-        # Bail on spells that can target players — "Shock target creature
-        # or player" has a player fallback, so it's never self-only.
-        if "any target" in oracle or "target player" in oracle or "target opponent" in oracle:
-            return False
-
-        local_seat = None
-        for p in game_state.get("players", []) or []:
-            if p.get("is_local"):
-                local_seat = p.get("seat_id")
-                break
-        if local_seat is None:
-            return False
-
-        battlefield = game_state.get("battlefield", []) or []
-        opp_permanents = [
-            c
-            for c in battlefield
-            # gamestate emits controller_seat_id (never controller_id);
-            # controller beats owner so stolen permanents classify right.
-            if (c.get("controller_seat_id") or c.get("owner_seat_id")) != local_seat
-            and "land" not in str(c.get("type_line") or "").lower()
-        ]
-
-        def _opp_of_type(pred) -> bool:
-            return any(pred(c) for c in opp_permanents)
-
-        # Narrow by oracle target type. If the spell specifies
-        # enchantment/artifact/creature and no opponent has that type,
-        # the only legal target is friendly → self-harm.
-        if "target enchantment" in oracle:
-            if not _opp_of_type(lambda c: "enchantment" in str(c.get("type_line") or "").lower()):
-                return True
-        if "target artifact" in oracle and "enchantment" not in oracle:
-            if not _opp_of_type(lambda c: "artifact" in str(c.get("type_line") or "").lower()):
-                return True
-        if "target creature" in oracle and "or enchantment" not in oracle and "or planeswalker" not in oracle:
-            if not _opp_of_type(lambda c: "creature" in str(c.get("type_line") or "").lower()):
-                return True
-        if "target nonland permanent" in oracle or "target permanent" in oracle:
-            if not opp_permanents:
-                return True
-        if "target planeswalker" in oracle:
-            if not _opp_of_type(lambda c: "planeswalker" in str(c.get("type_line") or "").lower()):
-                return True
-        return False
+        return removal_lacks_opponent_target(card, game_state)
 
     def _build_action_prompt(
         self,
@@ -1907,6 +1952,25 @@ class ActionPlanner(_ActionLegalityMixin):
                     legal_actions,
                 )
 
+        # Spoken line derives from what was actually ACCEPTED (a rejected
+        # target's instruction must not survive — test_planning_consistency).
+        # Keep the model's phrasing only when it refers to an accepted card;
+        # otherwise fall back to the terse action recap ("Discard Mutavault
+        # to hand size." survives; advice naming a dropped target doesn't).
+        if plan.actions and plan.voice_advice:
+            accepted_names = []
+            for action in plan.actions:
+                accepted_names.extend(action.select_card_names)
+                accepted_names.extend(action.target_names)
+                accepted_names.extend(action.attacker_names)
+                accepted_names.extend(action.blocker_assignments.keys())
+                accepted_names.extend(action.blocker_assignments.values())
+                if action.card_name:
+                    accepted_names.append(action.card_name)
+            advice_low = plan.voice_advice.casefold()
+            if any(n and n.casefold() in advice_low for n in accepted_names):
+                return plan
+        plan.voice_advice = plan.spoken_actions()
         return plan
 
     def _record_diagnostic(self, diag: dict[str, Any]) -> None:
@@ -2094,6 +2158,9 @@ class ActionPlanner(_ActionLegalityMixin):
         a deterministic pick from the same set. Never raises; returns []
         only when the decision has no options at all.
         """
+        decision = filter_play_options(decision, game_state)
+        if not decision.options:
+            return [DECLINE_DECISION]
         try:
             chosen = self._llm_decision_options(decision, game_state)
             valid = decision.option_ids()
@@ -2139,7 +2206,15 @@ class ActionPlanner(_ActionLegalityMixin):
         "gets −",
         "loses all abilities",
         "loses flying",
+        # 2026-09-24: Kogla's "it fights up to one target creature you don't
+        # control" read as beneficial; its correct pick was overridden.
+        "fights target",
+        "fights up to one target",
+        "fights another target",
+        "fight target",
     )
+    # A target restricted to the opponent's side is aimed at them.
+    _OPPONENT_TARGET_RE = re.compile(r"target [^.]*?(?:you don['’]t control|an opponent controls)")
 
     def _decision_source_is_harmful(self, decision: Any, game_state: dict[str, Any]) -> bool | None:
         """Classify the targeting decision's source spell as harmful.
@@ -2150,7 +2225,24 @@ class ActionPlanner(_ActionLegalityMixin):
         stack = game_state.get("stack", []) or []
         source_label = str(getattr(decision, "source_label", "") or "").strip().lower()
         picked_entry = None
-        if source_label:
+        # The request's own source instance is exact. Name/top-of-stack
+        # guesses break when triggers share the stack: Seam Rip's exile
+        # trigger was classified from Optimistic Scavenger's +1/+1 trigger
+        # sitting on top, declining the correct enemy target (2026-09-24).
+        source_id = self._decision_source_instance(game_state)
+        if source_id:
+            for zone in ("stack", "battlefield", "command"):
+                picked_entry = next(
+                    (
+                        entry
+                        for entry in game_state.get(zone, []) or []
+                        if isinstance(entry, dict) and _as_int(entry.get("instance_id")) == source_id
+                    ),
+                    None,
+                )
+                if picked_entry is not None:
+                    break
+        if picked_entry is None and source_label:
             for zone in ("stack", "hand", "command", "battlefield"):
                 for entry in game_state.get(zone, []) or []:
                     if str(entry.get("name") or "").strip().lower() == source_label:
@@ -2160,10 +2252,30 @@ class ActionPlanner(_ActionLegalityMixin):
                     break
         if picked_entry is None and stack:
             picked_entry = stack[-1]
-        oracle = str((picked_entry or {}).get("oracle_text") or "").lower()
+        context = game_state.get("decision_context") or {}
+        oracle = str(
+            context.get("source_oracle_text") or (picked_entry or {}).get("oracle_text") or ""
+        ).lower()
         if not oracle:
             return None
-        return any(p in oracle for p in self._HARMFUL_TARGET_ORACLE_PHRASES)
+        if (
+            re.search(r"\bexile[^.]*?\breturn (?:it|them|that card|those cards)\b", oracle)
+            and "to the battlefield" in oracle
+        ):
+            return False
+        return any(p in oracle for p in self._HARMFUL_TARGET_ORACLE_PHRASES) or bool(
+            self._OPPONENT_TARGET_RE.search(oracle)
+        )
+
+    @staticmethod
+    def _decision_source_instance(game_state: dict[str, Any]) -> int:
+        """Instance id of the pending request's source (bridge payload or log context)."""
+        for container in (game_state.get("_bridge_request_payload"), game_state.get("decision_context")):
+            if isinstance(container, dict):
+                value = _as_int(container.get("sourceId") or container.get("source_id"))
+                if value:
+                    return value
+        return 0
 
     def _battlefield_controllers(
         self, game_state: dict[str, Any]
@@ -2332,7 +2444,7 @@ class ActionPlanner(_ActionLegalityMixin):
             lines.append(f"- {o.option_id}: {o.label}{side}{note}")
         lines.append("")
         lines.append("GAME STATE:")
-        lines.append(self._fallback_format(game_state))
+        lines.append(self._decision_game_context(game_state))
         user_message = "\n".join(lines)
 
         try:
@@ -2369,6 +2481,25 @@ class ActionPlanner(_ActionLegalityMixin):
         ids = data.get("option_ids") or []
         return [str(i) for i in ids if isinstance(i, (str, int))]
 
+    def _decision_game_context(self, game_state: dict[str, Any]) -> str:
+        """The planner's full board view (card text, mana, combat math).
+
+        Typed decisions — every bridge priority window since Phase E — used
+        the names-only fallback formatter. 2026-09-24 the model passed turns 7
+        and 9 stuck on three lands with Archdruid's Charm castable: it could
+        not see that the charm fetches a land.
+        """
+        try:
+            from arenamcp.coach import CoachEngine
+
+            formatter = CoachEngine.__new__(CoachEngine)
+            context = formatter._format_game_context(game_state, for_planner=True)
+            if context and context.strip():
+                return context
+        except Exception as e:
+            logger.warning(f"typed-decision context formatter failed: {e}")
+        return self._fallback_format(game_state)
+
     @staticmethod
     def deterministic_option_pick(decision: Any) -> list[str]:
         """Mechanical fallback: pick from the option set, never outside it."""
@@ -2379,9 +2510,6 @@ class ActionPlanner(_ActionLegalityMixin):
             opts = [option for option in opts if option.payable is not False]
             if not opts:
                 return []
-            for o in opts:
-                if o.option_id.startswith("idx:") and o.payable:
-                    return [o.option_id]
             for o in opts:
                 if (o.meta or {}).get("actionType") == "ActionType_Play":
                     return [o.option_id]

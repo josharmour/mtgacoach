@@ -170,3 +170,26 @@ def test_target_options_labeled_with_controller():
     p.plan_decision_options(_decision([607, 812]), _state(own_ids=(607,), their_ids=(812,)))
     assert "tgt:607: target 607 (YOURS)" in captured["user"]
     assert "tgt:812: target 812 (opponent's)" in captured["user"]
+
+
+def _two_triggers_state(source_key):
+    """Seam Rip's exile trigger and Optimistic Scavenger's +1/+1 trigger share the stack."""
+    state = _state(own_ids=(311,), their_ids=(287,))
+    state["stack"] = [
+        {"instance_id": 901, "name": "Seam Rip ability", "controller_seat_id": 1,
+         "oracle_text": "When this enchantment enters, exile target nonland permanent an opponent controls"},
+        {"instance_id": 902, "name": "Optimistic Scavenger ability", "controller_seat_id": 1,
+         "oracle_text": "Whenever an enchantment you control enters, put a +1/+1 counter on target creature."},
+    ]
+    state[source_key] = {"sourceId": 901} if source_key == "_bridge_request_payload" else {"source_id": 901}
+    return state
+
+
+def test_request_source_beats_top_of_stack_for_harm_classification():
+    # 2026-09-24: Seam Rip's target was classified from the beneficial trigger
+    # on top of the stack, so the correct enemy target (#287) was declined.
+    p = _planner()
+    for key in ("_bridge_request_payload", "decision_context"):
+        state = _two_triggers_state(key)
+        assert p._decision_source_is_harmful(_decision([311, 287]), state) is True
+        assert p._targeting_fallback_pick(_decision([311, 287]), state) == ["tgt:287"]

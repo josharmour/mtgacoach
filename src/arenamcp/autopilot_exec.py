@@ -80,10 +80,14 @@ class _ActionExecMixin:
                         ActionType.DECLARE_ATTACKERS,
                         ActionType.DECLARE_BLOCKERS,
                     )
-                    is_displaced_main_action = (
-                        action.action_type in (ActionType.PLAY_LAND, ActionType.CAST_SPELL)
-                        and bridge_has_other_request
-                    )
+                    # A play the window no longer offers (e.g. the land was
+                    # already played from another trigger) is re-planned, not
+                    # escalated: 2026-09-24 the MANUAL REQUIRED here auto-passed
+                    # priority and threw away the rest of main phase 1.
+                    is_displaced_main_action = action.action_type in (
+                        ActionType.PLAY_LAND,
+                        ActionType.CAST_SPELL,
+                    ) or (action.action_type == ActionType.ACTIVATE_ABILITY and bridge_has_other_request)
                     is_displaced_select = action.action_type in (
                         ActionType.SELECT_N,
                         ActionType.SEARCH_LIBRARY,
@@ -94,6 +98,7 @@ class _ActionExecMixin:
                         action.action_type in (ActionType.PASS_PRIORITY, ActionType.RESOLVE)
                         and bridge_has_other_request
                     )
+                    is_displaced_numeric = action.action_type == ActionType.NUMERIC_INPUT
 
                     if (
                         is_combat_stale
@@ -123,6 +128,7 @@ class _ActionExecMixin:
                         or is_displaced_main_action
                         or is_displaced_select
                         or is_displaced_pass
+                        or is_displaced_numeric
                     ):
                         if is_combat_stale:
                             reason = "bridge not in combat step yet"
@@ -130,6 +136,8 @@ class _ActionExecMixin:
                             reason = f"bridge moved to {bridge_type or bridge_class}"
                         elif is_displaced_pass:
                             reason = f"window is now {bridge_type or bridge_class} — pass not applicable"
+                        elif is_displaced_numeric:
+                            reason = f"window is now {bridge_type or bridge_class or 'nothing'} — no number asked"
                         else:
                             reason = (
                                 f"bridge has no SelectN/Search pending "
