@@ -158,9 +158,9 @@ class TestMatchMemory:
         assert mem.turns[-1].text == f"q{MEMORY_RING_SIZE + 4}"
         assert mem.turns[0].text == "q5"
 
-    def test_wave3_fields_default_zero_and_empty(self) -> None:
+    def test_wave3_fields_default_unspoken_and_empty(self) -> None:
         mem = MatchMemory()
-        assert mem.last_proactive_ts == 0.0
+        assert mem.last_proactive_ts is None
         assert mem.pending_questions == []
         assert mem.plan_summary_prev == ""
 
@@ -469,7 +469,7 @@ class TestMatchResetAndIdentity:
 
         ctrl.reset_for_match("m-2", 5)
 
-        assert ctrl.memory.last_proactive_ts == 0.0
+        assert ctrl.memory.last_proactive_ts is None
         assert ctrl.memory.pending_questions == []
         assert ctrl.memory.discussed_topics == {}
         assert ctrl.memory.plan_summary == ""
@@ -558,11 +558,7 @@ class TestAugmentQuestion:
 
 class TestStatusLifecycle:
     def _states(self, ctrl: ConversationController) -> list[str]:
-        return [
-            f.get("state")
-            for c, f in ctrl._emit_event.calls
-            if c == "conversation_status"
-        ]
+        return [f.get("state") for c, f in ctrl._emit_event.calls if c == "conversation_status"]
 
     def test_convo_state_idle_on_stale_delivery(self, monkeypatch) -> None:
         gate = threading.Event()

@@ -245,9 +245,10 @@ class MatchMemory:
     discussed_topics: dict[str, float] = field(default_factory=dict)
     revealed_opponent_cards: list[str] = field(default_factory=list)
     plan_summary: str = ""
-    # Wave 3: last proactive topic utterance (monotonic-free wall clock) and
-    # questions deferred by urgent interrupts, newest last, capped.
-    last_proactive_ts: float = 0.0
+    # Last proactive utterance on the suppression clock. None means no
+    # utterance yet; zero is a valid monotonic timestamp just after boot.
+    last_proactive_ts: float | None = None
+    # Questions deferred by urgent interrupts, newest last, capped.
     pending_questions: list[PendingQuestion] = field(default_factory=list)
     # Previous plan summary, kept so plan-drift topics can detect change.
     plan_summary_prev: str = ""
@@ -1088,21 +1089,23 @@ class ConversationController:
                 # the cooldown — they interrupt in-flight speech by design —
                 # but not the per-key minimum spacing below (M2: a NEW threat
                 # is announced, then not re-announced 3× within one window).
+                last_proactive = self.memory.last_proactive_ts
+                elapsed = now - last_proactive if last_proactive is not None else None
                 logger.info(
                     "convo-diag: gate topic=%s prio=%s elapsed=%s cooldown=%s",
                     topic.key,
                     int(topic.priority),
-                    now - self.memory.last_proactive_ts,
+                    elapsed,
                     cooldown,
                 )
-                if topic.priority < EventPriority.THREAT and now - self.memory.last_proactive_ts < cooldown:
+                if topic.priority < EventPriority.THREAT and elapsed is not None and elapsed < cooldown:
                     return None
                 # PER-KEY MINIMUM SPACING (applies to ALL topics including
                 # urgent): the same topic key may re-speak only after
                 # 3×cooldown — the urgent bypass lifts the global cooldown,
                 # never a per-key re-announce cap.
-                last_spoken = self.memory.discussed_topics.get(topic.key, 0.0)
-                if now - last_spoken < cooldown * 3:
+                last_spoken = self.memory.discussed_topics.get(topic.key)
+                if last_spoken is not None and now - last_spoken < cooldown * 3:
                     continue
 
             identity = self.current_identity()
@@ -1413,9 +1416,7 @@ class ConversationController:
         thread.start()
         return request_id
 
-    def reset_for_match(
-        self, match_id: str | None, match_number: int, match_start: bool = True
-    ) -> None:
+    def reset_for_match(self, match_id: str | None, match_number: int, match_start: bool = True) -> None:
         # Match boundary: clear memory (including Wave-3 proactive-timing and
         # deferred-question fields), bump session identity, drop pending.
         # ``match_start``: True when a NEW match is beginning; False when the
@@ -1608,11 +1609,7 @@ class ConversationController:
             return f"{ANNOUNCER_QUESTION_PREFIX}\n\nUser question: {text}"
 
         digest = "\n".join(lines)
-        return (
-            f"{ANNOUNCER_QUESTION_PREFIX}\n\n"
-            f"Recent conversation:\n{digest}\n\n"
-            f"User question: {text}"
-        )
+        return f"{ANNOUNCER_QUESTION_PREFIX}\n\nRecent conversation:\n{digest}\n\nUser question: {text}"
 
     def _is_stale(self, identity: ResponseIdentity) -> bool:
         # Delivery gate: session/match/mode drift, or a newer request is

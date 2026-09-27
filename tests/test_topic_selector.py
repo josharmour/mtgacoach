@@ -144,9 +144,7 @@ class TestRoleShiftDetection:
 
     def test_shift_to_defense_fires(self) -> None:
         prev = make_state(battlefield=[card("Bear", 1, 10, attacking=True)])
-        cur = make_state(
-            battlefield=[card("Bear", 1, 10), card("Opp Bear", 2, 20, attacking=True)]
-        )
+        cur = make_state(battlefield=[card("Bear", 1, 10), card("Opp Bear", 2, 20, attacking=True)])
         topics = SELECTOR.select(prev, cur, [])
         shift = [t for t in topics if t.key == "role_shift"]
         assert len(shift) == 1
@@ -220,8 +218,9 @@ class TestOpponentDevelopmentAndThreats:
     def test_own_new_permanent_is_not_a_topic(self) -> None:
         prev = make_state(battlefield=[])
         cur = make_state(battlefield=[card("My Bear", 1, 32)])
-        assert [t.key for t in SELECTOR.select(prev, cur, []) if t.key in
-                ("opponent_development", "threat")] == []
+        assert [
+            t.key for t in SELECTOR.select(prev, cur, []) if t.key in ("opponent_development", "threat")
+        ] == []
 
     def test_threat_topic_dedupes_across_detectors(self) -> None:
         # A threat on the board matches BOTH threat scanning and development;
@@ -275,9 +274,7 @@ class TestObservedVsHypothesis:
 class TestPriorityOrdering:
     def test_threat_outranks_state_shift(self) -> None:
         prev = make_state(my_life=20, battlefield=[])
-        cur = make_state(
-            my_life=16, battlefield=[card("Atraxa, Grand Unifier", 2, 36)]
-        )
+        cur = make_state(my_life=16, battlefield=[card("Atraxa, Grand Unifier", 2, 36)])
         topics = SELECTOR.select(prev, cur, [])
         assert topics[0].key == "threat"
         assert topics[0].priority > topics[1].priority
@@ -312,9 +309,7 @@ def make_topic_controller(
     holder: dict = {"snap": make_state()}
     settings = MagicMock()
     settings.get = MagicMock(
-        side_effect=lambda key, default=None: (
-            cooldown if key == "conversation_cooldown_seconds" else default
-        )
+        side_effect=lambda key, default=None: cooldown if key == "conversation_cooldown_seconds" else default
     )
 
     import arenamcp.conversation as conversation_mod
@@ -445,7 +440,7 @@ class TestCooldownAndRepetition:
         # threats are not gated by the proactive cooldown).
         cur2 = make_state(battlefield=[card("Sheoldred, the Apocalypse", 2, 53)])
         ctrl.on_state(cur2, cur1, [])
-        ctrl.memory.last_proactive_ts = time.time()  # simulate recent proactive
+        ctrl.memory.last_proactive_ts = ctrl._now()  # simulate recent proactive
         result = ctrl.speak_topic_if_any()
         assert result is not None
         assert result[1] == "urgent"
@@ -503,9 +498,7 @@ class TestUserQuestionPriority:
         # A pending user question blocks topic speech.
         with ctrl._lock:
             ctrl._request_counter += 1
-            ctrl._pending[ctrl._request_counter] = ctrl.current_identity(
-                request_id=ctrl._request_counter
-            )
+            ctrl._pending[ctrl._request_counter] = ctrl.current_identity(request_id=ctrl._request_counter)
         assert ctrl.speak_topic_if_any() is None
         assert voice.speak.call_count == 0
 
@@ -549,9 +542,7 @@ class TestUrgentInterruptAndRecovery:
         identity = ctrl.current_identity()
         topic = ctrl._last_topics[0]
         assert topic.key == "threat"
-        ctrl._speak_topic(
-            "Watch Sheoldred.", "urgent", identity, topic, match_id="m-1"
-        )
+        ctrl._speak_topic("Watch Sheoldred.", "urgent", identity, topic, match_id="m-1")
         # The urgent speech spawned a recovery thread that re-answers the
         # deferred question — join it before asserting on the end state.
         for thread in list(ctrl._answer_threads):
@@ -674,7 +665,7 @@ class TestMemoryResetExtension:
 
         ctrl.reset_for_match("new-match", 2)
 
-        assert ctrl.memory.last_proactive_ts == 0.0
+        assert ctrl.memory.last_proactive_ts is None
         assert ctrl.memory.pending_questions == []
         assert ctrl.memory.discussed_topics == {}
         assert ctrl._last_topics == []
@@ -837,14 +828,10 @@ class TestPendingQuestionRecoveryWave5:
             ctrl._request_counter += 1
             rid = ctrl._request_counter
             ctrl._pending[rid] = ctrl.current_identity(request_id=rid)
-        ctrl.memory.append(
-            conversation_mod.ConversationTurn(role="user", text="Why not attack?")
-        )
+        ctrl.memory.append(conversation_mod.ConversationTurn(role="user", text="Why not attack?"))
 
         identity = ctrl.current_identity()
-        topic = conversation_mod.TopicCandidate(
-            key="threat", priority=EventPriority.THREAT, evidence="x"
-        )
+        topic = conversation_mod.TopicCandidate(key="threat", priority=EventPriority.THREAT, evidence="x")
         ctrl._speak_topic("Watch Sheoldred.", "urgent", identity, topic, match_id="m-1")
 
         # The topic speech is SPEAKING (sink busy): while the sink is busy,
@@ -869,7 +856,9 @@ class TestPendingQuestionRecoveryWave5:
 
         ctrl, coach, voice, holder, inner = make_topic_controller()
         old = conversation_mod.PendingQuestion(
-            text="stale question", ts=time.time() - conversation_mod.PENDING_QUESTION_TTL_SECONDS - 5, match_id="m-1"
+            text="stale question",
+            ts=time.time() - conversation_mod.PENDING_QUESTION_TTL_SECONDS - 5,
+            match_id="m-1",
         )
         ctrl.memory.pending_questions.append(old)
 

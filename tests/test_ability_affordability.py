@@ -12,6 +12,8 @@ Root causes, from the field report (bug_20260813_205508.json):
      were invisible too.
 """
 
+import pytest
+
 from arenamcp.gamestate_decisions import _braced_mana_cost
 from arenamcp.rules_engine import RulesEngine, _normalize_mana_symbols
 
@@ -328,6 +330,50 @@ def test_free_activation_survives_the_filter():
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def report_card_info(monkeypatch):
+    """Keep the GRE integration tests independent of local card DBs/network.
+
+    Supply only card metadata; the real snapshot builder, mana-source
+    detection, and affordability checks still run for every action.
+    """
+    from arenamcp import server
+
+    cards = {
+        71575: {
+            "name": "Talisman of Resilience",
+            "type_line": "Artifact",
+            "oracle_text": "{oT}: Add {oC}.\n{oT}: Add {oB} or {oG}.",
+        },
+        70716: {
+            "name": "Wolfwillow Haven",
+            "type_line": "Enchantment — Aura",
+            "oracle_text": "Enchant land\nWhenever enchanted land is tapped for mana, its controller adds an additional {oG}.",
+        },
+        75553: {
+            "name": "Forest",
+            "type_line": "Basic Land — Forest",
+            "oracle_text": "({oT}: Add {oG}.)",
+        },
+        69622: {
+            "name": "Paradise Druid",
+            "type_line": "Creature — Elf Druid",
+            "oracle_text": "{oT}: Add one mana of any color.",
+        },
+        97562: {
+            "name": "White Lotus Hideout",
+            "type_line": "Land",
+            "oracle_text": "{oT}: Add {oC}.",
+        },
+        95845: {
+            "name": "Verdant Catacombs",
+            "type_line": "Land",
+            "oracle_text": "{oT}, Pay 1 life, Sacrifice this land: Search your library for a Swamp or Forest card, put it onto the battlefield, then shuffle.",
+        },
+    }
+    monkeypatch.setattr(server, "get_card_info", lambda arena_id: dict(cards[arena_id]))
+
+
 def _report_game_state(tapped: bool):
     """Rebuild the reported board (grp_ids straight from the bug report)."""
     from arenamcp.gamestate import GameObject, GameState, Player, Zone, ZoneType
@@ -380,7 +426,7 @@ ACTIONS_AVAILABLE_MSG = {
 }
 
 
-def test_reported_activation_is_tagged_need_end_to_end():
+def test_reported_activation_is_tagged_need_end_to_end(report_card_info):
     """#483: with the board as reported, the legal list must warn that the
     {4}{G} activation is unpayable instead of presenting it as a free option."""
     from arenamcp.gamestate_decisions import _handle_actions_available
@@ -393,7 +439,7 @@ def test_reported_activation_is_tagged_need_end_to_end():
     assert activate_raw["_unaffordable"] is True
 
 
-def test_affordable_activation_is_tagged_ok_end_to_end():
+def test_affordable_activation_is_tagged_ok_end_to_end(report_card_info):
     """Same board with mana untapped: the activation is offered normally."""
     from arenamcp.gamestate_decisions import _handle_actions_available
 
@@ -405,7 +451,7 @@ def test_affordable_activation_is_tagged_ok_end_to_end():
     assert not activate_raw.get("_unaffordable")
 
 
-def test_free_activation_untagged_end_to_end():
+def test_free_activation_untagged_end_to_end(report_card_info):
     """A tap/sacrifice ability with no manaCost stays untagged (not [NEED:])."""
     from arenamcp.gamestate_decisions import _handle_actions_available
 
@@ -428,7 +474,7 @@ def test_free_activation_untagged_end_to_end():
     assert not gs.legal_actions_raw[0].get("_unaffordable")
 
 
-def test_floating_mana_keeps_activation_affordable_end_to_end():
+def test_floating_mana_keeps_activation_affordable_end_to_end(report_card_info):
     """Lands tapped for a partially-paid cost leave floating mana; the check
     must not call the ability unaffordable just because they are now tapped."""
     from arenamcp.gamestate_decisions import _handle_actions_available

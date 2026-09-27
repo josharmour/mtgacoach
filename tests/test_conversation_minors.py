@@ -22,6 +22,8 @@ import time
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+
 import arenamcp.conversation as conversation_mod
 from arenamcp.backend_health import BACKEND_ERROR_PREFIX
 from arenamcp.conversation import (
@@ -140,6 +142,48 @@ def make_controller(
 
 
 class TestMonotonicSuppressionClock:
+    @pytest.mark.parametrize("start", [0.0, 10.0, 120.0])
+    @pytest.mark.parametrize("priority", [EventPriority.STATE_SHIFT, EventPriority.THREAT])
+    def test_first_topic_is_not_suppressed_after_boot(self, start, priority) -> None:
+        clock = FakeClock(start=start)
+        ctrl, _coach, voice, _inner = make_controller(clock=clock)
+        ctrl._last_topics = [TopicCandidate("first", priority, "A new permanent resolved.")]
+
+        assert ctrl.speak_topic_if_any() is not None
+        assert voice.speak.call_count == 1
+        assert ctrl.memory.last_proactive_ts == start
+
+    def test_topic_spoken_at_zero_still_starts_global_cooldown(self) -> None:
+        clock = FakeClock(start=0.0)
+        ctrl, _coach, voice, _inner = make_controller(clock=clock)
+        first = TopicCandidate("first", EventPriority.STATE_SHIFT, "A creature resolved.")
+        second = TopicCandidate("second", EventPriority.STATE_SHIFT, "The plan changed.")
+        ctrl._last_topics = [first]
+        assert ctrl.speak_topic_if_any() is not None
+
+        clock.advance(COOLDOWN - 1)
+        ctrl._last_topics = [second]
+        assert ctrl.speak_topic_if_any() is None
+        clock.advance(1)
+        ctrl._last_topics = [second]
+        assert ctrl.speak_topic_if_any() is not None
+        assert voice.speak.call_count == 2
+
+    def test_threat_spoken_at_zero_still_starts_repetition_window(self) -> None:
+        clock = FakeClock(start=0.0)
+        ctrl, _coach, voice, _inner = make_controller(clock=clock)
+        threat = TopicCandidate("threat", EventPriority.THREAT, "A threat resolved.")
+        ctrl._last_topics = [threat]
+        assert ctrl.speak_topic_if_any() is not None
+
+        clock.advance(COOLDOWN * 3 - 1)
+        ctrl._last_topics = [threat]
+        assert ctrl.speak_topic_if_any() is None
+        clock.advance(1)
+        ctrl._last_topics = [threat]
+        assert ctrl.speak_topic_if_any() is not None
+        assert voice.speak.call_count == 2
+
     def test_backward_wall_clock_jump_does_not_expire_suppression(self) -> None:
         """A wall-clock jump BACKWARD must not clear suppression: cooldown and
         per-topic repetition windows run on the injected monotonic clock, so

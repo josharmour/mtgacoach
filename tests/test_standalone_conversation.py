@@ -317,9 +317,7 @@ def test_emit_conversation_event_pipe_forwards_reply_and_status():
     coach._emit_conversation_event("conversation_reply", text="hello", identity=identity)
     coach._emit_conversation_event("conversation_status", state="thinking", request_id=7)
 
-    assert coach.ui.events == [
-        {"type": "conversation_reply", "text": "hello", "identity": identity}
-    ]
+    assert coach.ui.events == [{"type": "conversation_reply", "text": "hello", "identity": identity}]
     assert coach.ui.statuses == [("CONVO_STATE", "thinking")]
 
 
@@ -389,9 +387,7 @@ def test_conversation_mode_noncritical_trigger_is_memory_only(monkeypatch):
 
 def test_conversation_mode_critical_trigger_still_dispatches_legacy(monkeypatch):
     state = make_state(pending="Select Targets", decision_type="target_selection")
-    coach = make_loop_coach(
-        mode="conversation", state=state, triggers=["decision_required"]
-    )
+    coach = make_loop_coach(mode="conversation", state=state, triggers=["decision_required"])
 
     run_loop(monkeypatch, coach, iterations=1)
 
@@ -460,7 +456,7 @@ def test_loop_delivers_proactive_topic_speech(monkeypatch):
     ]
     coach._mcp.state["local_seat_id"] = 1
     coach._mcp.state["opponent_seat_id"] = 2
-    coach.conversation.memory.last_proactive_ts = 0.0
+    coach.conversation.memory.last_proactive_ts = None
 
     spoken: list[tuple] = []
 
@@ -602,9 +598,7 @@ def test_match_id_change_resets_conversation_and_bumps_session(monkeypatch):
 
 
 def test_turn_drop_resets_conversation(monkeypatch):
-    coach = make_loop_coach(
-        mode=TURN_ADVICE, triggers=["land_played"], repeat_triggers=False
-    )
+    coach = make_loop_coach(mode=TURN_ADVICE, triggers=["land_played"], repeat_triggers=False)
 
     reset_calls: list[tuple] = []
     original_reset = coach.conversation.reset_for_match
@@ -668,9 +662,7 @@ def test_pre_match_questions_do_not_leak_into_first_match_answers(monkeypatch):
     # The None -> "m1" transition reset the memory: the pre-match question no
     # longer leaks into first-match prompt digests.
     assert coach.last_match_id == "m1"
-    assert all(
-        t.text != "what deck is my opponent on?" for t in coach.conversation.memory.turns
-    )
+    assert all(t.text != "what deck is my opponent on?" for t in coach.conversation.memory.turns)
 
 
 def test_phantom_redetection_of_finalized_match_does_not_speak_opener(monkeypatch):
