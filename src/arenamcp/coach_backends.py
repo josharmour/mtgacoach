@@ -66,12 +66,13 @@ def get_models_for_mode(mode: str) -> list[tuple[str, str | None]]:
             models: list[tuple[str, str | None]] = []
             for m in data.get("data", []):
                 mid = m["id"]
-                models.append((mid, mid))
+                if mid == "glm-5.3-flash":
+                    models.append(("GLM 5.3", mid))
             if models:
                 return models
         except Exception:
             pass
-        return [("Default", None)]
+        return [("GLM 5.3", "glm-5.3-flash")]
 
     if mode == "local":
         try:
@@ -106,14 +107,7 @@ def get_models_for_mode(mode: str) -> list[tuple[str, str | None]]:
     return [("Default", None)]
 
 
-THINKING_MODEL_PREFERENCE = [
-    "glm-5.3-flash",
-    "deepseek-v4-flash",
-    "claude-opus-4-6",
-    "claude-sonnet-4-5-20250929",
-    "gemini-2.5-pro",
-    "gpt-5.3-codex",
-]
+THINKING_MODEL_PREFERENCE = ["glm-5.3-flash"]
 
 
 def pick_thinking_model() -> str | None:

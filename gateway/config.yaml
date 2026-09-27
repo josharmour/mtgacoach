@@ -1,72 +1,19 @@
-# LiteLLM gateway — single observability gateway. All models local -> zsh cost.
+# Hosted customer model: GLM 5.3. No retired model names in customer grants.
+# Current live backend runs on blackwell's Docker network.
 model_list:
-  # 2026-07-30: CUTOVER to Qwen3.6-27B-FP8 single-card (card 1, qwen36-coach,
-  # recreate-qwen36-coach.sh). ds4-v9 is STOPPED but intact; DeepSeek needs
-  # both cards at 0.95 and the second card was reassigned. Rollback: docker stop qwen36-coach && docker start ds4-v9, then
-  # revert this entry to model: openai/deepseek-v4-flash.
-  # canonical entry — new clients should ask for this name
-  - model_name: qwen3.6-fp8
+  - model_name: glm-5.3-flash
     litellm_params:
-      model: openai/qwen3.6-fp8
-      api_base: http://10.0.0.10:8002/v1
+      model: openai/glm-5.3-flash-local
+      api_base: http://glm53-flash-2x-rtxpro6000:8001/v1
       api_key: none
       input_cost_per_token: 0
       output_cost_per_token: 0
 
-  # legacy alias — every shipped app + the eval harness requests this name;
-  # keep it routed at the live backend (same pattern as hy3 below)
-  - model_name: deepseek-v4-flash
-    litellm_params:
-      model: openai/qwen3.6-fp8
-      api_base: http://10.0.0.10:8002/v1
-      api_key: none
-      input_cost_per_token: 0
-      output_cost_per_token: 0
-
-  # 2026-07-25: hy3 was already broken (the vLLM never served that name;
-  # requests returned "model does not exist"). Pointed at a live backend so
-  # the fallback chains that reference it resolve instead of erroring.
-  - model_name: hy3
-    litellm_params:
-      model: ollama_chat/gemma4:12b
-      api_base: http://10.0.0.100:11434
-      input_cost_per_token: 0
-      output_cost_per_token: 0
-
+  # Service alias for a separate application, not offered by either MTGA app.
   - model_name: sc-generator
     litellm_params:
-      model: ollama_chat/gemma4:12b
-      api_base: http://10.0.0.100:11434
-      think: false
-      extra_body:
-        think: false
-      input_cost_per_token: 0
-      output_cost_per_token: 0
-
-  - model_name: gemma-4-12b-it
-    litellm_params:
-      model: ollama_chat/gemma4:12b
-      api_base: http://10.0.0.100:11434
-      think: false
-      extra_body:
-        think: false
-      input_cost_per_token: 0
-      output_cost_per_token: 0
-
-  - model_name: gemma-4-compactor
-    litellm_params:
-      model: ollama_chat/gemma4-compactor
-      api_base: http://10.0.0.100:11434
-      think: false
-      extra_body:
-        think: false
-      input_cost_per_token: 0
-      output_cost_per_token: 0
-
-  - model_name: qwen-uncensored
-    litellm_params:
-      model: openai/qwen-uncensored
-      api_base: http://10.0.0.100:13305/v1
+      model: openai/glm-5.3-flash-local
+      api_base: http://glm53-flash-2x-rtxpro6000:8001/v1
       api_key: none
       input_cost_per_token: 0
       output_cost_per_token: 0
@@ -75,12 +22,7 @@ litellm_settings:
   success_callback: [langfuse]
   drop_params: true
   num_retries: 1
-  request_timeout: 120
-  fallbacks:
-    - sc-generator: [deepseek-v4-flash, hy3]
-    - qwen-uncensored: [deepseek-v4-flash, hy3]
-    - gemma-4-12b-it: [deepseek-v4-flash, hy3]
-    - gemma-4-compactor: [deepseek-v4-flash, hy3]
+  request_timeout: 1800
   require_auth_for_metrics_endpoint: false
 
 general_settings:

@@ -48,9 +48,23 @@ ssh joshu@10.0.0.2 "/usr/local/bin/docker exec litellm printenv LITELLM_MASTER_K
 
 Customer keys are LiteLLM virtual keys (`sk-...`), minted via
 `POST /key/generate` (Bearer master key), scoped to
-`["deepseek-v4-flash", "gemma-4-12b-it"]`. Patreon signup mints these
+`["glm-5.3-flash"]`. Patreon signup mints these
 automatically — see `website/` (the mtgacoach.com FastAPI app).
 
 The old hand-rolled proxy (`website/`, container `mtgacoach` on :8443) is
 **website + Patreon auth only** — its `mc_` license keys are dead against
 this gateway.
+
+## Current customer model
+
+Both MTGA Coach and ArenaOnAir use **GLM 5.3** (`glm-5.3-flash`). Patreon and
+Coach trial keys are scoped only to that model. Existing customer key grants
+were migrated without changing their budgets, expiry, or key values. Older
+internal aliases may remain for other services; they are not offered in either
+app or exposed by customer model discovery.
+
+ArenaOnAir's separate five-match trial is served by `website/arenaonair.py` at
+`https://mtgacoach.com/api/arenaonair`. It keeps the match counter in the website
+SQLite database and forwards bounded requests to LiteLLM. Gateway admin credentials
+stay server-side; the desktop only receives its own trial access. Coach's existing
+seven-day trial is unchanged. See `website/ARENAONAIR.md` for limits and deployment.

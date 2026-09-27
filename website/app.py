@@ -98,6 +98,10 @@ app.include_router(proxy_router)
 app.include_router(billing_router)
 app.include_router(admin_router)
 
+# ArenaOnAir keeps its match trial separate from Coach subscriptions.
+from arenaonair import router as arenaonair_router
+app.include_router(arenaonair_router)
+
 # Compatibility exports for tests and direct module consumers
 config = state.config
 router = state.router
