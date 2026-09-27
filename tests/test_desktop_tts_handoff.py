@@ -100,9 +100,7 @@ def test_tts_error_after_stop_does_not_speak_last_text(qapp, monkeypatch):
     assert manager._last_text == ""
     assert manager._last_text_generation == -1
 
-    manager._handle_stdout_line(
-        json.dumps({"type": "error", "generation": 1, "message": "render failed"})
-    )
+    manager._handle_stdout_line(json.dumps({"type": "error", "generation": 1, "message": "render failed"}))
     fallback.assert_not_called()
 
 

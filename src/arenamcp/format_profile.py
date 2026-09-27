@@ -120,11 +120,7 @@ def detect_format_profile(
     resolved_deck_cards = deck_cards or game_state.get("deck_cards") or []
     deck_len = len(resolved_deck_cards) if isinstance(resolved_deck_cards, list) else 0
 
-    resolved_cmd_ids = (
-        commander_grp_ids
-        or game_state.get("commander_grp_ids")
-        or []
-    )
+    resolved_cmd_ids = commander_grp_ids or game_state.get("commander_grp_ids") or []
     if isinstance(resolved_cmd_ids, (list, tuple)):
         cmd_id_tuple = tuple(int(x) for x in resolved_cmd_ids if x)
     else:

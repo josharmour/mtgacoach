@@ -24,7 +24,9 @@ class _DummyBridge:
 
 def _engine(monkeypatch, pending: dict) -> tuple[AutopilotEngine, MagicMock]:
     monkeypatch.setattr(autopilot_module, "get_bridge", lambda: _DummyBridge())
-    engine = AutopilotEngine(planner=MagicMock(), get_game_state=lambda: {}, config=AutopilotConfig(dry_run=False))
+    engine = AutopilotEngine(
+        planner=MagicMock(), get_game_state=lambda: {}, config=AutopilotConfig(dry_run=False)
+    )
     bridge = MagicMock()
     bridge.connected = True
     bridge.connect.return_value = True
@@ -37,7 +39,11 @@ def _engine(monkeypatch, pending: dict) -> tuple[AutopilotEngine, MagicMock]:
 
 
 def test_x_zero_is_submitted(monkeypatch):
-    pending = {"has_pending": True, "request_class": "CastingTimeOptionRequest", "request_type": "CastingTimeOptions"}
+    pending = {
+        "has_pending": True,
+        "request_class": "CastingTimeOptionRequest",
+        "request_type": "CastingTimeOptions",
+    }
     engine, bridge = _engine(monkeypatch, pending)
     state = {"_bridge_request_class": "CastingTimeOptionRequest", "_bridge_connected": True}
     result = engine._execute_action(GameAction(action_type=ActionType.NUMERIC_INPUT, numeric_value=0), state)

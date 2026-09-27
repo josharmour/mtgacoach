@@ -2,7 +2,6 @@
 
 from arenamcp.ability_synthesizer import AbilitySynthesizer
 from arenamcp.afterstate import (
-    Action,
     ActivateAbility,
     AfterstateSimulator,
     BoardState,

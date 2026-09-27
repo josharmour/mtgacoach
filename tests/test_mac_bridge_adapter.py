@@ -22,9 +22,19 @@ def listing(*values: Any) -> dict:
 
 def action(handle: int, kind: str, grp: int, instance: int, **extra: Any) -> dict:
     return {
-        "$c": MSG + "Action", "$h": handle, "actionType_": enum(kind, 0), "grpId_": grp, "instanceId_": instance,
-        "abilityGrpId_": 0, "sourceId_": 0, "assumeCanBePaidFor_": True, "manaCost_": listing(),
-        "autoTapSolution_": None, "targets_": listing(), "highlight_": enum("None", 0), "shouldStop_": False,
+        "$c": MSG + "Action",
+        "$h": handle,
+        "actionType_": enum(kind, 0),
+        "grpId_": grp,
+        "instanceId_": instance,
+        "abilityGrpId_": 0,
+        "sourceId_": 0,
+        "assumeCanBePaidFor_": True,
+        "manaCost_": listing(),
+        "autoTapSolution_": None,
+        "targets_": listing(),
+        "highlight_": enum("None", 0),
+        "shouldStop_": False,
         **extra,
     }
 
@@ -32,7 +42,9 @@ def action(handle: int, kind: str, grp: int, instance: int, **extra: Any) -> dic
 class FakeGame:
     """Answers reflect batches from a scripted pending request; records every op."""
 
-    def __init__(self, request: dict | None, getters: dict | None = None, gsid: int = 40, msg: int = 7) -> None:
+    def __init__(
+        self, request: dict | None, getters: dict | None = None, gsid: int = 40, msg: int = 7
+    ) -> None:
         self.requests = [request]
         self.getters = getters or {}
         self.gsid, self.msg = gsid, msg
@@ -48,17 +60,24 @@ class FakeGame:
         ops = command["ops"]
         self.batches.append(ops)
         # A snapshot pops the next scripted request, so tests can script changes.
-        if len(self.requests) > 1 and any(o["op"] == "get" and o.get("member") == "OriginalMessage" for o in ops):
+        if len(self.requests) > 1 and any(
+            o["op"] == "get" and o.get("member") == "OriginalMessage" for o in ops
+        ):
             current = self.requests.pop(0)
         else:
             current = self.requests[0]
         results: list[Any] = []
         for op in ops:
             if op["op"] == "pending":
-                results.append(current if current else {"$none": "no GameManager in the scene (not in a match)"})
+                results.append(
+                    current if current else {"$none": "no GameManager in the scene (not in a match)"}
+                )
             elif op["op"] == "get" and op.get("member") == "OriginalMessage":
-                results.append({"$c": MSG + "GREToClientMessage", "$h": 1, "gameStateId_": self.gsid,
-                                "msgId_": self.msg} if current else None)
+                results.append(
+                    {"$c": MSG + "GREToClientMessage", "$h": 1, "gameStateId_": self.gsid, "msgId_": self.msg}
+                    if current
+                    else None
+                )
             elif op["op"] == "get" and op.get("member") in SNAPSHOT_GETTERS:
                 results.append(self.getters.get(op["member"]) if current else None)
             elif op["op"] == "expect_pending" and current and op["target"]["h"] != current["$h"]:
@@ -79,8 +98,12 @@ def adapter_for(game: FakeGame) -> MacBridgeAdapter:
 
 
 def actions_request(*actions: dict, handle: int = 5) -> dict:
-    return {"$c": "GreClient.Rules.ActionsAvailableRequest", "$h": handle, "Actions": listing(*actions),
-            "_passAction": None}
+    return {
+        "$c": "GreClient.Rules.ActionsAvailableRequest",
+        "$h": handle,
+        "Actions": listing(*actions),
+        "_passAction": None,
+    }
 
 
 def test_no_pending_matches_plugin_shape():
@@ -90,18 +113,32 @@ def test_no_pending_matches_plugin_shape():
 
 def test_actions_available_shape_and_identity():
     forest = action(11, "Play", 75553, 160)
-    cast = action(12, "Cast", 54163, 161, autoTapSolution_={"$c": MSG + "AutoTapSolution", "$h": 13,
-                                                           "autoTapActions_": listing({"instanceId_": 150,
-                                                                                       "manaId_": 3})})
-    game = FakeGame(actions_request(forest, cast),
-                    {"Type": enum("ActionsAvailable", 1), "CanPass": True, "CanCancel": False, "AllowUndo": False})
+    cast = action(
+        12,
+        "Cast",
+        54163,
+        161,
+        autoTapSolution_={
+            "$c": MSG + "AutoTapSolution",
+            "$h": 13,
+            "autoTapActions_": listing({"instanceId_": 150, "manaId_": 3}),
+        },
+    )
+    game = FakeGame(
+        actions_request(forest, cast),
+        {"Type": enum("ActionsAvailable", 1), "CanPass": True, "CanCancel": False, "AllowUndo": False},
+    )
     response = adapter_for(game).handle({"action": "get_pending_actions"})
     assert response["request_class"] == "ActionsAvailableRequest"
     assert response["request_type"] == "ActionsAvailable"
     assert response["game_state_id"] == 40 and response["msg_id"] == 7
     assert response["can_pass"] is True
-    assert response["actions"][0] == {"actionType": "Play", "grpId": 75553, "instanceId": 160,
-                                      "assumeCanBePaidFor": True}
+    assert response["actions"][0] == {
+        "actionType": "Play",
+        "grpId": 75553,
+        "instanceId": 160,
+        "assumeCanBePaidFor": True,
+    }
     assert response["actions"][1]["hasAutoTap"] is True
     assert response["actions"][1]["autoTapActions"] == [{"instanceId": 150, "manaId": 3}]
 
@@ -114,7 +151,12 @@ def test_get_game_state_stays_log_first():
 def test_submit_action_is_identity_checked_and_atomic():
     game = FakeGame(actions_request(action(11, "Play", 75553, 160)), {"CanPass": True})
     response = adapter_for(game).handle({"action": "submit_action", "action_index": 0, "auto_pass": False})
-    assert response == {"ok": True, "submitted_type": "Play", "submitted_grp_id": 75553, "submitted_instance_id": 160}
+    assert response == {
+        "ok": True,
+        "submitted_type": "Play",
+        "submitted_grp_id": 75553,
+        "submitted_instance_id": 160,
+    }
     [submit] = game.submits()
     assert submit[1] == {"op": "expect_pending", "target": {"h": 5}}
     assert submit[2]["method"] == "SubmitAction"
@@ -144,12 +186,20 @@ def test_pass_requires_can_pass():
 
 
 def test_blockers_send_fresh_messages_through_on_submit():
-    blocker = {"$c": MSG + "Blocker", "$h": 21, "blockerInstanceId_": 300,
-               "attackerInstanceIds_": listing(400), "selectedAttackerInstanceIds_": listing()}
+    blocker = {
+        "$c": MSG + "Blocker",
+        "$h": 21,
+        "blockerInstanceId_": 300,
+        "attackerInstanceIds_": listing(400),
+        "selectedAttackerInstanceIds_": listing(),
+    }
     request = {"$c": "GreClient.Rules.DeclareBlockersRequest", "$h": 5, "AllBlockers": listing(blocker)}
     game = FakeGame(request)
     response = adapter_for(game).handle(
-        {"action": "submit_blockers", "assignments": [{"blockerInstanceId": 300, "attackerInstanceIds": [400]}]}
+        {
+            "action": "submit_blockers",
+            "assignments": [{"blockerInstanceId": 300, "attackerInstanceIds": [400]}],
+        }
     )
     assert response == {"ok": True, "submitted_type": "DeclareBlockers"}
     [submit] = game.submits()
@@ -157,21 +207,36 @@ def test_blockers_send_fresh_messages_through_on_submit():
     assert types == ["DeclareBlockersResp", "SubmitBlockersReq"]
     invokes = [op for op in submit if op.get("method") == "Invoke"]
     assert len(invokes) == 2
-    assert {"op": "call", "target": submit[[i for i, o in enumerate(submit) if o.get("method") == "Add"][0]]["target"],
-            "method": "Add", "args": [{"uint": 400}], "depth": 0} in submit
+    assert {
+        "op": "call",
+        "target": submit[[i for i, o in enumerate(submit) if o.get("method") == "Add"][0]]["target"],
+        "method": "Add",
+        "args": [{"uint": 400}],
+        "depth": 0,
+    } in submit
 
 
 def test_attackers_two_step_flow():
     recipient = {"$c": MSG + "DamageRecipient", "$h": 31, "type_": enum("Player", 1)}
-    attacker = {"$c": MSG + "Attacker", "$h": 30, "attackerInstanceId_": 500,
-                "legalDamageRecipients_": listing(recipient), "selectedDamageRecipient_": None}
+    attacker = {
+        "$c": MSG + "Attacker",
+        "$h": 30,
+        "attackerInstanceId_": 500,
+        "legalDamageRecipients_": listing(recipient),
+        "selectedDamageRecipient_": None,
+    }
     request = {"$c": "GreClient.Rules.DeclareAttackerRequest", "$h": 5, "Attackers": listing(attacker)}
     game = FakeGame(request)
     adapter = adapter_for(game)
     step1 = adapter.handle({"action": "submit_attackers", "attackers": [{"attackerInstanceId": 500}]})
     assert step1["needs_finalize"] is True and step1["declared_count"] == 1
     update = game.submits()[-1]
-    assert {"op": "set", "target": {"h": 30}, "member": "SelectedDamageRecipient", "value": {"h": 31}} in update
+    assert {
+        "op": "set",
+        "target": {"h": 30},
+        "member": "SelectedDamageRecipient",
+        "value": {"h": 31},
+    } in update
     assert update[-1]["method"] == "UpdateAttacker" and update[-1]["args"] == [{"list": [{"h": 30}]}]
     step2 = adapter.handle({"action": "submit_attackers", "attackers": []})
     assert step2["submitted_type"] == "DeclareAttackersSubmit"
@@ -180,38 +245,95 @@ def test_attackers_two_step_flow():
 
 def targets_request(handle: int, selected: int) -> dict:
     target = {"$c": MSG + "Target", "$h": 41, "targetInstanceId_": 700, "highlight_": enum("Hot", 2)}
-    selection = {"$c": MSG + "TargetSelection", "$h": 40, "targetIdx_": 1, "minTargets_": 1, "maxTargets_": 1,
-                 "selectedTargets_": selected, "targets_": listing(target)}
-    return {"$c": "GreClient.Rules.SelectTargetsRequest", "$h": handle, "SourceId": 77,
-            "TargetSelections": listing(selection)}
+    selection = {
+        "$c": MSG + "TargetSelection",
+        "$h": 40,
+        "targetIdx_": 1,
+        "minTargets_": 1,
+        "maxTargets_": 1,
+        "selectedTargets_": selected,
+        "targets_": listing(target),
+    }
+    return {
+        "$c": "GreClient.Rules.SelectTargetsRequest",
+        "$h": handle,
+        "SourceId": 77,
+        "TargetSelections": listing(selection),
+    }
 
 
 def test_targets_select_then_commit_on_the_updated_request():
     game = FakeGame(targets_request(5, 0))
     # snapshot for the command, then the deferred loop sees the same request once
     # and then the GRE's updated request (new object, slot satisfied).
-    game.requests = [targets_request(5, 0), targets_request(5, 0), targets_request(9, 1), targets_request(9, 1)]
+    game.requests = [
+        targets_request(5, 0),
+        targets_request(5, 0),
+        targets_request(9, 1),
+        targets_request(9, 1),
+    ]
     response = adapter_for(game).handle({"action": "submit_targets", "target_instance_id": 700})
     assert response["ok"] is True and response["finalized"] is True
     selection_batch, commit_batch = game.submits()
-    assert [op["value"]["enum"] for op in selection_batch if op.get("member") == "Type"] == ["SelectTargetsResp"]
-    assert {"op": "set", "target": {"ref": 2}, "member": "TargetInstanceId", "value": {"uint": 700}} in selection_batch
+    assert [op["value"]["enum"] for op in selection_batch if op.get("member") == "Type"] == [
+        "SelectTargetsResp"
+    ]
+    assert {
+        "op": "set",
+        "target": {"ref": 2},
+        "member": "TargetInstanceId",
+        "value": {"uint": 700},
+    } in selection_batch
     assert commit_batch[1] == {"op": "expect_pending", "target": {"h": 9}}
     assert [op["value"]["enum"] for op in commit_batch if op.get("member") == "Type"] == ["SubmitTargetsReq"]
 
 
 def test_casting_time_entries_mirror_plugin_payloads():
-    modal = {"$c": "GreClient.Rules.CastingTimeOption_ModalRequest", "$h": 60, "SourceId": 12,
-             "ModalOptions": listing(1001, 1002), "AbilityGrpId": 5, "Min": 1, "Max": 1, "OtherSelection": listing()}
-    done = {"$c": "GreClient.Rules.CastingTimeOption_DoneRequest", "$h": 61, "SourceId": 12, "ManaCost": listing()}
-    x = {"$c": "GreClient.Rules.CastingTimeOption_NumericInputRequest", "$h": 62, "Min": 0, "Max": 3, "StepSize": 0,
-         "DisallowedValues": listing(1), "DisallowEven": False, "DisallowOdd": False, "GrpId": 9}
-    request = {"$c": "GreClient.Rules.CastingTimeOptionRequest", "$h": 5, "ChildRequests": listing(modal, done, x)}
+    modal = {
+        "$c": "GreClient.Rules.CastingTimeOption_ModalRequest",
+        "$h": 60,
+        "SourceId": 12,
+        "ModalOptions": listing(1001, 1002),
+        "AbilityGrpId": 5,
+        "Min": 1,
+        "Max": 1,
+        "OtherSelection": listing(),
+    }
+    done = {
+        "$c": "GreClient.Rules.CastingTimeOption_DoneRequest",
+        "$h": 61,
+        "SourceId": 12,
+        "ManaCost": listing(),
+    }
+    x = {
+        "$c": "GreClient.Rules.CastingTimeOption_NumericInputRequest",
+        "$h": 62,
+        "Min": 0,
+        "Max": 3,
+        "StepSize": 0,
+        "DisallowedValues": listing(1),
+        "DisallowEven": False,
+        "DisallowOdd": False,
+        "GrpId": 9,
+    }
+    request = {
+        "$c": "GreClient.Rules.CastingTimeOptionRequest",
+        "$h": 5,
+        "ChildRequests": listing(modal, done, x),
+    }
     entries = casting_time_entries(request)
-    kinds = [(e["payload"]["choiceKind"], e["payload"].get("optionIndex"), e["payload"].get("numericValue"))
-             for e in entries]
-    assert kinds == [("modal", 0, None), ("modal", 1, None), ("done", None, None),
-                     ("numeric_input", None, 0), ("numeric_input", None, 2), ("numeric_input", None, 3)]
+    kinds = [
+        (e["payload"]["choiceKind"], e["payload"].get("optionIndex"), e["payload"].get("numericValue"))
+        for e in entries
+    ]
+    assert kinds == [
+        ("modal", 0, None),
+        ("modal", 1, None),
+        ("done", None, None),
+        ("numeric_input", None, 0),
+        ("numeric_input", None, 2),
+        ("numeric_input", None, 3),
+    ]
     assert entries[1]["method"] == "SubmitModal" and entries[1]["args"] == [{"list": [{"uint": 1002}]}]
     game = FakeGame(request, {"CanCancel": True})
     response = adapter_for(game).handle({"action": "submit_action", "action_index": 1})
@@ -222,11 +344,20 @@ def test_casting_time_entries_mirror_plugin_payloads():
 
 
 def test_casting_time_identity_mismatch_never_submits():
-    modal = {"$c": "GreClient.Rules.CastingTimeOption_ModalRequest", "$h": 60, "ModalOptions": listing(1001, 1002)}
+    modal = {
+        "$c": "GreClient.Rules.CastingTimeOption_ModalRequest",
+        "$h": 60,
+        "ModalOptions": listing(1001, 1002),
+    }
     request = {"$c": "GreClient.Rules.CastingTimeOptionRequest", "$h": 5, "ChildRequests": listing(modal)}
     game = FakeGame(request)
     response = adapter_for(game).handle(
-        {"action": "submit_action", "action_index": 1, "expected_choice_kind": "modal", "expected_option_index": 0}
+        {
+            "action": "submit_action",
+            "action_index": 1,
+            "expected_choice_kind": "modal",
+            "expected_option_index": 0,
+        }
     )
     assert response["ok"] is False and "identity mismatch" in response["error"]
     assert game.submits() == []
@@ -235,9 +366,14 @@ def test_casting_time_identity_mismatch_never_submits():
 @pytest.mark.parametrize(
     ("expected", "sent"),
     [
-        ({"actionType": "Play", "grpId": 75553, "instanceId": 160},
-         {"expected_instance_id": 160, "expected_grp_id": 75553, "expected_action_type": "Play"}),
-        ({"choiceKind": "modal", "optionIndex": 1}, {"expected_choice_kind": "modal", "expected_option_index": 1}),
+        (
+            {"actionType": "Play", "grpId": 75553, "instanceId": 160},
+            {"expected_instance_id": 160, "expected_grp_id": 75553, "expected_action_type": "Play"},
+        ),
+        (
+            {"choiceKind": "modal", "optionIndex": 1},
+            {"expected_choice_kind": "modal", "expected_option_index": 1},
+        ),
         (None, {}),
     ],
 )
@@ -255,14 +391,22 @@ def test_auto_tap_uses_the_pay_costs_child():
     request = {"$c": "GreClient.Rules.PayCostsRequest", "$h": 5, "AutoTapActions": child}
     game = FakeGame(request)
     assert adapter_for(game).handle({"action": "submit_auto_tap"})["ok"] is True
-    assert game.submits()[-1][-1] == {"op": "call", "target": {"h": 70}, "method": "SubmitSolution",
-                                      "args": [{"h": 71}], "depth": 0}
+    assert game.submits()[-1][-1] == {
+        "op": "call",
+        "target": {"h": 70},
+        "method": "SubmitSolution",
+        "args": [{"h": 71}],
+        "depth": 0,
+    }
 
 
 def test_unknown_commands_are_reported_not_guessed():
     response = adapter_for(FakeGame(None)).handle({"action": "queue_bot_match"})
-    assert response == {"ok": False, "unsupported": True,
-                        "error": "not supported by the macOS IL2CPP bridge: queue_bot_match"}
+    assert response == {
+        "ok": False,
+        "unsupported": True,
+        "error": "not supported by the macOS IL2CPP bridge: queue_bot_match",
+    }
 
 
 def test_submission_failure_is_a_command_error():

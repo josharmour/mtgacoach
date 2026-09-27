@@ -44,6 +44,8 @@ def _device_label(device: str) -> str:
     if device == "android":
         return "Android phone"
     return "This Mac" if sys.platform == "darwin" else "This PC"
+
+
 _CONVO_STATES = ("idle", "listening", "thinking", "speaking")
 MAX_FEED_LINES = 500
 
@@ -240,7 +242,9 @@ class CompactCoachPanel(QWidget):
         self.mcts_pill_label.setObjectName("mctsPillLabel")
         self.mcts_pill_label.setWordWrap(True)
         self.mcts_pill_label.setTextFormat(Qt.RichText)
-        self.mcts_pill_label.setToolTip("Rule-of-thumb suggestion from the heuristic hints (not a simulation)")
+        self.mcts_pill_label.setToolTip(
+            "Rule-of-thumb suggestion from the heuristic hints (not a simulation)"
+        )
         self.mcts_pill_label.hide()
         now_layout.addWidget(self.mcts_pill_label)
 
@@ -507,7 +511,9 @@ class CompactCoachPanel(QWidget):
         # chance — show a word, not a percentage.
         root = float(payload.get("root_win_probability", 0.5))
         position, score_tone = (
-            ("favorable", "good") if root >= 0.6 else (("unfavorable", "bad") if root <= 0.4 else ("even", "warn"))
+            ("favorable", "good")
+            if root >= 0.6
+            else (("unfavorable", "bad") if root <= 0.4 else ("even", "warn"))
         )
         lines = [
             block(
@@ -840,7 +846,9 @@ class CompactCoachPanel(QWidget):
         bridge_val = self._dot_values.get("BRIDGE") or ""
         # "Connected (<runtime>)" | "Disconnected" | "Log mode"; "ON" from older builds.
         bridge_on = bridge_val.startswith("Connected") or bridge_val == "ON"
-        bridge_runtime = bridge_val[bridge_val.find("(") + 1 : bridge_val.rfind(")")] if "(" in bridge_val else ""
+        bridge_runtime = (
+            bridge_val[bridge_val.find("(") + 1 : bridge_val.rfind(")")] if "(" in bridge_val else ""
+        )
         seat = self._dot_values.get("SEAT") or "?"
         in_game = seat != "?" or self._dot_values.get("GAME") == "IN_MATCH"
 

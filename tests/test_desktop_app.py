@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 from unittest.mock import MagicMock
@@ -14,7 +14,9 @@ def test_restart_exit_code_defined() -> None:
     assert desktop_app.RESTART_EXIT_CODE == 42
 
 
-@pytest.mark.parametrize("entrypoint", ["/repo/src/arenamcp/desktop/__main__.py", "/venv/bin/mtgacoach-desktop"])
+@pytest.mark.parametrize(
+    "entrypoint", ["/repo/src/arenamcp/desktop/__main__.py", "/venv/bin/mtgacoach-desktop"]
+)
 def test_posix_restart_uses_module_not_a_package_file(monkeypatch, entrypoint):
     release = MagicMock()
     execute = MagicMock()
@@ -63,7 +65,9 @@ def test_restore_existing_instance_window_non_windows(monkeypatch) -> None:
 @pytest.mark.skipif(os.name != "nt", reason="Windows ctypes test")
 def test_restore_existing_instance_window_finds_by_title(monkeypatch) -> None:
     mock_user32 = MagicMock()
-    mock_user32.FindWindowW.side_effect = lambda class_name, title: 12345 if title == f"mtgacoach v{__version__}" else 0
+    mock_user32.FindWindowW.side_effect = lambda class_name, title: (
+        12345 if title == f"mtgacoach v{__version__}" else 0
+    )
 
     monkeypatch.setattr("ctypes.windll.user32", mock_user32)
 

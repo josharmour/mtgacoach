@@ -79,8 +79,15 @@ def test_fight_trigger_is_harmful_so_an_enemy_pick_stands():
         "creature you don't control.",
         "controller_seat_id": LOCAL,
     }
-    squirrel = {"instance_id": 803, "name": "Squirrel", "type_line": "Creature — Squirrel", "power": 1,
-                "toughness": 1, "controller_seat_id": OPP, "owner_seat_id": OPP}
+    squirrel = {
+        "instance_id": 803,
+        "name": "Squirrel",
+        "type_line": "Creature — Squirrel",
+        "power": 1,
+        "toughness": 1,
+        "controller_seat_id": OPP,
+        "owner_seat_id": OPP,
+    }
     state = _state(battlefield=[squirrel], stack=[kogla_trigger])
     state["decision_context"] = {"source_id": 900}
     decision = build_pending_decision(

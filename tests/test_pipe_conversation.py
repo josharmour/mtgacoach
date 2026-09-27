@@ -246,9 +246,7 @@ def test_chat_slash_commands_still_handled_before_conversation_routing() -> None
 def test_speak_request_payload_without_priority_or_identity() -> None:
     adapter, events = make_adapter(None)
 
-    adapter.emit_speech_request(
-        text="hello", voice_id="af_heart", voice_name="Heart", speed=1.0
-    )
+    adapter.emit_speech_request(text="hello", voice_id="af_heart", voice_name="Heart", speed=1.0)
 
     assert events == [
         {

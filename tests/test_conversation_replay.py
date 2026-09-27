@@ -523,11 +523,7 @@ def test_replay_t7_topic_backend_down_returns_none_cleanly(harness_factory):
     assert failures == []
 
     # Status lifecycle: idle after the failure (M6).
-    states = [
-        f.get("state")
-        for c, f in harness.events
-        if c == "conversation_status"
-    ]
+    states = [f.get("state") for c, f in harness.events if c == "conversation_status"]
     assert states[-1] == "idle"
 
 

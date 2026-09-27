@@ -137,7 +137,9 @@ class _ActionExecMixin:
                         elif is_displaced_pass:
                             reason = f"window is now {bridge_type or bridge_class} — pass not applicable"
                         elif is_displaced_numeric:
-                            reason = f"window is now {bridge_type or bridge_class or 'nothing'} — no number asked"
+                            reason = (
+                                f"window is now {bridge_type or bridge_class or 'nothing'} — no number asked"
+                            )
                         else:
                             reason = (
                                 f"bridge has no SelectN/Search pending "

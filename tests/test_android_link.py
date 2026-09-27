@@ -76,7 +76,9 @@ def _fake_adb(monkeypatch, devices: list[str], serials: dict[str, str]):
 
 
 def test_find_phone_prefers_usb_over_wifi(monkeypatch):
-    _fake_adb(monkeypatch, ["192.168.2.182:38815", "55301FDCH006K6"], {"192.168.2.182:38815": "55301FDCH006K6"})
+    _fake_adb(
+        monkeypatch, ["192.168.2.182:38815", "55301FDCH006K6"], {"192.168.2.182:38815": "55301FDCH006K6"}
+    )
     assert android_link.find_phone("adb") == "55301FDCH006K6"
 
 

@@ -7,14 +7,12 @@ without manual templates.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import os
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +326,9 @@ class AbilitySynthesizer:
 
             # Normalise card name to ~
             tokenized = re.sub(re.escape(norm_name), "~", clean_line, flags=re.IGNORECASE)
-            tokenized = re.sub(r"\b(this creature|this permanent|this artifact)\b", "~", tokenized, flags=re.IGNORECASE)
+            tokenized = re.sub(
+                r"\b(this creature|this permanent|this artifact)\b", "~", tokenized, flags=re.IGNORECASE
+            )
 
             ab = cls._parse_line(tokenized, clean_line, norm_name)
             if ab is not None:
@@ -372,7 +372,9 @@ class AbilitySynthesizer:
                 )
 
         # 3. Triggered ability check: When / Whenever / At Trigger, Effect
-        trig_match = re.match(r"^(When|Whenever|At)\s+(?P<trigger>.+?),\s+(?P<effect>.+)$", text, re.IGNORECASE)
+        trig_match = re.match(
+            r"^(When|Whenever|At)\s+(?P<trigger>.+?),\s+(?P<effect>.+)$", text, re.IGNORECASE
+        )
         if trig_match:
             trig_raw = trig_match.group("trigger").strip()
             eff_raw = trig_match.group("effect").strip()
@@ -402,9 +404,7 @@ class AbilitySynthesizer:
         found = []
         for w in words:
             # Check for ward
-            if w.startswith("ward"):
-                found.append(w.capitalize())
-            elif w in cls.STANDARD_KEYWORDS:
+            if w.startswith("ward") or w in cls.STANDARD_KEYWORDS:
                 found.append(w.capitalize())
         if found and len(found) == len(words):
             return StaticAbility(keywords=tuple(found), text=original_line)

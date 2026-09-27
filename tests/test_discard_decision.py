@@ -1,6 +1,6 @@
 """Tests for discard decision coaching, action planning, and staleness handling."""
 
-from arenamcp.action_planner import ActionPlanner, ActionType, GameAction
+from arenamcp.action_planner import ActionPlanner, ActionType
 
 
 def test_humanize_discard_action():
@@ -33,7 +33,13 @@ class DummyBackend:
 def test_action_planner_discard_empty_legal_actions():
     planner = ActionPlanner(backend=DummyBackend())
     game_state = {
-        "turn": {"turn_number": 14, "active_player": 2, "priority_player": 2, "phase": "Phase_Ending", "step": "Step_Cleanup"},
+        "turn": {
+            "turn_number": 14,
+            "active_player": 2,
+            "priority_player": 2,
+            "phase": "Phase_Ending",
+            "step": "Step_Cleanup",
+        },
         "players": [{"seat_id": 2, "is_local": True}, {"seat_id": 1, "is_local": False}],
         "pending_decision": "Discard",
         "legal_actions": [],
@@ -61,7 +67,13 @@ def test_action_planner_discard_empty_legal_actions():
 def test_build_action_prompt_discard():
     planner = ActionPlanner(backend=DummyBackend())
     game_state = {
-        "turn": {"turn_number": 14, "active_player": 2, "priority_player": 2, "phase": "Phase_Ending", "step": "Step_Cleanup"},
+        "turn": {
+            "turn_number": 14,
+            "active_player": 2,
+            "priority_player": 2,
+            "phase": "Phase_Ending",
+            "step": "Step_Cleanup",
+        },
         "players": [{"seat_id": 2, "is_local": True}, {"seat_id": 1, "is_local": False}],
         "pending_decision": "Discard",
         "legal_actions": [],

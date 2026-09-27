@@ -633,7 +633,9 @@ class _BridgeSubmitMixin:
         battlefield = [c for c in game_state.get("battlefield", []) or [] if isinstance(c, dict)]
         yours = [c for c in battlefield if c.get("controller_seat_id") == local_seat and _is_creature(c)]
         theirs = [
-            c for c in battlefield if c.get("controller_seat_id") not in (None, local_seat) and _is_creature(c)
+            c
+            for c in battlefield
+            if c.get("controller_seat_id") not in (None, local_seat) and _is_creature(c)
         ]
         ctx = game_state.get("decision_context") or {}
         legal_ids = {int(i) for i in ctx.get("legal_attacker_ids") or [] if i}
@@ -641,7 +643,11 @@ class _BridgeSubmitMixin:
         candidates = [
             c
             for c in yours
-            if (int(c.get("instance_id") or 0) in legal_ids if legal_ids else str(c.get("name") or "") in legal_names)
+            if (
+                int(c.get("instance_id") or 0) in legal_ids
+                if legal_ids
+                else str(c.get("name") or "") in legal_names
+            )
         ]
         by_iid = {int(c.get("instance_id") or 0): c for c in candidates}
         chosen: list[dict] = []
@@ -690,7 +696,8 @@ class _BridgeSubmitMixin:
             twins = sorted(
                 int(c.get("instance_id") or 0)
                 for c in battlefield
-                if c.get("owner_seat_id") == local_seat and str(c.get("name") or "").strip().lower() == name.lower()
+                if c.get("owner_seat_id") == local_seat
+                and str(c.get("name") or "").strip().lower() == name.lower()
             )
             iid = int(card.get("instance_id") or 0)
             return f"{name} #{twins.index(iid) + 1}" if len(twins) > 1 and iid in twins else name

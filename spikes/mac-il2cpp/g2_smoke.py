@@ -128,8 +128,8 @@ def main() -> int:
                 seen = confirm(
                     mark,
                     "PerformActionResp",
-                    lambda f: f.get("actionType") == "ActionType_Play"
-                    and f.get("instanceId") == str(land["instance_id"]),
+                    lambda f, instance_id=land["instance_id"]: f.get("actionType") == "ActionType_Play"
+                    and f.get("instanceId") == str(instance_id),
                 )
                 say(f"{'CONFIRMED' if seen is not None else 'NOT SEEN'} in Player.log: PerformActionResp {seen}")
                 if result.get("ok") and seen is not None:

@@ -24,16 +24,35 @@ def _base_state() -> dict[str, Any]:
         "match_id": "match-A",
         "turn": {"turn_number": 3, "phase": "Phase_Main1", "active_player": 1, "priority_player": 1},
         "players": [
-            {"seat_id": 1, "is_local": True, "life_total": 20, "lands_played": 0,
-             "mana_pool": {"U": 1, "G": 1}},
+            {
+                "seat_id": 1,
+                "is_local": True,
+                "life_total": 20,
+                "lands_played": 0,
+                "mana_pool": {"U": 1, "G": 1},
+            },
             {"seat_id": 2, "is_local": False, "life_total": 20, "cards_in_hand": 4},
         ],
         "battlefield": [
-            {"instance_id": 1, "name": "Forest", "controller_seat_id": 1, "owner_seat_id": 1,
-             "type_line": "Basic Land — Forest", "is_tapped": False},
-            {"instance_id": 2, "name": "Llanowar Elves", "controller_seat_id": 1, "owner_seat_id": 1,
-             "type_line": "Creature — Elf Druid", "is_tapped": False, "power": 1, "toughness": 1,
-             "oracle_text": "{T}: Add {G}."},
+            {
+                "instance_id": 1,
+                "name": "Forest",
+                "controller_seat_id": 1,
+                "owner_seat_id": 1,
+                "type_line": "Basic Land — Forest",
+                "is_tapped": False,
+            },
+            {
+                "instance_id": 2,
+                "name": "Llanowar Elves",
+                "controller_seat_id": 1,
+                "owner_seat_id": 1,
+                "type_line": "Creature — Elf Druid",
+                "is_tapped": False,
+                "power": 1,
+                "toughness": 1,
+                "oracle_text": "{T}: Add {G}.",
+            },
         ],
         "hand": [
             {"instance_id": 3, "name": "Giant Growth", "type_line": "Instant", "mana_cost": "{G}"},
@@ -159,15 +178,25 @@ def test_stack_card_identity_recomputes():
     """Stack content change (not just size) must recompute."""
     state = _base_state()
     state["stack"] = [
-        {"instance_id": 9, "name": "Spell Pierce", "controller_seat_id": 2,
-         "owner_seat_id": 2, "type_line": "Instant"}
+        {
+            "instance_id": 9,
+            "name": "Spell Pierce",
+            "controller_seat_id": 2,
+            "owner_seat_id": 2,
+            "type_line": "Instant",
+        }
     ]
     first = MCTSEvaluator.evaluate(state)
 
     other_spell = _base_state()
     other_spell["stack"] = [
-        {"instance_id": 9, "name": "Fading Hope", "controller_seat_id": 2,
-         "owner_seat_id": 2, "type_line": "Instant"}
+        {
+            "instance_id": 9,
+            "name": "Fading Hope",
+            "controller_seat_id": 2,
+            "owner_seat_id": 2,
+            "type_line": "Instant",
+        }
     ]
     second = MCTSEvaluator.evaluate(other_spell)
     assert second is not first
@@ -188,13 +217,11 @@ def test_opp_hand_count_change_recomputes():
 def test_graveyard_identity_counts():
     """Graveyard card identity participates (cards drive gating/encoding)."""
     state = _base_state()
-    state["graveyard"] = [{"instance_id": 7, "name": "Fading Hope",
-                           "type_line": "Instant"}]
+    state["graveyard"] = [{"instance_id": 7, "name": "Fading Hope", "type_line": "Instant"}]
     first = MCTSEvaluator.evaluate(state)
 
     changed = _base_state()
-    changed["graveyard"] = [{"instance_id": 7, "name": "Make Disappear",
-                             "type_line": "Instant"}]
+    changed["graveyard"] = [{"instance_id": 7, "name": "Make Disappear", "type_line": "Instant"}]
     second = MCTSEvaluator.evaluate(changed)
     assert second is not first
 
@@ -255,16 +282,26 @@ def test_semantic_changes_are_not_phony_hits():
     """Multiple semantic changes back-to-back each produce fresh payloads."""
     a = MCTSEvaluator.evaluate(_base_state())
     b = MCTSEvaluator.evaluate({**_base_state(), "match_id": "match-Z"})
-    c = MCTSEvaluator.evaluate({**_base_state(),
-                                "players": [{"seat_id": 1, "is_local": True,
-                                             "life_total": 19, "lands_played": 0,
-                                             "mana_pool": {"U": 1, "G": 1}},
-                                            {"seat_id": 2, "is_local": False,
-                                             "life_total": 20, "cards_in_hand": 4}]})
+    c = MCTSEvaluator.evaluate(
+        {
+            **_base_state(),
+            "players": [
+                {
+                    "seat_id": 1,
+                    "is_local": True,
+                    "life_total": 19,
+                    "lands_played": 0,
+                    "mana_pool": {"U": 1, "G": 1},
+                },
+                {"seat_id": 2, "is_local": False, "life_total": 20, "cards_in_hand": 4},
+            ],
+        }
+    )
     assert len({id(a), id(b), id(c)}) == 3
 
 
 # ----- Checkpoint-1 review remediation -----
+
 
 def test_mixed_missing_instance_ids_do_not_crash():
     """Same-name cards with mixed/missing instance IDs must evaluate cleanly.
@@ -276,8 +313,9 @@ def test_mixed_missing_instance_ids_do_not_crash():
     state = _base_state()
     state["hand"].append({"name": "Forest", "type_line": "Basic Land — Forest"})
     first = MCTSEvaluator.evaluate(state)  # must not raise
-    state["hand"].append({"name": "Forest", "instance_id": 7,
-                          "type_line": "Basic Land — Forest", "is_tapped": False})
+    state["hand"].append(
+        {"name": "Forest", "instance_id": 7, "type_line": "Basic Land — Forest", "is_tapped": False}
+    )
     second = MCTSEvaluator.evaluate(state)
     assert second is not first
 

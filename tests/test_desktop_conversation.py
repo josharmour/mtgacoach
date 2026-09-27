@@ -10,17 +10,15 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-
-from PySide6.QtCore import QObject, Signal as QtSignal
+from PySide6.QtCore import QObject
 
 pytest.importorskip("PySide6")
+from arenamcp.desktop.coach_session import CoachSession
 from arenamcp.desktop.compact_coach import CompactCoachPanel
 from arenamcp.desktop.conversation_transcript import ConversationTranscript
-from arenamcp.desktop.coach_session import CoachSession
 from arenamcp.desktop.ptt import VOICE_UNAVAILABLE_TOOLTIP, PttController
 from arenamcp.desktop.tts_manager import TtsManager
 from arenamcp.settings import DEFAULTS
-
 
 # ---------------------------------------------------------------------------
 # Settings defaults
@@ -143,9 +141,7 @@ def test_speak_stop_event_holds_tts_generation_gate(qapp, monkeypatch):
     """C2 + M4 interplay: a rendered-but-late request invalidated by a
     speak_stop is discarded even if the worker renders it afterwards."""
     manager = _ready_manager(monkeypatch)
-    manager.request_speech(
-        text="old utterance", voice_id="af_heart", voice_name="Heart", speed=1.0
-    )
+    manager.request_speech(text="old utterance", voice_id="af_heart", voice_name="Heart", speed=1.0)
     generation = manager._generation
     manager.stop_speech()  # engine-initiated preempt lands as a stop
     assert manager._pending_request is None
@@ -260,9 +256,7 @@ def test_speech_started_and_stopped_signals(qapp, monkeypatch):
     manager._current_audio_path = None
     play = Mock(return_value=True)
     monkeypatch.setattr("arenamcp.desktop.tts_manager.AudioPlayback.play_file", play)
-    manager._handle_stdout_line(
-        json.dumps({"type": "rendered", "generation": 1, "path": "voice.wav"})
-    )
+    manager._handle_stdout_line(json.dumps({"type": "rendered", "generation": 1, "path": "voice.wav"}))
     assert started == [True]
 
     manager._stop_playback()
@@ -559,9 +553,7 @@ def test_stop_button_cancels_engine_pending(monkeypatch):
     ctrl, coach, voice = make_controller()
     coach._coach.get_advice.side_effect = slow_advice
     coach.conversation = ctrl  # the adapter must find the REAL controller
-    monkeypatch.setattr(
-        conversation_mod, "get_settings", lambda: MagicMock(set=lambda k, v: None)
-    )
+    monkeypatch.setattr(conversation_mod, "get_settings", lambda: MagicMock(set=lambda k, v: None))
     ctrl.set_mode(CONVERSATION, persist=False)
 
     adapter = PipeAdapter()
@@ -824,4 +816,3 @@ def test_ptt_no_speech_info_differs_from_failure_notice(ptt_button, qapp):
     ptt_button.released.emit()
     assert "no speech detected" in session.notices[0]
     assert "failed" not in session.notices[0]
-

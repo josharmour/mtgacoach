@@ -231,7 +231,9 @@ class GREBridge:
                         self.disconnect()
                         return False
                     self.client_runtime = runtime or "bepinex"
-                    if runtime in ("il2cpp-macos", ANDROID_RUNTIME) and "reflect-1" in (resp.get("protocols") or []):
+                    if runtime in ("il2cpp-macos", ANDROID_RUNTIME) and "reflect-1" in (
+                        resp.get("protocols") or []
+                    ):
                         from arenamcp.mac_bridge_adapter import MacBridgeAdapter
 
                         self._mac_adapter = MacBridgeAdapter(self._send_command_raw, runtime)

@@ -32,10 +32,21 @@ SNAPSHOT_SKIP = ["OriginalMessage", "ParentRequest", "_outboundMessage", "OnSubm
 SNAPSHOT_DEPTH = 7
 # Speculative getters read in the snapshot batch; absent members come back null.
 SNAPSHOT_GETTERS = [
-    "Type", "CanCancel", "AllowUndo", "CanPass", "CanSubmit",
-    "IsInstanceIdSelection", "IsZoneSelection", "IsManaColorSelection", "IsCardColorSelection",
-    "IsCounterSelection", "IsBasicLandSelection", "IsTriggeredAbilitySelection", "IsStackingDecision",
-    "IsMultiZoneSearch", "IsOptional",
+    "Type",
+    "CanCancel",
+    "AllowUndo",
+    "CanPass",
+    "CanSubmit",
+    "IsInstanceIdSelection",
+    "IsZoneSelection",
+    "IsManaColorSelection",
+    "IsCardColorSelection",
+    "IsCounterSelection",
+    "IsBasicLandSelection",
+    "IsTriggeredAbilitySelection",
+    "IsStackingDecision",
+    "IsMultiZoneSearch",
+    "IsOptional",
 ]
 MAX_NUMERIC_INPUT_ENTRIES = 20
 TARGET_COMMIT_TIMEOUT_S = 1.2
@@ -45,19 +56,50 @@ TARGET_GONE_GRACE_S = 0.6
 PASSTHROUGH = {"ping", "reflect_batch"}
 
 DECISION_TYPES = {
-    "SelectTargetsReq": "target_selection", "SearchReq": "search", "DistributionReq": "distribution",
-    "NumericInputReq": "numeric_input", "SelectNReq": "select_n", "GroupReq": "group_selection",
-    "GroupOptionReq": "modal_choice", "DeclareAttackersReq": "declare_attackers",
-    "DeclareBlockersReq": "declare_blockers", "PayCostsReq": "pay_costs",
-    "ChooseStartingPlayerReq": "choose_starting_player", "SelectReplacementReq": "select_replacement",
-    "SelectNGroupReq": "select_n_group", "SelectFromGroupsReq": "select_from_groups",
-    "SearchFromGroupsReq": "search_from_groups", "SelectCountersReq": "select_counters",
-    "OrderReq": "order_triggers", "GatherReq": "gather",
+    "SelectTargetsReq": "target_selection",
+    "SearchReq": "search",
+    "DistributionReq": "distribution",
+    "NumericInputReq": "numeric_input",
+    "SelectNReq": "select_n",
+    "GroupReq": "group_selection",
+    "GroupOptionReq": "modal_choice",
+    "DeclareAttackersReq": "declare_attackers",
+    "DeclareBlockersReq": "declare_blockers",
+    "PayCostsReq": "pay_costs",
+    "ChooseStartingPlayerReq": "choose_starting_player",
+    "SelectReplacementReq": "select_replacement",
+    "SelectNGroupReq": "select_n_group",
+    "SelectFromGroupsReq": "select_from_groups",
+    "SearchFromGroupsReq": "search_from_groups",
+    "SelectCountersReq": "select_counters",
+    "OrderReq": "order_triggers",
+    "GatherReq": "gather",
 }
 INTERESTING_NAME_KEYWORDS = (
-    "prompt", "help", "message", "label", "text", "context", "target", "option", "choice", "select",
-    "group", "search", "source", "zone", "attack", "block", "counter", "id", "count", "min", "max",
-    "amount", "total", "value",
+    "prompt",
+    "help",
+    "message",
+    "label",
+    "text",
+    "context",
+    "target",
+    "option",
+    "choice",
+    "select",
+    "group",
+    "search",
+    "source",
+    "zone",
+    "attack",
+    "block",
+    "counter",
+    "id",
+    "count",
+    "min",
+    "max",
+    "amount",
+    "total",
+    "value",
 )
 
 
@@ -235,7 +277,9 @@ class MacBridgeAdapter:
             ops.get(request, name, depth=1, optional=True)
         return Snapshot(self._run(ops, timeout))
 
-    def _submit(self, snapshot: Snapshot, build: Callable[[_Ops, dict], None], timeout: float | None) -> list[Any]:
+    def _submit(
+        self, snapshot: Snapshot, build: Callable[[_Ops, dict], None], timeout: float | None
+    ) -> list[Any]:
         """Run `build`'s ops only if the snapshot's request is still the pending one."""
         ops = _Ops()
         request = ops.pending(0)
@@ -250,7 +294,11 @@ class MacBridgeAdapter:
         action = str(command.get("action") or "")
         handler = getattr(self, "_cmd_" + action, None)
         if handler is None:
-            return {"ok": False, "unsupported": True, "error": f"not supported by the macOS IL2CPP bridge: {action}"}
+            return {
+                "ok": False,
+                "unsupported": True,
+                "error": f"not supported by the macOS IL2CPP bridge: {action}",
+            }
         try:
             return handler(command, timeout)
         except AdapterError as exc:
@@ -268,7 +316,11 @@ class MacBridgeAdapter:
     # -- observation ---------------------------------------------------------
 
     def _cmd_get_game_state(self, command: dict, timeout: float | None) -> dict:
-        return {"ok": False, "unsupported": True, "error": "macOS bridge is log-first; board state comes from Player.log"}
+        return {
+            "ok": False,
+            "unsupported": True,
+            "error": "macOS bridge is log-first; board state comes from Player.log",
+        }
 
     def _cmd_get_pending_actions(self, command: dict, timeout: float | None) -> dict:
         snapshot = self.snapshot(timeout=timeout)
@@ -381,7 +433,11 @@ class MacBridgeAdapter:
             for target in items(field(selection, "Targets")):
                 # grpId stays 0: the plugin resolves it from the live board, which
                 # the log-first coach already knows by instance id.
-                entry = {"targetInstanceId": num(field(target, "TargetInstanceId")), "targetIdx": index, "grpId": 0}
+                entry = {
+                    "targetInstanceId": num(field(target, "TargetInstanceId")),
+                    "targetIdx": index,
+                    "grpId": 0,
+                }
                 slot.append(dict(entry))
                 flat.append(entry)
             selections.append(
@@ -451,10 +507,14 @@ class MacBridgeAdapter:
         should_cancel = bool(field(request, "ShouldCancel"))
         response["select_n_can_cancel"] = should_cancel
         for key, getter in (
-            ("instance_id", "IsInstanceIdSelection"), ("zone", "IsZoneSelection"),
-            ("mana_color", "IsManaColorSelection"), ("card_color", "IsCardColorSelection"),
-            ("counter", "IsCounterSelection"), ("basic_land", "IsBasicLandSelection"),
-            ("triggered_ability", "IsTriggeredAbilitySelection"), ("stacking_decision", "IsStackingDecision"),
+            ("instance_id", "IsInstanceIdSelection"),
+            ("zone", "IsZoneSelection"),
+            ("mana_color", "IsManaColorSelection"),
+            ("card_color", "IsCardColorSelection"),
+            ("counter", "IsCounterSelection"),
+            ("basic_land", "IsBasicLandSelection"),
+            ("triggered_ability", "IsTriggeredAbilitySelection"),
+            ("stacking_decision", "IsStackingDecision"),
         ):
             response["select_n_is_" + key] = bool(getters.get(getter))
         response["select_n_should_cancel"] = should_cancel
@@ -497,9 +557,10 @@ class MacBridgeAdapter:
                 raise AdapterError(f"identity mismatch: action {index} is {info}")
         if command.get("expected_action_type") and command["expected_action_type"] != info["actionType"]:
             raise AdapterError(f"identity mismatch: action {index} is {info}")
-        if command.get("expected_game_state_id") not in (None, -1) and int(
-            command["expected_game_state_id"]
-        ) != snapshot.game_state_id:
+        if (
+            command.get("expected_game_state_id") not in (None, -1)
+            and int(command["expected_game_state_id"]) != snapshot.game_state_id
+        ):
             raise AdapterError(
                 f"stale command: request game_state_id {snapshot.game_state_id} != {command['expected_game_state_id']}"
             )
@@ -526,9 +587,9 @@ class MacBridgeAdapter:
         payload = entry["payload"]
         if command.get("expected_choice_kind") and command["expected_choice_kind"] != payload["choiceKind"]:
             raise AdapterError(f"identity mismatch: option {index} is {payload}")
-        if command.get("expected_option_index") is not None and command["expected_option_index"] != payload.get(
-            "optionIndex"
-        ):
+        if command.get("expected_option_index") is not None and command[
+            "expected_option_index"
+        ] != payload.get("optionIndex"):
             raise AdapterError(f"identity mismatch: option {index} is {payload}")
 
         def build(ops: _Ops, request: dict) -> None:
@@ -567,13 +628,17 @@ class MacBridgeAdapter:
 
     def _cmd_submit_choose_starting_player(self, command: dict, timeout: float | None) -> dict:
         seat = int(command.get("seat_id") or 0)
-        self._call_on_request(command, timeout, ("ChooseStartingPlayerRequest",), "ChooseStartingPlayer", U(seat))
+        self._call_on_request(
+            command, timeout, ("ChooseStartingPlayerRequest",), "ChooseStartingPlayer", U(seat)
+        )
         return {"ok": True, "submitted_type": "ChooseStartingPlayer", "seat_id": seat}
 
     def _cmd_submit_optional(self, command: dict, timeout: float | None) -> dict:
         accept = bool(command.get("accept"))
         response = "AllowYes" if accept else "CancelNo"
-        self._call_on_request(command, timeout, ("OptionalActionMessageRequest",), "SubmitResponse", E(response))
+        self._call_on_request(
+            command, timeout, ("OptionalActionMessageRequest",), "SubmitResponse", E(response)
+        )
         return {"ok": True, "submitted_type": "Optional", "response": response}
 
     def _cmd_submit_numeric(self, command: dict, timeout: float | None) -> dict:
@@ -588,12 +653,17 @@ class MacBridgeAdapter:
             target, method, kind = snapshot.request, "SubmitValue", "NumericInput"
         else:
             target = next(
-                (c for c in items(field(snapshot.request, "ChildRequests"))
-                 if short_class(c) == "CastingTimeOption_NumericInputRequest"),
+                (
+                    c
+                    for c in items(field(snapshot.request, "ChildRequests"))
+                    if short_class(c) == "CastingTimeOption_NumericInputRequest"
+                ),
                 None,
             )
             if target is None:
-                raise AdapterError("CastingTimeOptionRequest has no CastingTimeOption_NumericInputRequest child")
+                raise AdapterError(
+                    "CastingTimeOptionRequest has no CastingTimeOption_NumericInputRequest child"
+                )
             method, kind = "SubmitX", "CastingTimeOption_X"
         # Clamp before the uint conversion (issue #390: out-of-range X wedged the slider).
         value = max(num(field(target, "Min")), min(num(field(target, "Max")), requested))
@@ -608,7 +678,10 @@ class MacBridgeAdapter:
             return {"ok": True, "submitted_type": "SelectN"}
         selection = LIST([U(i) for i in ids])
         self._submit(snapshot, lambda ops, request: ops.call(request, "SubmitSelection", selection), timeout)
-        return {"ok": True, "submitted_type": "SelectN" if snapshot.request_class == "SelectNRequest" else "Search"}
+        return {
+            "ok": True,
+            "submitted_type": "SelectN" if snapshot.request_class == "SelectNRequest" else "Search",
+        }
 
     def _cmd_submit_group(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout, "GroupRequest")
@@ -628,7 +701,10 @@ class MacBridgeAdapter:
         for value in spec.get("ids") or []:
             ops.call(ids, "Add", U(int(value)))
         if zones:
-            for key, prefix, member in (("zone", "ZoneType_", "ZoneType"), ("sub_zone", "SubZoneType_", "SubZoneType")):
+            for key, prefix, member in (
+                ("zone", "ZoneType_", "ZoneType"),
+                ("sub_zone", "SubZoneType_", "SubZoneType"),
+            ):
                 raw = str(spec.get(key) or "")
                 if raw:
                     ops.set(group, member, E(raw.removeprefix(prefix)))
@@ -647,7 +723,9 @@ class MacBridgeAdapter:
         for assignment in assignments:
             blocker = by_id.get(int(assignment.get("blockerInstanceId") or 0))
             if blocker is None:
-                logger.warning("mac bridge: blocker %s not in AllBlockers", assignment.get("blockerInstanceId"))
+                logger.warning(
+                    "mac bridge: blocker %s not in AllBlockers", assignment.get("blockerInstanceId")
+                )
                 continue
             selected.append((blocker, [int(a) for a in assignment.get("attackerInstanceIds") or []]))
 
@@ -724,7 +802,13 @@ class MacBridgeAdapter:
             required += required_slot
             targets = items(field(selection, "Targets"))
             pick = next(
-                (t for pid in preferred if pid not in used for t in targets if num(field(t, "TargetInstanceId")) == pid),
+                (
+                    t
+                    for pid in preferred
+                    if pid not in used
+                    for t in targets
+                    if num(field(t, "TargetInstanceId")) == pid
+                ),
                 None,
             ) or next((t for t in targets if num(field(t, "TargetInstanceId")) not in used), None)
             if pick is None:
@@ -770,7 +854,9 @@ class MacBridgeAdapter:
             advanced = self._deferred_commit_targets(snapshot, timeout)
             return {"ok": True, **result, "finalized": True, "advanced_without_commit": advanced}
         if finalize:
-            logger.warning("mac bridge SubmitTargets: only %d/%d required slots filled", required_filled, required)
+            logger.warning(
+                "mac bridge SubmitTargets: only %d/%d required slots filled", required_filled, required
+            )
         return {"ok": all_required, **result, "finalized": False}
 
     def _commit_targets(self, snapshot: Snapshot, timeout: float | None) -> None:
@@ -792,7 +878,10 @@ class MacBridgeAdapter:
         while time.monotonic() - started < TARGET_COMMIT_TIMEOUT_S:
             time.sleep(0.03)
             current = self.snapshot(depth=4, timeout=timeout)
-            if current.request_class != "SelectTargetsRequest" or num(field(current.request, "SourceId")) != source:
+            if (
+                current.request_class != "SelectTargetsRequest"
+                or num(field(current.request, "SourceId")) != source
+            ):
                 gone_since = gone_since or time.monotonic()
                 if time.monotonic() - gone_since >= TARGET_GONE_GRACE_S:
                     return True
@@ -803,7 +892,8 @@ class MacBridgeAdapter:
                 continue  # the GRE has not round-tripped our selection yet
             selections = items(field(current.request, "TargetSelections"))
             if all(
-                num(field(s, "MinTargets")) == 0 or num(field(s, "SelectedTargets")) >= num(field(s, "MinTargets"))
+                num(field(s, "MinTargets")) == 0
+                or num(field(s, "SelectedTargets")) >= num(field(s, "MinTargets"))
                 for s in selections
             ):
                 self._commit_targets(current, timeout)
@@ -820,7 +910,9 @@ class MacBridgeAdapter:
         for spec in command.get("assigners") or []:
             assigner = existing.get(int(spec.get("instanceId") or 0))
             if assigner is None:
-                logger.warning("mac bridge submit_assign_damage: attacker %s not in request", spec.get("instanceId"))
+                logger.warning(
+                    "mac bridge submit_assign_damage: attacker %s not in request", spec.get("instanceId")
+                )
                 continue
             templates = {num(field(a, "InstanceId")): a for a in items(field(assigner, "Assignments"))}
             plans.append((assigner, spec.get("assignments") or [], templates))
@@ -833,7 +925,10 @@ class MacBridgeAdapter:
                 ops.set(clone, "TotalDamage", U(num(field(assigner, "TotalDamage"))))
                 target_list = ops.get(clone, "Assignments")
                 for assignment in assignments:
-                    receiver, damage = int(assignment.get("instanceId") or 0), int(assignment.get("damage") or 0)
+                    receiver, damage = (
+                        int(assignment.get("instanceId") or 0),
+                        int(assignment.get("damage") or 0),
+                    )
                     template = templates.get(receiver)
                     entry = ops.new(MESSAGING + "DamageAssignment")
                     ops.set(entry, "InstanceId", U(receiver))
@@ -848,16 +943,29 @@ class MacBridgeAdapter:
         return {"ok": True, "submitted_type": "AssignDamage", "assigner_count": len(plans)}
 
     def _cmd_submit_distribution(self, command: dict, timeout: float | None) -> dict:
-        pairs = [[U(int(k)), U(int(v))] for k, v in (command.get("distributions") or {}).items() if str(k).isdigit()]
-        self._call_on_request(command, timeout, ("DistributionRequest",), "SubmitDistribution", {"dict": pairs})
+        pairs = [
+            [U(int(k)), U(int(v))]
+            for k, v in (command.get("distributions") or {}).items()
+            if str(k).isdigit()
+        ]
+        self._call_on_request(
+            command, timeout, ("DistributionRequest",), "SubmitDistribution", {"dict": pairs}
+        )
         return {"ok": True, "submitted_type": "Distribution", "target_count": len(pairs)}
 
     def _cmd_submit_order(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout, "OrderRequest")
         ids = command.get("ids")
-        ordered = [int(i) for i in ids] if ids is not None else [num(i) for i in items(field(snapshot.request, "Ids"))]
-        self._submit(snapshot, lambda ops, request: ops.call(request, "SubmitOrder", LIST([U(i) for i in ordered])),
-                     timeout)
+        ordered = (
+            [int(i) for i in ids]
+            if ids is not None
+            else [num(i) for i in items(field(snapshot.request, "Ids"))]
+        )
+        self._submit(
+            snapshot,
+            lambda ops, request: ops.call(request, "SubmitOrder", LIST([U(i) for i in ordered])),
+            timeout,
+        )
         return {"ok": True, "submitted_type": "Order", "count": len(ordered)}
 
     def _cmd_submit_select_replacement(self, command: dict, timeout: float | None) -> dict:
@@ -932,7 +1040,9 @@ class MacBridgeAdapter:
         if not 0 <= index < len(solutions):
             raise AdapterError(f"AutoTap solution index {index} out of range (0-{len(solutions) - 1})")
         chosen = H(handle(solutions[index]))
-        self._submit(snapshot, lambda ops, request: ops.call(H(handle(auto_tap)), "SubmitSolution", chosen), timeout)
+        self._submit(
+            snapshot, lambda ops, request: ops.call(H(handle(auto_tap)), "SubmitSolution", chosen), timeout
+        )
         return {"ok": True, "submitted_type": "AutoTap", "solution_index": index}
 
     def _cmd_submit_select_from_groups(self, command: dict, timeout: float | None) -> dict:
@@ -950,7 +1060,11 @@ class MacBridgeAdapter:
         if ids is not None:
             values = [int(i) for i in ids]
             self._call_on_request(
-                command, timeout, ("SelectNGroupRequest",), "SubmitGroupSelection", LIST([U(i) for i in values])
+                command,
+                timeout,
+                ("SelectNGroupRequest",),
+                "SubmitGroupSelection",
+                LIST([U(i) for i in values]),
             )
             return {"ok": True, "submitted_type": "SelectNGroup", "count": len(values)}
         single = int(command.get("id") or 0)
@@ -974,12 +1088,22 @@ class MacBridgeAdapter:
     def _cmd_submit_casting_mana_type(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout, "CastingTimeOption_ManaTypeRequest", "CastingTimeOptionRequest")
         request = snapshot.request
-        mana = request if snapshot.request_class == "CastingTimeOption_ManaTypeRequest" else next(
-            (c for c in items(field(request, "ChildRequests")) if short_class(c) == "CastingTimeOption_ManaTypeRequest"),
-            None,
+        mana = (
+            request
+            if snapshot.request_class == "CastingTimeOption_ManaTypeRequest"
+            else next(
+                (
+                    c
+                    for c in items(field(request, "ChildRequests"))
+                    if short_class(c) == "CastingTimeOption_ManaTypeRequest"
+                ),
+                None,
+            )
         )
         if mana is None:
-            raise AdapterError(f"Pending is {snapshot.request_class}, no CastingTimeOption_ManaTypeRequest child")
+            raise AdapterError(
+                f"Pending is {snapshot.request_class}, no CastingTimeOption_ManaTypeRequest child"
+            )
         colors = [str(c) for c in command.get("colors") or []]
         inner = items(field(mana, "InnerRequests"))
         if len(colors) != len(inner):
@@ -996,7 +1120,9 @@ class MacBridgeAdapter:
     def _cmd_cancel_action(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout)
         cancel = bool(snapshot.getters.get("CanCancel"))
-        self._submit(snapshot, lambda ops, request: ops.call(request, "Cancel" if cancel else "AutoRespond"), timeout)
+        self._submit(
+            snapshot, lambda ops, request: ops.call(request, "Cancel" if cancel else "AutoRespond"), timeout
+        )
         return {"ok": True, "cancelled": cancel, "request_class": snapshot.request_class}
 
 
@@ -1013,8 +1139,11 @@ def serialize_action(action: dict) -> dict[str, Any]:
         "instanceId": num(field(action, "InstanceId")),
     }
     for key, member in (
-        ("abilityGrpId", "AbilityGrpId"), ("sourceId", "SourceId"), ("alternativeGrpId", "AlternativeGrpId"),
-        ("facetId", "FacetId"), ("uniqueAbilityId", "UniqueAbilityId"),
+        ("abilityGrpId", "AbilityGrpId"),
+        ("sourceId", "SourceId"),
+        ("alternativeGrpId", "AlternativeGrpId"),
+        ("facetId", "FacetId"),
+        ("uniqueAbilityId", "UniqueAbilityId"),
     ):
         value = num(field(action, member))
         if value:
@@ -1069,7 +1198,11 @@ def recipient_id(recipient: dict, member: str) -> int | None:
 def replacement_display(replacement: Any) -> str:
     if not isinstance(replacement, dict):
         return "" if replacement is None else str(replacement)
-    parts = [f"{camel_case(k)}={v}" for k, v in replacement.items() if not k.startswith("$") and isinstance(v, (int, str))]
+    parts = [
+        f"{camel_case(k)}={v}"
+        for k, v in replacement.items()
+        if not k.startswith("$") and isinstance(v, (int, str))
+    ]
     return f"{short_class(replacement)}({', '.join(parts)})"
 
 
@@ -1099,7 +1232,9 @@ def auto_tap_request(request: dict | None) -> dict | None:
     child = field(request, "AutoTapActions")
     if isinstance(child, dict):
         return child
-    return next((c for c in items(field(request, "ChildRequests")) if short_class(c) == "AutoTapActionsRequest"), None)
+    return next(
+        (c for c in items(field(request, "ChildRequests")) if short_class(c) == "AutoTapActionsRequest"), None
+    )
 
 
 def numeric_values(request: dict) -> list[int]:
@@ -1110,8 +1245,10 @@ def numeric_values(request: dict) -> list[int]:
     values = []
     value = low
     while value <= high and len(values) < MAX_NUMERIC_INPUT_ENTRIES:
-        if value not in disallowed and not (field(request, "DisallowEven") and value % 2 == 0) and not (
-            field(request, "DisallowOdd") and value % 2 == 1
+        if (
+            value not in disallowed
+            and not (field(request, "DisallowEven") and value % 2 == 0)
+            and not (field(request, "DisallowOdd") and value % 2 == 1)
         ):
             values.append(value)
         value += step
@@ -1126,11 +1263,23 @@ def casting_time_entries(request: dict) -> list[dict[str, Any]]:
     """
     entries: list[dict[str, Any]] = []
 
-    def add(child: dict, index: int, kind: str, label: str, method: str, args: list[dict],
-            option_index: int | None = None, grp_id: int = 0, **extra: Any) -> dict:
+    def add(
+        child: dict,
+        index: int,
+        kind: str,
+        label: str,
+        method: str,
+        args: list[dict],
+        option_index: int | None = None,
+        grp_id: int = 0,
+        **extra: Any,
+    ) -> dict:
         payload: dict[str, Any] = {
-            "actionType": "CastingTimeOption", "choiceKind": kind, "requestClass": short_class(child),
-            "childIndex": index, "label": label,
+            "actionType": "CastingTimeOption",
+            "choiceKind": kind,
+            "requestClass": short_class(child),
+            "childIndex": index,
+            "label": label,
         }
         if option_index is not None:
             payload["optionIndex"] = option_index
@@ -1140,8 +1289,13 @@ def casting_time_entries(request: dict) -> list[dict[str, Any]]:
             payload["sourceId"] = num(field(child, "SourceId"))
         payload.update(extra)
         entries.append(
-            {"payload": payload, "child_handle": handle(child), "child_class": short_class(child), "method": method,
-             "args": args}
+            {
+                "payload": payload,
+                "child_handle": handle(child),
+                "child_class": short_class(child),
+                "method": method,
+                "args": args,
+            }
         )
         return payload
 
@@ -1160,8 +1314,17 @@ def casting_time_entries(request: dict) -> list[dict[str, Any]]:
                 other = [num(v) for v in items(field(child, "OtherSelection"))]
                 if other:
                     extra["otherSelection"] = other
-                add(child, index, "modal", f"Mode {option + 1}", "SubmitModal", [LIST([U(option_grp)])],
-                    option, option_grp, **extra)
+                add(
+                    child,
+                    index,
+                    "modal",
+                    f"Mode {option + 1}",
+                    "SubmitModal",
+                    [LIST([U(option_grp)])],
+                    option,
+                    option_grp,
+                    **extra,
+                )
         elif kind == "CastingTimeOption_ChooseOrCostRequest":
             for option, pair in enumerate(items(field(child, "Options"))):
                 prompt_id, selection = num(field(pair, "Key")), num(field(pair, "Value"))
@@ -1172,37 +1335,70 @@ def casting_time_entries(request: dict) -> list[dict[str, Any]]:
                     extra["min"] = num(field(child, "Min"))
                 if num(field(child, "Max")) > 0:
                     extra["max"] = num(field(child, "Max"))
-                add(child, index, "choose_or_cost", f"Choice {option + 1}", "SubmitChoice", [LIST([U(selection)])],
-                    option, grp, **extra)
+                add(
+                    child,
+                    index,
+                    "choose_or_cost",
+                    f"Choice {option + 1}",
+                    "SubmitChoice",
+                    [LIST([U(selection)])],
+                    option,
+                    grp,
+                    **extra,
+                )
         elif kind == "CastingTimeOption_DoneRequest":
             payload = add(child, index, "done", "Done", "SubmitDone", [])
             costs = mana_costs(field(child, "ManaCost"))
             if costs:
                 payload["manaCost"] = costs
         elif kind in (
-            "CastingTimeOption_TimingPermissionRequest", "CastingTimeOption_KickerRequest",
+            "CastingTimeOption_TimingPermissionRequest",
+            "CastingTimeOption_KickerRequest",
             "CastingTimeOption_AdditionalCostRequest",
         ):
             choice, label, method = {
-                "CastingTimeOption_TimingPermissionRequest": ("timing_permission", "Timing Permission", "SubmitFlash"),
+                "CastingTimeOption_TimingPermissionRequest": (
+                    "timing_permission",
+                    "Timing Permission",
+                    "SubmitFlash",
+                ),
                 "CastingTimeOption_KickerRequest": ("kicker", "Kicker", "SubmitKicked"),
-                "CastingTimeOption_AdditionalCostRequest": ("additional_cost", "Additional Cost", "SubmitAdditionalCost"),
+                "CastingTimeOption_AdditionalCostRequest": (
+                    "additional_cost",
+                    "Additional Cost",
+                    "SubmitAdditionalCost",
+                ),
             }[kind]
             payload = add(child, index, choice, label, method, [], grp_id=grp)
             costs = mana_costs(field(child, "ManaCost"))
             if costs:
                 payload["manaCost"] = costs
         elif kind == "CastingTimeOption_CostKeywordRequest":
-            add(child, index, "cost_keyword", enum_name(field(child, "OptionType")), "SubmitKeywordAction", [],
-                grp_id=grp)
+            add(
+                child,
+                index,
+                "cost_keyword",
+                enum_name(field(child, "OptionType")),
+                "SubmitKeywordAction",
+                [],
+                grp_id=grp,
+            )
         elif kind == "CastingTimeOption_NumericInputRequest":
             fixed = num(field(child, "Min")) == num(field(child, "Max"))
             for value in [num(field(child, "Min"))] if fixed else numeric_values(child):
                 extra = {"numericValue": value}
                 if not fixed:
                     extra.update(min=num(field(child, "Min")), max=num(field(child, "Max")))
-                add(child, index, "numeric_input", f"Value {value}" if fixed else f"X = {value}", "SubmitX",
-                    [U(value)], grp_id=grp, **extra)
+                add(
+                    child,
+                    index,
+                    "numeric_input",
+                    f"Value {value}" if fixed else f"X = {value}",
+                    "SubmitX",
+                    [U(value)],
+                    grp_id=grp,
+                    **extra,
+                )
         elif kind == "CastingTimeOption_Replicate":
             low, high = num(field(child, "Min")), num(field(child, "Max"))
             for value in range(low, min(high, low + MAX_NUMERIC_INPUT_ENTRIES - 1) + 1):
@@ -1212,9 +1408,17 @@ def casting_time_entries(request: dict) -> list[dict[str, Any]]:
                 add(child, index, "replicate", f"Replicate {value}", "SubmitValue", [U(value)], **extra)
         elif kind == "CastingTimeOption_SpecializeRequest":
             for color in items(field(child, "SelectableColors")):
-                add(child, index, "specialize", f"Specialize: {enum_name(color)}", "SubmitSpecialization",
-                    [I(num(color))], grp_id=num(field(child, "SourceAbilityId")), colorName=enum_name(color),
-                    colorValue=num(color))
+                add(
+                    child,
+                    index,
+                    "specialize",
+                    f"Specialize: {enum_name(color)}",
+                    "SubmitSpecialization",
+                    [I(num(color))],
+                    grp_id=num(field(child, "SourceAbilityId")),
+                    colorName=enum_name(color),
+                    colorValue=num(color),
+                )
         elif kind == "CastingTimeOption_ManaTypeRequest":
             defaults = []
             for inner in items(field(child, "InnerRequests")):
@@ -1222,8 +1426,15 @@ def casting_time_entries(request: dict) -> list[dict[str, Any]]:
                 if options:
                     defaults.append(options[max(0, min(num(field(inner, "DefaultIndex")), len(options) - 1))])
             names = [enum_name(c) for c in defaults]
-            add(child, index, "mana_type", f"Mana types: {','.join(names)}", "SubmitSelection",
-                [LIST([I(num(c)) for c in defaults])], colors=names)
+            add(
+                child,
+                index,
+                "mana_type",
+                f"Mana types: {','.join(names)}",
+                "SubmitSelection",
+                [LIST([I(num(c)) for c in defaults])],
+                colors=names,
+            )
     return entries
 
 
@@ -1250,17 +1461,44 @@ def build_request_payload(request: dict, request_type: str, request_class: str) 
     return payload if len(payload) > 2 else {}
 
 
-def build_decision_context(request_type: str, request_class: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+def build_decision_context(
+    request_type: str, request_class: str, payload: dict[str, Any]
+) -> dict[str, Any] | None:
     """Plugin.BuildPendingRequestDecisionContext."""
     context: dict[str, Any] = {"requestType": request_type, "requestClass": request_class}
     mapped = DECISION_TYPES.get(request_type)
     if mapped:
         context["type"] = mapped
     for name in (
-        "prompt", "promptText", "message", "messageText", "help", "helpText", "sourceId", "grpId", "abilityGrpId",
-        "zoneId", "count", "min", "max", "minCount", "maxCount", "amount", "total", "ids", "options", "targets",
-        "validTargets", "targetsToSelect", "qualifiedTargets", "attackers", "qualifiedAttackers", "blockers",
-        "qualifiedBlockers", "groups", "counterTypes",
+        "prompt",
+        "promptText",
+        "message",
+        "messageText",
+        "help",
+        "helpText",
+        "sourceId",
+        "grpId",
+        "abilityGrpId",
+        "zoneId",
+        "count",
+        "min",
+        "max",
+        "minCount",
+        "maxCount",
+        "amount",
+        "total",
+        "ids",
+        "options",
+        "targets",
+        "validTargets",
+        "targetsToSelect",
+        "qualifiedTargets",
+        "attackers",
+        "qualifiedAttackers",
+        "blockers",
+        "qualifiedBlockers",
+        "groups",
+        "counterTypes",
     ):
         if payload.get(name) is not None:
             context[name] = payload[name]

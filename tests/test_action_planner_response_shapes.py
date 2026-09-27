@@ -30,8 +30,10 @@ def test_wrapped_actions_still_parse():
 
 
 def test_bare_pick_object_parses():
-    plan = _parse('{"pick": 1, "reasoning": "Seam Rip has no legal targets; develop the body.", '
-                  '"turn_plan": {"steps": []}}')
+    plan = _parse(
+        '{"pick": 1, "reasoning": "Seam Rip has no legal targets; develop the body.", '
+        '"turn_plan": {"steps": []}}'
+    )
     assert len(plan.actions) == 1
     assert plan.actions[0].action_type == ActionType.CAST_SPELL
     assert plan.actions[0].card_name == "Optimistic Scavenger"
@@ -57,21 +59,44 @@ def test_unrelated_object_is_still_empty():
 
 def _declare_state(step: str) -> dict:
     return {
-        "players": [{"seat_id": 1, "is_local": True, "life_total": 18},
-                    {"seat_id": 2, "is_local": False, "life_total": 3}],
-        "turn": {"turn_number": 9, "active_player": 1, "priority_player": 1,
-                 "phase": "Phase_Combat", "step": step},
+        "players": [
+            {"seat_id": 1, "is_local": True, "life_total": 18},
+            {"seat_id": 2, "is_local": False, "life_total": 3},
+        ],
+        "turn": {
+            "turn_number": 9,
+            "active_player": 1,
+            "priority_player": 1,
+            "phase": "Phase_Combat",
+            "step": step,
+        },
         "battlefield": [
             # Being declared: GRE reports it tapped mid-declaration.
-            {"name": "Veteran Survivor", "type_line": "Creature — Human Survivor", "power": 12,
-             "toughness": 10, "controller_seat_id": 1, "owner_seat_id": 1, "is_tapped": True,
-             "turn_entered_battlefield": 1},
-            {"name": "Optimistic Scavenger", "type_line": "Creature — Human Scout", "power": 1,
-             "toughness": 1, "controller_seat_id": 1, "owner_seat_id": 1, "is_tapped": False,
-             "turn_entered_battlefield": 7},
+            {
+                "name": "Veteran Survivor",
+                "type_line": "Creature — Human Survivor",
+                "power": 12,
+                "toughness": 10,
+                "controller_seat_id": 1,
+                "owner_seat_id": 1,
+                "is_tapped": True,
+                "turn_entered_battlefield": 1,
+            },
+            {
+                "name": "Optimistic Scavenger",
+                "type_line": "Creature — Human Scout",
+                "power": 1,
+                "toughness": 1,
+                "controller_seat_id": 1,
+                "owner_seat_id": 1,
+                "is_tapped": False,
+                "turn_entered_battlefield": 7,
+            },
         ],
-        "decision_context": {"type": "declare_attackers",
-                             "legal_attackers": ["Veteran Survivor", "Optimistic Scavenger"]},
+        "decision_context": {
+            "type": "declare_attackers",
+            "legal_attackers": ["Veteran Survivor", "Optimistic Scavenger"],
+        },
     }
 
 
@@ -100,16 +125,37 @@ def _choose_x_state(forests: int, mana_cost: str = "{X}{G}{G}") -> dict:
         "players": [{"seat_id": 1, "is_local": True}, {"seat_id": 2, "is_local": False}],
         "turn": {"turn_number": 5, "active_player": 1, "priority_player": 1, "phase": "Phase_Main1"},
         "pending_decision": "Choose Casting Option",
-        "stack": [{"name": "Nature's Rhythm", "mana_cost": mana_cost, "instance_id": 557, "owner_seat_id": 1}],
+        "stack": [
+            {"name": "Nature's Rhythm", "mana_cost": mana_cost, "instance_id": 557, "owner_seat_id": 1}
+        ],
         "battlefield": [
-            {"name": "Forest", "type_line": "Basic Land — Forest", "owner_seat_id": 1,
-             "controller_seat_id": 1, "is_tapped": False}
+            {
+                "name": "Forest",
+                "type_line": "Basic Land — Forest",
+                "owner_seat_id": 1,
+                "controller_seat_id": 1,
+                "is_tapped": False,
+            }
             for _ in range(forests)
         ],
-        "decision_context": {"type": "casting_time_options", "raw": {"castingTimeOptionReq": [{
-            "ctoId": 2, "castingTimeOptionType": "CastingTimeOptionType_ChooseX", "affectedId": 557,
-            "numericInputReq": {"maxValue": 2147483647, "stepSize": 1, "sourceId": 557,
-                                "numericInputType": "NumericInputType_ChooseX"}}]}},
+        "decision_context": {
+            "type": "casting_time_options",
+            "raw": {
+                "castingTimeOptionReq": [
+                    {
+                        "ctoId": 2,
+                        "castingTimeOptionType": "CastingTimeOptionType_ChooseX",
+                        "affectedId": 557,
+                        "numericInputReq": {
+                            "maxValue": 2147483647,
+                            "stepSize": 1,
+                            "sourceId": 557,
+                            "numericInputType": "NumericInputType_ChooseX",
+                        },
+                    }
+                ]
+            },
+        },
     }
 
 
@@ -132,6 +178,8 @@ def test_other_casting_time_options_keep_generic_menu():
     from arenamcp.rules_engine import RulesEngine
 
     state = _choose_x_state(3)
-    state["decision_context"]["raw"]["castingTimeOptionReq"][0]["castingTimeOptionType"] = "CastingTimeOptionType_Kicker"
+    state["decision_context"]["raw"]["castingTimeOptionReq"][0]["castingTimeOptionType"] = (
+        "CastingTimeOptionType_Kicker"
+    )
     state["decision_context"]["raw"]["castingTimeOptionReq"][0].pop("numericInputReq")
     assert RulesEngine.get_legal_actions(state)[0] == "Cast normally"

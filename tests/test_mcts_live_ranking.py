@@ -60,10 +60,21 @@ def _actions(tree) -> list[str]:
 def test_gre_listed_but_unpayable_cast_is_not_a_candidate():
     state = _state(
         hand=[
-            {"name": "Ancient Behemoth", "type_line": "Creature — Beast", "mana_cost": "{4}{G}{G}",
-             "power": 9, "toughness": 9},
-            {"name": "Llanowar Elves", "type_line": "Creature — Elf Druid", "mana_cost": "{G}",
-             "power": 1, "toughness": 1, "oracle_text": "{T}: Add {G}."},
+            {
+                "name": "Ancient Behemoth",
+                "type_line": "Creature — Beast",
+                "mana_cost": "{4}{G}{G}",
+                "power": 9,
+                "toughness": 9,
+            },
+            {
+                "name": "Llanowar Elves",
+                "type_line": "Creature — Elf Druid",
+                "mana_cost": "{G}",
+                "power": 1,
+                "toughness": 1,
+                "oracle_text": "{T}: Add {G}.",
+            },
         ],
         battlefield=[_forest(turn_entered=1), _forest(tapped=True)],
         legal_actions=["Cast Ancient Behemoth", "Cast Llanowar Elves [OK]", "Pass"],
@@ -76,8 +87,14 @@ def test_gre_listed_but_unpayable_cast_is_not_a_candidate():
 
 def test_spell_gre_does_not_offer_is_not_a_candidate():
     state = _state(
-        hand=[{"name": "Shock", "type_line": "Instant", "mana_cost": "{R}",
-               "oracle_text": "Shock deals 2 damage to any target."}],
+        hand=[
+            {
+                "name": "Shock",
+                "type_line": "Instant",
+                "mana_cost": "{R}",
+                "oracle_text": "Shock deals 2 damage to any target.",
+            }
+        ],
         battlefield=[_forest()],
         legal_actions=["Cast Llanowar Elves [OK]", "Pass"],
         lands_played=1,
@@ -88,8 +105,15 @@ def test_spell_gre_does_not_offer_is_not_a_candidate():
 
 def test_land_drop_outranks_pass():
     state = _state(
-        hand=[_forest() | {"owner_seat_id": 1}, {"name": "Giant Growth", "type_line": "Instant",
-                                                 "mana_cost": "{G}", "oracle_text": "Target creature gets +3/+3."}],
+        hand=[
+            _forest() | {"owner_seat_id": 1},
+            {
+                "name": "Giant Growth",
+                "type_line": "Instant",
+                "mana_cost": "{G}",
+                "oracle_text": "Target creature gets +3/+3.",
+            },
+        ],
         battlefield=[],
         legal_actions=[],
         turn=1,
@@ -102,8 +126,14 @@ def test_land_drop_outranks_pass():
 
 
 def test_land_then_cast_scores_at_least_the_bare_cast():
-    birds = {"name": "Birds of Paradise", "type_line": "Creature — Bird", "mana_cost": "{G}",
-             "power": 0, "toughness": 1, "oracle_text": "Flying\n{T}: Add one mana of any color."}
+    birds = {
+        "name": "Birds of Paradise",
+        "type_line": "Creature — Bird",
+        "mana_cost": "{G}",
+        "power": 0,
+        "toughness": 1,
+        "oracle_text": "Flying\n{T}: Add one mana of any color.",
+    }
     state = _state(
         hand=[birds, _forest() | {"owner_seat_id": 1}],
         battlefield=[_forest()],

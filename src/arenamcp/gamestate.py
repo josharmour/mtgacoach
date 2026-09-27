@@ -431,7 +431,9 @@ class GameState(_GameStateAnnotationsMixin):
             with self._state_lock:
                 self._apply_field_defaults()
                 self.commander_grp_ids = [
-                    _coerce_int(gid, 0) for gid in checkpoint.get("commander_grp_ids", []) if _coerce_int(gid, 0)
+                    _coerce_int(gid, 0)
+                    for gid in checkpoint.get("commander_grp_ids", [])
+                    if _coerce_int(gid, 0)
                 ]
                 self.commander_casts = {
                     _coerce_int(gid, 0): _coerce_int(casts, 0)
@@ -1236,7 +1238,9 @@ class GameState(_GameStateAnnotationsMixin):
                                 "Ability (ID:"
                             ):
                                 enriched["name"] = f"{source_name} ability"
-                                enriched["oracle_text"] = enriched["oracle_text"] or source_info.get("oracle_text", "")
+                                enriched["oracle_text"] = enriched["oracle_text"] or source_info.get(
+                                    "oracle_text", ""
+                                )
                 except Exception as e:
                     logger.debug(f"Card info lookup failed for grp_id={grp_id}: {e}")
                     enriched["name"] = f"Unknown ({grp_id})"
@@ -1533,7 +1537,9 @@ class GameState(_GameStateAnnotationsMixin):
                     cid = grp_id or existing_obj.grp_id
                     if cid:
                         self.commander_casts[cid] = self.commander_casts.get(cid, 0) + 1
-                        logger.info("Commander %s cast from command zone (total: %d)", cid, self.commander_casts[cid])
+                        logger.info(
+                            "Commander %s cast from command zone (total: %d)", cid, self.commander_casts[cid]
+                        )
             zone_id = new_zone_id
         if "ownerSeatId" in obj_data:
             owner_seat_id = obj_data["ownerSeatId"]

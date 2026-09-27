@@ -23,7 +23,6 @@ def test_register_hotkeys_does_not_raise_nameerror(monkeypatch):
 
 def test_register_hotkeys_skips_when_disabled(monkeypatch):
     """Verify _register_hotkeys does not hook keyboard when _register_keyboard is False."""
-    import sys
     mock_keyboard = MagicMock()
     monkeypatch.setattr("arenamcp.standalone_hotkeys.keyboard", mock_keyboard)
     coach = DummyCoach()

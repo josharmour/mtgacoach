@@ -36,7 +36,6 @@ except ImportError:
     WatchdogPingBridge = None  # type: ignore[misc,assignment]
 
 
-
 class UiAnrWatchdog(threading.Thread):
     """Background OS thread that monitors Qt main event loop responsiveness.
 

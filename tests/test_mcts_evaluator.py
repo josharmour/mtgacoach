@@ -348,24 +348,45 @@ def test_mcts_evaluator_state_signature_caching():
     assert tree1 is tree2  # Must return identical cached object
 
 
-
 def _real_attack_board(phase: str, step: str = "", pending=None, active: int = 2) -> dict:
     """2026-09-24 turn 12: Emrakul 13/13 and Vorinclex 7/6 vs 11 life."""
+
     def creature(iid, name, seat, power, toughness, oracle=""):
-        return {"instance_id": iid, "name": name, "power": power, "toughness": toughness, "oracle_text": oracle,
-                "type_line": "Creature", "controller_seat_id": seat, "owner_seat_id": seat, "is_tapped": False}
+        return {
+            "instance_id": iid,
+            "name": name,
+            "power": power,
+            "toughness": toughness,
+            "oracle_text": oracle,
+            "type_line": "Creature",
+            "controller_seat_id": seat,
+            "owner_seat_id": seat,
+            "is_tapped": False,
+        }
 
     return {
-        "turn": {"turn_number": 12, "phase": phase, "step": step, "active_player": active, "priority_player": active},
+        "turn": {
+            "turn_number": 12,
+            "phase": phase,
+            "step": step,
+            "active_player": active,
+            "priority_player": active,
+        },
         "local_seat_id": 2,
-        "players": [{"seat_id": 2, "is_local": True, "life_total": 25}, {"seat_id": 1, "is_local": False, "life_total": 11}],
+        "players": [
+            {"seat_id": 2, "is_local": True, "life_total": 25},
+            {"seat_id": 1, "is_local": False, "life_total": 11},
+        ],
         "battlefield": [
             creature(510, "Emrakul, the Promised End", 2, 13, 13, "Flying, trample"),
             creature(503, "Vorinclex, Voice of Hunger", 2, 7, 6, "Trample"),
             creature(609, "Weapons Vendor", 1, 5, 3),
             creature(495, "Mabel, Heir to Cragflame", 1, 3, 3),
         ],
-        "hand": [], "stack": [], "graveyard": [], "legal_actions": [],
+        "hand": [],
+        "stack": [],
+        "graveyard": [],
+        "legal_actions": [],
         "pending_decision": pending,
     }
 

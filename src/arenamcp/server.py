@@ -586,7 +586,9 @@ def _handle_match_created(payload: dict) -> None:
         p_seat = participant.get("systemSeatId")
         p_user = participant.get("userId")
         p_name = participant.get("playerName") or participant.get("screenName") or participant.get("userName")
-        if p_name and ((seat_id is not None and p_seat != seat_id) or (local_user_id and p_user != local_user_id)):
+        if p_name and (
+            (seat_id is not None and p_seat != seat_id) or (local_user_id and p_user != local_user_id)
+        ):
             game_state.opponent_name = str(p_name)
             break
 

@@ -179,9 +179,7 @@ class PttController(QObject):
             with contextlib.suppress(Exception):
                 self._transcriber = default_transcriber()
 
-        recorder_ready = self._recorder is not None and callable(
-            getattr(self._recorder, "start", None)
-        )
+        recorder_ready = self._recorder is not None and callable(getattr(self._recorder, "start", None))
         transcriber_ready = self._transcriber is not None and callable(
             getattr(self._transcriber, "transcribe", None)
         )

@@ -81,8 +81,14 @@ def test_board_lists_opponent_creatures_and_groups_lands(panel):
     snap["battlefield"] += [
         {"name": "Forest", "controller_seat_id": 2, "type_line": "Basic Land — Forest"},
         {"name": "Forest", "controller_seat_id": 2, "type_line": "Basic Land — Forest"},
-        {"name": "Serra Angel", "controller_seat_id": 1, "owner_seat_id": 1,
-         "type_line": "Creature — Angel", "power": 4, "toughness": 4},
+        {
+            "name": "Serra Angel",
+            "controller_seat_id": 1,
+            "owner_seat_id": 1,
+            "type_line": "Creature — Angel",
+            "power": 4,
+            "toughness": 4,
+        },
     ]
     panel._on_game_state_changed(snap)
     html = panel.game_state_view.text()
@@ -93,18 +99,26 @@ def test_board_lists_opponent_creatures_and_groups_lands(panel):
 
 def test_tactical_pill_renders_hint_without_fake_odds(panel):
     # The score is a life/power/hand heuristic, not a win chance (2026-09-24).
-    panel._on_mcts_updated({
-        'eval_source': 'Tactical Heuristic Lookahead', 'root_win_probability': .62,
-        'best_action': 'Play Land: Island', 'branches': [{
-            'action': 'Play Land: Island', 'score_provenance': 'heuristic_lookahead',
-            'normalized_score': .62, 'value_delta': .04,
-        }],
-    })
+    panel._on_mcts_updated(
+        {
+            "eval_source": "Tactical Heuristic Lookahead",
+            "root_win_probability": 0.62,
+            "best_action": "Play Land: Island",
+            "branches": [
+                {
+                    "action": "Play Land: Island",
+                    "score_provenance": "heuristic_lookahead",
+                    "normalized_score": 0.62,
+                    "value_delta": 0.04,
+                }
+            ],
+        }
+    )
     rendered = panel.mcts_pill_label.text()
-    assert 'Heuristic hint' in rendered
-    assert 'board favorable' in rendered
-    assert '%' not in rendered
-    assert 'Play Land: Island' in rendered
+    assert "Heuristic hint" in rendered
+    assert "board favorable" in rendered
+    assert "%" not in rendered
+    assert "Play Land: Island" in rendered
 
 
 def test_controls_reflow_at_sidebar_width(panel, qapp):
@@ -140,8 +154,7 @@ def test_controls_reflow_at_sidebar_width(panel, qapp):
 
 
 def test_voice_style_settings_live_in_popover(panel, qapp):
-    for button in (panel.voice_btn, panel.speed_btn, panel.style_btn, panel.verbosity_btn,
-                   panel.mute_btn):
+    for button in (panel.voice_btn, panel.speed_btn, panel.style_btn, panel.verbosity_btn, panel.mute_btn):
         assert button.parent() is panel.voice_style_popover
         assert not button.isVisible()
     panel.more_btn.click()

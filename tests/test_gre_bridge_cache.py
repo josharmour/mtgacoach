@@ -1,6 +1,5 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-import time
 from unittest.mock import MagicMock
 
 from arenamcp.gre_bridge import GREBridge
@@ -12,6 +11,7 @@ def test_get_game_state_caches_within_ttl():
     bridge._pipe_file = MagicMock()
 
     call_count = 0
+
     def mock_send(cmd, timeout=None):
         nonlocal call_count
         call_count += 1

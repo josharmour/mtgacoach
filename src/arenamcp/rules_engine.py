@@ -60,7 +60,9 @@ class RulesEngine:
         sources: list[frozenset] = []
         turn_num = game_state.get("turn", {}).get("turn_number", 0)
         creature_mana_source_count = 0
-        your_cards = [c for c in battlefield if (c.get("controller_seat_id") or c.get("owner_seat_id")) == local_seat]
+        your_cards = [
+            c for c in battlefield if (c.get("controller_seat_id") or c.get("owner_seat_id")) == local_seat
+        ]
         for card in your_cards:
             if card.get("is_tapped"):
                 continue
@@ -675,7 +677,16 @@ class RulesEngine:
                     if isinstance(raw, int):
                         ids.append(raw)
                         return
-                for key in ("target", "card", "object", "targets", "validTargets", "qualifiedTargets", "targetsToSelect", "raw"):
+                for key in (
+                    "target",
+                    "card",
+                    "object",
+                    "targets",
+                    "validTargets",
+                    "qualifiedTargets",
+                    "targetsToSelect",
+                    "raw",
+                ):
                     child = value.get(key)
                     if isinstance(child, (dict, list, int)):
                         _collect(child)
@@ -743,12 +754,15 @@ class RulesEngine:
         explicit_ids = RulesEngine._extract_explicit_target_instance_ids(explicit_context)
         target_keys = {"validTargets", "qualifiedTargets", "targetsToSelect", "targets"}
         raw = explicit_context.get("raw") or {}
-        has_explicit = bool(explicit_ids) or bool(target_keys.intersection(explicit_context)) or (
-            isinstance(raw, dict) and bool(target_keys.intersection(raw))
+        has_explicit = (
+            bool(explicit_ids)
+            or bool(target_keys.intersection(explicit_context))
+            or (isinstance(raw, dict) and bool(target_keys.intersection(raw)))
         )
         if has_explicit:
             local_seat = game_state.get("local_seat_id") or next(
-                (player.get("seat_id") for player in game_state.get("players", []) if player.get("is_local")), None
+                (player.get("seat_id") for player in game_state.get("players", []) if player.get("is_local")),
+                None,
             )
             cards = {
                 card["instance_id"]: card
@@ -1139,7 +1153,11 @@ class RulesEngine:
         card = None
         for zone in ("stack", "hand", "command", "battlefield"):
             card = next(
-                (c for c in game_state.get(zone) or [] if isinstance(c, dict) and c.get("instance_id") == affected),
+                (
+                    c
+                    for c in game_state.get(zone) or []
+                    if isinstance(c, dict) and c.get("instance_id") == affected
+                ),
                 None,
             )
             if card:
@@ -1163,8 +1181,11 @@ class RulesEngine:
         max_x = min(max(max_x, min_x), min_x + 20)
         from arenamcp.play_safety import useful_tutor_x
 
-        return [f"X = {value}" for value in range(min_x, max_x + 1)
-                if useful_tutor_x(game_state, card or {}, value)] or ["No useful X values"]
+        return [
+            f"X = {value}"
+            for value in range(min_x, max_x + 1)
+            if useful_tutor_x(game_state, card or {}, value)
+        ] or ["No useful X values"]
 
     @staticmethod
     def get_legal_actions(game_state: dict[str, Any]) -> list[str]:

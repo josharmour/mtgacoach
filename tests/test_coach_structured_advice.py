@@ -86,11 +86,20 @@ def _state(legal_actions: list[str]) -> dict[str, Any]:
             {"seat_id": 1, "is_local": True, "life_total": 20},
             {"seat_id": 2, "is_local": False, "life_total": 20},
         ],
-        "turn": {"active_player": 1, "priority_player": 1, "turn_number": 6,
-                 "phase": "Phase_Main1", "step": "Step_Main"},
-        "hand": [{"name": "Kogla, the Titan Ape", "type_line": "Creature — Ape",
-                  "mana_cost": "{3}{G}{G}{G}"}],
-        "battlefield": [], "graveyard": [], "stack": [], "exile": [],
+        "turn": {
+            "active_player": 1,
+            "priority_player": 1,
+            "turn_number": 6,
+            "phase": "Phase_Main1",
+            "step": "Step_Main",
+        },
+        "hand": [
+            {"name": "Kogla, the Titan Ape", "type_line": "Creature — Ape", "mana_cost": "{3}{G}{G}{G}"}
+        ],
+        "battlefield": [],
+        "graveyard": [],
+        "stack": [],
+        "exile": [],
         "legal_actions": legal_actions,
     }
 
@@ -103,7 +112,10 @@ def test_get_advice_verified_pick_is_not_replaced():
     assert out.startswith("Cast Kogla")
     assert "LOCAL FALLBACK" not in out
     assert coach.last_structured_choice == {
-        "index": 1, "action": CHOICES[0], "verified": True, "trigger": "new_turn",
+        "index": 1,
+        "action": CHOICES[0],
+        "verified": True,
+        "trigger": "new_turn",
     }
 
 

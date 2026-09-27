@@ -657,7 +657,9 @@ class _AdvicePostprocessMixin:
                 if "declare attackers" in act and "declare attackers" in pending_decision:
                     score += 120
                 if act.startswith("attack with:"):
-                    if ("combat" in phase and "declareattack" in step) or "declare attackers" in pending_decision:
+                    if (
+                        "combat" in phase and "declareattack" in step
+                    ) or "declare attackers" in pending_decision:
                         score += 120
                     else:
                         score -= 100
@@ -1113,17 +1115,17 @@ class _AdvicePostprocessMixin:
             # "Play Land: Forest". Likewise "keep both back" at declare
             # attackers became "Declare Attackers: X" — the opposite advice.
             if not matches and not is_backend_error_text(advice):
-                holds_back = bool(
-                    re.search(r"\b(?:hold|keep)\b[\w\s,']{0,40}?\bback\b", advice_lower)
-                )
+                holds_back = bool(re.search(r"\b(?:hold|keep)\b[\w\s,']{0,40}?\bback\b", advice_lower))
                 attack_intent = bool(re.search(r"\b(?:attack|swing)\b", advice_lower))
                 block_intent = bool(re.search(r"\b(?:block|chump)\b", advice_lower))
                 turn_info = game_state.get("turn") or {}
                 phase_now = str(turn_info.get("phase", "") or "").lower()
                 my_turn = turn_info.get("active_player") == local_seat
                 pre_combat = my_turn and ("main1" in phase_now or "beginning" in phase_now)
-                opp_turn_pre_blocks = (not my_turn) and "combat" not in dec_type and (
-                    "main1" in phase_now or "combat" in phase_now or "beginning" in phase_now
+                opp_turn_pre_blocks = (
+                    (not my_turn)
+                    and "combat" not in dec_type
+                    and ("main1" in phase_now or "combat" in phase_now or "beginning" in phase_now)
                 )
                 if holds_back and not attack_intent:
                     if dec_type == "declare_attackers":
@@ -1131,9 +1133,7 @@ class _AdvicePostprocessMixin:
                         advice = f"Don't attack — {rest[:1].lower()}{rest[1:]}" if rest else "Don't attack"
                         advice_lower = advice.lower()
                     matches = True
-                elif attack_intent and pre_combat:
-                    matches = True
-                elif block_intent and opp_turn_pre_blocks:
+                elif attack_intent and pre_combat or block_intent and opp_turn_pre_blocks:
                     matches = True
 
             if not matches and is_backend_error_text(advice):
@@ -1213,7 +1213,8 @@ class _AdvicePostprocessMixin:
                         best = "Choose which creatures to block."
                 elif in_declare_attackers:
                     attacker_actions = [
-                        a for a in _candidates
+                        a
+                        for a in _candidates
                         if a.lower().startswith("attack with:") or "declare attackers:" in a.lower()
                     ]
                     if attacker_actions:
@@ -1226,8 +1227,10 @@ class _AdvicePostprocessMixin:
                     else:
                         # Prefer affordable candidates
                         affordable_candidates = [
-                            a for a in _candidates
-                            if "[need:" not in a.lower() and "[unaffordable]" not in a.lower()
+                            a
+                            for a in _candidates
+                            if "[need:" not in a.lower()
+                            and "[unaffordable]" not in a.lower()
                             and (not a.lower().startswith("cast ") or "[ok]" in a.lower())
                         ]
                         candidate_pool = affordable_candidates if affordable_candidates else _candidates

@@ -86,7 +86,9 @@ def test_notary_hobbits_return_is_accepted_without_llm(state, commander_prompt):
     executor._gre_bridge.submit_pass.assert_not_called()
 
 
-@pytest.mark.parametrize("case", ["other_prompt", "other_mechanic", "opponent", "token", "missing_card", "no_recipient"])
+@pytest.mark.parametrize(
+    "case", ["other_prompt", "other_mechanic", "opponent", "token", "missing_card", "no_recipient"]
+)
 def test_other_optional_actions_are_not_commander_returns(state, commander_prompt, case):
     if case == "other_prompt":
         commander_prompt["prompt"]["promptId"] = 999

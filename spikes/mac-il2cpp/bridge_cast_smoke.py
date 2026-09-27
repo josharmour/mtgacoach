@@ -175,7 +175,7 @@ def main() -> int:
                 say(f"cast {name} #{creature['instanceId']} -> {submit_by_identity(bridge, pending, creature)}")
                 seen = confirm(
                     mark, "PerformActionResp",
-                    lambda f: f.get("actionType") == "ActionType_Cast" and f.get("instanceId") == str(creature["instanceId"]),
+                    lambda f, instance_id=creature["instanceId"]: f.get("actionType") == "ActionType_Cast" and f.get("instanceId") == str(instance_id),
                 )
                 say(f"  {'CONFIRMED' if seen is not None else 'NOT SEEN'}: PerformActionResp Cast")
                 paid = False

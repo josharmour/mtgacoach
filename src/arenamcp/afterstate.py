@@ -7,7 +7,6 @@ true value deltas via uniform V(s) scoring without arbitrary additive constants.
 
 from __future__ import annotations
 
-import copy
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
@@ -15,18 +14,13 @@ from typing import Any, Literal
 
 from arenamcp.ability_synthesizer import (
     AbilitySynthesizer,
-    ActivatedAbility,
-    AddMana,
-    CardAbilities,
     Cost,
     CreateToken,
     GainLife,
-    ReturnFromGraveyard,
-    StaticAbility,
     TokenSpec,
     TriggeredAbility,
 )
-from arenamcp.format_profile import FormatEvaluatorConfig, FormatProfile
+from arenamcp.format_profile import FormatEvaluatorConfig
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +179,11 @@ class BoardState:
                 is_tok = bool(c.get("is_token") or "token" in str(c.get("type_line") or "").lower())
                 oracle = str(c.get("oracle_text") or "")
                 parsed_abs = AbilitySynthesizer.parse_card(name, oracle)
-                subtypes = tuple(str(c.get("type_line") or "").split("—")[-1].split()) if "—" in str(c.get("type_line") or "") else ()
+                subtypes = (
+                    tuple(str(c.get("type_line") or "").split("—")[-1].split())
+                    if "—" in str(c.get("type_line") or "")
+                    else ()
+                )
                 perms.append(
                     Permanent(
                         name=name,
@@ -212,7 +210,9 @@ class BoardState:
         )
 
         cfg = config or FormatEvaluatorConfig()
-        casts = int((game_state.get("command") or [{}])[0].get("commander_casts") or 0) if command_cards else 0
+        casts = (
+            int((game_state.get("command") or [{}])[0].get("commander_casts") or 0) if command_cards else 0
+        )
 
         return cls(
             hero_life=hero_life,
@@ -356,7 +356,9 @@ class AfterstateSimulator:
         elif isinstance(action, DeclareAttack):
             opp_life = max(0, opp_life - action.expected_damage)
             delta.damage_dealt += action.expected_damage
-            trigger_trace.append(f"Attack with {', '.join(action.attackers)} (-{action.expected_damage} Opp Life)")
+            trigger_trace.append(
+                f"Attack with {', '.join(action.attackers)} (-{action.expected_damage} Opp Life)"
+            )
 
         # 2. Trigger resolution loop
         depth = 0

@@ -60,6 +60,7 @@ def _memoized(key: tuple, compute: Callable[[], Any]) -> Any:
             _MEMO.popitem(last=False)
     return copy.deepcopy(value)
 
+
 # --- Helpers -----------------------------------------------------------
 
 
@@ -371,11 +372,15 @@ def _search_blocks(
                 plan.blockers_lost_material += _material(dead)
                 lost_blockers.append(dead)
     plan.score = _score_block_plan(plan, your_life)
-    plan.explanation = _explain_block_plan(plan, attackers, blockers, best_choice, killed_attackers, lost_blockers)
+    plan.explanation = _explain_block_plan(
+        plan, attackers, blockers, best_choice, killed_attackers, lost_blockers
+    )
     return plan
 
 
-def _block_score(damage_through: int, attackers_killed_material: int, blockers_lost_material: int, your_life: int) -> float:
+def _block_score(
+    damage_through: int, attackers_killed_material: int, blockers_lost_material: int, your_life: int
+) -> float:
     """Score a block assignment.
 
     Life dominates when we're at risk of dying; material dominates when
@@ -644,7 +649,9 @@ def evaluate_attack(
     # opponent will attack with next turn (we take this list in
     # verbatim since we can't easily predict it).
     crack_block = _search_blocks(opponent_attackers_next_turn, our_defenders, your_life)
-    crackback = crack_block.damage_through if crack_block else sum(_pt(a)[0] for a in opponent_attackers_next_turn)
+    crackback = (
+        crack_block.damage_through if crack_block else sum(_pt(a)[0] for a in opponent_attackers_next_turn)
+    )
 
     plan = AttackPlan(
         attacker_ids=[int(a.get("instance_id") or 0) for a in attacking],

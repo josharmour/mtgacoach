@@ -4,7 +4,6 @@ from arenamcp.ability_synthesizer import (
     AbilitySynthesizer,
     ActivatedAbility,
     CreateToken,
-    Filter,
     ReturnFromGraveyard,
     StaticAbility,
     TriggeredAbility,

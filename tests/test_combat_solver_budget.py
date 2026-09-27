@@ -13,10 +13,18 @@ import arenamcp.combat_solver as solver
 
 
 def _c(iid: int, power: int, toughness: int, text: str = "") -> dict:
-    return {"instance_id": iid, "name": f"c{iid}", "power": power, "toughness": toughness, "oracle_text": text}
+    return {
+        "instance_id": iid,
+        "name": f"c{iid}",
+        "power": power,
+        "toughness": toughness,
+        "oracle_text": text,
+    }
 
 
-OURS = [_c(1, 13, 13, "Flying, trample"), _c(2, 6, 6, "Trample"), _c(3, 1, 4)] + [_c(i, 1, 1) for i in range(4, 8)]
+OURS = [_c(1, 13, 13, "Flying, trample"), _c(2, 6, 6, "Trample"), _c(3, 1, 4)] + [
+    _c(i, 1, 1) for i in range(4, 8)
+]
 THEIRS = [_c(11, 3, 3), _c(12, 2, 1), _c(13, 3, 3), _c(14, 2, 2), _c(15, 6, 6), _c(16, 1, 1)]
 SPARE = [_c(8, 0, 3, "Reach"), _c(9, 1, 2)]
 
@@ -52,7 +60,9 @@ def _exhaustive(candidates, blockers, opp_life, your_life, crack, spare):
             plan = solver.AttackPlan(
                 attacker_ids=[c["instance_id"] for c in attacking],
                 damage_through=blocks.damage_through if blocks else sum(c["power"] for c in attacking),
-                worst_case_crackback=crackback.damage_through if crackback else sum(c["power"] for c in crack),
+                worst_case_crackback=crackback.damage_through
+                if crackback
+                else sum(c["power"] for c in crack),
                 attackers_lost_material=blocks.attackers_killed_material if blocks else 0,
                 blockers_killed_material=blocks.blockers_lost_material if blocks else 0,
             )

@@ -70,9 +70,17 @@ class MCTSBranch:
     def __post_init__(self) -> None:
         if self.normalized_score == 0.50 and self.win_probability != 0.50:
             self.normalized_score = self.win_probability
-        if self.raw_value == 0.0 and self.score_provenance == "heuristic_lookahead" and self.normalized_score != 0.50:
+        if (
+            self.raw_value == 0.0
+            and self.score_provenance == "heuristic_lookahead"
+            and self.normalized_score != 0.50
+        ):
             self.raw_value = round((self.normalized_score * 2.0) - 1.0, 3)
-        if self.raw_value_delta == 0.0 and self.value_delta != 0.0 and self.score_provenance == "heuristic_lookahead":
+        if (
+            self.raw_value_delta == 0.0
+            and self.value_delta != 0.0
+            and self.score_provenance == "heuristic_lookahead"
+        ):
             self.raw_value_delta = round(self.value_delta * 2.0, 3)
 
     def to_dict(self) -> dict[str, Any]:
@@ -220,9 +228,7 @@ class MCTSEvaluator:
         return (time.monotonic() - cls._last_payload_at) < ttl
 
     @classmethod
-    def _resolve_opponent_hand_count(
-        cls, game_state: dict[str, Any], local_seat: Any
-    ) -> tuple[Any, str]:
+    def _resolve_opponent_hand_count(cls, game_state: dict[str, Any], local_seat: Any) -> tuple[Any, str]:
         """Single source of truth for opponent-hand-count resolution.
 
         SHARED by the cache signature and the evaluation body, so their
@@ -310,8 +316,15 @@ class MCTSEvaluator:
                         ("attacking", bool(c.get("is_attacking"))),
                         ("sick", bool(c.get("is_summoning_sick"))),
                         ("etb", _freeze(c.get("turn_entered_battlefield"))),
-                        ("pt", _freeze((c.get("power") if "power" in c else None,
-                                        c.get("toughness") if "toughness" in c else None))),
+                        (
+                            "pt",
+                            _freeze(
+                                (
+                                    c.get("power") if "power" in c else None,
+                                    c.get("toughness") if "toughness" in c else None,
+                                )
+                            ),
+                        ),
                         ("cost", str(c.get("mana_cost") or "")),
                         ("types", str(c.get("type_line") or "")),
                         ("oracle", str(c.get("oracle_text") or "")),
@@ -349,23 +362,26 @@ class MCTSEvaluator:
         # tier) pair is the semantic input: unknown counts are distinguished
         # from every known value (including 0) via the tier, not by baking a
         # default into the signature.
-        opp_hand_count, opp_hand_tier = cls._resolve_opponent_hand_count(
-            game_state, local_seat
-        )
+        opp_hand_count, opp_hand_tier = cls._resolve_opponent_hand_count(game_state, local_seat)
 
         opp_life = next(
-            (p.get("life_total") for p in players
-             if isinstance(p, dict) and not (p.get("is_local") or p.get("seat_id") == local_seat)
-             and p.get("life_total") is not None),
+            (
+                p.get("life_total")
+                for p in players
+                if isinstance(p, dict)
+                and not (p.get("is_local") or p.get("seat_id") == local_seat)
+                and p.get("life_total") is not None
+            ),
             None,
         )
 
-        hero_player = next(
-            (p for p in players if isinstance(p, dict) and p.get("is_local")), None
-        )
+        hero_player = next((p for p in players if isinstance(p, dict) and p.get("is_local")), None)
         hero_life = next(
-            (p.get("life_total") for p in players
-             if isinstance(p, dict) and (p.get("is_local") or p.get("seat_id") == local_seat)),
+            (
+                p.get("life_total")
+                for p in players
+                if isinstance(p, dict) and (p.get("is_local") or p.get("seat_id") == local_seat)
+            ),
             None,
         )
         hero_lands_played = hero_player.get("lands_played") if hero_player else None
@@ -390,7 +406,9 @@ class MCTSEvaluator:
                         "has_command_zone": getattr(raw_fmt, "has_command_zone", None),
                     }
                     if hasattr(raw_fmt, "family")
-                    else raw_fmt if isinstance(raw_fmt, dict) else None
+                    else raw_fmt
+                    if isinstance(raw_fmt, dict)
+                    else None
                 ),
                 "detected": _freeze(detect_format_profile(game_state).__dict__)
                 if not (isinstance(raw_fmt, dict) and raw_fmt.get("family"))
@@ -434,7 +452,6 @@ class MCTSEvaluator:
             cls._zone_identity(zones.get("command") if isinstance(zones, dict) else None),
         )
 
-
     @classmethod
     def evaluate(cls, game_state: dict[str, Any], force: bool = False) -> MCTSTreePayload:
         """Run multi-ply outcome evaluation on the current game state snapshot."""
@@ -463,12 +480,7 @@ class MCTSEvaluator:
         battlefield = game_state.get("battlefield") or []
         stack = game_state.get("stack") or []
         sig = cls._decision_signature(game_state, local_seat)
-        if (
-            not force
-            and cls._last_sig == sig
-            and cls._last_payload is not None
-            and cls._cache_fresh()
-        ):
+        if not force and cls._last_sig == sig and cls._last_payload is not None and cls._cache_fresh():
             return cls._last_payload
 
         hero_life, opp_life = 20, 20
@@ -507,12 +519,22 @@ class MCTSEvaluator:
                 elif "creature" in t_line:
                     hero_creatures.append(obj)
                     has_haste = "haste" in oracle
-                    is_sick = (obj.get("turn_entered_battlefield") == turn_num and not has_haste)
-                    has_mana = "add {" in oracle or "add one mana" in oracle or "{ot}: add" in oracle or "taps for" in oracle
+                    is_sick = obj.get("turn_entered_battlefield") == turn_num and not has_haste
+                    has_mana = (
+                        "add {" in oracle
+                        or "add one mana" in oracle
+                        or "{ot}: add" in oracle
+                        or "taps for" in oracle
+                    )
                     if not is_tapped and has_mana and not is_sick:
                         hero_mana_dorks += 1
                 elif "artifact" in t_line and not is_tapped:
-                    if "add {" in oracle or "add one mana" in oracle or "{ot}: add" in oracle or "treasure" in t_line:
+                    if (
+                        "add {" in oracle
+                        or "add one mana" in oracle
+                        or "{ot}: add" in oracle
+                        or "treasure" in t_line
+                    ):
                         hero_mana_rocks += 1
             else:
                 if "land" in t_line and not is_tapped:
@@ -531,9 +553,7 @@ class MCTSEvaluator:
         # that produced it — both are semantic inputs (a synthesized default
         # for unknown is NOT the same state as a known count).
         zones = game_state.get("zones") or {}
-        opp_hand_count, opp_hand_count_tier = cls._resolve_opponent_hand_count(
-            game_state, local_seat
-        )
+        opp_hand_count, opp_hand_count_tier = cls._resolve_opponent_hand_count(game_state, local_seat)
         if opp_hand_count is None:
             # Evaluation synthesizes 4 for unknown; the signature tiers on the
             # (count, tier) pair so the cache distinguishes unknown from any
@@ -547,7 +567,9 @@ class MCTSEvaluator:
         if hasattr(raw_fmt, "family"):
             fmt_profile = raw_fmt
         elif isinstance(raw_fmt, dict) and raw_fmt.get("family"):
-            fmt_profile = FormatProfile(**{k: v for k, v in raw_fmt.items() if k in FormatProfile.__annotations__})
+            fmt_profile = FormatProfile(
+                **{k: v for k, v in raw_fmt.items() if k in FormatProfile.__annotations__}
+            )
         else:
             fmt_profile = detect_format_profile(game_state)
 
@@ -629,9 +651,7 @@ class MCTSEvaluator:
         ]
 
         # Check GRE legal actions for directly confirmed castable cards
-        legal_actions = (
-            game_state.get("legal_actions") or game_state.get("raw_legal_actions") or []
-        )
+        legal_actions = game_state.get("legal_actions") or game_state.get("raw_legal_actions") or []
         # GRE lists every card it would let you *start* casting; only the
         # "[OK]" tag means MTGA found an autotap payment (or the rules engine
         # did). Treating a bare "Cast X" as confirmed let the search rank a
@@ -785,7 +805,6 @@ class MCTSEvaluator:
                     )
 
         from arenamcp.afterstate import (
-            Action,
             ActivateAbility,
             AfterstateSimulator,
             BoardState,
@@ -865,7 +884,11 @@ class MCTSEvaluator:
                     seq_val = _afterstate_val(seq_after.board)
                     seq_val = max(
                         0.05,
-                        min(0.95, seq_val + _effect_bonus(str(top_spell.get("type_line") or "").lower(), oracle, is_cmd)),
+                        min(
+                            0.95,
+                            seq_val
+                            + _effect_bonus(str(top_spell.get("type_line") or "").lower(), oracle, is_cmd),
+                        ),
                     )
                     v_delta = seq_val - base_val
                     power_add = seq_after.delta.power_added or power_add

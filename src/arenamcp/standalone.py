@@ -224,9 +224,7 @@ class StandaloneCoach(
             # (persist=True is reserved for explicit user mode changes).
             with contextlib.suppress(Exception):
                 self.conversation.set_mode(saved_mode, persist=False)
-            logger.info(
-                f"Conversation mode restored from settings: {saved_mode}"
-            )
+            logger.info(f"Conversation mode restored from settings: {saved_mode}")
         else:
             logger.info("Conversation mode: turn_advice (default)")
 
@@ -1038,18 +1036,14 @@ class StandaloneCoach(
                         match_id,
                     )
                     try:
-                        conversation.reset_for_match(
-                            match_id, self._match_number, match_start=False
-                        )
+                        conversation.reset_for_match(match_id, self._match_number, match_start=False)
                     except Exception as e:
                         logger.debug(f"conversation.reset_for_match failed: {e}")
                     return
             except ImportError:
                 pass
         try:
-            conversation.reset_for_match(
-                match_id, self._match_number, match_start=match_id is not None
-            )
+            conversation.reset_for_match(match_id, self._match_number, match_start=match_id is not None)
         except Exception as e:
             logger.debug(f"conversation.reset_for_match failed: {e}")
 
@@ -1999,7 +1993,10 @@ class StandaloneCoach(
                         if (_bridge_now, _bridge_runtime) != self._last_bridge_ui_status:
                             self._last_bridge_ui_status = (_bridge_now, _bridge_runtime)
                             if _bridge_now:
-                                self.ui.status("BRIDGE", f"Connected ({_bridge_runtime})" if _bridge_runtime else "Connected")
+                                self.ui.status(
+                                    "BRIDGE",
+                                    f"Connected ({_bridge_runtime})" if _bridge_runtime else "Connected",
+                                )
                             elif self._bridge_capable_install():
                                 self.ui.status("BRIDGE", "Disconnected")
                             else:
@@ -2050,7 +2047,10 @@ class StandaloneCoach(
                         if pending_now and "decision_required" not in triggers:
                             pending_sig = self._build_pending_decision_signature(curr_state)
                             # Force decision_required for time-critical decisions if not yet advised
-                            if pending_sig != self._last_advised_decision_sig and pending_now != "Action Required":
+                            if (
+                                pending_sig != self._last_advised_decision_sig
+                                and pending_now != "Action Required"
+                            ):
                                 triggers.append("decision_required")
                                 logger.info(f"Forced decision_required for {pending_now}")
 
@@ -2221,7 +2221,13 @@ class StandaloneCoach(
                             # pending decision is stale — drop the trigger
                             # before it reaches autopilot OR coaching/TTS.
                             _bridge_up = bool(self._bridge_poller and self._bridge_poller.connected)
-                            if arbitrate(self._bridge_judged_state(curr_state, _bridge_up), bridge_connected=_bridge_up) is None:
+                            if (
+                                arbitrate(
+                                    self._bridge_judged_state(curr_state, _bridge_up),
+                                    bridge_connected=_bridge_up,
+                                )
+                                is None
+                            ):
                                 # Bridge idle — but if a spell is wedged on the
                                 # stack waiting for a target, reconcile before
                                 # dropping (multi-target wedge recovery).
@@ -2634,7 +2640,9 @@ class StandaloneCoach(
                         # Emrakul, the Promised End / Mindslaver: the LLM
                         # would advise playing the opponent's cards for them.
                         controlled = curr_state.get("controlled_turn") or {}
-                        if controlled.get("deciding_for_opponent") or controlled.get("you_controlled_by_opponent"):
+                        if controlled.get("deciding_for_opponent") or controlled.get(
+                            "you_controlled_by_opponent"
+                        ):
                             if getattr(self, "_controlled_turn_advised", None) != turn_num:
                                 self._controlled_turn_advised = turn_num
                                 advice = (
@@ -2989,7 +2997,9 @@ class StandaloneCoach(
             logger.info(f"Starting coaching thread for backend: {self.backend_name}")
             self._coaching_thread = threading.Thread(target=self._coaching_loop, daemon=True, name="coaching")
             self._coaching_thread.start()
-            threading.Thread(target=self._coaching_stall_watchdog, daemon=True, name="coaching-watchdog").start()
+            threading.Thread(
+                target=self._coaching_stall_watchdog, daemon=True, name="coaching-watchdog"
+            ).start()
 
         # Register hotkeys in a background thread (the keyboard module's
         # low-level Windows hook install can take a few seconds).

@@ -25,10 +25,12 @@ def _engine(monkeypatch) -> tuple[AutopilotEngine, MagicMock]:
     monkeypatch.setattr(autopilot_module, "get_bridge", lambda: _DummyBridge())
     planner = MagicMock()
     # Always take the first non-pass option: the behaviour that looped.
-    planner.plan_decision_options.side_effect = lambda decision, gs: [
-        o.option_id for o in decision.options if o.option_id != "pass"
-    ][:1] or ["pass"]
-    engine = AutopilotEngine(planner=planner, get_game_state=lambda: {}, config=AutopilotConfig(dry_run=False))
+    planner.plan_decision_options.side_effect = lambda decision, gs: (
+        [o.option_id for o in decision.options if o.option_id != "pass"][:1] or ["pass"]
+    )
+    engine = AutopilotEngine(
+        planner=planner, get_game_state=lambda: {}, config=AutopilotConfig(dry_run=False)
+    )
     bridge = MagicMock()
     bridge.connected = True
     bridge.get_pending_actions.return_value = {

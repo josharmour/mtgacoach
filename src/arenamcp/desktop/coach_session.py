@@ -148,9 +148,10 @@ class CoachSession(QObject):
 
     def capture_screenshots(self) -> dict[str, str]:
         """Capture coach window + MTGA window screenshots into bug_reports directory."""
+        import sys
         from datetime import datetime
         from pathlib import Path
-        import sys
+
         from arenamcp.logging_config import LOG_DIR
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -188,6 +189,7 @@ class CoachSession(QObject):
         # 2. MTGA window screenshot
         try:
             from PIL import ImageGrab
+
             from arenamcp.desktop.window_tracking import get_mtga_window_rect
 
             rect = get_mtga_window_rect()
@@ -226,6 +228,7 @@ class CoachSession(QObject):
         import platform
         from datetime import datetime
         from pathlib import Path
+
         from arenamcp import __version__
         from arenamcp.logging_config import LOG_DIR
 

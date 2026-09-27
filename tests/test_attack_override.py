@@ -79,7 +79,9 @@ def test_lone_spider_becomes_the_full_swing(monkeypatch):
         _creature(354, "Spider", LOCAL, 2, 1, "Reach"),
         _creature(296, "Optimistic Scavenger", LOCAL, 5, 5),
         _creature(355, "Optimistic Scavenger", LOCAL, 1, 1),
-        _creature(333, "Skyward Spider", LOCAL, 2, 2, "Ward {2}\nThis creature has flying as long as it's modified."),
+        _creature(
+            333, "Skyward Spider", LOCAL, 2, 2, "Ward {2}\nThis creature has flying as long as it's modified."
+        ),
         _creature(326, "Witch's Familiar", OPP, 2, 3),
         _creature(312, "Savage Gorger", OPP, 2, 2, "Flying"),
         _creature(303, "Scathe Zombies", OPP, 2, 2, tapped=True),

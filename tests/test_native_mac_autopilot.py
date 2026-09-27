@@ -597,7 +597,9 @@ def test_unverifiable_input_target_blocks_click(hit_result, pid_result):
         ("win32", True, False, False),
     ],
 )
-def test_select_native_engine_only_for_native_mac(monkeypatch, platform, bridge_capable, mac_bridge, expected):
+def test_select_native_engine_only_for_native_mac(
+    monkeypatch, platform, bridge_capable, mac_bridge, expected
+):
     monkeypatch.setattr("sys.platform", platform)
     monkeypatch.setattr("arenamcp.platform_integration.bridge_capable", lambda: bridge_capable)
     monkeypatch.setattr("arenamcp.platform_integration.mac_bridge_installed", lambda: False)

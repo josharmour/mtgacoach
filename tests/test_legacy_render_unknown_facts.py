@@ -31,14 +31,16 @@ def _gs(players=None, stack=None, active=None):
     return {
         "players": players
         or [
-            {"seat_id": 1, "is_local": True, "life_total": 15, "lands_played": 0,
-             "hand_size": 2},
-            {"seat_id": 2, "is_local": False, "life_total": 12, "lands_played": 0,
-             "hand_size": 0},
+            {"seat_id": 1, "is_local": True, "life_total": 15, "lands_played": 0, "hand_size": 2},
+            {"seat_id": 2, "is_local": False, "life_total": 12, "lands_played": 0, "hand_size": 0},
         ],
-        "turn": {"turn_number": 3, "phase": "Phase_Main1", "step": "",
-                 "active_player": active if active is not None else 1,
-                 "priority_player": 1},
+        "turn": {
+            "turn_number": 3,
+            "phase": "Phase_Main1",
+            "step": "",
+            "active_player": active if active is not None else 1,
+            "priority_player": 1,
+        },
         "battlefield": [],
         "hand": [],
         "stack": stack if stack is not None else [{"name": "Counterspell"}],
@@ -106,9 +108,12 @@ def test_production_render_is_byte_identical_with_and_without_marker():
     engine = _engine()
     gs = _gs()
     marked = dict(gs)
-    marked["_render_unknown"] = {"stack": True, "active_player": True,
-                                 "opponent_hand_size": True,
-                                 "turn_entered_battlefield": True}
+    marked["_render_unknown"] = {
+        "stack": True,
+        "active_player": True,
+        "opponent_hand_size": True,
+        "turn_entered_battlefield": True,
+    }
     a = engine._format_game_context(gs)
     b = engine._format_game_context(marked)
     assert a == b  # marker alone must not change the production output

@@ -326,7 +326,9 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         logger.info(f"Captured Decision: Declare Attackers ({len(attacker_names)} legal)")
         game_state.pending_decision = "Declare Attackers"
         game_state.decision_timestamp = _time.time()
-        game_state.legal_actions = [f"Attack with: {name}" for name in attacker_names] + ["Done (confirm attackers)"]
+        game_state.legal_actions = [f"Attack with: {name}" for name in attacker_names] + [
+            "Done (confirm attackers)"
+        ]
         game_state.legal_actions_raw = legal_attackers
         game_state.decision_context = {
             "type": "declare_attackers",
@@ -380,7 +382,9 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         )
         game_state.pending_decision = "Declare Blockers"
         game_state.decision_timestamp = _time.time()
-        game_state.legal_actions = [f"Block with: {name}" for name in blocker_names] + ["Done (confirm blockers)"]
+        game_state.legal_actions = [f"Block with: {name}" for name in blocker_names] + [
+            "Done (confirm blockers)"
+        ]
         game_state.legal_actions_raw = legal_blockers
         game_state.decision_context = {
             "type": "declare_blockers",

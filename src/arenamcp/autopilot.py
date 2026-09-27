@@ -1066,7 +1066,8 @@ class AutopilotEngine(
         if not (breq or bcls):
             return False
         if any(kind in breq + bcls for kind in ("SelectTargets", "CastingTimeOption", "NumericInput")) or (
-            self._decision_type(game_state or {}) in ("target_selection", "casting_time_options", "numeric_input")
+            self._decision_type(game_state or {})
+            in ("target_selection", "casting_time_options", "numeric_input")
         ):
             logger.info("Refusing unvalidated auto-response for %s", breq or bcls)
             return False
@@ -1179,7 +1180,8 @@ class AutopilotEngine(
         from arenamcp.play_safety import find_source, unsafe_play_reason
 
         candidates = [
-            (index, action) for index, action in enumerate(actions)
+            (index, action)
+            for index, action in enumerate(actions)
             if _norm(action) in ("play", "cast")
             and not unsafe_play_reason(game_state, find_source(game_state, action), _norm(action), action)
         ]
@@ -2913,7 +2915,9 @@ class AutopilotEngine(
                 if action.action_type == ActionType.ACTIVATE_ABILITY and self._activation_exhausted(
                     game_state, 0, action.card_name or ""
                 ):
-                    logger.info(f"Repeat-activation cap: skipping {action.card_name!r} for the rest of the turn")
+                    logger.info(
+                        f"Repeat-activation cap: skipping {action.card_name!r} for the rest of the turn"
+                    )
                     self._actions_skipped += 1
                     continue
 
@@ -3537,7 +3541,14 @@ class AutopilotEngine(
                     )
             for label in labels:
                 clean_name = str(label or "").strip().lower()
-                for prefix in ("cast ", "play land: ", "play ", "activate ability: ", "activate: ", "activate "):
+                for prefix in (
+                    "cast ",
+                    "play land: ",
+                    "play ",
+                    "activate ability: ",
+                    "activate: ",
+                    "activate ",
+                ):
                     if clean_name.startswith(prefix):
                         clean_name = clean_name[len(prefix) :].strip()
                         break

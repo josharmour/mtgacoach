@@ -263,9 +263,7 @@ def record_from_game_end(
 
         # Opponent Name
         record.opponent_name = (
-            game_state_snapshot.get("opponent_name")
-            or game_state_snapshot.get("opponent_screen_name")
-            or ""
+            game_state_snapshot.get("opponent_name") or game_state_snapshot.get("opponent_screen_name") or ""
         )
 
         # Format Name
@@ -302,7 +300,8 @@ def record_from_game_end(
                 if isinstance(c, dict):
                     c_owner = c.get("owner_seat_id")
                     if c_owner is not None and (
-                        c_owner == opp_seat or (opp_seat is None and local_seat is not None and c_owner != local_seat)
+                        c_owner == opp_seat
+                        or (opp_seat is None and local_seat is not None and c_owner != local_seat)
                     ):
                         cards_to_scan.append(c)
 
@@ -315,15 +314,45 @@ def record_from_game_end(
         t_line = str(card.get("type_line") or "")
         oracle = str(card.get("oracle_text") or "")
 
-        if "{W}" in mana or "White" in str(card_colors) or "Plains" in name or "Plains" in t_line or "{W}" in oracle:
+        if (
+            "{W}" in mana
+            or "White" in str(card_colors)
+            or "Plains" in name
+            or "Plains" in t_line
+            or "{W}" in oracle
+        ):
             colors_seen.add("W")
-        if "{U}" in mana or "Blue" in str(card_colors) or "Island" in name or "Island" in t_line or "{U}" in oracle:
+        if (
+            "{U}" in mana
+            or "Blue" in str(card_colors)
+            or "Island" in name
+            or "Island" in t_line
+            or "{U}" in oracle
+        ):
             colors_seen.add("U")
-        if "{B}" in mana or "Black" in str(card_colors) or "Swamp" in name or "Swamp" in t_line or "{B}" in oracle:
+        if (
+            "{B}" in mana
+            or "Black" in str(card_colors)
+            or "Swamp" in name
+            or "Swamp" in t_line
+            or "{B}" in oracle
+        ):
             colors_seen.add("B")
-        if "{R}" in mana or "Red" in str(card_colors) or "Mountain" in name or "Mountain" in t_line or "{R}" in oracle:
+        if (
+            "{R}" in mana
+            or "Red" in str(card_colors)
+            or "Mountain" in name
+            or "Mountain" in t_line
+            or "{R}" in oracle
+        ):
             colors_seen.add("R")
-        if "{G}" in mana or "Green" in str(card_colors) or "Forest" in name or "Forest" in t_line or "{G}" in oracle:
+        if (
+            "{G}" in mana
+            or "Green" in str(card_colors)
+            or "Forest" in name
+            or "Forest" in t_line
+            or "{G}" in oracle
+        ):
             colors_seen.add("G")
 
     record.opponent_colors_seen = sorted(colors_seen)

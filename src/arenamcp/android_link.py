@@ -24,7 +24,6 @@ import os
 import shutil
 import subprocess
 import threading
-import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -156,9 +155,7 @@ def list_devices(adb: str) -> list[str]:
     except (OSError, subprocess.SubprocessError):
         return []
     return [
-        parts[0]
-        for line in out.splitlines()[1:]
-        if len(parts := line.split()) >= 2 and parts[1] == "device"
+        parts[0] for line in out.splitlines()[1:] if len(parts := line.split()) >= 2 and parts[1] == "device"
     ]
 
 
@@ -282,7 +279,11 @@ class AndroidLink:
         try:
             pending = b""
             while not self._stop.is_set():
-                chunk = process.stdout.read1(65536) if hasattr(process.stdout, "read1") else process.stdout.read(65536)
+                chunk = (
+                    process.stdout.read1(65536)
+                    if hasattr(process.stdout, "read1")
+                    else process.stdout.read(65536)
+                )
                 if not chunk:
                     return received
                 received += len(chunk)

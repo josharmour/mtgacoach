@@ -282,9 +282,7 @@ class KokoroTTS:
                     str(self._model_path), sess_options=opts, providers=resolve_providers()
                 )
                 self._kokoro = Kokoro.from_session(session, str(self._voices_path))
-                logger.debug(
-                    "Kokoro ONNX initialized with %d intra-op threads", opts.intra_op_num_threads
-                )
+                logger.debug("Kokoro ONNX initialized with %d intra-op threads", opts.intra_op_num_threads)
             except Exception as exc:
                 logger.debug("Custom session init failed, falling back to default Kokoro: %s", exc)
                 self._kokoro = Kokoro(

@@ -424,9 +424,7 @@ def dispatch_record(sink: RecordingSink, llm: RecordingCoachEngine) -> list[dict
     speak_advice within a trigger, so per-engine lists concatenate cleanly)."""
     seq: list[dict] = []
     seq.extend(dict(c) for c in llm.calls)  # get_advice + win_prob entries
-    seq.extend(
-        {"kind": "speak", "text": c["text"], "blocking": c["blocking"]} for c in sink.calls
-    )
+    seq.extend({"kind": "speak", "text": c["text"], "blocking": c["blocking"]} for c in sink.calls)
     return seq
 
 

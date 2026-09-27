@@ -32,13 +32,6 @@ from arenamcp.coach_backends import (
     pick_thinking_model,
 )
 from arenamcp.coach_postprocess import _AdvicePostprocessMixin
-from arenamcp.coach_structured import (
-    build_choices,
-    format_choices,
-    is_verified,
-    parse_structured_advice,
-    structured_advice_enabled,
-)
 from arenamcp.coach_prompt_utils import (
     _ACTIONS_AVAILABLE_BRIDGE_REQUESTS,
     _build_bridge_context_lines,
@@ -54,6 +47,13 @@ from arenamcp.coach_prompts import (
     POST_MATCH_ANALYSIS_PROMPT,
     SIDEBOARD_RECOMMENDATION_PROMPT,
     WIN_PLAN_PROMPT,
+)
+from arenamcp.coach_structured import (
+    build_choices,
+    format_choices,
+    is_verified,
+    parse_structured_advice,
+    structured_advice_enabled,
 )
 from arenamcp.coach_tracker import WordUsageTracker
 from arenamcp.coach_triggers import GameStateTrigger
@@ -794,7 +794,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         hand_cards = game_state.get("hand", [])
         command_cards = [
-            c for c in game_state.get("command", [])
+            c
+            for c in game_state.get("command", [])
             if isinstance(c, dict) and c.get("owner_seat_id") == local_seat
         ]
         cur_mana = RulesEngine._count_available_mana(game_state, local_seat)
@@ -2448,16 +2449,16 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         UNKNOWN_ACTIVE = fact_meta.get("active_player", False)
         UNKNOWN_OPP_HAND_COUNT = fact_meta.get("opponent_hand_size", False)
         UNKNOWN_ETB = fact_meta.get("turn_entered_battlefield", False)
-        if strict and (
-            UNKNOWN_STACK or UNKNOWN_ACTIVE or UNKNOWN_OPP_HAND_COUNT or UNKNOWN_ETB
-        ):
+        if strict and (UNKNOWN_STACK or UNKNOWN_ACTIVE or UNKNOWN_OPP_HAND_COUNT or UNKNOWN_ETB):
             unknown_keys = sorted(
-                k for k, v in (
+                k
+                for k, v in (
                     ("stack", UNKNOWN_STACK),
                     ("active_player", UNKNOWN_ACTIVE),
                     ("opponent_hand_size", UNKNOWN_OPP_HAND_COUNT),
                     ("turn_entered_battlefield", UNKNOWN_ETB),
-                ) if v
+                )
+                if v
             )
             raise AssertionError(
                 "strict legacy render: refusing to render a state with "
@@ -2691,11 +2692,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             # under legacy-render opinions it runs only when the attacker's
             # freshness is actually established (task 11).
             combat_derivable = not active_unknown_effective
-            if (
-                ("Combat" in phase or "Main" in phase)
-                and is_your_turn
-                and combat_derivable
-            ):
+            if ("Combat" in phase or "Main" in phase) and is_your_turn and combat_derivable:
                 your_creatures = [
                     c
                     for c in your_cards
@@ -2727,11 +2724,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             # "Computed optimal blocks:" line on exactly the decision it
             # exists for. _in_block_decision already encodes this rule for the
             # inferred-attacker flags above; the dispatch must agree with it.
-            elif (
-                ("Combat" in phase or _in_block_decision)
-                and not is_your_turn
-                and combat_derivable
-            ):
+            elif ("Combat" in phase or _in_block_decision) and not is_your_turn and combat_derivable:
                 lines.extend(
                     self._format_block_combat(
                         your_cards,
