@@ -21,6 +21,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  hosted:
+    name: Hosted trials and Patreon keys
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install website test dependencies
+        run: python -m pip install -r website/requirements.txt pytest
+      - name: Check trial enforcement and key lifecycle
+        run: python -m pytest tests/test_arenaonair_trial.py tests/test_patreon_litellm.py tests/test_trial_endpoint.py -o addopts='' -q
+
   pytest:
     runs-on: ubuntu-latest
     timeout-minutes: 30

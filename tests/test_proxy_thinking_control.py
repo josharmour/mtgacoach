@@ -138,7 +138,9 @@ def test_explicit_vision_resume_reenables_failed_endpoint(monkeypatch):
     client.chat.completions.create.assert_called_once()
 
 
-@pytest.mark.parametrize("saved_model", [None, "dsv4", "deepseek-v4-flash", "gemma-4-12b-it", "glm-5.3-flash"])
+@pytest.mark.parametrize(
+    "saved_model", [None, "dsv4", "deepseek-v4-flash", "gemma-4-12b-it", "glm-5.3-flash"]
+)
 def test_hosted_model_is_current_glm_regardless_of_saved_alias(saved_model, monkeypatch):
     monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
     backend = ProxyBackend.create_online(model=saved_model, license_key="test-key")
