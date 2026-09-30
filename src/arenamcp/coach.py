@@ -1310,6 +1310,13 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             lines.append(f"\u26a0\ufe0f {note}")
         return lines, total_mana, mana_pool
 
+    @staticmethod
+    def _is_creature_now(card: dict) -> bool:
+        current_types = card.get("card_types") or []
+        if current_types:
+            return "CardType_Creature" in current_types
+        return "creature" in str(card.get("type_line") or "").lower()
+
     def _format_board_card(
         self,
         card: dict,
@@ -1332,7 +1339,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         lines: list[str] = []
         name = card.get("name", "Unknown")
         type_line = card.get("type_line", "").lower()
-        is_creature = "creature" in type_line
+        current_types = card.get("card_types") or []
+        is_creature = self._is_creature_now(card)
         is_land = "land" in type_line
 
         if name_counts[name] > 1:
@@ -1341,11 +1349,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         else:
             display_name = name
 
-        pt = (
-            f" {card.get('power') or 0}/{card.get('toughness') or 0}"
-            if is_creature or card.get("power") is not None
-            else ""
-        )
+        pt = f" {card.get('power') or 0}/{card.get('toughness') or 0}" if is_creature else ""
+        if not is_creature and "vehicle" in type_line and card.get("power") is not None:
+            pt = f" ({card['power']}/{card.get('toughness') or 0} when crewed)"
 
         flags: list[str] = []
         if not is_creature and not is_land:
@@ -1359,8 +1365,10 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 flags.append("PW")
         if card.get("is_tapped"):
             flags.append("T")
-        if "vehicle" in type_line and "CardType_Creature" in card.get("card_types", []):
+        if "creature" not in type_line and is_creature:
             flags.append("CREATURE NOW")
+        elif current_types and not is_creature and card.get("power") is not None:
+            flags.append("NOT A CREATURE")
 
         keywords = printed_combat_keywords(card.get("oracle_text") or "")
         if "flying" in keywords:
@@ -1379,6 +1387,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             flags.append("DTH")
         if is_creature and card.get("turn_entered_battlefield") == turn_num and "haste" not in keywords:
             flags.append("SS")
+        elif (
+            not is_creature
+            and card.get("turn_entered_battlefield") == turn_num
+            and (
+                "vehicle" in type_line
+                or re.search(r"becomes\b[^.\n]*\bcreature\b", card.get("oracle_text") or "", re.I)
+            )
+        ):
+            flags.append("ENTERED THIS TURN — needs haste to attack if animated")
         if self._is_impending(card):
             flags.append("IMPENDING")
         if card.get("is_attacking"):
@@ -1533,14 +1550,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         """Format the attack-side combat analysis (your turn attacking)."""
         lines: list[str] = []
         lines.extend(self._attack_tax_lines(opp_cards, game_state))
-        your_creatures = [
-            c
-            for c in your_cards
-            if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)
-        ]
-        opp_creatures = [
-            c for c in opp_cards if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)
-        ]
+        your_creatures = [c for c in your_cards if self._is_creature_now(c) and not self._is_impending(c)]
+        opp_creatures = [c for c in opp_cards if self._is_creature_now(c) and not self._is_impending(c)]
         opp_blockers = [c for c in opp_creatures if not c.get("is_tapped")]
         opp_block_count = len(opp_blockers)
         opp_life = opponent_player.get("life_total", 20) if opponent_player else 20
@@ -1684,9 +1695,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         your_creatures = [
             c
             for c in your_cards
-            if "creature" in c.get("type_line", "").lower()
-            and not c.get("is_tapped")
-            and not self._is_impending(c)
+            if self._is_creature_now(c) and not c.get("is_tapped") and not self._is_impending(c)
         ]
         flyer_blockers = [
             c
@@ -1771,9 +1780,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         opp_non_attacking = [
             c
             for c in opp_cards
-            if "creature" in c.get("type_line", "").lower()
-            and c not in attacking
-            and not self._is_impending(c)
+            if self._is_creature_now(c) and c not in attacking and not self._is_impending(c)
         ]
         opp_next_turn_power = sum(c.get("power") or 0 for c in attacking) + sum(
             c.get("power") or 0 for c in opp_non_attacking
@@ -2788,9 +2795,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             combat_derivable = not active_unknown_effective
             if ("Combat" in phase or "Main" in phase) and is_your_turn and combat_derivable:
                 your_creatures = [
-                    c
-                    for c in your_cards
-                    if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)
+                    c for c in your_cards if self._is_creature_now(c) and not self._is_impending(c)
                 ]
                 valid_attackers = [
                     c

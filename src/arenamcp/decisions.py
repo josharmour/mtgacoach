@@ -260,6 +260,7 @@ def _build_actions_available(
         elif atype == "ActionType_Play":
             label = f"Play land: {name or 'land'}"
         elif atype == "ActionType_Activate":
+            payable = True if has_autotap_solution(action) else None
             label = f"Activate: {name or 'ability'}"
         else:
             label = atype.replace("ActionType_", "") or f"Action {i}"
@@ -274,6 +275,8 @@ def _build_actions_available(
                     "instanceId": int(action.get("instanceId") or 0),
                     "abilityGrpId": int(action.get("abilityGrpId") or 0),
                     "manaCost": action.get("manaCost"),
+                    "autoTapActions": action.get("autoTapActions") or [],
+                    "hasAutoTap": has_autotap_solution(action),
                 },
             )
         )

@@ -403,6 +403,7 @@ RULES:
 - ZERO-POWER ATTACKERS: A legal attacker need not be a useful attacker. Leave zero-power creatures untapped for mana or defense unless an actual attack trigger, required attack, pump plan, or damage-replacement effect gives attacking a concrete benefit. Flying alone does not make a zero-power attack useful.
 - BLOCKERS: "Block with: X" names an eligible blocker, NOT a complete move. Supply action_type="declare_blockers" and blocker_assignments mapping each blocker to a named attacker. Never use a bare menu pick or an empty attacker name. Use an explicit empty mapping only when intentionally declaring no blocks.
 - BLOCKING COST: Nonlethal damage is not free. Before declining blocks, compare remaining life and the next attack with sacrificing the least useful single blocker. Preserving an engine must enable a concrete recovery play, not just a vague ramp plan. Respect mana spending restrictions: mana usable only for creature abilities cannot help cast spells. A large hit can justify losing a support creature while retaining the stronger mana engine.
+- ANIMATION: Making an artifact or land a creature does not untap it or make it enter again. A tapped source, including one tapped by the payment solution, cannot become an attacker just by animating it. Creatures that entered this turn need haste to attack; haste-on-entry triggers do not retroactively give older creatures haste. Require a concrete benefit before paying for temporary animation, and use current card types rather than leftover power/toughness to decide whether it is already a creature.
 - EQUIPMENT: Reassess haste-granting equipment after its wearer taps or new creatures enter. Move it to an untapped summoning-sick creature when that enables a useful attack or tap ability now. A tapped wearer can still deserve shroud/hexproof protection; do not move equipment just because another creature is untapped. Equip only when Arena offers the activation; do not shuffle it endlessly or float mana without a concrete use.
 - [SS] = summoning sick (can't attack). * prefix = token. [3P1P] = 3 +1/+1 counters.
 - If a TURN PLAN is shown, follow it. Stay committed to the locked turn plan unless a material change (opponent response, lethal threat, unexpected trigger) makes it obsolete.
@@ -2229,6 +2230,13 @@ class ActionPlanner(_ActionLegalityMixin):
         "again or retrigger its enters ability. Crew only for a concrete benefit "
         "such as attacking, blocking, or a synergy, not merely because an opponent "
         "cast a spell. Avoid redundant crewing when the Vehicle is already a creature. "
+        "A Vehicle that entered this turn cannot attack without haste, even after crewing. "
+        "Summoning-sick creatures may pay crew costs, but that does not give the Vehicle haste. "
+        "An enters-or-attacks trigger does not trigger from crewing; check that an attack is actually possible. "
+        "Animating an artifact or land does not untap it, give it haste, or retrigger entering. "
+        "If it is tapped or the payment taps it, it cannot attack or block without an actual untap effect. "
+        "Check current card types: leftover power/toughness does not mean a temporary animation is still active. "
+        "Do not pay to animate it without a concrete combat or other payoff. Payable does not mean free. "
         "For haste-granting equipment, reassess after the wearer taps or new creatures enter: "
         "moving it to an untapped summoning-sick creature can enable a useful attack or tap ability. "
         "Equip only when Arena offers it. Do not shuffle equipment without a concrete benefit, "
@@ -2540,6 +2548,20 @@ class ActionPlanner(_ActionLegalityMixin):
                 note = "  [Arena confirms payable now]"
             if "weight" in o.meta:
                 note += f"  [contribution: {o.meta['weight']}]"
+            if o.meta.get("actionType") == "ActionType_Activate":
+                source = find_source(game_state, o.meta)
+                note += " " + json.dumps(
+                    {
+                        "manaCost": o.meta.get("manaCost"),
+                        "source_tapped": source.get("is_tapped"),
+                        "turn_entered_battlefield": source.get("turn_entered_battlefield"),
+                        "current_card_types": source.get("card_types"),
+                        "payment_taps_source": any(
+                            payment.get("instanceId") == source.get("instance_id")
+                            for payment in o.meta.get("autoTapActions") or []
+                        ),
+                    }
+                )
             if decision.request_type in {"CastingTimeOptions", "OptionalAction", "Search"}:
                 note += " " + json.dumps(o.meta, ensure_ascii=False)
             side = ""

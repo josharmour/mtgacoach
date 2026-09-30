@@ -5,6 +5,8 @@ import re
 from collections import Counter
 from typing import Any
 
+from arenamcp.combat_keywords import has_combat_keyword
+from arenamcp.mana import has_autotap_solution
 from arenamcp.rules_engine import RulesEngine, _normalize_mana_symbols
 
 logger = logging.getLogger(__name__)
@@ -174,6 +176,132 @@ def removal_lacks_opponent_target(card: dict, state: dict, *, activation: bool =
     return not RulesEngine._match_battlefield_targets(opposing, local_seat, None, requirements)
 
 
+def _animation_has_visible_payoff(state: dict, card: dict) -> bool:
+    # Creature status may matter outside combat (sacrifices, untap tricks,
+    # activation triggers, or responding to a targeted spell). Only payable
+    # hand spells establish an immediate payoff when Arena supplies a menu.
+    local = _local_seat(state)
+    available = state.get("_bridge_actions")
+    payable_ids = {
+        action.get("instanceId")
+        for action in available or []
+        if has_autotap_solution(action)
+        and str(action.get("actionType", "")).removeprefix("ActionType_") == "Cast"
+    }
+
+    def ongoing_text(other: dict) -> str:
+        lines = []
+        for line in str(other.get("oracle_text") or "").splitlines():
+            # Animation/crew does not enter the battlefield. A spent ETB or
+            # another creature's enter trigger is not a payoff for animating.
+            condition = line.split(",", 1)[0]
+            if (
+                re.match(r"(?:when|whenever)\b", condition.strip(), re.I)
+                and re.search(r"\benters?\b", condition, re.I)
+                and not re.search(r"\b(?:crew\w*|activat\w*|becomes)\b", condition, re.I)
+            ):
+                continue
+            lines.append(line)
+        return "\n".join(lines)
+
+    relevant = (
+        [
+            str(other.get("oracle_text") or "")
+            for other in state.get("stack") or []
+            if not other.get("targeting") or card.get("instance_id") in other["targeting"]
+        ]
+        + [
+            "\n".join(
+                line
+                for line in ongoing_text(card).splitlines()
+                if line.lower().startswith(("whenever", "at the beginning"))
+            )
+        ]
+        + [
+            ongoing_text(other)
+            for other in state.get("battlefield") or []
+            if other.get("instance_id") != card.get("instance_id")
+            and (other.get("controller_seat_id") or other.get("owner_seat_id")) == local
+        ]
+        + [
+            str(other.get("oracle_text") or "")
+            for other in state.get("hand") or []
+            if available is None or other.get("instance_id") in payable_ids
+        ]
+    )
+    return any(
+        re.search(
+            r"\b(?:untap|haste)\b|\bsacrifice\b[^.]*\bcreature\b|\btarget\b[^.]*\b(?:noncreature|creature)\b"
+            r"|\bwhenever\b[^.]*\b(?:activat\w*|becomes|crew\w*)\b"
+            r"|number of creatures|for each (?:other )?creature|creatures you control (?:get|have)"
+            r"|greatest power|total power|creatures? (?:you control )?with power",
+            other.lower(),
+        )
+        for other in relevant
+    )
+
+
+def pointless_self_animation(state: dict, card: dict, metadata: dict) -> str:
+    """Withhold simple temporary animation/crew with no visible use for its body.
+
+    Ambiguous abilities and additional effects remain model decisions. This
+    checks for wasted resources, not whether Arena legally allows activation.
+    """
+    text = re.sub(r"<[^>]*>", "", card.get("oracle_text") or "").lower()
+    ability = str(metadata.get("ability_text") or "").lower()
+    if not ability:
+        abilities = list(
+            dict.fromkeys(
+                line.strip()
+                for line in text.splitlines()
+                if (":" in line and not re.search(r":\s*add\b", line))
+                or re.match(r"crew\s+\d+\b", line.strip())
+            )
+        )
+        if len(abilities) != 1:
+            return ""
+        ability = abilities[0]
+    crew = re.fullmatch(r"crew\s+\d+(?:\s*\([^\n]*\))?\.?", ability) is not None
+    effect = ability.split(":", 1)[-1].strip()
+    name = re.escape(str(card.get("name") or "").lower())
+    match = re.fullmatch(
+        rf"(?:this (?:artifact|land|permanent)|cardname|{name}) becomes (?:a|an) "
+        r"(\d+)/(\d+) (?:[\w-]+ )*creature until end of turn\.?",
+        effect,
+    )
+    if not crew and not match:
+        return ""
+    if _animation_has_visible_payoff(state, card):
+        return ""
+
+    if "CardType_Creature" in (card.get("card_types") or []):
+        if crew:
+            return "Vehicle is already a creature, with no visible benefit to crewing again"
+        power, toughness = card.get("power"), card.get("toughness")
+        if match and isinstance(power, int) and isinstance(toughness, int):
+            if power >= int(match[1]) and toughness >= int(match[2]):
+                return "already a creature with at least the animation's power and toughness"
+    taps_source = any(
+        payment.get("instanceId") == card.get("instance_id")
+        for payment in metadata.get("autoTapActions") or []
+    )
+    if card.get("is_tapped") or taps_source:
+        return "temporary animation leaves this source tapped, with no visible attack, block, or other payoff"
+    turn = state.get("turn") or {}
+    turn_number = turn.get("turn_number")
+    if (
+        _local_seat(state) is not None
+        and turn.get("active_player") == _local_seat(state)
+        and isinstance(turn_number, int)
+        and turn_number > 0
+        and card.get("turn_entered_battlefield") == turn_number
+        and not has_combat_keyword(card, "haste")
+        and not any("haste" in str(grant).lower() for grant in card.get("granted_abilities") or [])
+    ):
+        return "entered this turn without visible haste; temporary animation cannot enable an attack and has no other visible payoff"
+    return ""
+
+
 def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict | None = None) -> str:
     """Return a reason to withhold a play, not a claim of full MTG legality."""
     action_type = action_type.removeprefix("ActionType_").lower()
@@ -191,6 +319,8 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
     )
     if removal_lacks_opponent_target(card, state, activation=action_type == "activate"):
         return "mandatory removal has no opposing target"
+    if action_type == "activate":
+        return pointless_self_animation(state, card, metadata)
     if action_type != "cast" or _tutor_requirement(card) is None:
         return ""
     type_line = str(card.get("type_line") or "").lower()
@@ -226,6 +356,7 @@ def filter_play_options(decision: Any, state: dict) -> Any:
         )
     if decision.request_type != "ActionsAvailable":
         return decision
+    state = {**state, "_bridge_actions": [option.meta for option in decision.options if option.meta]}
     kept = []
     for option in decision.options:
         metadata = option.meta or {}

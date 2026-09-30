@@ -7,6 +7,32 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-09-29 — Require a usable body before temporary animation or crew
+
+- Report `bug_20260929_211332`: Firdoch Core tapped to help cast Badgermole
+  Cub, then the planner spent four mana animating it as a supposed "free
+  attacker." Animation did not untap Core; Woodfall Primus had also just
+  entered without haste. Arena's later attack menu offered only the zero-power
+  Grazer. The wasted activation preceded the correct decision not to attack.
+- Report `bug_20260929_212214`: the planner crewed a newly entered Lumbering
+  Worldwagon with the newly entered Thorn Mammoth, claiming both could attack
+  and that crewing would fetch a land. Crew does not grant haste or retrigger
+  entering; Worldwagon's land trigger requires entering or an actual attack.
+  The later legal attacker menu contained only Innkeeper and two Hobbit tokens.
+- Shared typed/legacy preflight now withholds simple, unambiguous animation or
+  crew when the body remains tapped, is redundant, or just entered on our turn
+  without visible haste and has no visible other payoff. Known crew/tap triggers,
+  untap effects, sacrifices, creature counts, power-based mana, and responses to
+  relevant targeted spells remain planner decisions. An opponent's turn can
+  justify crewing a new Vehicle to block. Unknown entry turns do not prove
+  summoning sickness; ambiguous abilities and added effects are not filtered.
+- Activation options retain Arena's payment solution and show cost, source tap
+  state, entry turn, and current types. The board labels new Vehicles' attack
+  restriction before they are crewed. Current types determine creature status
+  and combat summaries; stale power/toughness after animation expires no longer
+  makes a noncreature look like an active attacker. These checks are conservative
+  visible-state heuristics, not a complete rules engine or a combat guarantee.
+
 ## 2026-09-29 — Value large nonlethal hits against a single expendable blocker
 
 - Report `bug_20260929_210547`: the planner deliberately submitted no blocks
