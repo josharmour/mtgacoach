@@ -250,8 +250,6 @@ class AutopilotEngine(
         self._window_repeat_count: int = 0
         self._auto_respond_escaped_sig: tuple[Any, ...] | None = None
         self._AUTO_RESPOND_LOOP_THRESHOLD = 3
-        # Spoken game-plan announcement dedup (speak each new plan once).
-        self._last_announced_plan: str = ""
 
     @property
     def state(self) -> AutopilotState:
@@ -263,15 +261,8 @@ class AutopilotEngine(
         """Currently active action plan."""
         return self._current_plan
 
-    @property
     def _announce_game_plan(self) -> None:
-        """Speak the current game plan aloud when it changes (TTS).
-
-        Lets the operator hear what the autopilot is thinking strategically.
-        Fires only when a speak function is wired (the desktop coach and the
-        opt-in harness path) and only once per distinct plan. Always
-        non-blocking and best-effort — never affects play.
-        """
+        """Show background strategy separately from submitted-action speech."""
         if self._game_plan_mgr is None:
             return
         # Structured plan → UI strategy card. Independent of TTS wiring and
@@ -285,33 +276,27 @@ class AutopilotEngine(
                     self._ui_game_plan_fn(payload)
             except Exception as e:
                 logger.debug("game-plan UI payload failed: %s", e)
-        if self._speak_fn is None:
+
+    def _announce_submitted_action(self, action: GameAction, game_state: dict[str, Any]) -> None:
+        """Narrate the accepted submission, after live guards and any override."""
+        advice = ActionPlan(actions=[action]).spoken_actions()
+        self._last_plan_advice = (self._priority_window_signature(game_state), advice, time.time())
+        self._notify("AUTOPILOT", advice)
+        if (
+            not self._config.enable_tts_preview
+            or not self._speak_fn
+            or (
+                action.action_type == ActionType.PASS_PRIORITY
+                and not self._should_speak_pass_plan(game_state)
+            )
+        ):
             return
         try:
-            intro = self._game_plan_mgr.coach_intro()
-        except Exception:
-            return
-        if not intro or intro == self._last_announced_plan:
-            return
-        self._last_announced_plan = intro
-        # Show the plan in the Coach Log + match overlay too (not just speak it).
-        # The "PLAN:" prefix marks it strategic so the desktop renders it as
-        # visible advice rather than demoting it.
-        if self._ui_advice_fn is not None:
-            try:
-                self._ui_advice_fn(intro, "AUTOPILOT")
-            except Exception as e:
-                logger.debug("game-plan UI advice failed: %s", e)
-        try:
-            # speak_fn signature is (text, blocking); announce in the background.
-            self._speak_fn(intro, False)
-        except TypeError:
-            try:
-                self._speak_fn(intro)
-            except Exception as e:
-                logger.debug("game-plan TTS announce failed: %s", e)
-        except Exception as e:
-            logger.debug("game-plan TTS announce failed: %s", e)
+            # The callback queues nonblocking speech. Calling in submission
+            # order avoids per-action threads racing to enqueue old advice.
+            self._speak_fn(advice, False)
+        except Exception as error:
+            logger.debug("Submitted-action speech failed: %s", error)
 
     @staticmethod
     def _is_local_active_turn(game_state: dict[str, Any]) -> bool:
@@ -1402,7 +1387,12 @@ class AutopilotEngine(
         if self._config.dry_run:
             logger.info("[DRY RUN] bridge-only action: %s", action)
             return True
-        return self._execute_action(action, game_state).success
+        result = self._execute_action(action, game_state)
+        if result.success and not any(
+            tag in (result.error or "") for tag in ("no-op", "stale-skip", "intermission")
+        ):
+            self._announce_submitted_action(result.submitted_action or action, game_state)
+        return result.success
 
     def _is_planner_action_stale_vs_bridge(
         self,
@@ -1531,6 +1521,8 @@ class AutopilotEngine(
             return not any(
                 kw in bridge_class or kw in bridge_type for kw in ("NumericInput", "CastingTimeOption")
             )
+        if action.action_type == ActionType.CASTING_OPTIONS:
+            return "CastingTimeOption" not in bridge_class and "CastingTimeOption" not in bridge_type
 
         # Shape 5: pass/resolve against a non-passable window. SubmitPass
         # only exists on ActionsAvailableRequest — if the window changed to
@@ -2706,14 +2698,6 @@ class AutopilotEngine(
             plan_text = self._format_plan_preview(plan)
 
             self._notify("AUTOPILOT", plan_text)
-            # Pass-only plans get at most one spoken explanation per turn —
-            # and none when the pass was forced (no real alternatives), since
-            # there is no decision to explain. The reasoning always reaches
-            # the UI via the _notify above.
-            pass_only = bool(plan.actions) and all(
-                getattr(action, "action_type", None) == ActionType.PASS_PRIORITY for action in plan.actions
-            )
-            speak_plan = not pass_only or self._should_speak_pass_plan(game_state)
 
             # Auto-execute countdown: executes after delay unless user cancels
             if self._config.confirm_plan:
@@ -2858,13 +2842,7 @@ class AutopilotEngine(
 
             plan.voice_advice = plan.spoken_actions()
             self._current_plan = plan
-            self._last_plan_advice = (
-                self._priority_window_signature(game_state),
-                plan.voice_advice,
-                time.time(),
-            )
-            if plan.voice_advice and self._config.enable_tts_preview and self._speak_fn and speak_plan:
-                threading.Thread(target=self._speak_fn, args=(plan.voice_advice, False), daemon=True).start()
+            self._last_plan_advice = None
 
             # --- 3. EXECUTING ---
             self._state = AutopilotState.EXECUTING
@@ -3019,6 +2997,11 @@ class AutopilotEngine(
                     self._state = AutopilotState.IDLE
                     return True
 
+                # Combat handlers may refine the attacker set or replace a
+                # Done click. Telemetry, verification, and speech must all
+                # describe the action actually accepted by the bridge.
+                action = click_result.submitted_action or action
+                plan.actions[i] = action
                 self._actions_executed += 1
                 self._last_exec_success_ts = time.time()
                 # P0-9: plan-executed actions belong in the match packet too
@@ -3049,6 +3032,8 @@ class AutopilotEngine(
                 result_src = click_result.error or ""
                 is_real_submission = not any(k in result_src for k in ("stale-skip", "no-op", "intermission"))
                 if is_real_submission:
+                    if not self._config.dry_run:
+                        self._announce_submitted_action(action, game_state)
                     now_ts = time.monotonic()
                     self._recent_submission_times.append(now_ts)
                     if (
@@ -3558,7 +3543,10 @@ class AutopilotEngine(
                 game_state,
             )
             return True
-        if not option_ids or any(decision.find(option_id) is None for option_id in option_ids):
+        empty_search = decision.request_type == "Search" and decision.selection_is_valid(option_ids)
+        if (not option_ids and not empty_search) or any(
+            decision.find(option_id) is None for option_id in option_ids
+        ):
             if poll.get("payment_selection"):
                 self._pause_for_manual(
                     "No valid automatic non-mana payment — select payment manually", game_state
@@ -3597,9 +3585,11 @@ class AutopilotEngine(
             del self._recent_bot_submissions[:-24]
             get_reasoning = getattr(self._planner, "get_decision_reasoning", None)
             reasoning = get_reasoning(option_ids) if callable(get_reasoning) else ""
-            explanation = f"{decision.request_type}: {', '.join(labels)}"
+            explanation = " ".join(ActionPlanner._humanize_legal_action(label) for label in labels)
+            if decision.request_type == "Search":
+                explanation = f"Choose {', '.join(labels)}." if labels else "Find no cards."
             if reasoning:
-                explanation += f". {reasoning}"
+                explanation += f" {reasoning}"
             try:
                 from arenamcp.match_packets import get_current_packet
 
@@ -3610,7 +3600,7 @@ class AutopilotEngine(
                 logger.warning(f"MatchPacket: failed to record decision: {e}")
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE,
-                f"typed-decision {explanation}",
+                f"typed-decision {decision.request_type}: {explanation}",
             )
             self._notify(
                 "AUTOPILOT",
@@ -3623,7 +3613,10 @@ class AutopilotEngine(
                 and self._speak_fn
                 and (option_ids != ["pass"] or self._should_speak_pass_plan(game_state))
             ):
-                threading.Thread(target=self._speak_fn, args=(explanation, False), daemon=True).start()
+                try:
+                    self._speak_fn(explanation, False)
+                except Exception as error:
+                    logger.debug("Typed-decision speech failed: %s", error)
             self._actions_executed += 1
             self._last_exec_success_ts = time.time()
             self._state = AutopilotState.IDLE

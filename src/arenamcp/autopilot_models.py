@@ -1,7 +1,13 @@
 """Autopilot enums and config dataclasses extracted from autopilot.py (pure move, no behavior change)."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from arenamcp.action_planner import GameAction
 
 
 class ExecutionPath:
@@ -85,6 +91,8 @@ class ClickResult:
     y: int = 0
     description: str = ""
     error: str = ""
+    # Filled by handlers that refine/replace a plan before submitting it.
+    submitted_action: GameAction | None = None
 
     def __str__(self) -> str:
         if self.success:

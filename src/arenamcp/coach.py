@@ -58,6 +58,7 @@ from arenamcp.coach_structured import (
 )
 from arenamcp.coach_tracker import WordUsageTracker
 from arenamcp.coach_triggers import GameStateTrigger
+from arenamcp.combat_keywords import printed_combat_keywords
 from arenamcp.mana import get_local_seat_id, has_autotap_solution, mana_cost_to_cmc
 
 logger = logging.getLogger(__name__)
@@ -620,20 +621,20 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         atk_name = atk.get("name", "?")
         atk_pow = atk.get("power") or 0
         atk_tgh = atk.get("toughness") or 0
-        atk_oracle = self._remove_reminder_text(atk.get("oracle_text", "")).lower()
-        atk_has_fly = "flying" in atk_oracle
-        atk_has_dth = "deathtouch" in atk_oracle
-        atk_has_trample = "trample" in atk_oracle
-        atk_has_fs = "first strike" in atk_oracle or "double strike" in atk_oracle
+        atk_keywords = printed_combat_keywords(atk.get("oracle_text") or "")
+        atk_has_fly = "flying" in atk_keywords
+        atk_has_dth = "deathtouch" in atk_keywords
+        atk_has_trample = "trample" in atk_keywords
+        atk_has_fs = "first strike" in atk_keywords or "double strike" in atk_keywords
 
         blk_name = blk.get("name", "?")
         blk_pow = blk.get("power") or 0
         blk_tgh = blk.get("toughness") or 0
-        blk_oracle = self._remove_reminder_text(blk.get("oracle_text", "")).lower()
-        blk_has_fly = "flying" in blk_oracle
-        blk_has_reach = "reach" in blk_oracle
-        blk_has_dth = "deathtouch" in blk_oracle
-        blk_has_fs = "first strike" in blk_oracle or "double strike" in blk_oracle
+        blk_keywords = printed_combat_keywords(blk.get("oracle_text") or "")
+        blk_has_fly = "flying" in blk_keywords
+        blk_has_reach = "reach" in blk_keywords
+        blk_has_dth = "deathtouch" in blk_keywords
+        blk_has_fs = "first strike" in blk_keywords or "double strike" in blk_keywords
 
         if atk_has_fly and not blk_has_fly and not blk_has_reach:
             return None
@@ -667,13 +668,13 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         sorted_atk = sorted(attackers, key=lambda c: c.get("power") or 0, reverse=True)
         for atk in sorted_atk:
             atk_pow = atk.get("power") or 0
-            atk_oracle = self._remove_reminder_text(atk.get("oracle_text", "")).lower()
-            atk_has_fly = "flying" in atk_oracle
-            atk_has_trample = "trample" in atk_oracle
+            atk_keywords = printed_combat_keywords(atk.get("oracle_text") or "")
+            atk_has_fly = "flying" in atk_keywords
+            atk_has_trample = "trample" in atk_keywords
             valid = []
             for i, blk in enumerate(available_blk):
-                blk_oracle = self._remove_reminder_text(blk.get("oracle_text", "")).lower()
-                if atk_has_fly and "flying" not in blk_oracle and "reach" not in blk_oracle:
+                blk_keywords = printed_combat_keywords(blk.get("oracle_text") or "")
+                if atk_has_fly and "flying" not in blk_keywords and "reach" not in blk_keywords:
                     continue
                 valid.append((i, blk))
             if valid:
@@ -1361,22 +1362,22 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if "vehicle" in type_line and "CardType_Creature" in card.get("card_types", []):
             flags.append("CREATURE NOW")
 
-        oracle_text = self._remove_reminder_text(card.get("oracle_text", "")).lower()
-        if "flying" in oracle_text:
+        keywords = printed_combat_keywords(card.get("oracle_text") or "")
+        if "flying" in keywords:
             flags.append("FLY")
-        if "reach" in oracle_text:
+        if "reach" in keywords:
             flags.append("RCH")
-        if is_local and "haste" in oracle_text:
+        if is_local and "haste" in keywords:
             flags.append("HST")
-        if "vigilance" in oracle_text:
+        if "vigilance" in keywords:
             flags.append("VIG")
-        if "trample" in oracle_text:
+        if "trample" in keywords:
             flags.append("TRM")
-        if "first strike" in oracle_text:
+        if "first strike" in keywords:
             flags.append("FS")
-        if "deathtouch" in oracle_text:
+        if "deathtouch" in keywords:
             flags.append("DTH")
-        if is_creature and card.get("turn_entered_battlefield") == turn_num and "haste" not in oracle_text:
+        if is_creature and card.get("turn_entered_battlefield") == turn_num and "haste" not in keywords:
             flags.append("SS")
         if self._is_impending(card):
             flags.append("IMPENDING")
@@ -1678,9 +1679,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             ctx_atk_ids = self._attacker_ids_from_decision_context(ctx)
             if ctx_atk_ids:
                 attacking = [c for c in opp_cards if int(c.get("instance_id") or 0) in ctx_atk_ids]
-        flying_atk = [
-            c for c in attacking if "flying" in self._remove_reminder_text(c.get("oracle_text", "")).lower()
-        ]
+        flying_atk = [c for c in attacking if "flying" in printed_combat_keywords(c.get("oracle_text") or "")]
         ground_atk = [c for c in attacking if c not in flying_atk]
         your_creatures = [
             c
@@ -1692,10 +1691,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         flyer_blockers = [
             c
             for c in your_creatures
-            if any(
-                kw in self._remove_reminder_text(c.get("oracle_text", "")).lower()
-                for kw in ["flying", "reach"]
-            )
+            if any(kw in printed_combat_keywords(c.get("oracle_text") or "") for kw in ["flying", "reach"])
         ]
 
         if not attacking:
@@ -2994,8 +2990,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
     def _combat_keyword_flags(self, card: dict) -> str:
         """Compact ``[FLYING,DEATHTOUCH]``-style suffix for combat listings."""
-        oracle = self._remove_reminder_text(card.get("oracle_text", "")).lower()
-        found = [kw.upper().replace(" ", "-") for kw in self._COMBAT_KEYWORDS if kw in oracle]
+        from arenamcp.combat_keywords import has_combat_keyword
+
+        found = [kw.upper().replace(" ", "-") for kw in self._COMBAT_KEYWORDS if has_combat_keyword(card, kw)]
         return f" [{','.join(found)}]" if found else ""
 
     def _attacker_label_map(self, attackers: list[dict]) -> dict[int, str]:

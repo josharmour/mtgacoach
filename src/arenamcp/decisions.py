@@ -21,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from arenamcp.card_db import is_unknown_card_name
 from arenamcp.mana import has_autotap_solution
 
 logger = logging.getLogger(__name__)
@@ -95,14 +96,17 @@ class PendingDecision:
         )
 
 
-def _default_name_resolver(grp_id: int) -> str:
+def _default_card_resolver(grp_id: int) -> dict:
     try:
         from arenamcp import server
 
-        info = server.get_card_info(grp_id)
-        return str(info.get("name") or "")
+        return server.get_card_info(grp_id)
     except Exception:
-        return ""
+        return {}
+
+
+def _default_name_resolver(grp_id: int) -> str:
+    return str(_default_card_resolver(grp_id).get("name") or "")
 
 
 _ACTIONS_AVAILABLE_TYPES = {
@@ -374,6 +378,7 @@ def _build_select_n(
     resolve_instance: Callable[[int], str] | None = None,
 ) -> PendingDecision | None:
     ids = poll.get("select_n_ids") or poll.get("search_candidates") or []
+    is_search = "Search" in rtype or "Search" in str(poll.get("request_class") or "")
     weights = poll.get("select_n_weights") or []
     if weights and len(weights) != len(ids):
         return None
@@ -390,10 +395,20 @@ def _build_select_n(
             grp_id = 0
         if not oid:
             continue
-        name = resolve_name(grp_id) if grp_id else ""
+        card_info = _default_card_resolver(grp_id) if is_search and grp_id else {}
+        if is_search and isinstance(raw, dict):
+            card_info = {**card_info, **raw}
+        name = str(card_info.get("name") or "") or (resolve_name(grp_id) if grp_id else "")
         if not name and resolve_instance is not None:
             name = resolve_instance(oid)
         metadata = {"grpId": grp_id}
+        if is_search:
+            metadata["identity_known"] = not is_unknown_card_name(name)
+            metadata["card"] = {
+                key: card_info[key]
+                for key in ("name", "oracle_text", "type_line", "mana_cost", "cmc", "power", "toughness")
+                if key in card_info
+            }
         if weights:
             metadata["weight"] = int(weights[index])
         options.append(
@@ -403,10 +418,10 @@ def _build_select_n(
                 meta=metadata,
             )
         )
-    if not options:
-        return None
     min_select = int(poll.get("select_n_min", 1))
-    max_select = int(poll.get("select_n_max", 1))
+    max_select = int(poll.get("select_n_max", 0 if is_search else 1))
+    if not options and not (is_search and min_select == 0):
+        return None
     min_weight, max_weight = None, None
     if weights:
         min_weight = int(poll.get("select_n_min_weight", -(2**31)))
@@ -416,7 +431,7 @@ def _build_select_n(
             min_select, max_select = 0, len(options)
     return PendingDecision(
         request_id=request_id,
-        request_type="Search" if "Search" in rtype else "SelectN",
+        request_type="Search" if is_search else "SelectN",
         options=tuple(options),
         min_select=min_select,
         max_select=max_select,
@@ -649,6 +664,10 @@ def submit_option(
     Mechanical validation: ids outside the decision's option set are
     rejected here — there is no string matching and no legality heuristic.
     """
+    if decision.request_type == "Search":
+        if not decision.selection_is_valid(option_ids):
+            return False
+        return bool(bridge.submit_selection([int(oid.split(":", 1)[1]) for oid in option_ids]))
     valid = decision.option_ids()
     chosen = [oid for oid in option_ids if oid in valid]
     if decision.request_type == "ActionsAvailable" and any(

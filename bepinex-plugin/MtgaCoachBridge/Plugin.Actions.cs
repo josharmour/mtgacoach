@@ -649,11 +649,23 @@ namespace MtgaCoachBridge
             }
             else if (request is SearchRequest searchReqExpose)
             {
-                // Library/zone search: surface the candidate grpIds plus the
-                // zones being searched. Python can pick directly from
-                // search_candidates without re-resolving names.
+                // Search options are instance IDs. Resolve only offered
+                // candidates so Python can compare their actual card text.
+                MtgGameState searchState = null;
+                try { searchState = GetGameManager()?.CurrentGameState; } catch { }
                 var optionsArr = new JArray();
-                foreach (var gid in searchReqExpose.Options) optionsArr.Add((int)gid);
+                foreach (var instanceId in searchReqExpose.Options)
+                {
+                    uint grpId = 0;
+                    try { grpId = searchState?.GetCardById(instanceId)?.GrpId ?? 0; } catch { }
+                    optionsArr.Add(new JObject
+                    {
+                        ["instanceId"] = (int)instanceId,
+                        ["grpId"] = (int)grpId,
+                    });
+                }
+                resp["select_n_min"] = searchReqExpose.Min;
+                resp["select_n_max"] = (int)searchReqExpose.Max;
                 var zonesArr = new JArray();
                 foreach (var z in searchReqExpose.ZonesToSearch) zonesArr.Add((int)z);
                 var addlZonesArr = new JArray();

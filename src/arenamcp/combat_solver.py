@@ -31,6 +31,8 @@ from functools import lru_cache
 from itertools import product
 from typing import Any
 
+from arenamcp.combat_keywords import has_combat_keyword
+
 logger = logging.getLogger(__name__)
 
 # The planner prompt, the tactical line, the coach's advice prompt and the
@@ -72,7 +74,7 @@ def _text(c: dict) -> str:
 
 def _has(card: dict, keyword: str) -> bool:
     """Check for a keyword ability on a creature, case-insensitive."""
-    return keyword.lower() in _text(card)
+    return has_combat_keyword(card, keyword)
 
 
 def _pt(card: dict) -> tuple[int, int]:

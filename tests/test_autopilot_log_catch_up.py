@@ -76,6 +76,8 @@ def test_search_with_private_state_missing_from_log_can_be_answered():
         "game_state_id": 128,
         "msg_id": 171,
         "search_candidates": [386],
+        "select_n_min": 0,
+        "select_n_max": 1,
     }
 
     assert engine._try_typed_decision_path(stale, "decision_required") is True

@@ -4,6 +4,7 @@ Pure move: methods are unchanged and mixed back into AutopilotEngine."""
 
 import logging
 import time
+from dataclasses import replace
 from typing import Any
 
 from arenamcp.action_planner import ActionPlan, ActionType, GameAction
@@ -197,7 +198,14 @@ class _BridgeSubmitMixin:
                             ExecutionPath.GRE_AWARE,
                             "click_button(done): empty attacker declaration via GRE bridge",
                         )
-                        return ClickResult(True, 0, 0, "no attacks", "GRE bridge")
+                        return ClickResult(
+                            True,
+                            0,
+                            0,
+                            "no attacks",
+                            "GRE bridge",
+                            submitted_action=GameAction(action_type=ActionType.DECLARE_ATTACKERS),
+                        )
                     self._gre_bridge_failed_methods.add(method)
                     return None
                 if "DeclareBlocker" in request_type:
@@ -206,7 +214,14 @@ class _BridgeSubmitMixin:
                             ExecutionPath.GRE_AWARE,
                             "click_button(done): empty blocker declaration via GRE bridge",
                         )
-                        return ClickResult(True, 0, 0, "no blocks", "GRE bridge")
+                        return ClickResult(
+                            True,
+                            0,
+                            0,
+                            "no blocks",
+                            "GRE bridge",
+                            submitted_action=GameAction(action_type=ActionType.DECLARE_BLOCKERS),
+                        )
                     self._gre_bridge_failed_methods.add(method)
                     return None
             if self._gre_bridge.submit_pass():
@@ -780,6 +795,33 @@ class _BridgeSubmitMixin:
             entries.append({"attackerInstanceId": identity, "damageRecipient": recipient})
         return entries
 
+    def _prepare_attack_submission(
+        self, action: GameAction, names: list[str], entries: list[dict], state: dict, pending: dict
+    ) -> tuple[GameAction, list[dict]]:
+        """Remove known dead-weight attackers and retain exactly what will be sent."""
+        from arenamcp.combat_strategy import unproductive_attackers
+        from arenamcp.combat_targets import recipient_label
+
+        unproductive = unproductive_attackers(state, pending)
+        pairs = [
+            (name, entry)
+            for name, entry in zip(names, entries, strict=True)
+            if entry["attackerInstanceId"] not in unproductive
+        ]
+        if len(pairs) != len(entries):
+            logger.info("Omitting zero-power attackers with no visible attack payoff")
+        submitted = replace(
+            action,
+            action_type=ActionType.DECLARE_ATTACKERS,
+            card_name="",
+            attacker_names=[name for name, _ in pairs],
+            attacker_targets={
+                name: recipient_label(entry["damageRecipient"], state) for name, entry in pairs
+            },
+            target_names=[],
+        )
+        return submitted, [entry for _, entry in pairs]
+
     def _try_bridge_declare_attackers(self, action: GameAction) -> ClickResult | None:
         """Submit attacker declarations via GRE bridge (two-step NPE handler pattern).
 
@@ -824,6 +866,10 @@ class _BridgeSubmitMixin:
                         action_type=ActionType.DECLARE_ATTACKERS, target_names=["Opponent"]
                     )
                     attacker_entries = self._attack_entries(replacement, attacker_names, game_state, pending)
+            submitted_action, attacker_entries = self._prepare_attack_submission(
+                action, attacker_names, attacker_entries, game_state, pending
+            )
+            attacker_names = submitted_action.attacker_names
         except (ValueError, TypeError, KeyError) as error:
             logger.warning("Bridge declare_attackers: %s; manual choice required", error)
             return None
@@ -850,7 +896,7 @@ class _BridgeSubmitMixin:
                 ExecutionPath.GRE_AWARE,
                 "declare_attackers: confirmed no attackers via GRE bridge",
             )
-            return ClickResult(True, 0, 0, "attackers", "GRE bridge")
+            return ClickResult(True, 0, 0, "attackers", "GRE bridge", submitted_action=submitted_action)
 
         # Step 1: UpdateAttacker (declare attackers with damage recipients)
         resp = self._gre_bridge.submit_attackers_raw(attacker_entries)
@@ -875,7 +921,7 @@ class _BridgeSubmitMixin:
             for name, entry in zip(attacker_names, attacker_entries, strict=True)
         )
         self._log_execution_path(ExecutionPath.GRE_AWARE, f"declare_attackers: [{names_str}] via GRE bridge")
-        return ClickResult(True, 0, 0, "attackers", "GRE bridge")
+        return ClickResult(True, 0, 0, "attackers", "GRE bridge", submitted_action=submitted_action)
 
     def _try_gre_bridge_blockers(self, action: GameAction) -> ClickResult | None:
         """Submit blocker assignments via the GRE bridge.
@@ -1095,16 +1141,21 @@ class _BridgeSubmitMixin:
         game_state = self._get_game_state()
         try:
             attacker_list = self._attack_entries(action, action.attacker_names, game_state, pending)
+            submitted_action, attacker_list = self._prepare_attack_submission(
+                action, action.attacker_names, attacker_list, game_state, pending
+            )
         except (ValueError, TypeError, KeyError) as error:
             logger.warning("GRE bridge attackers: %s; manual choice required", error)
             return None
 
         if self._gre_bridge.submit_attackers(attacker_list):
-            names = ", ".join(action.attacker_names)
+            names = ", ".join(submitted_action.attacker_names)
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE, f"declare_attackers: {names} submitted via GRE bridge"
             )
-            return ClickResult(True, 0, 0, "declare_attackers", "GRE bridge")
+            return ClickResult(
+                True, 0, 0, "declare_attackers", "GRE bridge", submitted_action=submitted_action
+            )
 
         logger.info("GRE bridge submit_attackers failed, surfacing manual-required to caller")
         self._gre_bridge_failed_methods.add("declare_attackers")

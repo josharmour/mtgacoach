@@ -1551,11 +1551,13 @@ class GameState(_GameStateAnnotationsMixin):
 
         if "power" in obj_data:
             p = obj_data["power"]
-            power = p.get("value") if isinstance(p, dict) else p
+            # Protobuf omits a scalar's default value: a present empty
+            # wrapper is an explicit zero, not a missing stat.
+            power = p.get("value", 0) if isinstance(p, dict) else p
 
         if "toughness" in obj_data:
             t = obj_data["toughness"]
-            toughness = t.get("value") if isinstance(t, dict) else t
+            toughness = t.get("value", 0) if isinstance(t, dict) else t
 
         if "isTapped" in obj_data:
             is_tapped = obj_data["isTapped"]

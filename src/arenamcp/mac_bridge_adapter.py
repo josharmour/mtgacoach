@@ -410,6 +410,8 @@ class MacBridgeAdapter:
         shaper = getattr(self, "_shape_" + name, None)
         if shaper:
             shaper(request, getters, response)
+        if name == "SearchRequest":
+            response["search_candidates"] = self._search_card_options(snapshot, response, timeout)
         payload = build_request_payload(request, response["request_type"], name)
         if payload:
             response["request_payload"] = payload
@@ -418,6 +420,31 @@ class MacBridgeAdapter:
             if context:
                 response["decision_context"] = context
         return response
+
+    def _search_card_options(self, snapshot: Snapshot, response: dict, timeout: float | None) -> list[dict]:
+        """Identify only the instances Arena explicitly offers in this search.
+
+        Library choices need not appear in Player.log. Read each offered card
+        from the client, without enumerating hidden zones or library order.
+        """
+        ids = response["search_candidates"]
+        if not ids:
+            return []
+        ops = _Ops()
+        ops.expect_pending(H(snapshot.handle))
+        manager = ops.add("find", **{"class": "GameManager"}, depth=0, optional=True)
+        state = ops.get(manager, "CurrentGameState", optional=True)
+        grp_refs = []
+        for instance_id in ids:
+            card = ops.add(
+                "call", target=state, method="GetCardById", args=[U(instance_id)], depth=0, optional=True
+            )
+            grp_refs.append(ops.get(card, "GrpId", optional=True))
+        results = self._run(ops, timeout)
+        return [
+            {"instanceId": instance_id, "grpId": num(results[ref["ref"]])}
+            for instance_id, ref in zip(ids, grp_refs, strict=True)
+        ]
 
     def _shape_ActionsAvailableRequest(self, request: dict, getters: dict, response: dict) -> None:
         response["actions"] = [serialize_action(action) for action in items(field(request, "Actions"))]
@@ -569,7 +596,14 @@ class MacBridgeAdapter:
         response["can_pass"] = False
 
     def _shape_SearchRequest(self, request: dict, getters: dict, response: dict) -> None:
-        response["search_candidates"] = [num(i) for i in items(field(request, "Options"))]
+        options = field(request, "Options")
+        if isinstance(options, dict) and options.get("$n", len(items(options))) != len(items(options)):
+            raise AdapterError("Search options snapshot is incomplete")
+        if field(request, "Min") is None or field(request, "Max") is None:
+            raise AdapterError("Search selection limits are missing")
+        response["search_candidates"] = [num(i) for i in items(options)]
+        response["select_n_min"] = num(field(request, "Min"))
+        response["select_n_max"] = num(field(request, "Max"))
         response["search_zones"] = [num(i) for i in items(field(request, "ZonesToSearch"))]
         response["search_additional_zones"] = [num(i) for i in items(field(request, "AdditionalZones"))]
         response["search_context_options"] = [num(i) for i in items(field(request, "ContextOptions"))]
@@ -784,6 +818,15 @@ class MacBridgeAdapter:
     def _cmd_submit_selection(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout, "SelectNRequest", "SearchRequest", "PayCostsRequest")
         ids = [int(i) for i in command.get("ids") or []]
+        if snapshot.request_class == "SearchRequest":
+            offered = {num(i) for i in items(field(snapshot.request, "Options"))}
+            minimum, maximum = num(field(snapshot.request, "Min")), num(field(snapshot.request, "Max"))
+            if (
+                len(set(ids)) != len(ids)
+                or not set(ids).issubset(offered)
+                or not minimum <= len(ids) <= maximum
+            ):
+                raise AdapterError("Selection does not satisfy the current search constraints")
         if snapshot.request_class == "PayCostsRequest":
             from arenamcp.decisions import build_pending_decision
 

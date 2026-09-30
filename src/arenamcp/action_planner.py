@@ -400,6 +400,7 @@ RULES:
 - ONE action per plan. Don't sequence (no "play land" + "cast spell").
 - EXCEPTION: declare_attackers/declare_blockers carry the full set in one action — do NOT add a "done" click.
 - ATTACK TARGETS: Supply attacker_names AND attacker_targets mapping each chosen creature to its legal recipient. When a planeswalker and the opponent are available, explicitly choose who each creature attacks; split attacks when useful. Compare killing the planeswalker (loyalty, abilities, future value) with lethal or pressure on the player. Damage to a planeswalker is NOT damage to the opponent. Prefer the recipient-aware combat search over the older player-only attack line when both appear. The search models visible combat approximately, not hidden tricks, triggered abilities, or future loyalty activations; never invent unknown loyalty. Say the chosen recipients in voice_advice; never leave that choice to a default UI target.
+- ZERO-POWER ATTACKERS: A legal attacker need not be a useful attacker. Leave zero-power creatures untapped for mana or defense unless an actual attack trigger, required attack, pump plan, or damage-replacement effect gives attacking a concrete benefit. Flying alone does not make a zero-power attack useful.
 - BLOCKERS: "Block with: X" names an eligible blocker, NOT a complete move. Supply action_type="declare_blockers" and blocker_assignments mapping each blocker to a named attacker. Never use a bare menu pick or an empty attacker name. Use an explicit empty mapping only when intentionally declaring no blocks.
 - EQUIPMENT: Reassess haste-granting equipment after its wearer taps or new creatures enter. Move it to an untapped summoning-sick creature when that enables a useful attack or tap ability now. A tapped wearer can still deserve shroud/hexproof protection; do not move equipment just because another creature is untapped. Equip only when Arena offers the activation; do not shuffle it endlessly or float mana without a concrete use.
 - [SS] = summoning sick (can't attack). * prefix = token. [3P1P] = 3 +1/+1 counters.
@@ -2235,6 +2236,11 @@ class ActionPlanner(_ActionLegalityMixin):
         "but an unconditional draw-a-card clause can still justify cycling it to find lands or early plays. "
         "Compare that draw against spending mana needed for a useful creature or interaction; explain "
         "when casting only for the draw. Never buff an opposing creature merely to draw. "
+        "For library searches, compare the offered cards' rules text and choose a complementary set "
+        "up to max_select when the extra cards help. Explain the specific role of each choice. "
+        "Distinguish cards going to hand from cards entering the battlefield: putting a creature onto "
+        "the battlefield does not trigger 'when you cast' abilities. Consider cost and time to cast "
+        "cards going to hand, and do not assume an unchosen spell mode such as entwine is active. "
         "When passing your main phase, explain the concrete constraint (unpayable creatures, "
         "no useful targets, or holding interaction), and consider all playable lands and useful payable plays."
     )
@@ -2250,12 +2256,23 @@ class ActionPlanner(_ActionLegalityMixin):
         self._last_decision_option_ids = []
         decision = filter_play_options(decision, game_state)
         if not decision.options:
+            if decision.request_type == "Search" and decision.selection_is_valid([]):
+                return []
+            return [DECLINE_DECISION]
+        if decision.request_type == "Search" and any(
+            option.meta.get("identity_known") is False for option in decision.options
+        ):
+            logger.info("Search has unidentified cards; declining a blind tutor choice")
             return [DECLINE_DECISION]
         try:
             chosen = self._llm_decision_options(decision, game_state)
             valid = decision.option_ids()
             if decision.request_type == "ActionsAvailable":
                 valid = {option.option_id for option in decision.options if option.payable is not False}
+            if decision.request_type == "Search":
+                # Never silently truncate, substitute the first card, or
+                # narrate reasoning for a different set than we submit.
+                return chosen if decision.selection_is_valid(chosen) else [DECLINE_DECISION]
             chosen = [c for c in chosen if c in valid]
             if chosen and decision.min_weight is not None:
                 chosen = list(dict.fromkeys(chosen))
@@ -2522,7 +2539,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 note = "  [Arena confirms payable now]"
             if "weight" in o.meta:
                 note += f"  [contribution: {o.meta['weight']}]"
-            if decision.request_type in {"CastingTimeOptions", "OptionalAction"}:
+            if decision.request_type in {"CastingTimeOptions", "OptionalAction", "Search"}:
                 note += " " + json.dumps(o.meta, ensure_ascii=False)
             side = ""
             if o.option_id.startswith("tgt:") and local_seat is not None:
@@ -2584,8 +2601,12 @@ class ActionPlanner(_ActionLegalityMixin):
         except json.JSONDecodeError:
             logger.info(f"typed-decision: bad JSON: {json_str[:160]!r}")
             raise
-        ids = data.get("option_ids") or []
-        chosen = [str(option_id) for option_id in ids if isinstance(option_id, (str, int))]
+        if not isinstance(data.get("option_ids"), list):
+            raise ValueError("typed-decision response must contain an option_ids list")
+        ids = data["option_ids"]
+        if any(type(option_id) not in (str, int) for option_id in ids):
+            raise ValueError("typed-decision option_ids must contain only ids")
+        chosen = [str(option_id) for option_id in ids]
         reason = data.get("reasoning")
         self._last_decision_reasoning = " ".join(reason.split()[:50]) if isinstance(reason, str) else ""
         self._last_decision_option_ids = chosen
@@ -2632,7 +2653,7 @@ class ActionPlanner(_ActionLegalityMixin):
             return [opts[0].option_id]
         if decision.request_type == "Mulligan":
             return ["mull:keep"]
-        if decision.request_type in {"CastingTimeOptions", "OptionalAction"}:
+        if decision.request_type in {"CastingTimeOptions", "OptionalAction", "Search"}:
             return [DECLINE_DECISION]
         if decision.min_weight is not None:
             from itertools import combinations, islice

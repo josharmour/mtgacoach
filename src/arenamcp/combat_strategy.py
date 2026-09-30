@@ -1,6 +1,8 @@
 """Bounded joint attack-recipient and defending-block assignment search."""
 
 import json
+import math
+import re
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -8,6 +10,47 @@ from itertools import product
 
 from arenamcp.combat_solver import _can_block, _has, _material, _memoized, _resolve_attacker, optimal_blocks
 from arenamcp.combat_targets import attack_candidates, recipient_key, recipient_label
+
+
+def unproductive_attackers(state: dict, pending: dict | None = None) -> set[int]:
+    """Known zero-power choices with no visible non-damage reason to attack.
+
+    Preserve mandatory attacks and abstain when rules text offers an attack
+    payoff, a pump trick, or damage based on toughness. Unknown power is not zero.
+    """
+    local = next((p.get("seat_id") for p in state.get("players", []) if p.get("is_local")), None)
+    if local is None:
+        return set()
+    battlefield = state.get("battlefield") or []
+    for card in battlefield:
+        text = (card.get("oracle_text") or "").lower()
+        if "combat damage" in text and "toughness" in text:
+            return set()
+        if card.get("controller_seat_id", card.get("owner_seat_id")) == local and re.search(
+            r"\battack(?:s|ing|ed|ers?)?\b|\b(?:exert|exalted|annihilator|battle cry|myriad|melee)\b"
+            r"|gets?\s+\+|base power",
+            text,
+        ):
+            return set()
+    for card in state.get("hand") or []:
+        text = (card.get("oracle_text") or "").lower()
+        if re.search(r"\braid\b|you attacked this turn", text) or (
+            "instant" in (card.get("type_line") or "").lower()
+            and re.search(r"gets?\s+\+|base power|combat damage", text)
+        ):
+            return set()
+    cards = {card.get("instance_id"): card for card in battlefield}
+    result = set()
+    for candidate in attack_candidates(state, pending) or []:
+        identity = candidate.get("attackerInstanceId")
+        if candidate.get("mustAttack") or identity not in cards:
+            continue
+        try:
+            if int(cards[identity].get("power")) <= 0:
+                result.add(identity)
+        except (ValueError, TypeError):
+            continue
+    return result
 
 
 @dataclass
@@ -200,8 +243,21 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
             evaluated = CombatChoice(mapping, player_damage, removed, crackback, score)
             if worst is None or evaluated.score < worst.score:
                 worst = evaluated
-        if worst is not None and (best is None or worst.score > best.score):
-            best = worst
+        if worst is not None:
+            # Equal scores used to keep the first all-in attack, including
+            # zero-power mana creatures. Prefer real pressure at equal value,
+            # then keep unnecessary attackers available for mana and defense.
+            tied = best is not None and math.isclose(worst.score, best.score, abs_tol=1e-9)
+            if (
+                best is None
+                or (worst.score > best.score and not tied)
+                or (
+                    tied
+                    and (worst.player_damage, -len(worst.assignments))
+                    > (best.player_damage, -len(best.assignments))
+                )
+            ):
+                best = worst
     if best is not None:
         attacks = (
             "; ".join(

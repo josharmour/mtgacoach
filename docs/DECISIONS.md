@@ -7,6 +7,42 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-09-29 — Resolve search identities and narrate submitted moves
+
+- Report `bug_20260929_203249`: Tooth and Nail's library search reached the
+  model as anonymous instance labels such as `Option 537`, with a default
+  one-card limit. The model chose one anonymous option and claimed it was
+  the strongest creature; the next hand contained Shang-Chi. This is not
+  evidence that it compared Shang-Chi's text with the offered Eldrazi.
+- Both bridge implementations now expose SearchRequest's Min/Max and resolve
+  the offered instance IDs to card group IDs. Native reflection reads only
+  those offered instances, checks request identity, and rejects truncated
+  candidate lists. The typed chooser receives names and rules text, preserves
+  the entire valid selection, and never falls back to the first tutor candidate
+  after an invalid model answer. Missing identities require manual selection.
+  A deliberate legal empty selection can still finish a search.
+- Report `bug_20260929_201852`: the model chose Done to preserve its mana
+  creatures. The combat approximation incorrectly read Selfless Savior's
+  granted indestructibility as its own keyword. Keyword recognition now reads
+  printed keyword lines; equal-score attacks prefer actual damage, then fewer
+  attackers. The reconstructed Halfling/Savior board now selects Halfling.
+- Report `bug_20260929_202111`: the model announced Birds and Vaultborn Tyrant
+  before discovering the attack window had closed; that attempt did not submit.
+  An explicit empty protobuf stat wrapper now means zero, while an absent stat
+  remains unknown. Zero-power attackers with no visible payoff are omitted;
+  mandatory attacks, attack triggers, pump possibilities, and toughness-based
+  damage are exempt. The solver remains an approximation of visible combat.
+- Autoplay speech now follows successful submission and uses the actual move
+  returned by handlers after refinements. Stale, closed, or failed submissions
+  do not announce an executed move. Background strategy stays in its dedicated
+  UI panel. Typed speech omits the internal ActionsAvailable request prefix;
+  stale casting-mode answers cannot fall through against the next request.
+- Synthetic regressions cover combat outcomes, submitted attacker identities,
+  speech timing, search bounds, card metadata, invalid/empty selections, and
+  stale requests. Native behavior still needs a coach reload and live check;
+  no ongoing game was restarted. Windows bridge source was updated for parity;
+  no .NET SDK is available on this Mac to build that plugin.
+
 ## 2026-09-29 — Close prompt, combat, Limited, and card-coverage gaps
 
 - Casting-time decisions now use the actual modal/numeric options, including

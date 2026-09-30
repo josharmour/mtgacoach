@@ -99,6 +99,7 @@ class _ActionExecMixin:
                         and bridge_has_other_request
                     )
                     is_displaced_numeric = action.action_type == ActionType.NUMERIC_INPUT
+                    is_displaced_casting = action.action_type == ActionType.CASTING_OPTIONS
 
                     if (
                         is_combat_stale
@@ -119,6 +120,7 @@ class _ActionExecMixin:
                                     0,
                                     "pass_priority",
                                     "GRE bridge (advance-to-combat)",
+                                    submitted_action=GameAction(action_type=ActionType.PASS_PRIORITY),
                                 )
                         except Exception as e:
                             logger.debug(f"advance-to-combat pass failed: {e}")
@@ -129,6 +131,7 @@ class _ActionExecMixin:
                         or is_displaced_select
                         or is_displaced_pass
                         or is_displaced_numeric
+                        or is_displaced_casting
                     ):
                         if is_combat_stale:
                             reason = "bridge not in combat step yet"
@@ -140,6 +143,8 @@ class _ActionExecMixin:
                             reason = (
                                 f"window is now {bridge_type or bridge_class or 'nothing'} — no number asked"
                             )
+                        elif is_displaced_casting:
+                            reason = f"window is now {bridge_type or bridge_class} — casting options resolved"
                         else:
                             reason = (
                                 f"bridge has no SelectN/Search pending "
