@@ -63,7 +63,13 @@ def _make_coach(ui: _DraftHudUI, mcp: _DraftMcp) -> standalone.StandaloneCoach:
     coach.draft_mode = False
     coach.set_code = None
     coach.spoken: list[str] = []
-    coach.speak_advice = coach.spoken.append
+    coach.speech_blocking: list[bool] = []
+
+    def speak(text, blocking=True):
+        coach.spoken.append(text)
+        coach.speech_blocking.append(blocking)
+
+    coach.speak_advice = speak
     return coach
 
 
@@ -98,3 +104,4 @@ def test_coaching_loop_emits_draft_state_during_active_draft(monkeypatch) -> Non
 
     assert ui.draft_states == [draft_pack]
     assert coach.spoken == ["Take Alpha"]
+    assert coach.speech_blocking == [False]

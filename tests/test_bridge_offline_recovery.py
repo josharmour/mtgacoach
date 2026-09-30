@@ -10,11 +10,19 @@ every autopilot action failed "Bridge offline" with zero guidance.
 import logging
 import time
 
+import pytest
+
 import arenamcp.autopilot as autopilot_module
 from arenamcp.action_planner import ActionType, GameAction
 from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
 from arenamcp.autopilot_models import ClickResult
 from arenamcp.gre_bridge import GREBridge
+
+
+@pytest.fixture(autouse=True)
+def _desktop_bridge_environment(monkeypatch):
+    monkeypatch.setenv("MTGACOACH_GAME_DEVICE", "desktop")
+    monkeypatch.setattr("arenamcp.platform_integration.mac_bridge_installed", lambda: False)
 
 
 class _FlippingBridge:
@@ -154,6 +162,48 @@ def test_no_plugin_log_mode_instead_of_warning_when_bridge_impossible(caplog, mo
         "plugin is not loading" in r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
     )
     assert any("log-only" in r.getMessage() for r in caplog.records)
+
+
+def test_installed_mac_bridge_warns_instead_of_claiming_log_only(caplog, monkeypatch):
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("arenamcp.platform_integration.bridge_capable", lambda: False)
+    monkeypatch.setattr("arenamcp.platform_integration.mac_bridge_installed", lambda: True)
+    bridge = GREBridge()
+    bridge._server_socket = object()
+    bridge._server_started_at = time.monotonic() - 60.0
+    with caplog.at_level(logging.INFO, logger="arenamcp.gre_bridge"):
+        bridge._maybe_warn_no_plugin()
+        bridge._maybe_warn_no_plugin()
+    warnings = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert "quit MTGA and reopen the coach" in warnings[0]
+    assert "DYLD_INSERT_LIBRARIES" in warnings[0]
+    assert "BepInEx" not in warnings[0]
+    assert not any("log-only" in record.getMessage() for record in caplog.records)
+
+
+def test_android_bridge_warns_even_when_mac_bridge_is_not_installed(caplog, monkeypatch):
+    monkeypatch.setenv("MTGACOACH_GAME_DEVICE", "android")
+    monkeypatch.setattr("arenamcp.platform_integration.bridge_capable", lambda: False)
+    bridge = GREBridge()
+    bridge._server_socket = object()
+    bridge._server_started_at = time.monotonic() - 60.0
+    with caplog.at_level(logging.WARNING, logger="arenamcp.gre_bridge"):
+        bridge._maybe_warn_no_plugin()
+    assert "adb reverse" in caplog.text
+    assert "relaunch MTGA on the phone" in caplog.text
+    assert "DYLD_INSERT_LIBRARIES" not in caplog.text
+
+
+def test_mac_reconnect_timeout_reports_native_bridge_recovery(caplog, monkeypatch):
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("arenamcp.platform_integration.bridge_capable", lambda: False)
+    engine = _make_engine(monkeypatch, _FlippingBridge(10_000), bridge_reconnect_wait=0.01)
+    with caplog.at_level(logging.WARNING, logger="arenamcp.autopilot"):
+        assert engine._wait_for_bridge_reconnect() is False
+    assert "native macOS bridge" in caplog.text
+    assert "DYLD_INSERT_LIBRARIES" in caplog.text
+    assert "WINEDLLOVERRIDES" not in caplog.text
 
 
 def test_no_plugin_warning_suppressed_after_any_connection(caplog):

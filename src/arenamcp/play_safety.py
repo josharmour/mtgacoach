@@ -213,6 +213,17 @@ def filter_play_options(decision: Any, state: dict) -> Any:
     """Use the same safe option set for model selection and fallback."""
     from dataclasses import replace
 
+    if decision.request_type == "CastingTimeOptions":
+        source = pending_x_source(state)
+        return replace(
+            decision,
+            options=tuple(
+                option
+                for option in decision.options
+                if option.meta.get("numericValue") is None
+                or useful_tutor_x(state, source, int(option.meta["numericValue"]))
+            ),
+        )
     if decision.request_type != "ActionsAvailable":
         return decision
     kept = []

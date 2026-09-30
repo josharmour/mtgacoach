@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from collections.abc import Callable
 from typing import Any
+
+from arenamcp.decisions import TargetSlot, assign_target_slots
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +148,17 @@ def num(value: Any, default: int = 0) -> int:
 
 def handle(node: Any) -> int | None:
     return node.get("$h") if isinstance(node, dict) else None
+
+
+def guid(node: Any) -> str:
+    fields = [field(node, name) for name in "abcdefghijk"]
+    if any(type(value) is not int for value in fields):
+        raise AdapterError("Incomplete deck identity")
+    widths = (32, 16, 16, 8, 8, 8, 8, 8, 8, 8, 8)
+    encoded = "".join(
+        f"{value & ((1 << width) - 1):0{width // 4}x}" for value, width in zip(fields, widths, strict=True)
+    )
+    return str(uuid.UUID(hex=encoded))
 
 
 def short_class(node: Any) -> str:
@@ -315,6 +329,60 @@ class MacBridgeAdapter:
 
     # -- observation ---------------------------------------------------------
 
+    def _cmd_get_deck_editor(self, command: dict, timeout: float | None) -> dict:
+        ops = _Ops()
+        widget = ops.add("find", **{"class": "DeckBuilderWidget"}, depth=0, optional=True)
+        ops.get(widget, "_isActive", optional=True)
+        found, active = self._run(ops, timeout)
+        if not active or not handle(found):
+            return {"ok": True, "is_open": False}
+        widget = H(handle(found))
+        ops = _Ops()
+        ops.expect_member(widget, "_isActive", True)
+        context = ops.get(widget, "Context")
+        limited = ops.get(context, "IsLimited")
+        sideboarding = ops.get(context, "IsSideboarding")
+        readonly = ops.get(context, "IsReadOnly")
+        values = self._run(ops, timeout)
+        if not values[limited["ref"]] or values[sideboarding["ref"]] or values[readonly["ref"]]:
+            return {"ok": True, "is_open": False}
+        ops = _Ops()
+        ops.expect_member(widget, "_isActive", True)
+        context = ops.get(widget, "Context")
+        ops.expect_member(context, "IsLimited", True)
+        ops.expect_member(context, "IsSideboarding", False)
+        ops.expect_member(context, "IsReadOnly", False)
+        provider = ops.get(widget, "ModelProvider")
+        model = ops.get(provider, "_model")
+        ops.expect_member(model, "HasLoadedDeck", True)
+        deck = ops.call(model, "GetServerModel")
+        main = ops.get(deck, "mainDeck", depth=2)
+        side = ops.get(deck, "sideboard", depth=2)
+        identity = ops.get(deck, "id", depth=1)
+        values = self._run(ops, timeout)
+
+        def counts(reference: dict) -> list[dict]:
+            node = values[reference["ref"]]
+            entries = items(node)
+            if not isinstance(node, dict) or node.get("$n") != len(entries):
+                raise AdapterError("Incomplete deck editor snapshot")
+            result = []
+            for entry in entries:
+                grp_id, count = num(field(entry, "Id")), num(field(entry, "Quantity"))
+                if grp_id is None or count is None or grp_id <= 0 or count <= 0:
+                    raise AdapterError("Invalid deck editor card entry")
+                result.append({"grp_id": grp_id, "count": count})
+            return result
+
+        return {
+            "ok": True,
+            "is_open": True,
+            "is_limited": True,
+            "deck_id": guid(values[identity["ref"]]),
+            "main_deck": counts(main),
+            "sideboard": counts(side),
+        }
+
     def _cmd_get_game_state(self, command: dict, timeout: float | None) -> dict:
         return {
             "ok": False,
@@ -355,6 +423,11 @@ class MacBridgeAdapter:
         response["actions"] = [serialize_action(action) for action in items(field(request, "Actions"))]
         response["can_pass"] = bool(getters.get("CanPass"))
 
+    def _shape_OptionalActionMessageRequest(self, request: dict, getters: dict, response: dict) -> None:
+        response["source_instance_id"] = num(field(request, "SourceId"))
+        response["optional_mechanics"] = [enum_name(value) for value in items(field(request, "Mechanics"))]
+        response["optional_recipients"] = [num(value) for value in items(field(request, "RecipientIds"))]
+
     def _shape_DeclareBlockersRequest(self, request: dict, getters: dict, response: dict) -> None:
         response["blockers"] = [
             {
@@ -363,6 +436,9 @@ class MacBridgeAdapter:
                 "minAttackers": num(field(blocker, "MinAttackers")),
                 "maxAttackers": num(field(blocker, "MaxAttackers")),
                 "attackerInstanceIds": [num(i) for i in items(field(blocker, "AttackerInstanceIds"))],
+                "selectedAttackerInstanceIds": [
+                    num(instance_id) for instance_id in items(field(blocker, "SelectedAttackerInstanceIds"))
+                ],
             }
             for blocker in items(field(request, "AllBlockers"))
         ]
@@ -438,8 +514,13 @@ class MacBridgeAdapter:
                     "targetIdx": index,
                     "grpId": 0,
                 }
+                action = field(target, "LegalAction")
+                if action is not None:
+                    entry["legalAction"] = enum_name(action) or num(action)
+                entry["highlight"] = enum_name(field(target, "Highlight"))
                 slot.append(dict(entry))
-                flat.append(entry)
+                if action is None or enum_name(action) == "Select" or num(action) == 1:
+                    flat.append(entry)
             selections.append(
                 {
                     "targetIdx": index,
@@ -504,6 +585,9 @@ class MacBridgeAdapter:
         response["select_n_option_context"] = enum_name(field(request, "OptionContext"))
         response["select_n_min"] = num(field(request, "MinSel"))
         response["select_n_max"] = num(field(request, "MaxSel"))
+        response["select_n_weights"] = [num(weight) for weight in items(field(request, "Weights"))]
+        response["select_n_min_weight"] = num(field(request, "MinWeight"), -(2**31))
+        response["select_n_max_weight"] = num(field(request, "MaxWeight"), 2**31 - 1)
         should_cancel = bool(field(request, "ShouldCancel"))
         response["select_n_can_cancel"] = should_cancel
         for key, getter in (
@@ -519,6 +603,16 @@ class MacBridgeAdapter:
             response["select_n_is_" + key] = bool(getters.get(getter))
         response["select_n_should_cancel"] = should_cancel
         response["can_pass"] = False
+
+    def _shape_PayCostsRequest(self, request: dict, getters: dict, response: dict) -> None:
+        selection = cost_selection_request(request)
+        if selection is None:
+            return
+        self._shape_SelectNRequest(selection, {}, response)
+        response["request_type"] = "SelectN"
+        response["source_card"] = "Pay non-mana cost"
+        response["payment_selection"] = True
+        response["decision_context"] = {"type": "select_n", "source_id": num(field(request, "SourceId"))}
 
     def _shape_GroupRequest(self, request: dict, getters: dict, response: dict) -> None:
         # InstanceIds/GroupSpecs/Context are computed properties over the wrapped
@@ -585,6 +679,13 @@ class MacBridgeAdapter:
             raise AdapterError(f"Casting-time option index {index} out of range (0-{len(entries) - 1})")
         entry = entries[index]
         payload = entry["payload"]
+        self._check_request_identity(snapshot, command)
+        for expected, key in (
+            ("expected_child_index", "childIndex"),
+            ("expected_numeric_value", "numericValue"),
+        ):
+            if command.get(expected) is not None and command[expected] != payload.get(key):
+                raise AdapterError(f"identity mismatch: option {index} is {payload}")
         if command.get("expected_choice_kind") and command["expected_choice_kind"] != payload["choiceKind"]:
             raise AdapterError(f"identity mismatch: option {index} is {payload}")
         if command.get("expected_option_index") is not None and command[
@@ -611,8 +712,18 @@ class MacBridgeAdapter:
         self, command: dict, timeout: float | None, classes: tuple[str, ...], method: str, *args: dict
     ) -> Snapshot:
         snapshot = self._require(timeout, *classes)
+        self._check_request_identity(snapshot, command)
         self._submit(snapshot, lambda ops, request: ops.call(request, method, *args), timeout)
         return snapshot
+
+    @staticmethod
+    def _check_request_identity(snapshot: Snapshot, command: dict) -> None:
+        for expected, actual in (
+            ("expected_game_state_id", snapshot.game_state_id),
+            ("expected_msg_id", snapshot.msg_id),
+        ):
+            if command.get(expected) not in (None, 0, -1) and int(command[expected]) != actual:
+                raise AdapterError("stale command: the pending request changed")
 
     def _cmd_submit_pass(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout, "ActionsAvailableRequest")
@@ -671,8 +782,28 @@ class MacBridgeAdapter:
         return {"ok": True, "submitted_type": kind, "value": value, "clamped": value != requested}
 
     def _cmd_submit_selection(self, command: dict, timeout: float | None) -> dict:
-        snapshot = self._require(timeout, "SelectNRequest", "SearchRequest")
+        snapshot = self._require(timeout, "SelectNRequest", "SearchRequest", "PayCostsRequest")
         ids = [int(i) for i in command.get("ids") or []]
+        if snapshot.request_class == "PayCostsRequest":
+            from arenamcp.decisions import build_pending_decision
+
+            child = cost_selection_request(snapshot.request)
+            if child is None:
+                raise AdapterError("PayCosts has no supported non-mana selection")
+            poll = {"has_pending": True, "request_type": "SelectN"}
+            self._shape_SelectNRequest(child, {}, poll)
+            decision = build_pending_decision(poll)
+            if decision is None or not decision.selection_is_valid(
+                [f"sel:{instance_id}" for instance_id in ids]
+            ):
+                raise AdapterError("Selection does not satisfy the current non-mana payment constraints")
+            selection = LIST([U(instance_id) for instance_id in ids])
+            self._submit(
+                snapshot,
+                lambda ops, request: ops.call(H(handle(child)), "SubmitSelection", selection),
+                timeout,
+            )
+            return {"ok": True, "submitted_type": "CostSelection"}
         if snapshot.request_class == "SelectNRequest" and not ids:
             self._submit(snapshot, lambda ops, request: ops.call(request, "SubmitArbitrary"), timeout)
             return {"ok": True, "submitted_type": "SelectN"}
@@ -713,6 +844,7 @@ class MacBridgeAdapter:
         return group
 
     def _cmd_submit_blockers(self, command: dict, timeout: float | None) -> dict:
+        """Declare assignments first; finalize only after the caller checks acceptance."""
         snapshot = self._require(timeout, "DeclareBlockersRequest")
         assignments = command.get("assignments") or []
         if not assignments:
@@ -720,49 +852,87 @@ class MacBridgeAdapter:
             return {"ok": True, "submitted_type": "DeclareBlockers"}
         by_id = {num(field(b, "BlockerInstanceId")): b for b in items(field(snapshot.request, "AllBlockers"))}
         selected = []
+        used_blockers: set[int] = set()
         for assignment in assignments:
-            blocker = by_id.get(int(assignment.get("blockerInstanceId") or 0))
+            blocker_id = int(assignment.get("blockerInstanceId") or 0)
+            if blocker_id in used_blockers:
+                raise AdapterError(f"Duplicate blocker instance {blocker_id}")
+            used_blockers.add(blocker_id)
+            blocker = by_id.get(blocker_id)
             if blocker is None:
-                logger.warning(
-                    "mac bridge: blocker %s not in AllBlockers", assignment.get("blockerInstanceId")
-                )
-                continue
-            selected.append((blocker, [int(a) for a in assignment.get("attackerInstanceIds") or []]))
+                raise AdapterError(f"Blocker {blocker_id} not in AllBlockers")
+            attacker_ids = [int(attacker_id) for attacker_id in assignment.get("attackerInstanceIds") or []]
+            legal_attackers = {
+                num(instance_id) for instance_id in items(field(blocker, "AttackerInstanceIds"))
+            }
+            if not attacker_ids or not set(attacker_ids).issubset(legal_attackers):
+                raise AdapterError(f"Illegal attackers for blocker {blocker_id}: {attacker_ids}")
+            selected.append((blocker, attacker_ids))
 
         def build(ops: _Ops, request: dict) -> None:
-            # Fresh messages through OnSubmit, as the plugin does: UpdateBlockers
-            # and SubmitBlockers share one outbound message and the second
-            # overwrites the first before it is serialized.
-            if selected:
-                declaration = ops.message("DeclareBlockersResp", snapshot.game_state_id, snapshot.msg_id)
-                ops.set(declaration, "DeclareBlockersResp", ops.new(MESSAGING + "DeclareBlockersResp"))
-                chosen = ops.get(ops.get(declaration, "DeclareBlockersResp"), "SelectedBlockers")
-                for blocker, attacker_ids in selected:
-                    attackers = ops.get(H(handle(blocker)), "SelectedAttackerInstanceIds")
-                    ops.call(attackers, "Clear")
-                    for attacker_id in attacker_ids:
-                        ops.call(attackers, "Add", U(attacker_id))
-                    ops.call(chosen, "Add", H(handle(blocker)))
-                ops.on_submit(request, declaration)
-            ops.on_submit(request, ops.message("SubmitBlockersReq", snapshot.game_state_id, snapshot.msg_id))
+            declaration = ops.message("DeclareBlockersResp", snapshot.game_state_id, snapshot.msg_id)
+            ops.set(declaration, "DeclareBlockersResp", ops.new(MESSAGING + "DeclareBlockersResp"))
+            chosen = ops.get(ops.get(declaration, "DeclareBlockersResp"), "SelectedBlockers")
+            for blocker, attacker_ids in selected:
+                attackers = ops.get(H(handle(blocker)), "SelectedAttackerInstanceIds")
+                ops.call(attackers, "Clear")
+                for attacker_id in attacker_ids:
+                    ops.call(attackers, "Add", U(attacker_id))
+                ops.call(chosen, "Add", H(handle(blocker)))
+            ops.on_submit(request, declaration)
 
         self._submit(snapshot, build, timeout)
-        return {"ok": True, "submitted_type": "DeclareBlockers"}
+        return {"ok": True, "submitted_type": "DeclareBlockers", "needs_finalize": True}
 
     def _cmd_submit_attackers(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout, "DeclareAttackerRequest")
         wanted = {int(a.get("attackerInstanceId") or 0) for a in command.get("attackers") or []}
+        available = items(field(snapshot.request, "Attackers"))
+        legal_ids = {num(field(attacker, "AttackerInstanceId")) for attacker in available}
+        if not wanted.issubset(legal_ids):
+            raise AdapterError(
+                f"Requested attackers are not in this combat window: {sorted(wanted - legal_ids)}"
+            )
         matched = []
-        for attacker in items(field(snapshot.request, "Attackers")):
+        targets = {
+            int(entry.get("attackerInstanceId") or 0): entry.get("damageRecipient")
+            for entry in command.get("attackers") or []
+        }
+        for attacker in available:
+            identity = num(field(attacker, "AttackerInstanceId"))
+            if identity not in wanted:
+                continue
             legal = items(field(attacker, "LegalDamageRecipients"))
-            if (
-                num(field(attacker, "AttackerInstanceId")) in wanted
-                and field(attacker, "SelectedDamageRecipient") is None
-                and legal
-            ):
-                matched.append((attacker, legal[0]))
+            target = targets[identity]
+            if target:
+                from arenamcp.combat_targets import recipient_key
+
+                try:
+                    requested_kind, requested_id = recipient_key(target)
+                except (ValueError, TypeError) as error:
+                    raise AdapterError(str(error)) from error
+                member = {
+                    "player": "PlayerSystemSeatId",
+                    "planeswalker": "PlaneswalkerInstanceId",
+                    "battle": "BattleInstanceId",
+                }[requested_kind]
+                matches = [
+                    recipient for recipient in legal if recipient_id(recipient, member) == requested_id
+                ]
+                if len(matches) != 1:
+                    raise AdapterError(f"Illegal damage recipient for attacker {identity}")
+                recipient = matches[0]
+            elif len(legal) == 1:
+                recipient = legal[0]
+            else:
+                raise AdapterError(f"Attacker {identity} needs an explicit legal damage recipient")
+            selected = field(attacker, "SelectedDamageRecipient")
+            if selected is None or handle(selected) != handle(recipient):
+                matched.append((attacker, recipient))
         if not wanted or not matched:
             # Finalize: the second step of the two-step flow, or "attack with nobody".
+            if snapshot.getters.get("CanSubmit") is False:
+                raise AdapterError("Attack declaration cannot be confirmed; finish choosing legal recipients")
             self._submit(snapshot, lambda ops, request: ops.call(request, "SubmitAttackers"), timeout)
             return {"ok": True, "submitted_type": "DeclareAttackersSubmit"}
 
@@ -789,53 +959,55 @@ class MacBridgeAdapter:
         finalize = command.get("finalize", True) is not False
         selections = items(field(snapshot.request, "TargetSelections"))
 
-        def unsatisfied(selection: dict) -> bool:
-            return num(field(selection, "MinTargets")) > 0 and num(field(selection, "SelectedTargets")) < num(
-                field(selection, "MinTargets")
-            )
-
-        chosen: list[tuple[dict, dict]] = []
-        used: set[int] = set()
-        required = required_filled = 0
+        slots = []
+        candidates = []
         for selection in selections:
-            required_slot = unsatisfied(selection)
-            required += required_slot
-            targets = items(field(selection, "Targets"))
-            pick = next(
-                (
-                    t
-                    for pid in preferred
-                    if pid not in used
-                    for t in targets
-                    if num(field(t, "TargetInstanceId")) == pid
-                ),
-                None,
-            ) or next((t for t in targets if num(field(t, "TargetInstanceId")) not in used), None)
-            if pick is None:
-                continue  # no free legal target; SubmitTargets decides if that is acceptable
-            used.add(num(field(pick, "TargetInstanceId")))
-            required_filled += required_slot
-            chosen.append((selection, pick))
+            legal = {
+                num(field(target, "TargetInstanceId")): target
+                for target in items(field(selection, "Targets"))
+                if field(target, "LegalAction") is None
+                or enum_name(field(target, "LegalAction")) == "Select"
+                or num(field(target, "LegalAction")) == 1
+            }
+            candidates.append(legal)
+            slots.append(
+                TargetSlot(
+                    target_idx=num(field(selection, "TargetIdx")),
+                    min_targets=num(field(selection, "MinTargets")),
+                    max_targets=num(field(selection, "MaxTargets")),
+                    selected=num(field(selection, "SelectedTargets")),
+                    candidate_ids=tuple(legal),
+                )
+            )
+        assignments = assign_target_slots(tuple(slots), preferred)
+        if assignments is None:
+            raise AdapterError("Explicit targets do not satisfy every target slot; no targets submitted")
+        chosen = [
+            (selection, [legal[instance_id] for instance_id in assigned])
+            for selection, legal, assigned in zip(selections, candidates, assignments, strict=True)
+            if assigned
+        ]
 
         base = {"submitted_type": "SelectTargets", "target_instance_id": caller_target}
-        if finalize and not chosen and not any(unsatisfied(s) for s in selections):
+        if finalize and not chosen and selections and not any(slot.needs for slot in slots):
             self._commit_targets(snapshot, timeout)
             return {"ok": True, **base, "already_selected": True, "finalized": True}
         if not chosen:
             raise AdapterError("No legal targets to fill")
 
         def build(ops: _Ops, request: dict) -> None:
-            # One fresh SelectTargetsResp per slot through OnSubmit: UpdateTarget
-            # reuses the request's outbound message, which the commit would
-            # overwrite before it is serialized.
-            for selection, target in chosen:
-                sent = ops.new(MESSAGING + "Target")
-                ops.set(sent, "TargetInstanceId", U(num(field(target, "TargetInstanceId"))))
-                ops.set(sent, "LegalAction", E("Select"))
-                ops.set(sent, "Highlight", I(num(field(target, "Highlight"))))
+            for selection, targets in chosen:
+                sent_targets = []
+                for target in targets:
+                    sent = ops.new(MESSAGING + "Target")
+                    ops.set(sent, "TargetInstanceId", U(num(field(target, "TargetInstanceId"))))
+                    ops.set(sent, "LegalAction", E("Select"))
+                    ops.set(sent, "Highlight", I(num(field(target, "Highlight"))))
+                    sent_targets.append(sent)
                 slot = ops.new(MESSAGING + "TargetSelection")
                 ops.set(slot, "TargetIdx", U(num(field(selection, "TargetIdx"))))
-                ops.call(ops.get(slot, "Targets"), "Add", sent)
+                for sent in sent_targets:
+                    ops.call(ops.get(slot, "Targets"), "Add", sent)
                 response_body = ops.new(MESSAGING + "SelectTargetsResp")
                 ops.set(response_body, "Target", slot)
                 message = ops.message("SelectTargetsResp", snapshot.game_state_id, snapshot.msg_id)
@@ -843,21 +1015,21 @@ class MacBridgeAdapter:
                 ops.on_submit(request, message)
 
         self._submit(snapshot, build, timeout)
-        all_required = required_filled >= required
+        required = sum(slot.needs > 0 for slot in slots)
         result = {
             **base,
             "slots_required": required,
             "slots_filled": len(chosen),
-            "required_filled": required_filled,
+            "required_filled": required,
+            "targets_selected": len(preferred),
         }
-        if finalize and all_required:
-            advanced = self._deferred_commit_targets(snapshot, timeout)
-            return {"ok": True, **result, "finalized": True, "advanced_without_commit": advanced}
         if finalize:
-            logger.warning(
-                "mac bridge SubmitTargets: only %d/%d required slots filled", required_filled, required
-            )
-        return {"ok": all_required, **result, "finalized": False}
+            expected = {
+                slot.target_idx: set(assigned) for slot, assigned in zip(slots, assignments, strict=True)
+            }
+            advanced = self._deferred_commit_targets(snapshot, timeout, expected)
+            return {"ok": True, **result, "finalized": True, "advanced_without_commit": advanced}
+        return {"ok": True, **result, "finalized": False}
 
     def _commit_targets(self, snapshot: Snapshot, timeout: float | None) -> None:
         def build(ops: _Ops, request: dict) -> None:
@@ -865,7 +1037,9 @@ class MacBridgeAdapter:
 
         self._submit(snapshot, build, timeout)
 
-    def _deferred_commit_targets(self, original: Snapshot, timeout: float | None) -> bool:
+    def _deferred_commit_targets(
+        self, original: Snapshot, timeout: float | None, expected: dict[int, set[int]]
+    ) -> bool:
         """Commit on the GRE's updated SelectTargetsReq, like the real client.
 
         Returns True when the request disappeared without our commit (the client
@@ -874,10 +1048,9 @@ class MacBridgeAdapter:
         source = num(field(original.request, "SourceId"))
         started = time.monotonic()
         gone_since: float | None = None
-        last_seen: Snapshot | None = None
         while time.monotonic() - started < TARGET_COMMIT_TIMEOUT_S:
             time.sleep(0.03)
-            current = self.snapshot(depth=4, timeout=timeout)
+            current = self.snapshot(depth=SNAPSHOT_DEPTH, timeout=timeout)
             if (
                 current.request_class != "SelectTargetsRequest"
                 or num(field(current.request, "SourceId")) != source
@@ -887,21 +1060,29 @@ class MacBridgeAdapter:
                     return True
                 continue
             gone_since = None
-            last_seen = current
             if current.handle == original.handle:
                 continue  # the GRE has not round-tripped our selection yet
             selections = items(field(current.request, "TargetSelections"))
-            if all(
+            if selections and all(
                 num(field(s, "MinTargets")) == 0
                 or num(field(s, "SelectedTargets")) >= num(field(s, "MinTargets"))
                 for s in selections
             ):
+                for selection in selections:
+                    targets = items(field(selection, "Targets"))
+                    acknowledged = {
+                        num(field(target, "TargetInstanceId"))
+                        for target in targets
+                        if enum_name(field(target, "LegalAction")) == "Unselect"
+                        or num(field(target, "LegalAction")) == 2
+                    }
+                    if any(
+                        field(target, "LegalAction") is not None for target in targets
+                    ) and not expected.get(num(field(selection, "TargetIdx")), set()).issubset(acknowledged):
+                        raise AdapterError("GRE acknowledged different targets; refusing to finalize")
                 self._commit_targets(current, timeout)
                 return False
-        # No updated request: the original ids are still current, so the legacy
-        # immediate commit is right.
-        self._commit_targets(last_seen or original, timeout)
-        return False
+        raise AdapterError("Target selection was not acknowledged complete; refusing to finalize")
 
     def _cmd_submit_assign_damage(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout, "AssignDamageRequest")
@@ -1219,6 +1400,15 @@ def plain_object(node: Any, depth: int = 0) -> Any:
             if not k.startswith("$") and depth < 3 and v is not None
         }
     return node
+
+
+def cost_selection_request(request: dict | None) -> dict | None:
+    """The engine's effect-cost selection child, such as tapping creatures to crew."""
+    effect = field(request, "EffectCost")
+    selection = field(effect, "CostSelection")
+    if short_class(selection) == "SelectNRequest" and enum_name(field(selection, "IdType")) == "InstanceId":
+        return selection
+    return None
 
 
 def auto_tap_request(request: dict | None) -> dict | None:

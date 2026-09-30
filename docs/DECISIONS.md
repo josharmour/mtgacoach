@@ -7,6 +7,228 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-09-29 — Close prompt, combat, Limited, and card-coverage gaps
+
+- Casting-time decisions now use the actual modal/numeric options, including
+  localized ability text, rather than guessing a generic "Cast normally" action.
+  Casting and optional choices are bound to the current request identity. A
+  closed window is not retried against the next prompt; an unverified submission
+  stops for manual input. Optional decisions include source and mechanic context.
+- Two-sided fight/bite spells are mixed effects: choosing your own damage source
+  is legal, not automatically a harmful-target mistake. Per-slot legality still
+  applies. Updated the older fight-polarity regression to reflect this distinction.
+- A bounded joint combat search scores player damage, known planeswalker loyalty,
+  shared blockers, lost material, and surviving defenders against a counterattack.
+  It supports split attacks and preserves recipient intent through Done-only
+  confirmation. Unknown loyalty never establishes a kill. This remains a visible-
+  board approximation, not a complete rules engine or proof against hidden tricks.
+- Limited suggestions receive conservative, directed rules-text enabler/payoff
+  links, actual copy counts, and curve/body requirements. Unsupported named synergy
+  claims fail validation. Token-producing spells count as bodies; conditional
+  token payoffs are not treated as unconditional early creatures. Mana validation
+  includes required colorless sources. Unmodeled interactions remain model judgments.
+- Native deck-editor observation reads the active limited model with read-only
+  reflection, excludes constructed/sideboarding contexts, checks deck identity,
+  and rejects truncated lists. Counts include unsaved edits. Spoken remaining cuts
+  and additions reconcile against that snapshot, debounce edits, and reuse the
+  same proposal instead of changing the target build after every click. Other
+  platforms retain explicitly labeled logged-deck/pool advice. Nothing edits or
+  saves the user's deck automatically.
+- `python -m arenamcp.card_audit` checks all installed records in batches. On this
+  installation: 27,071 records = 27,044 card records + 23 effect/copy markers + four
+  wildcard placeholders; zero unresolved card records, missing printed costs, or
+  missing text for cards with ability IDs. Unknown Shores is a real name, not an
+  unresolved-card sentinel. Coverage is data availability, not verification of
+  every interaction. Earlier same-day feed refresh remains in place.
+- Regression tests exercise these paths; running-client metadata confirms the
+  native editor class exists. Active editor behavior still requires a coach reload
+  and live check. Do not restart an ongoing game just to validate the changes.
+
+## 2026-09-29 — Preserve attackers and explicitly choose combat recipients
+
+- Report `bug_20260929_191114`: the bridge offered Heartwood Crafter, Pia,
+  and Beast, but bridge enrichment failed to restore attacker context after a
+  log-window clear. The rules menu became Done-only and confirmed no attack.
+  Current bridge candidates now repopulate attacker names, IDs, and raw legal
+  recipients. Missing candidate resolution must not finalize an empty attack.
+- The later report `bug_20260929_191654` follows an explicit model choice to
+  hold back, not the same lost-context path. The user's additional observation
+  exposed a separate execution defect: the native adapter always picked the
+  first damage recipient, ignoring player-versus-planeswalker intent.
+- Structured attacks now carry per-creature recipient names, including exact
+  planeswalker identities. The planner sees legal recipients, names its targets
+  aloud, and the native adapter validates and honors them independent of list
+  order. Split attacks are supported. Ambiguous, vanished, or partially resolved
+  selections must not silently attack the player or confirm an empty declaration.
+  An incomplete or failed final confirmation is not reported as success.
+- The existing combat solver evaluates player attacks only. Its material/life
+  override must not overwrite an explicit planeswalker attack. This does not
+  establish strategic optimality for planeswalker or split attacks. Native-Mac
+  bridge regressions cover reversed recipient order, changed selections, split
+  targets, stale identities, and failed finalization; live reload is still needed.
+
+## 2026-09-29 — Speak counted forty-card builds and named cuts
+
+- Completed draft courses expose their authoritative CardPool at DeckSelect.
+  Recover that full pool rather than depending on every live pick or a retained
+  match snapshot. Repeated event metadata must not erase the completed pool.
+- Build advice validates available copies, exactly forty cards, a supported land
+  count, and a reason for every excluded nonbasic card. Ordinary basics are free
+  additions. Rules-aware model advice falls back to a counted curve/color build.
+- Speak named cuts and land allocations once per pool, retain the detailed keep
+  list in the compact UI, and discard advice if a match starts while computing it.
+  This is a proposed build from the drafted pool, not a verified view of the live
+  deck editor. No card is moved in the editor automatically.
+
+---
+
+## 2026-09-29 — Draft advice follows live packs, actual picks, and current card rules
+
+- Live logs at 18:54–18:59 showed every new FRA draft pack immediately cleared
+  by a retained match snapshot. Reading draft state must not infer match lifecycle
+  from an old snapshot; new match events still deactivate the draft. Startup now
+  replays the current draft segment, including its event and earlier picks, rather
+  than only the last pack. Duplicate card copies count; duplicate pick events do not.
+- Spoken draft recommendations now use the unified card database and a bounded
+  rules-based model request. The prompt includes the actual counted pool, curve,
+  colors, prior provisional theme, printed rules, and linked spells. PickTwo choices
+  are considered together. Invalid IDs, unsupported synergy references, stale
+  windows, and timeouts fall back to deterministic card-text recommendations.
+  Detailed explanations, plan, remaining needs, and alternatives remain visible;
+  speech does not block polling for the next pack.
+- MTGJSON's index fast path previously bypassed its daily freshness check, leaving
+  July data active. Refresh now precedes index loading and replaces the cache only
+  after successful download and validation; offline startup retains stale data.
+  Scryfall bulk names resolve locally even without Arena IDs. MTGA's numeric colors,
+  encoded printed costs, creature stats, and linked-face IDs are now decoded locally.
+- Refreshed MTGJSON to `5.3.0+20260929` and Scryfall to its September 29 bulk snapshot.
+  Audited all 447 installed FRA entries: no missing names, types, or printed costs;
+  42 entries expose linked faces. Vanilla creatures and tokens may have no rules text.
+- Reports `bug_20260929_183114` and `bug_20260929_183205` showed Artifist Acumen's
+  unconditional draw on an empty board, then a tapped land leaving insufficient mana
+  for the available creatures. Those choices are not intrinsically illegal, but their
+  rationale was discarded. Typed action explanations now reach the normal UI and
+  logs, and are attached only when they match the option actually submitted.
+- Live verification after the 19:00 restart: P3P2 and P3P3 produced named-card
+  interaction explanations and a continuing deck plan. This verifies generation;
+  it does not establish that every strategic recommendation is correct.
+
+---
+
+## 2026-09-29 — An installed native Mac bridge must report connection failures
+
+- Report `bug_20260929_182449` executed zero autopilot actions: the native
+  MTGA process was running without `libmtgacoach_probe.dylib` loaded, while
+  the coach listened on port 44222. The library was staged, but the old
+  BepInEx-only capability check incorrectly logged this as designed log-only
+  coaching. Autopilot then offered Linux/Proton injection instructions.
+- Keep log-only startup informational when no native bridge is installed.
+  When the native library is installed or the selected device is Android,
+  an absent connection gets actionable recovery guidance for that device.
+  Reconnect failures and manual-required advice use the same guidance;
+  snapshots without bridge metadata fall back to the live connection flag.
+- Native Mac recovery requires quitting MTGA after the match and reopening
+  the coach, which launches the game with the library injected. Steam launches
+  can instead use the existing `mac_bridge_launch_option()` setting. Running
+  matches are left alone; these changes do not inject into an existing process.
+- Regressions cover installed versus absent Mac libraries, reconnect timeout,
+  missing snapshot metadata, CrossOver, Proton, Windows, and Android guidance.
+
+---
+
+## 2026-09-28 — Combat material includes bodies and ongoing resource abilities
+
+- Report `bug_20260928_224954`: all three Notary Hobbits and Badgermole Cub
+  blocked and died killing a 5/5 Wary Zone Guard. The model explicitly chose
+  that trade; the bridge executed it correctly. Replaying the combat at 21 life
+  reproduces the same recommendation from the old solver: attacker P+T=10,
+  sacrificed blockers P+T=10, so preventing five damage broke the apparent tie.
+- P+T alone ignored both losing four bodies and dismantling the mana engine.
+  Material now includes a per-body value and bounded premiums for recognized
+  ongoing mana production/scaling, card draw, token production, and recursion.
+  These are approximate strategic values, not mana-pool or castability estimates.
+  Token copies retain the value of their abilities; names are not special-cased.
+  Repeated oracle renderings do not multiply value, and spent ETBs do not earn
+  repeatable-resource premiums. The bounded fallback also compares its chump
+  plan against taking the damage, rather than always blocking.
+- Prompts no longer describe the solver's heuristic scores as an exhaustive
+  strategic truth. They explicitly compare safe damage against losing resources
+  needed for next-turn recovery. Lethal damage still takes precedence.
+- Regressions in `test_combat_resource_value.py` cover the observed four-for-one,
+  generic engines, expendable versus mana-producing tokens, symmetric opponent
+  valuation, life-critical blocks, bounded search, and prompt context.
+
+---
+
+## 2026-09-28 — Complete block assignments and progress-aware equipment reuse
+
+- Report `bug_20260928_223703` stalled with `The Notary Hobbits -> ""`.
+  A `Block with:` menu entry identifies only an eligible blocker, not its
+  attacker. Do not convert a bare pick into a fabricated incomplete assignment;
+  preserve explicit blocker/attacker mappings and validate both names. Ask once
+  for a repaired structured answer, then stand down rather than auto-confirm
+  no blocks if repair fails.
+- Report `bug_20260928_223837` shows Lightning Greaves hidden by a one-equip
+  per-turn cap after its wearer tapped and new creatures entered. Equipment may
+  be activated once per distinct friendly-creature identity/tapped/attacking
+  state. Attachment-only changes do not reset the guard, and returning to an
+  already-used state remains blocked. This permits useful haste reuse without
+  restoring the free-equip shuffle loop. Other activation caps are unchanged.
+- Preserve equip text on older permanents in planner context; both planning
+  prompts weigh useful haste against protection rather than blindly moving
+  equipment to any untapped creature. Regressions cover block repair, malformed
+  choices, equipment progress, attachment-only changes, and repeated states.
+
+---
+
+## 2026-09-28 — Unknown targeting effects are not beneficial effects
+
+- Report `bug_20260928_222542`: the planner selected opposing lands 548 and 744
+  for Ulamog's cast trigger. The controller-aware safety override missed
+  "exile two target permanents", classified it as beneficial, and substituted
+  friendly creatures 545 and 859. The wire response selected Llanowar Elves 545;
+  the subsequent exile annotation confirms the loss.
+- Share a conservative, quantity-aware target classifier between planning and
+  single-target auto-selection. Only recognized, unmixed effects get a polarity;
+  unknown effects do not justify replacing enemy picks with friendly ones.
+  Without a valid model choice or safe fallback, decline rather than pick the
+  first legal permanent.
+- Validate every slot's remaining count using only explicitly chosen targets.
+  A single slot requiring two targets must retain both; neither executor may
+  invent a first-legal replacement. The native Mac adapter sends all choices for
+  that slot and finalizes only after updated GRE acknowledgment, never merely
+  because a timeout elapsed. A failed target submission pauses for manual review.
+- Regression coverage: `test_counted_target_selection.py`,
+  `test_mac_bridge_adapter.py`, and `test_typed_decision_path.py`. Native Mac
+  protocol changes still require live verification after restarting the coach.
+
+---
+
+## 2026-09-28 — Engine payment and selection constraints are authoritative
+
+- Current bridge auto-pay solutions determine castability, not a reconstructed
+  mana pool or printed cost. Typed prompts use the current decision's menu,
+  suppress contradictory mana estimates, and reassess after each action.
+  Mana/activated ability text remains visible on older permanents.
+- Search and SelectN decisions carry their own legal choices. Private library
+  updates can be absent from Player.log (observed search request 128 after board
+  update 127), so these choices do not wait for an impossible log watermark.
+  ActionsAvailable still waits for the board; every submission rechecks the
+  current request identity after planning.
+- Native Mac effect-cost selections are exposed through the typed SelectN path,
+  not mana auto-pay. Submit to `PayCostsRequest.EffectCost.CostSelection` so
+  Arena's existing child callbacks build the correct EffectCost response.
+  Preserve engine weights and count/weight bounds through planning, request
+  identity, and submission. Crew 4 can use one contribution-4 creature or
+  contributions 3+1; it does not require four creatures.
+- Evidence: reports `bug_20260928_215031`, `bug_20260928_220132`, and
+  `bug_20260928_220255`; local decompiled `PayCostsRequest`, `EffectCostRequest`,
+  and `WeightedSelectionState`; regressions in `test_coach_engine_castability.py`,
+  `test_autopilot_log_catch_up.py`, and `test_weighted_decisions.py`.
+  Adapter behavior is unit-tested; live in-game verification is still required.
+
+---
+
 ## 2026-09-23 — Native-macOS GRE bridge via the IL2CPP C API (logs stay the eyes)
 
 ### The decision

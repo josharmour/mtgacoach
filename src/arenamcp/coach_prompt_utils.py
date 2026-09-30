@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from arenamcp.backend_health import LOCAL_FALLBACK_PREFIX
+from arenamcp.mana import has_autotap_solution
 
 
 def _compact_gre_target(target: Any) -> Any:
@@ -51,6 +52,8 @@ def _compact_legal_action_for_prompt(action: Any) -> Any:
         compact["targets"] = [_compact_gre_target(t) for t in targets[:4]]
 
     mana_options = action.get("manaPaymentOptions")
+    if str(action.get("actionType", "")).removeprefix("ActionType_") == "Cast":
+        compact["hasAutoTap"] = has_autotap_solution(action)
     if isinstance(mana_options, list) and mana_options:
         compact["manaPaymentOptionsCount"] = len(mana_options)
 

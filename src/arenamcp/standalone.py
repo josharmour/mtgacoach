@@ -1399,6 +1399,15 @@ class StandaloneCoach(
                 draft_pack = self._mcp.get_draft_pack()
                 self._emit_pipe_snapshots(draft_state=draft_pack)
 
+                if draft_pack.get("is_building"):
+                    self.ui.status("DECK", "Building a 40-card draft deck")
+                    self._advise_draft_build(draft_pack)
+                    in_draft_mode = False
+                    in_sealed_mode = False
+                    self.draft_mode = False
+                    time.sleep(1.0)
+                    continue
+
                 if draft_pack.get("is_active"):
                     pack_num = draft_pack.get("pack_number", 0)
                     pick_num = draft_pack.get("pick_number", 0)
@@ -1468,6 +1477,28 @@ class StandaloneCoach(
                             # Use composite evaluation (WR + on-color + synergy + card type)
                             eval_result = self._mcp.evaluate_draft_pack()
                             if eval_result.get("is_active") and eval_result.get("evaluations"):
+                                backend = getattr(getattr(self, "_coach", None), "_backend", None)
+                                if backend is not None:
+                                    from arenamcp.draft_advisor import DraftAdvisor
+
+                                    if getattr(self, "_draft_advisor", None) is None:
+                                        self._draft_advisor = DraftAdvisor(backend)
+                                    eval_result = self._draft_advisor.recommend(draft_pack, eval_result)
+                                self._mcp.poll_log()
+                                live_pack = self._mcp.get_draft_pack()
+                                if (
+                                    not live_pack.get("is_active")
+                                    or live_pack.get("event_name") != draft_pack.get("event_name")
+                                    or live_pack.get("pack_number") != pack_num
+                                    or live_pack.get("pick_number") != pick_num
+                                    or [card.get("grp_id") for card in live_pack.get("cards", [])]
+                                    != [card.get("grp_id") for card in cards]
+                                    or live_pack.get("picked_cards") != draft_pack.get("picked_cards")
+                                ):
+                                    logger.info(
+                                        "Draft window changed while planning; discarding stale recommendation"
+                                    )
+                                    continue
                                 advice = eval_result["spoken_advice"]
                                 picked = eval_result.get("picked_count", 0)
 
@@ -1485,7 +1516,10 @@ class StandaloneCoach(
                                     f"\n[DRAFT P{pack_num}P{pick_num}] ({picked} picked)\n{detail_log}\n"
                                 )
                                 logger.info(f"DRAFT: P{pack_num}P{pick_num} - {advice}")
-                                self.speak_advice(advice)
+                                show_advice = getattr(self.ui, "advice", None)
+                                if callable(show_advice):
+                                    show_advice(eval_result.get("detailed_advice") or advice, "DRAFT")
+                                self.speak_advice(advice, blocking=False)
                                 last_draft_pack = pack_num
                                 last_draft_pick = pick_num
                             elif eval_result.get("is_active"):
@@ -1511,7 +1545,6 @@ class StandaloneCoach(
                 # Not in draft/sealed - regular game coaching
                 if in_draft_mode or in_sealed_mode:
                     mode_name = "Sealed" if in_sealed_mode else "Draft"
-                    was_draft = in_draft_mode
                     in_draft_mode = False
                     in_sealed_mode = False
                     sealed_analyzed = False
@@ -1521,26 +1554,6 @@ class StandaloneCoach(
                     logger.info(f"{mode_name} ended, resuming game coaching")
                     last_draft_pack = 0
                     last_draft_pick = 0
-
-                    # Analyze drafted pool and suggest a deck build
-                    if was_draft:
-                        try:
-                            pool_result = self._mcp.analyze_draft_pool()
-                            pool_size = pool_result.get("pool_size", 0)
-                            if pool_size > 0:
-                                detailed = pool_result.get("detailed_text", "")
-                                spoken = pool_result.get("spoken_advice", "")
-                                if detailed:
-                                    self.ui.log(f"\n{detailed}\n")
-                                if spoken:
-                                    logger.info(f"Draft deck suggestion: {spoken}")
-                                    self.speak_advice(spoken)
-                            else:
-                                logger.warning("No picked cards found for post-draft analysis")
-                        except Exception as e:
-                            logger.error(f"Post-draft deck analysis failed: {e}")
-                        # Deck strategy brief fires later when the match starts
-                        # and deck_cards arrive via ConnectResp.
 
                 curr_state = self._normalize_turn_snapshot(self._mcp.get_game_state())
 

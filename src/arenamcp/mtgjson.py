@@ -7,6 +7,8 @@ card data including oracle text, updated daily for new sets.
 import gzip
 import json
 import logging
+import os
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -87,38 +89,31 @@ class MTGJSONDatabase:
         Returns:
             True if download succeeded, False otherwise.
         """
-        logger.info("Downloading MTGJSON AtomicCards (one-time, ~30MB)...")
-
+        logger.info("Refreshing MTGJSON AtomicCards...")
+        compressed_path = None
+        replacement_path = None
         try:
-            response = requests.get(ATOMIC_CARDS_URL, timeout=120, stream=True)
-            response.raise_for_status()
+            with requests.get(ATOMIC_CARDS_URL, timeout=120, stream=True) as response:
+                response.raise_for_status()
+                with tempfile.NamedTemporaryFile(
+                    dir=self._cache_dir, suffix=".gz.tmp", delete=False
+                ) as download:
+                    compressed_path = Path(download.name)
+                    for chunk in response.iter_content(chunk_size=65536):
+                        download.write(chunk)
 
-            # Download to temp file first
-            temp_file = self._cache_file.with_suffix(".json.gz.tmp")
-            total_size = int(response.headers.get("content-length", 0))
-            downloaded = 0
-
-            with open(temp_file, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0:
-                        pct = int(100 * downloaded / total_size)
-                        if downloaded % (1024 * 1024) < 8192:  # Every ~1MB
-                            logger.info("MTGJSON download progress: %d%%", pct)
-
-            logger.info("MTGJSON download complete, decompressing...")
-
-            # Decompress
-            with gzip.open(temp_file, "rt", encoding="utf-8") as gz:
-                data = json.load(gz)
-
-            # Save decompressed
-            with open(self._cache_file, "w", encoding="utf-8") as f:
-                json.dump(data, f)
-
-            # Cleanup temp file
-            temp_file.unlink(missing_ok=True)
+            with gzip.open(compressed_path, "rt", encoding="utf-8") as compressed:
+                data = json.load(compressed)
+            if not isinstance(data, dict) or not isinstance(data.get("data"), dict) or not data["data"]:
+                raise ValueError("MTGJSON response contains no card data")
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self._cache_dir, suffix=".json.tmp", delete=False
+            ) as replacement:
+                replacement_path = Path(replacement.name)
+                json.dump(data, replacement)
+                replacement.flush()
+                os.fsync(replacement.fileno())
+            os.replace(replacement_path, self._cache_file)
 
             logger.info(f"MTGJSON data saved to {self._cache_file}")
             return True
@@ -129,6 +124,11 @@ class MTGJSONDatabase:
         except Exception as e:
             logger.error(f"Error processing MTGJSON data: {e}")
             return False
+        finally:
+            if compressed_path is not None:
+                compressed_path.unlink(missing_ok=True)
+            if replacement_path is not None:
+                replacement_path.unlink(missing_ok=True)
 
     def _build_indexes(self, data: dict[str, Any]) -> tuple[dict[int, MTGJSONCard], dict[str, MTGJSONCard]]:
         """Build both arena_id and name indexes from card data.
@@ -313,19 +313,13 @@ class MTGJSONDatabase:
         if self._loaded and not force_download:
             return self._available
 
-        # Try loading from pre-built indexes first (fast startup)
-        if not force_download and self._load_indexes():
+        if (force_download or self._needs_update()) and not self._download_data():
+            logger.warning("Using stale cache after download failure")
+
+        if self._load_indexes():
             self._loaded = True
             self._available = True
             return True
-
-        # Check if we need to download
-        if (force_download or self._needs_update()) and not self._download_data():
-            # Try using stale cache if download failed
-            if not self._cache_file.exists():
-                self._available = False
-                return False
-            logger.warning("Using stale cache after download failure")
 
         # Load and build indexes
         try:

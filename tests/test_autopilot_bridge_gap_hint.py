@@ -67,7 +67,20 @@ def test_hint_for_bridge_offline():
     engine = _engine_with_format_hint()
     state = {"_bridge_connected": False}
     hint = engine._format_bridge_gap_hint(state)
-    assert hint == "Bridge offline"
+    assert hint.startswith("Bridge offline. ")
+
+
+def test_mac_offline_hint_uses_live_bridge_without_snapshot_metadata(monkeypatch):
+    monkeypatch.setenv("MTGACOACH_GAME_DEVICE", "desktop")
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("arenamcp.platform_integration.bridge_capable", lambda: False)
+    engine = _engine_with_format_hint()
+    engine._gre_bridge = MagicMock(connected=False)
+    hint = engine._format_bridge_gap_hint({"pending_decision": "Priority"})
+    assert hint.startswith("Bridge offline. ")
+    assert "quit MTGA and reopen the coach" in hint
+    assert "DYLD_INSERT_LIBRARIES" in hint
+    assert "BepInEx" not in hint
 
 
 def test_hint_for_no_pending_request():

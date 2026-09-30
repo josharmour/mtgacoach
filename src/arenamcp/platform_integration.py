@@ -388,3 +388,29 @@ def bridge_capable() -> bool:
         return False
     plat = str(getattr(install, "platform", "") or "") if install else ""
     return any(tag in plat for tag in ("wine", "crossover", "bottle"))
+
+
+def bridge_offline_hint() -> str:
+    """Recovery guidance for the execution bridge on the selected game device."""
+    from arenamcp.android_link import game_device
+
+    if game_device() == "android":
+        return (
+            "Check the Android phone link and adb reverse connection, then "
+            "relaunch MTGA on the phone with its bridge enabled."
+        )
+    if sys.platform == "darwin" and not bridge_capable():
+        return (
+            "After this match, quit MTGA and reopen the coach to launch MTGA "
+            "with its native macOS bridge. If launching through Steam, set "
+            f"MTGA's Launch Options to: {mac_bridge_launch_option()}"
+        )
+    if sys.platform.startswith("linux"):
+        return (
+            "On Linux/Proton, BepInEx only injects when MTGA's Steam Launch "
+            'Options include: WINEDLLOVERRIDES="winhttp=n,b" %command%'
+        )
+    return (
+        "Check that BepInEx and MtgaCoachBridge.dll are installed in the "
+        "MTGA folder (desktop app → Repair tab can reinstall them)."
+    )

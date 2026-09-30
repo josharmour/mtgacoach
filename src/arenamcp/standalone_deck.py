@@ -5,12 +5,66 @@ Pure move: methods are unchanged and mixed back into StandaloneCoach."""
 import contextlib
 import logging
 import threading
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 class _DeckAnalysisMixin:
+    def _advise_draft_build(self, snapshot: dict[str, Any]) -> None:
+        signature = snapshot.get("pool_signature")
+        if not signature or signature == getattr(self, "_last_deck_build_signature", None):
+            return
+        if snapshot.get("editor_basis") == "live_editor" or (
+            len(signature) > 3 and signature[3] == "live_editor"
+        ):
+            if signature != getattr(self, "_pending_build_signature", None):
+                self._pending_build_signature = signature
+                self._pending_build_since = time.monotonic()
+                return
+            if time.monotonic() - self._pending_build_since < 1.5:
+                return
+        result = self._mcp.analyze_draft_pool()
+        if not result.get("pool_size"):
+            return
+        backend = getattr(getattr(self, "_coach", None), "_backend", None)
+        pool_key = signature[:2]
+        cached = getattr(self, "_deck_build_proposal", None)
+        if cached and pool_key == getattr(self, "_deck_build_pool_key", None):
+            result = {
+                **cached,
+                "editor_cards": result.get("editor_cards"),
+                "editor_basis": result.get("editor_basis"),
+            }
+        elif backend is not None:
+            from arenamcp.draft_advisor import DraftAdvisor
+
+            if getattr(self, "_draft_advisor", None) is None:
+                self._draft_advisor = DraftAdvisor(backend)
+            result = self._draft_advisor.recommend_deck(result)
+        self._deck_build_proposal = result
+        self._deck_build_pool_key = pool_key
+        from arenamcp.limited_deck import reconcile_logged_deck
+
+        result = reconcile_logged_deck(result)
+        self._mcp.poll_log()
+        live = self._mcp.get_draft_pack()
+        if not live.get("is_building") or live.get("pool_signature") != signature:
+            logger.info("Deck-building window changed; discarding stale cut advice")
+            return
+        self._last_deck_build_signature = signature
+        detailed = result.get("detailed_text") or result.get("spoken_advice", "")
+        if detailed:
+            self.ui.log(detailed)
+            show_advice = getattr(self.ui, "advice", None)
+            if callable(show_advice):
+                show_advice(detailed, "DECK")
+        spoken = result.get("spoken_advice", "")
+        if spoken:
+            logger.info("Draft deck cuts (%s): %s", result.get("reasoning_source", "heuristic"), spoken)
+            self.speak_advice(spoken, blocking=False)
+
     def _generate_deck_strategy_brief(self, card_ids: list[int] | None = None) -> None:
         """Generate and speak a brief deck strategy.
 

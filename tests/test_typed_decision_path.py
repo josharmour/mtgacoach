@@ -113,26 +113,52 @@ def test_typed_path_submits_llm_choice_by_id(monkeypatch):
     eng = _engine(monkeypatch, bridge, planner)
     handled = eng._try_typed_decision_path(_state(), "decision_required")
     assert handled is True
+
     assert bridge.submitted == [("targets", [2])]
 
 
-def test_typed_path_falls_back_deterministically_on_garbage_llm(monkeypatch):
+def test_typed_path_surfaces_reason_for_the_submitted_choice(monkeypatch):
+    bridge = _TypedBridge(_TARGET_POLL)
+    planner = _planner_with('{"option_ids": ["tgt:2"], "reasoning": "Remove the opposing threat."}')
+    engine = _engine(monkeypatch, bridge, planner)
+    notifications = []
+    engine._ui_advice_fn = lambda text, label: notifications.append(text)
+    assert engine._try_typed_decision_path(_state(), "decision_required") is True
+    assert "Remove the opposing threat." in notifications[-1]
+    assert planner.get_decision_reasoning(["tgt:2"]) == "Remove the opposing threat."
+    assert planner.get_decision_reasoning(["tgt:161"]) == ""
+    assert bridge.submitted == [("targets", [2])]
+
+
+def test_typed_path_pauses_for_unknown_effect_on_garbage_llm(monkeypatch):
     bridge = _TypedBridge(_TARGET_POLL)
     planner = _planner_with("completely invalid")
     eng = _engine(monkeypatch, bridge, planner)
+    pauses = []
+    monkeypatch.setattr(eng, "_pause_for_manual", lambda reason, state: pauses.append(reason))
     handled = eng._try_typed_decision_path(_state(), "decision_required")
     assert handled is True
-    # Deterministic pick = first option, still submitted BY ID.
-    assert bridge.submitted == [("targets", [2])]
+    assert bridge.submitted == []
+    assert pauses and "no safe automatic choice" in pauses[0]
 
 
-def test_typed_path_rejects_hallucinated_ids_then_falls_back(monkeypatch):
+def test_typed_path_rejects_hallucinated_ids_without_blind_target_fallback(monkeypatch):
     bridge = _TypedBridge(_TARGET_POLL)
     planner = _planner_with('{"option_ids": ["tgt:9999"], "reasoning": "x"}')
     eng = _engine(monkeypatch, bridge, planner)
     handled = eng._try_typed_decision_path(_state(), "decision_required")
     assert handled is True
-    assert bridge.submitted == [("targets", [2])]  # mechanical fallback
+    assert bridge.submitted == []
+
+
+def test_failed_target_submission_pauses_instead_of_retrying_legacy(monkeypatch):
+    bridge = _TypedBridge(_TARGET_POLL)
+    bridge.submit_targets = lambda ids: False
+    engine = _engine(monkeypatch, bridge, _planner_with('{"option_ids": ["tgt:2"]}'))
+    pauses = []
+    monkeypatch.setattr(engine, "_pause_for_manual", lambda reason, state: pauses.append(reason))
+    assert engine._try_typed_decision_path(_state(), "decision_required") is True
+    assert pauses and "not verified" in pauses[0]
 
 
 def test_typed_path_handles_actions_available(monkeypatch):
@@ -157,6 +183,35 @@ def test_typed_path_handles_mulligan(monkeypatch):
     handled = eng._try_typed_decision_path(_state(), "decision_required")
     assert handled is True
     assert bridge.submitted == [("mulligan", True)]
+
+
+def test_optional_accept_keeps_request_identity_and_reasoning(monkeypatch):
+    poll = {"has_pending": True, "request_type": "OptionalAction", "game_state_id": 42, "msg_id": 5}
+    bridge = _TypedBridge(poll)
+    bridge.submit_optional = lambda accept, **kwargs: bridge.submitted.append((accept, kwargs)) or True
+    engine = _engine(
+        monkeypatch,
+        bridge,
+        _planner_with('{"option_ids":["optional:accept"],"reasoning":"Take the free card."}'),
+    )
+    assert engine._try_typed_decision_path(_state(), "decision_required")
+    assert bridge.submitted == [(True, {"expected_request_id": (42, 5)})]
+
+
+def test_changed_optional_window_does_not_accept_the_next_prompt(monkeypatch):
+    poll = {"has_pending": True, "request_type": "OptionalAction", "game_state_id": 42, "msg_id": 5}
+    bridge = _TypedBridge(poll)
+    bridge.submit_optional = lambda accept, **kwargs: bridge.submitted.append((accept, kwargs)) or True
+    planner = _planner_with('{"option_ids":["optional:accept"]}')
+
+    def changed_during_reasoning(*args, **kwargs):
+        bridge.poll_resp = {**poll, "msg_id": 6}
+        return '{"option_ids":["optional:accept"]}'
+
+    planner._backend.complete = changed_during_reasoning
+    engine = _engine(monkeypatch, bridge, planner)
+    assert engine._try_typed_decision_path(_state(), "decision_required")
+    assert bridge.submitted == []
 
 
 def test_typed_path_fsm_blocks_double_submit_and_exhausts(monkeypatch):

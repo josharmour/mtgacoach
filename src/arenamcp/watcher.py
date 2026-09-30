@@ -107,7 +107,11 @@ def _startup_anchor_from_tail(
                 events.append(("match_start", absolute_pos))
             if _contains_any(line, MATCH_END_TOKENS):
                 events.append(("match_end", absolute_pos))
-            if _contains_any(line, DRAFT_ACTIVITY_TOKENS):
+            if re.search(r'"EventName"\s*:\s*"[^"\n]*(?:Draft|Sealed)[^"\n]*"', line):
+                events.append(("draft_start", absolute_pos))
+            if _contains_any(line, DRAFT_ACTIVITY_TOKENS) or (
+                '"CardPool"' in line and '"InternalEventName"' in line and '"DeckSelect"' in line
+            ):
                 events.append(("draft_activity", absolute_pos))
             if _is_active_gameplay_line(line):
                 events.append(("active_gameplay", absolute_pos))
@@ -117,6 +121,14 @@ def _startup_anchor_from_tail(
     if not events:
         return file_size, "no_relevant_events"
 
+    def draft_anchor() -> int:
+        anchor = events[-1][1]
+        for kind, position in reversed(events):
+            if kind not in {"draft_activity", "draft_start"}:
+                break
+            anchor = position
+        return anchor
+
     last_active_index = next(
         (idx for idx in range(len(events) - 1, -1, -1) if events[idx][0] == "active_gameplay"),
         None,
@@ -124,8 +136,8 @@ def _startup_anchor_from_tail(
     if last_active_index is not None:
         if last_active_index < len(events) - 1:
             trailing_kind, trailing_pos = events[-1]
-            if trailing_kind == "draft_activity":
-                return trailing_pos, "draft_waiting"
+            if trailing_kind in {"draft_activity", "draft_start"}:
+                return draft_anchor(), "draft_waiting"
             if trailing_kind in {"match_start", "match_end"}:
                 return file_size, "idle_or_completed"
 
@@ -143,8 +155,8 @@ def _startup_anchor_from_tail(
         return active_anchor, "mid_session_active"
 
     last_kind, last_pos = events[-1]
-    if last_kind == "draft_activity":
-        return last_pos, "draft_waiting"
+    if last_kind in {"draft_activity", "draft_start"}:
+        return draft_anchor(), "draft_waiting"
 
     if last_kind in {"match_start", "match_end"}:
         return file_size, "idle_or_completed"
@@ -540,7 +552,10 @@ class MTGALogWatcher:
                         self._resume_match_id,
                     )
                     self._handler.read_from_position(relevant_start)
-                elif relevant_start > self._resume_offset + RESUME_OVERRIDE_SLACK_BYTES:
+                elif (
+                    relevant_mode in {"draft_waiting", "active_draft"}
+                    or relevant_start > self._resume_offset + RESUME_OVERRIDE_SLACK_BYTES
+                ):
                     logger.info(
                         "Startup mode: readahead_override (%s at %s supersedes saved offset %s)",
                         relevant_mode,

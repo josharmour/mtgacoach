@@ -18,6 +18,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from arenamcp.card_db import is_unknown_card_name
 from arenamcp.gamestate_annotations import _GameStateAnnotationsMixin
 from arenamcp.gamestate_decisions import (
     _DECISION_RESPONSE_TYPES,
@@ -1611,6 +1612,12 @@ class GameState(_GameStateAnnotationsMixin):
                 ccount = _coerce_int(counter_data.get("count", 1), 1)
                 counters[ctype] = ccount
 
+        if "loyalty" in obj_data:
+            value = obj_data["loyalty"]
+            value = value.get("value") if isinstance(value, dict) else value
+            if value is not None:
+                counters["Loyalty"] = _coerce_int(value, 0)
+
         game_object = GameObject(
             instance_id=instance_id,
             grp_id=grp_id,
@@ -2027,7 +2034,7 @@ class GameState(_GameStateAnnotationsMixin):
 
             info = server.get_card_info(grp_id)
             name = info.get("name", f"Card#{grp_id}")
-            if name and not name.startswith("Card#") and not name.startswith("Unknown"):
+            if name and not name.startswith("Card#") and not is_unknown_card_name(name):
                 self._card_name_cache[grp_id] = name
             return name
         except Exception as e:
@@ -2047,7 +2054,7 @@ class GameState(_GameStateAnnotationsMixin):
         name = self._resolve_card_name(obj.grp_id)
         if obj.object_kind == GameObjectKind.ABILITY:
             name = f"Ability (ID: {obj.grp_id})"
-        elif not name.startswith("Card#") and not name.startswith("Unknown"):
+        elif not name.startswith("Card#") and not is_unknown_card_name(name):
             return name
         parent_id = getattr(obj, "parent_instance_id", None)
         if parent_id is None:
@@ -2056,7 +2063,7 @@ class GameState(_GameStateAnnotationsMixin):
         if parent is None or parent.grp_id == obj.grp_id:
             return name
         parent_name = self._resolve_card_name(parent.grp_id)
-        if parent_name.startswith("Card#") or parent_name.startswith("Unknown"):
+        if parent_name.startswith("Card#") or is_unknown_card_name(parent_name):
             return name
         return f"{parent_name}'s ability"
 

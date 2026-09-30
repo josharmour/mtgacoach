@@ -86,6 +86,35 @@ def test_solver_attacks_into_empty_board(monkeypatch):
     assert engine._solver_attack_names(state) == ["Bear Cub"]
 
 
+def test_report_board_gets_a_real_attack_evaluation_after_bridge_enrichment(monkeypatch):
+    from arenamcp.gre_bridge import enrich_snapshot_from_pending_response
+
+    engine = _make_engine(monkeypatch)
+    state = _state(
+        [
+            _creature("Heartwood Crafter", 1, 1, 1, 208),
+            _creature("Pia, Aether Ascetic", 1, 2, 2, 238),
+            _creature("Beast", 1, 4, 4, 288, oracle="Trample"),
+            _creature("Greenhouse Propagator", 1, 2, 3, 300),
+            _creature("Whiplash Wordsmith", 2, 3, 3, 275),
+        ],
+        legal_attackers=[],
+    )
+    state["decision_context"] = None
+    enrich_snapshot_from_pending_response(
+        state,
+        {
+            "has_pending": True,
+            "request_type": "DeclareAttackers",
+            "attackers": [{"attackerInstanceId": instance_id} for instance_id in (208, 238, 288)],
+        },
+        bridge_connected=True,
+    )
+    attackers = engine._solver_attack_names(state)
+    assert "Beast" in attackers
+    assert "Greenhouse Propagator" not in attackers
+
+
 def test_solver_declines_suicidal_attack(monkeypatch):
     engine = _make_engine(monkeypatch)
     state = _state(

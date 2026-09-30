@@ -12,6 +12,7 @@ from typing import Any
 import requests
 
 from arenamcp.cache_utils import FileCache
+from arenamcp.card_db import is_unknown_card_name
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ class ScryfallCache:
         self._file_cache = FileCache(self._cache_dir, ttl_seconds=CACHE_MAX_AGE_HOURS * 3600)
 
         self._arena_index: dict[int, dict[str, Any]] = {}
+        self._name_index: dict[str, dict[str, Any]] = {}
         self._bulk_data_ready = False
         self._last_api_call: float = 0.0
         self._not_found_cache: set[int] = set()  # Negative cache for 404s
@@ -141,34 +143,43 @@ class ScryfallCache:
         logger.info(f"Bulk data saved to {bulk_path}")
 
     def _load_bulk_data(self) -> None:
-        """Load bulk data JSON/JSONL and build arena_id index."""
+        """Load bulk data JSON/JSONL and index Arena IDs and exact names."""
         bulk_path = self._get_bulk_data_path()
         logger.debug(f"Loading bulk data from {bulk_path}...")
 
         temp_index = {}
+        name_index = {}
+
+        def index_card(card: dict[str, Any]) -> None:
+            arena_id = card.get("arena_id")
+            if arena_id is not None:
+                temp_index[arena_id] = card
+            name = str(card.get("name") or "").casefold()
+            if name and (name not in name_index or card.get("lang") == "en"):
+                name_index[name] = card
+
         with open(bulk_path, encoding="utf-8", errors="replace") as f:
             first_char = f.read(1)
             f.seek(0)
             if first_char == "[":
                 cards = json.load(f)
                 for card in cards:
-                    arena_id = card.get("arena_id")
-                    if arena_id is not None:
-                        temp_index[arena_id] = card
+                    index_card(card)
             else:
                 for line in f:
                     line = line.strip()
                     if line:
                         try:
                             card = json.loads(line)
-                            arena_id = card.get("arena_id")
-                            if arena_id is not None:
-                                temp_index[arena_id] = card
+                            index_card(card)
                         except Exception:
                             continue
 
         self._arena_index = temp_index
-        logger.info(f"Indexed {len(self._arena_index)} cards with arena_id")
+        self._name_index = name_index
+        self._not_found_cache.clear()
+        self._name_cache.clear()
+        logger.info("Indexed %d Arena IDs and %d card names", len(temp_index), len(name_index))
 
     def _load_or_download_bulk_data(self) -> None:
         """Load bulk data from cache or download if stale/missing."""
@@ -320,8 +331,12 @@ class ScryfallCache:
         Returns:
             ScryfallCard with card data, or None if not found
         """
-        if not name or name.startswith("Unknown"):
+        if is_unknown_card_name(name):
             return None
+
+        card_data = self._name_index.get(name.strip().casefold())
+        if card_data is not None:
+            return self._card_dict_to_scryfall_card(card_data)
 
         # Check session cache first
         if name in self._name_cache:

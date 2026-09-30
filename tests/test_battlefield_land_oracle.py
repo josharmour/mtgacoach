@@ -167,8 +167,8 @@ class TestBattlefieldLandOracleDisplay:
         full_text = "\n".join(lines)
         assert "12+" in full_text
 
-    def test_long_resident_evendo_hidden_in_planner_mode(self) -> None:
-        """Planner mode (for_planner=True) hides old permanents' oracle."""
+    def test_long_resident_evendo_keeps_relevant_oracle_in_planner_mode(self) -> None:
+        """An old permanent's activation condition remains relevant to planning."""
         card = _evendo()
         card["turn_entered_battlefield"] = 1  # entered long ago
         lines = _fmt()._format_board_card(
@@ -179,11 +179,10 @@ class TestBattlefieldLandOracleDisplay:
             name_counts=Counter({"Evendo, Waking Haven": 1}),
             name_seen={},
             is_local=True,
-            for_planner=True,  # Planner mode — skip old permanents
+            for_planner=True,
         )
         full_text = "\n".join(lines)
-        # Should NOT have oracle text in planner mode for old permanents
-        assert "12+" not in full_text
+        assert "12+" in full_text
 
     def test_recent_evendo_shows_oracle_in_planner_mode(self) -> None:
         """Planner mode keeps oracle for recently-entered permanents."""

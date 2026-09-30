@@ -33,6 +33,7 @@ from arenamcp.gre_bridge import (
     enrich_snapshot_from_pending_response,
     get_bridge,
 )
+from arenamcp.target_effects import target_effect_is_harmful
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ class AutopilotEngine(
         self._recent_bot_submissions: list[tuple[float, str]] = []
         # Activated-ability submissions this turn, keyed (turn, "iid"|"name", key).
         self._activation_counts: dict[tuple[int, str, Any], int] = {}
+        self._equipment_activation_states: set[tuple] = set()
         self._max_fallback_bugs_per_match: int = 5
 
         # State
@@ -430,10 +432,7 @@ class AutopilotEngine(
         """True while standing by after a detected manual play."""
         return time.time() < self._manual_play_cooldown_until
 
-    # A free repeatable ability is always "something to do": 2026-09-24 the
-    # planner moved Lightning Greaves (Equip {0}) between creatures every 3s
-    # until the user took over. Cap activations per source per turn.
-    _EQUIPMENT_ACTIVATIONS_PER_TURN = 1
+    _EQUIPMENT_ACTIVATIONS_PER_STATE = 1
     _ACTIVATIONS_PER_TURN = 3
 
     @staticmethod
@@ -456,24 +455,68 @@ class AutopilotEngine(
             ):
                 continue
             if "equipment" in str(card.get("type_line") or "").lower():
-                return self._EQUIPMENT_ACTIVATIONS_PER_TURN
+                return self._EQUIPMENT_ACTIVATIONS_PER_STATE
             break
         return self._ACTIVATIONS_PER_TURN
 
     def _activation_exhausted(self, game_state: dict[str, Any], instance_id: int = 0, name: str = "") -> bool:
-        """True once this source's abilities hit the per-turn activation cap."""
+        """Limit equipment per creature state, other abilities per turn."""
         name = (name or "").strip().lower()
         turn = self._turn_number(game_state)
+        limit = self._activation_limit(game_state, instance_id, name)
+        if limit == self._EQUIPMENT_ACTIVATIONS_PER_STATE:
+            return self._equipment_activation_key(game_state, instance_id, name) in getattr(
+                self, "_equipment_activation_states", set()
+            )
         count = max(
             self._activation_counts.get((turn, "iid", instance_id), 0) if instance_id else 0,
             self._activation_counts.get((turn, "name", name), 0) if name else 0,
         )
-        return count >= self._activation_limit(game_state, instance_id, name)
+        return count >= limit
+
+    def _equipment_activation_key(self, game_state: dict[str, Any], instance_id: int, name: str) -> tuple:
+        local_seat = game_state.get("local_seat_id") or next(
+            (player.get("seat_id") for player in game_state.get("players", []) if player.get("is_local")),
+            None,
+        )
+        board = game_state.get("battlefield") or []
+        source_id = instance_id or next(
+            (
+                int(card.get("instance_id") or 0)
+                for card in board
+                if str(card.get("name") or "").strip().lower() == name
+                and (card.get("controller_seat_id") or card.get("owner_seat_id")) == local_seat
+            ),
+            0,
+        )
+        creatures = tuple(
+            sorted(
+                (
+                    int(card.get("instance_id") or 0),
+                    bool(card.get("is_tapped")),
+                    bool(card.get("is_attacking")),
+                )
+                for card in board
+                if (card.get("controller_seat_id") or card.get("owner_seat_id")) == local_seat
+                and (
+                    "creature" in str(card.get("type_line") or "").lower()
+                    or "CardType_Creature" in (card.get("card_types") or [])
+                )
+            )
+        )
+        return self._turn_number(game_state), game_state.get("match_id"), source_id or name, creatures
 
     def _note_activation(self, game_state: dict[str, Any], instance_id: int = 0, name: str = "") -> None:
         turn = self._turn_number(game_state)
         self._activation_counts = {k: v for k, v in self._activation_counts.items() if k[0] == turn}
         name = (name or "").strip().lower()
+        if self._activation_limit(game_state, instance_id, name) == self._EQUIPMENT_ACTIVATIONS_PER_STATE:
+            self._equipment_activation_states = {
+                key for key in getattr(self, "_equipment_activation_states", set()) if key[0] == turn
+            }
+            self._equipment_activation_states.add(
+                self._equipment_activation_key(game_state, instance_id, name)
+            )
         if instance_id:
             key = (turn, "iid", instance_id)
             self._activation_counts[key] = self._activation_counts.get(key, 0) + 1
@@ -542,7 +585,7 @@ class AutopilotEngine(
         for label in legal_actions or []:
             source = self._activation_source_name(label)
             if source and self._activation_exhausted(game_state, 0, source):
-                logger.info(f"Repeat-activation cap: hiding {label!r} for the rest of the turn")
+                logger.info(f"Repeat-activation guard: hiding {label!r} until useful progress")
                 continue
             kept.append(label)
         return kept
@@ -733,29 +776,6 @@ class AutopilotEngine(
         """Whether this action already failed to advance the current window."""
         return self._action_block_key(action, game_state) in self._blocked_action_keys
 
-    # Oracle-text keywords that indicate a spell would HARM whatever it
-    # targets. If the source spell has one of these and the sole target
-    # candidate is a permanent the local player controls, auto-submitting
-    # would hand the player's own card to the effect (classic Seam Rip
-    # self-destruction bug). Hitting one of these phrases routes the
-    # decision back to the LLM, which can cancel the cast or target
-    # intentionally. Positive-target spells (auras with "enchant creature
-    # you control", buffs with "target creature you control gets"...) do
-    # NOT contain these phrases, so they keep the fast-path.
-    _HARMFUL_SOURCE_ORACLE_PHRASES = (
-        "destroy target",
-        "exile target",
-        "sacrifice target",  # rare — most "sacrifice" is "sacrifice a X you control"
-        "counter target",
-        "return target",  # bounce spells
-        "opponent sacrifices target",
-        "damage to target",  # Shock-style
-        "gets -",  # "target creature gets -X/-X"
-        "gets −",  # unicode minus variant
-        "loses all abilities",
-        "loses flying",
-    )
-
     def _pick_single_target_candidate(
         self,
         game_state: dict[str, Any],
@@ -763,14 +783,8 @@ class AutopilotEngine(
         """Return the sole legal target instance_id if there's exactly one
         AND auto-submit would be a good thing.
 
-        Two gates:
-          1. The bridge has to report exactly one legal candidate.
-          2. If that candidate is a permanent the local player controls,
-             the source spell's oracle text must NOT contain a removal-
-             style keyword. This keeps Sheltered-by-Ghosts-on-your-own-
-             creature on the fast path, while pausing on Seam Rip when
-             the only legal target is your own enchantment.
-        Opponent-controlled candidates always pass.
+        Requires exactly one legal candidate with a known controller and
+        a known beneficial effect for us or harmful effect for the opponent.
         """
 
         def _extract_ids(resp: dict[str, Any]) -> list[int]:
@@ -826,7 +840,9 @@ class AutopilotEngine(
         # the source spell is harmful to the opponent's permanent.
         # When the opponent is casting a buff on their own thing, we
         # should not confirm it for them.
-        if local_seat is not None and controller is not None and controller != local_seat:
+        if local_seat is None or controller is None:
+            return None
+        if controller != local_seat:
             if self._source_spell_is_harmful_to_target(game_state, snap_resp, live_resp):
                 return only_id
             logger.info(
@@ -840,11 +856,11 @@ class AutopilotEngine(
         # the source spell's oracle text reads as a positive / beneficial
         # targeting effect. Otherwise, pause so the LLM can cancel or
         # target deliberately.
-        if self._source_spell_is_harmful_to_target(game_state, snap_resp, live_resp):
+        if self._source_spell_is_harmful_to_target(game_state, snap_resp, live_resp) is not False:
             logger.info(
                 f"Autopilot: declining auto-submit for target {only_id} — "
                 "sole candidate is self-controlled and the source spell "
-                "looks removal-shaped. Letting the LLM decide."
+                "is harmful or unclassified. Letting the LLM decide."
             )
             return None
 
@@ -915,31 +931,19 @@ class AutopilotEngine(
         game_state: dict[str, Any],
         snap_resp: dict[str, Any] | None,
         live_resp: dict[str, Any] | None,
-    ) -> bool:
+    ) -> bool | None:
         """Does the spell on the stack read like a removal / hurt effect?
 
         We find the source card in this order:
           1. decision_context (bridge-supplied sourceId → stack entry)
           2. top of the stack (spell currently resolving targets)
-        Then we check its oracle text against known harmful phrases.
-        Unknown oracle text => False (err on the side of auto-submit).
+        Unknown or mixed effects return None and must not auto-target our board.
         """
         name, oracle = self._resolve_decision_source(game_state, snap_resp, live_resp)
 
-        if not oracle:
-            logger.debug(
-                f"Autopilot: no oracle text found for source spell (name={name!r}); defaulting to auto-submit"
-            )
-            return False
-
-        for phrase in self._HARMFUL_SOURCE_ORACLE_PHRASES:
-            if phrase in oracle:
-                logger.info(
-                    f"Autopilot: source spell {name!r} oracle contains "
-                    f"{phrase!r} — treating as harmful-to-target"
-                )
-                return True
-        return False
+        harmful = target_effect_is_harmful(oracle)
+        logger.debug("Autopilot: source spell %r target polarity: %s", name, harmful)
+        return harmful
 
     # A cast rolled back this many times in one turn is hidden from the
     # planner for the rest of the turn — it cannot complete and re-trying
@@ -1065,9 +1069,12 @@ class AutopilotEngine(
         bcls = str((game_state or {}).get("_bridge_request_class") or "")
         if not (breq or bcls):
             return False
-        if any(kind in breq + bcls for kind in ("SelectTargets", "CastingTimeOption", "NumericInput")) or (
+        if any(
+            kind in breq + bcls
+            for kind in ("SelectTargets", "CastingTimeOption", "NumericInput", "DeclareBlock")
+        ) or (
             self._decision_type(game_state or {})
-            in ("target_selection", "casting_time_options", "numeric_input")
+            in ("target_selection", "casting_time_options", "numeric_input", "declare_blockers")
         ):
             logger.info("Refusing unvalidated auto-response for %s", breq or bcls)
             return False
@@ -1356,8 +1363,12 @@ class AutopilotEngine(
             return ""
 
         connected = game_state.get("_bridge_connected")
+        if connected is None:
+            connected = getattr(getattr(self, "_gre_bridge", None), "connected", None)
         if connected is False:
-            return "Bridge offline"
+            from arenamcp.platform_integration import bridge_offline_hint
+
+            return f"Bridge offline. {bridge_offline_hint()}"
 
         req = game_state.get("_bridge_request_type") or game_state.get("_bridge_request_class")
         if not req:
@@ -2154,6 +2165,19 @@ class AutopilotEngine(
             ]
             if has_done_confirm and not meaningful_non_done:
                 done_action = next(a for a in legal if a.lower().startswith("done (confirm"))
+                if "attacker" in done_action.lower():
+                    solver_action = self._solver_attack_action(game_state)
+                    if solver_action is not None:
+                        return self._run_bridge_action(solver_action, game_state)
+                    context = game_state.get("decision_context") or {}
+                    payload = game_state.get("_bridge_request_payload") or {}
+                    offered = payload.get("qualifiedAttackers") or payload.get("attackers") or []
+                    if offered and not context.get("legal_attackers"):
+                        self._pause_for_manual(
+                            "Arena offers attackers but their choices were not resolved. Choose attackers manually; no empty attack was submitted.",
+                            game_state,
+                        )
+                        return True
                 logger.info(f"Autopilot: auto-confirming '{done_action}'")
                 self._record_autopilot_decision(
                     game_state,
@@ -2176,19 +2200,6 @@ class AutopilotEngine(
                             logger.info(
                                 "Autopilot: attack intended this turn — declaring "
                                 f"{intended_attackers} instead of confirming empty"
-                            )
-                    if not intended_attackers:
-                        # No planner intent — ask the combat solver before
-                        # submitting an empty attack. Live finding 2026-06-06:
-                        # autopilot confirmed "no attackers" every combat even
-                        # with safe profitable attacks on board, because the
-                        # only attack source was turn-plan intent.
-                        solver_names = self._solver_attack_names(game_state)
-                        if solver_names:
-                            intended_attackers = solver_names
-                            logger.info(
-                                "Autopilot: combat solver picked attackers "
-                                f"{solver_names}; declaring instead of empty confirm"
                             )
                     return self._run_bridge_action(
                         GameAction(
@@ -3350,7 +3361,16 @@ class AutopilotEngine(
     # Mulligan and — since Phase E — ActionsAvailable (priority windows),
     # which previously stayed on the legacy strategic path.
     _TYPED_DECISION_FAMILIES = frozenset(
-        {"SelectTargets", "SelectN", "Search", "Mulligan", "Group", "ActionsAvailable"}
+        {
+            "SelectTargets",
+            "SelectN",
+            "Search",
+            "Mulligan",
+            "Group",
+            "ActionsAvailable",
+            "CastingTimeOptions",
+            "OptionalAction",
+        }
     )
 
     _LOG_CATCH_UP_TIMEOUT_S = 3.0
@@ -3364,7 +3384,14 @@ class AutopilotEngine(
         the opponent's turn-12 board (0 mana) was answered against the new
         turn-13 Main 1 request: Pass, twice, and the whole turn was skipped.
         Unknown ids (0) keep the old behaviour.
+
+        Search and SelectN carry their own legal choices in the bridge.
+        Private-library updates may never appear in Player.log, so waiting
+        for their state id can deadlock. Submission still rechecks the live
+        request after planning.
         """
+        if poll.get("request_type") in {"Search", "SearchRequest", "SelectN", "SelectNRequest"}:
+            return game_state
         want = int(poll.get("game_state_id") or 0)
         have = int(game_state.get("_log_game_state_id", 0) or 0)
         if not want or not have or have >= want:
@@ -3410,13 +3437,20 @@ class AutopilotEngine(
         game_state = caught_up
 
         def _resolve_instance(iid: int) -> str:
-            for zone in ("hand", "battlefield"):
+            for zone in ("hand", "battlefield", "stack", "graveyard", "command"):
                 for c in game_state.get(zone) or []:
                     if isinstance(c, dict) and int(c.get("instance_id") or 0) == iid:
                         return str(c.get("name") or "")
             return ""
 
         decision = build_pending_decision(poll, resolve_instance=_resolve_instance)
+        if poll.get("payment_selection") and self._should_decline_optional_cost(game_state):
+            return None
+        if poll.get("payment_selection") and decision is None:
+            self._pause_for_manual(
+                "Non-mana payment choices are incomplete — select payment manually", game_state
+            )
+            return True
         # Feed the tracker the current decision (or None) so any in-flight
         # submission settles as ADVANCED/REJECTED before we act.
         fp = decision_fingerprint(decision) if decision else None
@@ -3442,7 +3476,7 @@ class AutopilotEngine(
             )
             if len(kept) != len(decision.options):
                 logger.info(
-                    "Repeat-activation cap: hiding %s for the rest of the turn",
+                    "Repeat-activation guard: hiding %s until useful progress",
                     [o.label for o in decision.options if o not in kept],
                 )
                 decision = dataclasses.replace(decision, options=kept)
@@ -3525,6 +3559,11 @@ class AutopilotEngine(
             )
             return True
         if not option_ids or any(decision.find(option_id) is None for option_id in option_ids):
+            if poll.get("payment_selection"):
+                self._pause_for_manual(
+                    "No valid automatic non-mana payment — select payment manually", game_state
+                )
+                return True
             self._state = AutopilotState.IDLE
             return True
 
@@ -3556,6 +3595,11 @@ class AutopilotEngine(
                 if clean_name:
                     self._recent_bot_submissions.append((time.monotonic(), clean_name))
             del self._recent_bot_submissions[:-24]
+            get_reasoning = getattr(self._planner, "get_decision_reasoning", None)
+            reasoning = get_reasoning(option_ids) if callable(get_reasoning) else ""
+            explanation = f"{decision.request_type}: {', '.join(labels)}"
+            if reasoning:
+                explanation += f". {reasoning}"
             try:
                 from arenamcp.match_packets import get_current_packet
 
@@ -3566,15 +3610,40 @@ class AutopilotEngine(
                 logger.warning(f"MatchPacket: failed to record decision: {e}")
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE,
-                f"typed-decision {decision.request_type}: {', '.join(labels)}",
+                f"typed-decision {explanation}",
             )
             self._notify(
                 "AUTOPILOT",
-                f"{decision.request_type}: {', '.join(labels)}",
+                explanation,
             )
+            if (
+                reasoning
+                and decision.request_type == "ActionsAvailable"
+                and self._config.enable_tts_preview
+                and self._speak_fn
+                and (option_ids != ["pass"] or self._should_speak_pass_plan(game_state))
+            ):
+                threading.Thread(target=self._speak_fn, args=(explanation, False), daemon=True).start()
             self._actions_executed += 1
             self._last_exec_success_ts = time.time()
             self._state = AutopilotState.IDLE
+            return True
+        if poll.get("payment_selection"):
+            self._pause_for_manual("Non-mana payment submission failed — select payment manually", game_state)
+            return True
+        if decision.request_type == "SelectTargets":
+            self._pause_for_manual("Target selection was not verified — check targets manually", game_state)
+            return True
+        if decision.request_type in {"OptionalAction", "CastingTimeOptions"}:
+            latest = self._gre_bridge.get_pending_actions() or {}
+            current = build_pending_decision(latest)
+            if current is None or current.request_id != decision.request_id:
+                self._request_tracker.observe(decision_fingerprint(current) if current else None)
+                self._state = AutopilotState.IDLE
+                return True
+            self._pause_for_manual(
+                f"{decision.request_type}: submission was not accepted; choose manually", game_state
+            )
             return True
         logger.info(
             "typed-decision submit failed for %s (%s); falling back to legacy path",
@@ -3621,12 +3690,12 @@ class AutopilotEngine(
                 logger.debug(f"Bridge reconnect attempt failed: {e}")
             time.sleep(0.25)
         self._last_bridge_wait_failed_at = time.monotonic()
+        from arenamcp.platform_integration import bridge_offline_hint
+
         logger.warning(
-            "Bridge still offline after %.1fs wait — the MtgaCoachBridge "
-            "plugin isn't connecting. If MTGA is running, BepInEx is likely "
-            "not injected. On Linux/Proton, Steam launch options must "
-            'include: WINEDLLOVERRIDES="winhttp=n,b" %%command%%',
+            "Bridge still offline after %.1fs wait. %s",
             wait_budget,
+            bridge_offline_hint(),
         )
         return False
 

@@ -3,7 +3,7 @@
 2026-09-24 (real match): with Lightning Greaves (Equip {0}) out, every
 priority window offered the equip again and the planner kept taking it —
 the Greaves moved 707 -> 692 -> 715 -> 692 in 40 seconds until the user
-took over. Equipment gets one activation per turn, anything else three.
+took over. Equipment gets one activation per creature state, anything else three per turn.
 """
 
 from unittest.mock import MagicMock
@@ -70,7 +70,7 @@ def _names(engine: AutopilotEngine) -> None:
     engine._planner._resolve_name = None
 
 
-def test_equipment_is_equipped_once_per_turn(monkeypatch):
+def test_equipment_is_equipped_once_without_creature_progress(monkeypatch):
     engine, bridge = _engine(monkeypatch)
     assert engine._try_typed_decision_path(_state(18), "decision_required") is True
     assert bridge.submit_action_by_index.call_count == 1
@@ -98,3 +98,58 @@ def test_planner_legal_actions_hide_spent_sources(monkeypatch):
     assert engine._drop_exhausted_activations(legal, state) == legal
     engine._note_activation(state, 0, "Lightning Greaves")
     assert engine._drop_exhausted_activations(legal, state) == ["Cast Llanowar Elves [OK]", "Pass"]
+
+
+def _creature(instance_id, tapped=False):
+    return {
+        "instance_id": instance_id,
+        "name": f"Mana creature {instance_id}",
+        "type_line": "Creature — Elf",
+        "controller_seat_id": LOCAL,
+        "is_tapped": tapped,
+    }
+
+
+def test_equipment_reappears_after_wearer_taps(monkeypatch):
+    engine, bridge = _engine(monkeypatch)
+    state = _state(18)
+    state["battlefield"].extend([_creature(100), _creature(101)])
+    assert engine._try_typed_decision_path(state, "decision_required")
+    state["battlefield"][1]["is_tapped"] = True
+    assert engine._try_typed_decision_path(state, "decision_required")
+    assert bridge.submit_action_by_index.call_count == 2
+    assert engine._try_typed_decision_path(state, "decision_required")
+    assert bridge.submit_action_by_index.call_count == 2
+
+
+def test_new_creature_allows_re_equip_but_attachment_changes_do_not(monkeypatch):
+    engine, _ = _engine(monkeypatch)
+    state = _state(18)
+    state["battlefield"].append(_creature(100))
+    engine._note_activation(state, 728, "Lightning Greaves")
+    state["battlefield"][0]["parent_instance_id"] = 100
+    assert engine._activation_exhausted(state, 728, "Lightning Greaves")
+    state["battlefield"].append(_creature(101))
+    assert not engine._activation_exhausted(state, 728, "Lightning Greaves")
+    engine._note_activation(state, 728, "Lightning Greaves")
+    state["battlefield"][0]["parent_instance_id"] = 101
+    assert engine._activation_exhausted(state, 728, "Lightning Greaves")
+
+
+def test_return_to_previous_creature_state_does_not_reset_equip_guard(monkeypatch):
+    engine, _ = _engine(monkeypatch)
+    state = _state(18)
+    state["battlefield"].append(_creature(100))
+    engine._note_activation(state, 728, "Lightning Greaves")
+    state["battlefield"][1]["is_tapped"] = True
+    engine._note_activation(state, 728, "Lightning Greaves")
+    state["battlefield"][1]["is_tapped"] = False
+    assert engine._activation_exhausted(state, 728, "Lightning Greaves")
+
+
+def test_identical_equipment_copies_have_separate_progress_guards(monkeypatch):
+    engine, _ = _engine(monkeypatch)
+    state = _state(18)
+    state["battlefield"].append({**state["battlefield"][0], "instance_id": 729})
+    engine._note_activation(state, 728, "Lightning Greaves")
+    assert not engine._activation_exhausted(state, 729, "Lightning Greaves")

@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from functools import lru_cache
 from itertools import product
 from typing import Any
 
@@ -77,10 +79,43 @@ def _pt(card: dict) -> tuple[int, int]:
     return int(card.get("power") or 0), int(card.get("toughness") or 0)
 
 
+@lru_cache(maxsize=2048)
+def _resource_roles(oracle: str) -> tuple[str, ...]:
+    """Recognize ongoing resource abilities, not resources from a spent ETB."""
+    roles: set[str] = set()
+    text = re.sub(r"<[^>]*>", "", oracle.lower())
+    for ability in text.splitlines():
+        ability = ability.strip()
+        activated = (
+            ":" in ability
+            and not re.match(r"(?:when|whenever|at the beginning)\b", ability)
+            and not re.search(r"sacrifice (?:this|~)[^:]*:", ability)
+        )
+        recurring = "whenever" in ability or "at the beginning" in ability
+        if not (activated or recurring):
+            continue
+        if re.search(r"\badd\b[^.]*?(?:\{(?:o?[wubrgc])+\}|\bmana\b)", ability):
+            roles.add("mana production")
+            if re.search(r"\bfor each\b|\badd x\b|\badditional\b|\binstead\b", ability):
+                roles.add("mana scaling")
+        if re.search(r"\bdraw\b[^.]*?\bcards?\b", ability):
+            roles.add("card draw")
+        if re.search(r"\bcreate\b[^.]*?\btokens?\b", ability):
+            roles.add("token production")
+        if re.search(r"\b(?:return|put)\b[^.]*?\bfrom (?:your|a|the) graveyard\b", ability):
+            roles.add("recursion")
+    return tuple(sorted(roles))
+
+
+def combat_resource_roles(card: dict) -> tuple[str, ...]:
+    """Strategic roles used by the approximate combat valuation."""
+    return _resource_roles(_text(card))
+
+
 def _material(card: dict) -> int:
-    """Crude material value: P+T, floored at 1 so tokens aren't zero."""
-    p, t = _pt(card)
-    return max(1, p + t)
+    """Value a body plus ongoing resources; this is not a mana/castability estimate."""
+    power, toughness = _pt(card)
+    return max(1, power + toughness) + 2 + 3 * len(combat_resource_roles(card))
 
 
 def _can_block(attacker: dict, blocker: dict) -> bool:
@@ -133,7 +168,7 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
     out = CombatOutcome()
 
     if not assigned:
-        out.damage_through = atk_p
+        out.damage_through = atk_p * (2 if atk_ds else 1)
         return out
 
     # Pre-fight state — attacker takes damage from blockers unless
@@ -492,6 +527,13 @@ def _greedy_block_plan(
         for b in blockers
         if int(b.get("instance_id") or 0) in assignments
     )
+    no_blocks = BlockPlan(
+        damage_through=sum(_resolve_attacker(attacker, []).damage_through for attacker in attackers)
+    )
+    no_blocks.score = _score_block_plan(no_blocks, your_life)
+    if no_blocks.score >= plan.score:
+        no_blocks.explanation = f"greedy: no blocks ({no_blocks.damage_through} dmg through)"
+        return no_blocks
     return plan
 
 

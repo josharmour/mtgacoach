@@ -9,9 +9,10 @@ import contextlib
 import glob
 import logging
 import os
+import re
 import sqlite3
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,9 @@ class MTGACard:
     expansion_code: str
     oracle_text: str = ""
     type_line: str = ""
+    mana_cost: str = ""
+    rarity: str = ""
+    linked_face_ids: list[int] = field(default_factory=list)
 
 
 # Common MTGA installation paths
@@ -183,6 +187,7 @@ class MTGADatabase:
         # columns. Probed rather than assumed so a schema change degrades to
         # "no type line" instead of making every card lookup fail.
         self._has_type_text_cols = False
+        self._card_columns: set[str] = set()
 
         self._connect()
 
@@ -214,6 +219,7 @@ class MTGADatabase:
                 self._available = True
                 try:
                     cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(Cards)")}
+                    self._card_columns = cols
                     self._has_type_text_cols = {"TypeTextId", "SubtypeTextId"} <= cols
                     if not self._has_type_text_cols:
                         logger.warning(
@@ -303,6 +309,26 @@ class MTGADatabase:
             return ""
         return self._resolve_type_line(row["TypeTextId"], row["SubtypeTextId"])
 
+    def _extra_card_sql(self) -> str:
+        return "".join(
+            f", c.{column}" if column in self._card_columns else f", NULL AS {column}"
+            for column in ("OldSchoolManaText", "Rarity", "LinkedFaceGrpIds")
+        )
+
+    def _extra_card_fields(self, row: Any) -> dict[str, Any]:
+        raw_cost = row["OldSchoolManaText"] or ""
+        symbols = re.findall(r"o(\([^()]+\)|\d+|[WUBRGCXYZS])", raw_cost)
+        mana_cost = "".join("{" + symbol.strip("()") + "}" for symbol in symbols)
+        return {
+            "mana_cost": mana_cost,
+            "rarity": self.RARITY_NAMES.get(row["Rarity"], ""),
+            "linked_face_ids": [
+                int(grp_id)
+                for grp_id in (row["LinkedFaceGrpIds"] or "").split(",")
+                if grp_id.strip().isdigit()
+            ],
+        }
+
     def _resolve_type_line(self, type_text_id: Any, subtype_text_id: Any) -> str:
         """Resolve the printed type line from MTGA's localization table.
 
@@ -372,6 +398,7 @@ class MTGADatabase:
                         c.AbilityIds,
                         c.Order_Title
                         {self._type_col_sql()}
+                        {self._extra_card_sql()}
                     FROM Cards c
                     LEFT JOIN Localizations_enUS l ON c.TitleId = l.LocId AND l.Formatted = 1
                     WHERE c.GrpId = ?
@@ -386,8 +413,6 @@ class MTGADatabase:
                     name = row["Name"] or row["Order_Title"] or f"Unknown_({grp_id})"
                     # Strip HTML tags that MTGA injects into hyphenated names
                     if "<" in name:
-                        import re
-
                         name = re.sub(r"<[^>]+>", "", name)
 
                     self._error_count = 0
@@ -402,6 +427,7 @@ class MTGADatabase:
                         expansion_code=row["ExpansionCode"] or "",
                         oracle_text=oracle_text,
                         type_line=type_line,
+                        **self._extra_card_fields(row),
                     )
                     self._card_cache[grp_id] = card
                     return card
@@ -460,6 +486,7 @@ class MTGADatabase:
                         c.AbilityIds,
                         c.Order_Title
                         {self._type_col_sql()}
+                        {self._extra_card_sql()}
                     FROM Cards c
                     LEFT JOIN Localizations_enUS l ON c.TitleId = l.LocId AND l.Formatted = 1
                     WHERE c.GrpId IN ({placeholders})
@@ -473,8 +500,6 @@ class MTGADatabase:
                     name = row["Name"] or row["Order_Title"] or f"Unknown_({row['GrpId']})"
                     # Strip HTML tags that MTGA injects into hyphenated names
                     if "<" in name:
-                        import re
-
                         name = re.sub(r"<[^>]+>", "", name)
 
                     card = MTGACard(
@@ -488,6 +513,7 @@ class MTGADatabase:
                         expansion_code=row["ExpansionCode"] or "",
                         oracle_text=oracle_text,
                         type_line=type_line,
+                        **self._extra_card_fields(row),
                     )
                     self._card_cache[card.grp_id] = card
                     results[card.grp_id] = card

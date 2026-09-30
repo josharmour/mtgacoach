@@ -676,7 +676,10 @@ def test_ptt_happy_path(ptt_button, qapp):
     assert not controller.listening
 
 
-def test_ptt_disabled_when_transcriber_missing(ptt_button, qapp):
+def test_ptt_disabled_when_transcriber_missing(ptt_button, qapp, monkeypatch):
+    import arenamcp.desktop.ptt as ptt_module
+
+    monkeypatch.setattr(ptt_module, "default_transcriber", Mock(side_effect=ImportError("no transcriber")))
     session = MockSession()
     controller = PttController(ptt_button, session, recorder=FakeRecorder(), transcriber=None)
     assert not ptt_button.isEnabled()

@@ -280,6 +280,29 @@ def test_spoken_line_fills_now_card(panel):
     assert "Bolt the attacker." in panel.log_view.toPlainText()
 
 
+def test_draft_explanations_are_visible_without_debug_logging(panel):
+    text = "Take Seer to trigger Saheeli. Still need: early creatures."
+    panel._on_advice_received(text, "DRAFT")
+    assert panel.now_text.text() == text
+    assert text in panel.log_view.toPlainText()
+
+
+def test_autopilot_action_reason_is_visible_without_speech(panel):
+    text = "ActionsAvailable: Pass. Our five-mana creatures are not payable yet."
+    panel._on_advice_received(text, "AUTOPILOT")
+    assert panel.now_text.text() == text
+
+
+def test_draft_speech_keeps_detailed_needs_and_alternatives_visible(panel):
+    spoken = "Take Seer to trigger Saheeli."
+    detailed = spoken + "\nStill need: early creatures.\nAlternative: Dragon is too expensive."
+    panel._on_advice_received(detailed, "DRAFT")
+    panel._on_spoken_line(spoken)
+    assert panel.now_text.text() == detailed
+    panel._on_spoken_line("Play your land.")
+    assert panel.now_text.text() == "Play your land."
+
+
 def test_theme_switch_rerenders_feed_colours(panel, qapp):
     from arenamcp.desktop import theme
 

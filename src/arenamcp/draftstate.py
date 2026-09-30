@@ -92,6 +92,42 @@ class DraftState:
     sealed_analyzed: bool = False
     picks_per_pack: int = 1
     last_completed_pool: list[int] = field(default_factory=list)
+    pick_history: set[tuple[int, int, tuple[int, ...]]] = field(default_factory=set)
+    is_building: bool = False
+    course_id: str = ""
+    deck_id: str = ""
+    editor_main_deck: dict[int, int] | None = None
+    editor_basis: str = "logged_deck"
+
+    def update_editor(self, snapshot: dict | None) -> None:
+        if snapshot is None:
+            if self.editor_basis == "live_editor":
+                self.editor_main_deck = None
+                self.editor_basis = "unavailable"
+                self.is_building = False
+            return
+        if not snapshot.get("is_open"):
+            self.is_building = False
+            if self.editor_basis in ("live_editor", "unavailable"):
+                self.is_building = False
+                self.editor_main_deck = None
+                self.editor_basis = "logged_deck"
+            return
+        if not snapshot.get("is_limited"):
+            return
+        deck_id = str(snapshot.get("deck_id") or "")
+        if not self.deck_id:
+            return
+        if deck_id.casefold() != self.deck_id.casefold():
+            self.is_building = False
+            self.editor_main_deck = None
+            self.editor_basis = "unavailable"
+            return
+        self.editor_main_deck = {entry["grp_id"]: entry["count"] for entry in snapshot["main_deck"]}
+        self.editor_basis = "live_editor"
+        self.is_building = True
+        self.is_active = False
+        self.cards_in_pack = []
 
     def reset(self) -> None:
         """Reset draft state for a new draft."""
@@ -109,6 +145,12 @@ class DraftState:
         self.sealed_pool = []
         self.sealed_analyzed = False
         self.picks_per_pack = 1
+        self.pick_history.clear()
+        self.is_building = False
+        self.course_id = ""
+        self.deck_id = ""
+        self.editor_main_deck = None
+        self.editor_basis = "logged_deck"
 
 
 def extract_set_code(event_name: str) -> str:
@@ -174,6 +216,7 @@ def create_draft_handler(draft_state: DraftState) -> Callable[[str, dict], None]
             "CardPool",
             "EventName",
             "GrpId",
+            "MainDeck",
         )
         if not any(kw in payload_str for kw in _DRAFT_KEYWORDS):
             return
@@ -185,8 +228,22 @@ def create_draft_handler(draft_state: DraftState) -> Callable[[str, dict], None]
 
         # Check for sealed pool (CardPool with InternalEventName containing Sealed)
         if "CardPool" in payload_str and "InternalEventName" in payload_str:
-            _handle_sealed_pool(draft_state, payload)
+            for course in _nested_records(payload):
+                if "CardPool" in course and "InternalEventName" in course:
+                    _handle_sealed_pool(draft_state, course)
             return
+
+        if "MainDeck" in payload_str and draft_state.is_building:
+            for record in _nested_records(payload):
+                identity = record.get("DeckId") or record.get("deckId")
+                if identity and identity == draft_state.deck_id:
+                    main = _find_nested_value(record, "MainDeck")
+                    if isinstance(main, list):
+                        draft_state.editor_main_deck = _deck_counts(main)
+            return
+
+        if "EventName" in payload_str:
+            _handle_event_start(draft_state, payload)
 
         # Check for draft start events (CardsInPack in first pack)
         if "CardsInPack" in payload_str:
@@ -214,6 +271,36 @@ def create_draft_handler(draft_state: DraftState) -> Callable[[str, dict], None]
             return
 
     return handle_draft_event
+
+
+def _nested_records(payload: Any):
+    if isinstance(payload, dict):
+        yield payload
+        for value in payload.values():
+            yield from _nested_records(value)
+    elif isinstance(payload, list):
+        for value in payload:
+            yield from _nested_records(value)
+    elif isinstance(payload, str) and payload.startswith("{"):
+        try:
+            yield from _nested_records(json.loads(payload))
+        except ValueError:
+            return
+
+
+def _deck_counts(entries: list) -> dict[int, int]:
+    counts = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            identity = int(entry.get("cardId", entry.get("grpId", 0)))
+            count = int(entry.get("quantity", entry.get("count", 0)))
+        except (TypeError, ValueError):
+            continue
+        if identity > 0 and count > 0:
+            counts[identity] = counts.get(identity, 0) + count
+    return counts
 
 
 def _find_nested_value(d: dict, key: str) -> Any:
@@ -251,16 +338,39 @@ def _handle_event_start(draft_state: DraftState, payload: dict) -> None:
         # Quick Draft sends EventName with every pack event.
         if event_name == draft_state.event_name and draft_state.is_active:
             return
+        if (
+            event_name == draft_state.event_name
+            and draft_state.is_building
+            and not any(
+                _find_nested_value(payload, key)
+                for key in ("CardsInPack", "PackCards", "SelfPack", "DraftPack")
+            )
+        ):
+            return
 
         dtype = detect_draft_type(event_name)
+        recovered_event = (
+            not draft_state.event_name
+            and draft_state.is_active
+            and bool(draft_state.cards_in_pack or draft_state.picked_cards)
+        )
         draft_state.event_name = event_name
         draft_state.draft_type = dtype
         draft_state.set_code = extract_set_code(event_name)
         draft_state.is_active = True
         draft_state.is_sealed = dtype in (DRAFT_TYPE_SEALED, DRAFT_TYPE_SEALED_TRAD)
         draft_state.picks_per_pack = 2 if dtype in _PICK_TWO_TYPES else 1
+        draft_state.is_building = False
+        if recovered_event:
+            logger.info("Recovered draft event metadata without discarding prior picks: %s", event_name)
+            return
         draft_state.cards_in_pack = []
         draft_state.picked_cards = []
+        draft_state.course_id = ""
+        draft_state.deck_id = ""
+        draft_state.editor_main_deck = None
+        draft_state.editor_basis = "logged_deck"
+        draft_state.pick_history.clear()
         draft_state.sealed_pool = []
         draft_state.sealed_analyzed = False
         logger.info(
@@ -278,11 +388,44 @@ def _handle_sealed_pool(draft_state: DraftState, payload: dict) -> None:
     event_name = _find_nested_value(payload, "InternalEventName")
 
     # Only process if this is a sealed event
-    if not event_name or "Sealed" not in event_name:
+    if not event_name or not any(kind in event_name for kind in ("Sealed", "Draft")):
         return
 
     card_pool = _find_nested_value(payload, "CardPool")
     if not card_pool or not isinstance(card_pool, list):
+        return
+
+    if "Draft" in event_name:
+        module = _find_nested_value(payload, "CurrentModule")
+        if draft_state.is_active and draft_state.cards_in_pack:
+            return
+        if module != "DeckSelect" and event_name != draft_state.event_name:
+            return
+        course_id = str(payload.get("CourseId") or "")
+        if course_id and course_id != draft_state.course_id:
+            draft_state.editor_main_deck = None
+            draft_state.deck_id = ""
+        draft_state.course_id = course_id
+        summary = payload.get("CourseDeckSummary") or {}
+        draft_state.deck_id = str(summary.get("DeckId") or draft_state.deck_id)
+        main = (payload.get("CourseDeck") or {}).get("MainDeck")
+        if isinstance(main, list):
+            draft_state.editor_main_deck = _deck_counts(main)
+        if module != "DeckSelect":
+            draft_state.is_building = False
+            return
+        draft_state.event_name = event_name
+        draft_state.set_code = extract_set_code(event_name)
+        draft_state.draft_type = detect_draft_type(event_name)
+        draft_state.picked_cards = [int(grp_id) for grp_id in card_pool if grp_id]
+        draft_state.last_completed_pool = list(draft_state.picked_cards)
+        draft_state.cards_in_pack = []
+        draft_state.is_active = False
+        draft_state.is_building = True
+        draft_state.is_sealed = False
+        logger.info(
+            "Draft deck building: recovered %d cards from completed course", len(draft_state.picked_cards)
+        )
         return
 
     # Set up sealed state
@@ -375,46 +518,27 @@ def _handle_draft_pick(draft_state: DraftState, payload: dict) -> None:
     """Handle player pick events to track picked cards."""
     # Handle PickTwo drafts: GrpIds is an array of picked card IDs
     grp_ids = _find_nested_value(payload, "GrpIds")
-    if isinstance(grp_ids, list) and len(grp_ids) >= 2:
-        # Dynamic PickTwo detection: if the pick payload contains 2+ cards
-        # but we didn't detect PickTwo from the event name, upgrade now.
-        if draft_state.picks_per_pack < 2:
-            draft_state.picks_per_pack = 2
-            if draft_state.draft_type not in _PICK_TWO_TYPES:
-                draft_state.draft_type = DRAFT_TYPE_PICK_TWO
-            logger.info("Detected PickTwo from multi-card pick payload (picks_per_pack upgraded to 2)")
-        for gid in grp_ids:
-            gid = int(gid)
-            if gid not in draft_state.picked_cards:
-                draft_state.picked_cards.append(gid)
-                logger.debug(f"Picked card: {gid}")
-            if gid in draft_state.cards_in_pack:
-                draft_state.cards_in_pack.remove(gid)
+    if not isinstance(grp_ids, list):
+        grp_id = (
+            _find_nested_value(payload, "GrpId")
+            or _find_nested_value(payload, "cardId")
+            or _find_nested_value(payload, "CardId")
+        )
+        grp_ids = [grp_id] if grp_id else []
+    picked = tuple(int(grp_id) for grp_id in grp_ids if grp_id)
+    if not picked:
         return
-    if isinstance(grp_ids, list):
-        # Single-element GrpIds array — still a normal pick
-        for gid in grp_ids:
-            gid = int(gid)
-            if gid not in draft_state.picked_cards:
-                draft_state.picked_cards.append(gid)
-                logger.debug(f"Picked card: {gid}")
-            if gid in draft_state.cards_in_pack:
-                draft_state.cards_in_pack.remove(gid)
+    window = (draft_state.pack_number, draft_state.pick_number, picked)
+    if window in draft_state.pick_history:
         return
-
-    # Single pick: try different field names used by different draft types
-    grp_id = (
-        _find_nested_value(payload, "GrpId")
-        or _find_nested_value(payload, "cardId")
-        or _find_nested_value(payload, "CardId")
-    )
-
-    if grp_id:
-        grp_id = int(grp_id)
-        if grp_id not in draft_state.picked_cards:
-            draft_state.picked_cards.append(grp_id)
-            logger.debug(f"Picked card: {grp_id}")
-
-        # Remove from current pack if present
+    draft_state.pick_history.add(window)
+    if len(picked) >= 2 and draft_state.picks_per_pack < 2:
+        draft_state.picks_per_pack = 2
+        if draft_state.draft_type not in _PICK_TWO_TYPES:
+            draft_state.draft_type = DRAFT_TYPE_PICK_TWO
+        logger.info("Detected PickTwo from multi-card pick payload (picks_per_pack upgraded to 2)")
+    for grp_id in picked:
+        draft_state.picked_cards.append(grp_id)
+        logger.debug(f"Picked card: {grp_id}")
         if grp_id in draft_state.cards_in_pack:
             draft_state.cards_in_pack.remove(grp_id)

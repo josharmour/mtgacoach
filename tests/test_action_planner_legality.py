@@ -173,13 +173,9 @@ def test_legal_action_to_action_strips_decoration_from_select_target():
     assert action.target_names == ["Escape Tunnel"]
 
 
-def test_legal_action_to_action_strips_decoration_from_block_with():
+def test_blocker_menu_entry_is_not_a_complete_assignment():
     action = _planner()._legal_action_to_action("Block with: Ooze #1 (2/2)")
-    assert action is not None
-    assert action.action_type == ActionType.DECLARE_BLOCKERS
-    # Disambiguation suffix "#1" must be preserved (it identifies which copy
-    # of the card to block with), but the (P/T) must be stripped.
-    assert action.blocker_assignments == {"Ooze #1": ""}
+    assert action is None
 
 
 def test_legal_action_to_action_leaves_undecorated_names_alone():

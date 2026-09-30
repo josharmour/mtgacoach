@@ -19,6 +19,7 @@ from arenamcp.card_db import (
     FallbackCardDatabase,
     ScryfallAdapter,
     get_card_database,
+    is_unknown_card_name,
 )
 from arenamcp.coach import CoachEngine, GameStateTrigger, create_backend
 from arenamcp.draft_eval import evaluate_pack, format_pick_recommendation
@@ -85,7 +86,7 @@ def _deactivate_draft_state(reason: str) -> None:
     """Clear active-pack draft state without discarding the drafted pool."""
     global _draft_helper_last_pack, _draft_helper_last_pick
 
-    if not draft_state.is_active and not draft_state.cards_in_pack:
+    if not draft_state.is_active and not draft_state.cards_in_pack and not draft_state.is_building:
         return
 
     logger.info(
@@ -97,6 +98,7 @@ def _deactivate_draft_state(reason: str) -> None:
         len(draft_state.cards_in_pack),
     )
     draft_state.is_active = False
+    draft_state.is_building = False
     draft_state.cards_in_pack = []
     draft_state.pack_number = 0
     draft_state.pick_number = 0
@@ -106,33 +108,6 @@ def _deactivate_draft_state(reason: str) -> None:
     draft_state.picks_per_pack = 1
     _draft_helper_last_pack = 0
     _draft_helper_last_pick = 0
-
-
-def _has_live_match_state() -> bool:
-    """Return True when the published snapshot already looks like real gameplay."""
-    snap = game_state.get_published_snapshot(deep_copy=False)
-    if snap.get("last_game_result") or snap.get("match_ended") or snap.get("_bridge_in_intermission"):
-        return False
-    if not snap.get("match_id"):
-        return False
-
-    turn_info = snap.get("turn_info", {}) or {}
-    if int(turn_info.get("turn_number", 0) or 0) > 0:
-        return True
-
-    if snap.get("pending_decision") or snap.get("legal_actions"):
-        return True
-
-    if snap.get("players"):
-        return True
-
-    zones = snap.get("zones", {}) or {}
-    for zone_name in ("battlefield", "my_hand", "stack", "graveyard", "exile", "command"):
-        if zones.get(zone_name):
-            return True
-
-    library_count = zones.get("library_count")
-    return library_count not in (None, "", "?")
 
 
 def _get_card_db() -> FallbackCardDatabase:
@@ -392,7 +367,7 @@ def _draft_helper_loop() -> None:
     logger.info("Draft helper loop started")
 
     # Pre-load caches for speed
-    scryfall = _get_scryfall()
+    scryfall = _get_card_db()
     draft_stats_cache = _get_draft_stats()
     mtgadb = _get_mtgadb()
     voice = _get_voice_output()
@@ -871,6 +846,12 @@ def enrich_with_oracle_text(grp_id: int) -> dict[str, Any]:
             "oracle_text": card.oracle_text or "",
             "type_line": card.type_line or "",
             "mana_cost": card.mana_cost or "",
+            "cmc": card.cmc,
+            "colors": [color for color in card.colors if color in {"W", "U", "B", "R", "G"}],
+            "power": card.power,
+            "toughness": card.toughness,
+            "rarity": card.rarity,
+            "related_faces": card.related_faces,
         }
 
     # Check if it's an ABILITY (e.g. on stack) via MTGA database
@@ -926,12 +907,12 @@ def _serialize_game_object(obj) -> dict[str, Any]:
                 "oracle_text": source_enriched["oracle_text"],
             }
             # If the ability name is unknown, label it with the source
-            if enriched["name"].startswith("Unknown"):
+            if is_unknown_card_name(enriched["name"]):
                 enriched["name"] = f"Ability of {source_enriched['name']}"
 
     name = enriched.get("name") or f"Unknown ({obj.grp_id})"
     type_line = enriched.get("type_line") or ""
-    if name.startswith("Unknown"):
+    if is_unknown_card_name(name):
         basics = {"Forest", "Island", "Swamp", "Mountain", "Plains"}
         matching = basics.intersection(obj.subtypes)
         if len(matching) == 1:
@@ -992,7 +973,7 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
     name = enriched.get("name") or f"Unknown ({grp_id})"
     type_line = enriched.get("type_line") or ""
     subtypes = obj.get("subtypes", [])
-    if name.startswith("Unknown"):
+    if is_unknown_card_name(name):
         basics = {"Forest", "Island", "Swamp", "Mountain", "Plains"}
         matching = basics.intersection(subtypes)
         if len(matching) == 1:
@@ -1072,7 +1053,7 @@ def _serialize_bridge_card(
     name = enriched.get("name") or fallback.get("name") or f"Unknown ({grp_id})"
     type_line = enriched.get("type_line") or fallback.get("type_line") or ""
     subtypes = _copy_list(card.get("subtypes") or fallback.get("subtypes"))
-    if name.startswith("Unknown"):
+    if is_unknown_card_name(name):
         basics = {"Forest", "Island", "Swamp", "Mountain", "Plains"}
         matching = basics.intersection(subtypes)
         if len(matching) == 1:
@@ -1786,14 +1767,13 @@ def get_draft_pack() -> dict[str, Any]:
     if watcher is None:
         start_watching()
 
-    if _has_live_match_state():
-        _deactivate_draft_state("live match state present")
-
     try:
         from arenamcp.gre_bridge import get_bridge
 
         bridge = get_bridge()
         bridge_draft = bridge.get_draft_state() if (bridge and getattr(bridge, "connected", False)) else None
+        editor = bridge.get_deck_editor() if (bridge and getattr(bridge, "connected", False)) else None
+        draft_state.update_editor(editor)
     except Exception as e:
         logger.debug(f"Failed to get_draft_state from bridge: {e}")
         bridge_draft = None
@@ -1817,6 +1797,15 @@ def get_draft_pack() -> dict[str, Any]:
     if not is_active or not pack_cards:
         return {
             "is_active": False,
+            "is_building": draft_state.is_building,
+            "pool_signature": [
+                draft_state.event_name,
+                sorted(draft_state.picked_cards),
+                sorted((draft_state.editor_main_deck or {}).items())
+                if draft_state.editor_main_deck is not None
+                else None,
+                draft_state.editor_basis,
+            ],
             "message": "No active draft pack detected. Make sure you're in a draft and a pack is open.",
         }
 
@@ -1941,16 +1930,13 @@ def evaluate_draft_pack_for_standalone() -> dict[str, Any]:
         Dict with pack_number, pick_number, spoken_advice, and evaluations list,
         or {"is_active": False} if no draft in progress.
     """
-    if _has_live_match_state():
-        _deactivate_draft_state("live match state present")
-
     if not draft_state.is_active or draft_state.is_sealed:
         return {"is_active": False}
 
     if not draft_state.cards_in_pack:
         return {"is_active": True, "cards": []}
 
-    _scryfall = _get_scryfall()
+    _scryfall = _get_card_db()
     _draft_stats = _get_draft_stats()
     _mtga = _get_mtgadb()
 
@@ -1958,7 +1944,7 @@ def evaluate_draft_pack_for_standalone() -> dict[str, Any]:
     try:
         from arenamcp.synergy import ensure_synergy_graph
 
-        ensure_synergy_graph(_scryfall)
+        ensure_synergy_graph(_get_scryfall())
     except Exception as e:
         logger.debug(f"Synergy graph init: {e}")
 
@@ -2159,8 +2145,7 @@ def get_sealed_pool() -> dict[str, Any]:
 def analyze_draft_pool() -> dict[str, Any]:
     """Analyze drafted cards and recommend a deck build.
 
-    Uses the same color-pair analysis as sealed pools to suggest
-    the best build from the cards picked during a draft.
+    Returns a counted 40-card starting build and named cuts from the pool.
 
     Returns:
         Dict with pool_size, spoken_advice, detailed_text,
@@ -2177,14 +2162,6 @@ def analyze_draft_pool() -> dict[str, Any]:
         card_info = enrich_with_oracle_text(grp_id)
         card_info["grp_id"] = grp_id
 
-        # Parse colors from mana cost
-        mana_cost = card_info.get("mana_cost", "")
-        colors = []
-        for color in ["W", "U", "B", "R", "G"]:
-            if f"{{{color}}}" in mana_cost:
-                colors.append(color)
-        card_info["colors"] = colors
-
         # Get 17lands stats
         if draft_state.set_code and card_info.get("name"):
             stats = draft_stats_cache.get_draft_rating(card_info["name"], draft_state.set_code)
@@ -2195,15 +2172,22 @@ def analyze_draft_pool() -> dict[str, Any]:
 
         pool_cards.append(card_info)
 
-    analysis = analyze_sealed_pool(pool_cards, draft_state.set_code, draft_stats_cache)
-    spoken = format_sealed_recommendation(analysis)
-    detailed = format_sealed_detailed(analysis)
+    from arenamcp.limited_deck import fallback_deck
+
+    build = fallback_deck(pool_cards)
 
     return {
         "pool_size": len(pool_cards),
         "set_code": draft_state.set_code,
-        "spoken_advice": spoken,
-        "detailed_text": detailed,
+        "pool_cards": pool_cards,
+        "editor_basis": draft_state.editor_basis,
+        "editor_cards": [
+            {**enrich_with_oracle_text(grp_id), "grp_id": grp_id, "count": count}
+            for grp_id, count in draft_state.editor_main_deck.items()
+        ]
+        if draft_state.editor_main_deck is not None
+        else None,
+        **build,
     }
 
 

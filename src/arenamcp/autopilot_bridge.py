@@ -183,20 +183,15 @@ class _BridgeSubmitMixin:
                     # preflight pattern in autopilot.py:2295-2331.
                     # Cluster: issues #398-#402 (5x bridge_submit_failed).
                     if game_state.get("_bridge_connected"):
-                        solver_names = self._solver_attack_names(game_state)
-                        if solver_names:
+                        solver_action = self._solver_attack_action(game_state)
+                        if solver_action is not None and solver_action.attacker_names:
+                            solver_names = solver_action.attacker_names
                             logger.info(
                                 "click_button(done) on DeclareAttacker with "
                                 f"solver-picked attackers: {solver_names}; "
                                 "routing through declare_attackers instead of empty submit"
                             )
-                            dec_action = GameAction(
-                                action_type=ActionType.DECLARE_ATTACKERS,
-                                attacker_names=solver_names,
-                                card_name=solver_names[0] if solver_names else "done",
-                                reasoning="click_button(done) → solver-picked attackers",
-                            )
-                            return self._try_bridge_declare_attackers(dec_action)
+                            return self._try_bridge_declare_attackers(solver_action)
                     if self._gre_bridge.submit_attackers([]):
                         self._log_execution_path(
                             ExecutionPath.GRE_AWARE,
@@ -525,6 +520,39 @@ class _BridgeSubmitMixin:
         )
         return None
 
+    def _solver_attack_action(self, game_state: dict[str, Any]) -> GameAction | None:
+        from arenamcp.combat_strategy import combat_choice
+        from arenamcp.combat_targets import recipient_label
+
+        choice = combat_choice(game_state)
+        if choice is not None:
+            battlefield = game_state.get("battlefield") or []
+            targets = {}
+            for identity, recipient in choice.assignments.items():
+                card = next(card for card in battlefield if card.get("instance_id") == identity)
+                name = card["name"]
+                twins = sorted(
+                    entry["instance_id"]
+                    for entry in battlefield
+                    if entry.get("name") == name and entry.get("owner_seat_id") == card.get("owner_seat_id")
+                )
+                label = f"{name} #{twins.index(identity) + 1}" if len(twins) > 1 else name
+                targets[label] = recipient_label(recipient, game_state)
+            return GameAction(
+                action_type=ActionType.DECLARE_ATTACKERS,
+                attacker_names=list(targets),
+                attacker_targets=targets,
+                reasoning=choice.explanation,
+            )
+        names = self._solver_attack_names(game_state)
+        return (
+            GameAction(
+                action_type=ActionType.DECLARE_ATTACKERS, attacker_names=names, target_names=["Opponent"]
+            )
+            if names
+            else None
+        )
+
     def _solver_attack_names(self, game_state: dict[str, Any]) -> list[str]:
         """Deterministic attack pick for auto-confirmed DeclareAttackers.
 
@@ -565,7 +593,13 @@ class _BridgeSubmitMixin:
             elif c.get("controller_seat_id") is not None:
                 theirs.append(c)
 
-        candidates = [c for c in yours if (c.get("name") or "") in legal_names]
+        legal_ids = set(ctx.get("legal_attacker_ids") or [])
+        candidates = [
+            card
+            for card in yours
+            if (card.get("name") or "") in legal_names
+            and (not legal_ids or card.get("instance_id") in legal_ids)
+        ]
         if not candidates:
             return []
 
@@ -710,6 +744,42 @@ class _BridgeSubmitMixin:
         )
         return replacement
 
+    def _attack_entries(self, action: GameAction, names: list[str], state: dict, pending: dict) -> list[dict]:
+        from arenamcp.combat_targets import attack_candidates, choose_recipient
+
+        local = next(
+            (player.get("seat_id") for player in state.get("players", []) if player.get("is_local")), None
+        )
+        opponent = next(
+            (player.get("seat_id") for player in state.get("players", []) if not player.get("is_local")), None
+        )
+        battlefield = state.get("battlefield", [])
+        raw = attack_candidates(state, pending)
+        candidates = {int(entry["attackerInstanceId"]): entry for entry in raw or []}
+        entries = []
+        seen = set()
+        for name in names:
+            identity = self._find_instance_id(name, battlefield, local)
+            if not identity or identity in seen or (raw is not None and identity not in candidates):
+                raise ValueError(f"Attacker {name!r} is unavailable or duplicated")
+            seen.add(identity)
+            target = action.attacker_targets.get(name, "")
+            if not target and action.target_names:
+                if len(action.target_names) != 1:
+                    raise ValueError("Use attacker_targets to assign different combat recipients")
+                target = action.target_names[0]
+            candidate = candidates.get(identity, {})
+            legal = candidate.get("legalDamageRecipients")
+            if legal is None:
+                if not opponent or any(
+                    "planeswalker" in str(card.get("type_line", "")).lower() for card in battlefield
+                ):
+                    raise ValueError("Combat recipients are missing; do not guess the attack target")
+                legal = [{"type": "DamageRecType_Player", "playerSystemSeatId": opponent}]
+            recipient = choose_recipient(target, legal, state)
+            entries.append({"attackerInstanceId": identity, "damageRecipient": recipient})
+        return entries
+
     def _try_bridge_declare_attackers(self, action: GameAction) -> ClickResult | None:
         """Submit attacker declarations via GRE bridge (two-step NPE handler pattern).
 
@@ -731,25 +801,32 @@ class _BridgeSubmitMixin:
             return None
 
         game_state = self._get_game_state()
-        battlefield = game_state.get("battlefield", [])
-        local_seat = next(
-            (p.get("seat_id") for p in game_state.get("players", []) if p.get("is_local")),
-            None,
-        )
-
         attacker_names = list(action.attacker_names)
-        override = self._attack_override(attacker_names, game_state)
-        if override is not None:
-            attacker_names = override
+        try:
+            if not attacker_names:
+                from arenamcp.combat_strategy import combat_choice
 
-        # Resolve attacker names to instance IDs
-        attacker_entries = []
-        for name in attacker_names:
-            iid = self._find_instance_id(name, battlefield, local_seat)
-            if iid is not None:
-                attacker_entries.append({"attackerInstanceId": iid})
-            else:
-                logger.warning(f"Bridge declare_attackers: can't resolve '{name}' to instance ID")
+                if combat_choice(game_state) is not None:
+                    action = self._solver_attack_action(game_state) or action
+                    attacker_names = list(action.attacker_names)
+            attacker_entries = self._attack_entries(action, attacker_names, game_state, pending)
+            from arenamcp.combat_targets import recipient_key
+
+            if (
+                attacker_entries
+                and not action.attacker_targets
+                and all(recipient_key(entry["damageRecipient"])[0] == "player" for entry in attacker_entries)
+            ):
+                override = self._attack_override(attacker_names, game_state)
+                if override is not None:
+                    attacker_names = override
+                    replacement = GameAction(
+                        action_type=ActionType.DECLARE_ATTACKERS, target_names=["Opponent"]
+                    )
+                    attacker_entries = self._attack_entries(replacement, attacker_names, game_state, pending)
+        except (ValueError, TypeError, KeyError) as error:
+            logger.warning("Bridge declare_attackers: %s; manual choice required", error)
+            return None
 
         if not attacker_entries:
             # Empty attacker list = "attack with nobody / Done (confirm attackers)".
@@ -787,12 +864,16 @@ class _BridgeSubmitMixin:
             resp2 = self._gre_bridge.submit_attackers_raw([])
             if not resp2 or not resp2.get("ok"):
                 logger.warning(f"Bridge declare_attackers step 2 (finalize) failed: {resp2}")
-                # Step 1 succeeded, so attackers are declared even if finalize fails
-                # The game may auto-advance or we can retry
+                return None
             else:
                 logger.info("Bridge declare_attackers: finalized successfully")
 
-        names_str = ", ".join(attacker_names)
+        from arenamcp.combat_targets import recipient_label
+
+        names_str = ", ".join(
+            f"{name} -> {recipient_label(entry['damageRecipient'], game_state)}"
+            for name, entry in zip(attacker_names, attacker_entries, strict=True)
+        )
         self._log_execution_path(ExecutionPath.GRE_AWARE, f"declare_attackers: [{names_str}] via GRE bridge")
         return ClickResult(True, 0, 0, "attackers", "GRE bridge")
 
@@ -819,7 +900,7 @@ class _BridgeSubmitMixin:
             return None
 
         bridge_blockers = pending.get("blockers") or []
-        if not bridge_blockers or not getattr(action, "blocker_assignments", None):
+        if not getattr(action, "blocker_assignments", None):
             logger.info("GRE bridge blockers: submitting empty blockers (no blockers to assign)")
             if self._gre_bridge.submit_blockers([]):
                 self._log_execution_path(
@@ -841,29 +922,38 @@ class _BridgeSubmitMixin:
                     continue
             return ""
 
-        bridge_by_name: dict[str, dict] = {}
+        from arenamcp.rules_engine import RulesEngine
+
+        bridge_by_id: dict[int, dict] = {}
         bridge_id_list: list[int] = []
-        for b in bridge_blockers:
+        for blocker in bridge_blockers:
             try:
-                biid = int(b.get("blockerInstanceId") or 0)
+                blocker_id = int(blocker.get("blockerInstanceId") or 0)
             except (TypeError, ValueError):
                 continue
-            if not biid:
+            if not blocker_id or blocker_id in bridge_by_id:
                 continue
-            bridge_id_list.append(biid)
-            n = _name_of(biid)
-            if n:
-                bridge_by_name[n] = b
+            bridge_id_list.append(blocker_id)
+            bridge_by_id[blocker_id] = blocker
+        blocker_labels = RulesEngine._disambiguate_names(
+            [_name_of(blocker_id) or f"creature {blocker_id}" for blocker_id in bridge_id_list]
+        )
+        bridge_by_name = {
+            label: bridge_by_id[blocker_id]
+            for label, blocker_id in zip(blocker_labels, bridge_id_list, strict=True)
+        }
 
         assignments = []
+        used_blockers: set[int] = set()
         for blocker_name, attacker_name in action.blocker_assignments.items():
-            bn = (blocker_name or "").lower()
+            bn = (blocker_name or "").strip().lower()
             b_entry = bridge_by_name.get(bn)
-            if not b_entry:
-                for k, v in bridge_by_name.items():
-                    if bn and (bn in k or k in bn):
-                        b_entry = v
-                        break
+            if not b_entry and "#" not in bn:
+                matches = [
+                    entry for label, entry in bridge_by_name.items() if bn and (bn in label or label in bn)
+                ]
+                if len(matches) == 1:
+                    b_entry = matches[0]
 
             if not b_entry:
                 logger.warning(
@@ -878,6 +968,10 @@ class _BridgeSubmitMixin:
             except (TypeError, ValueError, KeyError):
                 logger.warning(f"GRE bridge blockers: bad blockerInstanceId in {b_entry}")
                 return None
+            if blocker_id in used_blockers:
+                logger.warning("GRE bridge blockers: duplicate blocker instance %s", blocker_id)
+                return None
+            used_blockers.add(blocker_id)
 
             an = (attacker_name or "").lower()
             attacker_id: int | None = None
@@ -888,7 +982,7 @@ class _BridgeSubmitMixin:
                 except (TypeError, ValueError):
                     continue
                 cand_name = _name_of(aid_i)
-                if cand_name == an or (an and (an in cand_name or cand_name in an)):
+                if cand_name and (cand_name == an or (an and (an in cand_name or cand_name in an))):
                     attacker_id = aid_i
                     break
 
@@ -936,12 +1030,42 @@ class _BridgeSubmitMixin:
                     and still.get("has_pending")
                     and "DeclareBlockers" in str(still.get("request_class", ""))
                 ):
+                    refreshed_blockers = still.get("blockers") or []
+                    if still.get("bridge_runtime") in ("il2cpp-macos", "il2cpp-android") or any(
+                        "selectedAttackerInstanceIds" in blocker for blocker in refreshed_blockers
+                    ):
+                        original_request = (pending.get("game_state_id"), pending.get("msg_id"))
+                        refreshed_request = (still.get("game_state_id"), still.get("msg_id"))
+                        if any(value is not None for value in original_request) and (
+                            refreshed_request == original_request
+                        ):
+                            logger.warning("Bridge declare_blockers: still awaiting server acknowledgment")
+                            return None
+                        expected = {
+                            entry["blockerInstanceId"]: set(entry["attackerInstanceIds"])
+                            for entry in assignments
+                        }
+                        selected = {
+                            int(blocker["blockerInstanceId"]): set(blocker["selectedAttackerInstanceIds"])
+                            for blocker in refreshed_blockers
+                            if blocker.get("selectedAttackerInstanceIds")
+                        }
+                        if selected != expected:
+                            logger.warning(
+                                "Bridge declare_blockers: selection not accepted; refusing to finalize "
+                                "(expected=%s, selected=%s)",
+                                expected,
+                                selected,
+                            )
+                            return None
                     if self._gre_bridge.submit_blockers([]):
                         logger.info("Bridge declare_blockers: finalized on refreshed request")
                     else:
                         logger.warning("Bridge declare_blockers: finalize step failed")
+                        return None
             except Exception as e:
                 logger.debug(f"Bridge declare_blockers finalize check failed: {e}")
+                return None
             desc = ", ".join(f"{b}->{a}" for b, a in action.blocker_assignments.items())
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE,
@@ -956,8 +1080,7 @@ class _BridgeSubmitMixin:
     def _try_gre_bridge_attackers(self, action: GameAction) -> ClickResult | None:
         """Submit attacker declarations via the GRE bridge.
 
-        Maps card names in action.attacker_names to instance IDs and
-        targets the opponent's face by default.
+        Resolves and validates each attacker's chosen combat recipient.
         """
         # Verify the bridge actually has a DeclareAttacker request pending
         pending = self._gre_bridge.get_pending_actions()
@@ -970,34 +1093,11 @@ class _BridgeSubmitMixin:
             return None
 
         game_state = self._get_game_state()
-        battlefield = game_state.get("battlefield", [])
-        local_seat = None
-        opp_seat = None
-        for p in game_state.get("players", []):
-            if p.get("is_local"):
-                local_seat = p.get("seat_id")
-            else:
-                opp_seat = p.get("seat_id")
-
-        attacker_list = []
-        for name in action.attacker_names:
-            instance_id = self._find_instance_id(name, battlefield, local_seat)
-            if instance_id is None:
-                logger.warning(
-                    f"GRE bridge attackers: can't resolve ID for '{name}', "
-                    "surfacing manual-required to caller"
-                )
-                return None
-
-            attacker_list.append(
-                {
-                    "attackerInstanceId": instance_id,
-                    "damageRecipient": {
-                        "type": "DamageRecType_Player",
-                        "playerSystemSeatId": opp_seat or 0,
-                    },
-                }
-            )
+        try:
+            attacker_list = self._attack_entries(action, action.attacker_names, game_state, pending)
+        except (ValueError, TypeError, KeyError) as error:
+            logger.warning("GRE bridge attackers: %s; manual choice required", error)
+            return None
 
         if self._gre_bridge.submit_attackers(attacker_list):
             names = ", ".join(action.attacker_names)
@@ -1743,6 +1843,8 @@ class _BridgeSubmitMixin:
         btype = str(game_state.get("_bridge_request_type") or pending.get("request_type") or "")
         bclass = str(game_state.get("_bridge_request_class") or pending.get("request_class") or "")
         label = btype or bclass or dec_type or "interactive"
+        if dec_type == "declare_blockers" or "DeclareBlock" in btype + bclass:
+            return False
         from arenamcp.play_safety import pending_x_source, useful_tutor_x
         from arenamcp.rules_engine import RulesEngine
 

@@ -137,6 +137,8 @@ class _ActionLegalityMixin:
                 action_type=ActionType.PLAY_LAND,
                 card_name=self._strip_decoration(act.split(":", 1)[1]),
             )
+        if lower == "cast normally":
+            return GameAction(action_type=ActionType.CASTING_OPTIONS)
         if lower.startswith("cast "):
             return GameAction(action_type=ActionType.CAST_SPELL, card_name=self._strip_decoration(act[5:]))
         if lower.startswith("activate ability:"):
@@ -161,11 +163,7 @@ class _ActionLegalityMixin:
             names = [n for n in names if n]
             return GameAction(action_type=ActionType.DECLARE_ATTACKERS, attacker_names=names)
         if lower.startswith("block with:"):
-            name = self._strip_decoration(act.split(":", 1)[1])
-            return GameAction(
-                action_type=ActionType.DECLARE_BLOCKERS,
-                blocker_assignments={name: ""} if name else {},
-            )
+            return None
         if lower.startswith("select target:"):
             return GameAction(
                 action_type=ActionType.SELECT_TARGET,
@@ -339,6 +337,23 @@ class _ActionLegalityMixin:
         the handler that needs it. See `_is_legal_decision_passthrough` /
         `_is_legal_combat_declaration` / `_is_legal_default`.
         """
+        if action.action_type == ActionType.DECLARE_ATTACKERS:
+            if not isinstance(action.attacker_targets, dict) or any(
+                name not in action.attacker_names or not isinstance(target, str) or not target.strip()
+                for name, target in action.attacker_targets.items()
+            ):
+                return False
+            if action.attacker_targets and set(action.attacker_targets) != set(action.attacker_names):
+                return False
+        if action.action_type == ActionType.DECLARE_BLOCKERS:
+            if not isinstance(action.blocker_assignments, dict) or any(
+                not isinstance(blocker, str)
+                or not blocker.strip()
+                or not isinstance(attacker, str)
+                or not attacker.strip()
+                for blocker, attacker in action.blocker_assignments.items()
+            ):
+                return False
         if action.action_type == ActionType.NUMERIC_INPUT:
             x_values = [
                 int(match.group(1)) for entry in legal_actions if (match := re.fullmatch(r"X = (\d+)", entry))
@@ -570,12 +585,15 @@ class _ActionLegalityMixin:
             except ValueError:
                 logger.warning(f"Unknown action type: {action_type_str}")
                 return None
+            if action_type == ActionType.DECLARE_BLOCKERS and "blocker_assignments" not in data:
+                return None
 
             return GameAction(
                 action_type=action_type,
                 card_name=data.get("card_name", ""),
                 target_names=data.get("target_names", []),
                 attacker_names=data.get("attacker_names", []),
+                attacker_targets=data.get("attacker_targets", {}),
                 blocker_assignments=data.get("blocker_assignments", {}),
                 modal_index=data.get("modal_index", 0),
                 select_card_names=data.get("select_card_names", []),

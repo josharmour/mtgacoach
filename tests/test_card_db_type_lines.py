@@ -32,7 +32,7 @@ NO_TYPE_LOC = 1004  # row exists, localization missing
 ABSENT = 4242  # not in the database at all
 
 
-def _make_db(tmp_path, *, with_type_columns: bool = True):
+def _make_db(tmp_path, *, with_type_columns: bool = True, with_card_details: bool = False):
     """A miniature MTGA CardDatabase in MTGA's real schema shape."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / "carddb.mtga"
@@ -97,10 +97,39 @@ def _make_db(tmp_path, *, with_type_columns: bool = True):
                 (3103, "Servo", 1),
             ],
         )
+        if with_card_details:
+            conn.executescript(
+                "ALTER TABLE Cards ADD COLUMN OldSchoolManaText TEXT;"
+                "ALTER TABLE Cards ADD COLUMN Rarity INTEGER;"
+                "ALTER TABLE Cards ADD COLUMN LinkedFaceGrpIds TEXT;"
+            )
+            conn.execute(
+                "UPDATE Cards SET OldSchoolManaText=?, Rarity=?, LinkedFaceGrpIds=? WHERE GrpId=?",
+                ("o2o(W/U)", 3, str(TOKEN), BEAR),
+            )
+            conn.execute("UPDATE Cards SET OldSchoolManaText=? WHERE GrpId=?", ("o(U/B)", TOKEN))
         conn.commit()
     finally:
         conn.close()
     return MTGADatabase(db_path=path)
+
+
+def test_local_card_costs_stats_and_linked_spells_do_not_need_external_mapping(tmp_path):
+    database = _make_db(tmp_path, with_card_details=True)
+    adapter = MTGADatabaseAdapter(database)
+    bear = adapter.get_card_by_arena_id(BEAR)
+    assert bear.mana_cost == "{2}{W/U}"
+    assert bear.cmc == 3
+    assert bear.power == "2"
+    assert bear.toughness == "2"
+    assert bear.rarity == "uncommon"
+    assert bear.related_faces[0]["grp_id"] == TOKEN
+    assert bear.related_faces[0]["mana_cost"] == "{U/B}"
+    database._card_cache.clear()
+    batch = adapter.prewarm_cards([BEAR, TOKEN])
+    assert batch[BEAR].mana_cost == bear.mana_cost
+    assert batch[BEAR].related_faces == bear.related_faces
+    assert batch[TOKEN].cmc == 1
 
 
 # ---------------------------------------------------------------------------

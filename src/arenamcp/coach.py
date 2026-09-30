@@ -22,6 +22,7 @@ from arenamcp.backend_health import (
     is_backend_error_text,
 )
 from arenamcp.backends import LLMBackend, ProxyBackend
+from arenamcp.card_db import is_unknown_card_name
 from arenamcp.coach_analysis import _CoachAnalysisMixin
 from arenamcp.coach_backends import (
     _is_local_backend,
@@ -57,7 +58,7 @@ from arenamcp.coach_structured import (
 )
 from arenamcp.coach_tracker import WordUsageTracker
 from arenamcp.coach_triggers import GameStateTrigger
-from arenamcp.mana import get_local_seat_id, mana_cost_to_cmc
+from arenamcp.mana import get_local_seat_id, has_autotap_solution, mana_cost_to_cmc
 
 logger = logging.getLogger(__name__)
 
@@ -698,6 +699,33 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             card_names = [c.get("name", "Unknown") for c in hand_cards]
             return [f"Bottom: {n}" for n in card_names], ", ".join(card_names)
         else:
+            if (
+                game_state.get("_bridge_request_type") in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+                or game_state.get("_bridge_request_class") in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+            ):
+                from arenamcp.decisions import build_pending_decision
+
+                names = {
+                    card.get("grp_id"): card.get("name", "Unknown")
+                    for zone in ("hand", "battlefield", "command", "graveyard", "exile", "stack")
+                    for card in game_state.get(zone, [])
+                    if card.get("grp_id")
+                }
+                decision = build_pending_decision(
+                    {
+                        "has_pending": True,
+                        "request_type": "ActionsAvailable",
+                        "can_pass": game_state.get("_bridge_can_pass", False),
+                        "actions": self._resolve_raw_legal_actions(game_state),
+                    },
+                    resolve_name=lambda grp_id: names.get(grp_id, f"Card#{grp_id}"),
+                )
+                valid_moves = [
+                    option.label + (" [OK]" if option.payable is True else "")
+                    for option in (decision.options if decision else ())
+                    if option.payable is not False
+                ]
+                return valid_moves, ", ".join(valid_moves) if valid_moves else "NONE"
             try:
                 from arenamcp.rules_engine import RulesEngine
 
@@ -773,6 +801,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         from arenamcp.rules_engine import RulesEngine
 
         lines: list[str] = []
+        if self._engine_cast_actions(game_state) is not None:
+            return lines
         local_player = next((p for p in game_state.get("players", []) if p.get("is_local")), None)
         lands_played_count = local_player.get("lands_played", 0) if local_player else 0
         current_turn = (game_state.get("turn") or {}).get("turn_number", 0)
@@ -1294,11 +1324,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         """Format a single battlefield card into display lines.
 
         Args:
-            for_planner: If True, omit full oracle text for permanents that
-                have been on the battlefield for more than one turn — the
-                ability flags (FLY, RCH, DTH, etc.) already summarize what
-                the planner needs. Cards that just entered keep oracle text
-                so ETB triggers stay visible.
+            for_planner: Compact older permanents, but retain mana and
+                activated ability text, including crew/saddle costs.
+                Recent entrants retain their full text for ETB decisions.
         """
         lines: list[str] = []
         name = card.get("name", "Unknown")
@@ -1330,6 +1358,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 flags.append("PW")
         if card.get("is_tapped"):
             flags.append("T")
+        if "vehicle" in type_line and "CardType_Creature" in card.get("card_types", []):
+            flags.append("CREATURE NOW")
 
         oracle_text = self._remove_reminder_text(card.get("oracle_text", "")).lower()
         if "flying" in oracle_text:
@@ -1410,7 +1440,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 entered_recently = _etb_turn is None or (turn_num - _etb_turn) <= 1
             else:
                 entered_recently = (turn_num - (_etb_turn or 0)) <= 1
-            if for_planner and not entered_recently:
+            has_mana_text = bool(re.search(r"\badd\b[^.\n]*(?:\{o?[WUBRGC]\}|\bmana\b)", stripped, re.I))
+            has_activated_ability = ":" in stripped or re.search(
+                r"\b(?:crew|saddle)\s+\d+|\bequip\b", stripped, re.I
+            )
+            if for_planner and not entered_recently and not has_mana_text and not has_activated_ability:
                 pass
             elif not keyword_only and len(stripped) > 0:
                 # Cap land oracle text to avoid token bloat — non-basic lands
@@ -1596,6 +1630,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         # crackback. Surface its pick so the LLM can follow it.
         try:
             from arenamcp.combat_solver import optimal_attacks
+            from arenamcp.combat_strategy import combat_choice
+
+            recipient_plan = combat_choice(game_state) if game_state else None
+            if recipient_plan is not None:
+                lines.append(f"Computed recipient-aware attack: {recipient_plan.explanation}")
+                return lines
 
             opp_next_turn_attackers = [c for c in opp_creatures]
             your_remaining_blockers = [
@@ -1755,6 +1795,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         try:
             from arenamcp.combat_solver import (
                 blocker_allowed_attackers_map,
+                combat_resource_roles,
                 optimal_blocks,
             )
 
@@ -1783,6 +1824,19 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             )
             if solver_plan is not None:
                 lines.append(f"Computed optimal blocks: {solver_plan.explanation}")
+                resource_creatures = [
+                    f"{card.get('name', '?')} ({', '.join(combat_resource_roles(card))})"
+                    for card in usable_blockers
+                    if combat_resource_roles(card)
+                ]
+                if resource_creatures:
+                    lines.append(
+                        "Resource creatures: "
+                        + "; ".join(resource_creatures)
+                        + ". Their value is not just power/toughness. Compare taking nonlethal damage "
+                        "against losing future mana/cards and the ability to rebuild next turn. "
+                        "Solver valuations are approximate; consider the hand and synergies."
+                    )
         except Exception as e:
             logger.debug(f"combat solver (blocks) failed: {e}")
 
@@ -1974,6 +2028,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         can_play_land = (lands_played == 0) and is_my_turn and "Main" in phase and len(stack) == 0
         hand_name_counts = Counter(c.get("name", "Unknown") for c in hand)
         hand_name_seen: dict[str, int] = {}
+        engine_casts = self._engine_cast_actions(game_state)
 
         for card in hand:
             name = card.get("name", "Unknown")
@@ -1999,14 +2054,29 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 hybrid = re.findall(r"\{[^}]+/[^}]+\}", cost)
                 cmc += len(hybrid)
 
-            castable = self._check_castability(
-                type_line, cost, cmc, reqs, total_mana, mana_pool, can_play_land
-            )
+            if engine_casts is not None and "land" not in type_line:
+                matching_casts = [
+                    action
+                    for action in engine_casts
+                    if (
+                        action.get("instanceId") == card.get("instance_id")
+                        if action.get("instanceId")
+                        else action.get("grpId") and action.get("grpId") == card.get("grp_id")
+                    )
+                ]
+                if any(has_autotap_solution(action) for action in matching_casts):
+                    castable = "OK"
+                else:
+                    castable = "CANNOT AUTO-PAY" if matching_casts else "NOT AVAILABLE"
+            else:
+                castable = self._check_castability(
+                    type_line, cost, cmc, reqs, total_mana, mana_pool, can_play_land
+                )
             # Task 11: no cost fact -> no castability fact. A fabricated
             # zero-CMC made non-lands render "[OK]" (and X-spells "[OK,X=0]")
             # from absent data; the presence of the card still shows in the
             # Legal menu, which is the authority for what is castable.
-            if not cost_known and "land" not in type_line:
+            if engine_casts is None and not cost_known and "land" not in type_line:
                 castable = "CAST?"
 
             # Track cards the player can't afford so they're filtered from Legal
@@ -2015,7 +2085,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
             # Flag X-cost spells where X would be 0 — usually worthless
             has_x = "{X}" in cost or "{x}" in cost
-            if has_x and "land" not in type_line:
+            if engine_casts is None and has_x and "land" not in type_line:
                 non_x_cost = cmc  # cmc already excludes X (parsed from {digit} and {color})
                 x_value = max(0, total_mana - non_x_cost)
                 if castable == "OK" and x_value == 0:
@@ -2242,7 +2312,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     card = str(evt.get("card") or "?")
                     # An unresolved grp_id renders as "Card#12345" / "Unknown",
                     # which is pure token cost with no strategic signal.
-                    if card.startswith("Card#") or card.startswith("Unknown"):
+                    if card.startswith("Card#") or is_unknown_card_name(card):
                         continue
                     if etype == "resolution_start":
                         if evt.get("instance_id") in _completed_ids:
@@ -2317,13 +2387,37 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         bridge_req = game_state.get("_bridge_request_type")
         bridge_request_class = game_state.get("_bridge_request_class")
         bridge_actions = game_state.get("_bridge_actions")
-        is_actions_available_bridge_request = (
-            bridge_req in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
-            or bridge_request_class in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
-        )
-        if bridge_req and not is_actions_available_bridge_request:
+        if bridge_req or bridge_request_class:
+            return bridge_actions or []
+        if game_state.get("_bridge_connected") and "_bridge_actions" in game_state:
             return bridge_actions or []
         return bridge_actions or game_state.get("legal_actions_raw") or []
+
+    def _engine_cast_actions(self, game_state: dict[str, Any]) -> list[dict[str, Any]] | None:
+        """Current engine cast menu; None means only local estimates are available."""
+        bridge_requests = {
+            game_state.get("_bridge_request_type"),
+            game_state.get("_bridge_request_class"),
+        } - {None, ""}
+        if bridge_requests and not bridge_requests.intersection(_ACTIONS_AVAILABLE_BRIDGE_REQUESTS):
+            return []
+        if not (
+            game_state.get("_bridge_request_type")
+            or game_state.get("_bridge_request_class")
+            or game_state.get("_bridge_connected")
+            and "_bridge_actions" in game_state
+            or game_state.get("_bridge_actions") is not None
+            or any(
+                "hasAutoTap" in action or "autoTapSolution" in action
+                for action in game_state.get("legal_actions_raw") or []
+            )
+        ):
+            return None
+        return [
+            action
+            for action in self._resolve_raw_legal_actions(game_state)
+            if str(action.get("actionType", "")).removeprefix("ActionType_") == "Cast"
+        ]
 
     def _post_filter_uncastable_legal_moves(
         self,
@@ -2334,22 +2428,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         uncastable_card_names: set[str],
         game_state: dict[str, Any],
     ) -> None:
-        """Strip uncastable spells from the Legal: and LegalGRE: lines in-place.
-
-        The GRE may report a spell as legal because it considers potential
-        mana abilities, but our mana / target analysis can prove the spell
-        actually can't be cast right now. Showing it as legal anyway makes
-        the LLM suggest spells the engine will reject. This rewrites both
-        lines[1] (the human-readable Legal: line) and any LegalGRE: line in
-        place so the LLM only ever sees actionable options.
-        """
-        cards_to_filter = no_target_card_names | uncastable_card_names
-        non_ok_cast_names = {
-            m[5:].split("[", 1)[0].strip()
-            for m in valid_moves
-            if isinstance(m, str) and m.lower().startswith("cast ") and "[ok]" not in m.lower()
-        }
-        cards_to_filter |= non_ok_cast_names
+        """Filter unsafe plays without overriding Arena's confirmed payment solutions."""
+        cards_to_filter = set(no_target_card_names)
         if not valid_moves:
             return
 
@@ -2358,7 +2438,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 return False
             lowered = move.lower()
             if lowered.startswith("cast "):
-                return "[ok]" not in lowered or any(f"Cast {nt}" in move for nt in cards_to_filter)
+                return "[ok]" not in lowered or any(f"Cast {nt}" in move for nt in no_target_card_names)
             # Activated abilities the mana check proved unpayable — the GRE
             # lists them as legal to announce, but the player would have to
             # abort the half-paid activation.
@@ -2390,8 +2470,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             a
             for a in raw_legal_actions
             if not (
-                a.get("actionType") == "ActionType_Cast"
-                and (a.get("grpId") in filter_grp_ids or not a.get("autoTapSolution"))
+                str(a.get("actionType", "")).removeprefix("ActionType_") == "Cast"
+                and (a.get("grpId") in filter_grp_ids or not has_autotap_solution(a))
             )
             and not (a.get("actionType") == "ActionType_Activate" and a.get("_unaffordable"))
         ]
@@ -2573,13 +2653,20 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         ]
 
         # Mana info
-        mana_lines, total_mana, mana_pool = self._format_mana_info(your_cards, turn_num)
+        if self._engine_cast_actions(game_state) is not None:
+            mana_lines = [
+                "Mana: castability comes from Arena's current payment solutions, not a local estimate. "
+                "Recheck available options after each action."
+            ]
+            total_mana, mana_pool = 0, {}
+        else:
+            mana_lines, total_mana, mana_pool = self._format_mana_info(your_cards, turn_num)
         # task 11: mana pool size is only established when the controller's
         # permanent-entry turns are known. With unknown ETB turns, "Mana: N"
         # could be high or low — emit the ASSUMED label instead of a bare number
         # (strict opinion: refuse rather than label). Known sources are still
         # listed on the annotated line.
-        mana_is_assumed = bool(UNKNOWN_ETB) and total_mana > 0 or bool(UNKNOWN_ETB) and bool(mana_lines)
+        mana_is_assumed = self._engine_cast_actions(game_state) is None and bool(UNKNOWN_ETB)
         if annotate and mana_is_assumed:
             lines.append(f"Mana: {total_mana} (assumed pool — sources may be missing)")
         elif strict and mana_is_assumed:

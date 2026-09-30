@@ -309,15 +309,15 @@ def test_attack_solver_line_present_on_your_combat() -> None:
 # ── (5) solver deference is stated in the system prompt ──────────────────
 
 
-def test_system_prompt_has_an_explicit_solver_deference_rule() -> None:
-    """Before 2026-07-26 the only mention was a voice_advice clause."""
+def test_system_prompt_qualifies_solver_advice_and_requires_reasoned_deviations() -> None:
+    """Approximate combat values guide play without overriding strategic context."""
     assert "COMBAT SOLVER" in AUTOPILOT_SYSTEM_PROMPT
     assert "Computed optimal blocks:" in AUTOPILOT_SYSTEM_PROMPT
     assert "Computed optimal attack:" in AUTOPILOT_SYSTEM_PROMPT
-    # The instruction must be an obligation, not a hint.
-    assert "MUST match that line exactly" in AUTOPILOT_SYSTEM_PROMPT
-    # And deviation must be justified, not vibes-based.
-    assert "name that specific reason" in AUTOPILOT_SYSTEM_PROMPT
+    assert "recommendations under approximate life/material/resource values" in AUTOPILOT_SYSTEM_PROMPT
+    assert "Prefer the recommendation" in AUTOPILOT_SYSTEM_PROMPT
+    assert "explain a concrete reason when deviating" in AUTOPILOT_SYSTEM_PROMPT
+    assert "never authorize a combat action absent from the Legal: menu" in AUTOPILOT_SYSTEM_PROMPT
 
 
 def test_system_prompt_explains_the_stack_section() -> None:

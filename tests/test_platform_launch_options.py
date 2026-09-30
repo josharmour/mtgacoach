@@ -66,3 +66,24 @@ def test_mac_bridge_library_selects_the_gre_engine(monkeypatch, installed, conne
     monkeypatch.setattr("arenamcp.platform_integration.mac_bridge_installed", lambda: installed)
     monkeypatch.setattr("arenamcp.native_mac_autopilot.mac_gre_bridge_connected", lambda: connected)
     assert use_native_mac_autopilot() is expected
+
+
+@pytest.mark.parametrize(
+    ("platform", "bepinex_capable", "device", "expected", "excluded"),
+    [
+        ("darwin", False, "desktop", "DYLD_INSERT_LIBRARIES", "BepInEx"),
+        ("darwin", True, "desktop", "BepInEx", "DYLD_INSERT_LIBRARIES"),
+        ("linux", True, "desktop", "WINEDLLOVERRIDES", "DYLD_INSERT_LIBRARIES"),
+        ("win32", True, "desktop", "BepInEx", "WINEDLLOVERRIDES"),
+        ("darwin", False, "android", "adb reverse", "DYLD_INSERT_LIBRARIES"),
+    ],
+)
+def test_bridge_recovery_hint_matches_game_device(
+    monkeypatch, platform, bepinex_capable, device, expected, excluded
+):
+    monkeypatch.setattr("sys.platform", platform)
+    monkeypatch.setattr(pi, "bridge_capable", lambda: bepinex_capable)
+    monkeypatch.setenv("MTGACOACH_GAME_DEVICE", device)
+    hint = pi.bridge_offline_hint()
+    assert expected in hint
+    assert excluded not in hint

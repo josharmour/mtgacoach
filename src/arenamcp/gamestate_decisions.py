@@ -10,6 +10,7 @@ import copy
 import logging
 from typing import TYPE_CHECKING, Any
 
+from arenamcp.card_db import is_unknown_card_name
 from arenamcp.gamestate_persistence import mark_match_ended
 from arenamcp.gamestate_transforms import (
     _coerce_int,
@@ -140,7 +141,7 @@ def _resolve_request_source_context(game_state: "GameState", source_id: int) -> 
         if (
             not resolved.get("source_card")
             and source_name
-            and not source_name.lower().startswith("unknown")
+            and not is_unknown_card_name(source_name)
             and source_type.lower() != "ability"
         ):
             resolved["source_card"] = source_name

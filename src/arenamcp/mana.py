@@ -13,6 +13,11 @@ ALL_MANA_COLORS = frozenset({"W", "U", "B", "R", "G", "C"})
 _MANA_SYMBOL_RE = re.compile(r"\{([^}]+)\}")
 
 
+def has_autotap_solution(action: dict[str, Any]) -> bool:
+    """Whether Arena supplied a payment solution, including a zero-cost one."""
+    return bool(action.get("hasAutoTap")) or isinstance(action.get("autoTapSolution"), dict)
+
+
 def mana_cost_to_cmc(mana_cost: str | None) -> int:
     """Calculate converted mana cost (mana value) from a cost string.
 

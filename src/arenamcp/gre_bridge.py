@@ -20,7 +20,6 @@ import logging
 import re
 import select
 import socket
-import sys
 import threading
 import time
 from typing import Any
@@ -341,34 +340,22 @@ class GREBridge:
             return
         self._no_plugin_warned = True
         try:
-            from arenamcp.platform_integration import bridge_capable
+            from arenamcp.android_link import game_device
+            from arenamcp.platform_integration import bridge_capable, mac_bridge_installed
 
-            if not bridge_capable():
-                # Native Mac client: no plugin will ever connect — that's the
-                # designed log-only state, not a fault. A WARNING here would
-                # land in every Mac bug report's error section as a red
-                # herring ("check BepInEx is installed" — it can't be).
+            if not bridge_capable() and not mac_bridge_installed() and game_device() != "android":
                 logger.info(
                     "GRE bridge: no plugin (native macOS client — log-only coaching is the designed state)."
                 )
                 return
         except Exception:
             pass
-        if sys.platform.startswith("linux"):
-            hint = (
-                "On Linux/Proton, BepInEx only injects when the Steam launch "
-                'options for MTGA include: WINEDLLOVERRIDES="winhttp=n,b" '
-                "%command% — check they weren't overwritten."
-            )
-        else:
-            hint = (
-                "Check that BepInEx and MtgaCoachBridge.dll are installed in "
-                "the MTGA folder (desktop app → Repair tab can reinstall them)."
-            )
+        from arenamcp.platform_integration import bridge_offline_hint
+
         logger.warning(
             "GRE bridge: server listening but no plugin connection after "
             f"{self._NO_PLUGIN_HINT_AFTER_S:.0f}s. If MTGA is running, the "
-            f"MtgaCoachBridge plugin is not loading. {hint}"
+            f"MtgaCoachBridge plugin is not loading. {bridge_offline_hint()}"
         )
 
     def _keepalive_loop(self, interval: float) -> None:
@@ -644,14 +631,14 @@ class GREBridge:
         resolved: dict[int, str] = {}
 
         try:
-            from arenamcp.card_db import get_card_database
+            from arenamcp.card_db import get_card_database, is_unknown_card_name
 
             card_db = get_card_database()
             card_db.prewarm_cards(clean_ids)
 
             for gid in clean_ids:
                 info = card_db.get_card_by_arena_id(gid)
-                if info and info.name and not info.name.startswith("Unknown"):
+                if info and not is_unknown_card_name(info.name):
                     resolved[gid] = info.name
         except Exception as e:
             logger.debug(f"SQLite card prewarm failed in gre_bridge: {e}")
@@ -696,6 +683,14 @@ class GREBridge:
             "auto_pass": auto_pass,
         }
         if expected:
+            for key, source in (
+                ("expected_game_state_id", "gameStateId"),
+                ("expected_msg_id", "msgId"),
+                ("expected_child_index", "childIndex"),
+                ("expected_numeric_value", "numericValue"),
+            ):
+                if expected.get(source) is not None:
+                    command[key] = expected[source]
             if expected.get("choiceKind"):
                 command["expected_choice_kind"] = expected["choiceKind"]
                 if expected.get("optionIndex") is not None:
@@ -963,10 +958,15 @@ class GREBridge:
             logger.warning(f"GRE bridge submit_group error: {e}")
         return False
 
-    def submit_optional(self, accept: bool) -> bool:
+    def submit_optional(self, accept: bool, *, expected_request_id: tuple[int, int] | None = None) -> bool:
         """Submit optional action response (accept/decline)."""
         try:
-            resp = self._send_safe({"action": "submit_optional", "accept": accept})
+            command = {"action": "submit_optional", "accept": accept}
+            if expected_request_id:
+                command.update(
+                    expected_game_state_id=expected_request_id[0], expected_msg_id=expected_request_id[1]
+                )
+            resp = self._send_safe(command)
             if resp.get("ok"):
                 logger.info(f"GRE bridge submitted optional: {'accept' if accept else 'decline'}")
                 return True
@@ -1344,6 +1344,23 @@ class GREBridge:
         except GREBridgeError as e:
             logger.debug(f"get_game_state error: {e}")
             return None
+
+    def get_deck_editor(self) -> dict[str, Any] | None:
+        """Read the native limited editor without changing or saving the deck."""
+        if not self._mac_adapter:
+            return None
+        now = time.monotonic()
+        if now - getattr(self, "_deck_editor_read_at", 0.0) < 1.0:
+            return getattr(self, "_deck_editor_snapshot", None)
+        self._deck_editor_read_at = now
+        self._deck_editor_snapshot = None
+        try:
+            response = self._send_safe({"action": "get_deck_editor"})
+            if response.get("ok"):
+                self._deck_editor_snapshot = response
+        except GREBridgeError as exc:
+            logger.debug("get_deck_editor: %s", exc)
+        return self._deck_editor_snapshot
 
     def get_draft_state(self) -> dict[str, Any] | None:
         """Get draft state directly from DraftContentController via MTGA bridge.
@@ -1837,6 +1854,43 @@ def enrich_snapshot_from_pending_response(
     # flags and no legal_blocker_ids, so _format_block_combat / optimal_blocks
     # produce nothing and the coach can only give vague prose.
     _apply_bridge_blockers(snapshot, poll)
+    _apply_bridge_attackers(snapshot, poll)
+
+
+def _apply_bridge_attackers(snapshot: dict[str, Any], poll: dict[str, Any]) -> None:
+    """Keep the live attack candidates even when log decision context was cleared."""
+    request = str(poll.get("request_type") or poll.get("request_class") or "")
+    if "DeclareAttack" not in request:
+        return
+    payload = poll.get("request_payload") or {}
+    raw_attackers = poll.get("attackers")
+    if raw_attackers is None:
+        raw_attackers = payload.get("qualifiedAttackers", payload.get("attackers"))
+    if not isinstance(raw_attackers, list):
+        return
+    attacker_ids = []
+    for attacker in raw_attackers:
+        if not isinstance(attacker, dict):
+            continue
+        try:
+            instance_id = int(attacker.get("attackerInstanceId", attacker.get("instanceId", 0)))
+        except (TypeError, ValueError):
+            continue
+        if instance_id > 0 and instance_id not in attacker_ids:
+            attacker_ids.append(instance_id)
+    names = {card.get("instance_id"): card.get("name") for card in snapshot.get("battlefield", [])}
+    context = dict(snapshot.get("decision_context") or {})
+    context.update(
+        {
+            "type": "declare_attackers",
+            "raw_attackers": raw_attackers,
+            "legal_attacker_ids": attacker_ids,
+            "legal_attackers": [
+                names.get(instance_id) or f"Creature {instance_id}" for instance_id in attacker_ids
+            ],
+        }
+    )
+    snapshot["decision_context"] = context
 
 
 def _apply_bridge_blockers(snapshot: dict[str, Any], poll: dict[str, Any]) -> None:

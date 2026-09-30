@@ -185,7 +185,7 @@ def test_pass_requires_can_pass():
     assert game.submits() == []
 
 
-def test_blockers_send_fresh_messages_through_on_submit():
+def test_blockers_declare_before_confirming_refreshed_selection():
     blocker = {
         "$c": MSG + "Blocker",
         "$h": 21,
@@ -195,18 +195,19 @@ def test_blockers_send_fresh_messages_through_on_submit():
     }
     request = {"$c": "GreClient.Rules.DeclareBlockersRequest", "$h": 5, "AllBlockers": listing(blocker)}
     game = FakeGame(request)
-    response = adapter_for(game).handle(
+    adapter = adapter_for(game)
+    response = adapter.handle(
         {
             "action": "submit_blockers",
             "assignments": [{"blockerInstanceId": 300, "attackerInstanceIds": [400]}],
         }
     )
-    assert response == {"ok": True, "submitted_type": "DeclareBlockers"}
+    assert response == {"ok": True, "submitted_type": "DeclareBlockers", "needs_finalize": True}
     [submit] = game.submits()
     types = [op["value"]["enum"] for op in submit if op["op"] == "set" and op["member"] == "Type"]
-    assert types == ["DeclareBlockersResp", "SubmitBlockersReq"]
+    assert types == ["DeclareBlockersResp"]
     invokes = [op for op in submit if op.get("method") == "Invoke"]
-    assert len(invokes) == 2
+    assert len(invokes) == 1
     assert {
         "op": "call",
         "target": submit[[i for i, o in enumerate(submit) if o.get("method") == "Add"][0]]["target"],
@@ -214,6 +215,60 @@ def test_blockers_send_fresh_messages_through_on_submit():
         "args": [{"uint": 400}],
         "depth": 0,
     } in submit
+
+    response = adapter.handle({"action": "submit_blockers", "assignments": []})
+    assert response["ok"] is True
+    assert game.submits()[-1][-1]["method"] == "SubmitBlockers"
+
+
+@pytest.mark.parametrize(
+    "assignments, error",
+    [
+        (
+            [
+                {"blockerInstanceId": 300, "attackerInstanceIds": [400]},
+                {"blockerInstanceId": 300, "attackerInstanceIds": [400]},
+            ],
+            "Duplicate blocker",
+        ),
+        ([{"blockerInstanceId": 999, "attackerInstanceIds": [400]}], "not in AllBlockers"),
+        ([{"blockerInstanceId": 300, "attackerInstanceIds": [999]}], "Illegal attackers"),
+    ],
+)
+def test_invalid_blocker_assignments_never_submit_or_finalize(assignments, error):
+    blocker = {
+        "$c": MSG + "Blocker",
+        "$h": 21,
+        "blockerInstanceId_": 300,
+        "attackerInstanceIds_": listing(400),
+        "selectedAttackerInstanceIds_": listing(),
+    }
+    game = FakeGame(
+        {"$c": "GreClient.Rules.DeclareBlockersRequest", "$h": 5, "AllBlockers": listing(blocker)}
+    )
+
+    response = adapter_for(game).handle({"action": "submit_blockers", "assignments": assignments})
+
+    assert response["ok"] is False
+    assert error in response["error"]
+    assert game.submits() == []
+
+
+def test_blocker_snapshot_exposes_accepted_selection():
+    blocker = {
+        "$c": MSG + "Blocker",
+        "$h": 21,
+        "blockerInstanceId_": 300,
+        "attackerInstanceIds_": listing(400, 401),
+        "selectedAttackerInstanceIds_": listing(401),
+    }
+    game = FakeGame(
+        {"$c": "GreClient.Rules.DeclareBlockersRequest", "$h": 5, "AllBlockers": listing(blocker)}
+    )
+
+    response = adapter_for(game).handle({"action": "get_pending_actions"})
+
+    assert response["blockers"][0]["selectedAttackerInstanceIds"] == [401]
 
 
 def test_attackers_two_step_flow():
@@ -241,6 +296,73 @@ def test_attackers_two_step_flow():
     step2 = adapter.handle({"action": "submit_attackers", "attackers": []})
     assert step2["submitted_type"] == "DeclareAttackersSubmit"
     assert game.submits()[-1][-1]["method"] == "SubmitAttackers"
+
+
+def test_unresolved_attacker_never_finalizes_an_empty_attack():
+    request = {"$c": "GreClient.Rules.DeclareAttackerRequest", "$h": 5, "Attackers": listing()}
+    game = FakeGame(request)
+    result = adapter_for(game).handle(
+        {"action": "submit_attackers", "attackers": [{"attackerInstanceId": 500}]}
+    )
+    assert result["ok"] is False
+    assert game.submits() == []
+
+
+def test_attackers_do_not_confirm_an_incomplete_target_choice():
+    request = {"$c": "GreClient.Rules.DeclareAttackerRequest", "$h": 5, "Attackers": listing()}
+    game = FakeGame(request, {"CanSubmit": False})
+    result = adapter_for(game).handle({"action": "submit_attackers", "attackers": []})
+    assert result["ok"] is False
+    assert game.submits() == []
+
+
+@pytest.mark.parametrize(
+    "target_kind,target_id,expected_handle", [("player", 1, 31), ("planeswalker", 297, 32)]
+)
+@pytest.mark.parametrize("reversed_order", [False, True])
+def test_attackers_select_requested_player_or_planeswalker(
+    target_kind, target_id, expected_handle, reversed_order
+):
+    player = {"$h": 31, "type_": enum("Player", 1), "idCase_": enum("PlayerSystemSeatId", 2), "id_": 1}
+    walker = {
+        "$h": 32,
+        "type_": enum("Planeswalker", 2),
+        "idCase_": enum("PlaneswalkerInstanceId", 3),
+        "id_": 297,
+    }
+    recipients = [walker, player] if reversed_order else [player, walker]
+    attacker = {
+        "$h": 30,
+        "attackerInstanceId_": 500,
+        "legalDamageRecipients_": listing(*recipients),
+        "selectedDamageRecipient_": recipients[0],
+    }
+    game = FakeGame({"$c": "GreClient.Rules.DeclareAttackerRequest", "$h": 5, "Attackers": listing(attacker)})
+    member = "playerSystemSeatId" if target_kind == "player" else "planeswalkerInstanceId"
+    result = adapter_for(game).handle(
+        {
+            "action": "submit_attackers",
+            "attackers": [{"attackerInstanceId": 500, "damageRecipient": {member: target_id}}],
+        }
+    )
+    assert result["ok"] is True
+    if recipients[0]["$h"] == expected_handle:
+        assert result["submitted_type"] == "DeclareAttackersSubmit"
+    else:
+        assert result["needs_finalize"] is True
+        assert game.submits()[-1][2]["value"] == {"h": expected_handle}
+
+
+@pytest.mark.parametrize("target", [None, {"planeswalkerInstanceId": 999}, {"type": "Planeswalker"}])
+def test_ambiguous_or_illegal_attack_recipient_never_submits(target):
+    recipients = [{"$h": 31, "playerSystemSeatId_": 1}, {"$h": 32, "planeswalkerInstanceId_": 297}]
+    attacker = {"$h": 30, "attackerInstanceId_": 500, "legalDamageRecipients_": listing(*recipients)}
+    game = FakeGame({"$c": "GreClient.Rules.DeclareAttackerRequest", "$h": 5, "Attackers": listing(attacker)})
+    result = adapter_for(game).handle(
+        {"action": "submit_attackers", "attackers": [{"attackerInstanceId": 500, "damageRecipient": target}]}
+    )
+    assert result["ok"] is False
+    assert game.submits() == []
 
 
 def targets_request(handle: int, selected: int) -> dict:
@@ -286,6 +408,81 @@ def test_targets_select_then_commit_on_the_updated_request():
     } in selection_batch
     assert commit_batch[1] == {"op": "expect_pending", "target": {"h": 9}}
     assert [op["value"]["enum"] for op in commit_batch if op.get("member") == "Type"] == ["SubmitTargetsReq"]
+
+
+def counted_targets_request(handle, selected=()):
+    request = targets_request(handle, len(selected))
+    selection = request["TargetSelections"]["$items"][0]
+    selection["minTargets_"] = selection["maxTargets_"] = 2
+    selection["targets_"] = listing(
+        *[
+            {
+                "$c": MSG + "Target",
+                "$h": instance_id,
+                "targetInstanceId_": instance_id,
+                "legalAction_": enum("Unselect", 2) if instance_id in selected else enum("Select", 1),
+                "highlight_": enum("Cold", 1) if instance_id == 10 else enum("Hot", 2),
+            }
+            for instance_id in (10, 20, 30)
+        ]
+    )
+    return request
+
+
+def test_counted_targets_send_both_explicit_ids_in_one_slot_before_commit():
+    original = counted_targets_request(5)
+    acknowledged = counted_targets_request(9, (20, 30))
+    game = FakeGame(original)
+    game.requests = [original, original, acknowledged, acknowledged]
+    response = adapter_for(game).handle({"action": "submit_targets", "target_instance_ids": [20, 30]})
+    assert response["ok"] and response["finalized"]
+    assert response["targets_selected"] == 2
+    selection_batch, commit_batch = game.submits()
+    assert [op["value"]["uint"] for op in selection_batch if op.get("member") == "TargetInstanceId"] == [
+        20,
+        30,
+    ]
+    assert sum(op.get("class") == MSG + "TargetSelection" for op in selection_batch) == 1
+    assert [op["value"]["enum"] for op in commit_batch if op.get("member") == "Type"] == ["SubmitTargetsReq"]
+
+
+@pytest.mark.parametrize("preferred", [[20], [999], [20, 20]])
+def test_counted_targets_incomplete_plan_never_submits_or_autofills_own_target(preferred):
+    game = FakeGame(counted_targets_request(5))
+    response = adapter_for(game).handle({"action": "submit_targets", "target_instance_ids": preferred})
+    assert not response["ok"]
+    assert game.submits() == []
+
+
+@pytest.mark.parametrize("selected", [(), (20,)])
+def test_targets_not_acknowledged_complete_are_never_finalized(monkeypatch, selected):
+    monkeypatch.setattr("arenamcp.mac_bridge_adapter.TARGET_COMMIT_TIMEOUT_S", 0.08)
+    original = counted_targets_request(5)
+    updated = counted_targets_request(9, selected)
+    game = FakeGame(original)
+    game.requests = [original, original, updated, updated]
+    response = adapter_for(game).handle({"action": "submit_targets", "target_instance_ids": [20, 30]})
+    assert not response["ok"]
+    assert "not acknowledged complete" in response["error"]
+    assert len(game.submits()) == 1
+
+
+def test_mismatched_target_acknowledgment_never_finalizes():
+    original = counted_targets_request(5)
+    updated = counted_targets_request(9, (10, 20))
+    game = FakeGame(original)
+    game.requests = [original, original, updated, updated]
+    response = adapter_for(game).handle({"action": "submit_targets", "target_instance_ids": [20, 30]})
+    assert not response["ok"]
+    assert "different targets" in response["error"]
+    assert len(game.submits()) == 1
+
+
+def test_target_shape_preserves_action_and_filters_selected_targets():
+    game = FakeGame(counted_targets_request(5, (20,)))
+    response = adapter_for(game).handle({"action": "get_pending_actions"})
+    assert [candidate["targetInstanceId"] for candidate in response["target_candidates"]] == [10, 30]
+    assert response["target_selections"][0]["targets"][1]["legalAction"] == "Unselect"
 
 
 def test_casting_time_entries_mirror_plugin_payloads():
@@ -363,6 +560,29 @@ def test_casting_time_identity_mismatch_never_submits():
     assert game.submits() == []
 
 
+def test_stale_optional_request_never_accepts_a_new_prompt():
+    request = {"$c": "GreClient.Rules.OptionalActionMessageRequest", "$h": 5}
+    game = FakeGame(request, gsid=40, msg=8)
+    response = adapter_for(game).handle(
+        {"action": "submit_optional", "accept": True, "expected_game_state_id": 40, "expected_msg_id": 7}
+    )
+    assert not response["ok"]
+    assert "stale" in response["error"]
+    assert game.submits() == []
+
+
+def test_stale_casting_window_never_submits_even_if_the_mode_index_matches():
+    modal = {"$c": "GreClient.Rules.CastingTimeOption_ModalRequest", "$h": 60, "ModalOptions": listing(1001)}
+    request = {"$c": "GreClient.Rules.CastingTimeOptionRequest", "$h": 5, "ChildRequests": listing(modal)}
+    game = FakeGame(request, gsid=41)
+    response = adapter_for(game).handle(
+        {"action": "submit_action", "action_index": 0, "expected_game_state_id": 40, "expected_msg_id": 7}
+    )
+    assert not response["ok"]
+    assert "stale" in response["error"]
+    assert game.submits() == []
+
+
 @pytest.mark.parametrize(
     ("expected", "sent"),
     [
@@ -398,6 +618,62 @@ def test_auto_tap_uses_the_pay_costs_child():
         "args": [{"h": 71}],
         "depth": 0,
     }
+
+
+def _weighted_cost_request():
+    selection = {
+        "$c": "GreClient.Rules.SelectNRequest",
+        "$h": 72,
+        "Ids": listing(763, 771, 875),
+        "Weights": listing(3, 1, 4),
+        "IdType": enum("InstanceId", 1),
+        "MinSel": 4,
+        "MaxSel": 2147483647,
+        "MinWeight": -2147483648,
+        "MaxWeight": 2147483647,
+    }
+    return {
+        "$c": "GreClient.Rules.PayCostsRequest",
+        "$h": 5,
+        "EffectCost": {
+            "$c": "GreClient.Rules.EffectCostRequest",
+            "$h": 71,
+            "CostSelection": selection,
+        },
+    }
+
+
+def test_non_mana_payment_exposes_weighted_selection_not_mana_autopay():
+    game = FakeGame(_weighted_cost_request(), {"Type": enum("PayCostsReq", 1)})
+    response = adapter_for(game).handle({"action": "get_pending_actions"})
+    assert response["request_type"] == "SelectN"
+    assert response["request_class"] == "PayCostsRequest"
+    assert response["payment_selection"] is True
+    assert response["select_n_ids"] == [763, 771, 875]
+    assert response["select_n_weights"] == [3, 1, 4]
+    assert response["select_n_min"] == 4
+
+
+@pytest.mark.parametrize("ids", [[875], [763, 771]])
+def test_non_mana_payment_submits_to_nested_selection_child(ids):
+    game = FakeGame(_weighted_cost_request())
+    response = adapter_for(game).handle({"action": "submit_selection", "ids": ids})
+    assert response["ok"] is True
+    assert game.submits()[-1][-1] == {
+        "op": "call",
+        "target": {"h": 72},
+        "method": "SubmitSelection",
+        "args": [{"list": [{"uint": instance_id} for instance_id in ids]}],
+        "depth": 0,
+    }
+
+
+@pytest.mark.parametrize("ids", [[], [763], [763, 763], [999]])
+def test_non_mana_payment_rejects_invalid_selection_without_mutation(ids):
+    game = FakeGame(_weighted_cost_request())
+    response = adapter_for(game).handle({"action": "submit_selection", "ids": ids})
+    assert response["ok"] is False
+    assert not game.submits()
 
 
 def test_unknown_commands_are_reported_not_guessed():

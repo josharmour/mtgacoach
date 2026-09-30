@@ -56,12 +56,22 @@ def decision_fingerprint(decision: Any) -> Fingerprint:
                     int(option.meta.get("grpId") or 0),
                     int(option.meta.get("abilityGrpId") or 0),
                     json.dumps(option.meta.get("manaCost"), sort_keys=True),
+                    option.meta.get("weight"),
+                    json.dumps(
+                        {
+                            key: option.meta.get(key)
+                            for key in ("choiceKind", "childIndex", "optionIndex", "numericValue", "sourceId")
+                        },
+                        sort_keys=True,
+                    ),
                 )
                 for option in decision.options
             )
         ),
         int(decision.min_select or 0),
         int(decision.max_select or 0),
+        getattr(decision, "min_weight", None),
+        getattr(decision, "max_weight", None),
         decision.can_pass,
         decision.can_cancel,
         decision.source_label,
@@ -76,7 +86,7 @@ def decision_fingerprint(decision: Any) -> Fingerprint:
             for slot in decision.slots
         ),
     )
-    if decision.request_type == "Mulligan":
+    if decision.request_type in {"Mulligan", "OptionalAction"}:
         rid = tuple(getattr(decision, "request_id", (0, 0)) or (0, 0))
         if any(rid):
             return base + (rid,)

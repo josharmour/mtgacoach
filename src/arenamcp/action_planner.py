@@ -13,7 +13,9 @@ from enum import Enum
 from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
+from arenamcp.decisions import expand_target_selection
 from arenamcp.play_safety import filter_play_options, find_source, unsafe_play_reason
+from arenamcp.target_effects import target_effect_is_harmful
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +81,7 @@ class GameAction:
     card_name: str = ""
     target_names: list[str] = field(default_factory=list)
     attacker_names: list[str] = field(default_factory=list)
+    attacker_targets: dict[str, str] = field(default_factory=dict)
     blocker_assignments: dict[str, str] = field(default_factory=dict)
     modal_index: int = 0
     select_card_names: list[str] = field(default_factory=list)
@@ -103,6 +106,11 @@ class GameAction:
             parts.append(f"-> {', '.join(self.target_names)}")
         if self.attacker_names:
             parts.append(f"attackers: {', '.join(self.attacker_names)}")
+        if self.attacker_targets:
+            parts.append(
+                "attack targets: "
+                + ", ".join(f"{name} -> {target}" for name, target in self.attacker_targets.items())
+            )
         if self.blocker_assignments:
             assigns = [f"{b}->{a}" for b, a in self.blocker_assignments.items()]
             parts.append(f"blocks: {', '.join(assigns)}")
@@ -181,6 +189,12 @@ class ActionPlan:
                     if action.attacker_names
                     else "Don't attack"
                 )
+                if action.attacker_targets:
+                    line = "; ".join(
+                        f"Attack {target} with {name}" for name, target in action.attacker_targets.items()
+                    )
+                elif action.target_names:
+                    line += " at " + ", ".join(action.target_names)
             elif kind == ActionType.DECLARE_BLOCKERS:
                 line = (
                     "; ".join(
@@ -288,6 +302,7 @@ ACTION_SCHEMA = """{
     "card_name": "string (card name, empty if not applicable)",
     "target_names": ["string (target card/player names)"],
     "attacker_names": ["string (creature names to attack with)"],
+    "attacker_targets": {"attacker_name": "Opponent or exact legal planeswalker name [instance_id]"},
     "blocker_assignments": {"blocker_name": "attacker_name"},
     "modal_index": 0,
     "select_card_names": ["string (cards to select for scry/discard/etc)"],
@@ -339,6 +354,8 @@ def game_action_to_schema_json(action: Any) -> str:
             item["target_names"] = action.target_names
         if getattr(action, "attacker_names", None):
             item["attacker_names"] = action.attacker_names
+        if getattr(action, "attacker_targets", None):
+            item["attacker_targets"] = action.attacker_targets
         if getattr(action, "blocker_assignments", None):
             item["blocker_assignments"] = action.blocker_assignments
         if getattr(action, "modal_index", 0):
@@ -382,17 +399,20 @@ RULES:
 - If a pending decision is shown, resolve that decision (not a new cast/play).
 - ONE action per plan. Don't sequence (no "play land" + "cast spell").
 - EXCEPTION: declare_attackers/declare_blockers carry the full set in one action — do NOT add a "done" click.
+- ATTACK TARGETS: Supply attacker_names AND attacker_targets mapping each chosen creature to its legal recipient. When a planeswalker and the opponent are available, explicitly choose who each creature attacks; split attacks when useful. Compare killing the planeswalker (loyalty, abilities, future value) with lethal or pressure on the player. Damage to a planeswalker is NOT damage to the opponent. Prefer the recipient-aware combat search over the older player-only attack line when both appear. The search models visible combat approximately, not hidden tricks, triggered abilities, or future loyalty activations; never invent unknown loyalty. Say the chosen recipients in voice_advice; never leave that choice to a default UI target.
+- BLOCKERS: "Block with: X" names an eligible blocker, NOT a complete move. Supply action_type="declare_blockers" and blocker_assignments mapping each blocker to a named attacker. Never use a bare menu pick or an empty attacker name. Use an explicit empty mapping only when intentionally declaring no blocks.
+- EQUIPMENT: Reassess haste-granting equipment after its wearer taps or new creatures enter. Move it to an untapped summoning-sick creature when that enables a useful attack or tap ability now. A tapped wearer can still deserve shroud/hexproof protection; do not move equipment just because another creature is untapped. Equip only when Arena offers the activation; do not shuffle it endlessly or float mana without a concrete use.
 - [SS] = summoning sick (can't attack). * prefix = token. [3P1P] = 3 +1/+1 counters.
 - If a TURN PLAN is shown, follow it. Stay committed to the locked turn plan unless a material change (opponent response, lethal threat, unexpected trigger) makes it obsolete.
 - PROTECTIVE / LIFE-PAYMENT ABILITIES: Do NOT activate an ability that pays life (or other resources) for indestructible/hexproof/protection/a temporary buff unless there is a concrete threat to the creature right now — it is blocked by a creature that would kill it, it is targeted by removal/burn on the stack, or it must survive incoming damage this step. An unblocked attacker facing no removal needs no protection; activating "just in case" only loses life. When in doubt, pass.
 - BOARD PRESSURE: When the opponent's board is wider than yours or grew by multiple creatures this turn, prioritize interaction (removal, profitable blocks, combat tricks) over advancing your own plan. At low life (below ~15), block with large or indestructible creatures — an indestructible blocker loses nothing by blocking.
 - STACK: A "STACK (top resolves first):" block lists every spell and ability waiting to resolve, in resolution order — entry 1 resolves NEXT. Each entry shows its controller (YOU/OPP), its name, and "-> targets: ..." when it targets something. Read it before you act: if an OPP spell targets one of your permanents, decide whether to respond (counter it, or use the targeted permanent's ability in response so it isn't wasted) BEFORE it resolves — once it resolves the window is gone. Do not "respond" to your own spell that nothing is fighting over, and do not counter a spell that does not matter. When the stack is empty there is nothing to respond to.
-- COMBAT SOLVER — DEFER BY DEFAULT: "Computed optimal blocks:" and "Computed optimal attack:" lines are produced by a deterministic solver that enumerates EVERY legal assignment and scores it by life preserved plus material traded. It is not a suggestion and it is not a heuristic — it is the exhaustive answer. WHEN AND ONLY WHEN declare_attackers / declare_blockers appears in the Legal: menu, your action MUST match that line exactly, including which creatures are involved. The line is ALSO shown during your main phases, where declaring attackers is NOT yet legal — there it is forward-looking information for planning this turn (hold a blocker back, cast the creature before combat, leave mana for a trick). It NEVER authorizes an action absent from the Legal: menu; rule 2 wins. You may deviate ONLY for a concrete fact the solver could not see — a combat trick in your hand you will actually cast, a removal spell on the stack about to kill one of the creatures, or a named synergy that makes a creature worth more than its printed P/T — and when you deviate you MUST name that specific reason in your reasoning. "I think this is better" is not a reason. Never block with fewer creatures than the solver says because blocking "feels" risky.
+- COMBAT SOLVER: "Computed optimal blocks:" and "Computed optimal attack:" are recommendations under approximate life/material/resource values, not proof of the best strategic move. Large searches may use a bounded heuristic. Prefer the recommendation, but account for combat tricks, removal, resource engines, your hand, and next-turn recovery; explain a concrete reason when deviating. Do not trade away multiple mana/draw/token engines merely to prevent nonlethal damage or kill one attacker: compare the damage with the resources and future blocks lost. Tokens with useful abilities are not disposable just because they are small. Survival takes precedence when taking the hit would be lethal. These lines never authorize a combat action absent from the Legal: menu; main-phase combat analysis is planning information only.
 - VOICE CLARITY: when a play's payoff is on FUTURE turns (static effects,
   engines, ramp), voice_advice must say WHY NOW in a few words ("spare mana,
   nothing else to cast", "get the doubler down before next turn's counters") —
   a correct play that sounds random loses the user's trust.
-- VOICE CLARITY: voice_advice must state ONE concrete action in plain spoken language and name the specific creatures involved. For blocks: either name the block ("Block their <attacker> with your <blocker>") or, if not blocking, say "Don't block — take <N> from <attacker>". For attacks, name who swings. Never give self-contradictory advice (e.g. saying both "let it trade" and "take the hit"), and never reference a creature that is not on the board. When a "Computed optimal blocks:" line is present, your voice_advice must match it.
+- VOICE CLARITY: voice_advice must state ONE concrete action in plain spoken language and name the specific creatures involved. For blocks: either name the block ("Block their <attacker> with your <blocker>") or, if not blocking, say "Don't block — take <N> from <attacker>". For attacks, name who swings. Never give self-contradictory advice (e.g. saying both "let it trade" and "take the hit"), and never reference a creature that is not on the board. Your voice_advice must match your actual assignments; explain any deviation from the solver's recommendation.
 - DESTRUCTIVE TARGETING (destroy, exile, deals damage, -N/-N): When choosing targets for a destructive spell or ability (e.g. Cityscape Leveler, removal, fight spells), you MUST target an OPPONENT permanent. NEVER target your own permanents (e.g. your own tokens or creatures) unless there are zero legal opponent targets on the board.
 - TUTORS & SEARCH LIBRARY: When searching your library for an X-cost tutor (e.g. Green Sun's Zenith, Finale of Devastation, Chord of Calling), you may ONLY select a card whose mana value (CMC) is less than or equal to X. Never propose a card whose mana value exceeds X.
 - LAND PLAY PRIORITY: On Precombat Main (Main1), if you have not played a land this turn and hold a land in hand, playing your land MUST be the FIRST step before casting spells that require that mana.
@@ -791,6 +811,31 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         plan.trigger = trigger
         plan.turn_number = game_state.get("turn", {}).get("turn_number", 0)
+
+        blocking_window = any(entry.lower().startswith("block with:") for entry in effective_legal_actions)
+        if not plan.actions and blocking_window:
+            user_message += (
+                "\n\nYour previous response did not specify a valid complete block: "
+                + str(response or "")[:1000]
+                + '\nReturn one action_type="declare_blockers" with blocker_assignments '
+                'as {"eligible blocker name": "attacking creature name"}. '
+                'A bare "pick" cannot specify the attacker. Use {} only to deliberately decline all blocks.'
+            )
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    repair_response = pool.submit(_complete).result(timeout=self._timeout)
+                if not is_backend_error_text(repair_response):
+                    plan = self._parse_response(
+                        repair_response,
+                        effective_legal_actions,
+                        decision_context=decision_context,
+                        bridge_request=game_state.get("_bridge_request_type"),
+                    )
+                    plan.trigger = trigger
+                    plan.turn_number = current_turn
+                diag["block_repair_preview"] = (repair_response or "")[:300]
+            except Exception as error:
+                logger.warning("Block assignment repair failed: %s", error)
 
         if not plan.actions:
             logger.warning(
@@ -1775,6 +1820,17 @@ class ActionPlanner(_ActionLegalityMixin):
         if decision_context:
             parts.append(f"\nDecision: {json.dumps(decision_context, indent=2)}")
 
+        from arenamcp.combat_targets import attack_target_prompt
+
+        targets = attack_target_prompt(game_state, dec_ctx)
+        if targets:
+            parts.append(targets)
+            from arenamcp.combat_strategy import combat_choice
+
+            choice = combat_choice({**game_state, "decision_context": dec_ctx})
+            if choice is not None:
+                parts.append("Computed recipient-aware attack: " + choice.explanation)
+
         parts.append("\nRespond with ONLY a JSON action plan matching the schema.")
 
         return "\n".join(parts)
@@ -1929,7 +1985,14 @@ class ActionPlanner(_ActionLegalityMixin):
                 except (TypeError, ValueError):
                     idx = -1
                 if 0 <= idx < len(self._last_menu):
-                    action = self._legal_action_to_action(self._last_menu[idx])
+                    entry = self._last_menu[idx]
+                    if entry.lower().startswith("block with:"):
+                        if not action_data.get("blocker_assignments"):
+                            logger.warning("Blocker menu pick %s omitted its attacker assignments", pick)
+                            continue
+                        action = self._parse_action({**action_data, "action_type": "declare_blockers"})
+                    else:
+                        action = self._legal_action_to_action(entry)
                     if action is not None:
                         action.reasoning = str(action_data.get("reasoning", "") or "")
                         logger.debug(f"Menu pick {pick} → {self._last_menu[idx]!r}")
@@ -1957,6 +2020,13 @@ class ActionPlanner(_ActionLegalityMixin):
         # Keep the model's phrasing only when it refers to an accepted card;
         # otherwise fall back to the terse action recap ("Discard Mutavault
         # to hand size." survives; advice naming a dropped target doesn't).
+        if any(
+            action.action_type == ActionType.DECLARE_ATTACKERS
+            and (action.attacker_targets or action.target_names)
+            for action in plan.actions
+        ):
+            plan.voice_advice = plan.spoken_actions()
+            return plan
         if plan.actions and plan.voice_advice:
             accepted_names = []
             for action in plan.actions:
@@ -1991,6 +2061,8 @@ class ActionPlanner(_ActionLegalityMixin):
         plan = ActionPlan()
         if not legal_actions:
             logger.debug("Planner fallback: no legal actions available")
+            return plan
+        if any(entry.lower().startswith("block with:") for entry in legal_actions):
             return plan
 
         # A backend error sentinel is not advice — auto-picking a real game
@@ -2148,7 +2220,23 @@ class ActionPlanner(_ActionLegalityMixin):
         "Pick between min_select and max_select options FROM THE LIST — any "
         "other id is invalid. Prefer plays that advance your board and "
         "remove the biggest threat; never pick options marked 'cannot "
-        "auto-pay'."
+        "auto-pay'. Arena-confirmed payable options are authoritative: do not "
+        "reject them based on estimated mana or printed costs. Each option is "
+        "payable individually now, not necessarily together; reassess after each play. "
+        "Crew activates a Vehicle already on the battlefield; it does not cast it "
+        "again or retrigger its enters ability. Crew only for a concrete benefit "
+        "such as attacking, blocking, or a synergy, not merely because an opponent "
+        "cast a spell. Avoid redundant crewing when the Vehicle is already a creature. "
+        "For haste-granting equipment, reassess after the wearer taps or new creatures enter: "
+        "moving it to an untapped summoning-sick creature can enable a useful attack or tap ability. "
+        "Equip only when Arena offers it. Do not shuffle equipment without a concrete benefit, "
+        "float mana without a use, or abandon valuable shroud/hexproof protection merely for an untapped wearer. "
+        "Evaluate every clause of a spell: a team buff has no combat value without friendly creatures, "
+        "but an unconditional draw-a-card clause can still justify cycling it to find lands or early plays. "
+        "Compare that draw against spending mana needed for a useful creature or interaction; explain "
+        "when casting only for the draw. Never buff an opposing creature merely to draw. "
+        "When passing your main phase, explain the concrete constraint (unpayable creatures, "
+        "no useful targets, or holding interaction), and consider all playable lands and useful payable plays."
     )
 
     def plan_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
@@ -2158,6 +2246,8 @@ class ActionPlanner(_ActionLegalityMixin):
         a deterministic pick from the same set. Never raises; returns []
         only when the decision has no options at all.
         """
+        self._last_decision_reasoning = ""
+        self._last_decision_option_ids = []
         decision = filter_play_options(decision, game_state)
         if not decision.options:
             return [DECLINE_DECISION]
@@ -2167,10 +2257,17 @@ class ActionPlanner(_ActionLegalityMixin):
             if decision.request_type == "ActionsAvailable":
                 valid = {option.option_id for option in decision.options if option.payable is not False}
             chosen = [c for c in chosen if c in valid]
+            if chosen and decision.min_weight is not None:
+                chosen = list(dict.fromkeys(chosen))
+                if decision.selection_is_valid(chosen):
+                    return chosen
+                chosen = []
             if chosen and decision.request_type == "SelectTargets":
                 chosen = self._gate_harmful_llm_target_picks(decision, game_state, chosen)
                 if chosen == [DECLINE_DECISION]:
                     return chosen
+                if not expand_target_selection(decision, chosen):
+                    return [DECLINE_DECISION]
             if chosen:
                 limit = max(decision.min_select or 1, 1)
                 limit = max(limit, min(len(chosen), decision.max_select or 1))
@@ -2190,37 +2287,20 @@ class ActionPlanner(_ActionLegalityMixin):
             if picked:
                 logger.info(f"plan_decision_options: controller-aware target fallback picked {picked}")
                 return picked
+            return [DECLINE_DECISION]
         return self.deterministic_option_pick(decision)
 
-    # Mirror of autopilot._HARMFUL_SOURCE_ORACLE_PHRASES (kept local to
-    # avoid an action_planner→autopilot import cycle).
-    _HARMFUL_TARGET_ORACLE_PHRASES = (
-        "destroy target",
-        "exile target",
-        "sacrifice target",
-        "counter target",
-        "return target",
-        "opponent sacrifices target",
-        "damage to target",
-        "gets -",
-        "gets −",
-        "loses all abilities",
-        "loses flying",
-        # 2026-09-24: Kogla's "it fights up to one target creature you don't
-        # control" read as beneficial; its correct pick was overridden.
-        "fights target",
-        "fights up to one target",
-        "fights another target",
-        "fight target",
-    )
-    # A target restricted to the opponent's side is aimed at them.
-    _OPPONENT_TARGET_RE = re.compile(r"target [^.]*?(?:you don['’]t control|an opponent controls)")
+    def get_decision_reasoning(self, option_ids: list[str]) -> str:
+        """Return the model's reason only for the options it actually selected."""
+        if option_ids == getattr(self, "_last_decision_option_ids", None):
+            return getattr(self, "_last_decision_reasoning", "")
+        return ""
 
     def _decision_source_is_harmful(self, decision: Any, game_state: dict[str, Any]) -> bool | None:
         """Classify the targeting decision's source spell as harmful.
 
         Source resolution: decision source_label matched on the stack/hand/command,
-        else top of stack. Returns None when no oracle text resolves.
+        else top of stack. Unknown or mixed effects return None, not beneficial.
         """
         stack = game_state.get("stack", []) or []
         source_label = str(getattr(decision, "source_label", "") or "").strip().lower()
@@ -2256,16 +2336,7 @@ class ActionPlanner(_ActionLegalityMixin):
         oracle = str(
             context.get("source_oracle_text") or (picked_entry or {}).get("oracle_text") or ""
         ).lower()
-        if not oracle:
-            return None
-        if (
-            re.search(r"\bexile[^.]*?\breturn (?:it|them|that card|those cards)\b", oracle)
-            and "to the battlefield" in oracle
-        ):
-            return False
-        return any(p in oracle for p in self._HARMFUL_TARGET_ORACLE_PHRASES) or bool(
-            self._OPPONENT_TARGET_RE.search(oracle)
-        )
+        return target_effect_is_harmful(oracle)
 
     @staticmethod
     def _decision_source_instance(game_state: dict[str, Any]) -> int:
@@ -2358,11 +2429,9 @@ class ActionPlanner(_ActionLegalityMixin):
         if not candidates:
             return []
 
-        local_seat = None
-        for p in game_state.get("players", []) or []:
-            if p.get("is_local"):
-                local_seat = p.get("seat_id")
-                break
+        local_seat, controllers = self._battlefield_controllers(game_state)
+        if local_seat is None:
+            return []
 
         battlefield: dict[int, dict[str, Any]] = {}
         for card in game_state.get("battlefield", []) or []:
@@ -2394,7 +2463,7 @@ class ActionPlanner(_ActionLegalityMixin):
             )
             == local_seat
         ]
-        theirs = [iid for iid in candidates if iid in battlefield and iid not in own]
+        theirs = [iid for iid in candidates if controllers.get(iid) not in (None, local_seat)]
 
         if harmful:
             if not theirs and own:
@@ -2416,7 +2485,8 @@ class ActionPlanner(_ActionLegalityMixin):
         if not pool:
             return []
         n = max(1, int(decision.min_select or 1))
-        return [f"tgt:{iid}" for iid in pool[:n]]
+        picked = [f"tgt:{iid}" for iid in pool[:n]]
+        return picked if expand_target_selection(decision, picked) else [DECLINE_DECISION]
 
     def _llm_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         lines = [
@@ -2425,6 +2495,21 @@ class ActionPlanner(_ActionLegalityMixin):
             f"Choose at least {decision.min_select} and at most {decision.max_select} option(s).",
             "OPTIONS:",
         ]
+        if decision.min_weight is not None:
+            lines.insert(
+                2,
+                f"Required total contribution: {decision.min_weight} to {decision.max_weight}. "
+                "Sum the selected options' contributions, not their count. "
+                "For crew, tap creatures totaling the required power; preserve useful attackers/blockers. "
+                "Summoning-sick creatures may crew. Crewing does not let a newly entered Vehicle attack.",
+            )
+        for slot in decision.slots:
+            lines.insert(
+                -1,
+                f"Target slot {slot.target_idx}: choose {slot.needs} to "
+                f"{max(0, slot.max_targets - slot.selected)} additional targets from "
+                + ", ".join(f"tgt:{instance_id}" for instance_id in slot.candidate_ids),
+            )
         # #38: without controller labels the model cannot tell its own
         # permanents from the opponent's in a target list (live 2026-07-06:
         # it aimed Utter Insignificance at the user's own Nessian Wanderer).
@@ -2433,6 +2518,12 @@ class ActionPlanner(_ActionLegalityMixin):
             note = ""
             if o.payable is False:
                 note = "  [cannot auto-pay — do not pick]"
+            elif o.payable is True:
+                note = "  [Arena confirms payable now]"
+            if "weight" in o.meta:
+                note += f"  [contribution: {o.meta['weight']}]"
+            if decision.request_type in {"CastingTimeOptions", "OptionalAction"}:
+                note += " " + json.dumps(o.meta, ensure_ascii=False)
             side = ""
             if o.option_id.startswith("tgt:") and local_seat is not None:
                 try:
@@ -2444,7 +2535,22 @@ class ActionPlanner(_ActionLegalityMixin):
             lines.append(f"- {o.option_id}: {o.label}{side}{note}")
         lines.append("")
         lines.append("GAME STATE:")
-        lines.append(self._decision_game_context(game_state))
+        context_state = game_state
+        if decision.request_type == "ActionsAvailable":
+            context_state = {
+                **game_state,
+                "_bridge_request_type": "ActionsAvailable",
+                "_bridge_request_class": "ActionsAvailableRequest",
+                "_bridge_can_pass": decision.can_pass,
+                "_bridge_actions": [
+                    {**option.meta, "hasAutoTap": option.payable is True}
+                    if option.meta
+                    else {"actionType": "ActionType_Pass"}
+                    for option in decision.options
+                    if option.meta or option.option_id == "pass"
+                ],
+            }
+        lines.append(self._decision_game_context(context_state))
         user_message = "\n".join(lines)
 
         try:
@@ -2479,7 +2585,14 @@ class ActionPlanner(_ActionLegalityMixin):
             logger.info(f"typed-decision: bad JSON: {json_str[:160]!r}")
             raise
         ids = data.get("option_ids") or []
-        return [str(i) for i in ids if isinstance(i, (str, int))]
+        chosen = [str(option_id) for option_id in ids if isinstance(option_id, (str, int))]
+        reason = data.get("reasoning")
+        self._last_decision_reasoning = " ".join(reason.split()[:50]) if isinstance(reason, str) else ""
+        self._last_decision_option_ids = chosen
+        logger.info(
+            "typed-decision choice %s: %s", chosen, self._last_decision_reasoning or "reason not supplied"
+        )
+        return chosen
 
     def _decision_game_context(self, game_state: dict[str, Any]) -> str:
         """The planner's full board view (card text, mana, combat math).
@@ -2519,5 +2632,19 @@ class ActionPlanner(_ActionLegalityMixin):
             return [opts[0].option_id]
         if decision.request_type == "Mulligan":
             return ["mull:keep"]
+        if decision.request_type in {"CastingTimeOptions", "OptionalAction"}:
+            return [DECLINE_DECISION]
+        if decision.min_weight is not None:
+            from itertools import combinations, islice
+
+            candidates = (
+                list(selection)
+                for count in range(max(1, decision.min_select), min(len(opts), decision.max_select) + 1)
+                for selection in combinations([option.option_id for option in opts], count)
+            )
+            for selection in islice(candidates, 10000):
+                if decision.selection_is_valid(selection):
+                    return selection
+            return []
         n = max(1, int(decision.min_select or 1))
         return [o.option_id for o in opts[:n]]

@@ -21,6 +21,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from arenamcp.mana import has_autotap_solution
+
 logger = logging.getLogger(__name__)
 
 
@@ -69,6 +71,8 @@ class PendingDecision:
     # SelectTargets only: per-slot structure (empty for other families and
     # for single-slot requests built from older plugin builds).
     slots: tuple[TargetSlot, ...] = ()
+    min_weight: int | None = None
+    max_weight: int | None = None
 
     def option_ids(self) -> set[str]:
         return {o.option_id for o in self.options}
@@ -78,6 +82,17 @@ class PendingDecision:
             if o.option_id == option_id:
                 return o
         return None
+
+    def selection_is_valid(self, chosen: list[str]) -> bool:
+        """Validate distinct selection ids and the engine's count/weight bounds."""
+        if len(set(chosen)) != len(chosen) or not set(chosen).issubset(self.option_ids()):
+            return False
+        if not self.min_select <= len(chosen) <= self.max_select:
+            return False
+        weight = sum(int(self.find(option_id).meta.get("weight", 1)) for option_id in chosen)
+        return (self.min_weight is None or weight >= self.min_weight) and (
+            self.max_weight is None or weight <= self.max_weight
+        )
 
 
 def _default_name_resolver(grp_id: int) -> str:
@@ -99,6 +114,15 @@ _SELECT_TARGETS_TYPES = {"SelectTargets", "SelectTargetsRequest"}
 _SELECT_N_TYPES = {"SelectN", "SelectNRequest", "Search", "SearchRequest"}
 _MULLIGAN_TYPES = {"Mulligan", "MulliganReq", "MulliganRequest"}
 _GROUP_TYPES = {"Group", "GroupReq", "GroupRequest"}
+_CASTING_TYPES = {"CastingTimeOptions", "CastingTimeOptionsReq", "CastingTimeOptionRequest"}
+_OPTIONAL_TYPES = {
+    "OptionalAction",
+    "OptionalActionReq",
+    "OptionalActionRequest",
+    "OptionalActionMessage",
+    "OptionalActionMessageReq",
+    "OptionalActionMessageRequest",
+}
 
 
 def build_pending_decision(
@@ -127,12 +151,46 @@ def build_pending_decision(
     can_cancel = bool(poll.get("can_cancel"))
     source_label = str(poll.get("source_card") or poll.get("prompt") or "")
 
+    if rtype in _CASTING_TYPES or request_class in _CASTING_TYPES:
+        options = tuple(
+            DecisionOption(f"idx:{index}", _casting_label(action), meta=dict(action))
+            for index, action in enumerate(poll.get("actions") or [])
+            if action.get("actionType") == "CastingTimeOption"
+        )
+        return (
+            PendingDecision(
+                request_id, "CastingTimeOptions", options, can_cancel=can_cancel, source_label=source_label
+            )
+            if options
+            else None
+        )
+    if rtype in _OPTIONAL_TYPES or request_class in _OPTIONAL_TYPES:
+        source_id = int(poll.get("source_instance_id") or 0)
+        if not source_label and resolve_instance and source_id:
+            source_label = resolve_instance(source_id)
+        details = {
+            "sourceId": source_id,
+            "mechanics": poll.get("optional_mechanics") or [],
+            "recipients": poll.get("optional_recipients") or [],
+        }
+        return PendingDecision(
+            request_id,
+            "OptionalAction",
+            (
+                DecisionOption("optional:accept", "Accept the optional effect", meta=details),
+                DecisionOption("optional:decline", "Decline the optional effect", meta=details),
+            ),
+            source_label=source_label,
+        )
+
     if rtype in _ACTIONS_AVAILABLE_TYPES or (not rtype and poll.get("actions")):
         return _build_actions_available(poll, request_id, can_pass, can_cancel, source_label, resolve_name)
     if rtype in _SELECT_TARGETS_TYPES or request_class in _SELECT_TARGETS_TYPES:
         return _build_select_targets(poll, request_id, can_cancel, source_label, resolve_name)
     if rtype in _SELECT_N_TYPES or request_class in _SELECT_N_TYPES:
-        return _build_select_n(poll, request_id, rtype, can_cancel, source_label, resolve_name)
+        return _build_select_n(
+            poll, request_id, rtype, can_cancel, source_label, resolve_name, resolve_instance
+        )
     if rtype in _GROUP_TYPES or request_class in _GROUP_TYPES:
         return _build_group(poll, request_id, can_cancel, source_label, resolve_instance)
     if rtype in _MULLIGAN_TYPES or request_class in _MULLIGAN_TYPES:
@@ -147,6 +205,19 @@ def build_pending_decision(
             can_cancel=False,
         )
     return None
+
+
+def _casting_label(action: dict) -> str:
+    label = str(action.get("label") or action.get("choiceKind") or "Casting choice")
+    if action.get("choiceKind") == "modal" and action.get("grpId"):
+        from arenamcp.card_db import get_card_database
+
+        rules = get_card_database().get_ability_text(int(action["grpId"]))
+        if rules:
+            import re
+
+            label += ": " + re.sub(r"<[^>]*>", "", rules)
+    return label
 
 
 def _build_actions_available(
@@ -180,7 +251,7 @@ def _build_actions_available(
             # ActionsAvailable causes autopilot to tap lands one by one for no spell.
             continue
         if atype == "ActionType_Cast":
-            payable = bool(action.get("hasAutoTap")) or action.get("autoTapSolution") is not None
+            payable = has_autotap_solution(action)
             label = f"Cast {name or 'spell'}" + ("" if payable else " (cannot auto-pay)")
         elif atype == "ActionType_Play":
             label = f"Play land: {name or 'land'}"
@@ -226,6 +297,8 @@ def _build_select_targets(
     options: list[DecisionOption] = []
     seen: set[int] = set()
     for cand in poll.get("target_candidates") or []:
+        if cand.get("legalAction", "Select") not in ("Select", "SelectAction_Select", 1):
+            continue
         iid = int(cand.get("targetInstanceId") or cand.get("instanceId") or 0)
         if not iid or iid in seen:
             continue
@@ -250,7 +323,16 @@ def _build_select_targets(
         sel = sel or {}
         cand_ids: list[int] = []
         cseen: set[int] = set()
-        for t in sel.get("targets") or []:
+        slot_targets = sel.get("targets")
+        if slot_targets is None:
+            slot_targets = [
+                candidate
+                for candidate in poll.get("target_candidates") or []
+                if candidate.get("targetIdx", sel.get("targetIdx")) == sel.get("targetIdx")
+            ]
+        for t in slot_targets:
+            if t.get("legalAction", "Select") not in ("Select", "SelectAction_Select", 1):
+                continue
             iid = int(t.get("targetInstanceId") or t.get("instanceId") or 0)
             if iid and iid not in cseen:
                 cseen.add(iid)
@@ -258,18 +340,16 @@ def _build_select_targets(
         slots.append(
             TargetSlot(
                 target_idx=int(sel.get("targetIdx") or 0),
-                min_targets=int(sel.get("minTargets") or 1),
-                max_targets=int(sel.get("maxTargets") or 1),
+                min_targets=int(sel.get("minTargets", 1)),
+                max_targets=int(sel.get("maxTargets", 1)),
                 selected=int(sel.get("selectedTargets") or 0),
                 candidate_ids=tuple(cand_ids),
             )
         )
 
     if slots:
-        # Pick enough across all unsatisfied slots; single-slot stays 1/1.
-        min_sel = sum(s.needs for s in slots) or 1
-        max_sel = sum(max(0, s.max_targets - s.selected) for s in slots) or min_sel
-        max_sel = max(max_sel, min_sel)
+        min_sel = sum(slot.needs for slot in slots)
+        max_sel = sum(max(0, slot.max_targets - slot.selected) for slot in slots)
     else:
         min_sel, max_sel = 1, 1
     return PendingDecision(
@@ -291,10 +371,14 @@ def _build_select_n(
     can_cancel: bool,
     source_label: str,
     resolve_name: Callable[[int], str],
+    resolve_instance: Callable[[int], str] | None = None,
 ) -> PendingDecision | None:
     ids = poll.get("select_n_ids") or poll.get("search_candidates") or []
+    weights = poll.get("select_n_weights") or []
+    if weights and len(weights) != len(ids):
+        return None
     options: list[DecisionOption] = []
-    for raw in ids:
+    for index, raw in enumerate(ids):
         if isinstance(raw, dict):
             oid = int(raw.get("id") or raw.get("instanceId") or raw.get("grpId") or 0)
             grp_id = int(raw.get("grpId") or 0)
@@ -307,23 +391,39 @@ def _build_select_n(
         if not oid:
             continue
         name = resolve_name(grp_id) if grp_id else ""
+        if not name and resolve_instance is not None:
+            name = resolve_instance(oid)
+        metadata = {"grpId": grp_id}
+        if weights:
+            metadata["weight"] = int(weights[index])
         options.append(
             DecisionOption(
                 option_id=f"sel:{oid}",
                 label=name or f"Option {oid}",
-                meta={"grpId": grp_id},
+                meta=metadata,
             )
         )
     if not options:
         return None
+    min_select = int(poll.get("select_n_min", 1))
+    max_select = int(poll.get("select_n_max", 1))
+    min_weight, max_weight = None, None
+    if weights:
+        min_weight = int(poll.get("select_n_min_weight", -(2**31)))
+        max_weight = int(poll.get("select_n_max_weight", 2**31 - 1))
+        if min_weight == -(2**31) and max_weight == 2**31 - 1:
+            min_weight, max_weight = min_select, max_select
+            min_select, max_select = 0, len(options)
     return PendingDecision(
         request_id=request_id,
         request_type="Search" if "Search" in rtype else "SelectN",
         options=tuple(options),
-        min_select=int(poll.get("select_n_min") or 1),
-        max_select=int(poll.get("select_n_max") or 1),
+        min_select=min_select,
+        max_select=max_select,
         can_cancel=can_cancel,
         source_label=source_label,
+        min_weight=min_weight,
+        max_weight=max_weight,
     )
 
 
@@ -426,6 +526,8 @@ def decision_to_dict(decision: PendingDecision) -> dict[str, Any]:
         "can_pass": decision.can_pass,
         "can_cancel": decision.can_cancel,
         "source_label": decision.source_label,
+        "min_weight": decision.min_weight,
+        "max_weight": decision.max_weight,
         "slots": [
             {
                 "target_idx": s.target_idx,
@@ -452,11 +554,13 @@ def decision_from_dict(data: dict[str, Any]) -> PendingDecision:
             )
             for o in (data.get("options") or [])
         ),
-        min_select=int(data.get("min_select") or 1),
-        max_select=int(data.get("max_select") or 1),
+        min_select=int(data.get("min_select", 1)),
+        max_select=int(data.get("max_select", 1)),
         can_pass=bool(data.get("can_pass")),
         can_cancel=bool(data.get("can_cancel")),
         source_label=str(data.get("source_label") or ""),
+        min_weight=data.get("min_weight"),
+        max_weight=data.get("max_weight"),
         slots=tuple(
             TargetSlot(
                 target_idx=int(s.get("target_idx") or 0),
@@ -484,43 +588,55 @@ def _tgt_iid(option_id: str) -> int | None:
         return None
 
 
+def assign_target_slots(slots: tuple[TargetSlot, ...], preferred: list[int]) -> list[list[int]] | None:
+    """Match every explicit choice to slot capacity without inventing targets."""
+    if len(set(preferred)) != len(preferred) or sum(slot.needs for slot in slots) > len(preferred):
+        return None
+    rows = [index for index, slot in enumerate(slots) for _ in range(slot.needs)]
+    required = len(rows)
+    for index, slot in enumerate(slots):
+        capacity = max(0, slot.max_targets - slot.selected)
+        if slot.needs > capacity:
+            return None
+        rows.extend([index] * min(len(preferred), capacity - slot.needs))
+    owners: dict[int, int] = {}
+
+    def match(row: int, seen: set[int]) -> bool:
+        for instance_id in preferred:
+            if instance_id in seen or instance_id not in slots[rows[row]].candidate_ids:
+                continue
+            seen.add(instance_id)
+            if instance_id not in owners or match(owners[instance_id], seen):
+                owners[instance_id] = row
+                return True
+        return False
+
+    for row in range(len(rows)):
+        if row >= required and len(owners) == len(preferred):
+            break
+        if not match(row, set()) and row < required:
+            return None
+    if len(owners) != len(preferred):
+        return None
+    result: list[list[int]] = [[] for _ in slots]
+    for instance_id in preferred:
+        result[rows[owners[instance_id]]].append(instance_id)
+    return result
+
+
 def expand_target_selection(decision: PendingDecision, chosen_ids: list[str]) -> list[int]:
-    """Resolve a SelectTargets pick into one legal instance id per slot.
-
-    The planner chooses from the flat option list and may only name one
-    target even when the request has several slots (e.g. enchant-your-
-    creature + exile-opponent's-permanent). Submitting a single id leaves
-    the other slot empty → MTGA rejects → the request re-presents and the
-    autopilot wedges (the Sheltered by Ghosts / Ethereal Armor loop).
-
-    For every slot that still needs a target, prefer one of the planner's
-    chosen ids that is legal there; otherwise fall back to that slot's own
-    first candidate. Each id is used at most once so two slots can't
-    collapse onto the same target. Slots already satisfied are skipped.
-    """
-    preferred = [iid for iid in (_tgt_iid(o) for o in chosen_ids) if iid]
-
-    # No per-slot data (older plugin / single flat slot): preserve the
-    # historical single-target behavior.
+    """Validate complete target coverage and preserve every explicit chosen id."""
+    if not decision.selection_is_valid(chosen_ids):
+        return []
+    preferred = [_tgt_iid(option_id) for option_id in chosen_ids]
+    if any(instance_id is None for instance_id in preferred):
+        return []
     if not decision.slots:
-        return preferred[:1]
-
-    used: set[int] = set()
-    out: list[int] = []
-    for slot in decision.slots:
-        if slot.needs <= 0:
-            continue
-        legal = set(slot.candidate_ids)
-        pick = next((iid for iid in preferred if iid in legal and iid not in used), None)
-        if pick is None:
-            pick = next((iid for iid in slot.candidate_ids if iid not in used), None)
-        if pick is None:
-            continue  # slot has no free legal candidate; let the plugin decide
-        used.add(pick)
-        out.append(pick)
-    # If structure analysis produced nothing usable, don't silently submit
-    # empty — fall back to the planner's pick so single-target still works.
-    return out or preferred[:1]
+        return preferred
+    assigned = assign_target_slots(decision.slots, preferred)
+    if assigned is None:
+        return []
+    return [instance_id for slot_ids in assigned for instance_id in slot_ids]
 
 
 def submit_option(
@@ -558,12 +674,18 @@ def submit_option(
         return bool(bridge.submit_pass())
     if first.startswith("mull:"):
         return bool(bridge.submit_mulligan(first == "mull:keep"))
+    if first.startswith("optional:"):
+        return bool(
+            bridge.submit_optional(first == "optional:accept", expected_request_id=decision.request_id)
+        )
     if first.startswith("idx:"):
         # Identity travels with the index so a bridge that checks it (the
         # native Mac bridge) refuses a stale index instead of submitting
         # whatever now sits at that position.
         meta = decision.find(first).meta
         expected = {k: meta[k] for k in ("instanceId", "grpId") if meta.get(k)}
+        if decision.request_type == "CastingTimeOptions":
+            expected = {**meta, "gameStateId": decision.request_id[0], "msgId": decision.request_id[1]}
         index = int(first.split(":", 1)[1])
         if expected:
             return bool(bridge.submit_action_by_index(index, expected=expected))
@@ -575,6 +697,8 @@ def submit_option(
             return False
         return bool(bridge.submit_targets(target_ids))
     if first.startswith("sel:"):
+        if not decision.selection_is_valid(chosen):
+            return False
         ids = [int(o.split(":", 1)[1]) for o in chosen if o.startswith("sel:")]
         return bool(bridge.submit_selection(ids))
     if first.startswith("grp:"):

@@ -350,15 +350,28 @@ def normalize_card(
     rarity = str(_get(source, "rarity", "") or "").lower()
 
     raw_colors = _get(source, "colors", None)
-    if raw_colors:
-        colors = tuple(c for c in COLOR_LETTERS if c in {str(x).upper() for x in raw_colors})
-    else:
+    colors = tuple(c for c in COLOR_LETTERS if c in {str(x).upper() for x in (raw_colors or [])})
+    if not colors:
         colors = _colors_from_mana_cost(mana_cost)
 
     try:
         cmc = float(_get(source, "cmc", 0.0) or 0.0)
     except (TypeError, ValueError):
         cmc = 0.0
+    if not cmc and mana_cost:
+        pips = _PIP_RE.findall(mana_cost.split(" // ", 1)[0])
+        cmc = float(
+            sum(
+                int(pip)
+                if pip.isdigit()
+                else 0
+                if pip.upper() in {"X", "Y", "Z"}
+                else 2
+                if pip.startswith("2/")
+                else 1
+                for pip in pips
+            )
+        )
 
     # Win-rate fields: prefer the explicit stats object, fall back to the
     # source dict's own keys (get_draft_pack embeds gih_wr/alsa/iwd).

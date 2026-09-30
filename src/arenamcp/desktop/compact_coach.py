@@ -734,7 +734,12 @@ class CompactCoachPanel(QWidget):
         QTimer.singleShot(3000, lambda: self.bug_report_btn.setText(_BUG_REPORT_LABEL))
 
     def _on_spoken_line(self, text: str) -> None:
-        self._now = (datetime.datetime.now().strftime("%H:%M"), text)
+        display_text = text
+        if self._latest_advice:
+            detailed, label = self._latest_advice
+            if label in {"DRAFT", "DECK"} and detailed.startswith(text):
+                display_text = detailed
+        self._now = (datetime.datetime.now().strftime("%H:%M"), display_text)
         self._render_now()
         self.append_log(text, role="spoken")
 
@@ -752,6 +757,11 @@ class CompactCoachPanel(QWidget):
 
     def _on_advice_received(self, text: str, label: str) -> None:
         self._latest_advice = (text, label)
+        if label in {"DRAFT", "DECK"} or (label == "AUTOPILOT" and text.startswith("ActionsAvailable:")):
+            self._now = (datetime.datetime.now().strftime("%H:%M"), text)
+            self._render_now()
+            self.append_log(text, role="advice")
+            return
         if self._debug_logging:
             self.append_log(f"[{label}] {text}", role="advice")
 

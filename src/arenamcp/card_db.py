@@ -64,6 +64,13 @@ def is_bogus_type_line(type_line: str | None) -> bool:
     return bool(_NUMERIC_TYPE_CODE_RE.match(type_line))
 
 
+def is_unknown_card_name(name: str | None) -> bool:
+    """Match lookup sentinels, not real names such as Unknown Shores."""
+    return not name or bool(
+        re.fullmatch(r"Unknown(?: Card)?(?:[_ ]#?\d+|#\d+|\s*\(\d+\))?", name, re.IGNORECASE)
+    )
+
+
 @dataclass
 class CardInfo:
     """Unified card data returned by all card database implementations.
@@ -86,6 +93,10 @@ class CardInfo:
     color_identity: list[str] = field(default_factory=list)
     related_tokens: list[str] = field(default_factory=list)
     legalities: dict[str, str] = field(default_factory=dict)
+    rarity: str = ""
+    power: str = ""
+    toughness: str = ""
+    related_faces: list[dict[str, Any]] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -139,6 +150,9 @@ class ScryfallAdapter:
             arena_id=card.arena_id or 0,
             scryfall_uri=card.scryfall_uri or "",
             source="scryfall",
+            rarity=getattr(card, "rarity", ""),
+            power=getattr(card, "power", ""),
+            toughness=getattr(card, "toughness", ""),
         )
 
     def get_card_by_name(self, name: str) -> CardInfo | None:
@@ -155,6 +169,9 @@ class ScryfallAdapter:
             arena_id=card.arena_id or 0,
             scryfall_uri=card.scryfall_uri or "",
             source="scryfall",
+            rarity=getattr(card, "rarity", ""),
+            power=getattr(card, "power", ""),
+            toughness=getattr(card, "toughness", ""),
         )
 
 
@@ -232,21 +249,54 @@ class MTGADatabaseAdapter:
             return ""
         return type_line
 
+    @staticmethod
+    def _colors(card: Any) -> list[str]:
+        color_codes = {"1": "W", "2": "U", "3": "B", "4": "R", "5": "G"}
+        colors = [color.strip().upper() for color in (card.colors or "").split(",")]
+        return [
+            color_codes.get(color, color)
+            for color in colors
+            if color in color_codes or color in {"W", "U", "B", "R", "G"}
+        ]
+
     def get_card_by_arena_id(self, arena_id: int) -> CardInfo | None:
         if not self._db.available:
             return None
         card = self._db.get_card(arena_id)
         if card is None:
             return None
+        return self._card_info(card)
+
+    def _card_info(self, card: Any) -> CardInfo:
+        from arenamcp.mana import mana_cost_to_cmc
+
+        related_faces = []
+        for grp_id in getattr(card, "linked_face_ids", []):
+            face = self._db.get_card(grp_id)
+            if face is not None:
+                related_faces.append(
+                    {
+                        "grp_id": face.grp_id,
+                        "name": face.name,
+                        "type_line": self._type_line(face),
+                        "mana_cost": face.mana_cost,
+                        "oracle_text": face.oracle_text,
+                    }
+                )
+        mana_cost = getattr(card, "mana_cost", "") or ""
         return CardInfo(
             name=card.name or "",
             oracle_text=card.oracle_text or "",
             type_line=self._type_line(card),
-            mana_cost="",  # MTGA DB doesn't store mana cost
-            cmc=0.0,
-            colors=card.colors.split(",") if card.colors else [],
+            mana_cost=mana_cost,
+            cmc=float(mana_cost_to_cmc(mana_cost)),
+            colors=self._colors(card),
             arena_id=card.grp_id,
             source="mtgadb",
+            rarity=getattr(card, "rarity", ""),
+            power=getattr(card, "power", ""),
+            toughness=getattr(card, "toughness", ""),
+            related_faces=related_faces,
         )
 
     def get_card_by_name(self, name: str) -> CardInfo | None:
@@ -266,16 +316,7 @@ class MTGADatabaseAdapter:
         cards = self._db.prewarm_cards(grp_ids)
         res = {}
         for grp_id, card in cards.items():
-            res[grp_id] = CardInfo(
-                name=card.name or "",
-                oracle_text=card.oracle_text or "",
-                type_line=self._type_line(card),
-                mana_cost="",
-                cmc=0.0,
-                colors=card.colors.split(",") if card.colors else [],
-                arena_id=card.grp_id,
-                source="mtgadb",
-            )
+            res[grp_id] = self._card_info(card)
         return res
 
     @property
@@ -331,8 +372,8 @@ class FallbackCardDatabase:
     def _needs_enrichment(card: CardInfo) -> bool:
         """Check whether a card result is missing critical fields.
 
-        The MTGA local DB returns oracle_text but not mana_cost, so a result
-        sourced only from it is worth topping up from MTGJSON/Scryfall by name.
+        Older MTGA databases may lack mana costs or localized types, which
+        can be filled from MTGJSON/Scryfall by name.
         """
         if not card.mana_cost:
             # Lands legitimately have no mana cost, but non-lands should
@@ -348,7 +389,7 @@ class FallbackCardDatabase:
 
     def _enrich_from_name(self, card: CardInfo) -> None:
         """Fill in missing mana_cost / type_line / cmc by name lookup."""
-        if not card.name or card.name.startswith("Unknown"):
+        if is_unknown_card_name(card.name):
             return
         name_result = self.get_card_by_name(card.name)
         if name_result is None:
@@ -421,7 +462,7 @@ class FallbackCardDatabase:
             self._enrich_from_name(best)
 
         # Last resort: if we have a name but no oracle_text at all
-        if best and not best.oracle_text and best.name and not best.name.startswith("Unknown"):
+        if best and not best.oracle_text and not is_unknown_card_name(best.name):
             self._enrich_from_name(best)
 
         return best

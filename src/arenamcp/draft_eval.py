@@ -719,7 +719,11 @@ def evaluate_pack(
                 reasons.append(f"off-color for {ref_pair}")
 
         tier = get_tier(final_score)
-        best_reason = reasons[-1] if reasons else ""
+        if card and "basic land" in (card.type_line or "").lower():
+            final_score = 0.0
+            tier = "WEAK"
+            reasons = ["Basic land; prefer a spell while one remains"]
+        best_reason = "; ".join(reasons[-3:]) if reasons else "Card rules unavailable; uncertain pick"
 
         evaluations.append(
             CardEvaluation(
