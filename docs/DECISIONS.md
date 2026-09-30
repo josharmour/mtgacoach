@@ -7,6 +7,25 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-09-29 — Value large nonlethal hits against a single expendable blocker
+
+- Report `bug_20260929_210547`: the planner deliberately submitted no blocks
+  against a 10/9 to preserve mana producers for Tooth and Nail. Arena offered
+  Shang-Chi and two Notary Hobbit tokens as blockers. Life fell from 24 to 14;
+  this was a strategic choice, not a missing blocker or speech/execution mismatch.
+- The reconstructed solver also chose no blocks: its inverse-life penalty
+  valued that ten-point hit at only 3.57 material points, versus 9 for Shang-Chi
+  and 10 for each scaling-mana Hobbit. Normalize life to one material point per
+  life at 20 remaining life, with increasing cost as the life total shrinks.
+  The same board now sacrifices the support creature and preserves both tokens.
+  Small-hit engine-preservation cases continue to pass; abundant life, trample,
+  and Arena's per-blocker legality can still justify a different decision.
+- Combat prompts now show life after the recommended blocks, explicitly weigh
+  nonlethal damage and the next attack, and surface mana spending restrictions.
+  Shang-Chi's creature-ability-only mana cannot be counted toward Tooth and Nail.
+  These remain approximate visible-board valuations, not a guarantee of the
+  best line against hidden cards or all continuous effects.
+
 ## 2026-09-29 — Resolve search identities and narrate submitted moves
 
 - Report `bug_20260929_203249`: Tooth and Nail's library search reached the

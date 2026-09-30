@@ -114,6 +114,13 @@ def combat_resource_roles(card: dict) -> tuple[str, ...]:
     return _resource_roles(_text(card))
 
 
+def mana_spending_restriction(card: dict) -> str:
+    """Surface a mana source's printed restriction alongside its resource value."""
+    text = re.sub(r"<[^>]*>", "", card.get("oracle_text") or "")
+    match = re.search(r"\bSpend (?:this|that) mana only\b[^.]*", text, re.IGNORECASE)
+    return match.group(0) if match else ""
+
+
 def _material(card: dict) -> int:
     """Value a body plus ongoing resources; this is not a mana/castability estimate."""
     power, toughness = _pt(card)
@@ -420,18 +427,20 @@ def _block_score(
 ) -> float:
     """Score a block assignment.
 
-    Life dominates when we're at risk of dying; material dominates when
-    we're safe. We don't weight life linearly — taking damage at 20 life
-    is nearly free, but taking damage at 4 life is existential.
+    Nonlethal damage still spends a resource. Value life on the same scale
+    as body/material points at a healthy total, increasing its cost as the
+    remaining life shrinks. A resource creature can justify a small hit,
+    but "not lethal yet" must not make a ten-point hit nearly free.
     """
     # If this block plan kills you, it's worst possible.
     life_after = your_life - damage_through
     if life_after <= 0:
         life_score = -1000.0
     else:
-        # Inverse-life penalty: 1 damage at 20 life costs 0.25; 1 damage at
-        # 4 life costs 2.5.
-        life_score = -damage_through * (5.0 / max(1, life_after))
+        # Normalize around 20 remaining life = one material point per life.
+        # The old factor of 5 priced a 24 -> 14 hit at just 3.57, cheaper
+        # than losing ANY mana creature regardless of the hit's magnitude.
+        life_score = -damage_through * (20.0 / max(1, life_after))
 
     material_score = attackers_killed_material - blockers_lost_material
     return life_score + material_score

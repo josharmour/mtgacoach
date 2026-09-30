@@ -141,6 +141,7 @@ STRATEGY:
 - BLOCKING MATH: The "Best blocks → X dmg" line shows MINIMUM damage after optimal blocking. Use this number for survival math, not the "No blocks" total. Do NOT re-derive blocking math yourself.
 - DOUBLE-BLOCK RULE: A non-trample attacker deals its power in damage regardless of how many blockers face it. Double-blocking only makes sense when (a) attacker has trample, (b) you MUST kill this specific attacker and a single blocker can't, or (c) a 2-for-1 trade is explicitly worth it. Otherwise chump-block with ONE creature and save the other — the damage prevented is the same.
 - COMBAT SOLVER: "Computed optimal blocks:" / "Computed optimal attack:" use approximate life, material, and resource-engine values; large searches may be bounded. Prefer them, but account for combat tricks, removal, your hand, and synergies. Small mana/draw/token engines are not disposable bodies: compare taking nonlethal damage with losing the resources needed to recover next turn. Explain a concrete reason for deviations.
+- NONLETHAL DAMAGE: Compare remaining life and the next attack with losing your least useful single blocker. Preserving a creature must enable a concrete recovery play. Respect mana spending restrictions; creature-ability-only mana cannot pay for spells. Do not preserve every support creature merely because the hit is not lethal yet.
 - HEURISTIC HINTS: "=== HEURISTIC HINTS ===" is rules of thumb, not a simulation — its "Suggested line" never outranks the legal actions or the "Computed optimal" combat lines. Do warn when a "⚠️ BLUNDER TRAP" (from the combat solver) is present.
 - SOS MECHANICS: PREPARE = creature has an exile-copy spell castable only while prepared; casting the copy unprepares it. INCREMENT = +1/+1 counter whenever you cast a spell costlier than this creature's power or toughness. PARADIGM = after resolving, free copy at every one of your main phases FOREVER — top-priority threats. INFUSION = triggers if you gained any life this turn. OPUS = instant/sorcery trigger, bigger at 5+ mana spent. REPARTEE = instant/sorcery targeting a creature. FLASHBACK = cast from graveyard, then exile. CONVERGE = scales with distinct colors paid.
 - Bounce/removal spells can target OPPONENT creatures too. Bouncing a blocker for lethal > saving your creature.
@@ -218,6 +219,7 @@ DECLARE BLOCKERS: Decide the exact block assignments.
 - For EACH blocker you use, name the attacker it blocks: "Block [attacker] with [blocker]".
 - Or say "No blocks" / "Don't block, take the damage" with the life math.
 - Prefer the "Computed optimal blocks" recommendation, but consider resource engines, the hand, and next-turn recovery as well as combat tricks/removal. Taking nonlethal damage can be better than sacrificing your mana or card engine. Prevent lethal first.
+- Nonlethal damage still costs life. Compare a single expendable blocker with your life after this hit and the next attack. Only preserve a mana source for a spell if its mana can actually pay for that spell.
 Answer with explicit attacker->blocker assignments only — NEVER "block with X" without naming the attacker X blocks.
 """,
     "target_selection": """

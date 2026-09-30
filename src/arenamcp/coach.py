@@ -1792,6 +1792,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             from arenamcp.combat_solver import (
                 blocker_allowed_attackers_map,
                 combat_resource_roles,
+                mana_spending_restriction,
                 optimal_blocks,
             )
 
@@ -1820,6 +1821,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             )
             if solver_plan is not None:
                 lines.append(f"Computed optimal blocks: {solver_plan.explanation}")
+                lines.append(
+                    f"Recommended blocks leave {your_life - solver_plan.damage_through} life "
+                    f"after {solver_plan.damage_through} combat damage. "
+                    "Nonlethal damage still costs life; compare a single expendable blocker "
+                    "with taking the hit, and account for the next attack."
+                )
                 resource_creatures = [
                     f"{card.get('name', '?')} ({', '.join(combat_resource_roles(card))})"
                     for card in usable_blockers
@@ -1833,6 +1840,10 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                         "against losing future mana/cards and the ability to rebuild next turn. "
                         "Solver valuations are approximate; consider the hand and synergies."
                     )
+                for card in usable_blockers:
+                    restriction = mana_spending_restriction(card)
+                    if restriction:
+                        lines.append(f"Mana restriction — {card.get('name', '?')}: {restriction}.")
         except Exception as e:
             logger.debug(f"combat solver (blocks) failed: {e}")
 
