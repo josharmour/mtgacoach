@@ -143,9 +143,13 @@ def test_actions_available_shape_and_identity():
     assert response["actions"][1]["autoTapActions"] == [{"instanceId": 150, "manaId": 3}]
 
 
-def test_get_game_state_stays_log_first():
+def test_get_game_state_reports_missing_game_like_the_plugin():
+    # Outside a match the reflect batch finds no GameManager; the response
+    # mirrors the C# plugin's error shape so GREBridge.get_game_state() logs
+    # and returns None instead of treating the command as unsupported.
     response = adapter_for(FakeGame(None)).handle({"action": "get_game_state"})
-    assert response["ok"] is False and response["unsupported"] is True
+    assert response["ok"] is False
+    assert "GameManager" in response["error"]
 
 
 def test_submit_action_is_identity_checked_and_atomic():

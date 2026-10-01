@@ -10,9 +10,10 @@ GREBridge and the autopilot run unchanged. Each handler mirrors its
 counterpart in Plugin.Actions.cs; MTGA-specific logic stays in Python, where it
 can be fixed without restarting the game.
 
-Observation stays log-first (docs/DECISIONS.md, 2026-07-16 and 2026-09-23):
-``get_game_state`` is unsupported here, so the coach keeps its Player.log view
-of the board instead of a bridge overlay.
+Observation is bridge-first for board state: ``get_game_state`` walks the live
+``MtgGameState`` through the reflect ops (arenamcp/mac_game_state.py), while
+reveal/annotation history still comes from Player.log (docs/DECISIONS.md,
+2026-07-16 and 2026-09-23).
 """
 
 from __future__ import annotations
@@ -384,11 +385,9 @@ class MacBridgeAdapter:
         }
 
     def _cmd_get_game_state(self, command: dict, timeout: float | None) -> dict:
-        return {
-            "ok": False,
-            "unsupported": True,
-            "error": "macOS bridge is log-first; board state comes from Player.log",
-        }
+        from arenamcp.mac_game_state import fetch_game_state
+
+        return fetch_game_state(self._send, timeout)
 
     def _cmd_get_pending_actions(self, command: dict, timeout: float | None) -> dict:
         snapshot = self.snapshot(timeout=timeout)
