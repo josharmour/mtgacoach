@@ -38,6 +38,8 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <setjmp.h>
+#include <signal.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -373,6 +375,8 @@ class JsonParser {
     X(void, il2cpp_field_static_set_value, (void*, void*))                     \
     X(void, il2cpp_runtime_class_init, (void*))                                \
     X(void, il2cpp_gc_wbarrier_set_field, (void*, void**, void*))              \
+    X(void, il2cpp_gc_disable, ())                                            \
+    X(void, il2cpp_gc_enable, ())                                             \
     X(void*, il2cpp_runtime_invoke, (void*, void*, void**, void**))            \
     X(void*, il2cpp_thread_attach, (void*))                                    \
     X(void, il2cpp_format_exception, (void*, char*, int))                      \
@@ -1026,7 +1030,7 @@ static std::string command_call_request(const char* expected_class, const char* 
 // Bridge protocol (same commands and fields as the BepInEx plugin; main thread)
 // ---------------------------------------------------------------------------
 
-static const char* kBridgeVersion = "mac-il2cpp-0.2.0";
+static const char* kBridgeVersion = "mac-il2cpp-0.3.0";
 static const int kMainThreadBudgetMs = 3500;  // under gre_bridge.py's 5 s default read timeout
 static std::atomic<bool> g_bridge_connected{false};
 
@@ -1313,6 +1317,76 @@ static void* g_unity_object_class = nullptr;
 static size_t g_array_header = 0;  // verified offset of element 0 in an Il2CppArray, 0 = unknown
 static bool g_handles_ok = false;  // GC handle round trip verified at startup
 
+// Crash defense for the encoder walks (SIGSEGV in Encoder::object during live
+// matches, 2026-10-01 x2): a GC triggered by our own boxing allocations can
+// collect or relocate objects mid-walk, and a stale/garbage pointer anywhere in
+// the graph faults the whole game. While a walk runs we pause collections, and
+// every object pointer is sanity-checked before dereference. Belt and braces:
+// run_batch wraps each walk so an unforeseen fault degrades to an error result
+// instead of killing MTGA.
+static bool plausible_object(void* obj) {
+    if (!obj) return true;  // null is a legal value everywhere
+    mach_vm_address_t addr = reinterpret_cast<mach_vm_address_t>(obj);
+    if ((addr & 7) != 0) return false;                  // heap objects are 8-aligned
+    if (addr < 0x100000ULL || addr > 0x800000000000ULL) return false;
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info{};
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object_name = MACH_PORT_NULL;
+    kern_return_t kr = mach_vm_region(mach_task_self(), &addr, &size, VM_REGION_BASIC_INFO_64,
+                                      reinterpret_cast<vm_region_info_t>(&info), &count, &object_name);
+    return kr == KERN_SUCCESS && (info.protection & VM_PROT_READ) != 0;
+}
+
+class ScopedGcPaused {
+  public:
+    ScopedGcPaused() { if (il2cpp_gc_disable) il2cpp_gc_disable(); }
+    ~ScopedGcPaused() { if (il2cpp_gc_enable) il2cpp_gc_enable(); }
+    ScopedGcPaused(const ScopedGcPaused&) = delete;
+    ScopedGcPaused& operator=(const ScopedGcPaused&) = delete;
+};
+
+// SIGSEGV/SIGBUS landing pad for encoder walks. Single-threaded use only: all
+// walks run on the Unity main thread inside run_batch, so one file-scope jump
+// target is enough.
+static sigjmp_buf g_guard_jump;
+static volatile sig_atomic_t g_guard_armed = 0;
+
+static void guard_fault_handler(int sig, siginfo_t*, void*) {
+    signal(sig, SIG_DFL);          // never loop on repeated faults
+    if (!g_guard_armed) return;    // fault outside a guarded walk: die as before
+    g_guard_armed = 0;
+    siglongjmp(g_guard_jump, 1);
+}
+
+template <typename Fn>
+static std::string guarded_encode(Fn&& walk, const char* what) {
+    struct sigaction sa{}, old_segv{}, old_bus{};
+    sa.sa_sigaction = guard_fault_handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
+    sigemptyset(&sa.sa_mask);
+    bool installed = sigaction(SIGSEGV, &sa, &old_segv) == 0 &&
+                     sigaction(SIGBUS, &sa, &old_bus) == 0;
+    std::string out;
+    if (sigsetjmp(g_guard_jump, 1) == 0) {
+        ScopedGcPaused gc_pause;   // dtor runs on the normal path
+        g_guard_armed = 1;
+        out = walk();
+        g_guard_armed = 0;
+    } else {
+        // siglongjmp path: RAII destructors were skipped, so undo explicitly.
+        g_guard_armed = 0;
+        if (il2cpp_gc_enable) il2cpp_gc_enable();
+        plog("guarded_encode: recovered from %s fault", what);
+        out = "{\"$fault\":true}";
+    }
+    if (installed) {
+        sigaction(SIGSEGV, &old_segv, nullptr);
+        sigaction(SIGBUS, &old_bus, nullptr);
+    }
+    return out;
+}
+
 static void init_reflection() {
     g_string_class = find_class("System", "String");
     g_system_object_class = find_class("System", "Object");
@@ -1421,6 +1495,7 @@ class Encoder {
         : max_nodes_(max_nodes), max_items_(max_items), skip_(std::move(skip)) {}
 
     std::string object(void* obj, int depth) {
+        if (!plausible_object(obj)) return "{\"$bad_ptr\":true}";
         if (!obj) return "null";
         void* klass = il2cpp_object_get_class(obj);
         if (klass == g_string_class) return q(managed_string(obj));
@@ -1522,7 +1597,9 @@ class Encoder {
         for (int i = 0; i < shown; i++) {
             int32_t position = i;
             void* args[1] = {&position};
-            out += (i ? "," : "") + object(invoke(item_getter, list, args, &error), depth - 1);
+            void* item = invoke(item_getter, list, args, &error);
+            if (!plausible_object(item)) item = nullptr;
+            out += (i ? "," : "") + object(item, depth - 1);
         }
         return out + "]";
     }
@@ -1892,13 +1969,13 @@ static std::string run_batch(const Json& request) {
                 void* klass = il2cpp_object_get_class(target);
                 if (void* getter = find_method(klass, ("get_" + member).c_str(), 0)) {
                     object = invoke(getter, target, nullptr, &error);
-                    result = encoder.object(object, depth);
+                    result = guarded_encode([&] { return encoder.object(object, depth); }, "getter encode");
                     if (object && il2cpp_class_is_valuetype(il2cpp_object_get_class(object))) object = nullptr;
                 } else if (void* field = find_field(klass, member.c_str())) {
                     void* type = il2cpp_field_get_type(field);
                     std::vector<uint8_t> buffer(std::max<size_t>(16, value_size(type)), 0);
                     il2cpp_field_get_value(target, field, buffer.data());
-                    result = encoder.value(buffer.data(), type, depth);
+                    result = guarded_encode([&] { return encoder.value(buffer.data(), type, depth); }, "field encode");
                     if (!il2cpp_class_is_valuetype(il2cpp_class_from_type(type)))
                         object = *reinterpret_cast<void**>(buffer.data());
                 } else {
@@ -1909,7 +1986,8 @@ static std::string run_batch(const Json& request) {
                                              op.get("args"), op.get("sig"), batch, &error);
                 if (method) {
                     object = call_with_args(method, target, op.get("args"), batch, &error);
-                    if (error.empty()) result = encoder.object(object, depth);
+                    if (error.empty())
+                        result = guarded_encode([&] { return encoder.object(object, depth); }, "call encode");
                     if (object && il2cpp_class_is_valuetype(il2cpp_object_get_class(object))) object = nullptr;
                 }
             } else if (target && kind == "set") {
@@ -1936,7 +2014,8 @@ static std::string run_batch(const Json& request) {
                 object = il2cpp_object_new(klass);
                 void* constructor = select_method(klass, ".ctor", op.get("args"), op.get("sig"), batch, &error);
                 if (constructor) call_with_args(constructor, object, op.get("args"), batch, &error);
-                if (error.empty()) result = encoder.object(object, std::max(depth, 0));
+                if (error.empty())
+                    result = guarded_encode([&] { return encoder.object(object, std::max(depth, 0)); }, "new encode");
             }
         } else {
             error = "unknown op " + kind;
