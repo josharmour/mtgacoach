@@ -2555,7 +2555,7 @@ class AutopilotEngine(
                 # After 4 failures: use deterministic fallback
                 if self._consecutive_plan_failures >= 4:
                     logger.warning("Autopilot: 4+ consecutive failures, using deterministic fallback")
-                    plan = self._deterministic_fallback(game_state, trigger, legal_actions, decision_context)
+                    plan = self._deterministic_fallback(game_state, trigger)
 
                 if not plan.actions:
                     if self._is_critical_decision_state(game_state):
