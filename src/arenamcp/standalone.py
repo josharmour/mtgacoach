@@ -705,6 +705,7 @@ class StandaloneCoach(
                     timeout=config.planning_timeout,
                     land_drop_first=config.land_drop_first,
                     deck_strategy_fn=self.get_deck_strategy,
+                    deck_playbook_fn=self.get_deck_playbook,
                 )
                 engine = NativeMacAutopilot(
                     backend=autopilot_backend,
@@ -722,6 +723,7 @@ class StandaloneCoach(
                     timeout=config.planning_timeout,
                     land_drop_first=config.land_drop_first,
                     deck_strategy_fn=self.get_deck_strategy,
+                    deck_playbook_fn=self.get_deck_playbook,
                 )
 
                 self._autopilot = AutopilotEngine(
@@ -1971,107 +1973,8 @@ class StandaloneCoach(
 
                 self._try_restore_engine_resume(curr_state)
 
-                # Deck strategy analysis (once per match, after turn 1 starts and mulligan is complete)
-                if (
-                    self._auto_deck_strategy
-                    and not self._deck_analyzed
-                    and self._coach
-                    and turn_num >= 1
-                    and not self._is_mulligan_pending(curr_state)
-                ):
-                    deck_cards = list(curr_state.get("deck_cards") or [])
-
-                    # Fallback for mid-game join: ConnectResp was missed,
-                    # so reconstruct deck from all known local-player cards
-                    # across all zones (hand, battlefield, graveyard, etc.)
-                    if not deck_cards:
-                        local_seat = self._get_local_seat_from_state(curr_state)
-                        if local_seat is not None:
-                            seen_grp_ids = set()
-                            for zone in ("hand", "battlefield", "graveyard", "exile", "command"):
-                                for card in curr_state.get(zone, []):
-                                    if card.get("owner_seat_id") == local_seat:
-                                        grp_id = card.get("grp_id", 0)
-                                        if grp_id and grp_id not in seen_grp_ids:
-                                            seen_grp_ids.add(grp_id)
-                                            deck_cards.append(grp_id)
-                            if deck_cards:
-                                if len(deck_cards) != getattr(self, "_last_logged_deck_reconstruct_count", 0):
-                                    self._last_logged_deck_reconstruct_count = len(deck_cards)
-                                    logger.info(
-                                        f"Reconstructed deck from visible zones: {len(deck_cards)} unique cards"
-                                    )
-
-                    # Require at least 20 cards so deck strategy does not run on partial hands
-                    if len(deck_cards) >= 20:
-                        # ConnectResp's deckCards excludes Brawl commanders.
-                        # Include ours so the strategy can identify the deck's engine.
-                        local_seat = self._get_local_seat_from_state(curr_state)
-                        for card in curr_state.get("command", []):
-                            grp_id = card.get("grp_id")
-                            if (
-                                card.get("owner_seat_id") == local_seat
-                                and grp_id
-                                and grp_id not in deck_cards
-                            ):
-                                deck_cards.append(grp_id)
-                        self._deck_analyzed = True
-                        logger.info(f"Starting deck analysis for {len(deck_cards)} cards")
-
-                        def _analyze_deck_bg(coach, mcp, card_ids, ui, backend_name, model_name, speak_fn):
-                            try:
-                                # Enrich grpIds to (name, type, oracle_text) tuples
-                                enriched = []
-                                for grp_id in card_ids:
-                                    try:
-                                        info = mcp.get_card_info(grp_id)
-                                        name = info.get("name", f"Unknown({grp_id})")
-                                        card_type = info.get("type_line", "")
-                                        oracle = info.get("oracle_text", "")
-                                        enriched.append((name, card_type, oracle))
-                                    except Exception as exc:
-                                        logger.debug(f"Card enrichment failed for grp_id={grp_id}: {exc}")
-                                        enriched.append((f"Unknown({grp_id})", "", ""))
-
-                                # Use a SEPARATE backend instance so deck analysis
-                                # doesn't hold the advice backend's lock
-                                from arenamcp.coach import create_backend
-
-                                deck_backend = create_backend(backend_name, model=model_name)
-
-                                # Full strategy analysis (stored, injected into every prompt)
-                                try:
-                                    strategy = coach.analyze_deck(enriched, backend=deck_backend)
-                                    brief = coach.get_deck_strategy_brief(enriched, backend=deck_backend)
-                                finally:
-                                    if hasattr(deck_backend, "close"):
-                                        deck_backend.close()
-
-                                if strategy:
-                                    first_line = strategy.split("\n")[0].strip()
-                                    ui.status("DECK", first_line[:60])
-                                    logger.info(f"Deck strategy stored: {len(strategy)} chars")
-
-                                if brief:
-                                    ui.log(f"\n[bold green]DECK STRATEGY:[/] {brief}\n")
-                                    speak_fn(brief, blocking=False)
-                            except Exception as exc:
-                                logger.error(f"Background deck analysis failed: {exc}")
-
-                        t = threading.Thread(
-                            target=_analyze_deck_bg,
-                            args=(
-                                self._coach,
-                                self._mcp,
-                                deck_cards,
-                                self.ui,
-                                self._backend_name,
-                                self.model_name,
-                                self.speak_advice,
-                            ),
-                            daemon=True,
-                        )
-                        t.start()
+                # Reanalyze when the deck or designated commander changes.
+                self._maybe_analyze_deck(curr_state)
 
                 # FORCE CHECK: Always check triggers if trigger detector exists.
                 # prev_state starts as {} (falsy) but check_triggers handles empty

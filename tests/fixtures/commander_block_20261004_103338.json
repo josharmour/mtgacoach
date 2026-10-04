@@ -1,0 +1,869 @@
+{
+  "local_seat_id": 2,
+  "opponent_seat_id": 1,
+  "commander_grp_ids": [
+    103511
+  ],
+  "commander_casts": {
+    "103511": 2
+  },
+  "deck_cards": [
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    75553,
+    39581,
+    97547,
+    93262,
+    93940,
+    91888,
+    54281,
+    91087,
+    71959,
+    51281,
+    19737,
+    87101,
+    60275,
+    57281,
+    58433,
+    50879,
+    29589,
+    96863,
+    97115,
+    59613,
+    99534,
+    77058,
+    77063,
+    72447,
+    87435,
+    54163,
+    54769,
+    61645,
+    62415,
+    86606,
+    66487,
+    69600,
+    69611,
+    69620,
+    70308,
+    70387,
+    70456,
+    71229,
+    90661,
+    73425,
+    77064,
+    77305,
+    79706,
+    79961,
+    80310,
+    81103,
+    82718,
+    84506,
+    84850,
+    85121,
+    82684,
+    87339,
+    89065,
+    90513,
+    90681,
+    90824,
+    90826,
+    90855,
+    91002,
+    91004,
+    91011,
+    93819,
+    94970,
+    95516,
+    95657,
+    95672,
+    96766,
+    97444,
+    97474,
+    98493,
+    98507,
+    98577,
+    105082
+  ],
+  "battlefield": [
+    {
+      "instance_id": 541,
+      "grp_id": 89192,
+      "name": "Undercity Sewers",
+      "oracle_text": "This land enters tapped.\nWhen this land enters, surveil 1.\n{oT}: Add {oU}.\n{oT}: Add {oB}.",
+      "type_line": "Land \u2014 Island Swamp",
+      "mana_cost": "",
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 1,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [
+        "Island",
+        "Swamp"
+      ],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "Blue",
+        "Black"
+      ],
+      "base_grp_id": 89192
+    },
+    {
+      "instance_id": 544,
+      "grp_id": 75553,
+      "name": "Forest",
+      "oracle_text": "({T}: Add {G}.)",
+      "type_line": "Basic Land \u2014 Forest",
+      "mana_cost": "",
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 2,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [
+        "Forest"
+      ],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "Green"
+      ],
+      "base_grp_id": 75553
+    },
+    {
+      "instance_id": 546,
+      "grp_id": 96184,
+      "name": "Island",
+      "oracle_text": "({T}: Add {U}.)",
+      "type_line": "Basic Land \u2014 Island",
+      "mana_cost": "",
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 3,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [
+        "Island"
+      ],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "Blue"
+      ],
+      "base_grp_id": 96184
+    },
+    {
+      "instance_id": 560,
+      "grp_id": 75553,
+      "name": "Forest",
+      "oracle_text": "({T}: Add {G}.)",
+      "type_line": "Basic Land \u2014 Forest",
+      "mana_cost": "",
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 4,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [
+        "Forest"
+      ],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "Green"
+      ],
+      "base_grp_id": 75553
+    },
+    {
+      "instance_id": 746,
+      "grp_id": 106430,
+      "name": "Overgrown Farmland",
+      "oracle_text": "This land enters tapped unless you control two or more other lands.\n{oT}: Add {oG} or {oW}.",
+      "type_line": "Land",
+      "mana_cost": "",
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 5,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "White",
+        "Green"
+      ],
+      "base_grp_id": 106430
+    },
+    {
+      "instance_id": 754,
+      "grp_id": 75553,
+      "name": "Forest",
+      "oracle_text": "({T}: Add {G}.)",
+      "type_line": "Basic Land \u2014 Forest",
+      "mana_cost": "",
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 6,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [
+        "Forest"
+      ],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "Green"
+      ],
+      "base_grp_id": 75553
+    },
+    {
+      "instance_id": 844,
+      "grp_id": 79706,
+      "name": "Boseiju, Who Endures",
+      "oracle_text": "{oT}: Add {oG}.\nChannel \u2014 {o1oG}, Discard this card: Destroy target artifact, enchantment, or nonbasic land an opponent controls. That player may search their library for a land card with a basic land type, put it onto the battlefield, then shuffle. This ability costs {o1} less to activate for each legendary creature you control.\n<i>Channel</i><nobr> \u2014</nobr> {o1oG}, Discard this card: Destroy target artifact, enchantment, or nonbasic land an opponent controls. That player may search their library for a land card with a basic land type, put it onto the battlefield, then shuffle. This ability costs {o1} less to activate for each legendary creature you control.\nChannel \u2014 {o1oG}, Discard this card: Destroy target artifact, enchantment, or nonbasic land an opponent controls. That player may search their library for a land card with a basic land type, put it onto the battlefield, then shuffle. This ability costs {o1} less to activate for each legendary creature you control.",
+      "type_line": "Legendary Land",
+      "mana_cost": "",
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 6,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "Green"
+      ],
+      "base_grp_id": 79706
+    },
+    {
+      "instance_id": 848,
+      "grp_id": 106421,
+      "name": "Deserted Beach",
+      "oracle_text": "This land enters tapped unless you control two or more other lands.\n{oT}: Add {oW} or {oU}.",
+      "type_line": "Land",
+      "mana_cost": "",
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 7,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "White",
+        "Blue"
+      ],
+      "base_grp_id": 106421
+    },
+    {
+      "instance_id": 849,
+      "grp_id": 85551,
+      "name": "Atraxa, Praetors' Voice",
+      "oracle_text": "Flying\nVigilance\nDeathtouch\nLifelink\nAt the beginning of your end step, proliferate.",
+      "type_line": "Legendary Creature \u2014 Phyrexian Angel Horror",
+      "mana_cost": "{G}{W}{U}{B}",
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "power": 4,
+      "toughness": 4,
+      "is_tapped": false,
+      "turn_entered_battlefield": 7,
+      "is_attacking": true,
+      "is_blocking": false,
+      "card_types": [
+        "Creature"
+      ],
+      "subtypes": [
+        "Phyrexian",
+        "Angel",
+        "Horror"
+      ],
+      "object_kind": "CARD",
+      "counters": {},
+      "colors": [
+        "White",
+        "Blue",
+        "Black",
+        "Green"
+      ],
+      "base_grp_id": 85551
+    },
+    {
+      "instance_id": 865,
+      "grp_id": 70387,
+      "name": "Castle Garenbrig",
+      "oracle_text": "This land enters tapped unless you control a Forest.\n{oT}: Add {oG}.\n{o2oGoG}, {oT}: Add six {oG}. Spend this mana only to cast creature spells or activate abilities of creatures.",
+      "type_line": "Land",
+      "mana_cost": "",
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 8,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "Green"
+      ],
+      "base_grp_id": 70387
+    },
+    {
+      "instance_id": 867,
+      "grp_id": 96184,
+      "name": "Island",
+      "oracle_text": "({T}: Add {U}.)",
+      "type_line": "Basic Land \u2014 Island",
+      "mana_cost": "",
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 9,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [
+        "Island"
+      ],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "Blue"
+      ],
+      "base_grp_id": 96184
+    },
+    {
+      "instance_id": 898,
+      "grp_id": 75553,
+      "name": "Forest",
+      "oracle_text": "({T}: Add {G}.)",
+      "type_line": "Basic Land \u2014 Forest",
+      "mana_cost": "",
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 10,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [
+        "Forest"
+      ],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "Green"
+      ],
+      "base_grp_id": 75553
+    },
+    {
+      "instance_id": 902,
+      "grp_id": 75553,
+      "name": "Forest",
+      "oracle_text": "({T}: Add {G}.)",
+      "type_line": "Basic Land \u2014 Forest",
+      "mana_cost": "",
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 10,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [
+        "Forest"
+      ],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "Green"
+      ],
+      "base_grp_id": 75553
+    },
+    {
+      "instance_id": 908,
+      "grp_id": 89193,
+      "name": "Underground Mortuary",
+      "oracle_text": "This land enters tapped.\nWhen this land enters, surveil 1.\n{oT}: Add {oB}.\n{oT}: Add {oG}.",
+      "type_line": "Land \u2014 Swamp Forest",
+      "mana_cost": "",
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [
+        "Swamp",
+        "Forest"
+      ],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "Black",
+        "Green"
+      ],
+      "base_grp_id": 89193
+    },
+    {
+      "instance_id": 928,
+      "grp_id": 96184,
+      "name": "Island",
+      "oracle_text": "({T}: Add {U}.)",
+      "type_line": "Basic Land \u2014 Island",
+      "mana_cost": "",
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 13,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [
+        "Island"
+      ],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "Blue"
+      ],
+      "base_grp_id": 96184
+    },
+    {
+      "instance_id": 1014,
+      "grp_id": 83711,
+      "name": "The Eternal Wanderer",
+      "oracle_text": "No more than one creature can attack The Eternal Wanderer each combat.\nExile up to one target artifact or creature. Return that card to the battlefield under its owner's control at the beginning of that player's next end step.\nCreate a 2/2 white Samurai creature token with double strike.\nFor each player, choose a creature that player controls. Each player sacrifices all creatures they control not chosen this way.",
+      "type_line": "Legendary Planeswalker",
+      "mana_cost": "{4}{W}{W}",
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 13,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Planeswalker"
+      ],
+      "subtypes": [],
+      "object_kind": "CARD",
+      "counters": {
+        "Loyalty": 4
+      },
+      "loyalty": 0,
+      "colors": [
+        "White"
+      ],
+      "base_grp_id": 83711
+    },
+    {
+      "instance_id": 1034,
+      "grp_id": 103511,
+      "name": "The Notary Hobbits",
+      "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+      "type_line": "Legendary Creature \u2014 Halfling Advisor",
+      "mana_cost": "{3}{G}{G}",
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "power": 1,
+      "toughness": 1,
+      "is_tapped": false,
+      "turn_entered_battlefield": 14,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Creature"
+      ],
+      "subtypes": [
+        "Halfling",
+        "Advisor"
+      ],
+      "object_kind": "CARD",
+      "counters": {},
+      "colors": [
+        "Green"
+      ],
+      "base_grp_id": 103511
+    },
+    {
+      "instance_id": 1043,
+      "grp_id": 103511,
+      "name": "The Notary Hobbits",
+      "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+      "type_line": "Legendary Creature \u2014 Halfling Advisor",
+      "mana_cost": "{3}{G}{G}",
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "power": 1,
+      "toughness": 1,
+      "is_tapped": false,
+      "turn_entered_battlefield": 14,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Creature"
+      ],
+      "subtypes": [
+        "Halfling",
+        "Advisor"
+      ],
+      "object_kind": "TOKEN",
+      "counters": {},
+      "parent_instance_id": 1041,
+      "colors": [
+        "Green"
+      ],
+      "is_copy": true,
+      "base_grp_id": 103511
+    },
+    {
+      "instance_id": 1046,
+      "grp_id": 83988,
+      "name": "Samurai",
+      "oracle_text": "Double strike",
+      "type_line": "Token Creature \u2014 Samurai",
+      "mana_cost": "",
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "power": 2,
+      "toughness": 2,
+      "is_tapped": true,
+      "turn_entered_battlefield": 15,
+      "is_attacking": true,
+      "is_blocking": false,
+      "card_types": [
+        "Creature"
+      ],
+      "subtypes": [
+        "Samurai"
+      ],
+      "object_kind": "TOKEN",
+      "counters": {},
+      "parent_instance_id": 1045,
+      "colors": [
+        "White"
+      ],
+      "base_grp_id": 83988
+    },
+    {
+      "instance_id": 1049,
+      "grp_id": 75553,
+      "name": "Forest",
+      "oracle_text": "({T}: Add {G}.)",
+      "type_line": "Basic Land \u2014 Forest",
+      "mana_cost": "",
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 16,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Land"
+      ],
+      "subtypes": [
+        "Forest"
+      ],
+      "object_kind": "CARD",
+      "counters": {},
+      "color_production": [
+        "Green"
+      ],
+      "base_grp_id": 75553
+    },
+    {
+      "instance_id": 1060,
+      "grp_id": 71857,
+      "name": "Teferi, Master of Time",
+      "oracle_text": "You may activate loyalty abilities of Teferi on any player's turn any time you could cast an instant.\nDraw a card, then discard a card.\nTarget creature you don't control phases out.\nTake two extra turns after this one.",
+      "type_line": "Legendary Planeswalker \u2014 Teferi",
+      "mana_cost": "{2}{U}{U}",
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 17,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Planeswalker"
+      ],
+      "subtypes": [
+        "Teferi"
+      ],
+      "object_kind": "CARD",
+      "counters": {
+        "Loyalty": 5
+      },
+      "loyalty": 0,
+      "colors": [
+        "Blue"
+      ],
+      "base_grp_id": 71857
+    },
+    {
+      "instance_id": 1066,
+      "grp_id": 83988,
+      "name": "Samurai",
+      "oracle_text": "Double strike",
+      "type_line": "Token Creature \u2014 Samurai",
+      "mana_cost": "",
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "power": 2,
+      "toughness": 2,
+      "is_tapped": false,
+      "turn_entered_battlefield": 17,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Creature"
+      ],
+      "subtypes": [
+        "Samurai"
+      ],
+      "object_kind": "TOKEN",
+      "counters": {},
+      "parent_instance_id": 1065,
+      "colors": [
+        "White"
+      ],
+      "summoning_sickness": true,
+      "base_grp_id": 83988
+    },
+    {
+      "instance_id": 1042,
+      "grp_id": 103511,
+      "name": "The Notary Hobbits",
+      "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+      "type_line": "Legendary Creature \u2014 Halfling Advisor",
+      "mana_cost": "{3}{G}{G}",
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "power": 1,
+      "toughness": 1,
+      "is_tapped": false,
+      "turn_entered_battlefield": 14,
+      "is_attacking": false,
+      "is_blocking": false,
+      "card_types": [
+        "Creature"
+      ],
+      "subtypes": [
+        "Halfling",
+        "Advisor"
+      ],
+      "object_kind": "TOKEN",
+      "counters": {},
+      "parent_instance_id": 1041,
+      "colors": [
+        "Green"
+      ],
+      "is_copy": true,
+      "base_grp_id": 103511
+    },
+    {
+      "instance_id": 1057,
+      "grp_id": 91138,
+      "name": "Bird",
+      "oracle_text": "Flying",
+      "type_line": "Token Creature \u2014 Bird",
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "power": 2,
+      "toughness": 2,
+      "object_kind": "TOKEN",
+      "turn_entered_battlefield": 16,
+      "is_tapped": false,
+      "is_attacking": false
+    }
+  ],
+  "match_id": "commander-block-replay",
+  "turn": {
+    "turn_number": 17,
+    "active_player": 1,
+    "priority_player": 2,
+    "phase": "Combat",
+    "step": "DeclareBlock"
+  },
+  "players": [
+    {
+      "seat_id": 2,
+      "is_local": true,
+      "life_total": 16,
+      "commander_ids": [
+        1034
+      ]
+    },
+    {
+      "seat_id": 1,
+      "is_local": false,
+      "life_total": 40,
+      "commander_ids": [
+        849
+      ]
+    }
+  ],
+  "hand": [],
+  "graveyard": [],
+  "exile": [],
+  "command": [],
+  "stack": [],
+  "decision_context": {
+    "type": "declare_blockers",
+    "raw_blockers": [
+      {
+        "blockerInstanceId": 1034,
+        "attackerInstanceIds": [
+          1046
+        ],
+        "maxAttackers": 1
+      },
+      {
+        "blockerInstanceId": 1042,
+        "attackerInstanceIds": [
+          1046
+        ],
+        "maxAttackers": 1
+      },
+      {
+        "blockerInstanceId": 1043,
+        "attackerInstanceIds": [
+          1046
+        ],
+        "maxAttackers": 1
+      },
+      {
+        "blockerInstanceId": 1057,
+        "attackerInstanceIds": [
+          849,
+          1046
+        ],
+        "maxAttackers": 1
+      }
+    ],
+    "legal_blocker_ids": [
+      1034,
+      1042,
+      1043,
+      1057
+    ]
+  },
+  "legal_actions": [
+    "Block with: The Notary Hobbits #1",
+    "Block with: The Notary Hobbits #2",
+    "Block with: The Notary Hobbits #3",
+    "Block with: Bird",
+    "No Blocks"
+  ],
+  "_bridge_request_type": "DeclareBlockers",
+  "pending_decision": "Declare Blockers"
+}

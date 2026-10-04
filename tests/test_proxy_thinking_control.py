@@ -69,6 +69,18 @@ def test_disabled_sends_thinking_true_with_low_effort(captured):
     )
 
 
+@pytest.mark.parametrize("structured", [False, True])
+def test_text_json_format_is_opt_in_and_keeps_the_requested_output_budget(captured, structured):
+    backend = ProxyBackend(base_url="http://127.0.0.1:9/v1", api_key="test")
+    kwargs = {"response_format": {"type": "json_object"}} if structured else {}
+    backend.complete("Analyze this deck as JSON.", "Card rules", max_tokens=12288, **kwargs)
+    assert captured["max_tokens"] == 12288
+    if structured:
+        assert captured["response_format"] == {"type": "json_object"}
+    else:
+        assert "response_format" not in captured
+
+
 def test_thinking_enabled_is_sent_explicitly(captured):
     """The win-plan path must not depend on the server default either."""
     _run(thinking=True)
@@ -145,3 +157,12 @@ def test_hosted_model_is_current_glm_regardless_of_saved_alias(saved_model, monk
     monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
     backend = ProxyBackend.create_online(model=saved_model, license_key="test-key")
     assert backend.model == "glm-5.3-flash"
+
+
+def test_per_request_reasoning_override_does_not_change_the_backend_default(captured):
+    backend = ProxyBackend(base_url="http://127.0.0.1:9/v1", api_key="test", enable_thinking=False)
+    backend.complete("Analyze", "Deck", enable_thinking=True)
+    assert "reasoning_effort" not in captured["extra_body"]["chat_template_kwargs"]
+    assert backend.enable_thinking is False
+    backend.complete("Choose", "Board")
+    assert captured["extra_body"]["chat_template_kwargs"]["reasoning_effort"] == "low"

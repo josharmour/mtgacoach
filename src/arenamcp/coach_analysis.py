@@ -110,6 +110,10 @@ class _CoachAnalysisMixin:
             f"turns={turns}, response: {len(response)} chars"
         )
 
+        if getattr(self, "narration_mode", "advisor") == "autopilot":
+            from arenamcp.narration import action_narration
+
+            response = action_narration(response, planned=True)
         return response
 
     def generate_post_match_analysis(

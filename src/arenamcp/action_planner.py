@@ -405,6 +405,7 @@ RULES:
 - ATTACK TARGETS: Supply attacker_names AND attacker_targets mapping each chosen creature to its legal recipient. When a planeswalker and the opponent are available, explicitly choose who each creature attacks; split attacks when useful. Compare killing the planeswalker (loyalty, abilities, future value) with lethal or pressure on the player. Damage to a planeswalker is NOT damage to the opponent. Prefer the recipient-aware combat search over the older player-only attack line when both appear. The search models visible combat approximately, not hidden tricks, triggered abilities, or future loyalty activations; never invent unknown loyalty. Say the chosen recipients in voice_advice; never leave that choice to a default UI target.
 - ZERO-POWER ATTACKERS: A legal attacker need not be a useful attacker. Leave zero-power creatures untapped for mana or defense unless an actual attack trigger, required attack, pump plan, or damage-replacement effect gives attacking a concrete benefit. Flying alone does not make a zero-power attack useful.
 - BLOCKERS: "Block with: X" names an eligible blocker, NOT a complete move. Supply action_type="declare_blockers" and blocker_assignments mapping each blocker to a named attacker. Never use a bare menu pick or an empty attacker name. Use an explicit empty mapping only when intentionally declaring no blocks.
+- RESOURCE TRADES: For blocks, sacrifices or discards, compare the resulting board now AND after the earliest feasible recovery under the deck playbook. Price trigger payoffs, lost persistent resources, colored mana, tax and timing. A token label, legendary status, or generic material score cannot decide this comparison by itself.
 - BLOCKING COST: Nonlethal damage is not free. Before declining blocks, compare remaining life and the next attack with sacrificing the least useful single blocker. Preserving an engine must enable a concrete recovery play, not just a vague ramp plan. Respect mana spending restrictions: mana usable only for creature abilities cannot help cast spells. A large hit can justify losing a support creature while retaining the stronger mana engine.
 - ANIMATION: Making an artifact or land a creature does not untap it or make it enter again. A tapped source, including one tapped by the payment solution, cannot become an attacker just by animating it. Creatures that entered this turn need haste to attack; haste-on-entry triggers do not retroactively give older creatures haste. Require a concrete benefit before paying for temporary animation, and use current card types rather than leftover power/toughness to decide whether it is already a creature.
 - EQUIPMENT: Reassess haste-granting equipment after its wearer taps or new creatures enter. Move it to an untapped summoning-sick creature when that enables a useful attack or tap ability now. A tapped wearer can still deserve shroud/hexproof protection; do not move equipment just because another creature is untapped. Equip only when Arena offers the activation; do not shuffle it endlessly or float mana without a concrete use.
@@ -494,6 +495,7 @@ class ActionPlanner(_ActionLegalityMixin):
         timeout: float = 5.0,
         land_drop_first: bool = True,
         deck_strategy_fn: Callable[[], str | None] | None = None,
+        deck_playbook_fn: Callable[[], Any] | None = None,
     ):
         """Initialize the action planner.
 
@@ -510,6 +512,7 @@ class ActionPlanner(_ActionLegalityMixin):
         self._timeout = timeout
         self._land_drop_first = land_drop_first
         self._deck_strategy_fn = deck_strategy_fn
+        self._deck_playbook_fn = deck_playbook_fn
         # Recent planning diagnostics ring buffer for debug reports
         self._recent_diagnostics: list[dict[str, Any]] = []
         # R3: the numbered menu shown in the most recent prompt; {"pick": N}
@@ -558,14 +561,35 @@ class ActionPlanner(_ActionLegalityMixin):
     def clear_game_plan(self) -> None:
         self._game_plan = ""
 
-    def _strategy_context(self) -> str:
+    def _deck_playbook(self):
+        provider = getattr(self, "_deck_playbook_fn", None)
+        return provider() if provider else None
+
+    def _has_deck_rule(self, *kinds: str) -> bool:
+        playbook = self._deck_playbook()
+        return bool(
+            playbook
+            and any(
+                "all" in rule["decisions"] or set(kinds).intersection(rule["decisions"])
+                for rule in playbook.data["decision_rules"]
+            )
+        )
+
+    def _strategy_context(self, state: dict | None = None) -> str:
         parts = []
-        provider = getattr(self, "_deck_strategy_fn", None)
-        strategy = provider() if provider else None
-        if strategy:
-            parts.append(f"DECK STRATEGY:\n{strategy}")
+        playbook = self._deck_playbook()
+        if playbook is None or state is None:
+            provider = getattr(self, "_deck_strategy_fn", None)
+            strategy = provider() if provider else None
+            if strategy:
+                parts.append(f"DECK STRATEGY:\n{strategy}")
         if getattr(self, "_game_plan", ""):
             parts.append(self._game_plan)
+        if playbook is not None and state is not None:
+            # The full Oracle reference already accompanies the live state.
+            # Reuse just the plan and relevant rules instead of repeating the
+            # entire playbook, every source quotation, and then these rules.
+            parts.append(playbook.decision_context(state))
         return "\n\n".join(parts)
 
     def plan_actions(
@@ -597,7 +621,11 @@ class ActionPlanner(_ActionLegalityMixin):
             return ActionPlan(trigger=trigger, fallback_reason=FALLBACK_NO_ACTIONS)
         dec_ctx = decision_context or game_state.get("decision_context") or {}
         dec_type = str(dec_ctx.get("type") or "").lower()
-        if dec_type == "optional_action" and dec_ctx.get("commander_return"):
+        if (
+            dec_type == "optional_action"
+            and dec_ctx.get("commander_return")
+            and not self._has_deck_rule("commander_zone")
+        ):
             plan = ActionPlan(
                 actions=[
                     GameAction(
@@ -1031,7 +1059,7 @@ class ActionPlanner(_ActionLegalityMixin):
             '"target_names": [], "rationale": "early pressure"}'
             "]}}"
         )
-        game_plan_block = self._strategy_context() + "\n\n"
+        game_plan_block = self._strategy_context(game_state) + "\n\n"
         user_message = (
             f"TRIGGER: turn_plan (turn {current_turn})\n\n"
             f"{context}\n\n"
@@ -1585,6 +1613,10 @@ class ActionPlanner(_ActionLegalityMixin):
           - active player has played 0 lands this turn
           - a "Play Land: X" entry is in legal_actions
         """
+        # A learned sequencing exception must reach strategic planning instead
+        # of being preempted by the generic land-first shortcut.
+        if self._has_deck_rule("development", "mana"):
+            return None
         if not self._land_drop_first or not legal_actions:
             return None
 
@@ -1802,7 +1834,7 @@ class ActionPlanner(_ActionLegalityMixin):
         # tactical decision serves. Placed before the per-turn intent so the
         # model reads "here is how we win this game" first, then "here is the
         # plan for this turn", then the immediate decision.
-        strategy_context = self._strategy_context()
+        strategy_context = self._strategy_context(game_state)
         if strategy_context:
             parts.append(strategy_context)
 
@@ -2242,7 +2274,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     f"Optional cost from: {source_name or 'unknown source'}",
                     f"Effect text: {oracle_text or 'unknown'}",
                     self._decision_game_context(game_state),
-                    self._strategy_context(),
+                    self._strategy_context(game_state),
                     "",
                     "Should you pay this optional cost?",
                 ]
@@ -2315,7 +2347,7 @@ class ActionPlanner(_ActionLegalityMixin):
         "Until-end-of-turn animation expires this turn: it cannot supply a future-turn blocker or "
         "Great Henge discount. Name a use before it expires; compare any discount with the activation "
         "cost and the greatest power you already control. All-creature-types animation can increase "
-        "tribal mana such as The Notary Hobbits only if those producers can actually tap this turn. "
+        "tribal mana only when the supplied rules count those creature types and the producers can tap this turn. "
         "For haste-granting equipment, reassess after the wearer taps or new creatures enter: "
         "moving it to an untapped summoning-sick creature can enable a useful attack or tap ability. "
         "Equip only when Arena offers it. Do not shuffle equipment without a concrete benefit, "
@@ -2352,6 +2384,7 @@ class ActionPlanner(_ActionLegalityMixin):
             decision.request_type == "OptionalAction"
             and context.get("type") == "optional_action"
             and context.get("commander_return") is True
+            and not self._has_deck_rule("commander_zone")
             and accept is not None
             and all(value > 0 for value in decision.request_id)
             and (raw.get("gameStateId"), raw.get("msgId")) == decision.request_id
@@ -2801,7 +2834,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 ],
             }
         lines.append(self._decision_game_context(context_state))
-        strategy_context = self._strategy_context()
+        strategy_context = self._strategy_context(game_state)
         if strategy_context:
             lines.append(strategy_context)
         user_message = with_deck_reference("\n".join(lines), game_state)

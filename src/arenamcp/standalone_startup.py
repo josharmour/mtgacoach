@@ -121,6 +121,9 @@ class _StartupMixin:
                 "match_id": state.get("match_id"),
                 "turn": (state.get("turn") or {}).get("turn_number", 0),
                 "deck_strategy": getattr(self._coach, "_deck_strategy", None),
+                "deck_playbook": self._coach._deck_playbook.export()
+                if getattr(self._coach, "_deck_playbook", None)
+                else None,
                 "game_plan": manager.export_for_reload() if manager else None,
                 "autopilot_paused": was_paused,
             }
@@ -173,12 +176,24 @@ class _StartupMixin:
         ):
             logger.info("Engine reload strategy discarded: match changed or handoff expired")
             return
-        strategy = data.get("deck_strategy")
-        if isinstance(strategy, str) and strategy:
-            self._coach._deck_strategy = strategy
-            self._deck_analyzed = True
+        from arenamcp.deck_strategy import DeckPlaybook
+
+        try:
+            playbook = DeckPlaybook.restore(data.get("deck_playbook") or {}, state)
+        except (ValueError, KeyError, TypeError):
+            # Old unstructured summaries omitted commander policies and can
+            # contain unsupported combos. Rebuild rather than grandfathering
+            # them into the new strategy pipeline after an engine reload.
+            self._deck_analyzed = False
+            logger.info("Engine reload needs current deck playbook analysis")
+            self.ui.log("Rebuilding deck strategy from card rules after reload.")
+            return
+        self._coach._deck_playbook = playbook
+        self._coach._deck_strategy = playbook.render()
+        self._coach._deck_analysis_identity = playbook.identity
+        self._deck_analyzed = True
         manager = self._coach._ensure_game_plan_mgr()
         if manager and data.get("game_plan"):
             manager.restore_after_reload(data["game_plan"], state)
-        logger.info("Restored deck strategy and current plan for engine reload in match %s", match_id)
+        logger.info("Restored deck playbook and current plan for engine reload in match %s", match_id)
         self.ui.log("Resumed current match strategy; no new deck-analysis warmup needed.")

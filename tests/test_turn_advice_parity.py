@@ -596,14 +596,10 @@ def test_t5_passive_and_pass_narration_filters_match(monkeypatch):
     c_coach._coach = PassiveEngine()
     run_scripted_game(monkeypatch, c_coach, iterations=4)
 
-    # Baseline speak_advice ladder: "Pass." is passive (silence phrase, no
-    # action verb, <60 chars) -> muted. "I'm passing priority now." has NO
-    # \bpass\b word-boundary match ("passing") so it is NOT passive, but it IS
-    # a pass narration (L369: endswith "passing priority now") -> spoken once,
-    # then the 45s cooldown would mute repeats. "Attack with everything."
-    # spoken. Final "Pass." muted again.
+    # Both paths use the current passive filter: bare passes and passing
+    # priority are silent; the actionable attack advice remains audible.
     spoken_baseline = [c["text"] for c in b_sink.calls]
-    assert spoken_baseline == ["I'm passing priority now.", "Attack with everything."]
+    assert spoken_baseline == ["Attack with everything."]
     assert [c["text"] for c in c_sink.calls] == spoken_baseline
     assert [c["blocking"] for c in c_sink.calls] == [c["blocking"] for c in b_sink.calls]
 

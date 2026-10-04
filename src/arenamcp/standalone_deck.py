@@ -1,10 +1,9 @@
-"""Deck-analysis helpers for StandaloneCoach, extracted from standalone.py.
-
-Pure move: methods are unchanged and mixed back into StandaloneCoach."""
+"""Deck analysis, stored strategy and presentation for StandaloneCoach."""
 
 import logging
 import threading
 import time
+from copy import deepcopy
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -64,6 +63,86 @@ class _DeckAnalysisMixin:
             logger.info("Draft deck cuts (%s): %s", result.get("reasoning_source", "heuristic"), spoken)
             self.speak_advice(spoken, blocking=False)
 
+    def _maybe_analyze_deck(self, state: dict) -> bool:
+        """Start one versioned analysis per deck; never publish a stale worker."""
+        from arenamcp.deck_strategy import deck_identity
+
+        coach = self._coach
+        if (
+            not self._auto_deck_strategy
+            or coach is None
+            or not state.get("match_id")
+            or state.get("game_over")
+        ):
+            return False
+        identity = deck_identity(state)
+        key = (state.get("match_id"), identity)
+        prior_key = getattr(self, "_deck_analysis_key", None)
+        if key != prior_key:
+            self._deck_analysis_key = key
+            self._deck_analysis_attempts = 0
+            self._last_deck_analysis_attempt = 0.0
+            # A same-match deck/commander swap also invalidates the old plan.
+            if coach._deck_analysis_identity and (
+                coach._deck_analysis_identity != identity
+                or (prior_key is not None and prior_key[0] != key[0])
+            ):
+                coach.clear_deck_strategy()
+            self._deck_analyzed = False
+        if coach._deck_playbook and coach._deck_playbook.identity == identity:
+            self._deck_analyzed = True
+            return False
+        if (
+            not identity
+            or len(state.get("deck_cards") or []) < 20
+            or coach._deck_strategy_pending
+            or self._deck_analysis_attempts >= 3
+            or (self._last_deck_analysis_attempt and time.monotonic() - self._last_deck_analysis_attempt < 30)
+        ):
+            return False
+        snapshot = deepcopy(state)
+        generation = coach.begin_deck_analysis(identity)
+        self._deck_analysis_attempts += 1
+        self._last_deck_analysis_attempt = time.monotonic()
+        logger.info("Starting deck playbook analysis for %d cards", len(snapshot["deck_cards"]))
+
+        def analyze():
+            backend = None
+            try:
+                from arenamcp.coach import create_backend
+
+                backend = create_backend(self._backend_name, model=self.model_name)
+                strategy = coach.analyze_deck(snapshot, backend=backend, analysis_generation=generation)
+                with coach._deck_analysis_lock:
+                    if generation != coach._deck_analysis_generation or self._deck_analysis_key != key:
+                        return
+                    self._deck_analyzed = bool(strategy)
+                    playbook = coach._deck_playbook
+                if playbook:
+                    self.ui.status("DECK", playbook.data["archetype"][:60])
+                    brief = playbook.data["spoken_summary"]
+                    self.ui.log(f"\n[bold green]DECK STRATEGY:[/] {brief}\n")
+                    self.speak_advice(brief, blocking=False)
+                else:
+                    self.ui.log("Deck analysis incomplete; using current card rules while it retries.")
+            except Exception as error:
+                logger.warning("Background deck playbook failed: %s", error)
+            finally:
+                with coach._deck_analysis_lock:
+                    if generation == coach._deck_analysis_generation:
+                        coach._deck_strategy_pending = False
+                if backend is not None and hasattr(backend, "close"):
+                    backend.close()
+
+        try:
+            threading.Thread(target=analyze, daemon=True, name="deck-playbook").start()
+        except Exception:
+            with coach._deck_analysis_lock:
+                if generation == coach._deck_analysis_generation:
+                    coach._deck_strategy_pending = False
+            raise
+        return True
+
     def _generate_deck_strategy_brief(self, card_ids: list[int] | None = None) -> None:
         """Generate and speak a brief deck strategy.
 
@@ -75,6 +154,13 @@ class _DeckAnalysisMixin:
                       uses deck_cards from the current game state (library).
         """
         if not self._coach or not self._mcp:
+            return
+
+        playbook = self._coach._deck_playbook
+        if playbook is not None and card_ids is None:
+            brief = playbook.data["spoken_summary"]
+            self.ui.log(f"\n[bold green]DECK STRATEGY:[/] {brief}\n")
+            self.speak_advice(brief)
             return
 
         # Capture the list now so the background thread has it
@@ -142,14 +228,16 @@ class _DeckAnalysisMixin:
                         brief_backend.close()
 
                 if strategy:
-                    # Also store as the deck strategy so /deck-strategy can recall it
-                    self._coach._deck_strategy = strategy
+                    # Speech is presentation only; never overwrite the playbook.
                     self.ui.log(f"\n[bold green]DECK STRATEGY:[/] {strategy}\n")
                     self.speak_advice(strategy)
             except Exception as e:
                 logger.error(f"Deck strategy brief failed: {e}")
 
         threading.Thread(target=_run, daemon=True, name="deck-strategy-brief").start()
+
+    def get_deck_playbook(self):
+        return self._coach._deck_playbook if self._coach else None
 
     def get_deck_strategy(self) -> str | None:
         """Return the stored deck strategy, or None if not yet analyzed."""

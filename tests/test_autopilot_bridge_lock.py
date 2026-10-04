@@ -225,7 +225,8 @@ def test_process_trigger_refuses_when_bridge_idle_and_no_log_data(monkeypatch):
         "priority_gained",
     )
 
-    assert handled is False
+    # Consumed as stale: suppress fallback planning against the idle bridge.
+    assert handled is True
     assert planner.plan_calls == 0
     assert engine.state == AutopilotState.IDLE
 
@@ -262,7 +263,8 @@ def test_process_trigger_refuses_when_bridge_idle_despite_log_data(monkeypatch):
         "priority_gained",
     )
 
-    assert handled is False
+    # Consumed as stale: suppress fallback planning against the idle bridge.
+    assert handled is True
     assert planner.plan_calls == 0
     assert engine.state == AutopilotState.IDLE
 

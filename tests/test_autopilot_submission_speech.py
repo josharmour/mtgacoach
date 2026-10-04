@@ -61,7 +61,7 @@ def test_plan_speech_waits_for_submission_and_uses_its_actual_action(monkeypatch
     monkeypatch.setattr(engine, "_execute_action", execute)
     engine.process_trigger(deepcopy(state), "decision_required")
     expected = {"success": "Original", "replaced": "Replacement"}.get(outcome)
-    assert spoken == ([f"I'm casting {expected}."] if expected else [])
+    assert spoken == ([f"Casting {expected}."] if expected else [])
     if expected:
         assert planner.note_executed.call_args.args[0].card_name == expected
 
@@ -118,5 +118,5 @@ def test_typed_cast_speaks_card_and_reason_without_protocol_label(monkeypatch):
     assert engine._try_typed_decision_path(state, "decision_required") is True
     bridge.submit_action_by_index.assert_called_once()
     engine._speak_fn.assert_called_once_with(
-        "I'm casting Birds of Paradise. I plan to add mana for next turn.", False
+        "Casting Birds of Paradise. Plan: adding mana for next turn.", False
     )

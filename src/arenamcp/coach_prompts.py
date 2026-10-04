@@ -3,6 +3,8 @@
 Extracted from arenamcp.coach (pure move, no behavior change).
 Re-exported from arenamcp.coach for backwards compatibility."""
 
+from arenamcp.deck_strategy import DECK_ANALYSIS_PROMPT as DECK_ANALYSIS_PROMPT
+
 # Default MTG coach system prompt
 DEFAULT_SYSTEM_PROMPT = """You are an expert MTG coach providing real-time advice during Arena games.
 
@@ -240,9 +242,9 @@ Answer: "Choose mode [X]" with brief reason (1 sentence).
 """,
     "sacrifice": """
 SACRIFICE DECISION: Choose which permanent(s) to sacrifice.
-- Sacrifice the LEAST valuable permanent for the current board state
-- Keep: key synergy pieces, win conditions, blockers you need
-- Sacrifice: redundant creatures, tokens, low-impact permanents
+- Compare net resources after the sacrifice, supported triggers and feasible recovery using the deck playbook's conditions.
+- Preserve ongoing engine value or accumulated resources when losing them delays the winning line.
+- A reusable resource can be better to spend than a token or redundant body if recovery produces more value at an affordable cost. Token/commander labels alone do not determine value.
 Answer: "Sacrifice [card name]" with brief reason (1 sentence).
 """,
     "exile": """
@@ -298,18 +300,6 @@ Start your response with exactly one of:
   VIABLE: NO — if it requires specific draws or opponent misplays
 
 Then give the plan in 2-4 short lines max."""
-
-
-DECK_ANALYSIS_PROMPT = """Analyze this Magic: The Gathering deck list. Provide a strategic guide that will be injected into every turn's coaching context.
-
-1. ARCHETYPE: One-line (e.g. "Gruul Counters Aggro", "Dimir Control")
-2. WIN CONDITION: How does this deck close games?
-3. KEY COMBOS & SYNERGIES: Identify 2-4 powerful card interactions. Name the specific cards and explain the payoff. Example: "Kodama of the West Tree + any modified creature = free land ramp + trample."
-4. KEY CARDS: 3-5 most important cards. For each, note when to play it and what it enables.
-5. PLAY PATTERN: Ideal sequencing by game phase (early/mid/late). What to prioritize on curve, when to hold mana open, when to be aggressive vs defensive.
-6. WATCH OUT: Key weaknesses, what removal to play around, when you're vulnerable.
-
-Be specific to THIS deck's cards. Name card names, not generic advice. Keep under 600 characters total."""
 
 
 DECK_STRATEGY_BRIEF_PROMPT = """You are an expert MTG coach. Given a deck list, provide a brief spoken strategy summary in 3-5 sentences.

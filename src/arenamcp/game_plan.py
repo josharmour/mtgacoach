@@ -35,19 +35,24 @@ logger = logging.getLogger(__name__)
 # Strong, compact instruction. The model returns STRICT JSON so we can render a
 # stable prompt block for the planner and a one-line intro for spoken advice.
 GAME_PLAN_PROMPT = """You are a Magic: The Gathering strategic planner forming a PERSISTENT GAME PLAN.
-Given the current board, hand, mana, life totals and deck archetype, decide HOW THIS GAME IS WON and the concrete path to get there.
+Given the current board, hand, mana, life totals and Oracle-grounded deck playbook, decide HOW THIS GAME IS WON and the concrete path to get there.
 
 Think a few turns ahead, not just this decision. Pick the realistic win condition for THIS board, then the steps to reach it, the biggest thing that can stop you, and the single most important thing to develop next.
 Each turn's planned play MUST be mana-legal. Do NOT list multiple spells for a single turn unless their COMBINED mana cost is <= total available mana for that turn.
 Use the complete deck and remaining library to identify realistic engines, outs and backup plans; cards in the library are possibilities, not cards in hand or guaranteed draws. Preserve the prior plan when still sound, and adapt when its assumptions change.
 Removal and tutoring are conditional decisions: compare the current threat, timing, mana and opportunity cost. Hold interaction when that protects the winning line; remove a threat when it prevents loss or unlocks progress. A tutor should find the currently useful legal card still in the library, with a feasible follow-up, rather than repeat an old preferred target.
 
+Use the playbook's conditional decision rules, not just its archetype or finishers. Identify which mechanisms are currently available, which resources must survive, which may be spent/recovered, and assumptions that would invalidate this line. Evaluate commander deployment/recovery from its actual rules and current tax. Do not treat a desirable library card as an available plan.
+
 Respond with ONLY a JSON object, no prose, no markdown:
 {
   "win_conditions": ["primary win con (<=8 words)", "optional backup win con"],
   "path": "concrete path to the primary win con in turn shorthand (<=25 words), e.g. 'race for lethal ~T6 with creatures + auras, attack every turn'",
   "threat": "the opponent's biggest threat / what beats us (<=15 words)",
-  "develop_next": "the single most important thing to develop or set up next (<=12 words)"
+  "develop_next": "the single most important thing to develop or set up next (<=12 words)",
+  "active_mechanisms": ["relevant deck playbook mechanism ID and current applicability"],
+  "resource_priorities": ["what to preserve versus spend/recover, with a reason"],
+  "assumptions": ["mana, timing, survival or availability condition to recheck"]
 }"""
 
 
@@ -61,6 +66,9 @@ class GamePlan:
     develop_next: str = ""
     turn_formed: int = 0
     raw: str = ""
+    active_mechanisms: list[str] = field(default_factory=list)
+    resource_priorities: list[str] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not (self.win_conditions or self.path or self.develop_next)
@@ -78,6 +86,9 @@ class GamePlan:
             lines.append(f"  Biggest threat: {self.threat}")
         if self.develop_next:
             lines.append(f"  Develop next: {self.develop_next}")
+        lines.extend(f"  Active mechanism: {item}" for item in self.active_mechanisms)
+        lines.extend(f"  Resource priority: {item}" for item in self.resource_priorities)
+        lines.extend(f"  Recheck assumption: {item}" for item in self.assumptions)
         lines.append(
             "  Develop toward this win, but treat the plan as conditional guidance. "
             "The current board, stack, legal choices and immediate survival/lethal "
@@ -107,6 +118,9 @@ class GamePlan:
             "threat": self.threat,
             "develop_next": self.develop_next,
             "turn_formed": self.turn_formed,
+            "active_mechanisms": self.active_mechanisms,
+            "resource_priorities": self.resource_priorities,
+            "assumptions": self.assumptions,
         }
 
 
@@ -466,6 +480,10 @@ class GamePlanManager:
             identities(game_state.get("hand") or []),
             identities(game_state.get("graveyard") or []),
             identities(game_state.get("exile") or []),
+            identities(game_state.get("command") or []),
+            tuple(
+                sorted((str(gid), count) for gid, count in (game_state.get("commander_casts") or {}).items())
+            ),
         )
 
     # ----- LLM call --------------------------------------------------------
@@ -496,7 +514,7 @@ class GamePlanManager:
         context = self._build_context(game_state)
         user_parts = [context]
         if self._seed:
-            user_parts.append(f"\nDECK ARCHETYPE:\n{self._seed}")
+            user_parts.append(f"\nDECK PLAYBOOK / STRATEGY:\n{self._seed}")
         if self._plan:
             user_parts.append(self._plan.as_planner_block())
         if self._stall_count >= self._STALL_REFORM_THRESHOLD and self._stall_hint:
@@ -533,14 +551,14 @@ class GamePlanManager:
             return self._backend.complete(
                 system_prompt,
                 user_message,
-                1024,
+                2048,
                 temperature=0.0,
                 request_timeout_s=self._timeout,
             )
         except TypeError:
             # Local backends may not accept request_timeout_s / temperature.
             try:
-                return self._backend.complete(system_prompt, user_message, 1024)
+                return self._backend.complete(system_prompt, user_message, 2048)
             except TypeError:
                 return self._backend.complete(system_prompt, user_message)
 
@@ -581,6 +599,14 @@ class GamePlanManager:
         else:
             wins = []
 
+        def items(key):
+            value = data.get(key)
+            return (
+                [item.strip() for item in value if isinstance(item, str) and item.strip()][:8]
+                if isinstance(value, list)
+                else []
+            )
+
         return GamePlan(
             win_conditions=wins,
             path=str(data.get("path", "") or "").strip(),
@@ -588,4 +614,7 @@ class GamePlanManager:
             develop_next=str(data.get("develop_next", "") or "").strip(),
             turn_formed=turn_num,
             raw=blob,
+            active_mechanisms=items("active_mechanisms"),
+            resource_priorities=items("resource_priorities"),
+            assumptions=items("assumptions"),
         )

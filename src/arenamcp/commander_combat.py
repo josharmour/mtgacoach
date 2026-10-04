@@ -55,7 +55,7 @@ def commander_block_context(state: dict, context: dict) -> list[str]:
             recast = f"printed {cost} plus UNKNOWN commander tax; do not assume zero tax"
         lines.append(
             f"Commander recovery: {label(card)} is YOUR COMMANDER. Next command-zone cast costs {recast}. "
-            "If it dies, return it to the command zone; token copies cannot return there. "
+            "If it dies, command-zone recovery is available; token copies cannot return there. "
             "The combat solver does not price commander recovery or replaying enters abilities."
         )
         if card.get("oracle_text"):
@@ -76,15 +76,44 @@ def commander_block_context(state: dict, context: dict) -> list[str]:
             alternatives = [c for c in copies if attacker_id in legal[c["instance_id"]] and dies(c, attacker)]
             if not alternatives:
                 continue
+            # Enumerate the unchanged resources before evaluating replay
+            # effects. A model comparing two alternatives can otherwise carry
+            # the substitute's death into the commander-dies branch too.
+            local_creatures = [
+                c
+                for c in cards.values()
+                if (c.get("controller_seat_id") or c.get("owner_seat_id")) == seat
+                and (
+                    "creature" in str(c.get("type_line", "")).lower()
+                    or "Creature" in (c.get("card_types") or [])
+                )
+            ]
+            survivors = [c for c in local_creatures if c["instance_id"] != iid]
+            lines.append(
+                f"Single-trade ledger if {label(card)} dies: unchanged surviving creatures = "
+                f"{', '.join(label(c) for c in survivors) or 'none'} ({len(survivors)} bodies). "
+                f"An eventual recast adds the original back: {len(survivors) + 1} bodies BEFORE "
+                "new cast/entry effects. Apply those effects to these survivors, not to the "
+                "other alternative's board. This ledger isolates one trade; subtract other "
+                "combat losses separately in BOTH alternatives."
+            )
+            for alternative in alternatives:
+                survivors = [c for c in local_creatures if c["instance_id"] != alternative["instance_id"]]
+                lines.append(
+                    f"Single-trade ledger if {label(alternative)} dies instead: unchanged creatures = "
+                    f"{', '.join(label(c) for c in survivors) or 'none'} ({len(survivors)} bodies); "
+                    "no recast or new entry is caused by this alternative."
+                )
             lines.append(
                 f"Recovery comparison against {label(attacker)}: {label(card)} or "
                 f"{', '.join(label(c) for c in alternatives)} would die in a single block under visible combat. "
-                "When those blocks have equivalent combat outcomes, prefer losing the commander over a token "
-                "if its next recast is affordable and its enters ability rebuilds more value. "
-                "For a nontoken-only copy-creation trigger, recasting the original creates fresh copies; "
-                "sacrificing an existing token forfeits that opportunity. Check commander tax, colored mana "
+                "Equivalent combat outcomes do not imply equal strategic value. Apply this deck's "
+                "conditional decision rules: compare replayable cast/enter/death value with preserving "
+                "ongoing abilities, counters or other invested resources. Do not automatically choose "
+                "either a token or the commander. Check commander tax, colored mana "
                 "from the SURVIVING board after untapping, other planned spells, and the delay before new "
                 "creatures can tap. Never count the dying commander as a source for its own recast. "
-                "Preserve the commander when recasting is impractical; surviving combat takes precedence."
+                "Recasting is only a plan if its next recast is affordable and worthwhile; "
+                "surviving combat takes precedence."
             )
     return lines

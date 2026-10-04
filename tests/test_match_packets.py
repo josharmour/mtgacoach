@@ -93,7 +93,7 @@ def test_autopilot_integration_records_packets(monkeypatch):
     eng = _engine(monkeypatch, bridge, planner)
 
     # Execute decision
-    handled = eng._try_typed_decision_path(_state(), "decision_required")
+    handled = eng._try_typed_decision_path(_state(known_source=True), "decision_required")
     assert handled is True
 
     # Verify decision logged in packet

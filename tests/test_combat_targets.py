@@ -90,7 +90,7 @@ def test_attack_speech_uses_submitted_recipient_not_conflicting_prose():
         }
     )
     plan = planner._parse_response(response, ["Attack with: Beast"])
-    assert plan.voice_advice == "Attack Jace with Beast."
+    assert plan.voice_advice == "Attack with Beast at Jace."
     assert plan.actions[0].attacker_targets == {"Beast": "Jace [297]"}
     assert "opponent" not in plan.voice_advice
 

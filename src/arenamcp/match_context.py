@@ -36,7 +36,17 @@ STRATEGIC_POLICY = (
     "never reject a fetch/tutor or predict decking based on missing observations. "
     "A fetch land that sacrifices itself for one land replaces a land; it is not net land ramp. "
     "Evaluate its life cost, needed colors/mana, timing and actual synergies; deck thinning alone "
-    "is not a reason to crack it immediately."
+    "is not a reason to crack it immediately. "
+    "Apply the deck playbook's relevant mechanisms and conditions to each choice, including combat, "
+    "sacrifices, discards, commander zones and mana use. Equal combat stats do not imply equal "
+    "strategic value. Compare preserving an ongoing engine with spending a recoverable resource "
+    "to replay a supported trigger; account for the surviving board, colored mana, commander tax, "
+    "timing, summoning sickness and opportunity cost. Do not count a sacrificed source toward its "
+    "own recovery or assume a token has the original's cast/enter/zone options. Neither commanders "
+    "nor tokens are automatically expendable. Before choosing, compare the strongest legal "
+    "alternative and name the relevant mechanism or the live constraint that makes deviating better. "
+    "Use only effects supported by the supplied Oracle text: cast, enter, attack, death and zone "
+    "changes are different events. A static material/combat score does not price these strategic effects."
 )
 
 
@@ -135,15 +145,9 @@ def prepare_match_context(state: dict, *, card_lookup: Callable[[int], Any] | No
     local = state.get("local_seat_id") or next(
         (p.get("seat_id") for p in state.get("players", []) if p.get("is_local")), None
     )
-    commanders = Counter(_ids(state.get("commander_grp_ids")))
-    if not commanders and local is not None:
-        commanders.update(
-            {
-                c.get("grp_id"): 1
-                for c in _zone(state, "command")
-                if c.get("owner_seat_id") == local and c.get("grp_id", 0) > 4
-            }
-        )
+    from arenamcp.deck_strategy import commander_ids
+
+    commanders = Counter(commander_ids(state))
     lookup = card_lookup or (lambda grp_id: _local_card(grp_id, int(time.monotonic() // 30)))
     catalog: dict[int, dict] = {}
     for grp_id in sorted(deck.keys() | commanders.keys()):

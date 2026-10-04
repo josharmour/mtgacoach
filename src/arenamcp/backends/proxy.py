@@ -373,6 +373,9 @@ class ProxyBackend:
         temperature: float = 0.3,
         request_timeout_s: float | None = None,
         raise_on_error: bool = False,
+        response_format: dict | None = None,
+        background: bool = False,
+        enable_thinking: bool | None = None,
     ) -> str:
         """Get completion from the API endpoint.
 
@@ -385,6 +388,12 @@ class ProxyBackend:
                 HTTP request gets the remaining budget as its socket timeout;
                 streaming also checks elapsed time between chunks. Socket
                 timeouts bound stalled reads, not an exact wall-clock cutoff.
+            background: Opt into a 120-second ceiling for setup analysis;
+                ordinary tactical requests retain their existing ceiling.
+            enable_thinking: Per-request reasoning override; does not alter
+                the backend default for subsequent tactical requests.
+            response_format: Optional structured output schema for callers
+                that also validate the returned JSON.
             raise_on_error: Re-raise API errors instead of returning the
                 "[BACKEND ERROR] ..." sentinel string. The autopilot
                 planner sets this — during the 2026-07-05 gateway outage the
@@ -393,8 +402,12 @@ class ProxyBackend:
                 castable spells. Sentinel-string returns are only safe for
                 consumers that display text to a human.
         """
+        thinking_enabled = self.enable_thinking if enable_thinking is None else enable_thinking
         request_started = time.perf_counter()
-        budget = self._CLIENT_HARD_TIMEOUT_S
+        # Full deck analysis is off the tactical path and can need longer than
+        # a live action window. Opt in per request; never mutate the shared
+        # client's timeout or relax the default decision budget.
+        budget = 120.0 if background else self._CLIENT_HARD_TIMEOUT_S
         if request_timeout_s is not None:
             budget = min(budget, max(0.0, request_timeout_s))
         deadline = request_started + budget
@@ -409,6 +422,8 @@ class ProxyBackend:
                 ],
                 "temperature": temperature,
             }
+            if response_format is not None:
+                params["response_format"] = response_format
 
             model_lower = self.model.lower()
             is_gpt5 = (
@@ -439,11 +454,11 @@ class ProxyBackend:
             # :8002, the low-effort kwargs hurt it (dsv4 slowed with
             # thinking=true — the 2026-07-29 p50 6134ms bug); re-gate on the
             # served engine then.
-            if self.enable_thinking:
+            if thinking_enabled:
                 extra["chat_template_kwargs"] = {"thinking": True}
             else:
                 extra["chat_template_kwargs"] = {"thinking": True, "reasoning_effort": "low"}
-            if self.enable_thinking:
+            if thinking_enabled:
                 if "claude" in model_lower:
                     extra["thinking"] = {"type": "enabled", "budget_tokens": 8000}
                     if "max_completion_tokens" in params:

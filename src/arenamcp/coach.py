@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from collections import Counter
 from typing import TYPE_CHECKING, Any
@@ -104,6 +105,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         self._word_tracker = WordUsageTracker()
         self._deck_strategy: str | None = None
         self._deck_strategy_pending = False
+        self._deck_playbook = None
+        self._deck_analysis_lock = threading.RLock()
+        self._deck_analysis_generation = 0
+        self._deck_analysis_identity = ""
+        self._deck_analysis_error = ""
         self._rules_db: RulesDB | None = None
         self.narration_mode = "advisor"
         # Last structured pick from get_advice ({"index", "action", "verified",
@@ -363,102 +369,150 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         return f"{LOCAL_FALLBACK_PREFIX} {msg}"
 
     def clear_deck_strategy(self) -> None:
-        """Reset deck strategy for a new match."""
-        self._deck_strategy = None
-        self._deck_strategy_pending = False
-        self._last_advised_plan_intro = ""
+        """Invalidate strategy and any late analysis from the previous deck/match."""
+        with self._deck_analysis_lock:
+            self._deck_analysis_generation += 1
+            self._deck_strategy = None
+            self._deck_playbook = None
+            self._deck_strategy_pending = False
+            self._deck_analysis_identity = ""
+            self._deck_analysis_error = ""
+            self._last_advised_plan_intro = ""
+            if self._game_plan_mgr is not None:
+                self._game_plan_mgr.reset()
 
-    def analyze_deck(self, deck_cards: list[tuple[str, str, str]], backend=None) -> str | None:
-        """Analyze a deck list and store the strategy summary.
+    def begin_deck_analysis(self, identity: str) -> int:
+        """Reserve this analysis before starting its worker, not after enrichment."""
+        with self._deck_analysis_lock:
+            self.clear_deck_strategy()
+            self._deck_analysis_identity = identity
+            self._deck_strategy_pending = True
+            return self._deck_analysis_generation
 
-        Args:
-            deck_cards: List of (card_name, card_type, oracle_text) tuples
-            backend: Optional separate backend instance (avoids lock contention
-                     with advice calls when run on a background thread)
+    def analyze_deck(self, game_state: dict, backend=None, *, analysis_generation=None) -> str | None:
+        """Build and publish an Oracle-grounded playbook for this exact deck.
 
-        Returns:
-            Strategy string, or None on failure
+        A separate background backend keeps analysis off the tactical request
+        path. No spoken summary can replace this internal strategic knowledge.
         """
+        from arenamcp.deck_strategy import (
+            DECK_DISCOVERY_PROMPT,
+            DeckPlaybook,
+            analysis_reference,
+            commander_ids,
+            deck_identity,
+            playbook_response_format,
+        )
+        from arenamcp.match_context import prepare_match_context
 
-        start = time.perf_counter()
-        self._deck_strategy_pending = True
-
-        # Use dedicated backend if provided, otherwise fall back to shared one
+        identity = deck_identity(game_state)
+        generation = analysis_generation
+        if generation is None:
+            generation = self.begin_deck_analysis(identity)
         be = backend or self._backend
-
+        start = time.perf_counter()
         try:
-            # Group duplicates compactly: "4x Mountain (Basic Land)"
-            from collections import Counter
+            prepared = prepare_match_context(game_state)
+            catalog = prepared.get("deck_catalog") or {}
+            commanders = commander_ids(game_state)
+            if not catalog:
+                raise ValueError("Starting deck and card rules are unavailable")
+            user_message = (
+                analysis_reference(game_state, catalog)
+                + "\n\nDESIGNATED COMMANDER CARD IDS: "
+                + json.dumps(commanders)
+                + "\nAnalyze exactly these card IDs: "
+                + json.dumps(sorted(catalog))
+            )
 
-            # Group by (name, type) for counting, but keep oracle text
-            oracle_by_name: dict[str, str] = {}
-            count_key = Counter()
-            for name, card_type, oracle in deck_cards:
-                count_key[(name, card_type)] += 1
-                if oracle and name not in oracle_by_name:
-                    oracle_by_name[name] = oracle
-
-            deck_lines = []
-            for (name, card_type), count in count_key.most_common():
-                type_short = card_type.split("—")[0].strip() if card_type else "Unknown"
-                line = f"{count}x {name} ({type_short})"
-                # Include oracle text for non-basic-land spells so the LLM
-                # knows what the card actually does instead of guessing
-                oracle = oracle_by_name.get(name, "")
-                is_basic = "basic" in (card_type or "").lower()
-                if oracle and not is_basic:
-                    oracle_short = self._remove_reminder_text(oracle).strip()
-                    if oracle_short:
-                        line += f" — {oracle_short}"
-                deck_lines.append(line)
-
-            deck_text = "\n".join(deck_lines)
-            user_message = f"DECK LIST ({len(deck_cards)} cards):\n{deck_text}"
-
-            # Deck analysis benefits from thinking (one-time, not real-time).
-            # Also needs more tokens than game advice for the full strategy output.
-            try:
-                strategy = be.complete(
-                    DECK_ANALYSIS_PROMPT,
-                    user_message,
-                    max_tokens=4096,
-                    use_thinking=True,
+            # Separate strategic reasoning from encoding the result. Asking
+            # the hosted model to do both inside a large decoding grammar led
+            # to omitted branches and repeated invalid/truncated JSON.
+            def complete(system, message, *, discovery=False):
+                with self._deck_analysis_lock:
+                    if generation != self._deck_analysis_generation:
+                        raise ValueError("Deck changed during analysis")
+                options = dict(
+                    max_tokens=6000 if discovery else 12288,
+                    temperature=0.0,
+                    request_timeout_s=120.0,
+                    background=True,
+                    enable_thinking=discovery,
                 )
-            except TypeError:
-                # Backend doesn't support max_tokens parameter
-                strategy = be.complete(DECK_ANALYSIS_PROMPT, user_message)
+                if not discovery:
+                    options["response_format"] = playbook_response_format(catalog, commanders)
+                try:
+                    response = be.complete(system, message, **options)
+                except TypeError:
+                    try:
+                        response = be.complete(system, message, 12288)
+                    except TypeError:
+                        response = be.complete(system, message)
+                if not response or is_backend_error_text(response):
+                    raise ValueError("Deck analysis backend returned no usable response")
+                return response
 
-            # Don't store error/fallback messages as deck strategy
-            if not strategy:
-                logger.warning("Deck analysis returned empty response")
-                return None
-            # Check for backend auth/billing errors (e.g. "Credit balance is too low")
-            from arenamcp.backend_detect import is_query_failure_retriable
-
-            if (
-                is_backend_error_text(strategy)
-                or "didn't catch that" in strategy
-                or is_query_failure_retriable(strategy)
-            ):
-                logger.warning(f"Deck analysis returned error-like response: {strategy[:80]}")
-                return None
-
-            self._deck_strategy = strategy
-            # Seed the persistent game plan from the deck archetype.
-            try:
+            notes = complete(DECK_DISCOVERY_PROMPT, user_message, discovery=True)
+            user_message += (
+                "\n\nAUDIT THE PROPOSED PLAYBOOK NOTES BELOW AGAINST THESE RULES, then "
+                "compile a complete playbook using the required JSON shape. Correct unsupported "
+                "claims instead of copying them for consistency. A spent ETB is not a continuing "
+                "benefit of preserving its source. Recompute both resource comparisons from "
+                "the same starting state, retaining every unaffected survivor. Verify costs, "
+                "cast versus entry triggers, token restrictions and mana restrictions. Express "
+                "affordability from surviving sources and actual tax; reject arbitrary cast-count "
+                "cutoffs. Every conditional exception needs a supported mechanism and exceptions."
+                "\nANALYSIS NOTES:\n" + notes
+            )
+            playbook = None
+            for attempt in range(2):
+                response = complete(DECK_ANALYSIS_PROMPT, user_message)
+                try:
+                    playbook = DeckPlaybook.parse(response, catalog, commanders, identity)
+                    break
+                except (ValueError, TypeError, KeyError) as error:
+                    logger.info("Deck playbook validation failed (attempt %d): %s", attempt + 1, error)
+                    with self._deck_analysis_lock:
+                        if generation == self._deck_analysis_generation:
+                            self._deck_analysis_error = str(error)
+                    if attempt:
+                        raise
+                    user_message += (
+                        f"\n\nYour previous analysis failed validation: {error}. "
+                        "Return the complete corrected JSON, preserving key-card roles, "
+                        "commander policies and valid numbered Oracle rule references.\nPrevious response:\n"
+                        + response
+                    )
+            assert playbook is not None
+            strategy = playbook.render()
+            with self._deck_analysis_lock:
+                if generation != self._deck_analysis_generation:
+                    logger.info("Discarded deck analysis after deck/match changed")
+                    return None
+                self._deck_playbook = playbook
+                self._deck_strategy = strategy
+                self._deck_analysis_error = ""
                 mgr = self._ensure_game_plan_mgr()
                 if mgr is not None:
-                    mgr.seed(self._deck_strategy)
-            except Exception as e:
-                logger.debug(f"Game-plan seed failed (non-fatal): {e}")
+                    mgr.seed(strategy)
             elapsed = (time.perf_counter() - start) * 1000
-            logger.info(f"Deck analysis complete: {elapsed:.0f}ms, {len(strategy)} chars")
+            logger.info(
+                "Deck playbook complete: %.0fms, %d cards, %d mechanisms",
+                elapsed,
+                len(catalog),
+                len(playbook.data["mechanisms"]),
+            )
             return strategy
-        except Exception as e:
-            logger.error(f"Deck analysis failed: {e}")
+        except Exception as error:
+            with self._deck_analysis_lock:
+                if generation == self._deck_analysis_generation:
+                    self._deck_analysis_error = str(error)
+            logger.warning("Deck playbook analysis failed: %s", error)
             return None
         finally:
-            self._deck_strategy_pending = False
+            with self._deck_analysis_lock:
+                if generation == self._deck_analysis_generation:
+                    self._deck_strategy_pending = False
 
     def get_deck_strategy_brief(self, deck_cards: list[tuple[str, str, str]], backend=None) -> str | None:
         """Generate a brief 3-5 sentence spoken strategy for a deck.
@@ -1839,6 +1893,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             )
             if solver_plan is not None:
                 lines.append(f"Computed optimal blocks: {solver_plan.explanation}")
+                lines.append(
+                    "This is a mechanical combat/material baseline. It does not simulate cast/entry/death "
+                    "triggers, commander recovery or the deck's conditional resource trades. Compare "
+                    "otherwise similar blocks using those effects and the resulting next-turn board."
+                )
                 lines.append(
                     f"Recommended blocks leave {your_life - solver_plan.damage_through} life "
                     f"after {solver_plan.damage_through} combat damage. "
@@ -3510,7 +3569,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         dynamic_context = ""
 
         # Inject deck strategy if available — instruct model to reference it
-        if self._deck_strategy:
+        if self._deck_strategy and self._deck_playbook is None:
             dynamic_context += (
                 f"\n\nDECK STRATEGY:\n{self._deck_strategy}"
                 "\n\nALWAYS consider this strategy when advising. Prioritize plays that:"
@@ -3588,6 +3647,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             logger.warning(f"Rules RAG error (non-fatal): {e}")
 
         # Stable system + deck prefix; changing plans/rules never invalidate the deck cache.
+        if self._deck_playbook is not None:
+            user_message += "\n\n" + self._deck_playbook.decision_context(game_state)
         user_message = with_deck_reference(dynamic_context + "\n\n" + user_message, game_state)
 
         # OPTIMIZATION: Log prompt size with token estimate

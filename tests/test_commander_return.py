@@ -134,7 +134,7 @@ def test_typed_commander_return_bypasses_portal_decline_and_revalidates_request(
         engine._gre_bridge.submit_optional.assert_not_called()
     else:
         engine._gre_bridge.submit_optional.assert_called_once_with(True, expected_request_id=(224, 314))
-        assert "return The Notary Hobbits to the command zone" in engine._notify.call_args.args[1]
+        assert "returning The Notary Hobbits to the command zone" in engine._notify.call_args.args[1]
 
 
 @pytest.mark.parametrize("case", ["unrecognized", "stale_request", "unknown_request", "other_recipient"])

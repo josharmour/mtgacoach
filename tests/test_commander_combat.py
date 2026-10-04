@@ -79,7 +79,7 @@ def test_report_block_prompt_distinguishes_recastable_original_and_permanent_tok
     assert f"{HOBBIT} [id:472] is YOUR COMMANDER" in prompt
     assert "printed {3}{G}{G} plus {2} commander tax" in prompt
     assert "*The Notary Hobbits [id:481], *The Notary Hobbits [id:482] would die" in prompt
-    assert "prefer losing the commander over a token" in prompt
+    assert "Apply this deck's conditional decision rules" in prompt
     assert "SURVIVING board after untapping" in prompt
     assert "Never count the dying commander as a source" in prompt
     assert RULES in prompt
@@ -101,7 +101,7 @@ def test_high_or_unknown_tax_is_not_presented_as_a_cheap_recast(combat, casts):
     prompt = render(combat)
     assert ("plus {10} commander tax" if casts else "UNKNOWN commander tax") in prompt
     assert "if its next recast is affordable" in prompt
-    assert "Preserve the commander when recasting is impractical" in prompt
+    assert "Recasting is only a plan if its next recast is affordable and worthwhile" in prompt
 
 
 @pytest.mark.parametrize("change", ["illegal", "not_commander", "token", "stolen"])
@@ -159,3 +159,17 @@ def test_other_players_designations_and_invalid_taxes_do_not_replace_local_count
     gs.commander_casts = {103511: 1}
     gs._process_annotations([designation(seat, tax, kind)])
     assert gs.commander_casts == {103511: 1}
+
+
+def test_alternative_ledgers_never_remove_a_body_from_both_branches(combat):
+    prompt = render(combat)
+    line = next(line for line in prompt.splitlines() if "Single-trade ledger if The Notary" in line)
+    assert "[id:481]" in line and "[id:482]" in line
+    assert "(2 bodies)" in line and "3 bodies BEFORE" in line
+    token_line = next(
+        line for line in prompt.splitlines() if "Single-trade ledger if *The Notary Hobbits [id:481]" in line
+    )
+    assert (
+        "unchanged creatures = The Notary Hobbits [id:472], *The Notary Hobbits [id:482] (2 bodies)"
+        in token_line
+    )

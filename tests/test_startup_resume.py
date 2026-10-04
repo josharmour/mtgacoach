@@ -10,16 +10,14 @@ import pytest
 from arenamcp.game_plan import GamePlanManager
 from arenamcp.pipe_adapter import PipeAdapter
 from arenamcp.standalone_startup import _StartupMixin
+from test_deck_strategy import deck_case, playbook_for
 
 
 def state(match="match-one", turn=4):
-    return {
-        "match_id": match,
-        "turn": {"turn_number": turn},
-        "players": [{"seat_id": 1, "is_local": True}],
-        "battlefield": [],
-        "hand": [],
-    }
+    result = deck_case()[0]
+    result["match_id"] = match
+    result["turn"]["turn_number"] = turn
+    return result
 
 
 class Runtime(_StartupMixin):
@@ -30,7 +28,8 @@ class Runtime(_StartupMixin):
         self._running = True
         self.manager = GamePlanManager(Mock())
         self._coach = SimpleNamespace(
-            _deck_strategy="Develop the engine, hold removal.",
+            _deck_strategy=playbook_for().render(),
+            _deck_playbook=playbook_for(),
             _game_plan_mgr=self.manager,
             _ensure_game_plan_mgr=lambda: self.manager,
         )
@@ -154,3 +153,24 @@ def test_inconclusive_model_list_check_keeps_coaching_enabled():
     payload = runtime.ui.emit_startup_status.call_args.args[0]
     assert payload["phase"] == "connection_warning"
     assert payload["ready"] is True
+
+
+def test_legacy_unstructured_summary_is_reanalyzed_after_reload(resume_path):
+    resume_path.write_text(
+        json.dumps(
+            {
+                "saved_at": time.time(),
+                "match_id": "match-one",
+                "turn": 4,
+                "deck_strategy": "Generic old ramp summary without commander analysis.",
+            }
+        )
+    )
+    runtime = Runtime()
+    runtime._coach._deck_strategy = None
+    runtime._coach._deck_playbook = None
+    runtime._load_engine_resume()
+    runtime._try_restore_engine_resume(state())
+    assert not runtime._deck_analyzed
+    assert runtime._coach._deck_strategy is None
+    assert runtime._coach._deck_playbook is None

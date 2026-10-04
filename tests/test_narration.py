@@ -14,19 +14,19 @@ from arenamcp.narration import action_narration, narration_policy, submission_na
 @pytest.mark.parametrize(
     ("action", "expected"),
     [
-        ("Cast Play with Fire.", "I'm casting Play with Fire."),
-        ("Don't attack.", "I'm not attacking."),
-        ("Don't block.", "I'm not blocking."),
+        ("Cast Play with Fire.", "Casting Play with Fire."),
+        ("Don't attack.", "Not attacking."),
+        ("Don't block.", "Not blocking."),
         (
             "Attack Jace with Bear; Attack opponent with Dragon.",
-            "I'm attacking Jace with Bear, and opponent with Dragon.",
+            "Attacking Jace with Bear, and opponent with Dragon.",
         ),
-        ("Block Dragon with Giant.", "I'm blocking Dragon with Giant."),
-        ("Choose The Notary Hobbits.", "I'm choosing The Notary Hobbits."),
-        ("Mulligan.", "I'm taking a mulligan."),
-        ("Resolve.", "I'm passing priority."),
-        ("Pass priority.", "I'm passing priority."),
-        ("I'm holding removal.", "I'm holding removal."),
+        ("Block Dragon with Giant.", "Blocking Dragon with Giant."),
+        ("Choose The Notary Hobbits.", "Choosing The Notary Hobbits."),
+        ("Mulligan.", "Taking a mulligan."),
+        ("Resolve.", "Passing priority."),
+        ("Pass priority.", "Passing priority."),
+        ("I'm holding removal.", "Holding removal."),
         ("The opponent cast Murder.", "The opponent cast Murder."),
     ],
 )
@@ -35,19 +35,19 @@ def test_driver_actions_preserve_names_targets_and_observations(action, expected
 
 
 def test_preview_is_intent_without_claiming_an_action_happened():
-    assert action_narration("Cast Murder.", planned=True) == "I plan to cast Murder."
-    assert action_narration("Don't attack.", planned=True) == "I plan not to attack."
+    assert action_narration("Cast Murder.", planned=True) == "Plan: casting Murder."
+    assert action_narration("Don't attack.", planned=True) == "Plan: not attacking."
     plan = ActionPlan(actions=[GameAction(action_type=ActionType.CAST_SPELL, card_name="Murder")])
     engine = AutopilotEngine.__new__(AutopilotEngine)
-    assert "PLAN: I plan to cast Murder." in engine._format_plan_preview(plan)
+    assert "PLAN: casting Murder." in engine._format_plan_preview(plan)
 
 
 def test_submission_reason_is_plan_instead_of_an_instruction_to_viewer():
     assert submission_narration("Cast Birds of Paradise.", "Add mana for next turn.") == (
-        "I'm casting Birds of Paradise. I plan to add mana for next turn."
+        "Casting Birds of Paradise. Plan: adding mana for next turn."
     )
     assert submission_narration("Choose Forest.", "This supports the next land drop.") == (
-        "I'm choosing Forest. This supports the next land drop."
+        "Choosing Forest. This supports the next land drop."
     )
 
 
@@ -60,8 +60,8 @@ def test_report_attack_is_one_sentence_grouped_by_target_without_protocol_labels
     action = GameAction(action_type=ActionType.DECLARE_ATTACKERS, attacker_targets=assignments.copy())
     speech = submission_narration(ActionPlan(actions=[action]).spoken_actions())
     assert speech == (
-        "I'm attacking the opponent with Llanowar Elves and Badgermole Cub, "
-        "and Nicol Bolas, Dragon-God with Rhino Warrior token."
+        "Attacking with Llanowar Elves and Badgermole Cub at the opponent, "
+        "and Rhino Warrior token at Nicol Bolas, Dragon-God."
     )
     assert action.attacker_targets == assignments  # Rendering cannot alter execution identity.
 
@@ -72,17 +72,17 @@ def test_multiple_blockers_share_one_action_and_preserve_the_other_attacker():
         blocker_assignments={"Bear #1": "Giant [id:10]", "Bear #2": "Giant [id:10]", "Elf": "Goblin [id:11]"},
     )
     assert submission_narration(ActionPlan(actions=[action]).spoken_actions()) == (
-        "I'm blocking Giant with Bear #1 and Bear #2, and Goblin with Elf."
+        "Blocking with Bear #1 and Bear #2 against Giant, and Elf against Goblin."
     )
 
 
 def test_autopilot_uses_my_in_actions_and_rationale_without_rewriting_card_titles():
     assert submission_narration("Return your commander.", "Your creatures can protect your life total.") == (
-        "I'm returning my commander. My creatures can protect my life total."
+        "Returning my commander. My creatures can protect my life total."
     )
-    assert action_narration("Cast Your Temple Is Under Attack.") == "I'm casting Your Temple Is Under Attack."
+    assert action_narration("Cast Your Temple Is Under Attack.") == "Casting Your Temple Is Under Attack."
     assert submission_narration("Choose Forest.", "That land is yours.") == (
-        "I'm choosing Forest. That land is mine."
+        "Choosing Forest. That land is mine."
     )
 
 
@@ -119,7 +119,7 @@ def test_coach_routes_prompt_and_final_text_without_an_extra_call(monkeypatch, m
     if mode == "autopilot":
         assert "VOICE ROLE — AUTOPILOT" in prompt
         assert "a cast is not a resolved spell" in prompt
-        assert response == "I plan to cast Murder."
+        assert response == "Plan: casting Murder."
     else:
         assert "VOICE ROLE — ADVISOR" in prompt
         assert response == "Cast Murder."
@@ -146,7 +146,7 @@ def test_background_win_plan_uses_driver_voice_without_new_requests(monkeypatch)
     coach, backend = make_coach(monkeypatch, "I plan to keep removal available.")
     coach.narration_mode = "autopilot"
     result = coach.get_win_plan({}, turns=3)
-    assert result == "I plan to keep removal available."
+    assert result == "Plan: keeping removal available."
     assert len(backend.calls) == 1
     assert "VOICE ROLE — AUTOPILOT" in backend.calls[0][0]
 
@@ -176,7 +176,7 @@ def test_native_mac_input_reports_intent_without_claiming_cast_completion(monkey
     )
     engine._speak_fn = Mock()
     assert engine.process_trigger(state, "desktop_poll")
-    expected = "I plan to cast Murder."
+    expected = "Plan: casting Murder."
     if dry_run:
         expected = "Preview only: " + expected
         controller.execute.assert_not_called()
@@ -214,4 +214,18 @@ def test_native_failed_or_repeated_input_does_not_repeat_speech(monkeypatch):
     controller.execute.return_value = True
     assert engine._send(make_frame(), action)
     assert engine._send(make_frame(), action)
-    engine._speak_fn.assert_called_once_with("I plan to choose Forest.", False)
+    engine._speak_fn.assert_called_once_with("Plan: choosing Forest.", False)
+
+
+def test_model_supplied_action_prefixes_are_removed_without_changing_observations():
+    assert action_narration("I’m attacking with my Elf.") == "Attacking with my Elf."
+    assert action_narration("I'm blocking with my token.") == "Blocking with my token."
+    assert action_narration("I plan to cast Murder.") == "Plan: casting Murder."
+    assert action_narration("I'm holding removal.", planned=True) == "Plan: holding removal."
+    assert action_narration("I'm concerned about their open mana.") == "I'm concerned about their open mana."
+
+
+def test_submission_also_normalizes_old_model_action_prefixes_in_the_rationale():
+    assert submission_narration("Play Forest.", "I'm holding my removal.") == (
+        "Playing Forest. Plan: holding my removal."
+    )

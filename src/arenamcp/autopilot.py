@@ -3393,7 +3393,8 @@ class AutopilotEngine(
         """
         from arenamcp.narration import action_narration
 
-        lines = [f"PLAN: {action_narration(plan.spoken_actions(), planned=True)}"]
+        preview = action_narration(plan.spoken_actions(), planned=True).removeprefix("Plan: ")
+        lines = [f"PLAN: {preview}"]
         for i, action in enumerate(plan.actions, 1):
             lines.append(f"  {i}. {action}")
         return "\n".join(lines)

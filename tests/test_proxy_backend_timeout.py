@@ -46,6 +46,15 @@ def test_complete_uses_default_budget_when_timeout_omitted():
     assert 0 < mock_client.with_options.call_args.kwargs["timeout"] <= backend._CLIENT_HARD_TIMEOUT_S
 
 
+def test_background_budget_is_bounded_and_does_not_change_later_tactical_requests():
+    backend, mock_client = _make_backend_with_mock_client()
+    backend.complete("sys", "user", background=True, request_timeout_s=500)
+    assert 60 < mock_client.with_options.call_args.kwargs["timeout"] <= 120
+    mock_client.with_options.reset_mock()
+    backend.complete("sys", "user", request_timeout_s=500)
+    assert 0 < mock_client.with_options.call_args.kwargs["timeout"] <= 60
+
+
 def test_get_client_sets_finite_default_timeout(monkeypatch):
     """Even without per-call request_timeout_s, the client must have a real ceiling.
 

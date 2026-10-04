@@ -7,6 +7,75 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-10-04 — Learn conditional deck policies from Oracle text (v3.2.0)
+
+- The strategy saved in `bug_20261004_103352` omitted The Notary Hobbits,
+  despite it being the designated commander, and claimed an Emrakul cast
+  trigger from putting it onto the battlefield with Tooth and Nail. At
+  10:33:42 the planner sacrificed token 1042 instead of original 1034 against
+  Samurai 1046. The user requested a general deck-learning fix rather than
+  a hardcoded commander/token substitution.
+- Analyze the complete starting deck, costs, types, related faces and explicitly
+  designated commander(s) in one background task. Store a structured playbook:
+  primary/backup plans, key-card roles, Oracle-backed mechanisms, conditional
+  exceptions to normal heuristics, phase priorities and recovery policies.
+  Each exception links to mechanisms and states when it applies and when its
+  costs/risks invalidate it. Commander policies compare preserving versus
+  spending/recovering from a shared resource state, including both resulting
+  boards, timing, lost investments and actual affordability after tax. No
+  card-name-specific action override is added.
+- Validate referenced cards, commander coverage, source-rule handles, both
+  resource comparisons and rule links. Attach original Oracle rules to each
+  mechanism in code. First reason about the deck in free-form notes; a second
+  setup request checks those notes against the sources and compiles the JSON.
+  Compilation permits one structural repair, then reports failure rather than
+  storing error prose. Source validation proves provenance, not strategic
+  correctness. Keep inference failures visible in diagnostics.
+  Keep output focused on game-changing interactions instead of repeating every
+  card description. The old `use_thinking` argument was unsupported by the
+  backend and discarded the intended output budget through a TypeError fallback.
+- Start analysis as soon as full deck inventory is available, including during
+  the opening hand. Use a dedicated backend and enable reasoning for discovery,
+  with a 120-second per-request ceiling. Compilation and tactical requests use
+  their usual reasoning setting; per-request overrides never change the backend
+  default. The bounded output allowance includes hidden reasoning; incomplete
+  final JSON is rejected. Tactical request timeouts stay unchanged.
+- Tactical decisions reuse the playbook and receive relevant conditions near
+  the live choice. They do not rerun deck analysis or repeat the entire playbook
+  alongside those same rules. Combat comparisons explicitly enumerate surviving
+  creatures in each branch; losing a substitute in one branch must not also
+  remove it from the commander-dies branch. These are resource facts, not an
+  action override. The changing game plan keeps
+  active mechanisms, resource priorities and assumptions, and refreshes when
+  command-zone availability or tax changes. Learned sequencing/zone rules can
+  reach the model instead of being preempted by generic land-first/command-zone
+  shortcuts; legality, request freshness and submission checks still apply.
+- Key analysis to starting deck counts and designated commander IDs. Changing
+  decks invalidates late workers; reloads preserve validated same-deck playbooks
+  and rebuild older prose-only summaries. Spoken summaries never overwrite
+  internal strategy. Bug reports retain the playbook and analysis status.
+- Narration now uses “Attacking with…”, “Blocking with…” and “Casting…”. Preserve
+  my/mine possessives, grouped combat targets and intent-versus-resolution
+  distinctions. Remove recognized model-supplied “I'm…” action prefixes as well
+  as the formatter's automatic prefix.
+
+
+- Verification: `ruff check src tests`, `ruff format --check src tests`, and the
+  full pytest suite passed (2,468 passed, 7 skipped). Refresh five stale test
+  expectations/fixtures for existing idle-bridge consumption, target-source
+  validation, desktop reload wiring and passive speech filtering.
+- **Open acceptance issue:** the sanitized pre-block board is retained in
+  `tests/fixtures/commander_block_20261004_103338.json`. The final read-only
+  GLM-5.3-Flash evaluation produced a valid full-deck playbook (74 unique card
+  references), but the tactical replay still chose token 1042 against Samurai
+  1046 instead of commander 1034. No game actions were submitted. This is NOT
+  a verified fix for the reported commander block. The model's interpretations
+  and resource priorities remain unreliable despite explicit Oracle references
+  and both resource branches; passing structural tests is not evidence of good
+  strategic play. Some additional evaluations also encountered backend timeouts.
+  Auto-queue still needs a complete live post-match verification as recorded
+  under v3.1.4. Keep these acceptance issues open.
+
 ## 2026-10-04 — Verify result dismissal, retry queueing, and group combat speech (v3.1.4)
 
 - The 10:14 match-end log shows a `DEFEAT` click delivered at 10:14:47,

@@ -790,6 +790,10 @@ class _DiagnosticsMixin:
             if self._coach:
                 context["system_prompt"] = getattr(self._coach, "_system_prompt", None)
                 context["deck_strategy"] = getattr(self._coach, "_deck_strategy", None)
+                playbook = getattr(self._coach, "_deck_playbook", None)
+                context["deck_playbook"] = playbook.export() if playbook else None
+                context["deck_analysis_pending"] = getattr(self._coach, "_deck_strategy_pending", False)
+                context["deck_analysis_error"] = getattr(self._coach, "_deck_analysis_error", "")
 
                 # Use the game_context from the last advice_history entry instead of
                 # regenerating it, to avoid timing issues where game state has changed
