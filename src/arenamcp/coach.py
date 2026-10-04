@@ -1885,18 +1885,23 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 if gre_blockers:
                     usable_blockers = gre_blockers
             allowed_map = blocker_allowed_attackers_map(ctx.get("raw_blockers") or [])
+            from arenamcp.combat_recovery import CombatRecovery
+
+            recovery = CombatRecovery(game_state or {})
             solver_plan = optimal_blocks(
                 attacking,
                 usable_blockers,
                 your_life,
                 blocker_allowed_attackers=allowed_map or None,
+                recovery_credit=recovery.credit if recovery.commanders else None,
             )
             if solver_plan is not None:
                 lines.append(f"Computed optimal blocks: {solver_plan.explanation}")
                 lines.append(
-                    "This is a mechanical combat/material baseline. It does not simulate cast/entry/death "
-                    "triggers, commander recovery or the deck's conditional resource trades. Compare "
-                    "otherwise similar blocks using those effects and the resulting next-turn board."
+                    "This search prices immediate combat plus supported, affordable commander entry "
+                    "recovery below. Future resources are discounted and the full recast cost is charged. "
+                    "It does not simulate all triggers or intervening plays. Check the deck's conditional "
+                    "rules, hand and timing before deviating from the resulting resource comparison."
                 )
                 lines.append(
                     f"Recommended blocks leave {your_life - solver_plan.damage_through} life "
@@ -1904,6 +1909,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     "Nonlethal damage still costs life; compare a single expendable blocker "
                     "with taking the hit, and account for the next attack."
                 )
+                lines.extend(f.explanation for f in recovery.forecasts(solver_plan.blockers_lost_ids))
                 resource_creatures = [
                     f"{card.get('name', '?')} ({', '.join(combat_resource_roles(card))})"
                     for card in usable_blockers

@@ -363,8 +363,8 @@ def test_report_block_replay_keeps_real_identity_tax_and_legal_alternatives(monk
         game_state=state,
     )
     assert plan.actions[0].blocker_instance_assignments == {1034: 1046, 1057: 849}
-    # No deterministic substitution: the generic planner preserves the model's
-    # validated choice. The learned playbook is what must inform that choice.
+    # Parsing preserves the model's exact identity. A later resource comparison
+    # can price an alternative; parsing must never confuse originals and copies.
     token_plan = planner._parse_response(
         '{"action_type":"declare_blockers","blocker_assignments":{"*The Notary Hobbits [id:1042]":"*Samurai [id:1046]"}}',
         state["legal_actions"],

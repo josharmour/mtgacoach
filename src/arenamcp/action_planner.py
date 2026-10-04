@@ -548,6 +548,7 @@ class ActionPlanner(_ActionLegalityMixin):
         # set_game_plan(); unlike _turn_intent it survives turn changes. "" when
         # no plan has been formed yet.
         self._game_plan: str = ""
+        self._planned_recovery: tuple[str, int, int, int] | None = None
 
     def set_game_plan(self, plan_text: str | None) -> None:
         """Set the persistent strategic GAME PLAN block injected into prompts.
@@ -573,6 +574,25 @@ class ActionPlanner(_ActionLegalityMixin):
                 "all" in rule["decisions"] or set(kinds).intersection(rule["decisions"])
                 for rule in playbook.data["decision_rules"]
             )
+        )
+
+    def _committed_commander_return(self, state: dict, context: dict) -> bool:
+        """Carry a priced recovery trade through its immediate zone choice."""
+        intent = self._planned_recovery
+        if intent is None:
+            return False
+        match, turn, gid, iid = intent
+        if state.get("match_id") != match or (state.get("turn") or {}).get("turn_number") != turn:
+            self._planned_recovery = None
+            return False
+        recipients = set(context.get("recipient_ids") or [])
+        if iid in recipients:
+            return True
+        local = state.get("local_seat_id")
+        return any(
+            c.get("instance_id") in recipients and c.get("grp_id") == gid and c.get("owner_seat_id") == local
+            for zone in ("graveyard", "exile")
+            for c in state.get(zone, [])
         )
 
     def _strategy_context(self, state: dict | None = None) -> str:
@@ -624,7 +644,10 @@ class ActionPlanner(_ActionLegalityMixin):
         if (
             dec_type == "optional_action"
             and dec_ctx.get("commander_return")
-            and not self._has_deck_rule("commander_zone")
+            and (
+                self._committed_commander_return(game_state, dec_ctx)
+                or not self._has_deck_rule("commander_zone")
+            )
         ):
             plan = ActionPlan(
                 actions=[
@@ -905,6 +928,10 @@ class ActionPlanner(_ActionLegalityMixin):
                     f"{len(effective_legal_actions)} legal actions"
                 )
 
+        self._check_block_recovery(
+            plan, game_state, decision_context or game_state.get("decision_context") or {}
+        )
+
         # Attach GRE action refs if raw actions are available. If the bridge says
         # the current request has no actions (e.g. PayCostsReq), do not fall back
         # to stale ActionsAvailable actions from the previous window.
@@ -935,6 +962,52 @@ class ActionPlanner(_ActionLegalityMixin):
 
         logger.info(f"Planned {len(plan.actions)} actions: {plan.overall_strategy}")
         return plan
+
+    def _check_block_recovery(self, plan: ActionPlan, state: dict, context: dict) -> None:
+        """Price supported recovery before committing a same-outcome trade."""
+        if len(plan.actions) != 1 or plan.actions[0].action_type != ActionType.DECLARE_BLOCKERS:
+            return
+        from arenamcp.combat_recovery import improve_block_recovery
+
+        action = plan.actions[0]
+        book = self._deck_playbook()
+        forecast_state = {**state, "deck_catalog": book.catalog} if book is not None else state
+        improved = improve_block_recovery(forecast_state, context, action.blocker_instance_assignments)
+        if improved is None:
+            return
+        assignments, explanation = improved
+        cards = {c.get("instance_id"): c for c in state.get("battlefield", [])}
+
+        def label(iid):
+            card = cards[iid]
+            token = card.get("is_token") or "token" in str(card.get("object_kind", "")).lower()
+            return f"{'*' if token else ''}{card.get('name', 'Creature')} [id:{iid}]"
+
+        logger.info(
+            "Combat recovery comparison changed %s to %s: %s",
+            action.blocker_instance_assignments,
+            assignments,
+            explanation,
+        )
+        action.blocker_instance_assignments = assignments
+        action.blocker_assignments = {label(b): label(a) for b, a in assignments.items()}
+        action.reasoning = explanation
+        plan.fallback_reason = "planner_combat_recovery"
+        plan.overall_strategy = (
+            "Keep the same combat outcome and use affordable commander recovery to rebuild resources."
+        )
+        blocks = "; ".join(f"{label(b)} against {label(a)}" for b, a in assignments.items())
+        plan.voice_advice = f"Blocking with {blocks} to rebuild through an affordable recast of my commander."
+        local = next((p for p in state.get("players", []) if p.get("is_local")), {})
+        recovering = set(assignments) & set(local.get("commander_ids") or [])
+        if len(recovering) == 1 and state.get("match_id") and state.get("turn", {}).get("turn_number"):
+            iid = next(iter(recovering))
+            self._planned_recovery = (
+                state["match_id"],
+                state["turn"]["turn_number"],
+                cards[iid].get("grp_id"),
+                iid,
+            )
 
     _NON_INTENT_PREFIXES: tuple[str, ...] = (
         "[land-drop-first]",
@@ -2384,7 +2457,10 @@ class ActionPlanner(_ActionLegalityMixin):
             decision.request_type == "OptionalAction"
             and context.get("type") == "optional_action"
             and context.get("commander_return") is True
-            and not self._has_deck_rule("commander_zone")
+            and (
+                self._committed_commander_return(game_state, context)
+                or not self._has_deck_rule("commander_zone")
+            )
             and accept is not None
             and all(value > 0 for value in decision.request_id)
             and (raw.get("gameStateId"), raw.get("msgId")) == decision.request_id

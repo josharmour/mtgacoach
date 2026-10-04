@@ -7,6 +7,52 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-10-04 — Price commander recovery before accepting equivalent blocks (v3.2.1)
+
+- Close the recorded autoplay blocker-selection acceptance issue from v3.2.0.
+  The real GLM replay still proposes token 1042; adding correct facts and more
+  reasoning did not reliably change that choice. The final planner now validates
+  the proposed resource trade with a bounded Oracle-derived continuation.
+  This is a deterministic correction, explicitly marked `planner_combat_recovery`
+  so it cannot be mistaken for a successful model decision in training records.
+- Compile supported self-entry effects (fixed creature tokens, guarded
+  nonlegendary self-copies and fixed draws) from Oracle text, without named-card
+  policies. Cache these mechanics and include their resource arithmetic in the
+  initial deck analysis. The block solver prices recovery alongside immediate
+  combat; material is discounted to 75% and the full observed recast cost is
+  charged. This is a heuristic continuation, not a complete Magic simulator.
+- Compute payment from every surviving source after the next ordinary untap.
+  Count fixed multimana and per-type yields accurately, choose only one output
+  per source, check colored pips, and exclude all combat deaths. Ignore costly,
+  restricted or unsupported mana abilities rather than credit unproven mana.
+  Current pumped stats do not become printed stats of fresh copies.
+- Before accepting a losing single block, compare substitutions with the same
+  blocked attackers, damage through, enemy deaths and number of own deaths.
+  Require known empty hand, exact commander identity, current GRE legality,
+  known printed stats/tax, payable recovery and a meaningful resource advantage.
+  Counters, attachments, missing facts, stack actions and recognized interfering
+  effects disable correction. Unknown mechanics and competing cards in hand
+  remain decisions for the tactical planner. No additional model call is made.
+- Update both blocker identity representations, reasoning and narration together.
+  A selected recovery line carries through the immediately following verified
+  command-zone prompt, scoped to this match, turn and commander, including its
+  new graveyard instance. Existing request freshness checks remain in force.
+- Recorded board: original 1034 blocks Samurai 1046; Bird 1057 blocks Atraxa 849.
+  Both old Hobbit tokens survive. Eight lands plus two producers yielding two
+  colorless each provide 12 mana, paying the nine-mana recast including GG and
+  tax. Resolving the entry leaves five Hobbits; once all are ready they yield
+  25C plus the eight lands. New creatures cannot tap immediately.
+- Verification: read-only production-backend replay selects those exact final
+  assignments; no game inputs submitted. Regression coverage includes other
+  entry commanders, ordinary nontoken substitutes, ongoing engines, high/unknown
+  tax, missing colors, dead mana sources, investments, legality, training origin,
+  narration and command-zone continuation. A new live match remains untested.
+- Final checks: `ruff check src tests`, `ruff format --check src tests` and the
+  full suite passed (2,519 passed, 7 skipped). One preceding full run stalled
+  late and was stopped; the isolated late tests and clean complete rerun passed.
+
+---
+
 ## 2026-10-04 — Learn conditional deck policies from Oracle text (v3.2.0)
 
 - The strategy saved in `bug_20261004_103352` omitted The Notary Hobbits,
@@ -64,7 +110,7 @@ records *why* and *how we know*). Newest entries first.
   full pytest suite passed (2,468 passed, 7 skipped). Refresh five stale test
   expectations/fixtures for existing idle-bridge consumption, target-source
   validation, desktop reload wiring and passive speech filtering.
-- **Open acceptance issue:** the sanitized pre-block board is retained in
+- **Acceptance issue at v3.2.0 (resolved for this replay in v3.2.1 above):** the sanitized pre-block board is retained in
   `tests/fixtures/commander_block_20261004_103338.json`. The final read-only
   GLM-5.3-Flash evaluation produced a valid full-deck playbook (74 unique card
   references), but the tactical replay still chose token 1042 against Samurai

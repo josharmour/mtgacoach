@@ -103,6 +103,8 @@ def oracle_rules(card: dict) -> list[str]:
 
 def analysis_reference(state: dict, catalog: dict[int, dict]) -> str:
     """Full card facts with stable rule handles; the model need not copy text."""
+    from arenamcp.combat_recovery import entry_resources
+
     counts = Counter(state.get("deck_cards") or [])
     commanders = commander_ids(state)
     lines = ["COMPLETE DECK ORACLE REFERENCE (printed facts, not a current board):"]
@@ -115,6 +117,15 @@ def analysis_reference(state: dict, catalog: dict[int, dict]) -> str:
         )
         rules = oracle_rules(card)
         lines.extend(f"  RULE {gid}:{number}: {text}" for number, text in enumerate(rules, 1))
+        entry = entry_resources(card)
+        if entry.evidence:
+            bodies = entry.copies + sum(token[0] for token in entry.tokens)
+            lines.append(
+                f"  Compiled entry resources: +{bodies} new token bodies, +{entry.cards} cards drawn, "
+                "in addition to the entering original. Existing survivors remain. This is a payoff "
+                "after a successful entry, not passive growth or a promise that recovery is payable. "
+                "Live combat forecasts price supported recasts from the surviving board and observed tax."
+            )
         if not rules:
             lines.append("  Rules unavailable; do not invent abilities.")
     return "\n".join(lines)

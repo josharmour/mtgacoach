@@ -262,6 +262,8 @@ class BlockPlan:
     explanation: str = ""
     score: float = 0.0
     evaluated: int = 0  # block assignments scored (search cost)
+    blockers_lost_ids: frozenset[int] = frozenset()
+    recovery_credit: float = 0.0
 
 
 def _can_block_this_attacker(attacker: dict, blocker: dict, allowed_ids: set[int] | None) -> bool:
@@ -277,8 +279,20 @@ def optimal_blocks(
     *,
     blocker_allowed_attackers: dict[int, set[int]] | None = None,
     max_options: int = 50_000,
+    recovery_credit: Callable[[frozenset[int]], float] | None = None,
 ) -> BlockPlan | None:
     """Best block assignment (memoized; see `_search_blocks`)."""
+    if recovery_credit is not None:
+        # Recovery reads the whole live board, tax and surviving mana. Never
+        # reuse the body-only cache for a stateful forecast.
+        return _search_blocks(
+            attackers,
+            blockers,
+            your_life,
+            blocker_allowed_attackers=blocker_allowed_attackers,
+            max_options=max_options,
+            recovery_credit=recovery_credit,
+        )
     allowed = (
         None
         if blocker_allowed_attackers is None
@@ -304,6 +318,7 @@ def _search_blocks(
     *,
     blocker_allowed_attackers: dict[int, set[int]] | None = None,
     max_options: int = 50_000,
+    recovery_credit: Callable[[frozenset[int]], float] | None = None,
 ) -> BlockPlan | None:
     """Enumerate legal block assignments and pick the best.
 
@@ -348,7 +363,7 @@ def _search_blocks(
     menace = [_has(a, "menace") for a in attackers]
     # An attacker's fight depends only on which blockers it gets, and the
     # same (attacker, blockers) pairs recur across thousands of choices.
-    fights: dict[tuple[int, tuple[int, ...]], tuple[int, int, int]] = {}
+    fights: dict[tuple[int, tuple[int, ...]], tuple[int, int, int, frozenset[int]]] = {}
 
     best_score: float | None = None
     best_choice: tuple = ()
@@ -369,6 +384,7 @@ def _search_blocks(
         total_damage = 0
         atk_killed_material = 0
         blocker_lost_material = 0
+        lost_ids: set[int] = set()
         for a_idx in range(n_attackers):
             key = (a_idx, tuple(assigned_to_atk.get(a_idx, ())))
             fight = fights.get(key)
@@ -378,13 +394,17 @@ def _search_blocks(
                     outcome.damage_through,
                     _material(attackers[a_idx]) if outcome.attacker_died else 0,
                     sum(_material(dead) for dead in outcome.blockers_died),
+                    frozenset(dead.get("instance_id", 0) for dead in outcome.blockers_died),
                 )
                 fights[key] = fight
             total_damage += fight[0]
             atk_killed_material += fight[1]
             blocker_lost_material += fight[2]
+            lost_ids.update(fight[3])
 
         score = _block_score(total_damage, atk_killed_material, blocker_lost_material, your_life)
+        if recovery_credit is not None and total_damage < your_life:
+            score += recovery_credit(frozenset(lost_ids))
         if best_score is None or score > best_score:
             best_score = score
             best_choice = choice
@@ -416,6 +436,10 @@ def _search_blocks(
                 plan.blockers_lost_material += _material(dead)
                 lost_blockers.append(dead)
     plan.score = _score_block_plan(plan, your_life)
+    plan.blockers_lost_ids = frozenset(c.get("instance_id", 0) for c in lost_blockers)
+    if recovery_credit is not None and plan.damage_through < your_life:
+        plan.recovery_credit = recovery_credit(plan.blockers_lost_ids)
+        plan.score += plan.recovery_credit
     plan.explanation = _explain_block_plan(
         plan, attackers, blockers, best_choice, killed_attackers, lost_blockers
     )
