@@ -7,6 +7,24 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-10-04 — Confirm attacks by recipient identity across native object copies
+
+- Report `bug_20261004_092322`: Innkeeper (instance 451) was offered as a
+  legal attacker. Both 09:22:56 and 09:23:02 attempts updated its selection,
+  passed the fresh-request acknowledgment check, then failed confirmation
+  with "Attack declaration changed before confirmation."
+- Confirmation compared `SelectedDamageRecipient` and the legal recipient
+  by managed object handle. Different objects representing the same player
+  or planeswalker therefore failed despite matching combat identities. Use
+  the populated recipient kind and ID; retain exact-handle equality for
+  shared `$ref` nodes. Unreadable identities still fail closed.
+- The regression reproduces update → fresh acknowledgment → confirmation
+  with a copied opponent recipient; it failed before this fix. Coverage
+  also retains rejection of changed requests, different recipients, extra
+  attackers, and equal numeric IDs belonging to different recipient kinds.
+  This verifies the adapter path without driving a live match; the report
+  did not capture the underlying native recipient handles.
+
 ## 2026-10-04 — Keep ETB searches fresh and preserve every selected card ID
 
 - Worldwagon report `bug_20261004_005836`: accepting its optional ETB opened

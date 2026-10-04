@@ -430,15 +430,23 @@ def test_attacker_menu_selection_requires_membership_in_authoritative_declaratio
     assert bool(response["attackers"][0]["selectedDamageRecipient"]) is (declared == "reference")
 
 
-@pytest.mark.parametrize("change", ["none", "request", "recipient", "extra_attacker"])
-def test_native_attack_confirmation_revalidates_request_and_exact_declared_selection(change):
+@pytest.mark.parametrize("cloned_recipient", [False, True])
+@pytest.mark.parametrize("change", ["none", "request", "recipient", "extra_attacker", "unreadable"])
+def test_native_attack_confirmation_revalidates_request_and_exact_declared_selection(
+    change, cloned_recipient
+):
     player = {"$h": 31, "type_": enum("Player", 1), "playerSystemSeatId_": 2}
     walker = {"$h": 32, "type_": enum("PlanesWalker", 2), "planeswalkerInstanceId_": 1022}
+    selected = player if change == "recipient" else walker
+    if cloned_recipient:
+        selected = {**selected, "$h": 33}
+    if change == "unreadable":
+        selected = {"$h": 34, "$ref": True}
     attacker = {
         "$h": 40,
         "attackerInstanceId_": 803,
         "legalDamageRecipients_": listing(player, walker),
-        "selectedDamageRecipient_": player if change == "recipient" else walker,
+        "selectedDamageRecipient_": selected,
     }
     attackers = [attacker]
     if change == "extra_attacker":
@@ -466,6 +474,77 @@ def test_native_attack_confirmation_revalidates_request_and_exact_declared_selec
         )
         assert result["ok"] is False
         assert game.submits() == []
+
+
+def test_innkeeper_attack_finalizes_after_native_recipient_clone():
+    # bug_20261004_092322: UpdateAttacker succeeds and the fresh request
+    # acknowledges Innkeeper -> opponent, but its selected recipient is a
+    # different managed object from the same opponent in the legal menu.
+    opponent = {"$h": 31, "type_": enum("Player", 1), "idCase_": enum("PlayerSystemSeatId", 2), "id_": 1}
+    attacker = {
+        "$h": 30,
+        "attackerInstanceId_": 451,
+        "legalDamageRecipients_": listing(opponent),
+        "selectedDamageRecipient_": None,
+    }
+    request = {
+        "$c": "GreClient.Rules.DeclareAttackerRequest",
+        "$h": 5,
+        "QualifiedAttackers": listing(attacker),
+        "Attackers": listing(attacker),
+    }
+    game = FakeGame(request, {"CanSubmit": True})
+    adapter = adapter_for(game)
+    bridge = GREBridge()
+    bridge._send_safe = adapter.handle
+    entries = [{"attackerInstanceId": 451, "damageRecipient": {"playerSystemSeatId": 1}}]
+    assert bridge.submit_attackers_raw(entries)["needs_finalize"] is True
+    assert game.submits()[-1][-1]["method"] == "UpdateAttacker"
+
+    game.gsid += 1
+    game.msg += 1
+    game.requests = [
+        {
+            **request,
+            "$h": 6,
+            "Attackers": listing({**attacker, "$h": 40, "selectedDamageRecipient_": {**opponent, "$h": 41}}),
+        }
+    ]
+    acknowledged = adapter.handle({"action": "get_pending_actions"})
+    assert acknowledged["attackers"][0]["selectedDamageRecipient"] == {
+        "type": "Player",
+        "playerSystemSeatId": 1,
+    }
+    result = bridge.submit_attackers_raw(
+        entries,
+        expected_request_id=(game.gsid, game.msg),
+        finalize_only=True,
+    )
+    assert result["ok"] is True
+    assert len(game.submits()) == 2
+    assert game.submits()[-1][-1]["method"] == "SubmitAttackers"
+    assert not any(op["op"] == "set" for op in game.submits()[-1])
+
+
+def test_attack_confirmation_rejects_different_recipient_kind_with_same_numeric_id():
+    player = {"$h": 31, "idCase_": enum("PlayerSystemSeatId", 2), "id_": 1}
+    walker = {"$h": 32, "idCase_": enum("PlaneswalkerInstanceId", 3), "id_": 1}
+    attacker = {
+        "$h": 30,
+        "attackerInstanceId_": 451,
+        "legalDamageRecipients_": listing(player, walker),
+        "selectedDamageRecipient_": walker,
+    }
+    game = FakeGame({"$c": "GreClient.Rules.DeclareAttackerRequest", "$h": 5, "Attackers": listing(attacker)})
+    result = adapter_for(game).handle(
+        {
+            "action": "submit_attackers",
+            "attackers": [{"attackerInstanceId": 451, "damageRecipient": {"playerSystemSeatId": 1}}],
+            "finalize_only": True,
+        }
+    )
+    assert result["ok"] is False
+    assert game.submits() == []
 
 
 def test_unresolved_attacker_never_finalizes_an_empty_attack():

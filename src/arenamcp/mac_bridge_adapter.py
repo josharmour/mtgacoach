@@ -1103,7 +1103,7 @@ class MacBridgeAdapter:
             else:
                 raise AdapterError(f"Attacker {identity} needs an explicit legal damage recipient")
             selected = field(attacker, "SelectedDamageRecipient")
-            if selected is None or handle(selected) != handle(recipient):
+            if not same_damage_recipient(selected, recipient):
                 matched.append((attacker, recipient))
         if command.get("finalize_only") or (wanted and not matched):
             selected_ids = {
@@ -1558,6 +1558,23 @@ def recipient_id(recipient: dict, member: str) -> int | None:
     if value is None and "id_" in recipient and case == member:
         value = recipient["id_"]
     return num(value) if value is not None and case in ("", member) else None
+
+
+def same_damage_recipient(selected: Any, legal: dict) -> bool:
+    """Compare combat identities even when Arena copies a recipient object."""
+    if not isinstance(selected, dict):
+        return False
+    # A handle-only $ref still identifies the exact same native object.
+    if handle(selected) is not None and handle(selected) == handle(legal):
+        return True
+    # The acknowledged declaration can contain a fresh DamageRecipient with
+    # the same oneof value as the legal menu. Its object handle is not its
+    # player/planeswalker identity, and must not force another UpdateAttacker.
+    for member in ("PlayerSystemSeatId", "PlaneswalkerInstanceId", "BattleInstanceId", "TeamId"):
+        identity = recipient_id(legal, member)
+        if identity is not None and identity > 0:
+            return recipient_id(selected, member) == identity
+    return False
 
 
 def replacement_display(replacement: Any) -> str:
