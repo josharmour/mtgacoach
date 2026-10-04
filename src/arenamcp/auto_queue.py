@@ -29,6 +29,10 @@ Claim a free match reward if present, then Play, then Play on the most recent ma
 Victory/Defeat/Draw overlays and "Click to Continue" are RESULT screens even when the old
 battlefield, cards and life totals remain visible underneath. The ended game's board is NOT
 a new match. Dismiss that result using its visible Continue/Done/Click to Continue prompt.
+If only the large VICTORY, DEFEAT or DRAW result title is visible, the result overlay itself
+can be clicked to dismiss it: use dismiss_result, quote that title as label, and set
+result_visible=true. Do not wait indefinitely for a separate Continue button. For this
+action point may be the title's center or null (the center of the dismissible overlay).
 Open Play from home, use Recently Played,
 and choose the most recent (first) tile. Recently Played may already be selected, with Play
 already visible: use that button directly when the selected most-recent queue is clear.
@@ -40,11 +44,12 @@ only for a visibly free earned reward; a paid/reward purchase screen is blocked.
 Only report match for active gameplay or mulligans WITHOUT a Victory/Defeat/Draw/result overlay.
 If the screenshot shows gameplay, mulligans, sideboarding, a queue/loading screen, or any
 unfamiliar screen, do not click: report match, sideboard, queue, or blocked respectively.
-For every click, quote the visible button/tile label and use its center coordinates normalized
-to the supplied image_size. At most ONE action. Never claim a click already succeeded.
+For every click, quote the visible button/tile/result title and use its center coordinates
+normalized to the supplied image_size, except dismiss_result may use the overlay center.
+At most ONE action. Never claim a click already succeeded.
 Return ONLY JSON:
 {"screen":"results|reward|home|play|recent|deck|queue|match|sideboard|blocked",
- "action":"claim|continue|open_play|open_recent|select_recent|start_queue|wait|stop",
+ "action":"claim|continue|dismiss_result|open_play|open_recent|select_recent|start_queue|wait|stop",
  "label":"visible target label", "point":[0.5,0.5], "confidence":0.95,
  "recent_index":0, "recent_selected":false, "deck_selected":false,
  "free_entry":false, "result_visible":false,
@@ -52,12 +57,13 @@ Return ONLY JSON:
  "reason":"brief observed state and next navigation step"}
 Use recent_index=0 only for the first/most recent Recently Played tile. For start_queue,
 recent_selected, deck_selected and free_entry must all be true based on the visible UI.
-For claim, free_entry must be true. For wait/stop point may be null.
+For claim, free_entry must be true. For wait/stop/dismiss_result point may be null.
 """
 
 _ALLOWED = {
     "claim": {"reward", "results"},
     "continue": {"results", "reward"},
+    "dismiss_result": {"results"},
     "open_play": {"home"},
     "open_recent": {"play", "recent", "deck"},
     "select_recent": {"recent", "play"},
@@ -66,6 +72,7 @@ _ALLOWED = {
 _LABELS = {
     "claim": {"claim", "claim reward", "claim rewards"},
     "continue": {"continue", "done", "click to continue", "click anywhere to continue", "tap to continue"},
+    "dismiss_result": {"victory", "defeat", "draw"},
     "open_play": {"play"},
     "open_recent": {"recently played"},
     "start_queue": {"play", "find match"},
@@ -91,17 +98,39 @@ def parse_queue_action(content: str) -> tuple[dict, DesktopAction | None]:
         "blocked",
     }:
         raise ValueError("Unknown navigation screen")
+    label = " ".join(str(data.get("label") or "").split())
+    # Observed at 09:49:35: the model recognized DEFEAT but returned wait,
+    # because it saw no separate Continue button. A confirmed result overlay
+    # is itself dismissible; this is not permission to click an old board.
+    if (
+        screen == "results"
+        and kind in {"wait", "continue"}
+        and data.get("result_visible") is True
+        and label.casefold() in _LABELS["dismiss_result"]
+    ):
+        data = {**data, "action": "dismiss_result"}
+        kind = "dismiss_result"
     if kind in {"wait", "stop"}:
         return data, None
     if kind not in _ALLOWED or screen not in _ALLOWED[kind]:
         raise ValueError("Navigation action is not allowed on this screen")
-    label = " ".join(str(data.get("label") or "").split())
     if not label:
         raise ValueError("Navigation target must have a visible label")
     if re.search(r"\b(?:draft|sealed|purchase|buy)\b|entry fee", label, re.IGNORECASE):
         raise ValueError("Paid or limited events are outside automatic requeueing")
     if kind in _LABELS and label.casefold() not in _LABELS[kind]:
         raise ValueError("Unexpected navigation button label")
+    if kind == "dismiss_result":
+        if data.get("result_visible") is not True:
+            raise ValueError("Result dismissal requires a visible result overlay")
+        # Victory/Defeat/Draw covers the ended board and accepts a click
+        # anywhere. Use the center only for this verified overlay; other
+        # navigation targets still require image-grounded coordinates.
+        data = {
+            **data,
+            "point": [0.5, 0.5] if data.get("point") is None else data["point"],
+            "reason": f"Dismiss the visible {label} result overlay",
+        }
     if kind == "select_recent" and (type(data.get("recent_index")) is not int or data["recent_index"] != 0):
         raise ValueError("Only the most recent queue tile may be selected")
     if kind == "claim" and data.get("free_entry") is not True:
@@ -143,6 +172,7 @@ class AutoQueueNavigator:
         self._next_poll = 0.0
         self._attempts: Counter[str] = Counter()
         self._failures = 0
+        self._result_waits = 0
         self._stage = "off"
         self._last_frame = None
         self._last_proposal: dict | None = None
@@ -194,6 +224,7 @@ class AutoQueueNavigator:
             self._attempts.clear()
             self._history.clear()
             self._failures = 0
+            self._result_waits = 0
             self._queue_started = False
             self._queue_observed = False
             self._next_poll = 0
@@ -240,6 +271,16 @@ class AutoQueueNavigator:
         self._stage = "paused"
         self._status(reason + " Toggle auto queue off/on to retry after the next match.")
 
+    def _wait_for_results(self) -> None:
+        """An end animation is an observation to retry, not a failed action."""
+        self._result_waits += 1
+        self._failures = 0
+        self._next_poll = time.monotonic() + 3
+        if self._result_waits >= 12:
+            self._pause("Arena's result screen did not become ready to dismiss")
+        else:
+            self._status("Waiting for the match result overlay to become ready")
+
     def _step(self, generation: int, aborted: threading.Event) -> None:
         try:
             if not self._current(generation, aborted):
@@ -262,7 +303,15 @@ class AutoQueueNavigator:
                 self._handoff(generation, aborted)
                 return
             self._last_frame = frame
-            user = json.dumps({"image_size": list(frame.image.size), "previous_actions": list(self._history)})
+            user = json.dumps(
+                {
+                    "image_size": list(frame.image.size),
+                    "previous_actions": list(self._history),
+                    "confirmed_ended_match_id": self._ended_match_id,
+                    "queue_started": self._queue_started,
+                    "queue_observed": self._queue_observed,
+                }
+            )
             response = self._backend.complete_with_image(
                 QUEUE_PROMPT,
                 user,
@@ -289,10 +338,12 @@ class AutoQueueNavigator:
                 # match ID, but a result overlay retains the previous board.
                 # A visual handoff needs evidence that this navigation cycle
                 # reached matchmaking, not just the model seeing old cards.
+                if not (self._queue_started or self._queue_observed):
+                    self._wait_for_results()
+                    return
                 confidence = data.get("confidence")
                 if (
-                    not (self._queue_started or self._queue_observed)
-                    or data.get("result_visible") is not False
+                    data.get("result_visible") is not False
                     or type(confidence) not in (int, float)
                     or not 0.9 <= confidence <= 1
                 ):
@@ -306,8 +357,12 @@ class AutoQueueNavigator:
                 if data.get("action") == "stop" or self._stage in {"blocked", "sideboard"}:
                     self._pause("Arena needs a manual check before requeueing")
                 else:
+                    if self._stage == "results":
+                        self._wait_for_results()
+                        return
                     if self._stage == "queue":
                         self._queue_observed = True
+                    self._failures = 0
                     self._next_poll = time.monotonic() + (30 if self._stage == "queue" else 3)
                     self._status(
                         "Waiting for the next match"
@@ -337,6 +392,7 @@ class AutoQueueNavigator:
                 self._attempts[key] += 1
                 self._history.append({"action": data["action"], "label": data["label"]})
                 self._failures = 0
+                self._result_waits = 0
                 self._next_poll = time.monotonic() + (5 if data["action"] == "start_queue" else 1.5)
                 self._status(
                     "Joining the most recent queue"
@@ -350,7 +406,7 @@ class AutoQueueNavigator:
                 self._next_poll = time.monotonic() + 3
                 self._status(str(error))
         except Exception as error:
-            logger.debug("Auto-queue step failed: %s", error)
+            logger.info("Auto-queue step failed: %s", error)
             if self._current(generation, aborted):
                 self._failures += 1
                 self._next_poll = time.monotonic() + 3
@@ -372,6 +428,7 @@ class AutoQueueNavigator:
                 "last_proposal": self._last_proposal,
                 "recent_actions": list(self._history),
                 "failures": self._failures,
+                "result_waits": self._result_waits,
                 "worker_running": bool(self._worker and self._worker.is_alive()),
             }
 

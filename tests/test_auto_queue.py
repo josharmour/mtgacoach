@@ -193,6 +193,13 @@ def test_ended_board_misclassified_as_gameplay_cannot_handoff_or_click():
     backend.complete_with_image.return_value = proposal("wait", "match", point=None)
     for _ in range(3):
         step(nav)
+    assert nav.active and not nav.paused_reason
+    assert nav.get_debug_info()["result_waits"] == 3
+    assert nav.get_debug_info()["failures"] == 0
+    # Give the result animation time to finish, but bound a permanently
+    # misclassified/stuck screen without clicking or handing gameplay off.
+    for _ in range(9):
+        step(nav)
     assert nav.active and nav.paused_reason
     assert nav.process_tick(state)
     controller.execute.assert_not_called()
@@ -218,6 +225,102 @@ def test_defeat_click_to_continue_is_supported_without_new_game_handoff():
     assert nav.active
     controller.execute.assert_called_once()
     assert nav.get_debug_info()["stage"] == "results"
+
+
+@pytest.mark.parametrize("title", ["VICTORY", "DEFEAT", "DRAW"])
+def test_report_result_wait_dismisses_overlay_then_requeues_and_hands_off(title):
+    nav, controller, backend, state, _ = navigator()
+    arm(nav)
+    # The old board remains visible while the match-end animation runs.
+    backend.complete_with_image.return_value = proposal("wait", "match", point=None)
+    for _ in range(3):
+        step(nav)
+    assert not nav.paused_reason
+    controller.execute.assert_not_called()
+    # Replay the observed results/wait/DEFEAT response. The title itself
+    # proves the dismissible overlay; no separate Continue button is needed.
+    backend.complete_with_image.return_value = proposal(
+        "wait", "results", label=title, point=None, result_visible=True
+    )
+    step(nav)
+    controller.execute.assert_called_once()
+    assert controller.execute.call_args.args[1].point == (0.5, 0.5)
+    assert nav.get_debug_info()["recent_actions"] == [{"action": "dismiss_result", "label": title}]
+    assert nav.get_debug_info()["result_waits"] == 0
+    for response in [
+        proposal("open_play", "home"),
+        proposal("select_recent", "recent", label="Brawl"),
+        proposal(),
+        proposal("wait", "queue", point=None),
+    ]:
+        backend.complete_with_image.return_value = response
+        step(nav)
+    assert controller.execute.call_count == 4
+    assert nav.get_debug_info()["queue_started"]
+    state["match_id"] = "next"
+    assert not nav.process_tick(state)
+    assert not nav.active
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"screen": "match"},
+        {"screen": "reward"},
+        {"result_visible": False},
+        {"result_visible": "true"},
+        {"result_visible": None},
+        {"label": "Play"},
+        {"confidence": 0.89},
+        {"point": [1.1, 0.5]},
+    ],
+)
+def test_result_dismissal_requires_a_confident_result_title_on_a_visible_overlay(changes):
+    data = dict(label="DEFEAT", point=None, result_visible=True)
+    data.update(changes)
+    screen = data.pop("screen", "results")
+    with pytest.raises(ValueError):
+        parse_queue_action(proposal("dismiss_result", screen, **data))
+
+
+def test_results_without_visible_banner_only_waits_and_remains_bounded():
+    nav, controller, backend, _, _ = navigator()
+    arm(nav)
+    backend.complete_with_image.return_value = proposal(
+        "wait", "results", label="DEFEAT", point=None, result_visible=False
+    )
+    for _ in range(12):
+        step(nav)
+    controller.execute.assert_not_called()
+    assert nav.paused_reason
+
+
+@pytest.mark.parametrize("change", ["new_match", "disabled", "changed_screen"])
+def test_normalized_result_dismissal_rechecks_match_and_screen_before_click(change):
+    nav, controller, backend, state, _ = navigator()
+    arm(nav)
+    backend.complete_with_image.return_value = proposal(
+        "wait", "results", label="DEFEAT", point=None, result_visible=True
+    )
+
+    def fresh_capture():
+        if change == "new_match":
+            state["match_id"] = "next"
+        elif change == "disabled":
+            nav.set_enabled(False)
+        return make_frame(color="red" if change == "changed_screen" else "green")
+
+    # Apply state changes at the second capture, after the observation.
+    count = 0
+
+    def capture():
+        nonlocal count
+        count += 1
+        return make_frame(color="green") if count == 1 else fresh_capture()
+
+    controller.capture.side_effect = capture
+    step(nav)
+    controller.execute.assert_not_called()
 
 
 def test_debug_snapshot_retains_navigation_evidence_without_serializing_image_or_backend():

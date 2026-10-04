@@ -7,6 +7,29 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-10-04 — Dismiss result overlays before requeueing (v3.1.3)
+
+- Logs show the navigator repeatedly classified the ended battlefield as
+  `match/wait` and exhausted its three-error budget. At 09:49:35 it recognized
+  `results/wait`, label `DEFEAT`, confidence 0.9, but had no dismissal action:
+  the schema only allowed Continue/Done-style buttons, not the result overlay.
+- Add a narrowly scoped `dismiss_result` action for a visible, confidently
+  identified Victory/Defeat/Draw overlay. Normalize `results/wait` with a
+  verified result title to this action. The overlay accepts a center click
+  when the model supplies no point; all other navigation targets still need
+  explicit coordinates. The authoritative match-completion gate, fresh frame
+  comparison, new-match recheck, cancellation, foreground and input-ownership
+  checks remain in place.
+- Treat the old battlefield during the end animation as a bounded wait rather
+  than a failed navigation action. Allow 12 observations before pausing; never
+  infer a new match from that board before this cycle has reached matchmaking.
+  Valid waits reset the consecutive-error counter. Log actual navigation
+  exceptions at INFO so future reports retain why a step failed.
+- Validation: 149 queue, runtime, native-input and release tests passed. These
+  include all three result titles through dismissal, Recently Played, queue,
+  and new-match handoff, plus stale-screen/cancellation and unverified-overlay
+  cases. Verification was offline; no live clicks or queue entries were sent.
+
 ## 2026-10-04 — Compare commander recovery with losing a token copy
 
 - Report `bug_20261004_094314`, match `7843532a-4907-4829-90f9-adfb9862ef50`:
