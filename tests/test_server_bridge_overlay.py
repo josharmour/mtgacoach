@@ -73,6 +73,7 @@ def _fake_enrich_with_oracle_text(grp_id: int) -> dict:
 def test_get_game_state_overlays_bridge_visible_state(monkeypatch):
     snapshot = {
         "match_id": "match-123",
+        "commander_casts": {103511: 1},
         "local_seat_id": 1,
         "opponent_seat_id": 2,
         "turn_info": {
@@ -235,6 +236,9 @@ def test_get_game_state_overlays_bridge_visible_state(monkeypatch):
     result = server_module.get_game_state()
 
     assert result["bridge_connected"] is True
+    assert result["commander_casts"] == {103511: 1}
+    result["commander_casts"][103511] = 3
+    assert snapshot["commander_casts"] == {103511: 1}
     assert result["_bridge_connected"] is True
     assert result["turn"]["turn_number"] == 4
     assert result["turn"]["priority_player"] == 1

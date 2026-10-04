@@ -1675,6 +1675,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         phase: str,
         _inferred_atk_ids: set[int],
         decision_context: dict[str, Any] | None = None,
+        game_state: dict[str, Any] | None = None,
     ) -> list[str]:
         """Format the block-side combat analysis (opponent's turn)."""
         lines: list[str] = []
@@ -1864,6 +1865,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         except Exception as e:
             logger.debug(f"combat solver (blocks) failed: {e}")
 
+        from arenamcp.commander_combat import commander_block_context
+
+        lines.extend(
+            commander_block_context(
+                game_state
+                or {"players": [local_player] if local_player else [], "battlefield": your_cards + opp_cards},
+                ctx,
+            )
+        )
         return lines
 
     def _check_castability(
@@ -2863,6 +2873,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                         phase,
                         _inferred_atk_ids,
                         decision_context=game_state.get("decision_context"),
+                        game_state=game_state,
                     )
                 )
         else:

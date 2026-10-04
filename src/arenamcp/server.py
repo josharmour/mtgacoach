@@ -1614,6 +1614,7 @@ def get_game_state() -> dict[str, Any]:
         "raw_gre_event_count": snap.get("raw_gre_event_count", len(raw_gre_events)),
         "deck_cards": list(snap.get("deck_cards", [])),
         "commander_grp_ids": list(snap.get("commander_grp_ids", [])),
+        "commander_casts": dict(snap.get("commander_casts", {})),
         "damage_taken": dict(snap.get("damage_taken", {})),
         # ── Phase 1 turbo-charge fields ──
         "designations": copy.deepcopy(snap.get("designations", {})),

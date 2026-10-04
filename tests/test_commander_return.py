@@ -5,7 +5,9 @@ from unittest.mock import Mock
 import pytest
 
 from arenamcp.action_planner import ActionPlan, ActionPlanner, ActionType, GameAction
+from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
 from arenamcp.autopilot_bridge import _BridgeSubmitMixin
+from arenamcp.decisions import build_pending_decision
 from arenamcp.gamestate import GameObject, GameObjectKind, GameState
 from arenamcp.gamestate_decisions import _handle_decision_message
 from arenamcp.gre_bridge import enrich_snapshot_from_pending_response
@@ -79,11 +81,84 @@ def test_notary_hobbits_return_is_accepted_without_llm(state, commander_prompt):
     assert not backend.mock_calls
     executor = _BridgeSubmitMixin()
     executor._gre_bridge = Mock()
+    executor._gre_bridge.get_pending_actions.return_value = {
+        "has_pending": True,
+        "request_type": "OptionalAction",
+        "request_class": "OptionalActionMessageRequest",
+    }
     executor._gre_bridge_failed_methods = set()
     executor._log_execution_path = Mock()
     assert executor._try_gre_bridge(plan.actions[0], snapshot) is not None
     executor._gre_bridge.submit_optional.assert_called_once_with(True)
     executor._gre_bridge.submit_pass.assert_not_called()
+
+
+def _commander_poll(commander_prompt):
+    return {
+        "has_pending": True,
+        "request_type": "OptionalAction",
+        "request_class": "OptionalActionMessageRequest",
+        "game_state_id": commander_prompt["gameStateId"],
+        "msg_id": commander_prompt["msgId"],
+        "optional_mechanics": ["ZoneTransfer"],
+        "optional_recipients": [695],
+        # The native bridge overlays a numeric prompt onto the log's text.
+        "decision_context": {"prompt": commander_prompt["prompt"], "sourceId": 14454},
+    }
+
+
+@pytest.mark.parametrize("changed_request", [False, True])
+def test_typed_commander_return_bypasses_portal_decline_and_revalidates_request(
+    state, commander_prompt, changed_request
+):
+    """Replay the decision that let Portal steal the Hobbits at 09:35:52."""
+    _handle_decision_message(state, commander_prompt["type"], commander_prompt)
+    snapshot = {"decision_context": state.decision_context, "pending_decision": "Optional Action"}
+    backend = Mock()
+    backend.complete.return_value = (
+        '{"option_ids": ["optional:decline"], "reasoning": "Declining stops Portal from reanimating it."}'
+    )
+    planner = ActionPlanner(backend=backend)
+    engine = AutopilotEngine(
+        planner=planner, mapper=Mock(), controller=Mock(), config=AutopilotConfig(dry_run=False)
+    )
+    engine._gre_bridge = Mock(connected=True)
+    poll = _commander_poll(commander_prompt)
+    fresh = {**poll, "msg_id": poll["msg_id"] + 1} if changed_request else poll
+    engine._gre_bridge.get_pending_actions.side_effect = [poll, fresh]
+    engine._notify = Mock()
+
+    assert engine._try_typed_decision_path(snapshot, "decision_required") is True
+    assert not backend.mock_calls
+    if changed_request:
+        engine._gre_bridge.submit_optional.assert_not_called()
+    else:
+        engine._gre_bridge.submit_optional.assert_called_once_with(True, expected_request_id=(224, 314))
+        assert "return The Notary Hobbits to the command zone" in engine._notify.call_args.args[1]
+
+
+@pytest.mark.parametrize("case", ["unrecognized", "stale_request", "unknown_request", "other_recipient"])
+def test_typed_commander_policy_does_not_accept_unrelated_optional(state, commander_prompt, case):
+    _handle_decision_message(state, commander_prompt["type"], commander_prompt)
+    context = state.decision_context
+    poll = _commander_poll(commander_prompt)
+    if case == "unrecognized":
+        context["commander_return"] = False
+    elif case == "stale_request":
+        poll["msg_id"] += 1
+    elif case == "unknown_request":
+        poll["game_state_id"] = poll["msg_id"] = 0
+    else:
+        poll["optional_recipients"] = [999]
+    backend = Mock()
+    backend.complete.return_value = (
+        '{"option_ids": ["optional:decline"], "reasoning": "Do not use this effect."}'
+    )
+    planner = ActionPlanner(backend=backend)
+    decision = build_pending_decision(poll)
+
+    assert planner.plan_decision_options(decision, {"decision_context": context}) == ["optional:decline"]
+    backend.complete.assert_called_once()
 
 
 @pytest.mark.parametrize(

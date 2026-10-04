@@ -7,6 +7,57 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-10-04 — Compare commander recovery with losing a token copy
+
+- Report `bug_20261004_094314`, match `7843532a-4907-4829-90f9-adfb9862ef50`:
+  at 09:42:53 autoplay traded Hobbit token 481 for Gnome 495 despite commander
+  472 also being a legal blocker. Its stated plan preserved mana engines but
+  omitted the original's recast trigger. Arena's designation reported tax 2;
+  the next commander cast would cost seven mana and create two new copies.
+- The server omitted the existing commander-cast map from its response. Preserve
+  it, and synchronize the local player's count from Arena's commander designation
+  `CostIncrease`, which survives instance-ID changes and mid-game reconnects.
+  Do not use the opponent's count, even when both commanders share a card ID.
+- Both coach and action-planner combat context now identify the exact owned
+  commander and its legal token alternatives, surface printed cost plus tax
+  (or explicitly unknown tax), and compare deaths under visible combat. Prefer
+  commander recovery for otherwise equivalent blocks when an affordable recast
+  rebuilds more value. Account for surviving mana sources, colored requirements,
+  other planned spells, and summoning sickness. The approximate material solver
+  still does not simulate future recasts; this adds strategic grounding rather
+  than blindly replacing every token block with the commander.
+- Offline regression coverage replays the identities and rules, verifies exact
+  original-ID binding, rejects ineligible/stolen/token commanders, and covers
+  high/unknown tax, non-dying blockers, annotation replay, and server preservation.
+  No live match was driven or restarted during these checks.
+- Validation: the commander/combat/server group passed 89 tests; the typed
+  decision/combat/release group passed 135 tests. These targeted runs do not
+  replace the earlier full-suite baseline, which had unrelated failures.
+
+## 2026-10-04 — Preserve the commander-return policy in typed decisions
+
+- Watched match `ee1f33ed-6b2b-4808-b553-86c09d896001`, report
+  `bug_20261004_093656`: at 09:35:52 the model declined "Return The Notary
+  Hobbits to the command zone?", incorrectly claiming that would prevent
+  Portal to Phyrexia from reanimating it. The opponent subsequently took the
+  commander and received its two token copies. Arena's request was prompt
+  144, ZoneTransfer, recipient 856, gameStateId 320, msgId 442.
+- The log parser recognized the commander prompt, but the typed option
+  planner bypassed the existing deterministic return policy in the legacy
+  action planner. Apply that policy before asking the model, only when the
+  parser's validated commander context matches the typed request IDs and
+  any supplied recipient IDs. Submission still re-polls the live request.
+- Regression coverage supplies the observed incorrect model decline and
+  verifies that no model call occurs, acceptance is bound to the original
+  request, and a changed request receives no answer. Unrecognized, stale,
+  unknown-ID and different-recipient choices retain their normal planning.
+- Other observations from this match remain unresolved: Settle the Wilds
+  consumed a Treasure before the available Forest land drop (09:32:18), and
+  Malevolent Rumble's typed SelectN options lost their card identities
+  (09:34:18; the match packet records `Option 256/257/258`, all grpId 0).
+  The attack-confirmation fix succeeded live for Kogla at 09:38:38. The match
+  ended in a loss at 09:40:27; this does not isolate any single cause of loss.
+
 ## 2026-10-04 — Confirm attacks by recipient identity across native object copies
 
 - Report `bug_20261004_092322`: Innkeeper (instance 451) was offered as a

@@ -1760,6 +1760,10 @@ class ActionPlanner(_ActionLegalityMixin):
         from arenamcp.combat_identity import combat_identity_prompt
 
         context += combat_identity_prompt(game_state, dec_ctx)
+        if "Commander recovery:" not in context:
+            from arenamcp.commander_combat import commander_block_context
+
+            context += "\n" + "\n".join(commander_block_context(game_state, dec_ctx))
         dec_type = str(dec_ctx.get("type") or "").lower()
         trigger_descriptions = {
             "new_turn": "Your turn started (Main Phase 1). Plan your plays.",
@@ -2334,15 +2338,42 @@ class ActionPlanner(_ActionLegalityMixin):
     def plan_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         """Choose option ids for a typed PendingDecision.
 
-        LLM-first with mechanical validation against the option set, then
-        a deterministic pick from the same set. Never raises; returns []
-        only when the decision has no options at all.
+        Verified commander returns use the same deterministic policy as the
+        legacy planner. Other choices use the LLM with mechanical validation,
+        then a deterministic pick from the same option set.
         """
         self._last_decision_reasoning = ""
         self._last_decision_option_ids = []
         self._last_decision_target_controllers = {}
         self._last_decision_unusual_targets = {}
         self._last_decision_trace = {}
+        context = game_state.get("decision_context") or {}
+        raw = context.get("raw") or {}
+        accept = decision.find("optional:accept")
+        if (
+            decision.request_type == "OptionalAction"
+            and context.get("type") == "optional_action"
+            and context.get("commander_return") is True
+            and accept is not None
+            and all(value > 0 for value in decision.request_id)
+            and (raw.get("gameStateId"), raw.get("msgId")) == decision.request_id
+            and (
+                not accept.meta.get("recipients")
+                or set(accept.meta["recipients"]) == set(context.get("recipient_ids") or [])
+            )
+        ):
+            # The log parser verifies prompt 144, ZoneTransfer, and ownership.
+            # Apply the legacy commander policy in the typed path too, bound
+            # to this exact request so a later optional ETB cannot inherit it.
+            # A model decline here previously let Portal steal the commander.
+            names = ", ".join(context.get("recipient_names") or []) or "your commander"
+            self._last_decision_option_ids = ["optional:accept"]
+            self._last_decision_reasoning = (
+                f"Return {names} to the command zone to preserve access to your commander."
+            )
+            self._last_decision_trace = {"policy": "commander_return", "validated_ids": ["optional:accept"]}
+            logger.info("typed-decision: returning %s to the command zone without an LLM choice", names)
+            return ["optional:accept"]
         decision = filter_play_options(decision, game_state)
         if not decision.options:
             if decision.request_type == "Search" and decision.selection_is_valid([]):

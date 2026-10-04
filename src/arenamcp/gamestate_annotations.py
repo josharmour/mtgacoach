@@ -562,6 +562,17 @@ class _GameStateAnnotationsMixin:
                     )
 
                 elif ann_type in ("AnnotationType_Designation", "AnnotationType_GainDesignation"):
+                    # Arena publishes the accumulated commander tax on the local
+                    # player's designation, even after an instance-ID change or
+                    # mid-game reconnect. Object zone transitions alone miss it.
+                    if (
+                        self.local_seat_id in affected_ids
+                        and _coerce_int(detail_map.get("DesignationType"), 0) == 1
+                    ):
+                        grp_id = _coerce_int(detail_map.get("grpid"), 0)
+                        tax = _coerce_optional_int(detail_map.get("CostIncrease"))
+                        if grp_id > 0 and tax is not None and tax >= 0 and tax % 2 == 0:
+                            self.commander_casts[grp_id] = tax // 2
                     designation = detail_map.get("designation", detail_map.get("value", ""))
                     for obj_id in affected_ids:
                         # Designations apply to players (seat IDs)
