@@ -280,11 +280,13 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         commander_cards = _ensure_int_list(deck_msg.get("commanderGrpIds", []))
         if deck_cards:
             game_state.deck_cards = deck_cards
+            game_state.format_profile = None
             logger.info(f"Captured deck list from ConnectResp: {len(deck_cards)} cards")
-        if sideboard_cards:
+        if deck_cards or "sideboardCards" in deck_msg:
             game_state.sideboard_cards = sideboard_cards
-        if commander_cards:
+        if deck_cards or "commanderGrpIds" in deck_msg:
             game_state.commander_grp_ids = commander_cards
+        if commander_cards:
             logger.info(f"Captured commander from ConnectResp: {commander_cards}")
 
         # Update format profile on game_state
@@ -305,6 +307,8 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         if all_match_cards:
             prewarmed_count = game_state.prewarm_card_cache(all_match_cards)
             logger.info(f"Pre-warmed {prewarmed_count} grp_id card lookups from ConnectResp")
+        if deck_cards:
+            game_state.capture_connection_deck()
         return False
 
     elif msg_type == "GREMessageType_DeclareAttackersReq":

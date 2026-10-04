@@ -105,6 +105,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         self._deck_strategy: str | None = None
         self._deck_strategy_pending = False
         self._rules_db: RulesDB | None = None
+        self.narration_mode = "advisor"
         # Last structured pick from get_advice ({"index", "action", "verified",
         # "trigger"}), for autopilot/UI to consume; None when the reply was
         # free text or structured advice is off.
@@ -120,6 +121,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 from arenamcp.game_plan import GamePlanManager
 
                 self._game_plan_mgr = GamePlanManager(self._backend)
+                self._game_plan_mgr.background_suspended_fn = lambda: self._deck_strategy_pending
             except Exception as e:
                 logger.debug(f"GamePlanManager unavailable: {e}")
                 return None
@@ -364,6 +366,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         """Reset deck strategy for a new match."""
         self._deck_strategy = None
         self._deck_strategy_pending = False
+        self._last_advised_plan_intro = ""
 
     def analyze_deck(self, deck_cards: list[tuple[str, str, str]], backend=None) -> str | None:
         """Analyze a deck list and store the strategy summary.
@@ -1314,8 +1317,22 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
     def _is_creature_now(card: dict) -> bool:
         current_types = card.get("card_types") or []
         if current_types:
-            return "CardType_Creature" in current_types
+            return any(str(kind).removeprefix("CardType_") == "Creature" for kind in current_types)
         return "creature" in str(card.get("type_line") or "").lower()
+
+    @staticmethod
+    def _rules_in_deck_reference(card: dict, game_state: dict[str, Any]) -> bool:
+        """Omit repeated rules only when the exact text is in the shared prefix."""
+        if not game_state.get("deck_reference"):
+            return False
+        catalog = game_state.get("deck_catalog") or {}
+        entry = catalog.get(card.get("grp_id")) or catalog.get(str(card.get("grp_id")))
+        if not isinstance(entry, dict):
+            return False
+        return bool(card.get("oracle_text")) and (
+            (card.get("modified_name") or card.get("name")) == entry.get("name")
+            and card.get("oracle_text") == entry.get("oracle_text")
+        )
 
     def _format_board_card(
         self,
@@ -1328,13 +1345,14 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         is_local: bool,
         *,
         for_planner: bool = False,
+        rules_in_reference: bool = False,
     ) -> list[str]:
         """Format a single battlefield card into display lines.
 
         Args:
-            for_planner: Compact older permanents, but retain mana and
-                activated ability text, including crew/saddle costs.
-                Recent entrants retain their full text for ETB decisions.
+            for_planner: Retained for call compatibility. Rules text remains
+                relevant throughout a permanent's lifetime, including static
+                restrictions and attack triggers on older permanents.
         """
         lines: list[str] = []
         name = card.get("name", "Unknown")
@@ -1349,9 +1367,17 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         else:
             display_name = name
 
-        pt = f" {card.get('power') or 0}/{card.get('toughness') or 0}" if is_creature else ""
+        power = card.get("modified_power")
+        if power is None:
+            power = card.get("power")
+        toughness = card.get("modified_toughness")
+        if toughness is None:
+            toughness = card.get("toughness")
+        power_label = power if power is not None else "?"
+        toughness_label = toughness if toughness is not None else "?"
+        pt = f" {power_label}/{toughness_label}" if is_creature else ""
         if not is_creature and "vehicle" in type_line and card.get("power") is not None:
-            pt = f" ({card['power']}/{card.get('toughness') or 0} when crewed)"
+            pt = f" ({power_label}/{toughness_label} when crewed)"
 
         flags: list[str] = []
         if not is_creature and not is_land:
@@ -1402,6 +1428,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             flags.append("ATK")
         if card.get("is_blocking"):
             flags.append("BLK")
+        if card.get("is_phased_out"):
+            flags.append("PHASED OUT")
 
         inst_id = card.get("instance_id")
         attached = attachments.get(inst_id, [])
@@ -1423,55 +1451,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         raw_oracle = card.get("oracle_text", "")
         is_basic_land = is_land and not self._land_has_abilities(raw_oracle, type_line)
 
-        if raw_oracle and not is_basic_land:
+        if raw_oracle and not is_basic_land and not rules_in_reference:
             stripped = self._remove_reminder_text(raw_oracle).strip()
-            keyword_only = all(
-                w
-                in {
-                    "flying",
-                    "reach",
-                    "haste",
-                    "vigilance",
-                    "trample",
-                    "first",
-                    "strike",
-                    "double",
-                    "deathtouch",
-                    "lifelink",
-                    "menace",
-                    "ward",
-                    "hexproof",
-                    "indestructible",
-                    "defender",
-                }
-                for w in stripped.lower().replace(",", " ").replace("\n", " ").split()
-                if w
-            )
-            # Planner skips full oracle text on long-resident permanents — the
-            # flags already summarize relevant abilities. Recent ETBs keep
-            # oracle text so triggered abilities stay visible. In legacy render
-            # mode (where entry turns may not be established), unknown entry turn
-            # is treated as recent so oracle text is preserved. In live planner
-            # mode, baseline behavior is strictly preserved.
-            _etb_turn = card.get("turn_entered_battlefield")
-            if card.get("_legacy_render_mode"):
-                entered_recently = _etb_turn is None or (turn_num - _etb_turn) <= 1
-            else:
-                entered_recently = (turn_num - (_etb_turn or 0)) <= 1
-            has_mana_text = bool(re.search(r"\badd\b[^.\n]*(?:\{o?[WUBRGC]\}|\bmana\b)", stripped, re.I))
-            has_activated_ability = ":" in stripped or re.search(
-                r"\b(?:crew|saddle)\s+\d+|\bequip\b", stripped, re.I
-            )
-            if for_planner and not entered_recently and not has_mana_text and not has_activated_ability:
-                pass
-            elif not keyword_only and len(stripped) > 0:
-                # Cap land oracle text to avoid token bloat — non-basic lands
-                # with activated abilities (e.g. Evendo, Waking Haven) need
-                # their ability conditions visible, but the full text can be
-                # verbose after reminder-text removal.
-                if is_land and len(stripped) > 300:
-                    stripped = stripped[:300] + "..."
+            if stripped:
                 lines.append(f"    {self._clean_oracle_for_prompt(stripped)}")
+
+        for key, label in (("granted_abilities", "Granted"), ("removed_abilities", "Removed")):
+            abilities = card.get(key) or []
+            if abilities:
+                lines.append(f"    {label}: {', '.join(str(ability) for ability in abilities)}")
 
         if attached:
             for att in attached:
@@ -1552,6 +1540,16 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         lines.extend(self._attack_tax_lines(opp_cards, game_state))
         your_creatures = [c for c in your_cards if self._is_creature_now(c) and not self._is_impending(c)]
         opp_creatures = [c for c in opp_cards if self._is_creature_now(c) and not self._is_impending(c)]
+        if any(
+            not isinstance(c.get(stat), (int, float))
+            for c in your_creatures + opp_creatures
+            for stat in ("power", "toughness")
+        ):
+            lines.append(
+                "Combat estimates unavailable: some creature stats are UNKNOWN, not zero. "
+                "Use current rules and Arena's legal combat choices; do not infer that attacking deals no damage."
+            )
+            return lines
         opp_blockers = [c for c in opp_creatures if not c.get("is_tapped")]
         opp_block_count = len(opp_blockers)
         opp_life = opponent_player.get("life_total", 20) if opponent_player else 20
@@ -1704,6 +1702,18 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         ]
 
         if not attacking:
+            return lines
+
+        if any(
+            not isinstance(c.get(stat), (int, float))
+            for c in attacking + your_creatures
+            for stat in ("power", "toughness")
+        ):
+            lines.append(f"Attackers: {', '.join(self._attacker_label_map(attacking).values())}")
+            lines.append(
+                "Combat estimates unavailable: some creature stats are UNKNOWN, not zero. "
+                "Use current rules and Arena's legal blocking choices."
+            )
             return lines
 
         fly_dmg = sum(c.get("power") or 0 for c in flying_atk)
@@ -2283,6 +2293,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
             suffix = "  <- resolves next" if position == 1 else ""
             lines.append(f"  {position}. {side} {name}{detail}{suffix}")
+            oracle = self._clean_oracle_for_prompt(str(obj.get("oracle_text") or ""))
+            if oracle:
+                lines.append(f"     {oracle}")
         return lines
 
     def _format_zones_and_events(
@@ -2345,19 +2358,33 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         lines.extend(self._format_stack_section(game_state, local_seat))
 
-        graveyard = game_state.get("graveyard", [])
-        if graveyard:
-            your_gy = [c for c in graveyard if c.get("owner_seat_id") == local_seat]
-            opp_gy = [c for c in graveyard if c.get("owner_seat_id") != local_seat]
-            if your_gy or opp_gy:
-                gy_parts = []
-                if your_gy:
-                    gy_parts.append(
-                        f"Y={len(your_gy)} ({', '.join(c.get('name', '?') for c in your_gy[:8])})"
-                    )
-                if opp_gy:
-                    gy_parts.append(f"O={len(opp_gy)} ({', '.join(c.get('name', '?') for c in opp_gy[:8])})")
-                lines.append(f"GY: {' '.join(gy_parts)}")
+        for zone_name in ("graveyard", "exile"):
+            cards = game_state.get(zone_name) or []
+            if not cards:
+                continue
+            lines.append(f"{zone_name.upper()}:")
+            # Preserve every known identity and its rules: recursion, flashback,
+            # escape and exile permissions can matter at any point in a match.
+            # Group identical copies rather than imposing an arbitrary cutoff.
+            groups: dict[tuple[str, str, str, str], int] = {}
+            for card in cards:
+                owner = card.get("owner_seat_id")
+                side = "YOUR" if owner == local_seat else "OPP" if owner == opp_seat else "UNKNOWN OWNER"
+                name = str(card.get("name") or "Unknown")
+                card_type = str(card.get("type_line") or "")
+                oracle = (
+                    ""
+                    if self._rules_in_deck_reference(card, game_state)
+                    else self._clean_oracle_for_prompt(str(card.get("oracle_text") or ""))
+                )
+                key = (side, name, card_type, oracle)
+                groups[key] = groups.get(key, 0) + 1
+            for (side, name, card_type, oracle), quantity in groups.items():
+                count = f" x{quantity}" if quantity > 1 else ""
+                type_label = f" [{card_type}]" if card_type else ""
+                lines.append(f"  {side}: {name}{count}{type_label}")
+                if oracle:
+                    lines.append(f"    {oracle}")
 
         command = game_state.get("command", [])
         if command:
@@ -2507,11 +2534,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         Orchestrator that delegates to focused helper methods for each section.
 
         Args:
-            for_planner: If True, produce a leaner context for the autopilot
-                action planner — drops heavy GRE JSON dumps and trims oracle
-                text on long-resident permanents (the flags already summarize
-                their relevant abilities). Coach advice path keeps full
-                fidelity by default.
+            for_planner: If True, omit heavy GRE JSON dumps. Preserve all
+                strategically relevant card rules and public zones.
             legacy_render: Explicit legacy-render opinion (task 11). Only
                 offline training builders may pass this; live production
                 callers leave it unset and render byte-identically.
@@ -2607,13 +2631,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         # active_player=OPP_SEAT assigned) overrides the declared-unknown
         # marker; the marker only controls the fallback rendering of a
         # MISSING value (None).
-        active_unknown_effective = UNKNOWN_ACTIVE and active_seat is None
+        active_unknown_effective = active_seat not in (local_seat, opp_seat) or active_seat is None
         if active_unknown_effective:
             active_label = "UNKNOWN"
             priority_label = "UNKNOWN"
         else:
             active_label = "YOUR" if is_your_turn else "OPP"
-            priority_label = "You" if priority_seat == local_seat else "Opp"
+            priority_label = (
+                "You" if priority_seat == local_seat else "Opp" if priority_seat == opp_seat else "UNKNOWN"
+            )
         is_main_phase = "Main" in phase
         stack = game_state.get("stack", [])
         stack_empty = len(stack) == 0
@@ -2658,12 +2684,14 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         your_cards = [
             c
             for c in battlefield
-            if c.get("owner_seat_id") == local_seat and c.get("type_line", "").lower() != "ability"
+            if (c.get("controller_seat_id") or c.get("owner_seat_id")) == local_seat
+            and c.get("type_line", "").lower() != "ability"
         ]
         opp_cards = [
             c
             for c in battlefield
-            if c.get("owner_seat_id") != local_seat and c.get("type_line", "").lower() != "ability"
+            if (c.get("controller_seat_id") or c.get("owner_seat_id")) != local_seat
+            and c.get("type_line", "").lower() != "ability"
         ]
 
         # Mana info
@@ -2737,6 +2765,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                             your_name_seen,
                             is_local=True,
                             for_planner=for_planner,
+                            rules_in_reference=self._rules_in_deck_reference(card, game_state),
                         )
                     )
             else:
@@ -2783,6 +2812,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                             opp_name_seen,
                             is_local=False,
                             for_planner=for_planner,
+                            rules_in_reference=self._rules_in_deck_reference(card, game_state),
                         )
                     )
             else:
@@ -2842,15 +2872,14 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         # Recent events and revealed cards
         lines.extend(self._format_zones_and_events(game_state, local_seat, opp_seat))
 
-        # Opponent hand (task 11): represent the count exactly when it is
-        # known — a missing producer entry is UNKNOWN, never a bare zero.
-        # Production format renders no opponent-hand section at all, so this
-        # line is legacy-render-mode only (live output stays byte-identical).
+        # Counts are public information; card identities in hidden zones are
+        # not. The live server stores these counts in the nested zones payload.
+        zones = game_state.get("zones") or {}
         opp_hs = opponent_player.get("hand_size") if opponent_player else None
+        if opp_hs is None:
+            opp_hs = zones.get("opponent_hand_count", game_state.get("opponent_hand_count"))
         known_opp_hand = opp_hs if isinstance(opp_hs, int) else None
-        if not (annotate or strict):
-            pass  # production: no opponent-hand section (unchanged format)
-        elif known_opp_hand is None:
+        if known_opp_hand is None:
             if strict:
                 raise AssertionError(
                     "strict legacy render: opponent hand size is not "
@@ -2859,6 +2888,18 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             lines.append("Opp hand: UNKNOWN")
         else:
             lines.append(f"Opp hand: {int(known_opp_hand)} card(s)")
+        from arenamcp.library_counts import observed_library_count
+
+        your_library = observed_library_count(game_state)
+        if your_library is not None:
+            lines.append(f"Your library: {your_library} card(s)")
+        else:
+            lines.append("Your library: UNKNOWN (missing observations do not mean empty)")
+        opp_library = zones.get("opponent_library_count", game_state.get("opponent_library_count"))
+        if opp_library is None and opponent_player:
+            opp_library = opponent_player.get("library_size", opponent_player.get("library_count"))
+        if isinstance(opp_library, int):
+            lines.append(f"Opp library: {opp_library} card(s)")
 
         # Hand cards
         hand_lines, no_target_card_names, uncastable_card_names = self._format_hand_cards(
@@ -3018,8 +3059,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         seen: dict[str, int] = {}
         out: dict[int, str] = {}
         for c, n in zip(attackers, names, strict=False):
-            p = c.get("power") or 0
-            t = c.get("toughness") or 0
+            p = c.get("power") if c.get("power") is not None else "?"
+            t = c.get("toughness") if c.get("toughness") is not None else "?"
             label = n
             if counts[n] > 1:
                 seen[n] = seen.get(n, 0) + 1
@@ -3099,6 +3140,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
     # prefixed fields used for internal bookkeeping. See _format_game_context_raw_json.
     _RAW_JSON_TRIM_FIELDS = frozenset(
         {
+            "deck_reference",
+            "deck_catalog",
             "raw_gre_events",
             "legal_actions_raw",
             "_match_number",
@@ -3231,6 +3274,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         style: str | None = None,
         threat: dict[str, Any] | None = None,
         conversational: bool = False,
+        narration_mode: str | None = None,
     ) -> str:
         """Get coaching advice for the current game state.
 
@@ -3251,6 +3295,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             Advice string from the LLM
         """
 
+        from arenamcp.match_context import STRATEGIC_POLICY, prepare_match_context, with_deck_reference
+        from arenamcp.narration import action_narration, narration_policy
+
+        voice_mode = narration_mode or getattr(self, "narration_mode", "advisor")
+        game_state = prepare_match_context(game_state)
         total_start = time.perf_counter()
 
         # Build context. _build_context honors MTGACOACH_PROMPT_VARIANT
@@ -3378,14 +3427,6 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             if structured_choices:
                 user_message += "\n\n" + format_choices(structured_choices)
 
-        # OPTIMIZATION: Log prompt size with token estimate
-        prompt_chars = len(system_prompt) + len(user_message)
-        prompt_tokens_est = self._estimate_tokens(system_prompt + user_message)
-        context_lines = context.count("\n") + 1
-        logger.info(
-            f"[PROMPT] {context_lines} lines, {prompt_chars} chars, ~{prompt_tokens_est} tokens | context: {context_time:.1f}ms"
-        )
-
         # Log backend diagnostics
         backend_info = self.get_backend_info()
         logger.info(
@@ -3453,11 +3494,13 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             "pirate": "You are a ruthless pirate captain coaching a swabby! Speak like a pirate! Yarr! Keep it short!",
         }
 
-        effective_system_prompt = prompts.get(style_key, _quick_prompt)
+        effective_system_prompt = prompts.get(style_key, _quick_prompt) + "\n" + STRATEGIC_POLICY
+        effective_system_prompt += "\n\n" + narration_policy(voice_mode)
+        dynamic_context = ""
 
         # Inject deck strategy if available — instruct model to reference it
         if self._deck_strategy:
-            effective_system_prompt += (
+            dynamic_context += (
                 f"\n\nDECK STRATEGY:\n{self._deck_strategy}"
                 "\n\nALWAYS consider this strategy when advising. Prioritize plays that:"
                 "\n- Set up or execute the combos/synergies listed above"
@@ -3467,7 +3510,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 "(e.g. 'Cast X — triggers Kodama for a free land, setting up combo next turn')."
             )
 
-        # Persistent GAME PLAN: refresh on our own active turn, then frame the
+        # Persistent GAME PLAN: refresh in the background, then frame the
         # advice as the next STEP in that plan. Fully guarded — a plan failure
         # must never break advice generation.
         #
@@ -3480,8 +3523,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         try:
             mgr = self._ensure_game_plan_mgr()
             if mgr is not None:
-                # Only reform on our own active turn. If the local seat is
-                # unknown, treat the turn as ours (conservative — still refreshes).
+                # Turn ownership controls spoken framing; refresh scheduling
+                # separately yields to live-stack decisions and active workers.
                 local_seat = None
                 for p in game_state.get("players", []) or []:
                     if p.get("is_local"):
@@ -3489,12 +3532,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                         break
                 active_player = (game_state.get("turn", {}) or {}).get("active_player")
                 our_turn = local_seat is None or active_player == local_seat
-                intro_before = mgr.coach_intro()
-                if our_turn:
-                    mgr.maybe_reform(game_state)
+                mgr.observe(game_state)
+                mgr.seed(self._deck_strategy)
+                mgr.request_reform(game_state)
                 intro_after = mgr.coach_intro()
-                plan_changed = bool(intro_after) and intro_after != intro_before
-                effective_system_prompt += self._plan_framing_instruction(
+                plan_changed = bool(intro_after) and intro_after != getattr(
+                    self, "_last_advised_plan_intro", ""
+                )
+                self._last_advised_plan_intro = intro_after
+                dynamic_context += self._plan_framing_instruction(
                     mgr.plan_text() or "", our_turn=our_turn, plan_changed=plan_changed
                 )
         except Exception as e:
@@ -3503,7 +3549,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         # Re-inject blacklisted words and decision guidance into effective prompt
         if blacklisted:
             avoid_list = ", ".join(blacklisted)
-            effective_system_prompt += (
+            dynamic_context += (
                 f"\n\nIMPORTANT: Avoid using these overused words: {avoid_list}. Use different phrasing."
             )
 
@@ -3511,7 +3557,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             dec_type = decision_context.get("type", "unknown")
             decision_guidance = DECISION_PROMPTS.get(dec_type)
             if decision_guidance:
-                effective_system_prompt += f"\n\n{decision_guidance}"
+                dynamic_context += f"\n\n{decision_guidance}"
 
         # RAG: Inject relevant MTG rules for this situation
         try:
@@ -3522,13 +3568,24 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             rules = self._rules_db.get_rules_for_situation(game_state, trigger, limit=5)
             if rules:
                 rules_lines = [f"- Rule {r['number']}: {r['text']}" for r in rules]
-                effective_system_prompt += (
+                dynamic_context += (
                     "\n\nRELEVANT MTG RULES (official — these override any conflicting assumptions):\n"
                     + "\n".join(rules_lines)
                 )
                 logger.debug(f"Injected {len(rules)} rules: {[r['number'] for r in rules]}")
         except Exception as e:
             logger.warning(f"Rules RAG error (non-fatal): {e}")
+
+        # Stable system + deck prefix; changing plans/rules never invalidate the deck cache.
+        user_message = with_deck_reference(dynamic_context + "\n\n" + user_message, game_state)
+
+        # OPTIMIZATION: Log prompt size with token estimate
+        prompt_chars = len(effective_system_prompt) + len(user_message)
+        prompt_tokens_est = self._estimate_tokens(effective_system_prompt + user_message)
+        context_lines = context.count("\n") + 1
+        logger.info(
+            f"[PROMPT] {context_lines} lines, {prompt_chars} chars, ~{prompt_tokens_est} tokens | context: {context_time:.1f}ms"
+        )
 
         # Get response with timeout to prevent hanging on slow models.
         # IMPORTANT: The external timeout MUST be longer than the backend's
@@ -3620,6 +3677,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             threat_name = str(threat.get("name", "") or "").strip()
             if threat_name and threat_name.lower() not in response.lower():
                 response = f"{threat_name} is the key threat. {response}"
+
+        # Keep legal-action checks in their existing imperative vocabulary,
+        # then frame only the resulting recommendation as an intended play.
+        # Commentary and direct answers retain their model-written phrasing.
+        if voice_mode == "autopilot" and not conversational and not question:
+            response = action_narration(response, planned=True)
 
         self._word_tracker.record(response, exclude_words=card_words)
 

@@ -61,11 +61,14 @@ from arenamcp.decision_arbiter import arbitrate
 from arenamcp.logging_config import LOG_DIR, LOG_FILE, configure_logging
 from arenamcp.mana import get_local_seat_id
 from arenamcp.settings import get_settings
+from arenamcp.standalone_auto_queue import _AutoQueueMixin
+from arenamcp.standalone_autopilot_capture import _AutopilotCaptureMixin
 from arenamcp.standalone_deck import _DeckAnalysisMixin
 from arenamcp.standalone_diagnostics import _DiagnosticsMixin
 from arenamcp.standalone_hotkeys import _StandaloneHotkeysMixin
 from arenamcp.standalone_mcp import MCPClient
 from arenamcp.standalone_postmatch import _PostMatchMixin
+from arenamcp.standalone_startup import _StartupMixin
 from arenamcp.standalone_tempo import _TempoTracker
 from arenamcp.standalone_ui import CLIAdapter, UIAdapter
 from arenamcp.standalone_voice import _PipeVoiceOutput, _probe_sounddevice_import, _SAPIVoice
@@ -86,6 +89,9 @@ logger = logging.getLogger(__name__)
 
 
 class StandaloneCoach(
+    _AutoQueueMixin,
+    _AutopilotCaptureMixin,
+    _StartupMixin,
     _DeckAnalysisMixin,
     _PostMatchMixin,
     _DiagnosticsMixin,
@@ -148,6 +154,9 @@ class StandaloneCoach(
         self._autopilot_afk = afk
         self._autopilot: Any | None = None  # AutopilotEngine instance
         self._autopilot_backend: Any | None = None  # Separate LLM backend for autopilot
+        self._autopilot_capture_lock = threading.RLock()
+        self._auto_queue_enabled = bool(self.settings.get("auto_queue_enabled", False))
+        self._auto_queue_since = time.time()
 
         # State
         # advice_style can be "quick" (terse, speakable) or "chatty" (longer,
@@ -218,6 +227,8 @@ class StandaloneCoach(
         try:
             saved_mode = str(self.settings.get("conversation_mode", TURN_ADVICE) or TURN_ADVICE)
         except Exception:
+            saved_mode = TURN_ADVICE
+        if os.environ.get("ARENAMCP_PROACTIVE_ONLY") == "1":
             saved_mode = TURN_ADVICE
         if saved_mode != TURN_ADVICE:
             # Restore the persisted session mode without re-persisting it
@@ -446,16 +457,40 @@ class StandaloneCoach(
         A dead gateway must be announced at startup — not discovered mid-match
         as a stream of tagged error advice.
         """
+        self._startup_connection_error = ""
+        self._startup_connection_warning = ""
         try:
             backend = getattr(self._coach, "_backend", None) if self._coach else None
             if backend is None:
                 return
+            # Import/construct the SDK at boot, outside a match's short action
+            # deadline. A cold OpenAI client import can take several seconds.
+            from arenamcp.backends.proxy import ProxyBackend
+
+            if isinstance(backend, ProxyBackend):
+                self._startup_status(
+                    "initializing_client", "Preparing the LLM connection locally; advice waits until ready…"
+                )
+                backend.prepare_client()
 
             def _on_health_transition(snapshot: dict[str, Any]) -> None:
                 try:
                     emit = getattr(self.ui, "emit_backend_health", None)
                     if callable(emit):
                         emit(snapshot)
+                    if snapshot.get("state") == "ok" and (
+                        getattr(self, "_startup_connection_error", "")
+                        or getattr(self, "_startup_connection_warning", "")
+                    ):
+                        self._startup_connection_error = ""
+                        self._startup_connection_warning = ""
+                        if getattr(self, "_startup_finished", False):
+                            self._startup_complete()
+                    elif snapshot.get("state") in ("degraded", "down") and snapshot.get("total_failures", 0):
+                        self._startup_connection_error = snapshot.get("detail") or "Model request failed"
+                        self._startup_connection_warning = ""
+                        if getattr(self, "_startup_finished", False):
+                            self._startup_complete()
                     logger.info(
                         f"Backend health transition: {snapshot.get('state')} — {snapshot.get('detail')}"
                     )
@@ -469,7 +504,12 @@ class StandaloneCoach(
                 logger.debug("Backend has no _base_url; skipping startup health probe")
                 return
 
+            self._startup_status("checking_connection", "Checking the model server connection…")
             state, detail = check_gateway_health(backend)
+            if state is HealthState.DOWN:
+                self._startup_connection_error = detail
+            elif state is not HealthState.OK:
+                self._startup_connection_warning = detail
             logger.info(f"Backend health: {state.value.upper()} ({detail})")
             self.ui.log(f"Backend health: {state.value.upper()} ({detail})")
             if state is HealthState.DOWN:
@@ -485,6 +525,7 @@ class StandaloneCoach(
             # when no transition fired (probe OK from a fresh OK tracker).
             _on_health_transition(BackendHealth.instance().snapshot())
         except Exception as e:
+            self._startup_connection_error = str(e)
             logger.debug(f"Startup backend health probe failed (non-fatal): {e}")
 
     def _emit_coach_game_plan(self) -> None:
@@ -600,6 +641,7 @@ class StandaloneCoach(
         logger.info(f"Created {self.backend_name} backend with model: {actual_model}")
         self._validate_model_on_launch()
         self._coach = CoachEngine(backend=llm_backend)
+        self._sync_narration_mode()
         # Log full backend diagnostics at startup
         backend_info = self._coach.get_backend_info()
         logger.info(f"[BACKEND-DIAG] {backend_info}")
@@ -662,11 +704,13 @@ class StandaloneCoach(
                     create_backend(self._backend_name, model=self._model_name),
                     timeout=config.planning_timeout,
                     land_drop_first=config.land_drop_first,
+                    deck_strategy_fn=self.get_deck_strategy,
                 )
                 engine = NativeMacAutopilot(
                     backend=autopilot_backend,
                     get_game_state=self._mcp.get_game_state,
                     config=config,
+                    speak_fn=self.speak_advice,
                     ui_advice_fn=self.ui.advice if self.ui else None,
                     planner=planner,
                 )
@@ -677,6 +721,7 @@ class StandaloneCoach(
                     autopilot_backend,
                     timeout=config.planning_timeout,
                     land_drop_first=config.land_drop_first,
+                    deck_strategy_fn=self.get_deck_strategy,
                 )
 
                 self._autopilot = AutopilotEngine(
@@ -694,6 +739,13 @@ class StandaloneCoach(
                     ),
                 )
             self._autopilot._advice_recorder = self._record_advice
+            self._autopilot._stuck_report_fn = self._auto_capture_autopilot_stuck
+            if self._coach:
+                self._autopilot._game_plan_mgr = self._coach._ensure_game_plan_mgr()
+                if self._autopilot._game_plan_mgr:
+                    self._autopilot._game_plan_mgr.background_suspended_fn = lambda: bool(
+                        self._coach and self._coach._deck_strategy_pending
+                    )
 
             mode = "DRY-RUN" if self._autopilot_dry_run else "LIVE"
             afk = " (AFK)" if self._autopilot_afk else ""
@@ -707,6 +759,29 @@ class StandaloneCoach(
             self.ui.log(f"[red]Autopilot init failed: {e}[/]")
             logger.error(f"Autopilot init failed: {e}", exc_info=True)
             self._autopilot_enabled = False
+
+    def _sync_narration_mode(self) -> None:
+        coach = getattr(self, "_coach", None)
+        if coach is not None:
+            engine = getattr(self, "_autopilot", None)
+            paused = getattr(getattr(engine, "state", None), "value", None) == "paused"
+            coach.narration_mode = (
+                "autopilot" if getattr(self, "_autopilot_enabled", False) and not paused else "advisor"
+            )
+
+    def _completed_match_wait(self, state: dict[str, Any]) -> bool:
+        """A finished match must not generate more tactical advice or inputs."""
+        from arenamcp.server import get_completed_match_for_navigation
+
+        match_id = state.get("match_id")
+        completed = get_completed_match_for_navigation()
+        if not match_id or completed.get("match_id") != match_id:
+            self._completed_match_notice_id = None
+            return False
+        if getattr(self, "_completed_match_notice_id", None) != match_id:
+            self._completed_match_notice_id = match_id
+            self.ui.advice("Match finished.", "MATCH")
+        return True
 
     def _bridge_judged_state(self, curr_state: dict[str, Any], bridge_up: bool) -> dict[str, Any]:
         """The snapshot to arbitrate a decision from while the bridge is up.
@@ -728,7 +803,9 @@ class StandaloneCoach(
         engine = self._autopilot
         if not self._autopilot_enabled or not getattr(engine, "requires_desktop_poll", False):
             return False
-        engine.process_trigger(self._mcp.get_game_state() or {}, "desktop_poll")
+        state = self._mcp.get_game_state() or {}
+        self._try_restore_engine_resume(state)
+        engine.process_trigger(state, "desktop_poll")
         status = self._autopilot_control_status()
         if status != getattr(self, "_last_desktop_ap_status", None):
             self.ui.status("AUTOPILOT", status)
@@ -739,10 +816,9 @@ class StandaloneCoach(
         if not self._autopilot_enabled:
             return "AP:OFF"
         engine = self._autopilot
-        if getattr(engine, "requires_desktop_poll", False):
-            state = getattr(engine, "state", None)
-            if getattr(state, "value", None) == "paused":
-                return "AP:PAUSED"
+        state = getattr(engine, "state", None)
+        if getattr(state, "value", None) == "paused":
+            return "AP:PAUSED"
         return "AP:ON"
 
     def set_autopilot(self, enabled: bool) -> bool:
@@ -764,6 +840,7 @@ class StandaloneCoach(
             # Turn OFF: abort any in-flight plan, disable
             self._autopilot.on_abort()
             self._autopilot_enabled = False
+            self._suspend_auto_queue()
             # Clean up the separate autopilot backend
             ap_backend = getattr(self, "_autopilot_backend", None)
             if ap_backend and not getattr(self._autopilot, "requires_desktop_poll", False):
@@ -774,6 +851,7 @@ class StandaloneCoach(
                         logger.debug(f"Autopilot backend close error: {e}")
                 self._autopilot_backend = None
             logger.info("Autopilot toggled OFF")
+            self._sync_narration_mode()
             try:
                 self.settings.set("autopilot_enabled", False)
             except Exception as e:
@@ -808,12 +886,26 @@ class StandaloneCoach(
                 # Clear abort/skip/confirm events from previous session —
                 # on_abort() sets _abort_event which persists across toggles
                 # and causes process_trigger() to bail out immediately.
+                if getattr(self, "_autopilot_bug_needs_reset", False):
+                    # A request already running when the bug was captured may
+                    # have re-filled the planner memo after our first abort.
+                    # We have verified its owner is gone; discard that intent.
+                    for planner_name in ("_planner", "_log_planner"):
+                        planner = getattr(self._autopilot, planner_name, None)
+                        if planner is not None:
+                            planner._turn_memo = None
+                            planner._turn_intent = None
+                    if hasattr(self._autopilot, "_plan_cache"):
+                        self._autopilot._plan_cache = None
+                    self._autopilot_bug_needs_reset = False
                 try:
                     self._autopilot._clear_events()
                 except RuntimeError as exc:
                     self.ui.log(f"Autopilot could not start: {exc}")
                     return False
                 self._autopilot_enabled = True
+                self._finish_autopilot_recovery("autopilot_resumed")
+                self._sync_narration_mode()
                 logger.info("Autopilot toggled ON")
                 try:
                     self.settings.set("autopilot_enabled", True)
@@ -1049,10 +1141,12 @@ class StandaloneCoach(
 
     def _emit_control_status_snapshot(self, actual_model: str | None) -> None:
         """Emit the current control-state snapshot for GUI frontends."""
+        self.ui.status("AUTO_QUEUE", "ON" if getattr(self, "_auto_queue_enabled", False) else "OFF")
         model_value = actual_model or self.model_name or "default"
         self.ui.status("MODEL", str(model_value))
         self.ui.status("STYLE", self.advice_style)
         self.ui.status("AUTOPILOT", self._autopilot_control_status())
+        self.ui.status("DRY_RUN", "ON" if getattr(self, "_autopilot_dry_run", False) else "OFF")
 
         afk_enabled = self._autopilot_afk
         if self._autopilot is not None:
@@ -1352,6 +1446,8 @@ class StandaloneCoach(
         while self._running:
             self._loop_heartbeat = time.monotonic()
             try:
+                self._sync_narration_mode()
+                self._publish_arena_connection_status()
                 # Poll for new log content (watchdog backup - Windows often misses events)
                 self._mcp.poll_log()
 
@@ -1392,8 +1488,6 @@ class StandaloneCoach(
                                 emit_cp(positions)
                 except Exception as e:
                     logger.debug(f"card positions emit failed: {e}")
-
-                desktop_autopilot_active = self._poll_desktop_autopilot()
 
                 # Check for active draft/sealed first
                 draft_pack = self._mcp.get_draft_pack()
@@ -1851,6 +1945,16 @@ class StandaloneCoach(
                     self._conversation_reset_for_match(curr_match_id)
                     logger.info("Cleared advice history for new match")
 
+                # Post-match UI navigation has exclusive ownership of inputs.
+                # End-state staging above runs first; navigation never delays
+                # those records or overlaps with the in-match autopilot.
+                match_finished = self._completed_match_wait(curr_state)
+                if self._poll_auto_queue(curr_state) or match_finished:
+                    prev_state = curr_state
+                    time.sleep(0.3)
+                    continue
+                desktop_autopilot_active = self._poll_desktop_autopilot()
+
                 # Announce seat detection when game starts
                 if not seat_announced:
                     players = curr_state.get("players", [])
@@ -1864,6 +1968,8 @@ class StandaloneCoach(
                             # Auto-enable replay recording for debug reports
                             self._enable_replay_recording()
                             break
+
+                self._try_restore_engine_resume(curr_state)
 
                 # Deck strategy analysis (once per match, after turn 1 starts and mulligan is complete)
                 if (
@@ -1898,6 +2004,17 @@ class StandaloneCoach(
 
                     # Require at least 20 cards so deck strategy does not run on partial hands
                     if len(deck_cards) >= 20:
+                        # ConnectResp's deckCards excludes Brawl commanders.
+                        # Include ours so the strategy can identify the deck's engine.
+                        local_seat = self._get_local_seat_from_state(curr_state)
+                        for card in curr_state.get("command", []):
+                            grp_id = card.get("grp_id")
+                            if (
+                                card.get("owner_seat_id") == local_seat
+                                and grp_id
+                                and grp_id not in deck_cards
+                            ):
+                                deck_cards.append(grp_id)
                         self._deck_analyzed = True
                         logger.info(f"Starting deck analysis for {len(deck_cards)} cards")
 
@@ -2625,7 +2742,10 @@ class StandaloneCoach(
                                     last_actionable_window_log_at = 0.0
                                     last_advice_turn = turn_num
                                     last_advice_phase = phase
-                                    continue  # Autopilot handled it
+                                    # A handled action may open a different prompt.
+                                    # Re-poll before dispatching another trigger
+                                    # built from this pre-submission snapshot.
+                                    break
                                 else:
                                     last_priority_progress_note = f"autopilot fell through {trigger}"
                                     logger.info(
@@ -2954,6 +3074,10 @@ class StandaloneCoach(
             return
 
         self._running = True
+        self._startup_started = time.monotonic()
+        self._startup_finished = False
+        self._load_engine_resume()
+        self._startup_status("starting", "Starting coaching engine…")
 
         # Initialize components — emit progress to pipe so GUI shows what's happening
         # Android: MTGA runs on an adb-tethered phone. Mirror its log before the
@@ -2970,6 +3094,7 @@ class StandaloneCoach(
                 self.ui.log(f"Android: linked {self._android_link.device_name}")
                 self.ui.status("DEVICE", f"ANDROID:{self._android_link.device_name}")
         self.ui.log("Initializing game state tracker...")
+        self._startup_status("loading_cards", "Preparing card data and reconnecting to Arena…")
         self._init_mcp()
         self.ui.log("Initializing voice (background)...")
         self._init_voice()
@@ -2986,8 +3111,8 @@ class StandaloneCoach(
         else:
             # Initialize LLM for coaching
             self.ui.log("Connecting to LLM backend...")
+            self._startup_status("initializing_client", "Preparing the LLM client; advice waits until ready…")
             self._init_llm()
-            self.ui.log("LLM backend ready.")
             self._probe_backend_health_at_startup()
             if self._coach and hasattr(self._coach, "_backend"):
                 actual_model = getattr(self._coach._backend, "model", self.model_name)
@@ -2996,6 +3121,9 @@ class StandaloneCoach(
                     self.settings.set("model", actual_model, save=True)
 
             if self._autopilot_enabled:
+                self._startup_status(
+                    "resuming_match", "Connecting to Arena controls and restoring match context…"
+                )
                 self._init_autopilot()
                 if getattr(self, "_autopilot_restored_from_settings", False):
                     logger.info("Autopilot re-enabled automatically from last session")
@@ -3007,6 +3135,7 @@ class StandaloneCoach(
                         )
 
             # Start coaching thread
+            self._startup_complete()
             logger.info(f"Starting coaching thread for backend: {self.backend_name}")
             self._coaching_thread = threading.Thread(target=self._coaching_loop, daemon=True, name="coaching")
             self._coaching_thread.start()
@@ -3017,6 +3146,8 @@ class StandaloneCoach(
         # Register hotkeys in a background thread (the keyboard module's
         # low-level Windows hook install can take a few seconds).
         threading.Thread(target=self._register_hotkeys, daemon=True, name="hotkey-register").start()
+        if self.draft_mode:
+            self._startup_complete()
 
         # Print status
         _is_pipe = hasattr(self.ui, "emit_game_state")
@@ -3064,6 +3195,8 @@ class StandaloneCoach(
             return
 
         logger.info("Stopping coach - beginning cleanup...")
+        self._suspend_auto_queue()
+        self._finish_autopilot_recovery("coach_stopped")
         self._running = False
 
         # 0. Abort autopilot if active

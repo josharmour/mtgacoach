@@ -254,6 +254,10 @@ class PipeAdapter:
         """
         self._emit({"type": "card_positions", "data": payload or {}})
 
+    def emit_startup_status(self, snapshot: dict[str, Any]) -> None:
+        """Keep preparation/readiness separate from connectivity health."""
+        self._emit({**snapshot, "type": "startup_status"})
+
     def emit_backend_health(self, snapshot: dict[str, Any]) -> None:
         """Emit a backend-health snapshot (ok/degraded/down) to the GUI."""
         snap = dict(snapshot or {})
@@ -453,6 +457,8 @@ class PipeAdapter:
                 # Deprecated alias — prefer set_autopilot (idempotent).
                 enabled = coach.toggle_autopilot()
                 self.status("AUTOPILOT", "AP:ON" if enabled else "AP:OFF")
+            elif action == "set_auto_queue":
+                coach.set_auto_queue(cmd.get("enabled") is True)
             elif action == "set_autopilot":
                 # Idempotent control plane (fable-improvements.md item 6):
                 # raced/repeated calls converge on the requested state.
@@ -596,6 +602,16 @@ class PipeAdapter:
                         pass  # Handled
                     else:
                         threading.Thread(target=self._handle_chat, args=(text,), daemon=True).start()
+            elif action == "autopilot_bug":
+                coach.capture_autopilot_bug(str(cmd.get("capture_id", "")), str(cmd.get("clicked_at", "")))
+            elif action == "autopilot_bug_screenshots":
+                coach.attach_autopilot_bug_screenshots(
+                    str(cmd.get("capture_id", "")),
+                    cmd.get("screenshots") or {},
+                    str(cmd.get("screenshot_error", "")),
+                )
+            elif action == "prepare_engine_reload":
+                coach.prepare_engine_reload()
             elif action == "restart":
                 coach._restart_requested = True
                 coach._running = False

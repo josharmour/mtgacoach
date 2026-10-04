@@ -65,3 +65,31 @@ def test_failed_freshness_poll_does_not_submit_or_fall_back():
     engine._gre_bridge.get_pending_actions.side_effect = [_poll(), OSError("disconnected")]
     assert engine._try_typed_decision_path({}, "decision_required") is True
     engine._gre_bridge.submit_action_by_index.assert_not_called()
+
+
+def test_typed_decision_receives_plan_and_schedules_background_refresh():
+    engine = _engine()
+    engine._gre_bridge.get_pending_actions.return_value = _poll()
+    manager = MagicMock()
+    manager.plan_text.return_value = "GAME PLAN: develop commander engine"
+    engine._game_plan_mgr = manager
+    engine._planner._deck_strategy_fn = lambda: "Commander mana engine"
+    state = {"turn": {"turn_number": 4}, "match_id": "match"}
+
+    def choose_with_plan(*args):
+        engine._planner.set_game_plan.assert_called_with("GAME PLAN: develop commander engine")
+        manager.request_reform.assert_called_once()
+        return ["idx:0"]
+
+    engine._planner.plan_decision_options.side_effect = choose_with_plan
+    assert engine._try_typed_decision_path(state, "decision_required") is True
+    manager.observe.assert_called_once()
+    observed = manager.observe.call_args.args[0]
+    assert observed["turn"] == state["turn"]
+    assert observed["match_id"] == state["match_id"]
+    assert observed["_bridge_request_type"] == "ActionsAvailable"
+    assert observed["decision_context"]["type"] == "actions_available"
+    assert engine._planner.plan_decision_options.call_args.args[1] is observed
+    assert "_bridge_request_type" not in state
+    manager.seed.assert_called_once_with("Commander mana engine")
+    manager.maybe_reform.assert_not_called()

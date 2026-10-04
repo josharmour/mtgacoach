@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 from arenamcp.action_planner import ActionPlanner, ActionType, GameAction
-from arenamcp.autopilot import AutopilotEngine
+from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
 from arenamcp.autopilot_models import ClickResult
+from arenamcp.autopilot_progress import DecisionProgressGuard
 
 
 class _SubmitTargetBridge:
@@ -162,6 +164,11 @@ def test_gre_select_target_uses_sole_bridge_candidate_when_name_lookup_fails() -
     }
     bridge = _SubmitTargetBridge(pending)
     engine = AutopilotEngine.__new__(AutopilotEngine)
+    engine._abort_event = threading.Event()
+    engine._config = AutopilotConfig(dry_run=False)
+    engine._progress_guard = DecisionProgressGuard()
+    engine._progress_game_state = {}
+    engine._progress_last_poll = None
     engine._gre_bridge = bridge
     engine._log_execution_path = lambda *args, **kwargs: None
     engine._gre_bridge_failed_methods = set()

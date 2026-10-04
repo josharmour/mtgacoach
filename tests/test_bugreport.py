@@ -110,3 +110,18 @@ def test_build_issue_payload_includes_bridge_miss_and_replay(tmp_path: Path) -> 
     assert "Bridge connected: `True`" in body
     assert "Bridge failed methods: `['cast_spell']`" in body
     assert "Latest replay: `/tmp/replays/match_abc123.gretrace`" in body
+
+
+def test_build_issue_payload_links_bounded_manual_recovery(tmp_path):
+    report = _sample_report()
+    report["manual_recovery"] = {
+        "status": "completed",
+        "events_path": "/local/incident_recovery.jsonl",
+        "finish_reason": "autopilot_resumed",
+        "event_count": 3,
+    }
+    _, body = build_issue_payload(report, tmp_path / "incident.json")
+    assert "Autopilot Bug and Manual Recovery" in body
+    assert "/local/incident_recovery.jsonl" in body
+    assert "autopilot_resumed" in body
+    assert "observed Arena state and action history" in body

@@ -5,8 +5,7 @@ With ``legacy_render=True`` the formatter renders unknown fields as unknown
 (never as fabricated facts) while known values, including empty/zero, still
 render as facts; ``legacy_render=False`` fails hard on declared-unknown state.
 
-Production live-state formatting is unchanged: with legacy_render unset the
-formatter keeps its previous opinionated behaviour.
+Live and offline rendering both retain known public hand counts.
 """
 
 from __future__ import annotations
@@ -63,11 +62,11 @@ def test_missing_hand_renders_as_unknown():
     assert "Opp hand: UNKNOWN" in out
 
 
-def test_production_opinion_renders_no_opp_hand_line():
-    """Without legacy_render the formatter unchanged: no Opp hand line at all."""
+def test_production_renders_known_opp_hand_count():
+    """Public hand counts are strategically relevant in live and offline modes."""
     engine = _engine()
     out = engine._format_game_context(_gs())
-    assert "Opp hand" not in out
+    assert "Opp hand: 0 card(s)" in out
     out2 = engine._format_game_context(_gs(), legacy_render=True)
     assert "Opp hand: 0 card(s)" in out2
 

@@ -62,6 +62,10 @@ class _AutopilotTelemetryMixin:
             "blocked_actions": [list(key) for key in self._blocked_action_keys],
         }
 
+        guard = getattr(self, "_progress_guard", None)
+        if guard is not None:
+            info["semantic_progress"] = guard.snapshot()
+
         # Current plan details
         plan = self._current_plan
         if plan:
@@ -84,6 +88,10 @@ class _AutopilotTelemetryMixin:
             }
         else:
             info["current_plan"] = None
+
+        trace = getattr(self._planner, "get_last_decision_trace", None)
+        if callable(trace):
+            info["last_typed_decision"] = trace()
 
         # Screen mapper state
         try:

@@ -35,7 +35,7 @@ def captured(monkeypatch):
     """Capture the request params without touching the network."""
     seen: dict = {}
 
-    def fake_complete_once(self, client, params):
+    def fake_complete_once(self, client, params, **kwargs):
         seen.clear()
         seen.update(params)
         return "Play Forest."

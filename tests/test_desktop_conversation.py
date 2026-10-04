@@ -28,6 +28,7 @@ from arenamcp.settings import DEFAULTS
 def test_settings_defaults_include_conversation_keys():
     assert DEFAULTS["conversation_mode"] == "turn_advice"
     assert DEFAULTS["conversation_verbosity"] == "balanced"
+    assert DEFAULTS["auto_queue_enabled"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +384,9 @@ class MockSession(QObject):
     def toggle_autopilot(self) -> None:
         self.commands.append(("toggle_autopilot", ()))
 
+    def set_auto_queue(self, enabled: bool) -> None:
+        self.commands.append(("set_auto_queue", enabled))
+
     def toggle_mute(self) -> None:
         self.commands.append(("toggle_mute", ()))
 
@@ -453,68 +457,107 @@ def _fake_ptt_controller(button, session, recorder=None, transcriber=None, on_se
 _PTT_BUTTONS: list[Any] = []
 
 
-def test_mode_button_clicks_send_set_mode(panel):
-    panel.chat_mode_btn.click()
-    assert ("set_mode", "conversation") in panel.session.commands
-    panel._on_mode_changed("conversation")
-    panel.advice_mode_btn.click()
-    assert ("set_mode", "turn_advice") in panel.session.commands
+def test_proactive_panel_has_no_chat_or_microphone_controls(panel):
+    from PySide6.QtWidgets import QLineEdit, QPushButton
+
+    assert panel.findChildren(QLineEdit) == []
+    assert not hasattr(panel, "_ptt_controller")
+    assert not hasattr(panel, "conversation_transcript")
+    labels = [button.text() for button in panel.findChildren(QPushButton)]
+    assert "Chat" not in labels
+    assert "Advice" not in labels
+    assert "Send" not in labels
+    assert not any("talk" in label or "Chat detail" in label for label in labels)
 
 
-def test_panel_reads_isolated_settings_not_singleton(panel, isolated_settings):
-    """Regression: a controller persist call must write through the ISOLATED
-    Settings instance (tmp_path) and the panel must read that instance at
-    construction — never the process-wide singleton or the real
-    ~/.arenamcp/settings.json. Before the compact_coach call-time lookup fix,
-    the panel captured get_settings at import time, so the isolated_settings
-    patch never reached it and a polluted singleton leaked through here."""
-    from arenamcp.conversation import CONVERSATION
+def test_auto_queue_is_opt_in_and_persists_user_toggle(panel, isolated_settings):
+    assert panel.auto_queue_btn.text() == "Auto-queue: Off"
+    assert panel.auto_queue_status_label.isHidden()
+    assert panel.session.commands == []
+    panel.auto_queue_btn.click()
+    assert isolated_settings.get("auto_queue_enabled") is True
+    assert panel.session.commands == [("set_auto_queue", True)]
+    assert panel.auto_queue_btn.text() == "Auto-queue: On"
+    assert not panel.auto_queue_status_label.isHidden()
+    panel.auto_queue_btn.click()
+    assert isolated_settings.get("auto_queue_enabled") is False
+    assert panel.session.commands[-1] == ("set_auto_queue", False)
 
-    # Controller persist write under isolation (goes to tmp_path instance).
-    isolated_settings.set("conversation_mode", CONVERSATION)
-    assert isolated_settings.get("conversation_mode") == CONVERSATION
 
-    # A freshly constructed panel must see the isolated value.
+def test_auto_queue_saved_choice_does_not_send_startup_activation(panel, isolated_settings):
+    isolated_settings.set("auto_queue_enabled", True)
+    restored = CompactCoachPanel(session=panel.session)
+    try:
+        assert restored.auto_queue_btn.text() == "Auto-queue: On"
+        assert restored.session.commands == []
+        restored.session.started.emit()
+        assert not any(command == "set_auto_queue" for command, _ in restored.session.commands)
+    finally:
+        restored.close()
+
+
+def test_auto_queue_reason_does_not_change_toggle_or_enable_autoplay(panel):
+    panel.session.statusChanged.emit("AUTO_QUEUE", "ON")
+    panel.session.statusChanged.emit("AUTO_QUEUE_DETAIL", "Paused: turn on Autoplay to continue.")
+    assert panel.auto_queue_btn.text() == "Auto-queue: On"
+    assert "turn on Autoplay" in panel.auto_queue_status_label.text()
+    assert panel.ap_btn.text() == "Autoplay: Off"
+    assert panel.session.commands == []
+    panel.session.statusChanged.emit("AUTO_QUEUE_DETAIL", "Continuing the result screen.")
+    assert "result screen" in panel.auto_queue_status_label.text()
+    panel.session.statusChanged.emit("AUTO_QUEUE", "OFF")
+    assert panel.auto_queue_btn.text() == "Auto-queue: Off"
+    assert panel.auto_queue_status_label.isHidden()
+
+
+def test_session_sends_explicit_auto_queue_choice(session, monkeypatch):
+    from arenamcp.pipe_adapter import PipeAdapter
+
+    payloads = []
+    monkeypatch.setattr(session._process, "send_payload", payloads.append)
+    session.set_auto_queue(True)
+    session.set_auto_queue(False)
+    assert payloads == [
+        {"cmd": "set_auto_queue", "enabled": True},
+        {"cmd": "set_auto_queue", "enabled": False},
+    ]
+    adapter = PipeAdapter.__new__(PipeAdapter)
+    adapter._coach = Mock()
+    for payload in payloads:
+        adapter._dispatch(json.loads(json.dumps(payload)))
+    assert [call.args for call in adapter._coach.set_auto_queue.call_args_list] == [(True,), (False,)]
+
+
+def test_saved_chat_preference_cannot_disable_proactive_desktop(panel, isolated_settings):
+    isolated_settings.set("conversation_mode", "conversation")
     p = CompactCoachPanel(session=panel.session)  # type: ignore[arg-type]
     try:
-        assert p._conversation_mode == CONVERSATION
+        assert p._settings is isolated_settings
+        p.session.started.emit()
+        assert ("set_mode", "turn_advice") in p.session.commands
+        assert not p.log_view.isHidden()
+        assert not hasattr(p, "chat_mode_btn")
     finally:
-        with contextlib.suppress(RuntimeError):
-            p.close()
+        p.close()
 
 
-def test_mode_ack_updates_button_and_views(panel):
+def test_stale_chat_mode_ack_requests_proactive_coaching(panel):
     panel.session.modeChanged.emit("conversation")
-    assert panel.chat_mode_btn.isChecked()
-    assert not panel.mode_chip.isHidden()
-    assert not panel.conversation_transcript.isHidden()
-    assert panel.log_view.isHidden()
-    assert panel.conversation_mode == "conversation"
-
-    panel.session.modeChanged.emit("turn_advice")
-    assert panel.advice_mode_btn.isChecked()
-    assert panel.mode_chip.isHidden()
-    assert panel.conversation_transcript.isHidden()
+    assert panel.session.commands == [("set_mode", "turn_advice")]
     assert not panel.log_view.isHidden()
-    assert panel.conversation_mode == "turn_advice"
+    assert panel.feed_caption.text() == "FEED"
 
 
-def test_mode_ack_ignores_unknown_mode(panel):
+def test_unknown_mode_ack_leaves_proactive_feed_visible(panel):
     panel.session.modeChanged.emit("weird_mode")
-    assert panel.conversation_mode == "turn_advice"
+    assert panel.session.commands == []
+    assert not panel.log_view.isHidden()
 
 
-def test_verbosity_button_cycles(panel):
-    panel.verbosity_btn.click()
-    assert ("set_verbosity", "detailed") in panel.session.commands
-    assert panel.verbosity_btn.text() == "Chat detail: Detailed"
-    panel.verbosity_btn.click()
-    assert ("set_verbosity", "quiet") in panel.session.commands
-
-
-def test_verbosity_status_ack_updates_button(panel):
+def test_stale_chat_verbosity_ack_has_no_ui_effect(panel):
     panel.session.statusChanged.emit("VERBOSITY", "quiet")
-    assert panel.verbosity_btn.text() == "Chat detail: Quiet"
+    assert not hasattr(panel, "verbosity_btn")
+    assert not panel.log_view.isHidden()
 
 
 def test_stop_speech_button_calls_session(panel):
@@ -587,33 +630,19 @@ def test_ptt_press_sends_stop_speech_command(ptt_button, qapp):
     assert ("stop_speech", ()) in session.commands
 
 
-def test_conversation_reply_routes_to_transcript(panel):
-    panel.session.conversationReply.emit("cast the counterspell")
-    assert "Coach: cast the counterspell" in panel.conversation_transcript.toPlainText()
+def test_proactive_advice_and_narration_still_reach_panel(panel):
+    panel.session.adviceReceived.emit("Save removal for the attacker.", "Advice")
+    panel.session.spokenLine.emit("Save removal for the attacker.")
+    assert "Save removal for the attacker." in panel.now_text.text()
+    assert "Save removal for the attacker." in panel.log_view.toPlainText()
 
 
-def test_conversation_status_updates_label(panel):
+def test_legacy_conversation_events_do_not_replace_proactive_feed(panel):
+    panel.session.conversationReply.emit("legacy reply")
     panel.session.conversationStatus.emit("speaking")
-    assert "Speaking" in panel.conversation_status_label.text()
-
-
-def test_chat_input_routed_by_mode(panel):
-    panel.chat_input.setText("why not attack?")
-    panel.send_chat()
-    assert ("chat", "why not attack?") in panel.session.commands
-
-    panel.session.modeChanged.emit("conversation")
-    panel.chat_input.setText("what changed?")
-    panel.send_chat()
-    assert ("chat", "what changed?") in panel.session.commands
-    assert "You: what changed?" in panel.conversation_transcript.toPlainText()
-
-
-def test_ptt_route_logs_user_entry(panel):
-    panel.session.modeChanged.emit("conversation")
-    panel._send_ptt_text("explain that")
-    assert ("chat", "explain that") in panel.session.commands
-    assert "You: explain that" in panel.conversation_transcript.toPlainText()
+    assert not panel.log_view.isHidden()
+    assert "legacy reply" not in panel.log_view.toPlainText()
+    assert panel.feed_caption.text() == "FEED"
 
 
 # ---------------------------------------------------------------------------

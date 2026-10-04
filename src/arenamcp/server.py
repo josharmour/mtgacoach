@@ -33,6 +33,7 @@ from arenamcp.gamestate import (
     save_match_state,
     validate_log_identity,
 )
+from arenamcp.library_counts import observed_library_count
 from arenamcp.mtgadb import MTGADatabase
 from arenamcp.parser import LogParser
 from arenamcp.scryfall import ScryfallCache
@@ -468,6 +469,14 @@ def stop_draft_helper() -> None:
     logger.info("Stopped draft helper")
 
 
+_completed_match_for_navigation: dict[str, Any] = {}
+
+
+def get_completed_match_for_navigation() -> dict[str, Any]:
+    """Latest authoritative match completion, distinct from a BO3 game ending."""
+    return dict(_completed_match_for_navigation)
+
+
 def _handle_match_created(payload: dict) -> None:
     """Handle MatchCreated / MatchGameRoomStateChangedEvent.
 
@@ -537,6 +546,44 @@ def _handle_match_created(payload: dict) -> None:
                 team_id = participant.get("teamId")
                 break
 
+    # ConnectResp may precede room metadata on any match, not only startup.
+    # Preserve only its fresh/unbound or explicitly matching connection deck
+    # across a reset; a deck already bound to the previous match cannot carry.
+    match_id = (
+        event_payload.get("matchId")
+        or room_info.get("gameRoomConfig", {}).get("matchId")
+        or game_room_config.get("matchId")
+        or payload.get("matchId")
+    )
+    if match_id and game_state.match_id != match_id:
+        connection_deck = game_state.connection_deck_for_match(match_id)
+        if game_state.match_id:
+            mark_match_ended()
+        if state_type == "MatchGameRoomStateType_MatchCompleted":
+            logger.info(
+                "Completed match event for unseen match %s. Recording metadata without reset.", match_id
+            )
+        else:
+            if game_state.match_id is not None:
+                logger.info(f"New match detected (ID: {match_id}). Resetting game state.")
+                game_state.reset()
+            else:
+                logger.info("Binding initial match ID %s; retaining connection metadata", match_id)
+            if connection_deck is not None:
+                game_state.restore_connection_deck(connection_deck, match_id)
+            else:
+                game_state._awaiting_connection_match_id = match_id
+            _deactivate_draft_state(f"new live match {match_id}")
+        game_state.match_id = match_id
+    elif (
+        match_id
+        and state_type != "MatchGameRoomStateType_MatchCompleted"
+        and not game_state._connection_deck_metadata
+        and not game_state.deck_cards
+    ):
+        # A Full GameState may supply matchID before the room and connection.
+        game_state._awaiting_connection_match_id = match_id
+
     if seat_id is not None:
         # Use System (2) priority for match messages. This will be ignored if
         # the user already manually forced a seat via F8.
@@ -567,38 +614,33 @@ def _handle_match_created(payload: dict) -> None:
             game_state.opponent_name = str(p_name)
             break
 
-    # ── Match ID tracking ──
-    match_id = (
-        event_payload.get("matchId")
-        or room_info.get("gameRoomConfig", {}).get("matchId")
-        or game_room_config.get("matchId")
-        or payload.get("matchId")
-    )
-
-    if match_id and game_state.match_id != match_id:
-        if state_type == "MatchGameRoomStateType_MatchCompleted":
-            if game_state.match_id:
-                mark_match_ended()
-            logger.info(
-                "Completed match event for unseen match %s. Recording metadata without reset.",
-                match_id,
-            )
-        else:
-            if game_state.match_id:
-                mark_match_ended()
-            logger.info(f"New match detected (ID: {match_id}). Resetting game state.")
-            game_state.reset()
-            _deactivate_draft_state(f"new live match {match_id}")
-        game_state.match_id = match_id
-
-        # Since we reset state, notify draft helper effectively if needed
-        # (though draft state is separate)
-
     # ── Match result detection (from finalMatchResult) ──
     # MTGA sends this in MatchGameRoomStateChangedEvent when the match ends.
     results = room_info.get("finalMatchResult", {}).get("resultList", []) or event_payload.get(
         "finalMatchResult", {}
     ).get("resultList", [])
+
+    if match_id and (
+        state_type == "MatchGameRoomStateType_MatchCompleted"
+        or any(
+            row.get("scope") == "MatchScope_Match"
+            and (
+                str(row.get("result", "")).lower()
+                in {"draw", "win", "loss", "resulttype_draw", "resulttype_win", "resulttype_loss"}
+                or isinstance(row.get("winningTeamId"), int)
+                and row["winningTeamId"] > 0
+            )
+            for row in results
+        )
+    ):
+        global _completed_match_for_navigation
+        if _completed_match_for_navigation.get("match_id") != match_id:
+            _completed_match_for_navigation = {
+                "match_id": match_id,
+                "event_id": game_state.event_id,
+                "completed_at": time.time(),
+                "match_complete": True,
+            }
     if results and not game_state.last_game_result:
         # IntermissionReq may have already wiped seat/team state via reset().
         our_seat = seat_id or game_state.local_seat_id
@@ -1148,6 +1190,9 @@ def _serialize_bridge_card(
         result["revealed_to_opponent"] = True
     if card.get("face_down"):
         result["face_down"] = True
+    for key in ("is_copy", "copied_from_grp_id", "base_grp_id", "original_grp_id", "is_token"):
+        if card.get(key) is not None:
+            result[key] = card[key]
 
     return result
 
@@ -1313,10 +1358,14 @@ def _build_public_zones(
     command: list[dict[str, Any]],
     opponent_hand_count: Any,
     library_count: Any,
+    library_count_source: str = "",
     local_graveyard: list[dict[str, Any]] | None = None,
     opponent_graveyard: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the nested zones payload used by older consumers."""
+    observed_count = observed_library_count(
+        {"library_count": library_count, "library_count_source": library_count_source}
+    )
     zones = {
         "battlefield": battlefield,
         "my_hand": hand,
@@ -1326,7 +1375,8 @@ def _build_public_zones(
         "exile": exile,
         "command": command,
         "opponent_hand_count": opponent_hand_count,
-        "library_count": library_count,
+        "library_count": observed_count if observed_count is not None else "?",
+        "library_count_source": library_count_source if observed_count is not None else "unknown",
     }
     if local_graveyard is not None:
         zones["local_graveyard"] = local_graveyard
@@ -1406,11 +1456,15 @@ def _get_bridge_overlay(
         if isinstance(opponent_hand_zone, dict) and opponent_hand_zone.get("total_count") is not None
         else fallback_zones.get("opponent_hand_count", 0)
     )
-    library_count = (
-        local_library_zone.get("total_count")
-        if isinstance(local_library_zone, dict) and local_library_zone.get("total_count") is not None
-        else fallback_zones.get("library_count", "?")
+    bridge_library_count = (
+        local_library_zone.get("total_count") if isinstance(local_library_zone, dict) else None
     )
+    if type(bridge_library_count) is int and bridge_library_count >= 0:
+        library_count = bridge_library_count
+        library_count_source = "bridge_total_card_count"
+    else:
+        library_count = observed_library_count({"zones": fallback_zones})
+        library_count_source = fallback_zones.get("library_count_source", "")
 
     overlay.update(
         {
@@ -1436,6 +1490,7 @@ def _get_bridge_overlay(
                 command=command,
                 opponent_hand_count=opponent_hand_count,
                 library_count=library_count,
+                library_count_source=library_count_source,
                 local_graveyard=local_graveyard,
                 opponent_graveyard=opponent_graveyard,
             ),
@@ -1546,6 +1601,7 @@ def get_game_state() -> dict[str, Any]:
             command=command,
             opponent_hand_count=zones.get("opponent_hand_count", 0),
             library_count=zones.get("library_count", "?"),
+            library_count_source=zones.get("library_count_source", ""),
         ),
         "pending_decision": None,
         "decision_context": None,
@@ -1557,6 +1613,7 @@ def get_game_state() -> dict[str, Any]:
         "raw_gre_events": raw_gre_events,
         "raw_gre_event_count": snap.get("raw_gre_event_count", len(raw_gre_events)),
         "deck_cards": list(snap.get("deck_cards", [])),
+        "commander_grp_ids": list(snap.get("commander_grp_ids", [])),
         "damage_taken": dict(snap.get("damage_taken", {})),
         # ── Phase 1 turbo-charge fields ──
         "designations": copy.deepcopy(snap.get("designations", {})),

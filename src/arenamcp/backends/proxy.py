@@ -5,8 +5,10 @@ through the same OpenAI-compatible chat completions interface.
 """
 
 import logging
+import os
 import re
 import threading
+import time
 
 from arenamcp.backend_health import BACKEND_ERROR_PREFIX, BackendHealth
 from arenamcp.client_metadata import get_client_headers
@@ -200,6 +202,23 @@ def _classify_api_error(e: Exception) -> BackendError:
     return BackendError(str(e), retryable=retryable, retry_after_s=retry_after, status_code=status)
 
 
+def _field(value, key: str):
+    """Read optional usage fields from SDK objects or compatible JSON objects."""
+    return value.get(key) if isinstance(value, dict) else getattr(value, key, None)
+
+
+def _token_count(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _rejects_stream_usage(error: Exception) -> bool:
+    """Older compatible servers can explicitly reject OpenAI's usage option."""
+    if getattr(error, "status_code", None) not in (400, 422):
+        return False
+    detail = f"{error} {getattr(error, 'body', '')}".lower()
+    return "stream_options" in detail or "include_usage" in detail
+
+
 class ProxyBackend:
     """LLM backend using OpenAI-compatible chat completions API.
 
@@ -220,9 +239,12 @@ class ProxyBackend:
         self._base_url = base_url
         self._api_key = api_key
         self._client = None
+        self._client_lock = threading.Lock()
         # What the server said it actually ran (R4: gateway aliases lie).
         self.last_served_model: str | None = None
         self._served_model_warned = False
+        self._stream_usage_supported = True
+        self.last_request_metrics: dict | None = None
 
         # Fire-and-forget warmup for any local backend to pre-load weights/KV cache
         self._local_warmup()
@@ -261,8 +283,12 @@ class ProxyBackend:
     _CLIENT_HARD_TIMEOUT_S = 60.0
 
     def _get_client(self):
-        """Lazy init of OpenAI client."""
-        if self._client is None:
+        """Create one HTTP client even when startup and warmup race."""
+        if self._client is not None:
+            return self._client
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
             try:
                 from openai import OpenAI
 
@@ -287,12 +313,30 @@ class ProxyBackend:
                 raise ImportError("openai package required: pip install openai")
         return self._client
 
+    def prepare_client(self) -> None:
+        """Initialize the HTTP SDK without inference or a readiness probe.
+
+        Successful preparation means the local client is configured, not that
+        the remote model is warm or healthy. Requests still determine health.
+        """
+        self._get_client()
+
+    def probe_connection(self, timeout: float = 5.0) -> None:
+        """Check model discovery using the same auth/headers as inference.
+
+        This is a single GET, never a completion or a model warmup.
+        """
+        self._get_client().with_options(timeout=timeout, max_retries=0).models.list()
+
     def _local_warmup(self) -> None:
         """Send a minimal warmup request to a local backend in a background thread.
 
         Fires for any non-online endpoint (vLLM/Ollama/LM Studio/etc.) so the
         first real coach call doesn't pay the cold-start cost.
         """
+        if os.environ.get("ARENAMCP_ENGINE_RELOAD") == "1":
+            logger.debug("[PROXY] Engine reload: skipping synthetic model warmup")
+            return
         url = self._base_url or ""
         if not url or url == ONLINE_BASE_URL:
             return
@@ -336,11 +380,11 @@ class ProxyBackend:
             temperature: Sampling temperature. Default 0.3 for flavorful
                 coach advice; pass 0.0 for deterministic planner calls
                 (avoids cross-priority-window flip-flops).
-            request_timeout_s: Hard deadline for the underlying HTTP call.
-                When the SDK hits this, it tears down the socket and raises,
-                which lets the calling worker thread exit cleanly. Without
-                it, hung backends silently leak threads forever (the future
-                timeout only abandons the thread, it doesn't kill it).
+            request_timeout_s: Overall request budget, shared by retries and
+                compatibility fallbacks, capped by the client ceiling. Each
+                HTTP request gets the remaining budget as its socket timeout;
+                streaming also checks elapsed time between chunks. Socket
+                timeouts bound stalled reads, not an exact wall-clock cutoff.
             raise_on_error: Re-raise API errors instead of returning the
                 "[BACKEND ERROR] ..." sentinel string. The autopilot
                 planner sets this — during the 2026-07-05 gateway outage the
@@ -349,12 +393,13 @@ class ProxyBackend:
                 castable spells. Sentinel-string returns are only safe for
                 consumers that display text to a human.
         """
-        import time
-
+        request_started = time.perf_counter()
+        budget = self._CLIENT_HARD_TIMEOUT_S
+        if request_timeout_s is not None:
+            budget = min(budget, max(0.0, request_timeout_s))
+        deadline = request_started + budget
         try:
             client = self._get_client()
-            if request_timeout_s is not None:
-                client = client.with_options(timeout=request_timeout_s)
 
             params = {
                 "model": self.model,
@@ -436,7 +481,13 @@ class ProxyBackend:
             last_err: BackendError | None = None
             for attempt in (1, 2):
                 try:
-                    result = self._complete_once(client, params)
+                    result = self._complete_once(
+                        client,
+                        params,
+                        request_started=request_started,
+                        deadline=deadline,
+                        attempt=attempt,
+                    )
                     BackendHealth.instance().record_success()
                     return result
                 except Exception as e:
@@ -447,12 +498,21 @@ class ProxyBackend:
                         and (err.retry_after_s is None or err.retry_after_s <= 5.0)
                     ):
                         wait = min(err.retry_after_s or 0.5, 1.0)
+                        if deadline - time.perf_counter() <= wait:
+                            last_err = err
+                            break
                         logger.warning(f"API error (retryable): {e} — one retry in {wait:.1f}s")
                         time.sleep(wait)
                         continue
                     last_err = err
                     break
             last_err = last_err or BackendError("unknown API failure")
+            self._record_request_metrics(
+                params,
+                request_started=request_started,
+                attempt=attempt,
+                status="error",
+            )
             logger.error(f"API error: {last_err}")
             BackendHealth.instance().record_failure(error=str(last_err), status_code=last_err.status_code)
             if raise_on_error:
@@ -490,121 +550,190 @@ class ProxyBackend:
                 f"{self.model!r} — routing is gateway-side"
             )
 
-    def _complete_once(self, client, params) -> str:
-        """Single request attempt: streaming first, non-streaming fallback."""
-        import time
+    def _record_request_metrics(
+        self,
+        params,
+        *,
+        request_started: float,
+        attempt: int,
+        status: str = "ok",
+        streamed: bool = False,
+        usage=None,
+        served_model: str | None = None,
+        first_token_at: float | None = None,
+        first_content_at: float | None = None,
+        finish_reason: str | None = None,
+    ) -> None:
+        """Log counts and timing only; never prompts, credentials, or reasoning."""
+        cached = _token_count(_field(_field(usage, "prompt_tokens_details"), "cached_tokens"))
+        if cached is None:
+            cached = _token_count(_field(usage, "cache_read_input_tokens"))
+        metrics = {
+            "model": self.model,
+            "served_model": served_model,
+            "status": status,
+            "streamed": streamed,
+            "attempts": attempt,
+            "input_chars": sum(len(message["content"]) for message in params["messages"]),
+            "input_tokens": _token_count(_field(usage, "prompt_tokens")),
+            "output_tokens": _token_count(_field(usage, "completion_tokens")),
+            "cached_input_tokens": cached,
+            "reasoning_tokens": _token_count(
+                _field(_field(usage, "completion_tokens_details"), "reasoning_tokens")
+            ),
+            "ttft_ms": round((first_token_at - request_started) * 1000, 1)
+            if first_token_at is not None
+            else None,
+            "first_content_ms": round((first_content_at - request_started) * 1000, 1)
+            if first_content_at is not None
+            else None,
+            "total_ms": round((time.perf_counter() - request_started) * 1000, 1),
+            "finish_reason": finish_reason if isinstance(finish_reason, str) else None,
+        }
+        self.last_request_metrics = metrics
+        logger.info("[PROXY] Request metrics: %s", metrics)
 
-        request_start = time.perf_counter()
+    def _complete_once(
+        self,
+        client,
+        params,
+        *,
+        request_started: float | None = None,
+        deadline: float | None = None,
+        attempt: int = 1,
+    ) -> str:
+        """One attempt, sharing the caller's budget across compatible fallbacks."""
+        if request_started is None:
+            request_started = time.perf_counter()
+        if deadline is None:
+            deadline = request_started + self._CLIENT_HARD_TIMEOUT_S
 
-        # Try streaming first for lower perceived latency
+        def request(**options):
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                raise TimeoutError("LLM request time budget exhausted")
+            return client.with_options(timeout=remaining).chat.completions.create(**params, **options)
+
+        # Try streaming first. Usage is delivered in an extra chunk with no
+        # choices; it must be collected separately from text/finish chunks.
+        stream = None
         try:
-            stream = client.chat.completions.create(**params, stream=True)
+            stream_options = (
+                {"stream_options": {"include_usage": True}} if self._stream_usage_supported else {}
+            )
+            try:
+                stream = request(stream=True, **stream_options)
+            except Exception as error:
+                if not stream_options or not _rejects_stream_usage(error):
+                    raise
+                self._stream_usage_supported = False
+                logger.info("[PROXY] Endpoint rejects streamed usage; retaining streaming without usage")
+                stream = request(stream=True)
             chunks: list[str] = []
             reasoning_chunks: list[str] = []
             served_model = None
+            usage = None
+            finish_reason = None
+            first_token_at = None
+            first_content_at = None
             for chunk in stream:
+                now = time.perf_counter()
+                if now >= deadline:
+                    raise TimeoutError("LLM streaming time budget exhausted")
                 if served_model is None and getattr(chunk, "model", None):
                     served_model = chunk.model
-                if chunk.choices and chunk.choices[0].delta:
-                    delta = chunk.choices[0].delta
-
-                    # Extract reasoning token if present
-                    reasoning_token = None
-                    if getattr(delta, "reasoning_content", None):
-                        reasoning_token = delta.reasoning_content
-                    elif getattr(delta, "model_extra", None) and delta.model_extra.get("reasoning"):
-                        reasoning_token = delta.model_extra.get("reasoning")
-                    elif getattr(delta, "reasoning", None):
-                        reasoning_token = delta.reasoning
-
-                    if reasoning_token:
-                        reasoning_chunks.append(reasoning_token)
-
-                    if delta.content:
-                        chunks.append(delta.content)
-
-            if reasoning_chunks:
-                reasoning_str = "".join(reasoning_chunks)
-                logger.debug(f"[PROXY] Model reasoning:\n{reasoning_str}")
+                if getattr(chunk, "usage", None) is not None:
+                    usage = chunk.usage
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                if getattr(choice, "finish_reason", None):
+                    finish_reason = choice.finish_reason
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+                reasoning_token = (
+                    getattr(delta, "reasoning_content", None)
+                    or _field(getattr(delta, "model_extra", None), "reasoning")
+                    or getattr(delta, "reasoning", None)
+                )
+                token = getattr(delta, "content", None)
+                if isinstance(reasoning_token, str) and reasoning_token:
+                    reasoning_chunks.append(reasoning_token)
+                    if first_token_at is None:
+                        first_token_at = now
+                if isinstance(token, str) and token:
+                    chunks.append(token)
+                    if first_token_at is None:
+                        first_token_at = now
+                    if first_content_at is None:
+                        first_content_at = now
 
             self._note_served_model(served_model)
             content = "".join(chunks)
             if "</think>" in content:
                 content = content.split("</think>")[-1].strip()
             if not content and reasoning_chunks:
-                salvaged = _salvage_reasoning_answer("".join(reasoning_chunks))
-                if salvaged:
+                content = _salvage_reasoning_answer("".join(reasoning_chunks))
+                if content:
                     logger.warning(
-                        f"[PROXY] Empty streamed content — using answer "
-                        f"salvaged from reasoning text ({len(salvaged)} chars)"
+                        "[PROXY] Empty streamed content — using salvaged answer (%s chars)", len(content)
                     )
-                    content = salvaged
                 else:
                     logger.warning(
-                        "[PROXY] Empty streamed content and reasoning text "
-                        "has no clean final answer — returning empty so the "
-                        "caller's fallback advice takes over"
+                        "[PROXY] Empty streamed content with no clean final answer — using caller fallback"
                     )
-            request_time = (time.perf_counter() - request_start) * 1000
-            logger.info(
-                f"[PROXY] API (streamed): {request_time:.0f}ms, "
-                f"model: {self.model}, served: {served_model or '?'}"
+            self._record_request_metrics(
+                params,
+                request_started=request_started,
+                attempt=attempt,
+                streamed=True,
+                usage=usage,
+                served_model=served_model,
+                first_token_at=first_token_at,
+                first_content_at=first_content_at,
+                finish_reason=finish_reason,
             )
             return content or ""
         except Exception as stream_err:
-            # Streaming transport quirks fall through to non-streaming, but a
-            # real API failure (auth, 5xx, connection) would fail identically
-            # there — reclassify and re-raise those for the retry loop.
+            # Real API/network errors belong to the bounded outer retry loop.
             err = _classify_api_error(stream_err)
             if err.retryable or err.status_code is not None:
                 raise
-            logger.debug(f"[PROXY] Streaming failed, falling back to non-streaming: {stream_err}")
+            logger.debug("[PROXY] Streaming failed, falling back to non-streaming: %s", stream_err)
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.debug("[PROXY] Failed to close stream", exc_info=True)
 
-        # Fallback: non-streaming request
-        request_start = time.perf_counter()
-        response = client.chat.completions.create(**params)
-        request_time = (time.perf_counter() - request_start) * 1000
-
+        response = request()
         message = response.choices[0].message
         content = message.content or ""
         if "</think>" in content:
             content = content.split("</think>")[-1].strip()
-
-        # Extract reasoning
-        reasoning = None
-        if getattr(message, "reasoning_content", None):
-            reasoning = message.reasoning_content
-        elif getattr(message, "model_extra", None) and message.model_extra.get("reasoning"):
-            reasoning = message.model_extra.get("reasoning")
-        elif getattr(message, "reasoning", None):
-            reasoning = message.reasoning
-        if reasoning:
-            logger.debug(f"[PROXY] Model reasoning:\n{reasoning}")
-
+        reasoning = (
+            getattr(message, "reasoning_content", None)
+            or _field(getattr(message, "model_extra", None), "reasoning")
+            or getattr(message, "reasoning", None)
+        )
         if not content and reasoning:
-            salvaged = _salvage_reasoning_answer(reasoning)
-            if salvaged:
-                logger.warning(
-                    f"[PROXY] Empty content — using answer salvaged from "
-                    f"reasoning text ({len(salvaged)} chars)"
-                )
-                content = salvaged
+            content = _salvage_reasoning_answer(reasoning)
+            if content:
+                logger.warning("[PROXY] Empty content — using salvaged answer (%s chars)", len(content))
             else:
-                logger.warning(
-                    "[PROXY] Empty content and reasoning text has no clean "
-                    "final answer — returning empty so the caller's "
-                    "fallback advice takes over"
-                )
-
+                logger.warning("[PROXY] Empty content with no clean final answer — using caller fallback")
         served_model = getattr(response, "model", None)
         self._note_served_model(served_model)
-        usage = getattr(response, "usage", None)
-        tokens_info = ""
-        if usage:
-            tokens_info = f", in={usage.prompt_tokens}, out={usage.completion_tokens}"
-        logger.info(
-            f"[PROXY] API: {request_time:.0f}ms, model: {self.model}, "
-            f"served: {served_model or '?'}{tokens_info}"
+        self._record_request_metrics(
+            params,
+            request_started=request_started,
+            attempt=attempt,
+            usage=getattr(response, "usage", None),
+            served_model=served_model,
+            finish_reason=getattr(response.choices[0], "finish_reason", None),
         )
         return content or ""
 

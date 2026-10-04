@@ -333,6 +333,7 @@ class _StandaloneWindowsMixin:
         "wait",
         "pass",
         "pass priority",
+        "passing",
         "no actions",
         "wait for opponent",
         "opponent has priority",
@@ -384,9 +385,9 @@ class _StandaloneWindowsMixin:
         # count too — "Nothing to do here — pass priority and let their
         # Swordsman's Steel resolve." (2026-09-24) was spoken every window.
         clean = (text or "").lower().strip(" .!")
-        return bool(re.search(r"\bpass(ing)? (the )?priority\b", clean)) and not any(
-            re.search(rf"\b{re.escape(v)}", clean) for v in cls._ACTION_VERBS
-        )
+        return bool(
+            re.search(r"\bpass(ing)? (the )?priority\b|^(?:i.m passing|i plan to pass)\b", clean)
+        ) and not any(re.search(rf"\b{re.escape(v)}", clean) for v in cls._ACTION_VERBS)
 
     @classmethod
     def _is_mulligan_pending(cls, curr_state: dict) -> bool:

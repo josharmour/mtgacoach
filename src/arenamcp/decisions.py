@@ -90,10 +90,32 @@ class PendingDecision:
             return False
         if not self.min_select <= len(chosen) <= self.max_select:
             return False
+        if self.request_type == "CastingTimeOptions":
+            selected = [self.find(option_id) for option_id in chosen]
+            if not selected:
+                return False
+            first = selected[0].meta
+            group = (first.get("childIndex"), first.get("choiceKind"))
+            if any(
+                (option.meta.get("childIndex"), option.meta.get("choiceKind")) != group for option in selected
+            ):
+                return False
+            minimum, maximum = casting_selection_bounds(first)
+            if not minimum <= len(selected) <= maximum:
+                return False
         weight = sum(int(self.find(option_id).meta.get("weight", 1)) for option_id in chosen)
         return (self.min_weight is None or weight >= self.min_weight) and (
             self.max_weight is None or weight <= self.max_weight
         )
+
+
+def casting_selection_bounds(meta: dict[str, Any]) -> tuple[int, int]:
+    """Counts belong to one casting child, not the flattened parent menu."""
+    if meta.get("choiceKind") not in {"modal", "choose_or_cost"}:
+        return 1, 1
+    minimum = int(meta.get("min", 1))
+    maximum = int(meta.get("max", max(1, minimum)))
+    return minimum, maximum
 
 
 def _default_card_resolver(grp_id: int) -> dict:
@@ -163,7 +185,13 @@ def build_pending_decision(
         )
         return (
             PendingDecision(
-                request_id, "CastingTimeOptions", options, can_cancel=can_cancel, source_label=source_label
+                request_id,
+                "CastingTimeOptions",
+                options,
+                min_select=min(casting_selection_bounds(option.meta)[0] for option in options),
+                max_select=max(casting_selection_bounds(option.meta)[1] for option in options),
+                can_cancel=can_cancel,
+                source_label=source_label,
             )
             if options
             else None
@@ -190,7 +218,14 @@ def build_pending_decision(
     if rtype in _ACTIONS_AVAILABLE_TYPES or (not rtype and poll.get("actions")):
         return _build_actions_available(poll, request_id, can_pass, can_cancel, source_label, resolve_name)
     if rtype in _SELECT_TARGETS_TYPES or request_class in _SELECT_TARGETS_TYPES:
-        return _build_select_targets(poll, request_id, can_cancel, source_label, resolve_name)
+        source_id = int(
+            poll.get("source_instance_id") or (poll.get("request_payload") or {}).get("sourceId") or 0
+        )
+        if not source_label and resolve_instance and source_id:
+            source_label = resolve_instance(source_id)
+        return _build_select_targets(
+            poll, request_id, can_cancel, source_label, resolve_name, resolve_instance
+        )
     if rtype in _SELECT_N_TYPES or request_class in _SELECT_N_TYPES:
         return _build_select_n(
             poll, request_id, rtype, can_cancel, source_label, resolve_name, resolve_instance
@@ -300,6 +335,7 @@ def _build_select_targets(
     can_cancel: bool,
     source_label: str,
     resolve_name: Callable[[int], str],
+    resolve_instance: Callable[[int], str] | None = None,
 ) -> PendingDecision | None:
     options: list[DecisionOption] = []
     seen: set[int] = set()
@@ -311,12 +347,13 @@ def _build_select_targets(
             continue
         seen.add(iid)
         grp_id = int(cand.get("grpId") or 0)
-        name = resolve_name(grp_id) if grp_id else ""
+        name = resolve_instance(iid) if resolve_instance else ""
+        name = name or (resolve_name(grp_id) if grp_id else "")
         options.append(
             DecisionOption(
                 option_id=f"tgt:{iid}",
                 label=name or f"Target #{iid}",
-                meta={"grpId": grp_id, "targetIdx": cand.get("targetIdx")},
+                meta={"instanceId": iid, "grpId": grp_id, "targetIdx": cand.get("targetIdx")},
             )
         )
     if not options:
@@ -671,6 +708,26 @@ def submit_option(
         if not decision.selection_is_valid(option_ids):
             return False
         return bool(bridge.submit_selection([int(oid.split(":", 1)[1]) for oid in option_ids]))
+    if decision.request_type == "CastingTimeOptions":
+        if not decision.selection_is_valid(option_ids):
+            logger.warning("Refusing incomplete or mixed casting choices: %s", option_ids)
+            return False
+        if len(option_ids) > 1:
+            # One atomic modal response: submitting the first option alone
+            # leaves choose-two requests invalid and discards the second mode.
+            return bool(
+                bridge.submit_casting_options(
+                    [int(option_id.split(":", 1)[1]) for option_id in option_ids],
+                    expected=[
+                        {
+                            **decision.find(option_id).meta,
+                            "gameStateId": decision.request_id[0],
+                            "msgId": decision.request_id[1],
+                        }
+                        for option_id in option_ids
+                    ],
+                )
+            )
     valid = decision.option_ids()
     chosen = [oid for oid in option_ids if oid in valid]
     if decision.request_type == "ActionsAvailable" and any(

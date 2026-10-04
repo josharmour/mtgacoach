@@ -44,3 +44,31 @@ def test_watchdog_ping_bridge_delivers_pong(qapp):
     qapp.processEvents()
 
     assert pongs == [True]
+
+
+def test_reload_engine_keeps_window_open(qapp, monkeypatch):
+    from unittest.mock import Mock
+
+    win = MainWindow()
+    reload_engine = Mock()
+    monkeypatch.setattr(win._session, "restart", reload_engine)
+    try:
+        win.coach_panel.reload_engine_requested.emit()
+        reload_engine.assert_called_once_with()
+        assert not win._closed
+        assert win._session is win.coach_panel._session
+    finally:
+        win.close()
+
+
+def test_autopilot_bug_button_routes_to_capture(qapp, monkeypatch):
+    from unittest.mock import Mock
+
+    capture = Mock()
+    monkeypatch.setattr("arenamcp.desktop.coach_session.CoachSession.trigger_autopilot_bug", capture)
+    win = MainWindow()
+    try:
+        win.coach_panel.autopilot_bug_requested.emit()
+        capture.assert_called_once_with()
+    finally:
+        win.close()

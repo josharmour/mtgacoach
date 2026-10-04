@@ -64,6 +64,7 @@ DEFAULTS = {
     "last_seen_message_id": None,
     # Autopilot persistent toggle state
     "autopilot_enabled": False,
+    "auto_queue_enabled": False,  # Opt in to repeating the most recent queue/deck after matches.
     "autopilot_vision_model": None,
     "autopilot_vision_url": None,
     "autopilot_vision_api_key": None,

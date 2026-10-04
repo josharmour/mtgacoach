@@ -7,6 +7,8 @@ tutor is in hand) so the coach can reason about draw odds and remaining outs
 
 from types import SimpleNamespace
 
+import pytest
+
 from arenamcp.standalone import StandaloneCoach
 
 MOUNTAIN, BOLT, OTHER, TUTOR = 100, 200, 300, 400
@@ -27,6 +29,11 @@ CARD_INFO = {
         "oracle_text": "Search your library for a card and put it into your hand.",
     },
 }
+
+
+@pytest.fixture(autouse=True)
+def local_card_facts(monkeypatch):
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda grp, epoch: CARD_INFO.get(grp, {}))
 
 
 class _Stub:
@@ -73,6 +80,7 @@ def test_compact_summary_subtracts_seen_and_shows_odds():
         hand=[_hand_card(MOUNTAIN), _hand_card(MOUNTAIN), _hand_card(BOLT)],
         battlefield=[_hand_card(MOUNTAIN), _hand_card(MOUNTAIN)],
     )
+    gs["zones"] = {"library_count": 55, "library_count_source": "log_zone_membership"}
     summary = stub._compute_library_summary(gs, detailed=False)
     # 60 - 5 seen = 55 remaining; Mountain 24-4=20, Bolt 4-1=3, Bears 32
     assert summary.startswith("MY LIBRARY (55 cards left")
@@ -80,9 +88,18 @@ def test_compact_summary_subtracts_seen_and_shows_odds():
     assert "20x Mountain" in summary
     assert "3x Lightning Bolt" in summary
     # Draw odds: 20/55 = 36%
-    assert "(36%)" in summary
+    assert "(36.4% per random draw)" in summary
     # Compact form must not leak oracle text into every prompt
     assert "deals 3 damage" not in summary
+
+
+def test_unknown_observed_count_retains_inferred_inventory_without_exact_odds():
+    summary = _Stub()._compute_library_summary(_game_state(), detailed=False)
+    assert "60 cards left by starting-deck-minus-visible estimate" in summary
+    assert "observed count UNKNOWN" in summary
+    assert "24x Mountain" in summary
+    assert "4x Lightning Bolt" in summary
+    assert "per random draw" not in summary
 
 
 def test_compact_summary_ignores_opponent_cards():
@@ -95,7 +112,7 @@ def test_compact_summary_ignores_opponent_cards():
 def test_detailed_summary_keeps_oracle_text():
     stub = _Stub()
     summary = stub._compute_library_summary(_game_state(), detailed=True)
-    assert "cards remaining in library" in summary
+    assert "MY LIBRARY (60 cards left" in summary
     assert "deals 3 damage" in summary  # non-basics carry oracle text
 
 
@@ -106,17 +123,21 @@ def test_inject_uses_compact_form_without_tutor():
     assert gs["library_summary"].startswith("MY LIBRARY (")
 
 
-def test_inject_upgrades_to_tutor_targets_with_tutor_in_hand():
+def test_tutor_in_hand_retains_all_draw_inventory_and_full_target_rules():
     stub = _Stub()
-    stub._compute_tutor_library_targets = lambda gs: "TUTOR TARGETS BY MANA VALUE"
     gs = _game_state(hand=[_hand_card(TUTOR)])
     stub._inject_library_summary_if_needed(gs)
-    assert gs["library_summary"] == "TUTOR TARGETS BY MANA VALUE"
+    assert "4x Lightning Bolt" in gs["library_summary"]
+    assert "24x Mountain" in gs["library_summary"]
+    assert "deals 3 damage" in gs["deck_reference"]
 
 
-def test_no_injection_without_decklist():
+def test_missing_decklist_injects_explicit_unknown_not_empty():
     stub = _Stub()
     gs = _game_state()
     gs["deck_cards"] = []
     stub._inject_library_summary_if_needed(gs)
-    assert "library_summary" not in gs
+    assert "count UNKNOWN" in gs["library_summary"]
+    assert "starting deck inventory unavailable" in gs["library_summary"]
+    assert "Missing inventory does not mean empty" in gs["library_summary"]
+    assert "deck_reference" not in gs

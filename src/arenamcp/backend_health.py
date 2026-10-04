@@ -44,6 +44,7 @@ class HealthState(Enum):
     OK = "ok"
     DEGRADED = "degraded"
     DOWN = "down"
+    UNKNOWN = "unknown"
 
 
 def is_backend_error_text(text: str | None) -> bool:
@@ -169,9 +170,21 @@ class BackendHealth:
             self._notify(snap)
         return transitioned
 
+    def record_probe_warning(self, detail: str) -> None:
+        """Model-list permissions do not establish whether inference works."""
+        with self._lock:
+            if self._total_successes or self._total_failures:
+                return  # Never replace evidence from actual requests.
+            self._last_detail = detail
+            old = self._state
+            self._state = HealthState.UNKNOWN
+            snap = self._snapshot_locked()
+        if old is not HealthState.UNKNOWN:
+            self._notify(snap)
+
     def _snapshot_locked(self) -> dict[str, Any]:
         """snapshot() with self._lock already held."""
-        if self._state is HealthState.OK:
+        if self._state in (HealthState.OK, HealthState.UNKNOWN):
             detail = self._last_detail or "reachable"
         else:
             detail = self._last_error or "backend failing"
@@ -229,16 +242,24 @@ def check_gateway_health(backend: Any, timeout: float = 5.0) -> tuple[HealthStat
     tracker = BackendHealth.instance()
     start = time.perf_counter()
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            response.read()
+        probe = getattr(backend, "probe_connection", None)
+        if callable(probe):
+            probe(timeout=timeout)
+        else:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                response.read()
         ms = (time.perf_counter() - start) * 1000
         tracker.record_success(detail=f"startup probe OK ({ms:.0f}ms)")
         return HealthState.OK, f"{model} reachable, {ms:.0f}ms"
-    except urllib.error.HTTPError as e:
-        ms = (time.perf_counter() - start) * 1000
-        tracker.record_failure(error=f"HTTP {e.code} from {base_url}", status_code=e.code)
-        return HealthState.DEGRADED, f"{model} endpoint answered HTTP {e.code} ({ms:.0f}ms)"
     except Exception as e:
         ms = (time.perf_counter() - start) * 1000
+        code = e.code if isinstance(e, urllib.error.HTTPError) else getattr(e, "status_code", None)
+        if code in (401, 403, 404, 405):
+            detail = f"{model}: model-list check returned HTTP {code}; inference is not yet tested"
+            tracker.record_probe_warning(detail)
+            return HealthState.UNKNOWN, detail
+        if code:
+            tracker.record_failure(error=f"HTTP {code} from {base_url}", status_code=code)
+            return HealthState.DEGRADED, f"{model} endpoint answered HTTP {code} ({ms:.0f}ms)"
         tracker.record_failure(error=f"{type(e).__name__}: {e}")
         return HealthState.DOWN, f"{model} unreachable: {e} ({ms:.0f}ms)"

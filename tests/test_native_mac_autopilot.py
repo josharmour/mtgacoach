@@ -300,6 +300,32 @@ def test_repeated_no_progress_inputs_are_bounded(monkeypatch):
     assert engine.state == AutopilotState.PAUSED
 
 
+def test_repeated_inputs_capture_once_and_stop_before_fourth_click(monkeypatch):
+    engine, controller, _, state, _ = make_engine(monkeypatch)
+    captures = []
+
+    def capture(reason, proof):
+        assert engine._abort_event.is_set()
+        assert controller.execute.call_count == 3
+        captures.append((reason, proof, engine.get_debug_info()))
+
+    engine._stuck_report_fn = capture
+    for _ in range(6):
+        engine._next_poll = 0
+        engine.process_trigger(state, "desktop_poll")
+    assert controller.execute.call_count == 3
+    assert len(captures) == 1
+    assert captures[0][1]["native_input_progress"]["repeated_attempts"] == 3
+    assert len(captures[0][2]["recent_inputs"]) == 3
+    assert engine.state == AutopilotState.PAUSED
+
+
+def test_debug_snapshot_handles_no_committed_log_action(monkeypatch):
+    engine, *_ = make_engine(monkeypatch)
+    engine._plan_cache = ("decision-without-legal-log-actions", None)
+    assert engine.get_debug_info()["committed_play"] is None
+
+
 def test_bad_model_response_stops_instead_of_clicking(monkeypatch):
     engine, controller, backend, state, notices = make_engine(monkeypatch)
     backend.complete_with_image.return_value = "This model does not accept images"

@@ -22,13 +22,16 @@ def build_issue_payload(
     errors = report_data.get("errors", []) or []
     recent_logs = report_data.get("recent_logs", []) or []
     game_state = report_data.get("game_state", {}) or {}
-    turn = game_state.get("turn", {}) if isinstance(game_state, dict) else {}
+    turn = (
+        (game_state.get("turn") or game_state.get("turn_info") or {}) if isinstance(game_state, dict) else {}
+    )
     match_context = report_data.get("match_context", {}) or {}
     reporter = report_data.get("reporter", {}) or {}
     settings = report_data.get("settings", {}) or {}
     post_match_feedback = report_data.get("post_match_feedback", {}) or {}
     auto_fallback_bug = report_data.get("auto_fallback_bug", {}) or {}
     auto_user_takeover = report_data.get("auto_user_takeover", {}) or {}
+    manual_recovery = report_data.get("manual_recovery", {}) or {}
     replay = report_data.get("replay", {}) or {}
     install_id = reporter.get("install_id") or settings.get("install_id")
 
@@ -48,6 +51,7 @@ def build_issue_payload(
         "replay": report_data.get("replay"),
         "auto_fallback_bug": auto_fallback_bug,
         "auto_user_takeover": auto_user_takeover,
+        "manual_recovery": manual_recovery,
         "recent_errors": errors[-5:],
     }
     excerpt_json = json.dumps(excerpt, indent=2, default=str)
@@ -113,6 +117,18 @@ def build_issue_payload(
             lines.append(f"- Planned card: `{auto_user_takeover.get('planned_card')}`")
         if auto_user_takeover.get("planned_strategy"):
             lines.append(f"- Planned strategy: {auto_user_takeover.get('planned_strategy')}")
+
+    if manual_recovery:
+        lines.extend(["", "## Autopilot Bug and Manual Recovery", ""])
+        lines.append(f"- Capture status: `{manual_recovery.get('status')}`")
+        lines.append(f"- Recovery observations: `{manual_recovery.get('events_path')}`")
+        if manual_recovery.get("finish_reason"):
+            lines.append(f"- Capture ended: `{manual_recovery.get('finish_reason')}`")
+        if "event_count" in manual_recovery:
+            lines.append(f"- Recorded state transitions: `{manual_recovery.get('event_count')}`")
+        lines.append(
+            "- The initial report preserves autopilot intent before pausing; recovery records contain observed Arena state and action history."
+        )
 
     lines.extend(
         [

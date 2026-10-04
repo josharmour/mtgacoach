@@ -10,6 +10,7 @@ import threading
 import time
 import webbrowser
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,6 +37,8 @@ _COMMON_MTGA_PATHS = [
 ]
 _RELEASES_URL = "https://github.com/josharmour/mtgacoach/releases"
 _PYTHON_DOWNLOADS_URL = "https://www.python.org/downloads/windows/"
+_MAC_LAUNCH_LOCK = threading.Lock()
+_native_mtga_process: subprocess.Popen | None = None
 
 
 @dataclass(slots=True)
@@ -1105,7 +1108,23 @@ def _find_mac_app_bundle(mtga_dir: str) -> Path | None:
     return None
 
 
-def launch_mtga(mtga_dir: str) -> str:
+def launch_mtga(mtga_dir: str, *, on_status: Callable[[str], None] | None = None) -> str:
+    """Launch Arena once, keeping any existing Mac game process untouched."""
+    if sys.platform != "darwin":
+        return _launch_mtga(mtga_dir, on_status=on_status)
+    with _MAC_LAUNCH_LOCK:
+        _invalidate_mtga_running_cache()
+        # The child handle also covers the brief fork/exec window before pgrep
+        # can see Arena, including concurrent automatic/manual launch requests.
+        if (_native_mtga_process is not None and _native_mtga_process.poll() is None) or is_mtga_running():
+            if on_status:
+                on_status("Arena is already running. Connecting to its bridge; your match stays open.")
+            return str(_find_mac_app_bundle(mtga_dir) or Path(mtga_dir))
+        return _launch_mtga(mtga_dir, on_status=on_status)
+
+
+def _launch_mtga(mtga_dir: str, *, on_status: Callable[[str], None] | None = None) -> str:
+    global _native_mtga_process
     if sys.platform == "darwin":
         app_bundle = _find_mac_app_bundle(mtga_dir)
         if app_bundle is not None:
@@ -1117,6 +1136,8 @@ def launch_mtga(mtga_dir: str) -> str:
                 executable = app_bundle / "Contents" / "MacOS" / "MTGA"
                 if not executable.is_file():
                     raise FileNotFoundError(f"MTGA executable not found: {executable}")
+                if on_status:
+                    on_status("Starting Steam before launching Arena with its bridge…")
                 subprocess.run(["/usr/bin/open", "-a", "Steam"], check=True, timeout=10)
                 for attempt in range(30):
                     steam = subprocess.run(
@@ -1129,6 +1150,10 @@ def launch_mtga(mtga_dir: str) -> str:
                     raise RuntimeError("Steam is still starting. Open Steam and try launching MTGA again.")
                 _invalidate_mtga_running_cache()
                 if is_mtga_running():
+                    if on_status:
+                        on_status(
+                            "Arena is already running. Connecting to its bridge; your match stays open."
+                        )
                     return str(app_bundle)
                 env = os.environ.copy()
                 env["SteamAppId"] = "2141910"
@@ -1136,8 +1161,10 @@ def launch_mtga(mtga_dir: str) -> str:
                 env["DYLD_INSERT_LIBRARIES"] = str(MAC_BRIDGE_LIBRARY)
                 log_path = Path(get_runtime_root()) / "mtga-launch.log"
                 log_path.parent.mkdir(parents=True, exist_ok=True)
+                if on_status:
+                    on_status("Launching Arena with its native bridge…")
                 with log_path.open("ab") as launch_log:
-                    subprocess.Popen(
+                    _native_mtga_process = subprocess.Popen(
                         [str(executable)],
                         cwd=str(app_bundle.parent),
                         env=env,
@@ -1147,6 +1174,8 @@ def launch_mtga(mtga_dir: str) -> str:
                         start_new_session=True,
                     )
                 _invalidate_mtga_running_cache()
+                if on_status:
+                    on_status("Arena launch requested. Waiting for its bridge to connect…")
                 return str(app_bundle)
             subprocess.Popen(["/usr/bin/open", str(app_bundle)])
             return str(app_bundle)
@@ -1174,18 +1203,32 @@ def launch_mtga(mtga_dir: str) -> str:
     return str(executable)
 
 
-def launch_native_mac_session() -> str | None:
+def launch_native_mac_session(*, on_status: Callable[[str], None] | None = None) -> str | None:
     """Start bridge-enabled MTGA with the coach, leaving existing games alone."""
     if sys.platform != "darwin":
         return None
     from arenamcp.platform_integration import mac_bridge_installed
 
-    if not mac_bridge_installed() or is_mtga_running():
+    installed = mac_bridge_installed()
+    _invalidate_mtga_running_cache()
+    if is_mtga_running():
+        if on_status:
+            on_status(
+                "Arena is already running. Connecting to its bridge; your match stays open."
+                if installed
+                else "Arena is already running. Native bridge not installed: using screen-based autoplay mode."
+            )
+        return None
+    if not installed:
+        if on_status:
+            on_status("Native bridge not installed: using screen-based autoplay mode. Start Arena normally.")
         return None
     mtga_dir, _source = find_mtga_install_dir()
     if not mtga_dir or _find_mac_app_bundle(mtga_dir) is None:
+        if on_status:
+            on_status("Arena's Mac app was not found. Choose its install location in Setup & Repair.")
         return None
-    return launch_mtga(mtga_dir)
+    return launch_mtga(mtga_dir, on_status=on_status)
 
 
 def restart_mtga(mtga_dir: str) -> str:

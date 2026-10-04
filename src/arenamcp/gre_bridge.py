@@ -658,6 +658,32 @@ class GREBridge:
 
         return resolved
 
+    def submit_casting_options(self, action_indices: list[int], *, expected: list[dict[str, Any]]) -> bool:
+        """Submit every selected mode in one request-bound bridge operation.
+
+        Older plugins reject this distinct command, rather than ignoring an
+        extra field and silently submitting only the first mode.
+        """
+        if not action_indices or len(action_indices) != len(expected):
+            return False
+        first = expected[0]
+        command = {
+            "action": "submit_casting_options",
+            "action_indices": action_indices,
+            "expected_options": expected,
+            "expected_game_state_id": first.get("gameStateId", 0),
+            "expected_msg_id": first.get("msgId", 0),
+        }
+        try:
+            response = self._send_safe(command)
+            if response.get("ok"):
+                logger.info("GRE bridge submitted casting modes %s", action_indices)
+                return True
+            logger.warning("GRE bridge could not submit all casting modes: %s", response.get("error"))
+        except GREBridgeError as exc:
+            logger.warning("GRE bridge multi-mode submit error: %s", exc)
+        return False
+
     def submit_action_by_index(
         self,
         action_index: int,
@@ -891,6 +917,9 @@ class GREBridge:
     def submit_attackers_raw(
         self,
         attackers: list[dict[str, Any]],
+        *,
+        expected_request_id: tuple[int, int] | None = None,
+        finalize_only: bool = False,
     ) -> dict[str, Any] | None:
         """Submit attacker declarations and return full response dict.
 
@@ -898,12 +927,14 @@ class GREBridge:
         check needs_finalize for the two-step UpdateAttacker/SubmitAttackers flow.
         """
         try:
-            resp = self._send_safe(
-                {
-                    "action": "submit_attackers",
-                    "attackers": attackers,
-                }
-            )
+            command = {"action": "submit_attackers", "attackers": attackers}
+            if expected_request_id is not None:
+                command.update(
+                    expected_game_state_id=expected_request_id[0], expected_msg_id=expected_request_id[1]
+                )
+            if finalize_only:
+                command["finalize_only"] = True
+            resp = self._send_safe(command)
             logger.info(f"GRE bridge submit_attackers_raw response: {resp}")
             return resp
         except GREBridgeError as e:
@@ -1629,6 +1660,9 @@ _BRIDGE_REQUEST_TO_DECISION_TYPE: dict[str, str] = {
     "OptionalActionMessage": "optional_action",
     "OptionalActionMessageRequest": "optional_action",
     "OptionalActionMessageReq": "optional_action",
+    "OptionalAction": "optional_action",
+    "OptionalActionRequest": "optional_action",
+    "OptionalActionReq": "optional_action",
     "CastingTimeOptions": "casting_time_options",
     "CastingTimeOptionsReq": "casting_time_options",
     "CastingTimeOptionRequest": "casting_time_options",
@@ -1714,6 +1748,9 @@ _BRIDGE_REQUEST_TO_LABEL: dict[str, str] = {
     "OptionalActionMessage": "Optional Action",
     "OptionalActionMessageRequest": "Optional Action",
     "OptionalActionMessageReq": "Optional Action",
+    "OptionalAction": "Optional Action",
+    "OptionalActionRequest": "Optional Action",
+    "OptionalActionReq": "Optional Action",
     "CastingTimeOptions": "Casting Option",
     "CastingTimeOptionsReq": "Casting Option",
     "CastingTimeOptionRequest": "Casting Option",
@@ -1832,7 +1869,12 @@ def enrich_snapshot_from_pending_response(
     decision_type = _get_bridge_decision_type(request_type, request_class)
     plugin_provided_type = bool(bridge_decision_context and bridge_decision_context.get("type"))
     existing_ctx = _merge_decision_context_from_bridge(
-        snapshot, bridge_decision_context, request_type, request_class
+        snapshot,
+        bridge_decision_context,
+        request_type,
+        request_class,
+        request_payload=request_payload,
+        source_instance_id=poll.get("source_instance_id"),
     )
     existing_ctx = _resolve_decision_context_type(existing_ctx, decision_type, plugin_provided_type)
     existing_ctx = _refine_generic_selection_type(
@@ -2085,24 +2127,110 @@ def _merge_decision_context_from_bridge(
     bridge_decision_context: dict[str, Any],
     request_type: str | None,
     request_class: str | None,
+    *,
+    request_payload: Any = None,
+    source_instance_id: Any = None,
 ) -> dict[str, Any]:
-    """Overlay bridge-provided decision_context onto the snapshot's, then
-    backfill requestType / requestClass tags. Returns the merged dict.
+    """Overlay the live request without carrying a previous family's choices.
+
+    Log snapshots can still describe OptionalAction after Arena has opened
+    Search. Its old prompt, raw message and limits are not Search context.
+    Source-card facts may survive that transition only for the same source.
     """
     existing_ctx = snapshot.get("decision_context") or {}
-    if bridge_decision_context:
-        snapshot["decision_context"] = {
-            **existing_ctx,
+    old_family = _decision_context_family(existing_ctx)
+    new_family = _get_bridge_decision_type(request_type, request_class)
+    # Scry/surveil describe the effect, not its protocol family. Either a
+    # SelectN or a Group request can carry one; use request tags/raw structure
+    # when known, and avoid discarding details based on that label alone.
+    compatible_effect = old_family in {"scry", "surveil"} and new_family in _GENERIC_SELECTION_TYPES
+    if old_family and new_family and old_family != new_family and not compatible_effect:
+        fresh_source = {
+            **(request_payload if isinstance(request_payload, dict) else {}),
             **bridge_decision_context,
-            "_bridge_source": True,
         }
-        existing_ctx = snapshot["decision_context"]
+        if source_instance_id:
+            fresh_source["source_id"] = source_instance_id
+        source_id = _decision_context_source_id(fresh_source)
+        keep_source = source_id and source_id == _decision_context_source_id(existing_ctx)
+        existing_ctx = {
+            key: value
+            for key, value in existing_ctx.items()
+            if keep_source
+            and key
+            in {
+                "source_card",
+                "source_oracle_text",
+                "source_card_oracle_text",
+                "source_parent_instance_id",
+            }
+        }
+        if source_id:
+            existing_ctx["source_id"] = source_id
+        # Legal actions belong to the consumed decision too. The live bridge
+        # action menu is separately stamped in _bridge_actions above.
+        if "legal_actions" in snapshot:
+            snapshot["legal_actions"] = []
+        if "legal_actions_raw" in snapshot:
+            snapshot["legal_actions_raw"] = []
 
-    if request_type and "requestType" not in existing_ctx:
+    if bridge_decision_context:
+        existing_ctx = {**existing_ctx, **bridge_decision_context, "_bridge_source": True}
+
+    if request_type:
         existing_ctx = {**existing_ctx, "requestType": request_type}
-    if request_class and "requestClass" not in existing_ctx:
+    if request_class:
         existing_ctx = {**existing_ctx, "requestClass": request_class}
     return existing_ctx
+
+
+def _decision_context_family(context: dict[str, Any]) -> str | None:
+    mapped = _get_bridge_decision_type(context.get("requestType"), context.get("requestClass"))
+    if mapped and mapped != UNMAPPED_INTERACTION_TYPE:
+        return mapped
+    kind = str(context.get("type") or "")
+    if kind.startswith("casting_time_"):
+        return "casting_time_options"
+    if kind == "mulligan_bottom":
+        return "group_selection"
+    raw = context.get("raw")
+    if kind in {"scry", "surveil"} and isinstance(raw, dict) and "groupSpecs" in raw:
+        return "group_selection"
+    if kind in {
+        "discard",
+        "mill",
+        "explore",
+        "sacrifice",
+        "exile",
+        "destroy",
+        "return",
+        "select_n",
+        "choose",
+        "choose_creature",
+        "choose_land",
+        "choose_enchantment",
+        "choose_artifact",
+        "choose_permanent",
+    }:
+        return "selection_generic"
+    return kind if kind and kind not in {"unknown_req", UNMAPPED_INTERACTION_TYPE} else None
+
+
+def _decision_context_source_id(context: dict[str, Any]) -> int:
+    raw = context.get("raw")
+    candidates = [context]
+    if isinstance(raw, dict):
+        candidates.append(raw)
+        candidates.extend(value for value in raw.values() if isinstance(value, dict))
+    for candidate in candidates:
+        for key in ("source_id", "sourceId"):
+            try:
+                value = int(candidate.get(key) or 0)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+    return 0
 
 
 def _resolve_decision_context_type(

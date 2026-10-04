@@ -17,9 +17,10 @@ from arenamcp.backends.proxy import ProxyBackend
 
 
 def _make_backend_with_mock_client():
-    backend = ProxyBackend(model="test-model", base_url="http://localhost:11434/v1")
+    backend = ProxyBackend(model="test-model", base_url="http://test.invalid/v1")
 
     mock_client = MagicMock()
+    mock_client.with_options.return_value = mock_client
     mock_chunk = MagicMock()
     mock_chunk.choices = [MagicMock(delta=MagicMock(content="ok"))]
     mock_client.chat.completions.create.return_value = iter([mock_chunk])
@@ -32,33 +33,29 @@ def test_complete_forwards_request_timeout_to_with_options():
 
     backend.complete("sys", "user", request_timeout_s=7.5)
 
-    mock_client.with_options.assert_called_once_with(timeout=7.5)
+    mock_client.with_options.assert_called_once()
+    assert 0 < mock_client.with_options.call_args.kwargs["timeout"] <= 7.5
 
 
-def test_complete_skips_with_options_when_timeout_omitted():
+def test_complete_uses_default_budget_when_timeout_omitted():
     backend, mock_client = _make_backend_with_mock_client()
 
     backend.complete("sys", "user")
 
-    mock_client.with_options.assert_not_called()
+    mock_client.with_options.assert_called_once()
+    assert 0 < mock_client.with_options.call_args.kwargs["timeout"] <= backend._CLIENT_HARD_TIMEOUT_S
 
 
-def test_get_client_sets_finite_default_timeout():
+def test_get_client_sets_finite_default_timeout(monkeypatch):
     """Even without per-call request_timeout_s, the client must have a real ceiling.
 
     Without a finite default, the SDK falls back to ~10 minutes — long enough
     that a hung backend leaks the worker thread for what feels like forever.
     """
-    backend = ProxyBackend(model="test-model", base_url="http://localhost:11434/v1")
+    backend = ProxyBackend(model="test-model", base_url="http://test.invalid/v1")
     backend._client = None
 
     captured = {}
-
-    def fake_openai_factory(**kwargs):
-        captured.update(kwargs)
-        return MagicMock()
-
-    __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
 
     class _FakeOpenAI:
         def __init__(self, **kwargs):
@@ -68,11 +65,8 @@ def test_get_client_sets_finite_default_timeout():
 
     import sys
 
-    sys.modules["openai"] = fake_module
-    try:
-        backend._get_client()
-    finally:
-        sys.modules.pop("openai", None)
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+    backend._get_client()
 
     assert "timeout" in captured, "OpenAI client must be created with a finite timeout"
     assert isinstance(captured["timeout"], (int, float))

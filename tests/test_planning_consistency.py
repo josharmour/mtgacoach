@@ -22,12 +22,14 @@ def target_state():
                 "instance_id": 545,
                 "type_line": "Artifact Creature",
                 "owner_seat_id": 1,
+                "controller_seat_id": 1,
             },
             {
                 "name": "Lumbering Worldwagon",
                 "instance_id": 652,
                 "type_line": "Artifact — Vehicle",
                 "owner_seat_id": 1,
+                "controller_seat_id": 1,
             },
         ],
         "decision_context": {

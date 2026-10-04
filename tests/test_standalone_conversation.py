@@ -397,6 +397,41 @@ def test_conversation_mode_critical_trigger_still_dispatches_legacy(monkeypatch)
     assert any("decision_required" in (t.trigger or "") for t in coach.conversation.memory.turns)
 
 
+def test_autopilot_repolls_after_accept_before_handling_search(monkeypatch):
+    state = make_state(pending="Optional Action", decision_type="optional")
+    state["local_seat_id"] = 1
+    coach = make_loop_coach(state=state, triggers=["decision_required", "stack_spell_yours"])
+    calls = []
+
+    class Autopilot:
+        requires_desktop_poll = False
+
+        def is_window_given_up(self, _state):
+            return False
+
+        def process_trigger(self, snapshot, trigger):
+            calls.append((snapshot["pending_decision"], trigger))
+            # Accepting Worldwagon's optional ETB opens a new search request.
+            # The other trigger in this batch still refers to the old prompt.
+            coach._mcp.state = {
+                **coach._mcp.state,
+                "pending_decision": "Search Library",
+                "decision_context": {"type": "search", "min": 0, "max": 1},
+            }
+            return True
+
+    coach._autopilot_enabled = True
+    coach._autopilot = Autopilot()
+
+    run_loop(monkeypatch, coach, iterations=2)
+
+    assert calls == [
+        ("Optional Action", "decision_required"),
+        ("Search Library", "decision_required"),
+    ]
+    assert coach._coach.calls == []
+
+
 def test_turn_advice_mode_skips_controller_and_calls_legacy(monkeypatch):
     coach = make_loop_coach(mode=TURN_ADVICE, triggers=["land_played"])
 

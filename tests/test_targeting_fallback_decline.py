@@ -168,8 +168,8 @@ def test_target_options_labeled_with_controller():
 
     p._backend = _CapturingBackend()
     p.plan_decision_options(_decision([607, 812]), _state(own_ids=(607,), their_ids=(812,)))
-    assert "tgt:607: target 607 (YOURS)" in captured["user"]
-    assert "tgt:812: target 812 (opponent's)" in captured["user"]
+    assert "tgt:607: own-607 (YOURS)" in captured["user"]
+    assert "tgt:812: opp-812 (opponent's)" in captured["user"]
 
 
 def _two_triggers_state(source_key):

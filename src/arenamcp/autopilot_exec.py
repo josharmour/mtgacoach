@@ -17,6 +17,8 @@ class _ActionExecMixin:
 
     def _execute_action(self, action: GameAction, game_state: dict[str, Any]) -> ClickResult:
         """Route an action to the GRE bridge submission handler."""
+        if self._abort_event.is_set():
+            return ClickResult(False, 0, 0, action.action_type.value, "aborted")
         # Match just ended — the bridge is in Intermission and no action is legal.
         if game_state.get("_bridge_in_intermission") or game_state.get("match_ended"):
             logger.info(f"Autopilot: skipping {action.action_type.value} — bridge in intermission")
@@ -31,6 +33,8 @@ class _ActionExecMixin:
                 and self._wait_for_bridge_reconnect()
             ):
                 gre_result = self._try_gre_bridge(action, game_state)
+            if self._abort_event.is_set():
+                return ClickResult(False, 0, 0, action.action_type.value, "aborted")
             if gre_result is not None:
                 return gre_result
 
@@ -108,7 +112,7 @@ class _ActionExecMixin:
                         and self._gre_bridge is not None
                     ):
                         try:
-                            if self._gre_bridge.submit_pass():
+                            if self._progress_bridge(game_state, poll=live or None).submit_pass():
                                 self._log_execution_path(
                                     ExecutionPath.GRE_AWARE,
                                     f"{action.action_type.value}: not in combat "
@@ -229,7 +233,7 @@ class _ActionExecMixin:
                     candidates = pending.get("candidate_ids") or []
                     if len(candidates) == 1:
                         only_id = int(candidates[0])
-                        if self._gre_bridge.submit_targets([only_id]):
+                        if self._progress_bridge(game_state, poll=live or None).submit_targets([only_id]):
                             self._log_execution_path(
                                 ExecutionPath.GRE_AWARE,
                                 f"select_target (no name): auto-picked sole candidate {only_id}",

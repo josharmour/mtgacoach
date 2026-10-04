@@ -70,9 +70,14 @@ def removal_state(oracle="When you cast this spell, exile two target permanents.
     }
 
 
-def planner_with_picks(picks):
+def planner_with_picks(picks, *, target_controllers=None):
     planner = ActionPlanner.__new__(ActionPlanner)
-    planner._llm_decision_options = lambda *args: picks
+
+    def choose(*args):
+        planner._last_decision_target_controllers = target_controllers or {}
+        return picks
+
+    planner._llm_decision_options = choose
     return planner
 
 
@@ -103,9 +108,18 @@ def test_optional_counted_exile_keeps_enemy_target():
 
 
 def test_unknown_effect_keeps_model_enemy_choices_instead_of_inventing_a_buff():
-    planner = planner_with_picks(["tgt:20", "tgt:30"])
+    planner = planner_with_picks(
+        ["tgt:20", "tgt:30"], target_controllers={"tgt:20": "opponent", "tgt:30": "opponent"}
+    )
     state = removal_state("Choose two target permanents.")
     assert planner.plan_decision_options(counted_decision(), state) == ["tgt:20", "tgt:30"]
+
+
+def test_unknown_effect_without_explicit_per_target_controller_intent_declines():
+    planner = planner_with_picks(["tgt:20", "tgt:30"])
+    assert planner.plan_decision_options(
+        counted_decision(), removal_state("Choose two target permanents.")
+    ) == [DECLINE_DECISION]
 
 
 def test_unknown_effect_does_not_blindly_fallback_to_own_first_option():

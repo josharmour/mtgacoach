@@ -95,10 +95,10 @@ def _engine(monkeypatch, bridge, planner) -> AutopilotEngine:
     )
 
 
-def _state():
-    return {
+def _state(*, known_source=False):
+    state = {
         "turn": {"turn_number": 5, "phase": "Phase_Main1"},
-        "players": [{"seat_id": 1, "is_local": True}],
+        "players": [{"seat_id": 1, "is_local": True}, {"seat_id": 2}],
         "_bridge_connected": True,
         "_bridge_request_type": "SelectTargets",
         "pending_decision": "Select Targets",
@@ -106,12 +106,18 @@ def _state():
         "hand": [],
     }
 
+    if known_source:
+        state["stack"] = [
+            {"instance_id": 900, "name": "Shock", "oracle_text": "Shock deals 2 damage to target player."}
+        ]
+    return state
+
 
 def test_typed_path_submits_llm_choice_by_id(monkeypatch):
     bridge = _TypedBridge(_TARGET_POLL)
     planner = _planner_with('{"option_ids": ["tgt:2"], "reasoning": "opponent"}')
     eng = _engine(monkeypatch, bridge, planner)
-    handled = eng._try_typed_decision_path(_state(), "decision_required")
+    handled = eng._try_typed_decision_path(_state(known_source=True), "decision_required")
     assert handled is True
 
     assert bridge.submitted == [("targets", [2])]
@@ -123,7 +129,7 @@ def test_typed_path_surfaces_reason_for_the_submitted_choice(monkeypatch):
     engine = _engine(monkeypatch, bridge, planner)
     notifications = []
     engine._ui_advice_fn = lambda text, label: notifications.append(text)
-    assert engine._try_typed_decision_path(_state(), "decision_required") is True
+    assert engine._try_typed_decision_path(_state(known_source=True), "decision_required") is True
     assert "Remove the opposing threat." in notifications[-1]
     assert planner.get_decision_reasoning(["tgt:2"]) == "Remove the opposing threat."
     assert planner.get_decision_reasoning(["tgt:161"]) == ""
@@ -157,7 +163,7 @@ def test_failed_target_submission_pauses_instead_of_retrying_legacy(monkeypatch)
     engine = _engine(monkeypatch, bridge, _planner_with('{"option_ids": ["tgt:2"]}'))
     pauses = []
     monkeypatch.setattr(engine, "_pause_for_manual", lambda reason, state: pauses.append(reason))
-    assert engine._try_typed_decision_path(_state(), "decision_required") is True
+    assert engine._try_typed_decision_path(_state(known_source=True), "decision_required") is True
     assert pauses and "not verified" in pauses[0]
 
 
@@ -224,21 +230,29 @@ def test_typed_path_fsm_blocks_double_submit_and_exhausts(monkeypatch):
     monkeypatch.setattr(eng._request_tracker, "REJECT_GRACE_S", 0.0)
 
     # 1st call: submits.
-    assert eng._try_typed_decision_path(_state(), "decision_required") is True
+    assert eng._try_typed_decision_path(_state(known_source=True), "decision_required") is True
     assert bridge.submitted == [("targets", [2])]
 
     # 2nd/3rd calls: window re-presented (same poll) → rejection counted,
     # resubmit allowed up to the cap.
-    assert eng._try_typed_decision_path(_state(), "decision_required") is True
-    assert eng._try_typed_decision_path(_state(), "decision_required") is True
+    assert eng._try_typed_decision_path(_state(known_source=True), "decision_required") is True
+    assert eng._try_typed_decision_path(_state(known_source=True), "decision_required") is True
     assert len(bridge.submitted) == 3
 
     # 4th call: cap reached → owns the trigger, no 4th submission.
     pauses = []
     monkeypatch.setattr(eng, "_pause_for_manual", lambda reason, gs=None: pauses.append(reason))
-    assert eng._try_typed_decision_path(_state(), "decision_required") is True
+    assert eng._try_typed_decision_path(_state(known_source=True), "decision_required") is True
     assert len(bridge.submitted) == 3
-    assert pauses and "not accepted after" in pauses[0]
+    # Submissions remain capped while the semantic 8s settlement gate runs.
+    assert not pauses
+    first = eng._progress_guard._first_attempt
+    monkeypatch.setattr("arenamcp.autopilot.time.monotonic", lambda: first + 9)
+    captures = []
+    eng._stuck_report_fn = lambda reason, context: captures.append(context)
+    assert eng._try_typed_decision_path(_state(known_source=True), "decision_required") is True
+    assert len(bridge.submitted) == 3
+    assert captures[0]["semantic_progress"]["attempts"] == 3
 
 
 def test_planner_respects_max_select():

@@ -20,6 +20,7 @@ def _clean_runtime_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("MTGACOACH_RUNTIME_ROOT", raising=False)
     monkeypatch.delenv("MTGA_DIR", raising=False)
     monkeypatch.setattr(platform_integration, "mac_bridge_installed", lambda: False)
+    monkeypatch.setattr(runtime, "_native_mtga_process", None)
     runtime._invalidate_mtga_running_cache()
     yield
     runtime._invalidate_mtga_running_cache()
@@ -247,6 +248,7 @@ def test_launch_mtga_darwin_opens_app_bundle(monkeypatch, tmp_path: Path) -> Non
 
     calls: list[list[str]] = []
     monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(runtime, "is_mtga_running", lambda: False)
     monkeypatch.setattr(runtime.subprocess, "Popen", lambda args, **_: calls.append(args))
 
     result = runtime.launch_mtga(str(tmp_path))
@@ -291,7 +293,8 @@ def test_mac_bridge_launch_leaves_running_match_alone(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "installed,running,expected", [(True, False, True), (True, True, False), (False, False, False)]
+    "installed,running,expected",
+    [(True, False, True), (True, True, False), (False, False, False), (False, True, False)],
 )
 def test_native_mac_session_auto_launch(monkeypatch, tmp_path, installed, running, expected):
     bundle = tmp_path / "MTGA.app"
@@ -301,7 +304,7 @@ def test_native_mac_session_auto_launch(monkeypatch, tmp_path, installed, runnin
     monkeypatch.setattr(platform_integration, "mac_bridge_installed", lambda: installed)
     monkeypatch.setattr(runtime, "is_mtga_running", lambda: running)
     monkeypatch.setattr(runtime, "find_mtga_install_dir", lambda: (str(tmp_path), "test"))
-    monkeypatch.setattr(runtime, "launch_mtga", lambda path: calls.append(path) or str(bundle))
+    monkeypatch.setattr(runtime, "launch_mtga", lambda path, **kwargs: calls.append(path) or str(bundle))
     result = runtime.launch_native_mac_session()
     assert calls == ([str(tmp_path)] if expected else [])
     assert result == (str(bundle) if expected else None)
@@ -310,7 +313,7 @@ def test_native_mac_session_auto_launch(monkeypatch, tmp_path, installed, runnin
 def test_mac_auto_launch_failure_does_not_close_coach(monkeypatch):
     messages = []
 
-    def fail_launch():
+    def fail_launch(**kwargs):
         raise OSError("Steam unavailable")
 
     monkeypatch.setenv("MTGACOACH_GAME_DEVICE", "desktop")  # independent of the user's settings.json
@@ -318,6 +321,86 @@ def test_mac_auto_launch_failure_does_not_close_coach(monkeypatch):
     monkeypatch.setattr(desktop_app, "_write_log", messages.append)
     desktop_app._launch_native_mac_session()
     assert messages == ["MTGA automatic launch failed: Steam unavailable"]
+
+
+def test_mac_auto_launch_failure_is_visible_in_parent_status_and_feed(monkeypatch):
+    statuses, errors = [], []
+
+    def fail_launch(**kwargs):
+        raise OSError("Steam unavailable")
+
+    monkeypatch.setenv("MTGACOACH_GAME_DEVICE", "desktop")
+    monkeypatch.setattr(runtime, "launch_native_mac_session", fail_launch)
+    desktop_app._launch_native_mac_session(statuses.append, errors.append)
+    assert statuses == errors
+    assert "Arena could not start: Steam unavailable" in statuses[0]
+
+
+@pytest.mark.parametrize("installed,running", [(True, True), (False, False), (False, True)])
+def test_mac_auto_launch_explains_reconnect_or_screen_mode(monkeypatch, installed, running):
+    statuses = []
+    monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(platform_integration, "mac_bridge_installed", lambda: installed)
+    monkeypatch.setattr(runtime, "is_mtga_running", lambda: running)
+    monkeypatch.setattr(runtime, "launch_mtga", lambda *a, **k: pytest.fail("must not launch"))
+    runtime.launch_native_mac_session(on_status=statuses.append)
+    assert len(statuses) == 1
+    assert ("already running" if running else "screen-based autoplay mode") in statuses[0]
+    if running:
+        assert "Start Arena normally" not in statuses[0]
+
+
+def test_mac_launch_does_not_duplicate_a_still_starting_child(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    bundle = tmp_path / "MTGA.app"
+    executable = bundle / "Contents" / "MacOS" / "MTGA"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    calls, statuses = [], []
+    monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(platform_integration, "mac_bridge_installed", lambda: True)
+    # Simulate the interval before the new child appears in process discovery.
+    monkeypatch.setattr(runtime, "is_mtga_running", lambda: False)
+    monkeypatch.setattr(runtime, "get_runtime_root", lambda: str(tmp_path / "runtime"))
+    monkeypatch.setattr(runtime.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+
+    def spawn(args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(poll=lambda: None)
+
+    monkeypatch.setattr(runtime.subprocess, "Popen", spawn)
+    ready = Barrier(2)
+
+    def launch():
+        ready.wait(timeout=3)
+        return runtime.launch_mtga(str(bundle), on_status=statuses.append)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(launch)
+        second = pool.submit(launch)
+        assert first.result(timeout=5) == second.result(timeout=5) == str(bundle)
+    assert calls == [[str(executable)]]
+    assert any("Starting Steam" in status for status in statuses)
+    assert any("Waiting for its bridge" in status for status in statuses)
+    assert any("already running" in status for status in statuses)
+
+
+def test_mac_launch_keeps_game_started_during_steam_startup(monkeypatch, tmp_path):
+    bundle = tmp_path / "MTGA.app"
+    executable = bundle / "Contents" / "MacOS" / "MTGA"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    checks = iter([False, False, True])
+    statuses = []
+    monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(platform_integration, "mac_bridge_installed", lambda: True)
+    monkeypatch.setattr(runtime, "is_mtga_running", lambda: next(checks))
+    monkeypatch.setattr(runtime.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(runtime.subprocess, "Popen", lambda *a, **k: pytest.fail("duplicate game"))
+    assert runtime.launch_mtga(str(bundle), on_status=statuses.append) == str(bundle)
+    assert "already running" in statuses[-1]
 
 
 def test_android_mode_does_not_start_mtga_on_the_mac(monkeypatch):
@@ -338,6 +421,7 @@ def test_launch_mtga_darwin_accepts_bundle_path_itself(monkeypatch, tmp_path: Pa
 
     calls: list[list[str]] = []
     monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(runtime, "is_mtga_running", lambda: False)
     monkeypatch.setattr(runtime.subprocess, "Popen", lambda args, **_: calls.append(args))
 
     result = runtime.launch_mtga(str(bundle))
@@ -349,6 +433,7 @@ def test_launch_mtga_darwin_accepts_bundle_path_itself(monkeypatch, tmp_path: Pa
 def test_launch_mtga_darwin_falls_back_to_steam_url(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(runtime, "is_mtga_running", lambda: False)
     monkeypatch.setattr(runtime.subprocess, "Popen", lambda args, **_: calls.append(args))
 
     result = runtime.launch_mtga(str(tmp_path))
@@ -363,6 +448,7 @@ def test_launch_mtga_darwin_steam_fallback_reports_wine_exe(monkeypatch, tmp_pat
 
     calls: list[list[str]] = []
     monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(runtime, "is_mtga_running", lambda: False)
     monkeypatch.setattr(runtime.subprocess, "Popen", lambda args, **_: calls.append(args))
 
     result = runtime.launch_mtga(str(tmp_path))

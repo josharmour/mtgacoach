@@ -5,9 +5,10 @@ from unittest.mock import Mock
 import pytest
 
 from arenamcp.action_planner import DECLINE_DECISION
+from arenamcp.autopilot import AutopilotState
 from arenamcp.decisions import build_pending_decision, submit_option
 from arenamcp.mac_bridge_adapter import MacBridgeAdapter
-from test_mac_bridge_adapter import FakeGame, enum, listing
+from test_mac_bridge_adapter import FakeGame, enum, listing, submitted_uint_values
 from test_typed_decision_path import _engine, _planner_with, _TypedBridge
 
 CARDS = {
@@ -113,7 +114,7 @@ def test_native_search_checks_the_offered_set_and_count_before_submission(ids):
     calls = [op for batch in game.batches for op in batch if op.get("method") == "SubmitSelection"]
     assert len(calls) == int(valid)
     if valid:
-        assert calls[0]["args"] == [{"list": [{"uint": iid} for iid in ids]}]
+        assert submitted_uint_values(game.submits()[0]) == ids
 
 
 def test_two_creature_search_carries_card_rules_to_planner_and_submits_both(poll):
@@ -150,7 +151,100 @@ def test_unidentified_search_is_not_sold_as_a_strategic_choice(monkeypatch):
     assert engine._try_typed_decision_path({}, "decision_required") is True
     assert planner._backend.calls == 0
     assert bridge.submitted == []
+    engine._pause_for_manual.assert_not_called()
+
+
+def test_transient_unidentified_fetch_retries_after_reveal_without_manual_or_empty_submit(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr("arenamcp.autopilot.time.monotonic", lambda: clock[0])
+    poll = {
+        "has_pending": True,
+        "request_type": "Search",
+        "game_state_id": 10,
+        "msg_id": 20,
+        "search_candidates": [257, 258],
+        "select_n_min": 0,
+        "select_n_max": 1,
+        "can_cancel": True,
+    }
+    planner = _planner_with('{"option_ids":["sel:257"],"reasoning":"Get the needed Forest."}')
+    bridge = _TypedBridge(poll)
+    bridge.cancel_action = Mock(side_effect=AssertionError("Do not cancel a paid fetch while names load"))
+    engine = _engine(monkeypatch, bridge, planner)
+    engine._pause_for_manual = Mock()
+    assert engine._try_typed_decision_path({}, "decision_required")
+    assert planner._backend.calls == 0
+    assert bridge.submitted == []
+    clock[0] += 6.0  # The captured native Search needed six seconds to reveal card identities.
+    assert engine._try_typed_decision_path({}, "decision_required")
+    engine._pause_for_manual.assert_not_called()
+    poll["search_candidates"] = [
+        {"instanceId": iid, "name": "Forest", "type_line": "Basic Land — Forest"} for iid in (257, 258)
+    ]
+    assert engine._try_typed_decision_path({}, "decision_required")
+    assert planner._backend.calls == 1
+    assert bridge.submitted == [("selection", [257])]
+    engine._pause_for_manual.assert_not_called()
+    bridge.cancel_action.assert_not_called()
+
+
+def test_unresolved_search_wait_is_bounded_and_reports_manual_once(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr("arenamcp.autopilot.time.monotonic", lambda: clock[0])
+    poll = {
+        "has_pending": True,
+        "request_type": "Search",
+        "search_candidates": [257],
+        "select_n_min": 0,
+        "select_n_max": 1,
+    }
+    planner = _planner_with("must not call model")
+    bridge = _TypedBridge(poll)
+    engine = _engine(monkeypatch, bridge, planner)
+    bridge.auto_respond = Mock(return_value=True)
+    engine._pause_for_manual = Mock(wraps=engine._pause_for_manual)
+    game_state = {"_bridge_request_type": "Search", "pending_decision": "Search", "turn": {"turn_number": 3}}
+    assert engine._try_typed_decision_path(game_state, "decision_required")
+    clock[0] += engine._SEARCH_IDENTITY_WAIT_S + 0.1
+    poll["game_state_id"] = 11  # Protocol ID churn does not reset the reveal deadline.
+    assert engine._try_typed_decision_path(game_state, "decision_required")
+    assert engine._state is AutopilotState.PAUSED
+    assert engine._try_typed_decision_path(game_state, "decision_required")
+    assert engine._state is AutopilotState.PAUSED
     engine._pause_for_manual.assert_called_once()
+    assert "still unreadable" in engine._pause_for_manual.call_args.args[0]
+    assert planner._backend.calls == 0
+    assert bridge.submitted == []
+    bridge.auto_respond.assert_not_called()
+
+
+def test_two_forest_search_clears_stale_manual_hold_and_tracks_unaccepted_submission(monkeypatch):
+    poll = {
+        "has_pending": True,
+        "request_type": "Search",
+        "game_state_id": 233,
+        "msg_id": 307,
+        "search_candidates": [
+            {"instanceId": iid, "name": "Forest", "type_line": "Basic Land — Forest"} for iid in (671, 692)
+        ],
+        "select_n_min": 0,
+        "select_n_max": 2,
+    }
+    bridge = _TypedBridge(poll)
+    planner = _planner_with(
+        '{"option_ids":["sel:671","sel:692"],"reasoning":"Two Forests to hand for future land drops."}'
+    )
+    engine = _engine(monkeypatch, bridge, planner)
+    engine._given_up_semantics = {"previous": "unidentified search"}
+    engine._given_up_window_sig = ("Search", "unidentified")
+    monkeypatch.setattr(engine._request_tracker, "REJECT_GRACE_S", 0.0)
+    assert engine._try_typed_decision_path({}, "decision_required")
+    assert bridge.submitted == [("selection", [671, 692])]
+    assert engine._given_up_semantics is None
+    assert engine._given_up_window_sig is None
+    # Same live choice still pending: this is rejected/unconfirmed, not completion.
+    assert engine._try_typed_decision_path({}, "decision_required")
+    assert bridge.submitted == [("selection", [671, 692]), ("selection", [671, 692])]
 
 
 @pytest.mark.parametrize(

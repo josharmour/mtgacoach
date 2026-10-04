@@ -6,7 +6,7 @@ import contextlib
 import logging
 from typing import Any
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from .coach_process import CoachProcess
 from .tts_manager import TtsManager
@@ -22,6 +22,8 @@ class CoachSession(QObject):
     turnPlanChanged = Signal(object)
     gamePlanChanged = Signal(object)
     statusChanged = Signal(str, str)
+    startupStatusChanged = Signal(dict)
+    autopilotBugStatusChanged = Signal(dict)
     spokenLine = Signal(str)
     logEmitted = Signal(str, str)  # message, role
     adviceReceived = Signal(str, str)  # text, label
@@ -61,6 +63,11 @@ class CoachSession(QObject):
         self._statuses: dict[str, str] = {}
         self._autopilot_active = False
         self._muted = False
+        self._last_startup_status: dict[str, Any] = {}
+        self._last_autopilot_bug_status: dict[str, Any] = {}
+        self._start_options = {"autopilot": False, "dry_run": False, "afk": False}
+        self._pending_restart: dict[str, bool] | None = None
+        self._shutting_down = False
 
     @property
     def is_running(self) -> bool:
@@ -70,34 +77,107 @@ class CoachSession(QObject):
     def last_game_state(self) -> dict[str, Any]:
         return self._last_game_state
 
-    def start(self, autopilot: bool = False, dry_run: bool = False, afk: bool = False) -> None:
+    @property
+    def last_startup_status(self) -> dict[str, Any]:
+        return dict(self._last_startup_status)
+
+    @property
+    def last_autopilot_bug_status(self) -> dict[str, Any]:
+        return dict(self._last_autopilot_bug_status)
+
+    def _set_autopilot_bug_status(self, status: dict[str, Any]) -> None:
+        self._last_autopilot_bug_status = dict(status)
+        self.autopilotBugStatusChanged.emit(dict(status))
+
+    def _set_startup_status(self, status: dict[str, Any]) -> None:
+        self._last_startup_status = dict(status)
+        self.startupStatusChanged.emit(dict(status))
+
+    def start(
+        self,
+        autopilot: bool = False,
+        dry_run: bool = False,
+        afk: bool = False,
+        *,
+        engine_reload: bool = False,
+    ) -> None:
         """Start the background coaching subprocess."""
-        if self.is_running:
+        if self.is_running or self._shutting_down:
             return
+        self._start_options = {"autopilot": autopilot, "dry_run": dry_run, "afk": afk}
+        self._set_startup_status(
+            {
+                "phase": "starting",
+                "message": "Reloading coaching engine…" if engine_reload else "Starting coach…",
+                "ready": False,
+            }
+        )
         with contextlib.suppress(Exception):
             if not self._tts.is_running:
                 self._tts.start()
         try:
-            self._process.start(autopilot=autopilot, dry_run=dry_run, afk=afk)
+            self._process.start(autopilot=autopilot, dry_run=dry_run, afk=afk, engine_reload=engine_reload)
             self.started.emit()
             self.logEmitted.emit("✅ Coach process started.", "status")
         except Exception as e:
             logger.error(f"Failed to start coach process: {e}")
+            self._set_startup_status(
+                {"phase": "error", "message": f"Coach could not start: {e}", "ready": False}
+            )
             self.errorOccurred.emit(str(e))
             self.logEmitted.emit(f"❌ Failed to start coach process: {e}", "error")
 
     def stop(self) -> None:
         """Stop the background coaching subprocess."""
+        self._pending_restart = None
         if not self.is_running:
             return
         self._process.stop()
-        self.stopped.emit()
 
-    def restart(self, autopilot: bool = False, dry_run: bool = False, afk: bool = False) -> None:
-        """Restart the background coaching process."""
-        self.stop()
-        self.logEmitted.emit("Restarting coach process…", "status")
-        self.start(autopilot=autopilot, dry_run=dry_run, afk=afk)
+    def restart(
+        self,
+        autopilot: bool | None = None,
+        dry_run: bool | None = None,
+        afk: bool | None = None,
+    ) -> None:
+        """Reload Python code after the old engine has fully exited.
+
+        Preserve the UI and current runtime controls. The new child skips
+        the optional remote warmup; the remote model server stays running.
+        """
+        if self._shutting_down or self._pending_restart is not None:
+            return
+        options = dict(self._start_options)
+        if "AUTOPILOT" in self._statuses:
+            options["autopilot"] = self._autopilot_active
+        if "AFK" in self._statuses:
+            options["afk"] = "ON" in self._statuses["AFK"]
+        if "DRY_RUN" in self._statuses:
+            options["dry_run"] = "ON" in self._statuses["DRY_RUN"]
+        for key, value in (("autopilot", autopilot), ("dry_run", dry_run), ("afk", afk)):
+            if value is not None:
+                options[key] = value
+        self._pending_restart = options
+        self._tts.stop_speech()
+        self._set_startup_status(
+            {
+                "phase": "reloading",
+                "message": "Reloading engine — saving match context and stopping current work…",
+                "ready": False,
+            }
+        )
+        self.logEmitted.emit("Reloading coaching engine; the model server stays running.", "status")
+        if self.is_running:
+            self._process.stop_async(command="prepare_engine_reload")
+        else:
+            self._finish_restart()
+
+    def _finish_restart(self) -> None:
+        options = self._pending_restart
+        if options is None or self._shutting_down or self.is_running:
+            return
+        self._pending_restart = None
+        self.start(**options, engine_reload=True)
 
     def send_command(self, command: str, *args: Any) -> None:
         """Send a JSON command to the coach subprocess."""
@@ -105,6 +185,10 @@ class CoachSession(QObject):
 
     def toggle_autopilot(self) -> None:
         self.send_command("toggle_autopilot")
+
+    def set_auto_queue(self, enabled: bool) -> None:
+        """Choose whether autoplay may repeat the recent queue after a match."""
+        self._process.send_payload({"cmd": "set_auto_queue", "enabled": bool(enabled)})
 
     def toggle_mute(self) -> None:
         self.send_command("toggle_mute")
@@ -148,7 +232,6 @@ class CoachSession(QObject):
 
     def capture_screenshots(self) -> dict[str, str]:
         """Capture coach window + MTGA window screenshots into bug_reports directory."""
-        import sys
         from datetime import datetime
         from pathlib import Path
 
@@ -188,26 +271,94 @@ class CoachSession(QObject):
 
         # 2. MTGA window screenshot
         try:
-            from PIL import ImageGrab
+            from arenamcp.autopilot_bug_capture import capture_mtga_screenshot
 
-            from arenamcp.desktop.window_tracking import get_mtga_window_rect
-
-            rect = get_mtga_window_rect()
-            if rect is not None:
-                left, top, width, height = rect
-                if width > 0 and height > 0:
-                    grab_kwargs = {}
-                    if sys.platform == "win32":
-                        grab_kwargs["all_screens"] = True
-                    bbox = (left, top, left + width, top + height)
-                    img = ImageGrab.grab(bbox=bbox, **grab_kwargs)
-                    mtga_path = bug_dir / f"bug_{ts}_mtga.png"
-                    img.save(str(mtga_path), "PNG")
-                    out["mtga"] = str(mtga_path)
+            out.update(capture_mtga_screenshot(bug_dir, f"bug_{ts}"))
         except Exception as e:
             logger.debug("MTGA screenshot failed: %s", e)
 
         return out
+
+    def trigger_autopilot_bug(self) -> None:
+        """Pause/capture first, then attach Arena's screenshot for manual recovery."""
+        from datetime import datetime, timezone
+        from pathlib import Path
+        from uuid import uuid4
+
+        from arenamcp.autopilot_bug_capture import AutopilotBugCapture, capture_mtga_screenshot
+        from arenamcp.logging_config import LOG_DIR
+
+        if self._last_autopilot_bug_status.get("phase") in {"capturing", "recording"}:
+            return
+        clicked_at = datetime.now(timezone.utc)
+        capture_id = clicked_at.strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid4().hex[:8]
+        self._tts.stop_speech()
+        self._set_autopilot_bug_status(
+            {
+                "phase": "capturing",
+                "capture_id": capture_id,
+                "message": "Capturing autopilot bug and requesting pause…",
+            }
+        )
+        engine_running = self.is_running
+        if engine_running:
+            # Send before screenshot work so the engine snapshots its intent
+            # and stops input promptly even if screen capture is slow.
+            self._process.send_payload(
+                {"cmd": "autopilot_bug", "capture_id": capture_id, "clicked_at": clicked_at.isoformat()}
+            )
+        screenshots: dict[str, str] = {}
+        screenshot_error = ""
+        try:
+            screenshots = capture_mtga_screenshot(
+                Path(LOG_DIR) / "bug_reports", f"autopilot_bug_{capture_id}"
+            )
+            if not screenshots:
+                screenshot_error = "Arena window unavailable for screenshot"
+        except Exception as exc:
+            screenshot_error = str(exc)
+            logger.debug("Autopilot bug screenshot failed: %s", exc)
+        if screenshot_error:
+            self.logEmitted.emit(f"Autopilot bug screenshot unavailable: {screenshot_error}", "error")
+        if engine_running:
+            self._process.send_payload(
+                {
+                    "cmd": "autopilot_bug_screenshots",
+                    "capture_id": capture_id,
+                    "screenshots": screenshots,
+                    "screenshot_error": screenshot_error,
+                }
+            )
+        else:
+            try:
+                recorder = AutopilotBugCapture(Path(LOG_DIR) / "bug_reports")
+                path = recorder.begin(
+                    capture_id,
+                    {
+                        "timestamp": clicked_at.isoformat(),
+                        "game_state": self._last_game_state,
+                        "game_state_source": "desktop_last_known_state",
+                        "autopilot": {"available": False, "statuses": dict(self._statuses)},
+                        "screenshots": screenshots,
+                        "screenshot_error": screenshot_error,
+                    },
+                )
+                recorder.finish("engine_unavailable")
+                self.bugReportSaved.emit(str(path), "")
+                self._set_autopilot_bug_status(
+                    dict(
+                        recorder.status,
+                        message="Saved local screenshot and last known state. Engine unavailable; recovery recording could not start.",
+                    )
+                )
+            except Exception as exc:
+                self._set_autopilot_bug_status(
+                    {
+                        "phase": "error",
+                        "capture_id": capture_id,
+                        "message": f"Autopilot bug capture failed: {exc}",
+                    }
+                )
 
     def trigger_debug_report(self) -> None:
         """Capture screenshots and request bug report creation."""
@@ -269,8 +420,33 @@ class CoachSession(QObject):
             return
 
         ev_type = str(event.get("type") or event.get("event") or "")
+        if self._pending_restart is not None and ev_type in {
+            "startup_status",
+            "speak_request",
+            "speak",
+            "speak_audio",
+            "advice",
+            "emit_advice",
+        }:
+            # The outgoing engine can finish a model request while stopping.
+            # Its advice/readiness is obsolete once a reload is requested.
+            return
 
-        if ev_type in ("game_state", "emit_game_state"):
+        if ev_type == "startup_status":
+            status = event.get("data", event)
+            if isinstance(status, dict):
+                self._set_startup_status(status)
+
+        elif ev_type == "autopilot_bug_status":
+            status = event.get("data", event)
+            if isinstance(status, dict):
+                incoming_id = status.get("capture_id")
+                current_id = self._last_autopilot_bug_status.get("capture_id")
+                prior_finished = self._last_autopilot_bug_status.get("phase") in ("completed", "error")
+                if not incoming_id or not current_id or incoming_id == current_id or prior_finished:
+                    self._set_autopilot_bug_status(status)
+
+        elif ev_type in ("game_state", "emit_game_state"):
             state = event.get("data") if "data" in event else event.get("game_state", {})
             if isinstance(state, dict):
                 self._last_game_state = state
@@ -369,9 +545,33 @@ class CoachSession(QObject):
         logger.info(f"Coach process exited with code {code}")
         self.processExited.emit(code)
         self.stopped.emit()
+        if self._last_autopilot_bug_status.get("phase") in {"capturing", "recording"}:
+            self._set_autopilot_bug_status(
+                dict(
+                    self._last_autopilot_bug_status,
+                    phase="error",
+                    message="Engine stopped during capture. Any saved recovery snapshots remain in the local report folder.",
+                )
+            )
+        if self._pending_restart is not None and not self._shutting_down:
+            # Defer until QProcess.finished has returned and cleaned up the
+            # old child; never allow two engines to control Arena at once.
+            QTimer.singleShot(0, self._finish_restart)
+        else:
+            self._set_startup_status(
+                {
+                    "phase": "stopped" if code == 0 or self._shutting_down else "error",
+                    "message": "Coach stopped."
+                    if code == 0 or self._shutting_down
+                    else f"Coach exited (code {code}).",
+                    "ready": False,
+                }
+            )
 
     def shutdown(self) -> None:
         """Cleanly terminate subprocess and TTS manager."""
+        self._shutting_down = True
+        self._pending_restart = None
         if self._tts is not None:
             self._tts.shutdown()
         self.stop()

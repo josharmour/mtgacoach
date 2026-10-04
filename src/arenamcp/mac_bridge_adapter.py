@@ -151,6 +151,17 @@ def handle(node: Any) -> int | None:
     return node.get("$h") if isinstance(node, dict) else None
 
 
+def attacker_nodes(request: dict, member: str) -> list[dict]:
+    """Resolve shared list entries only by their exact native object handle."""
+    expanded = {
+        handle(node): node
+        for name in ("QualifiedAttackers", "Attackers")
+        for node in items(field(request, name))
+        if handle(node) is not None and field(node, "AttackerInstanceId") is not None
+    }
+    return [expanded.get(handle(node), node) for node in items(field(request, member))]
+
+
 def guid(node: Any) -> str:
     fields = [field(node, name) for name in "abcdefghijk"]
     if any(type(value) is not int for value in fields):
@@ -201,6 +212,11 @@ def LIST(values: list[dict]) -> dict:
     return {"list": list(values)}
 
 
+def UINTS(values: list[int]) -> dict:
+    """Adapter-only argument expanded into a managed uint array in the batch."""
+    return {"uint_array": [int(value) for value in values]}
+
+
 class _Ops:
     """Builds a reflect batch whose ops can refer to earlier results by index."""
 
@@ -218,7 +234,26 @@ class _Ops:
         return self.add("get", target=target, member=member, depth=depth, optional=optional)
 
     def call(self, target: dict, method: str, *args: dict, depth: int = 0) -> dict:
-        return self.add("call", target=target, method=method, args=list(args), depth=depth)
+        resolved = [self.uint_array(arg["uint_array"]) if "uint_array" in arg else arg for arg in args]
+        return self.add("call", target=target, method=method, args=resolved, depth=depth)
+
+    def uint_array(self, values: list[int]) -> dict:
+        """Build through managed scalar writes, including with an older loaded probe.
+
+        Old probes stride primitive LIST arrays as pointers: [480, 475] reaches
+        Arena as [480, 0]. A fresh protobuf collection supplies the closed generic
+        type without modifying any pending request. Exact capacity is necessary
+        because some methods require uint[] rather than IEnumerable<uint>.
+        Keep the array dump shallow: old probes also misread primitive arrays.
+        """
+        collection = self.get(self.new(MESSAGING + "SearchResp"), "ItemsFound")
+        for value in values:
+            self.call(collection, "Add", U(value))
+        self.set(collection, "Capacity", I(len(values)))
+        self.expect_member(collection, "Count", len(values))
+        array = self.get(collection, "array")
+        self.expect_member(array, "Length", len(values))
+        return array
 
     def new(self, class_name: str, *args: dict) -> dict:
         return self.add("new", **{"class": class_name}, args=list(args), depth=0)
@@ -472,9 +507,18 @@ class MacBridgeAdapter:
 
     def _shape_DeclareAttackerRequest(self, request: dict, getters: dict, response: dict) -> None:
         attackers = []
-        for attacker in items(field(request, "QualifiedAttackers")):
+        # QualifiedAttackers is the legal menu; Attackers holds the mutable
+        # declaration used by UpdateAttacker/SubmitAttackers. The two can be
+        # separate objects, so the menu's selected recipient may remain null
+        # even after a real selection (captured during manual recovery).
+        declarations = {
+            num(field(attacker, "AttackerInstanceId")): attacker
+            for attacker in attacker_nodes(request, "Attackers")
+        }
+        for attacker in attacker_nodes(request, "QualifiedAttackers"):
             recipients = []
-            for recipient in items(field(attacker, "LegalDamageRecipients")):
+            recipient_nodes = items(field(attacker, "LegalDamageRecipients"))
+            for recipient in recipient_nodes:
                 entry = {"type": enum_name(field(recipient, "Type"))}
                 for key, member in (
                     ("playerSystemSeatId", "PlayerSystemSeatId"),
@@ -485,13 +529,56 @@ class MacBridgeAdapter:
                     if value is not None:
                         entry[key] = value
                 recipients.append(entry)
-            attackers.append(
-                {
-                    "attackerInstanceId": num(field(attacker, "AttackerInstanceId")),
-                    "mustAttack": bool(field(attacker, "MustAttack")),
-                    "legalDamageRecipients": recipients,
-                }
-            )
+            entry = {
+                "attackerInstanceId": num(field(attacker, "AttackerInstanceId")),
+                "mustAttack": bool(field(attacker, "MustAttack")),
+                "legalDamageRecipients": recipients,
+            }
+            declared = declarations.get(num(field(attacker, "AttackerInstanceId")))
+            if field(request, "Attackers") is None:
+                declared = attacker  # Compatibility with snapshots exposing only the legal menu.
+            selected = field(declared, "SelectedDamageRecipient")
+            entry["selectedDamageRecipient"] = None
+            if isinstance(selected, dict):
+                selected_recipient = {"type": enum_name(field(selected, "Type"))}
+                for key, member in (
+                    ("playerSystemSeatId", "PlayerSystemSeatId"),
+                    ("planeswalkerInstanceId", "PlaneswalkerInstanceId"),
+                    ("teamId", "TeamId"),
+                ):
+                    value = recipient_id(selected, member)
+                    if value is not None:
+                        selected_recipient[key] = value
+                # Shared objects can be encoded as handle-only $ref nodes.
+                # Reuse the legal recipient's expanded identity in that case.
+                if handle(selected) is not None:
+                    declaration_recipients = items(field(declared, "LegalDamageRecipients"))
+                    selected = next(
+                        (node for node in declaration_recipients if handle(node) == handle(selected)),
+                        selected,
+                    )
+                    for key, member in (
+                        ("playerSystemSeatId", "PlayerSystemSeatId"),
+                        ("planeswalkerInstanceId", "PlaneswalkerInstanceId"),
+                        ("teamId", "TeamId"),
+                    ):
+                        value = recipient_id(selected, member)
+                        if value is not None:
+                            selected_recipient[key] = value
+                    selected_recipient["type"] = (
+                        enum_name(field(selected, "Type")) or selected_recipient["type"]
+                    )
+                    selected_recipient = next(
+                        (
+                            value
+                            for node, value in zip(recipient_nodes, recipients, strict=True)
+                            if handle(node) == handle(selected)
+                        ),
+                        selected_recipient,
+                    )
+                if any(key in selected_recipient for key in ("playerSystemSeatId", "planeswalkerInstanceId")):
+                    entry["selectedDamageRecipient"] = selected_recipient
+            attackers.append(entry)
         response["attackers"] = attackers
         response["can_submit"] = bool(getters.get("CanSubmit"))
         response["can_pass"] = False
@@ -712,6 +799,8 @@ class MacBridgeAdapter:
             raise AdapterError(f"Casting-time option index {index} out of range (0-{len(entries) - 1})")
         entry = entries[index]
         payload = entry["payload"]
+        if payload.get("choiceKind") == "modal" and int(payload.get("min", 1)) > 1:
+            raise AdapterError("This modal request requires multiple modes in one submission")
         self._check_request_identity(snapshot, command)
         for expected, key in (
             ("expected_child_index", "childIndex"),
@@ -740,6 +829,45 @@ class MacBridgeAdapter:
         if "optionIndex" in payload:
             response["submitted_option_index"] = payload["optionIndex"]
         return response
+
+    def _cmd_submit_casting_options(self, command: dict, timeout: float | None) -> dict:
+        snapshot = self._require(timeout, "CastingTimeOptionRequest")
+        self._check_request_identity(snapshot, command)
+        entries = casting_time_entries(snapshot.request)
+        indices = command.get("action_indices") or []
+        expected = command.get("expected_options") or []
+        if (
+            not indices
+            or any(type(index) is not int or not 0 <= index < len(entries) for index in indices)
+            or len(set(indices)) != len(indices)
+            or len(expected) != len(indices)
+        ):
+            raise AdapterError("Invalid casting option indices or missing identities")
+        selected = [entries[index] for index in indices]
+        first = selected[0]
+        if first["payload"]["choiceKind"] != "modal" or any(
+            entry["child_handle"] != first["child_handle"] or entry["payload"]["choiceKind"] != "modal"
+            for entry in selected
+        ):
+            raise AdapterError("Casting modes must belong to one modal child request")
+        for entry, identity in zip(selected, expected, strict=True):
+            if not isinstance(identity, dict):
+                raise AdapterError("Missing casting option identity")
+            for key in ("childIndex", "choiceKind", "optionIndex", "grpId"):
+                if identity.get(key) != entry["payload"].get(key):
+                    raise AdapterError(f"identity mismatch: casting option {key} changed")
+        minimum = int(first["payload"].get("min", 1))
+        maximum = int(first["payload"].get("max", max(1, minimum)))
+        if not minimum <= len(selected) <= maximum:
+            raise AdapterError(f"Casting request requires {minimum}-{maximum} modes, got {len(selected)}")
+        groups = [entry["payload"]["grpId"] for entry in selected]
+
+        def build(ops: _Ops, request: dict) -> None:
+            ops.expect_class(H(first["child_handle"]), first["child_class"])
+            ops.call(H(first["child_handle"]), "SubmitModal", UINTS(groups))
+
+        self._submit(snapshot, build, timeout)
+        return {"ok": True, "submitted_type": "CastingTimeOptions", "submitted_grp_ids": groups}
 
     def _call_on_request(
         self, command: dict, timeout: float | None, classes: tuple[str, ...], method: str, *args: dict
@@ -839,7 +967,7 @@ class MacBridgeAdapter:
                 [f"sel:{instance_id}" for instance_id in ids]
             ):
                 raise AdapterError("Selection does not satisfy the current non-mana payment constraints")
-            selection = LIST([U(instance_id) for instance_id in ids])
+            selection = UINTS(ids)
             self._submit(
                 snapshot,
                 lambda ops, request: ops.call(H(handle(child)), "SubmitSelection", selection),
@@ -849,7 +977,7 @@ class MacBridgeAdapter:
         if snapshot.request_class == "SelectNRequest" and not ids:
             self._submit(snapshot, lambda ops, request: ops.call(request, "SubmitArbitrary"), timeout)
             return {"ok": True, "submitted_type": "SelectN"}
-        selection = LIST([U(i) for i in ids])
+        selection = UINTS(ids)
         self._submit(snapshot, lambda ops, request: ops.call(request, "SubmitSelection", selection), timeout)
         return {
             "ok": True,
@@ -928,8 +1056,14 @@ class MacBridgeAdapter:
 
     def _cmd_submit_attackers(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout, "DeclareAttackerRequest")
+        for name, actual in (
+            ("expected_game_state_id", snapshot.game_state_id),
+            ("expected_msg_id", snapshot.msg_id),
+        ):
+            if command.get(name) is not None and command[name] != actual:
+                raise AdapterError("Stale attack declaration: request changed before confirmation")
         wanted = {int(a.get("attackerInstanceId") or 0) for a in command.get("attackers") or []}
-        available = items(field(snapshot.request, "Attackers"))
+        available = attacker_nodes(snapshot.request, "Attackers")
         legal_ids = {num(field(attacker, "AttackerInstanceId")) for attacker in available}
         if not wanted.issubset(legal_ids):
             raise AdapterError(
@@ -971,6 +1105,14 @@ class MacBridgeAdapter:
             selected = field(attacker, "SelectedDamageRecipient")
             if selected is None or handle(selected) != handle(recipient):
                 matched.append((attacker, recipient))
+        if command.get("finalize_only") or (wanted and not matched):
+            selected_ids = {
+                num(field(attacker, "AttackerInstanceId"))
+                for attacker in available
+                if field(attacker, "SelectedDamageRecipient") is not None
+            }
+            if matched or selected_ids != wanted:
+                raise AdapterError("Attack declaration changed before confirmation; no selection submitted")
         if not wanted or not matched:
             # Finalize: the second step of the two-step flow, or "attack with nobody".
             if snapshot.getters.get("CanSubmit") is False:
@@ -1186,7 +1328,7 @@ class MacBridgeAdapter:
         )
         self._submit(
             snapshot,
-            lambda ops, request: ops.call(request, "SubmitOrder", LIST([U(i) for i in ordered])),
+            lambda ops, request: ops.call(request, "SubmitOrder", UINTS(ordered)),
             timeout,
         )
         return {"ok": True, "submitted_type": "Order", "count": len(ordered)}
@@ -1287,7 +1429,7 @@ class MacBridgeAdapter:
                 timeout,
                 ("SelectNGroupRequest",),
                 "SubmitGroupSelection",
-                LIST([U(i) for i in values]),
+                UINTS(values),
             )
             return {"ok": True, "submitted_type": "SelectNGroup", "count": len(values)}
         single = int(command.get("id") or 0)
@@ -1552,7 +1694,7 @@ def casting_time_entries(request: dict) -> list[dict[str, Any]]:
                     "modal",
                     f"Mode {option + 1}",
                     "SubmitModal",
-                    [LIST([U(option_grp)])],
+                    [UINTS([option_grp])],
                     option,
                     option_grp,
                     **extra,
@@ -1573,7 +1715,7 @@ def casting_time_entries(request: dict) -> list[dict[str, Any]]:
                     "choose_or_cost",
                     f"Choice {option + 1}",
                     "SubmitChoice",
-                    [LIST([U(selection)])],
+                    [UINTS([selection])],
                     option,
                     grp,
                     **extra,

@@ -1608,8 +1608,9 @@ class Encoder {
         uint32_t length = il2cpp_array_length(array);
         std::string out = ",\"$n\":" + std::to_string(length) + ",\"$items\":[";
         if (!g_array_header) return out + "],\"$more\":true";
-        void* element_type = il2cpp_class_get_type(il2cpp_class_get_element_class(klass));
-        size_t element_size = static_cast<size_t>(il2cpp_class_array_element_size(klass));
+        void* element_class = il2cpp_class_get_element_class(klass);
+        void* element_type = il2cpp_class_get_type(element_class);
+        size_t element_size = static_cast<size_t>(il2cpp_class_array_element_size(element_class));
         const uint8_t* data = static_cast<const uint8_t*>(array) + g_array_header;
         uint32_t shown = std::min<uint32_t>(length, static_cast<uint32_t>(max_items_));
         for (uint32_t i = 0; i < shown; i++)
@@ -1675,7 +1676,9 @@ static void* build_collection(const Json& items, void* type, Batch& batch, std::
         }
         void* array = il2cpp_array_new(element_class, items.items.size());
         void* element_type = il2cpp_class_get_type(element_class);
-        size_t element_size = static_cast<size_t>(il2cpp_class_array_element_size(il2cpp_object_get_class(array)));
+        // The API takes the element class. Passing the array class gives pointer
+        // width, corrupting uint[] as [first, 0, second, 0, ...] on 64-bit hosts.
+        size_t element_size = static_cast<size_t>(il2cpp_class_array_element_size(element_class));
         bool inline_values = il2cpp_class_is_valuetype(element_class);
         for (size_t i = 0; i < items.items.size(); i++) {
             void* slot = nullptr;

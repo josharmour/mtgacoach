@@ -166,3 +166,67 @@ def test_repeated_space_that_does_not_advance_pauses(monkeypatch):
         engine.process_trigger(state, "desktop_poll")
     assert controller.execute.call_count == 3
     assert engine.state == AutopilotState.PAUSED
+
+
+def test_native_log_planning_receives_shared_strategy_without_waiting(monkeypatch):
+    play = GameAction(ActionType.CAST_SPELL, card_name="Optimistic Scavenger")
+    engine, _, _, planner, state = _engine(monkeypatch, play)
+    manager = Mock()
+    manager.plan_text.return_value = "GAME PLAN: develop commander engine"
+    engine._game_plan_mgr = manager
+    planner._deck_strategy_fn = lambda: "Commander mana engine"
+
+    def plan_with_strategy(*args):
+        planner.set_game_plan.assert_called_with("GAME PLAN: develop commander engine")
+        manager.request_reform.assert_called_once()
+        return ActionPlan(actions=[play])
+
+    planner.plan_actions.side_effect = plan_with_strategy
+    assert engine.process_trigger(state, "desktop_poll")
+    manager.observe.assert_called_once_with(state)
+    manager.seed.assert_called_once_with("Commander mana engine")
+    manager.maybe_reform.assert_not_called()
+
+
+def test_vision_fallback_receives_deck_library_and_strategy(monkeypatch):
+    monkeypatch.setattr(
+        "arenamcp.match_context._local_card",
+        lambda gid, epoch: {
+            "name": "Answer",
+            "type_line": "Instant",
+            "oracle_text": "Destroy target creature.",
+        },
+    )
+    state = {
+        "match_id": "m",
+        "legal_actions": list(LEGAL),
+        "deck_cards": [100],
+        "local_seat_id": 1,
+        "zones": {"library_count": 1, "library_count_source": "log_zone_membership"},
+    }
+    engine, _, backend, planner, state = _engine(monkeypatch, None, state=state)
+    manager = Mock()
+    manager.plan_text.return_value = "GAME PLAN: answer the engine"
+    engine._game_plan_mgr = manager
+    planner._deck_strategy_fn = lambda: "Commander engine"
+    assert engine.process_trigger(state, "desktop_poll")
+    prompt = _prompt(backend)
+    assert next(iter(prompt)) == "deck_reference"
+    assert "1x Answer" in prompt["deck_reference"]
+    assert "Destroy target creature." in prompt["deck_reference"]
+    assert "1x Answer" in prompt["library_summary"]
+    assert "Arena library count 1" in prompt["library_summary"]
+    assert prompt["game_plan"] == manager.plan_text()
+    assert prompt["deck_strategy"] == "Commander engine"
+
+
+def test_committed_play_localization_omits_unneeded_deck_context(monkeypatch):
+    state = {
+        "match_id": "m",
+        "legal_actions": list(LEGAL),
+        "deck_reference": "DECK REFERENCE: complete rules",
+    }
+    play = GameAction(ActionType.CAST_SPELL, card_name="Optimistic Scavenger")
+    engine, _, backend, _, state = _engine(monkeypatch, play, state=state)
+    assert engine.process_trigger(state, "desktop_poll")
+    assert "deck_reference" not in _prompt(backend)

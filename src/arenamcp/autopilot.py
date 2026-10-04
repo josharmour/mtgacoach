@@ -24,6 +24,12 @@ from arenamcp.autopilot_bridge import _BridgeSubmitMixin
 from arenamcp.autopilot_exec import _ActionExecMixin
 from arenamcp.autopilot_models import AutopilotConfig, AutopilotState, ClickResult, ExecutionPath
 from arenamcp.autopilot_modes import _AutopilotModesMixin
+from arenamcp.autopilot_progress import (
+    DecisionProgressGuard,
+    ProgressBridge,
+    decision_kind,
+    decision_semantics,
+)
 from arenamcp.autopilot_targets import _normalize_planner_card_name
 from arenamcp.autopilot_telemetry import _AutopilotTelemetryMixin
 from arenamcp.gre_bridge import (
@@ -99,6 +105,11 @@ class AutopilotEngine(
         self._speak_fn = speak_fn
         self._ui_advice_fn = ui_advice_fn
         self._bug_report_fn = bug_report_fn
+        self._stuck_report_fn: Callable[[str, dict], None] | None = None
+        self._progress_guard = DecisionProgressGuard(clock=lambda: time.monotonic())
+        self._progress_game_state: dict[str, Any] = {}
+        self._progress_last_poll: dict[str, Any] | None = None
+        self._given_up_semantics: dict[str, Any] | None = None
         self._ui_turn_plan_fn = ui_turn_plan_fn
         self._ui_game_plan_fn = ui_game_plan_fn
         self._last_emitted_game_plan: dict[str, Any] | None = None
@@ -136,9 +147,6 @@ class AutopilotEngine(
         self._confirm_event = threading.Event()
         self._skip_event = threading.Event()
         self._abort_event = threading.Event()
-        # R2: game-plan reform runs off the critical path; this guards
-        # against stacking concurrent reform threads.
-        self._game_plan_reform_inflight = threading.Event()
         # P2-3: (window signature, advice text, ts) of the last computed
         # plan, for coach fall-through reuse.
         self._last_plan_advice: tuple[Any, str, float] | None = None
@@ -277,9 +285,34 @@ class AutopilotEngine(
             except Exception as e:
                 logger.debug("game-plan UI payload failed: %s", e)
 
+    def _refresh_game_plan(self, game_state: dict[str, Any]) -> None:
+        """Attach current strategy and refresh it without delaying tactics."""
+        mgr = self._game_plan_mgr
+        if mgr is None:
+            return
+        try:
+            mgr.observe(game_state)
+            provider = getattr(self._planner, "_deck_strategy_fn", None)
+            if callable(provider):
+                mgr.seed(provider())
+            self._planner.set_game_plan(mgr.plan_text())
+            self._announce_game_plan()
+            if self._config.afk_mode or self._config.land_drop_mode:
+                return
+
+            def updated() -> None:
+                self._planner.set_game_plan(mgr.plan_text())
+                self._announce_game_plan()
+
+            mgr.request_reform(game_state, on_updated=updated)
+        except Exception as error:
+            logger.debug("game-plan refresh skipped: %s", error)
+
     def _announce_submitted_action(self, action: GameAction, game_state: dict[str, Any]) -> None:
         """Narrate the accepted submission, after live guards and any override."""
-        advice = ActionPlan(actions=[action]).spoken_actions()
+        from arenamcp.narration import submission_narration
+
+        advice = submission_narration(ActionPlan(actions=[action]).spoken_actions())
         self._last_plan_advice = (self._priority_window_signature(game_state), advice, time.time())
         self._notify("AUTOPILOT", advice)
         if (
@@ -539,19 +572,19 @@ class AutopilotEngine(
         request = str(poll.get("request_class") or poll.get("request_type") or "")
         done = ""
         if "ActionsAvailable" in request:
-            if poll.get("can_pass") and self._gre_bridge.submit_pass():
+            if poll.get("can_pass") and self._progress_bridge(game_state).submit_pass():
                 done = "passed (their land and spells stay unused)"
         elif "DeclareAttacker" in request:
-            resp = self._gre_bridge.submit_attackers_raw([])
+            resp = self._progress_bridge(game_state).submit_attackers_raw([])
             if resp and resp.get("ok"):
                 done = "declared no attackers"
         elif "Optional" in request:
-            if self._gre_bridge.submit_optional(False):
+            if self._progress_bridge(game_state).submit_optional(False):
                 done = "declined the optional action"
         elif ("SelectN" in request or "Search" in request) and int(poll.get("select_n_min") or 0) == 0:
-            if self._gre_bridge.submit_selection([]):
+            if self._progress_bridge(game_state).submit_selection([]):
                 done = "selected nothing"
-        elif poll.get("can_cancel") and self._gre_bridge.cancel_action():
+        elif poll.get("can_cancel") and self._progress_bridge(game_state).cancel_action():
             done = f"cancelled {request or 'the request'}"
         if done:
             self._notify("AUTOPILOT", f"Controlling the opponent's turn: {done}")
@@ -798,6 +831,9 @@ class AutopilotEngine(
             except Exception as e:
                 logger.debug(f"_pick_single_target_candidate bridge query failed: {e}")
                 return None
+        observed = live_resp or snap_resp
+        if isinstance(observed, dict):
+            self._progress_last_poll = observed
         if len(ids) != 1:
             return None
 
@@ -1056,10 +1092,24 @@ class AutopilotEngine(
             return False
         if any(
             kind in breq + bcls
-            for kind in ("SelectTargets", "CastingTimeOption", "NumericInput", "DeclareBlock")
+            for kind in (
+                "SelectTargets",
+                "CastingTimeOption",
+                "NumericInput",
+                "DeclareBlock",
+                "DeclareAttack",
+                "Search",
+            )
         ) or (
             self._decision_type(game_state or {})
-            in ("target_selection", "casting_time_options", "numeric_input", "declare_blockers")
+            in (
+                "target_selection",
+                "casting_time_options",
+                "numeric_input",
+                "declare_blockers",
+                "declare_attackers",
+                "search",
+            )
         ):
             logger.info("Refusing unvalidated auto-response for %s", breq or bcls)
             return False
@@ -1083,7 +1133,7 @@ class AutopilotEngine(
             )
             return False
         try:
-            if self._gre_bridge.auto_respond():
+            if self._progress_bridge(game_state).auto_respond():
                 self._escape_count_this_turn += 1
                 if any(k in (breq + bcls) for k in ("SelectTargets", "PayCosts", "CastingTimeOption")):
                     # Escaping a casting-flow window rolls back the cast.
@@ -1111,6 +1161,10 @@ class AutopilotEngine(
         nothing "failed", so without this the harness re-fires forever (observed
         live as the 'Choose a color' SelectN loop submitting 19 times).
         """
+        # Choice dialogs use observed semantic progress and real submissions.
+        # Repeated polls or a long model call must never trigger a blind pick.
+        if decision_semantics(self._progress_poll_from_state(game_state), game_state) is not None:
+            return False
         sig = self._window_repeat_sig
         # Age gate: the repeat counter increments on every trigger ping and
         # several pings land per second for one window, so the count alone
@@ -1212,7 +1266,7 @@ class AutopilotEngine(
         if chosen_idx is None:
             return False
         try:
-            if self._gre_bridge.submit_action_by_index(
+            if self._progress_bridge(game_state).submit_action_by_index(
                 chosen_idx, auto_pass=self._config.auto_pass_priority, expected=actions[chosen_idx]
             ):
                 self._log_execution_path(
@@ -1240,6 +1294,9 @@ class AutopilotEngine(
         # wants, submit it instead of passing. This is what fixes the autopilot
         # silently skipping a castable creature when the planner's action failed
         # to match the bridge.
+        if self._abort_event.is_set():
+            self._state = AutopilotState.PAUSED
+            return
         if not self._config.dry_run and self._try_submit_plan_advancing_play(game_state):
             self._state = AutopilotState.IDLE
             return
@@ -1264,7 +1321,7 @@ class AutopilotEngine(
             bcls = str(game_state.get("_bridge_request_class") or "")
             if breq in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS or bcls in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS:
                 try:
-                    if self._gre_bridge.submit_pass():
+                    if self._progress_bridge(game_state).submit_pass():
                         self._log_execution_path(
                             ExecutionPath.GRE_AWARE,
                             f"auto-pass to advance (could not act: {reason})",
@@ -1304,6 +1361,9 @@ class AutopilotEngine(
         # same advice against a window only the user can resolve (live
         # 2026-06-09: dead SelectTargets window → TTS loop).
         if game_state is not None:
+            self._given_up_semantics = decision_semantics(
+                self._progress_poll_from_state(game_state), game_state
+            )
             try:
                 self._given_up_window_sig = self._priority_window_signature(game_state)
             except Exception:
@@ -1326,6 +1386,14 @@ class AutopilotEngine(
         for a window the autopilot has handed to the user. Self-clears as
         soon as the window signature changes (user acted / game advanced).
         """
+        semantic = getattr(self, "_given_up_semantics", None)
+        if semantic is not None:
+            current = decision_semantics(self._progress_poll_from_state(game_state), game_state)
+            if semantic == current:
+                return True
+            self._given_up_semantics = None
+            self._given_up_window_sig = None
+            return False
         sig = getattr(self, "_given_up_window_sig", None)
         if sig is None:
             return False
@@ -1616,6 +1684,69 @@ class AutopilotEngine(
         logger.info(f"[{path}] {action_desc}")
         self._path_stats[path] = self._path_stats.get(path, 0) + 1
 
+    @staticmethod
+    def _progress_poll_from_state(state: dict[str, Any]) -> dict[str, Any]:
+        context = state.get("decision_context") or {}
+        return {
+            "has_pending": bool(
+                state.get("pending_decision")
+                or state.get("_bridge_has_pending")
+                or state.get("_bridge_request_type")
+                or state.get("_bridge_request_class")
+            ),
+            "request_type": state.get("_bridge_request_type")
+            or state.get("_bridge_request_class")
+            or context.get("type"),
+            "decision_context": context,
+        }
+
+    def _observe_decision_progress(self, poll: dict, game_state: dict) -> bool:
+        self._progress_last_poll = poll
+        guard = self._progress_guard
+        proof = guard.observe(poll, game_state)
+        if proof:
+            reason = (
+                f"The same {decision_kind(poll)} choice did not advance after "
+                f"{proof['attempts']} submissions over {proof['elapsed_s']:.0f}s."
+            )
+            # Stop new inputs but retain the committed plan until the callback
+            # has copied the evidence. The callback owns local capture/cleanup.
+            self.on_abort()
+            self._state = AutopilotState.PAUSED
+            self._notify("AUTOPILOT", f"Autoplay paused: {reason} Recording this issue for manual recovery.")
+            callback = getattr(self, "_stuck_report_fn", None)
+            if callable(callback):
+                try:
+                    callback(reason, {"semantic_progress": proof})
+                except Exception:
+                    logger.exception("Automatic stuck-decision capture failed")
+            self._state = AutopilotState.PAUSED
+            return True
+        return guard.blocked
+
+    def _progress_bridge(self, game_state: dict | None = None, *, poll: dict | None = None) -> ProgressBridge:
+        if game_state is not None:
+            self._progress_game_state = game_state
+        state = getattr(self, "_progress_game_state", {})
+
+        def before_submit(observed, command, args, kwargs):
+            if self._abort_event.is_set():
+                return False
+            if self._config.dry_run:
+                return False
+            if observed is None:
+                observed = poll or state.get("_bridge_last_poll") or state.get("_bridge_trigger")
+            if observed is None:
+                state_poll = self._progress_poll_from_state(state)
+                last = self._progress_last_poll
+                observed = last if last and decision_kind(last) == decision_kind(state_poll) else state_poll
+            if self._observe_decision_progress(observed, state):
+                return False
+            self._progress_guard.note_attempt(command, {"args": args, "kwargs": kwargs})
+            return True
+
+        return ProgressBridge(self._gre_bridge, before_submit, poll=poll)
+
     def on_spacebar(self) -> None:
         """Handle spacebar press (confirm current action/plan)."""
         logger.info("Autopilot: spacebar pressed (confirm)")
@@ -1648,7 +1779,11 @@ class AutopilotEngine(
         self._confirm_event.set()
         self._skip_event.set()
         self._current_plan = None
+        self._given_up_semantics = None
+        self._given_up_window_sig = None
         self._state = AutopilotState.IDLE
+        if hasattr(self, "_progress_guard"):
+            self._progress_guard.reset()
         with contextlib.suppress(Exception):
             self._request_tracker.reset()
         planner = getattr(self, "_planner", None)
@@ -1762,6 +1897,7 @@ class AutopilotEngine(
             return True
 
         try:
+            self._progress_game_state = game_state
             self._last_plan_advice = None
             if self._abort_event.is_set():
                 self._state = AutopilotState.IDLE
@@ -1780,6 +1916,7 @@ class AutopilotEngine(
                 self._last_cast_submitted = None
                 self._runaway_tripped_turn = None
                 self._request_tracker.reset()
+                self._progress_guard.reset()
             self._max_seen_turn = max(self._max_seen_turn, turn_num)
 
             # P1-4: the user casting manually while autopilot runs. On
@@ -1834,7 +1971,7 @@ class AutopilotEngine(
             # call and TTS line. Stay silent until the window changes.
             if self.is_window_given_up(game_state):
                 logger.debug("Autopilot: window already declared manual-required; standing by for the user")
-                self._state = AutopilotState.IDLE
+                self._state = AutopilotState.PAUSED
                 return False
 
             if (game_state.get("controlled_turn") or {}).get("deciding_for_opponent"):
@@ -1898,7 +2035,7 @@ class AutopilotEngine(
                         trigger,
                     )
                     self._state = AutopilotState.IDLE
-                    return False
+                    return True
 
             if self._decision_type(game_state) == UNMAPPED_INTERACTION_TYPE:
                 self._pause_for_manual("Unmapped GRE interaction", game_state)
@@ -1969,7 +2106,7 @@ class AutopilotEngine(
                     if not self._config.dry_run and (
                         self._gre_bridge.connected or self._gre_bridge.connect()
                     ):
-                        if self._gre_bridge.submit_targets(auto_id):
+                        if self._progress_bridge(game_state).submit_targets(auto_id):
                             self._log_execution_path(
                                 ExecutionPath.GRE_AWARE,
                                 f"auto-submit single target {auto_id}",
@@ -1981,6 +2118,8 @@ class AutopilotEngine(
                                 summary=f"auto-selected only legal target (instance_id={auto_id})",
                             )
                             self._state = AutopilotState.IDLE
+                            return True
+                        if self._abort_event.is_set():
                             return True
                         logger.warning(
                             f"Autopilot: submit_targets({auto_id}) failed — falling through to LLM planning"
@@ -2025,9 +2164,9 @@ class AutopilotEngine(
                             summary=f"[dry-run] would decline optional cost: {decline_reason}",
                         )
                         return True
-                    if (
-                        self._gre_bridge.connected or self._gre_bridge.connect()
-                    ) and self._gre_bridge.cancel_action():
+                    if (self._gre_bridge.connected or self._gre_bridge.connect()) and self._progress_bridge(
+                        game_state
+                    ).cancel_action():
                         self._log_execution_path(ExecutionPath.GRE_AWARE, "decline optional PayCosts")
                         self._record_autopilot_decision(
                             game_state,
@@ -2060,7 +2199,7 @@ class AutopilotEngine(
                 # (= what the in-game Auto Pay button does).
                 logger.info("Autopilot: submitting AutoTap solution for PayCosts")
                 if not self._config.dry_run and (self._gre_bridge.connected or self._gre_bridge.connect()):
-                    auto_tap_ok = self._gre_bridge.submit_auto_tap()
+                    auto_tap_ok = self._progress_bridge(game_state).submit_auto_tap()
                     if not auto_tap_ok:
                         # #40 (live 2026-07-06): the AutoTapActionsRequest
                         # child can populate a beat AFTER the PayCostsRequest
@@ -2069,7 +2208,7 @@ class AutopilotEngine(
                         # cancelled, and 3 strikes game-suppressed Hei Bai.
                         # One short retry before concluding it's unpayable.
                         time.sleep(0.4)
-                        auto_tap_ok = self._gre_bridge.submit_auto_tap()
+                        auto_tap_ok = self._progress_bridge(game_state).submit_auto_tap()
                         if auto_tap_ok:
                             logger.info("Autopilot: AutoTap child arrived late — retry succeeded")
                     if not auto_tap_ok and self._live_pending_request_is("PayCosts") is False:
@@ -2120,7 +2259,7 @@ class AutopilotEngine(
                         return True
                     # No autotap child available — fall back to cancel.
                     logger.info("Autopilot: no AutoTap solution; cancelling PayCostsRequest")
-                    if self._gre_bridge.cancel_action():
+                    if self._progress_bridge(game_state).cancel_action():
                         self._log_execution_path(ExecutionPath.GRE_AWARE, "cancel PayCosts")
                         # The cast that opened this PayCosts can't be paid —
                         # remember it so the planner stops re-picking it.
@@ -2258,7 +2397,7 @@ class AutopilotEngine(
                     logger.info("Autopilot: auto-declining optional action (no meaningful actions)")
                     if not self._config.dry_run:
                         if self._gre_bridge.connected or self._gre_bridge.connect():
-                            if self._gre_bridge.submit_optional(False):
+                            if self._progress_bridge(game_state).submit_optional(False):
                                 self._log_execution_path(
                                     ExecutionPath.GRE_AWARE,
                                     "auto-decline optional via submit_optional(False)",
@@ -2460,45 +2599,7 @@ class AutopilotEngine(
                 f"bridge={game_state.get('_bridge_request_type')}"
             )
 
-            # --- STRATEGIC GAME PLAN: (re)form on material change, then inject ---
-            # Refresh the persistent game plan before tactical planning so the
-            # per-decision prompt is framed by "how we win this game". The
-            # manager only calls the LLM on material board changes (and at most
-            # once per turn), so this is cheap on most windows. Gate the
-            # (potentially blocking) reform to our own turn — we don't want to
-            # burn think-time reforming during the opponent's turn — but always
-            # inject whatever plan we have.
-            if self._game_plan_mgr is not None:
-                try:
-                    # R2: reform runs in the background — the tactical call
-                    # uses whatever plan text exists NOW. The old blocking
-                    # reform added ~5s to the first own-turn window and
-                    # helped chains self-induce staleness discards.
-                    if (
-                        self._is_local_active_turn(game_state)
-                        and not self._game_plan_reform_inflight.is_set()
-                    ):
-                        self._game_plan_reform_inflight.set()
-
-                        def _reform_async(gs=game_state):
-                            try:
-                                self._game_plan_mgr.maybe_reform(gs)
-                                self._planner.set_game_plan(self._game_plan_mgr.plan_text())
-                                self._announce_game_plan()
-                            except Exception as e:
-                                logger.debug("async game-plan reform failed: %s", e)
-                            finally:
-                                self._game_plan_reform_inflight.clear()
-
-                        threading.Thread(
-                            target=_reform_async,
-                            daemon=True,
-                            name="game-plan-reform",
-                        ).start()
-                    self._planner.set_game_plan(self._game_plan_mgr.plan_text())
-                    self._announce_game_plan()
-                except Exception as e:
-                    logger.debug("game-plan refresh skipped: %s", e)
+            self._refresh_game_plan(game_state)
 
             _plan_started_at = time.perf_counter()
             legal_actions = self._drop_exhausted_activations(legal_actions, game_state)
@@ -2568,7 +2669,7 @@ class AutopilotEngine(
                         not self._config.dry_run
                         and self._should_allow_auto_respond(game_state)
                         and (self._gre_bridge.connected or self._gre_bridge.connect())
-                    ) and self._gre_bridge.auto_respond():
+                    ) and self._progress_bridge(game_state).auto_respond():
                         self._log_execution_path(ExecutionPath.GRE_AWARE, "auto_respond (planner empty)")
                         logger.warning(
                             f"AUTO_RESPOND_FALLBACK (planner empty): trigger={trigger}, "
@@ -2948,7 +3049,19 @@ class AutopilotEngine(
                     # (e.g. an auto-pick fallback whose name doesn't resolve)
                     # gets re-planned on every backstop tick → infinite loop.
                     self._mark_action_blocked(action, game_state, f"execute failed: {click_result.error}")
-                    continue
+                    if self._state == AutopilotState.PAUSED or action.action_type in (
+                        ActionType.DECLARE_ATTACKERS,
+                        ActionType.DECLARE_BLOCKERS,
+                    ):
+                        self._state = AutopilotState.PAUSED
+                        self._given_up_semantics = decision_semantics(
+                            self._progress_poll_from_state(game_state), game_state
+                        )
+                    # A failed declaration/selection leaves the current dialog
+                    # unresolved. Never continue to Done or another plan step.
+                    if self._state != AutopilotState.PAUSED:
+                        self._state = AutopilotState.IDLE
+                    return False
 
                 # Stale-skip: bridge has moved on (different request type
                 # pending, or in a step the planner's action doesn't apply
@@ -3125,6 +3238,9 @@ class AutopilotEngine(
                     else:
                         time.sleep(self._config.action_delay)
 
+            if self._abort_event.is_set() or self._state == AutopilotState.PAUSED:
+                return False
+
             # Preserve PAUSED state if _pause_for_manual fired mid-plan
             # (e.g. bridge-mismatch on one action). Overwriting PAUSED with
             # IDLE here is what stranded users with a stale current_plan in
@@ -3275,7 +3391,9 @@ class AutopilotEngine(
         advice overlay should show only the advice itself. Hotkeys are
         documented in the desktop UI and remain functional regardless.
         """
-        lines = [f"PLAN: {plan.spoken_actions()}"]
+        from arenamcp.narration import action_narration
+
+        lines = [f"PLAN: {action_narration(plan.spoken_actions(), planned=True)}"]
         for i, action in enumerate(plan.actions, 1):
             lines.append(f"  {i}. {action}")
         return "\n".join(lines)
@@ -3359,6 +3477,40 @@ class AutopilotEngine(
     )
 
     _LOG_CATCH_UP_TIMEOUT_S = 3.0
+    _SEARCH_IDENTITY_WAIT_S = 10.0
+
+    def _wait_for_search_identities(self, decision: Any, game_state: dict[str, Any]) -> bool:
+        """Let newly revealed search cards arrive without spending a model call.
+
+        An unidentified candidate is a transient observation, not an instruction
+        to cancel or fail to find. Yield to the normal bridge pump so its next
+        poll can resolve those identities; cap the wait for genuinely unreadable
+        choices. Returning True owns this trigger and prevents legacy fallback.
+        """
+        unknown = decision.request_type == "Search" and any(
+            option.meta.get("identity_known") is False for option in decision.options
+        )
+        if not unknown:
+            self._search_identity_wait = None
+            return False
+        key = (
+            game_state.get("match_id"),
+            tuple(option.option_id for option in decision.options),
+            decision.min_select,
+            decision.max_select,
+        )
+        waiting = getattr(self, "_search_identity_wait", None)
+        now = time.monotonic()
+        if waiting is None or waiting[0] != key:
+            self._search_identity_wait = (key, now, False)
+            self._notify("AUTOPILOT", "Waiting for Arena to reveal the search choices…")
+        elif now - waiting[1] >= self._SEARCH_IDENTITY_WAIT_S:
+            if not waiting[2]:
+                self._search_identity_wait = (key, waiting[1], True)
+                self._pause_for_manual("Search choices are still unreadable — pick manually", game_state)
+            return True
+        self._state = AutopilotState.IDLE
+        return True
 
     def _await_log_catch_up(self, poll: dict[str, Any], game_state: dict[str, Any]) -> dict[str, Any] | None:
         """The board (log-derived) no older than the bridge's live request, or None.
@@ -3409,7 +3561,18 @@ class AutopilotEngine(
             poll = self._gre_bridge.get_pending_actions() or {}
         except Exception as e:
             logger.debug(f"typed-decision poll failed: {e}")
-            return None
+            self._state = AutopilotState.IDLE
+            return True
+
+        # A connected bridge owns decision freshness. Between an accepted
+        # optional effect and its Search dialog it can briefly have no pending
+        # request. Falling into legacy planning here replays the old Accept
+        # menu and can strand the new Search as manual-required.
+        if not poll or poll.get("ok") is False or poll.get("has_pending") is False:
+            if poll.get("has_pending") is False and poll.get("ok") is not False:
+                self._request_tracker.observe(None)
+            self._state = AutopilotState.IDLE
+            return True
 
         from arenamcp.decisions import build_pending_decision, submit_option
         from arenamcp.request_tracker import decision_fingerprint
@@ -3419,7 +3582,14 @@ class AutopilotEngine(
         if caught_up is None:
             self._state = AutopilotState.IDLE
             return True
-        game_state = caught_up
+        # The freshly observed request may differ from the queued trigger's
+        # snapshot (OptionalAction -> Search is a common ETB transition).
+        # Keep the planner's context aligned with its actual typed option set.
+        game_state = dict(caught_up)
+        enrich_snapshot_from_pending_response(game_state, poll, bridge_connected=True)
+        self._progress_game_state = game_state
+        if self._observe_decision_progress(poll, game_state):
+            return True
 
         def _resolve_instance(iid: int) -> str:
             for zone in ("hand", "battlefield", "stack", "graveyard", "command"):
@@ -3443,6 +3613,8 @@ class AutopilotEngine(
         if decision is None or decision.request_type not in self._TYPED_DECISION_FAMILIES:
             return None
         assert fp is not None
+        if self._wait_for_search_identities(decision, game_state):
+            return True
         if decision.request_type == "ActionsAvailable":
             from arenamcp.play_safety import filter_play_options
 
@@ -3468,6 +3640,11 @@ class AutopilotEngine(
 
         if not self._request_tracker.may_submit(fp):
             if self._request_tracker.exhausted(fp):
+                # Let the semantic guard's time gate settle before capturing;
+                # the request cap still prevents a fourth submission meanwhile.
+                if self._progress_guard.snapshot()["attempts"] >= 3:
+                    self._state = AutopilotState.IDLE
+                    return True
                 # Answered MAX times without the game advancing — a human
                 # is needed. Declare once (sets the given-up window) and
                 # own the trigger so coaching doesn't replan it either.
@@ -3485,6 +3662,11 @@ class AutopilotEngine(
             )
             self._state = AutopilotState.IDLE
             return True
+
+        # Typed priority/target/search decisions must receive the same evolving
+        # strategy as the legacy planner. Use the caught-up state and keep the
+        # strategic model request off the tactical deadline.
+        self._refresh_game_plan(game_state)
 
         if decision.request_type == "Group":
             # Only take Group windows when the LLM gives a valid pick — the
@@ -3525,7 +3707,7 @@ class AutopilotEngine(
         if option_ids == [DECLINE_DECISION]:
             # Safe move is to not take this window at all (e.g. harmful
             # targeting whose only legal candidates are our own permanents).
-            if decision.can_cancel and self._gre_bridge.cancel_action():
+            if decision.can_cancel and self._progress_bridge(game_state, poll=fresh_poll).cancel_action():
                 self._log_execution_path(
                     ExecutionPath.GRE_AWARE,
                     f"typed-decision {decision.request_type}: declined (cancel)",
@@ -3556,7 +3738,13 @@ class AutopilotEngine(
             return True
 
         labels = [(decision.find(oid).label if decision.find(oid) else oid) for oid in option_ids]
-        if submit_option(self._gre_bridge, decision, option_ids):
+        bridge = self._progress_bridge(game_state, poll=fresh_poll)
+        if submit_option(bridge, decision, option_ids):
+            # A previous transient "unidentified Search" manual hold must not
+            # disable the retry/verification backstop for this later submission.
+            # The request tracker still requires Arena to advance and caps retries.
+            self._given_up_semantics = None
+            self._given_up_window_sig = None
             self._request_tracker.note_submitted(fp)
             for oid in option_ids:
                 opt = decision.find(oid)
@@ -3585,11 +3773,13 @@ class AutopilotEngine(
             del self._recent_bot_submissions[:-24]
             get_reasoning = getattr(self._planner, "get_decision_reasoning", None)
             reasoning = get_reasoning(option_ids) if callable(get_reasoning) else ""
+            reasoning = reasoning if isinstance(reasoning, str) else ""
             explanation = " ".join(ActionPlanner._humanize_legal_action(label) for label in labels)
             if decision.request_type == "Search":
                 explanation = f"Choose {', '.join(labels)}." if labels else "Find no cards."
-            if reasoning:
-                explanation += f" {reasoning}"
+            from arenamcp.narration import submission_narration
+
+            explanation = submission_narration(explanation, reasoning)
             try:
                 from arenamcp.match_packets import get_current_packet
 
@@ -3620,6 +3810,8 @@ class AutopilotEngine(
             self._actions_executed += 1
             self._last_exec_success_ts = time.time()
             self._state = AutopilotState.IDLE
+            return True
+        if self._abort_event.is_set():
             return True
         if poll.get("payment_selection"):
             self._pause_for_manual("Non-mana payment submission failed — select payment manually", game_state)

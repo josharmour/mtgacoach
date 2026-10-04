@@ -1,3 +1,5 @@
+import pytest
+
 import arenamcp.gre_bridge as gre_bridge_module
 import arenamcp.server as server_module
 
@@ -25,6 +27,30 @@ class _DummyBridge:
 
     def get_timer_state(self) -> dict | None:
         return self._timer_state
+
+
+@pytest.mark.parametrize(
+    "bridge_count, fallback_count, source, expected",
+    [
+        (0, 90, "log_zone_membership", 0),
+        (53, 0, "", 53),
+        (None, 90, "log_zone_membership", 90),
+        (None, 0, "", "?"),
+        (None, 0, "log_zone_membership", 0),
+        (True, 90, "log_zone_membership", 90),
+    ],
+)
+def test_library_overlay_distinguishes_unknown_and_empty(
+    monkeypatch, bridge_count, fallback_count, source, expected
+):
+    bridge_state = {"ok": True, "zones": {"local_library": {"total_count": bridge_count, "cards": []}}}
+    monkeypatch.setattr(gre_bridge_module, "get_bridge", lambda: _DummyBridge(bridge_state))
+    overlay = server_module._get_bridge_overlay(
+        {}, [], {"library_count": fallback_count, "library_count_source": source}, 2, 1
+    )
+    assert overlay["zones"]["library_count"] == expected
+    if type(bridge_count) is int:
+        assert overlay["zones"]["library_count_source"] == "bridge_total_card_count"
 
 
 def _fake_enrich_with_oracle_text(grp_id: int) -> dict:

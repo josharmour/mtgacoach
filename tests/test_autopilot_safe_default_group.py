@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+import threading
 from unittest.mock import MagicMock
 
 
@@ -63,6 +64,10 @@ def _engine(bridge):
     ap = _load_autopilot()
     engine = ap.AutopilotEngine.__new__(ap.AutopilotEngine)
     engine._gre_bridge = bridge
+    engine._abort_event = threading.Event()
+    engine._progress_guard = ap.DecisionProgressGuard()
+    engine._progress_game_state = {}
+    engine._progress_last_poll = None
     engine._config = MagicMock(dry_run=False)
     engine._path_stats = {}
     engine._gre_bridge_failed_methods = set()

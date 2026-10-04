@@ -5,7 +5,7 @@ import json
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
 from .runtime import find_python_executable, get_app_root, get_runtime_root
 
@@ -30,7 +30,14 @@ class CoachProcess(QObject):
     def is_running(self) -> bool:
         return self._process is not None and self._process.state() != QProcess.NotRunning
 
-    def start(self, autopilot: bool = False, dry_run: bool = False, afk: bool = False) -> None:
+    def start(
+        self,
+        autopilot: bool = False,
+        dry_run: bool = False,
+        afk: bool = False,
+        *,
+        engine_reload: bool = False,
+    ) -> None:
         with self._lifecycle_lock:
             if self.is_running:
                 return
@@ -71,8 +78,14 @@ class CoachProcess(QObject):
             env.insert("PYTHONPATH", src_dir)
             env.insert("MTGACOACH_RUNTIME_ROOT", runtime_root)
             env.insert("MTGACOACH_FRONTEND", "pyside")
+            env.insert("ARENAMCP_PROACTIVE_ONLY", "1")
             env.insert("PYTHONUNBUFFERED", "1")
             env.insert("PYTHONIOENCODING", "utf-8")
+            # Never inherit a stale reload flag from the desktop environment.
+            if engine_reload:
+                env.insert("ARENAMCP_ENGINE_RELOAD", "1")
+            else:
+                env.remove("ARENAMCP_ENGINE_RELOAD")
             process.setProcessEnvironment(env)
             process.setWorkingDirectory(str(app_root))
             process.setProgram(python_exe)
@@ -81,16 +94,17 @@ class CoachProcess(QObject):
             process.readyReadStandardError.connect(self._on_stderr_ready)
             process.finished.connect(self._on_finished)
             process.errorOccurred.connect(self._on_error)
+            self._process = process
+            self._stdout_buffer = ""
+            self._stderr_buffer = ""
             process.start()
 
             if not process.waitForStarted(5000):
                 message = process.errorString() or "Failed to start Python coach process"
-                process.deleteLater()
+                if self._process is process:
+                    self._process = None
+                    process.deleteLater()
                 raise RuntimeError(message)
-
-            self._process = process
-            self._stdout_buffer = ""
-            self._stderr_buffer = ""
 
     def stop(self) -> None:
         with self._lifecycle_lock:
@@ -98,8 +112,8 @@ class CoachProcess(QObject):
                 return
 
             process = self._process
-            self._process = None
             if process.state() == QProcess.NotRunning:
+                self._process = None
                 process.deleteLater()
                 return
 
@@ -109,57 +123,43 @@ class CoachProcess(QObject):
             process.terminate()
             if not process.waitForFinished(3000):
                 process.kill()
-                process.waitForFinished(2000)
-            process.deleteLater()
+                if not process.waitForFinished(2000):
+                    raise RuntimeError("Coach process did not exit after termination")
+            if self._process is process:
+                self._process = None
+                process.deleteLater()
 
-    def stop_async(self) -> None:
-        """Non-blocking stop — terminates the process and schedules a
-        background kill+cleanup so the Qt main thread never freezes.
+    def stop_async(self, *, command: str | None = None) -> None:
+        """Stop without blocking Qt, keeping the child tracked until it exits.
 
-        The process may still be running briefly after this returns; the
-        `finished` signal handler will clean up once it exits. Safe to
-        start a new process immediately afterward.
+        A reload command gets time to checkpoint and exit before the normal
+        terminate/kill fallback, including compatibility with older engines.
+        start() remains a no-op while the old child is still alive.
         """
         process = self._process
         if process is None:
             return
-        # Detach the reference so any new `start()` creates a fresh
-        # QProcess — the old one lingers in the background until it
-        # finishes on its own.
-        self._process = None
         if process.state() == QProcess.NotRunning:
-            process.deleteLater()
+            self._on_finished(process.exitCode(), process.exitStatus())
             return
 
-        with contextlib.suppress(RuntimeError):
-            process.closeWriteChannel()
-        with contextlib.suppress(Exception):
-            process.terminate()
+        def _hard_kill() -> None:
+            if self._process is process and process.state() != QProcess.NotRunning:
+                process.kill()
 
-        # Hard-kill after a grace period if the process hasn't died.
-        def _hard_kill():
-            try:
-                if process.state() != QProcess.NotRunning:
-                    process.kill()
-            except Exception:
-                pass
+        def _terminate() -> None:
+            if self._process is not process or process.state() == QProcess.NotRunning:
+                return
+            with contextlib.suppress(RuntimeError):
+                process.closeWriteChannel()
+                process.terminate()
+            QTimer.singleShot(2000, _hard_kill)
 
-        from PySide6.QtCore import QTimer
-
-        QTimer.singleShot(5000, _hard_kill)
-
-        # Clean up the QProcess object once it finishes
-        def _cleanup(*_args):
-            with contextlib.suppress(Exception):
-                process.deleteLater()
-
-        try:
-            process.finished.connect(_cleanup)
-        except Exception:
-            # If connection fails for any reason, fall back to immediate
-            # delete — the process exit won't be tracked but at least we
-            # won't leak the QProcess object.
-            process.deleteLater()
+        if command:
+            self.send_command(command)
+            QTimer.singleShot(5000, _terminate)
+        else:
+            _terminate()
 
     def send_command(self, command: str, text: str | None = None) -> None:
         if self._process is None or self._process.state() == QProcess.NotRunning:
@@ -178,7 +178,7 @@ class CoachProcess(QObject):
         self._process.write(line.encode("utf-8", errors="replace"))
 
     def _on_stdout_ready(self) -> None:
-        if self._process is None:
+        if self._process is None or (self.sender() is not None and self.sender() is not self._process):
             return
 
         chunk = bytes(self._process.readAllStandardOutput()).decode("utf-8", errors="replace")
@@ -188,7 +188,7 @@ class CoachProcess(QObject):
             self._handle_stdout_line(line.rstrip("\r"))
 
     def _on_stderr_ready(self) -> None:
-        if self._process is None:
+        if self._process is None or (self.sender() is not None and self.sender() is not self._process):
             return
 
         chunk = bytes(self._process.readAllStandardError()).decode("utf-8", errors="replace")
@@ -213,6 +213,12 @@ class CoachProcess(QObject):
         self.event_received.emit(payload)
 
     def _on_finished(self, exit_code: int, _status: QProcess.ExitStatus) -> None:
+        # A late signal from a retired child must never clear a newer one.
+        sender = self.sender()
+        if sender is not None and sender is not self._process:
+            return
+        self._on_stdout_ready()
+        self._on_stderr_ready()
         if self._stdout_buffer.strip():
             self._handle_stdout_line(self._stdout_buffer.strip())
         self._stdout_buffer = ""
@@ -225,5 +231,5 @@ class CoachProcess(QObject):
         self.exited.emit(exit_code)
 
     def _on_error(self, _error: QProcess.ProcessError) -> None:
-        if self._process is not None:
+        if self._process is not None and (self.sender() is None or self.sender() is self._process):
             self.last_error = self._process.errorString()

@@ -47,6 +47,8 @@ ZONE_GETTERS: list[tuple[str, str]] = [
     ("OpponentGraveyard", "opponent_graveyard"),
     ("Exile", "exile"),
     ("Command", "command"),
+    ("LocalLibrary", "local_library"),
+    ("OpponentLibrary", "opponent_library"),
 ]
 
 _IDX_ZONE_START = IDX_STATE + 1
@@ -119,9 +121,7 @@ def build_state_ops() -> tuple[_Ops, dict[str, int]]:
     """One reflect batch yielding every piece of HandleGetGameState's payload."""
     ops = _Ops()
     game_manager = ops.add("find", **{"class": "GameManager"}, depth=_SCALAR_DEPTH)
-    state_ref = ops.add(
-        "get", target=game_manager, member="CurrentGameState", depth=_SCALAR_DEPTH
-    )
+    state_ref = ops.add("get", target=game_manager, member="CurrentGameState", depth=_SCALAR_DEPTH)
     index: dict[str, int] = {"game_manager": IDX_GAME_MANAGER, "state": IDX_STATE}
 
     for offset, (getter_name, key) in enumerate(ZONE_GETTERS):
@@ -129,7 +129,8 @@ def build_state_ops() -> tuple[_Ops, dict[str, int]]:
             "get",
             target=state_ref,
             member=getter_name,
-            depth=_ZONE_DEPTH,
+            # Library identities are hidden; only read its handle and count.
+            depth=0 if key.endswith("_library") else _ZONE_DEPTH,
             max_nodes=_ZONE_MAX_NODES,
             max_items=_ZONE_MAX_ITEMS,
             skip=list(_ZONE_OP_SKIP),
@@ -157,6 +158,13 @@ def build_state_ops() -> tuple[_Ops, dict[str, int]]:
     index["active_player"] = len(ops.ops) - 1
     ops.add("get", target=state_ref, member="DecidingPlayer", depth=_SCALAR_DEPTH)
     index["deciding_player"] = len(ops.ops) - 1
+
+    # TotalCardCount includes hidden cards. VisibleCards / a truncated CardIds
+    # reflection is not a count of the zone. Keep these cheap scalar reads in
+    # the same batch (no extra bridge round trips).
+    for _, key in ZONE_GETTERS:
+        ops.add("get", target={"ref": index[key]}, member="TotalCardCount", depth=2, optional=True)
+        index[f"{key}_count"] = len(ops.ops) - 1
 
     return ops, index
 
@@ -233,9 +241,7 @@ def assemble_state(results: list[Any], index: dict[str, int]) -> dict[str, Any]:
             }
         designations = [
             name
-            for name in (
-                enum_name(field(datum, "Type")) for datum in items(field(player, "Designations"))
-            )
+            for name in (enum_name(field(datum, "Type")) for datum in items(field(player, "Designations")))
             if name
         ]
         if designations:
@@ -268,7 +274,7 @@ def assemble_state(results: list[Any], index: dict[str, int]) -> dict[str, Any]:
                 cards.append(_card_entry(card_node))
         zones[key] = {
             "zone_id": num(field(zone_node, "Id")),
-            "total_count": len(items(field(zone_node, "CardIds"))) or len(cards),
+            "total_count": _zone_count(result(f"{key}_count")),
             "cards": cards,
         }
 
@@ -299,6 +305,14 @@ def assemble_state(results: list[Any], index: dict[str, int]) -> dict[str, Any]:
     return response
 
 
+def _zone_count(value: Any) -> int | None:
+    """An unreadable counter is unknown, never an empty zone."""
+    if isinstance(value, bool):
+        return None
+    count = _sbi(value) if isinstance(value, dict) else value
+    return count if isinstance(count, int) and count >= 0 else None
+
+
 def _seat_of(node: Any, players_by_handle: dict[int, dict[str, Any]]) -> int:
     """Resolve an MtgPlayer reference dump to its seat id."""
     node_handle = handle(node)
@@ -318,6 +332,7 @@ def _card_entry(node: dict[str, Any]) -> dict[str, Any]:
     }
     overlay_grp = _nullable_int(field(node, "OverlayGrpId"))
     entry["grp_id"] = overlay_grp if overlay_grp else num(field(node, "BaseGrpId"))
+    entry["base_grp_id"] = num(field(node, "BaseGrpId"))
     entry["object_type"] = enum_name(field(node, "ObjectType"))
     entry["is_tapped"] = bool(field(node, "IsTapped"))
 
@@ -373,8 +388,10 @@ def _card_entry(node: dict[str, Any]) -> dict[str, Any]:
         entry["class_level"] = class_level
 
     copy_grp = num(field(node, "CopyObjectGrpId"))
-    if bool(field(node, "IsCopy")) and copy_grp:
-        entry["copied_from_grp_id"] = copy_grp
+    if bool(field(node, "IsCopy")):
+        entry["is_copy"] = True
+        if copy_grp:
+            entry["copied_from_grp_id"] = copy_grp
 
     card_types = _enum_list(field(node, "CardTypes"))
     subtypes = _enum_list(field(node, "Subtypes"))
@@ -406,9 +423,7 @@ def _card_entry(node: dict[str, Any]) -> dict[str, Any]:
     if attached_to_id:
         entry["attached_to_id"] = attached_to_id
 
-    face_down_reason = enum_name(
-        field(field(node, "FaceDownState"), "reasonFaceDown")
-    )
+    face_down_reason = enum_name(field(field(node, "FaceDownState"), "reasonFaceDown"))
     if face_down_reason and face_down_reason != "None":
         entry["face_down"] = True
 
@@ -441,6 +456,16 @@ def _sbi(value: Any) -> int | None:
     """StringBackedInt struct dump -> int (None when undefined)."""
     if not isinstance(value, dict):
         return None
+    # RawText is the game's canonical representation. Reflecting the nested
+    # Nullable<int> can lose its value when IL2CPP boxes it as the underlying
+    # int, yielding a misleading zero in DefinedValue. Do not let that zero
+    # overwrite real creature stats (or turn an undefined '*' into zero).
+    raw = field(value, "RawText")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
     return _nullable_int(value.get("DefinedValue", value.get("definedValue")))
 
 

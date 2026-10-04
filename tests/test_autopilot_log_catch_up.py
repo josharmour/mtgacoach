@@ -66,7 +66,10 @@ def test_unknown_ids_keep_the_old_behaviour():
     assert engine._await_log_catch_up(_poll(7), board) is board  # log already ahead
 
 
-def test_search_with_private_state_missing_from_log_can_be_answered():
+def test_search_with_private_state_missing_from_log_can_be_answered(monkeypatch):
+    monkeypatch.setattr(
+        "arenamcp.server.get_card_info", lambda grp: {"name": "Forest"} if grp == 75553 else {}
+    )
     stale = {"_log_game_state_id": 127}
     engine = _engine([stale])
     engine._planner.plan_decision_options.return_value = ["sel:386"]
@@ -75,7 +78,7 @@ def test_search_with_private_state_missing_from_log_can_be_answered():
         "request_type": "Search",
         "game_state_id": 128,
         "msg_id": 171,
-        "search_candidates": [386],
+        "search_candidates": [{"instanceId": 386, "grpId": 75553}],
         "select_n_min": 0,
         "select_n_max": 1,
     }
@@ -84,14 +87,23 @@ def test_search_with_private_state_missing_from_log_can_be_answered():
     engine._gre_bridge.submit_selection.assert_called_once_with([386])
 
 
-def test_search_is_not_submitted_if_private_request_changes_during_planning():
+def test_search_is_not_submitted_if_private_request_changes_during_planning(monkeypatch):
+    monkeypatch.setattr(
+        "arenamcp.server.get_card_info", lambda grp: {"name": "Forest"} if grp == 75553 else {}
+    )
     stale = {"_log_game_state_id": 127}
     engine = _engine([stale])
     engine._planner.plan_decision_options.return_value = ["sel:386"]
     engine._gre_bridge.get_pending_actions.side_effect = [
-        {"has_pending": True, "request_type": "Search", "game_state_id": 128, "search_candidates": [386]},
+        {
+            "has_pending": True,
+            "request_type": "Search",
+            "game_state_id": 128,
+            "search_candidates": [{"instanceId": 386, "grpId": 75553}],
+        },
         {"has_pending": False},
     ]
 
     assert engine._try_typed_decision_path(stale, "decision_required") is True
+    engine._planner.plan_decision_options.assert_called_once()
     engine._gre_bridge.submit_selection.assert_not_called()

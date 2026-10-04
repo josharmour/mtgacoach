@@ -18,6 +18,11 @@ from arenamcp.mana import mana_cost_to_cmc
 logger = logging.getLogger(__name__)
 
 
+def _progress_bridge_for(engine, game_state=None):
+    factory = getattr(engine, "_progress_bridge", None)
+    return factory(game_state) if callable(factory) else engine._gre_bridge
+
+
 class _BridgeSubmitMixin:
     def _try_gre_bridge(
         self,
@@ -29,10 +34,11 @@ class _BridgeSubmitMixin:
         Returns a ClickResult if the bridge handled it, or None to fall
         through to mouse-click execution.
         """
+        bridge = _progress_bridge_for(self, game_state)
         if game_state.get("game_engine_busy"):
             return None
 
-        if not self._gre_bridge.connect():
+        if not bridge.connect():
             return None
 
         method = action.action_type.value
@@ -61,7 +67,7 @@ class _BridgeSubmitMixin:
             # show no pending while the live bridge already has the next
             # request queued.
             try:
-                live = self._gre_bridge.get_pending_actions() or {}
+                live = bridge.get_pending_actions() or {}
             except Exception:
                 live = {}
             if not live.get("has_pending"):
@@ -75,6 +81,31 @@ class _BridgeSubmitMixin:
             )
 
         gre_ref = getattr(action, "gre_action_ref", None)
+
+        optional_button_window = None
+        if action.action_type == ActionType.CLICK_BUTTON and (action.card_name or "").lower().strip() in {
+            "accept",
+            "yes",
+            "decline",
+            "no",
+        }:
+            # A queued yes/no answer belongs only to its optional dialog. A
+            # successful ETB Accept commonly opens Search on the next tick;
+            # never route the leftover button to pass/Done in that new window.
+            try:
+                live_optional = bridge.get_pending_actions() or {}
+            except Exception:
+                live_optional = {}
+            optional_button_window = bool(
+                live_optional.get("has_pending")
+                and live_optional.get("ok") is not False
+                and "Optional"
+                in str(live_optional.get("request_class") or live_optional.get("request_type") or "")
+            )
+            if not optional_button_window:
+                return ClickResult(
+                    True, 0, 0, action.card_name, "GRE bridge (stale-skip: optional dialog changed)"
+                )
 
         # CLICK_BUTTON on an OptionalActionMessageRequest must go through
         # submit_optional, NOT submit_pass — the latter is rejected by MTGA
@@ -91,6 +122,8 @@ class _BridgeSubmitMixin:
             )
             decision_type = (game_state.get("decision_context") or {}).get("type") or ""
             is_optional_window = "Optional" in str(bridge_request_class) or decision_type == "optional_action"
+            if optional_button_window is not None:
+                is_optional_window = optional_button_window
             # activate_ability / cast_spell against an OptionalActionMessage
             # window ("Use Alseid's ability?") is the planner answering that
             # exact yes/no — accept it. Without this mapping the action falls
@@ -102,7 +135,7 @@ class _BridgeSubmitMixin:
                 ActionType.ACTIVATE_ABILITY,
                 ActionType.CAST_SPELL,
             ):
-                if self._gre_bridge.submit_optional(True):
+                if bridge.submit_optional(True):
                     self._log_execution_path(
                         ExecutionPath.GRE_AWARE,
                         f"{action.action_type.value} ({action.card_name or '?'}): "
@@ -127,7 +160,19 @@ class _BridgeSubmitMixin:
                     accept = False
                 else:
                     accept = True
-                if self._gre_bridge.submit_optional(accept):
+                expected_optional = (
+                    (live_optional["game_state_id"], live_optional["msg_id"])
+                    if optional_button_window
+                    and live_optional.get("game_state_id") is not None
+                    and live_optional.get("msg_id") is not None
+                    else None
+                )
+                submitted_optional = (
+                    bridge.submit_optional(accept, expected_request_id=expected_optional)
+                    if expected_optional is not None
+                    else bridge.submit_optional(accept)
+                )
+                if submitted_optional:
                     self._log_execution_path(
                         ExecutionPath.GRE_AWARE,
                         f"click_button: submit_optional(accept={accept}) via GRE bridge",
@@ -159,7 +204,7 @@ class _BridgeSubmitMixin:
             if not useful_tutor_x(game_state, pending_x_source(game_state), value):
                 self._pause_for_manual("X value has no useful tutor target", game_state)
                 return ClickResult(False, 0, 0, f"X={value}", "No useful tutor target")
-            if self._gre_bridge.submit_x(value) or self._gre_bridge.submit_numeric(value):
+            if bridge.submit_x(value) or bridge.submit_numeric(value):
                 self._log_execution_path(ExecutionPath.GRE_AWARE, f"numeric_input: X={value} via GRE bridge")
                 return ClickResult(True, 0, 0, f"X={value}", "GRE bridge")
             logger.info("GRE bridge submit_x/submit_numeric failed; surfacing manual-required")
@@ -193,7 +238,7 @@ class _BridgeSubmitMixin:
                                 "routing through declare_attackers instead of empty submit"
                             )
                             return self._try_bridge_declare_attackers(solver_action)
-                    if self._gre_bridge.submit_attackers([]):
+                    if bridge.submit_attackers([]):
                         self._log_execution_path(
                             ExecutionPath.GRE_AWARE,
                             "click_button(done): empty attacker declaration via GRE bridge",
@@ -209,7 +254,7 @@ class _BridgeSubmitMixin:
                     self._gre_bridge_failed_methods.add(method)
                     return None
                 if "DeclareBlocker" in request_type:
-                    if self._gre_bridge.submit_blockers([]):
+                    if bridge.submit_blockers([]):
                         self._log_execution_path(
                             ExecutionPath.GRE_AWARE,
                             "click_button(done): empty blocker declaration via GRE bridge",
@@ -224,7 +269,7 @@ class _BridgeSubmitMixin:
                         )
                     self._gre_bridge_failed_methods.add(method)
                     return None
-            if self._gre_bridge.submit_pass():
+            if bridge.submit_pass():
                 self._log_execution_path(
                     ExecutionPath.GRE_AWARE, f"{action.action_type.value}: submitted via GRE bridge (pass)"
                 )
@@ -236,7 +281,7 @@ class _BridgeSubmitMixin:
         # MULLIGAN — submit keep/mulligan via bridge
         if action.action_type in (ActionType.MULLIGAN_KEEP, ActionType.MULLIGAN_MULL):
             keep = action.action_type == ActionType.MULLIGAN_KEEP
-            if self._gre_bridge.submit_mulligan(keep):
+            if bridge.submit_mulligan(keep):
                 self._log_execution_path(
                     ExecutionPath.GRE_AWARE, f"mulligan: {'keep' if keep else 'mulligan'} via GRE bridge"
                 )
@@ -256,7 +301,7 @@ class _BridgeSubmitMixin:
                     opp_seat = p.get("seat_id")
             # play_or_draw field from LLM: "play" means we go first (our seat)
             seat = local_seat if getattr(action, "play_or_draw", "play") == "play" else opp_seat
-            if seat and self._gre_bridge.submit_choose_starting_player(seat):
+            if seat and bridge.submit_choose_starting_player(seat):
                 self._log_execution_path(
                     ExecutionPath.GRE_AWARE, f"choose_starting_player: seat {seat} via GRE bridge"
                 )
@@ -340,7 +385,7 @@ class _BridgeSubmitMixin:
             instance_id = gre_ref.instance_id if hasattr(gre_ref, "instance_id") else 0
             ability_grp_id = gre_ref.ability_grp_id if hasattr(gre_ref, "ability_grp_id") else 0
 
-            if self._gre_bridge.submit_action_by_match(
+            if bridge.submit_action_by_match(
                 action_type=action_type,
                 grp_id=grp_id,
                 instance_id=instance_id,
@@ -370,7 +415,7 @@ class _BridgeSubmitMixin:
             if self._bridge_preloaded_actions:
                 bridge_actions = self._bridge_preloaded_actions
             else:
-                pending = self._gre_bridge.get_pending_actions()
+                pending = bridge.get_pending_actions()
                 if pending and pending.get("has_pending") and pending.get("actions"):
                     bridge_actions = pending["actions"]
             if bridge_actions:
@@ -443,7 +488,7 @@ class _BridgeSubmitMixin:
                         )
 
                 if best_idx is not None:
-                    if self._gre_bridge.submit_action_by_index(
+                    if bridge.submit_action_by_index(
                         best_idx, auto_pass=self._config.auto_pass_priority, expected=bridge_actions[best_idx]
                     ):
                         self._log_execution_path(
@@ -472,11 +517,12 @@ class _BridgeSubmitMixin:
         optionIndex for modals. We match the LLM's modal_index to the bridge's
         optionIndex to pick the right entry.
         """
+        bridge = _progress_bridge_for(self)
         bridge_actions = None
         if self._bridge_preloaded_actions:
             bridge_actions = self._bridge_preloaded_actions
         else:
-            pending = self._gre_bridge.get_pending_actions()
+            pending = bridge.get_pending_actions()
             if pending and pending.get("has_pending") and pending.get("actions"):
                 bridge_actions = pending["actions"]
 
@@ -499,7 +545,7 @@ class _BridgeSubmitMixin:
         if action.action_type == ActionType.CASTING_OPTIONS:
             # Prefer "done" entries, then fall back to first entry
             for idx, ba in casting_entries:
-                if ba.get("choiceKind") == "done" and self._gre_bridge.submit_action_by_index(
+                if ba.get("choiceKind") == "done" and bridge.submit_action_by_index(
                     idx, auto_pass=self._config.auto_pass_priority, expected=ba
                 ):
                     self._log_execution_path(
@@ -513,9 +559,7 @@ class _BridgeSubmitMixin:
         # modal_choice: find the entry with matching optionIndex
         for idx, ba in casting_entries:
             if ba.get("choiceKind") == "modal" and ba.get("optionIndex", -1) == modal_index:
-                if self._gre_bridge.submit_action_by_index(
-                    idx, auto_pass=self._config.auto_pass_priority, expected=ba
-                ):
+                if bridge.submit_action_by_index(idx, auto_pass=self._config.auto_pass_priority, expected=ba):
                     self._log_execution_path(
                         ExecutionPath.GRE_AWARE,
                         f"modal_choice: '{action.card_name}' option {modal_index} via GRE bridge",
@@ -773,8 +817,21 @@ class _BridgeSubmitMixin:
         candidates = {int(entry["attackerInstanceId"]): entry for entry in raw or []}
         entries = []
         seen = set()
-        for name in names:
-            identity = self._find_instance_id(name, battlefield, local)
+        from arenamcp.combat_identity import resolve_combatant
+
+        locked_ids = action.attacker_instance_ids
+        if locked_ids and len(locked_ids) != len(names):
+            raise ValueError("Attacker identities no longer match the planned declaration")
+        for index, name in enumerate(names):
+            identity = (
+                locked_ids[index]
+                if locked_ids
+                else (
+                    resolve_combatant(name, state, list(candidates), local_side=True)
+                    if raw is not None
+                    else self._find_instance_id(name, battlefield, local)
+                )
+            )
             if not identity or identity in seen or (raw is not None and identity not in candidates):
                 raise ValueError(f"Attacker {name!r} is unavailable or duplicated")
             seen.add(identity)
@@ -815,6 +872,7 @@ class _BridgeSubmitMixin:
             action_type=ActionType.DECLARE_ATTACKERS,
             card_name="",
             attacker_names=[name for name, _ in pairs],
+            attacker_instance_ids=[entry["attackerInstanceId"] for _, entry in pairs],
             attacker_targets={
                 name: recipient_label(entry["damageRecipient"], state) for name, entry in pairs
             },
@@ -830,11 +888,12 @@ class _BridgeSubmitMixin:
 
         Returns ClickResult if bridge handled it, None to fall through to clicks.
         """
-        if not self._gre_bridge.connect():
+        bridge = _progress_bridge_for(self)
+        if not bridge.connect():
             return None
 
         # Verify the bridge has a DeclareAttackers request pending
-        pending = self._gre_bridge.get_pending_actions()
+        pending = bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
             return None
         req_class = pending.get("request_class", "")
@@ -888,7 +947,7 @@ class _BridgeSubmitMixin:
                 )
                 return None
             logger.info("Bridge declare_attackers: confirming with no attackers (Done)")
-            resp = self._gre_bridge.submit_attackers_raw([])
+            resp = bridge.submit_attackers_raw([])
             if not resp or not resp.get("ok"):
                 logger.warning(f"Bridge declare_attackers (no-attackers confirm) failed: {resp}")
                 return None
@@ -899,15 +958,74 @@ class _BridgeSubmitMixin:
             return ClickResult(True, 0, 0, "attackers", "GRE bridge", submitted_action=submitted_action)
 
         # Step 1: UpdateAttacker (declare attackers with damage recipients)
-        resp = self._gre_bridge.submit_attackers_raw(attacker_entries)
+        resp = bridge.submit_attackers_raw(attacker_entries)
         if not resp or not resp.get("ok"):
             logger.warning(f"Bridge declare_attackers step 1 failed: {resp}")
             return None
 
         if resp.get("needs_finalize"):
-            # Step 2: Wait for GRE to process, then finalize with SubmitAttackers
-            time.sleep(0.4)
-            resp2 = self._gre_bridge.submit_attackers_raw([])
+            # Give the native update a bounded chance to round-trip. One early
+            # poll is not proof of rejection, and a successful method return
+            # alone is not proof that Arena accepted the chosen recipients.
+            for attempt in range(6):
+                abort = getattr(self, "_abort_event", None)
+                if abort is not None and abort.is_set():
+                    return None
+                time.sleep(0.4 if attempt == 0 else 0.2)
+                try:
+                    refreshed = bridge.get_pending_actions()
+                except Exception:
+                    logger.warning("Bridge declare_attackers: cannot read selection acknowledgment")
+                    return None
+                if not refreshed or refreshed.get("ok") is False:
+                    continue
+                if not (
+                    refreshed.get("has_pending")
+                    and "DeclareAttacker" in str(refreshed.get("request_class", ""))
+                ):
+                    # Arena advanced; never send an empty declaration into a
+                    # different request. The caller verifies the transition.
+                    return ClickResult(
+                        True, 0, 0, "attackers", "GRE bridge", submitted_action=submitted_action
+                    )
+                native = refreshed.get("bridge_runtime") in ("il2cpp-macos", "il2cpp-android")
+                if native:
+                    from arenamcp.combat_targets import recipient_key
+
+                    original_key = (pending.get("game_state_id"), pending.get("msg_id"))
+                    refreshed_key = (refreshed.get("game_state_id"), refreshed.get("msg_id"))
+                    try:
+                        selected = {
+                            int(entry["attackerInstanceId"]): recipient_key(entry["selectedDamageRecipient"])
+                            for entry in refreshed.get("attackers") or []
+                            if entry.get("selectedDamageRecipient")
+                        }
+                    except (ValueError, TypeError, KeyError):
+                        logger.warning("Bridge declare_attackers: accepted selection is unreadable")
+                        return None
+                    expected = {
+                        int(entry["attackerInstanceId"]): recipient_key(entry["damageRecipient"])
+                        for entry in attacker_entries
+                    }
+                    if (
+                        refreshed_key == original_key
+                        or selected != expected
+                        or not refreshed.get("can_submit")
+                    ):
+                        continue
+                break
+            else:
+                logger.warning("Bridge declare_attackers: selection was not acknowledged; refusing finalize")
+                return None
+            # Bind native confirmation to the acknowledged request and exact
+            # selection, so a newer request cannot receive an empty "Done".
+            resp2 = (
+                bridge.submit_attackers_raw(
+                    attacker_entries, expected_request_id=refreshed_key, finalize_only=True
+                )
+                if native
+                else bridge.submit_attackers_raw([])
+            )
             if not resp2 or not resp2.get("ok"):
                 logger.warning(f"Bridge declare_attackers step 2 (finalize) failed: {resp2}")
                 return None
@@ -936,7 +1054,8 @@ class _BridgeSubmitMixin:
         autopilot in a Declare-Blockers loop.
         """
         # Verify the bridge actually has a DeclareBlockers request pending
-        pending = self._gre_bridge.get_pending_actions()
+        bridge = _progress_bridge_for(self)
+        pending = bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
             logger.info("GRE bridge blockers: no pending interaction, falling back")
             return None
@@ -948,7 +1067,7 @@ class _BridgeSubmitMixin:
         bridge_blockers = pending.get("blockers") or []
         if not getattr(action, "blocker_assignments", None):
             logger.info("GRE bridge blockers: submitting empty blockers (no blockers to assign)")
-            if self._gre_bridge.submit_blockers([]):
+            if bridge.submit_blockers([]):
                 self._log_execution_path(
                     ExecutionPath.GRE_AWARE,
                     "declare_blockers: [No Blocks] submitted via GRE bridge",
@@ -957,107 +1076,28 @@ class _BridgeSubmitMixin:
             return None
 
         game_state = self._get_game_state()
-        battlefield = game_state.get("battlefield", [])
+        from arenamcp.combat_identity import blocker_id_assignments
 
-        def _name_of(iid: int) -> str:
-            for c in battlefield:
-                try:
-                    if int(c.get("instance_id") or 0) == iid:
-                        return (c.get("name") or "").lower()
-                except (TypeError, ValueError):
-                    continue
-            return ""
-
-        from arenamcp.rules_engine import RulesEngine
-
-        bridge_by_id: dict[int, dict] = {}
-        bridge_id_list: list[int] = []
-        for blocker in bridge_blockers:
-            try:
-                blocker_id = int(blocker.get("blockerInstanceId") or 0)
-            except (TypeError, ValueError):
-                continue
-            if not blocker_id or blocker_id in bridge_by_id:
-                continue
-            bridge_id_list.append(blocker_id)
-            bridge_by_id[blocker_id] = blocker
-        blocker_labels = RulesEngine._disambiguate_names(
-            [_name_of(blocker_id) or f"creature {blocker_id}" for blocker_id in bridge_id_list]
-        )
-        bridge_by_name = {
-            label: bridge_by_id[blocker_id]
-            for label, blocker_id in zip(blocker_labels, bridge_id_list, strict=True)
-        }
-
-        assignments = []
-        used_blockers: set[int] = set()
-        for blocker_name, attacker_name in action.blocker_assignments.items():
-            bn = (blocker_name or "").strip().lower()
-            b_entry = bridge_by_name.get(bn)
-            if not b_entry and "#" not in bn:
-                matches = [
-                    entry for label, entry in bridge_by_name.items() if bn and (bn in label or label in bn)
-                ]
-                if len(matches) == 1:
-                    b_entry = matches[0]
-
-            if not b_entry:
-                logger.warning(
-                    f"GRE bridge blockers: can't find blocker {blocker_name!r} "
-                    f"among bridge entries (names: {list(bridge_by_name)}, "
-                    f"ids: {bridge_id_list}), surfacing manual-required"
-                )
-                return None
-
-            try:
-                blocker_id = int(b_entry["blockerInstanceId"])
-            except (TypeError, ValueError, KeyError):
-                logger.warning(f"GRE bridge blockers: bad blockerInstanceId in {b_entry}")
-                return None
-            if blocker_id in used_blockers:
-                logger.warning("GRE bridge blockers: duplicate blocker instance %s", blocker_id)
-                return None
-            used_blockers.add(blocker_id)
-
-            an = (attacker_name or "").lower()
-            attacker_id: int | None = None
-            legal_attackers = b_entry.get("attackerInstanceIds") or []
-            for aid in legal_attackers:
-                try:
-                    aid_i = int(aid)
-                except (TypeError, ValueError):
-                    continue
-                cand_name = _name_of(aid_i)
-                if cand_name and (cand_name == an or (an and (an in cand_name or cand_name in an))):
-                    attacker_id = aid_i
-                    break
-
-            if attacker_id is None and len(legal_attackers) == 1:
-                try:
-                    attacker_id = int(legal_attackers[0])
-                    logger.info(
-                        f"GRE bridge blockers: attacker name lookup failed for "
-                        f"{attacker_name!r}; using sole legal attacker {attacker_id}"
-                    )
-                except (TypeError, ValueError):
-                    attacker_id = None
-
-            if attacker_id is None:
-                logger.warning(
-                    f"GRE bridge blockers: can't resolve attacker {attacker_name!r} "
-                    f"for blocker {blocker_name!r} (legal attacker ids: "
-                    f"{legal_attackers}), surfacing manual-required"
-                )
-                return None
-
-            assignments.append(
-                {
-                    "blockerInstanceId": blocker_id,
-                    "attackerInstanceIds": [attacker_id],
-                }
+        try:
+            identities = action.blocker_instance_assignments or blocker_id_assignments(
+                action.blocker_assignments, game_state, bridge_blockers
             )
+            if len(identities) != len(action.blocker_assignments):
+                raise ValueError("Missing or duplicate blocker identities")
+            legal = {
+                int(blocker["blockerInstanceId"]): set(blocker.get("attackerInstanceIds") or [])
+                for blocker in bridge_blockers
+            }
+            assignments = []
+            for blocker_id, attacker_id in identities.items():
+                if blocker_id not in legal or attacker_id not in legal[blocker_id]:
+                    raise ValueError(f"Block {blocker_id}->{attacker_id} is no longer legal")
+                assignments.append({"blockerInstanceId": blocker_id, "attackerInstanceIds": [attacker_id]})
+        except (ValueError, TypeError, KeyError) as error:
+            logger.warning("GRE bridge blockers: %s; manual choice required", error)
+            return None
 
-        if self._gre_bridge.submit_blockers(assignments):
+        if bridge.submit_blockers(assignments):
             # Blockers are a two-step server round-trip, like attackers: the
             # DeclareBlockersResp update makes the GRE re-issue a fresh
             # DeclareBlockersRequest carrying the selection, and the
@@ -1070,7 +1110,7 @@ class _BridgeSubmitMixin:
             # confirming the pending selection.
             time.sleep(0.8)
             try:
-                still = self._gre_bridge.get_pending_actions()
+                still = bridge.get_pending_actions()
                 if (
                     still
                     and still.get("has_pending")
@@ -1104,7 +1144,7 @@ class _BridgeSubmitMixin:
                                 selected,
                             )
                             return None
-                    if self._gre_bridge.submit_blockers([]):
+                    if bridge.submit_blockers([]):
                         logger.info("Bridge declare_blockers: finalized on refreshed request")
                     else:
                         logger.warning("Bridge declare_blockers: finalize step failed")
@@ -1129,7 +1169,8 @@ class _BridgeSubmitMixin:
         Resolves and validates each attacker's chosen combat recipient.
         """
         # Verify the bridge actually has a DeclareAttacker request pending
-        pending = self._gre_bridge.get_pending_actions()
+        bridge = _progress_bridge_for(self)
+        pending = bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
             logger.info("GRE bridge attackers: no pending interaction, falling back")
             return None
@@ -1148,7 +1189,7 @@ class _BridgeSubmitMixin:
             logger.warning("GRE bridge attackers: %s; manual choice required", error)
             return None
 
-        if self._gre_bridge.submit_attackers(attacker_list):
+        if bridge.submit_attackers(attacker_list):
             names = ", ".join(submitted_action.attacker_names)
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE, f"declare_attackers: {names} submitted via GRE bridge"
@@ -1167,7 +1208,8 @@ class _BridgeSubmitMixin:
         Uses submit_targets (SelectTargetsRequest) or submit_selection
         (SelectNRequest) depending on the pending request type.
         """
-        pending = self._gre_bridge.get_pending_actions()
+        bridge = _progress_bridge_for(self)
+        pending = bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
             return None
 
@@ -1305,9 +1347,9 @@ class _BridgeSubmitMixin:
                         target_ids = covered
             except Exception as e:
                 logger.debug(f"select_target multi-slot expand failed: {e}")
-            success = self._gre_bridge.submit_targets(target_ids)
+            success = bridge.submit_targets(target_ids)
         else:
-            success = self._gre_bridge.submit_selection([target_id])
+            success = bridge.submit_selection([target_id])
 
         if success:
             display = matched_name or ", ".join(target_names)
@@ -1333,7 +1375,8 @@ class _BridgeSubmitMixin:
         treat `distribution` as receiver_name → damage. Otherwise we
         fall back to the bridge's existing assigner template.
         """
-        pending = self._gre_bridge.get_pending_actions()
+        bridge = _progress_bridge_for(self, game_state)
+        pending = bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
             return None
         req_class = pending.get("request_class") or pending.get("request_type") or ""
@@ -1408,7 +1451,7 @@ class _BridgeSubmitMixin:
             logger.info("GRE bridge assign_damage: no assignments built; surfacing manual-required")
             return None
 
-        if self._gre_bridge.submit_assign_damage(assigners):
+        if bridge.submit_assign_damage(assigners):
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE, f"assign_damage: {len(assigners)} assigners via GRE bridge"
             )
@@ -1420,7 +1463,8 @@ class _BridgeSubmitMixin:
         self, action: GameAction, game_state: dict[str, Any]
     ) -> ClickResult | None:
         """Submit a Distribution decision via GRE bridge."""
-        pending = self._gre_bridge.get_pending_actions()
+        bridge = _progress_bridge_for(self, game_state)
+        pending = bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
             return None
         req_class = pending.get("request_class") or pending.get("request_type") or ""
@@ -1449,7 +1493,7 @@ class _BridgeSubmitMixin:
         if not distributions:
             return None
 
-        if self._gre_bridge.submit_distribution(distributions):
+        if bridge.submit_distribution(distributions):
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE, f"distribute: {len(distributions)} targets via GRE bridge"
             )
@@ -1465,7 +1509,8 @@ class _BridgeSubmitMixin:
           SelectFromGroups     → submit_select_from_groups
           GroupRequest         → submit_group (existing)
         """
-        pending = self._gre_bridge.get_pending_actions()
+        bridge = _progress_bridge_for(self, game_state)
+        pending = bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
             return None
         req_class = pending.get("request_class") or pending.get("request_type") or ""
@@ -1475,7 +1520,7 @@ class _BridgeSubmitMixin:
         # ever reified). Most stack-trigger ordering is "default order is
         # fine"; sending the bridge's current Ids list confirms it.
         if "Order" in req_class_str and "Group" not in req_class_str:
-            if self._gre_bridge.submit_order():
+            if bridge.submit_order():
                 self._log_execution_path(ExecutionPath.GRE_AWARE, "order: default ordering via GRE bridge")
                 return ClickResult(True, 0, 0, "order", "GRE bridge")
             self._gre_bridge_failed_methods.add("order")
@@ -1486,7 +1531,7 @@ class _BridgeSubmitMixin:
         # SelectFromGroups prompts (e.g. assignment of triggers to stack
         # spots) are "confirm the default" interactions.
         if "SelectFromGroups" in req_class_str:
-            if self._gre_bridge.submit_select_from_groups([]):
+            if bridge.submit_select_from_groups([]):
                 self._log_execution_path(
                     ExecutionPath.GRE_AWARE, "order: select_from_groups default via GRE bridge"
                 )
@@ -1505,7 +1550,8 @@ class _BridgeSubmitMixin:
         otherwise picks index 0. Honors a 'decline' card_name / no-op
         modal as a decline when the request is optional.
         """
-        pending = self._gre_bridge.get_pending_actions()
+        bridge = _progress_bridge_for(self, game_state)
+        pending = bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
             return None
         req_class = pending.get("request_class") or pending.get("request_type") or ""
@@ -1514,7 +1560,7 @@ class _BridgeSubmitMixin:
 
         button_name = (action.card_name or "").lower().strip()
         if button_name in ("decline", "cancel", "no", "skip"):
-            if self._gre_bridge.submit_select_replacement(decline=True):
+            if bridge.submit_select_replacement(decline=True):
                 self._log_execution_path(
                     ExecutionPath.GRE_AWARE, "select_replacement: declined via GRE bridge"
                 )
@@ -1523,7 +1569,7 @@ class _BridgeSubmitMixin:
             return None
 
         idx = int(getattr(action, "modal_index", 0) or 0)
-        if self._gre_bridge.submit_select_replacement(index=idx):
+        if bridge.submit_select_replacement(index=idx):
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE, f"select_replacement: index {idx} via GRE bridge"
             )
@@ -1545,7 +1591,8 @@ class _BridgeSubmitMixin:
         (`_exec_select_n`) which clicks by list index and often misses
         the actual option positions, causing the autopilot to loop.
         """
-        pending = self._gre_bridge.get_pending_actions()
+        bridge = _progress_bridge_for(self, game_state)
+        pending = bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
             return None
 
@@ -1734,7 +1781,7 @@ class _BridgeSubmitMixin:
 
         # Submit — empty list → SubmitArbitrary (safe fallback when we can't
         # resolve a specific option)
-        success = self._gre_bridge.submit_selection(matched_ids)
+        success = bridge.submit_selection(matched_ids)
         if success:
             id_kind = "instance_ids" if wants_instance_ids else "grp_ids"
             method = f"{len(matched_ids)} {id_kind}" if matched_ids else "arbitrary"
@@ -1759,7 +1806,8 @@ class _BridgeSubmitMixin:
 
         Cards not named in `select_card_names` go to the other group.
         """
-        pending = self._gre_bridge.get_pending_actions()
+        bridge = _progress_bridge_for(self, game_state)
+        pending = bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
             return None
 
@@ -1823,7 +1871,7 @@ class _BridgeSubmitMixin:
             {"ids": top_ids, "zone": "Library", "sub_zone": "Top"},
             {"ids": bottom_ids, "zone": "Library", "sub_zone": "Bottom"},
         ]
-        success = self._gre_bridge.submit_group(groups)
+        success = bridge.submit_group(groups)
         if success:
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE, f"scry: top={len(top_ids)} bottom={len(bottom_ids)} via GRE bridge"
@@ -1882,11 +1930,12 @@ class _BridgeSubmitMixin:
         (including MTGA's own AutoRespond) failed, or None if the request
         isn't actionable here (dry-run, bridge offline, or nothing pending).
         """
+        bridge = _progress_bridge_for(self, game_state)
         if self._config.dry_run:
             return None
-        if not (self._gre_bridge.connected or self._gre_bridge.connect()):
+        if not (bridge.connected or bridge.connect()):
             return None
-        pending = self._gre_bridge.get_pending_actions()
+        pending = bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
             return None
 
@@ -1930,7 +1979,7 @@ class _BridgeSubmitMixin:
             res = self._try_gre_bridge_select_n(GameAction(action_type=ActionType.SELECT_N), game_state)
             if res is not None and res.success:
                 return _ok("select_n/search min-or-arbitrary")
-            if self._gre_bridge.submit_selection([]):
+            if bridge.submit_selection([]):
                 return _ok("empty selection (SubmitArbitrary)")
 
         # NumericInput: min (or first suggested) legal value.
@@ -1938,7 +1987,7 @@ class _BridgeSubmitMixin:
             value = self._safe_default_numeric(pending)
             if not useful_tutor_x(game_state, pending_x_source(game_state), value):
                 return False
-            if self._gre_bridge.submit_numeric(value):
+            if bridge.submit_numeric(value):
                 return _ok(f"numeric={value}")
 
         if dec_type == "target_selection" or "SelectTargets" in btype or "SelectTargets" in bclass:
@@ -1951,27 +2000,27 @@ class _BridgeSubmitMixin:
             target_planner = ActionPlanner.__new__(ActionPlanner)
             selected = target_planner._targeting_fallback_pick(decision, game_state)
             if selected == [DECLINE_DECISION]:
-                if decision.can_cancel and self._gre_bridge.cancel_action():
+                if decision.can_cancel and bridge.cancel_action():
                     return _ok("cancelled unsafe targeting")
                 return False
-            if selected and submit_option(self._gre_bridge, decision, selected):
+            if selected and submit_option(bridge, decision, selected):
                 return _ok("controller-aware target selection")
             return False
 
         # SelectReplacement: first replacement.
         if dec_type == "select_replacement" or "SelectReplacement" in btype or "SelectReplacement" in bclass:
-            if self._gre_bridge.submit_select_replacement(index=0):
+            if bridge.submit_select_replacement(index=0):
                 return _ok("replacement index 0")
 
         # Ordering / SelectFromGroups: accept the given default order.
         if dec_type in ("order_triggers", "order_combat_damage", "select_from_groups"):
-            if self._gre_bridge.submit_order():
+            if bridge.submit_order():
                 return _ok("default order")
-            if self._gre_bridge.submit_select_from_groups([]):
+            if bridge.submit_select_from_groups([]):
                 return _ok("select_from_groups default")
 
         # Universal fallback: MTGA's own "do the default" for this request.
-        if self._gre_bridge.auto_respond():
+        if bridge.auto_respond():
             return _ok("auto_respond")
         return False
 
@@ -2034,7 +2083,8 @@ class _BridgeSubmitMixin:
 
         Returns a ClickResult (success flag set), or None if not a GroupRequest.
         """
-        pending = pending or self._gre_bridge.get_pending_actions()
+        bridge = _progress_bridge_for(self, game_state)
+        pending = pending or bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
             return None
         btype = str(pending.get("request_type") or "")
@@ -2101,7 +2151,7 @@ class _BridgeSubmitMixin:
                     else ""
                 )
                 groups.append({"ids": [], "zone": z or None, "sub_zone": s or None})
-            ok = self._gre_bridge.submit_group(groups)
+            ok = bridge.submit_group(groups)
             if ok:
                 self._log_execution_path(
                     ExecutionPath.GRE_AWARE,
@@ -2120,7 +2170,7 @@ class _BridgeSubmitMixin:
             {"ids": keep_ids, "zone": "Hand", "sub_zone": "Top"},
             {"ids": bottom_ids, "zone": "Library", "sub_zone": "Bottom"},
         ]
-        ok = self._gre_bridge.submit_group(groups)
+        ok = bridge.submit_group(groups)
         if ok:
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE,

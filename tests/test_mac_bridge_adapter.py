@@ -97,6 +97,54 @@ def adapter_for(game: FakeGame) -> MacBridgeAdapter:
     return MacBridgeAdapter(game.send)
 
 
+def submitted_uint_values(batch: list[dict]) -> list[int]:
+    """Interpret scratch managed collections as the old loaded bridge would.
+
+    The old native array writer uses an eight-byte stride for four-byte uints.
+    Emulating the values Arena receives catches the actual [id, 0] regression,
+    including accidental extra capacity and an adapter-only marker leaking out.
+    """
+    results: list[Any] = []
+
+    def resolve(arg: dict) -> Any:
+        if "ref" in arg:
+            return results[arg["ref"]]
+        if "uint" in arg or "int" in arg:
+            return arg.get("uint", arg.get("int"))
+        if "list" in arg:
+            corrupt = [part for value in arg["list"] for part in (resolve(value), 0)]
+            return corrupt[: len(arg["list"])]
+        return None
+
+    for op in batch:
+        result = None
+        target = resolve(op.get("target", {}))
+        if op["op"] == "new" and op["class"] == MSG + "SearchResp":
+            result = {"ItemsFound": {"array": [], "Count": 0}}
+        elif op["op"] == "get" and target is not None:
+            assert op["depth"] == 0  # Never use the old probe's misleading array dump.
+            result = target[op["member"]]
+        elif op["op"] == "set" and op["member"] == "Capacity":
+            capacity = resolve(op["value"])
+            assert capacity >= target["Count"]
+            target["array"] = (target["array"] + [0] * capacity)[:capacity]
+        elif op.get("method") == "Add":
+            count = target["Count"]
+            if count == len(target["array"]):
+                target["array"] += [0] * max(8, count)
+            target["array"][count] = resolve(op["args"][0])
+            target["Count"] += 1
+        elif op["op"] == "expect" and "equals" in op:
+            actual = len(target) if op["member"] == "Length" else target[op["member"]]
+            assert actual == op["equals"]
+        elif op.get("method", "").startswith("Submit"):
+            result = resolve(op["args"][0])
+            assert isinstance(result, list)
+            return list(result)
+        results.append(result)
+    raise AssertionError("No uint collection submission")
+
+
 def actions_request(*actions: dict, handle: int = 5) -> dict:
     return {
         "$c": "GreClient.Rules.ActionsAvailableRequest",
@@ -275,6 +323,27 @@ def test_blocker_snapshot_exposes_accepted_selection():
     assert response["blockers"][0]["selectedAttackerInstanceIds"] == [401]
 
 
+def test_attacker_snapshot_resolves_selected_recipient_shared_reference():
+    recipient = {
+        "$c": MSG + "DamageRecipient",
+        "$h": 31,
+        "type_": enum("Player", 1),
+        "playerSystemSeatId_": 2,
+    }
+    attacker = {
+        "$c": MSG + "Attacker",
+        "$h": 30,
+        "attackerInstanceId_": 955,
+        "legalDamageRecipients_": listing(recipient),
+        "selectedDamageRecipient_": {"$h": 31, "$ref": True},
+    }
+    game = FakeGame(
+        {"$c": "GreClient.Rules.DeclareAttackerRequest", "$h": 5, "QualifiedAttackers": listing(attacker)}
+    )
+    response = adapter_for(game).handle({"action": "get_pending_actions"})
+    assert response["attackers"][0]["selectedDamageRecipient"]["playerSystemSeatId"] == 2
+
+
 def test_attackers_two_step_flow():
     recipient = {"$c": MSG + "DamageRecipient", "$h": 31, "type_": enum("Player", 1)}
     attacker = {
@@ -300,6 +369,103 @@ def test_attackers_two_step_flow():
     step2 = adapter.handle({"action": "submit_attackers", "attackers": []})
     assert step2["submitted_type"] == "DeclareAttackersSubmit"
     assert game.submits()[-1][-1]["method"] == "SubmitAttackers"
+
+
+def test_attacker_acknowledgment_uses_mutable_declaration_not_qualified_menu():
+    # Live 00:45 capture: the menu kept null selections while manual recovery
+    # produced an actual declared selection. Attackers is the mutable list.
+    player = {"$h": 31, "type_": enum("Player", 1), "playerSystemSeatId_": 2}
+    walker = {"$h": 32, "type_": enum("PlanesWalker", 2), "planeswalkerInstanceId_": 1022}
+    menu = [
+        {
+            "$h": handle,
+            "attackerInstanceId_": iid,
+            "legalDamageRecipients_": listing(player, walker),
+            "selectedDamageRecipient_": None,
+        }
+        for handle, iid in ((40, 551), (41, 693), (42, 803))
+    ]
+    declared = [
+        {
+            **entry,
+            "$h": entry["$h"] + 10,
+            "selectedDamageRecipient_": {"$h": recipient["$h"], "$ref": True} if recipient else None,
+        }
+        for entry, recipient in zip(menu, (None, player, walker), strict=True)
+    ]
+    game = FakeGame(
+        {
+            "$c": "GreClient.Rules.DeclareAttackerRequest",
+            "$h": 5,
+            "QualifiedAttackers": listing(*menu),
+            "Attackers": listing(*declared),
+        }
+    )
+    response = adapter_for(game).handle({"action": "get_pending_actions"})
+    assert [(a["attackerInstanceId"], a["selectedDamageRecipient"]) for a in response["attackers"]] == [
+        (551, None),
+        (693, {"type": "Player", "playerSystemSeatId": 2}),
+        (803, {"type": "PlanesWalker", "planeswalkerInstanceId": 1022}),
+    ]
+
+
+@pytest.mark.parametrize("declared", ["absent", "reference"])
+def test_attacker_menu_selection_requires_membership_in_authoritative_declarations(declared):
+    player = {"$h": 31, "type_": enum("Player", 1), "playerSystemSeatId_": 2}
+    attacker = {
+        "$h": 40,
+        "attackerInstanceId_": 693,
+        "legalDamageRecipients_": listing(player),
+        "selectedDamageRecipient_": player,
+    }
+    game = FakeGame(
+        {
+            "$c": "GreClient.Rules.DeclareAttackerRequest",
+            "$h": 5,
+            "QualifiedAttackers": listing(attacker),
+            "Attackers": listing(*([{"$h": 40, "$ref": True}] if declared == "reference" else [])),
+        }
+    )
+    response = adapter_for(game).handle({"action": "get_pending_actions"})
+    assert bool(response["attackers"][0]["selectedDamageRecipient"]) is (declared == "reference")
+
+
+@pytest.mark.parametrize("change", ["none", "request", "recipient", "extra_attacker"])
+def test_native_attack_confirmation_revalidates_request_and_exact_declared_selection(change):
+    player = {"$h": 31, "type_": enum("Player", 1), "playerSystemSeatId_": 2}
+    walker = {"$h": 32, "type_": enum("PlanesWalker", 2), "planeswalkerInstanceId_": 1022}
+    attacker = {
+        "$h": 40,
+        "attackerInstanceId_": 803,
+        "legalDamageRecipients_": listing(player, walker),
+        "selectedDamageRecipient_": player if change == "recipient" else walker,
+    }
+    attackers = [attacker]
+    if change == "extra_attacker":
+        attackers.append({**attacker, "$h": 41, "attackerInstanceId_": 693})
+    game = FakeGame(
+        {"$c": "GreClient.Rules.DeclareAttackerRequest", "$h": 5, "Attackers": listing(*attackers)},
+        {"CanSubmit": True},
+        gsid=468,
+        msg=665,
+    )
+    bridge = GREBridge()
+    bridge._send_safe = adapter_for(game).handle
+    result = bridge.submit_attackers_raw(
+        [{"attackerInstanceId": 803, "damageRecipient": {"planeswalkerInstanceId": 1022}}],
+        expected_request_id=(467 if change == "request" else 468, 665),
+        finalize_only=True,
+    )
+    assert result["ok"] is (change == "none")
+    assert len(game.submits()) == int(change == "none")
+    if change == "none":
+        assert game.submits()[0][-1]["method"] == "SubmitAttackers"
+    if change == "extra_attacker":
+        result = bridge.submit_attackers_raw(
+            [{"attackerInstanceId": 803, "damageRecipient": {"planeswalkerInstanceId": 1022}}]
+        )
+        assert result["ok"] is False
+        assert game.submits() == []
 
 
 def test_unresolved_attacker_never_finalizes_an_empty_attack():
@@ -535,13 +701,14 @@ def test_casting_time_entries_mirror_plugin_payloads():
         ("numeric_input", None, 2),
         ("numeric_input", None, 3),
     ]
-    assert entries[1]["method"] == "SubmitModal" and entries[1]["args"] == [{"list": [{"uint": 1002}]}]
+    assert entries[1]["method"] == "SubmitModal"
     game = FakeGame(request, {"CanCancel": True})
     response = adapter_for(game).handle({"action": "submit_action", "action_index": 1})
     assert response["submitted_choice_kind"] == "modal" and response["submitted_option_index"] == 1
     submit = game.submits()[-1]
     assert submit[2] == {"op": "expect", "target": {"h": 60}, "class": "CastingTimeOption_ModalRequest"}
-    assert submit[3]["method"] == "SubmitModal"
+    assert submit[-1]["method"] == "SubmitModal"
+    assert submitted_uint_values(submit) == [1002]
 
 
 def test_casting_time_identity_mismatch_never_submits():
@@ -663,13 +830,10 @@ def test_non_mana_payment_submits_to_nested_selection_child(ids):
     game = FakeGame(_weighted_cost_request())
     response = adapter_for(game).handle({"action": "submit_selection", "ids": ids})
     assert response["ok"] is True
-    assert game.submits()[-1][-1] == {
-        "op": "call",
-        "target": {"h": 72},
-        "method": "SubmitSelection",
-        "args": [{"list": [{"uint": instance_id} for instance_id in ids]}],
-        "depth": 0,
-    }
+    submit = game.submits()[-1]
+    assert submit[-1]["target"] == {"h": 72}
+    assert submit[-1]["method"] == "SubmitSelection"
+    assert submitted_uint_values(submit) == ids
 
 
 @pytest.mark.parametrize("ids", [[], [763], [763, 763], [999]])
@@ -708,3 +872,139 @@ def test_bridge_routes_plugin_commands_through_the_adapter(action_name):
     assert bridge._send_command({"action": "get_pending_actions"})["has_pending"] is False
     assert calls == [action_name]  # answered by the adapter via reflect batches
     assert len(game.batches) == 1
+
+
+def choose_two_request():
+    return {
+        "$c": "GreClient.Rules.CastingTimeOptionRequest",
+        "$h": 5,
+        "ChildRequests": listing(
+            {
+                "$c": "GreClient.Rules.CastingTimeOption_ModalRequest",
+                "$h": 60,
+                "ModalOptions": listing(149502, 149503, 149504, 149505),
+                "Min": 2,
+                "Max": 2,
+            }
+        ),
+    }
+
+
+def multi_mode_command(request=None):
+    entries = casting_time_entries(request or choose_two_request())
+    return {
+        "action": "submit_casting_options",
+        "action_indices": [1, 2],
+        "expected_options": [entries[index]["payload"] for index in (1, 2)],
+        "expected_game_state_id": 40,
+        "expected_msg_id": 7,
+    }
+
+
+def test_choose_two_bridge_pipeline_submits_one_complete_modal_array():
+    from arenamcp.decisions import build_pending_decision, submit_option
+
+    game = FakeGame(choose_two_request(), {"Type": enum("CastingTimeOptions", 1)})
+    adapter = adapter_for(game)
+    bridge = GREBridge()
+    bridge._send_safe = adapter.handle
+    poll = adapter.handle({"action": "get_pending_actions"})
+    decision = build_pending_decision(poll)
+    assert decision.min_select == decision.max_select == 2
+    assert submit_option(bridge, decision, ["idx:1", "idx:2"])
+    submissions = game.submits()
+    assert len(submissions) == 1
+    modal_calls = [operation for operation in submissions[0] if operation.get("method") == "SubmitModal"]
+    assert len(modal_calls) == 1
+    assert submitted_uint_values(submissions[0]) == [149503, 149504]
+
+
+@pytest.mark.parametrize("ids", [[480, 475], [671, 692], [480], []])
+def test_search_preserves_exact_uint_ids_with_old_loaded_probe(ids):
+    request = {
+        "$c": "GreClient.Rules.SearchRequest",
+        "$h": 5,
+        "Options": listing(480, 475, 671, 692),
+        "Min": 0,
+        "Max": 2,
+    }
+    game = FakeGame(request)
+    assert adapter_for(game).handle({"action": "submit_selection", "ids": ids})["ok"]
+    [batch] = game.submits()
+    assert submitted_uint_values(batch) == ids
+    assert request["Options"]["$items"] == [480, 475, 671, 692]
+    assert batch[1] == {"op": "expect_pending", "target": {"h": 5}}
+
+
+@pytest.mark.parametrize(
+    ("request_class", "command"),
+    [
+        ("SelectNRequest", {"action": "submit_selection", "ids": [480, 475]}),
+        ("OrderRequest", {"action": "submit_order", "ids": [480, 475]}),
+        ("SelectNGroupRequest", {"action": "submit_select_n_group", "ids": [480, 475]}),
+    ],
+)
+def test_other_uint_collection_submissions_preserve_both_ids(request_class, command):
+    game = FakeGame({"$c": "GreClient.Rules." + request_class, "$h": 5})
+    assert adapter_for(game).handle(command)["ok"]
+    assert submitted_uint_values(game.submits()[-1]) == [480, 475]
+
+
+def test_uint_collection_setup_failure_never_reports_submission_success():
+    game = FakeGame({"$c": "GreClient.Rules.SearchRequest", "$h": 5, "Options": listing(480, 475), "Max": 2})
+    game.fail_on = "Add"
+    response = adapter_for(game).handle({"action": "submit_selection", "ids": [480, 475]})
+    assert response == {"ok": False, "error": "Add threw"}
+
+
+@pytest.mark.parametrize(
+    "fault", ["one_mode", "too_many", "duplicate", "stale_request", "reordered_modes", "mixed_child"]
+)
+def test_invalid_multi_mode_response_never_sends_any_mode(fault):
+    request = choose_two_request()
+    command = multi_mode_command(request)
+    if fault == "one_mode":
+        command["action_indices"] = [1]
+        command["expected_options"] = command["expected_options"][:1]
+    elif fault == "too_many":
+        entries = casting_time_entries(request)
+        command["action_indices"] = [0, 1, 2]
+        command["expected_options"] = [entry["payload"] for entry in entries[:3]]
+    elif fault == "duplicate":
+        command["action_indices"] = [1, 1]
+    elif fault == "stale_request":
+        command["expected_msg_id"] = 6
+    elif fault == "reordered_modes":
+        request["ChildRequests"]["$items"][0]["ModalOptions"] = listing(149502, 149504, 149503, 149505)
+    elif fault == "mixed_child":
+        second = {
+            "$c": "GreClient.Rules.CastingTimeOption_ModalRequest",
+            "$h": 61,
+            "ModalOptions": listing(2000, 2001),
+            "Min": 1,
+            "Max": 1,
+        }
+        request["ChildRequests"]["$items"].append(second)
+        entries = casting_time_entries(request)
+        command["action_indices"] = [1, 4]
+        command["expected_options"] = [entries[index]["payload"] for index in (1, 4)]
+    game = FakeGame(request)
+    response = adapter_for(game).handle(command)
+    assert not response["ok"]
+    assert game.submits() == []
+
+
+def test_legacy_single_mode_submit_refuses_required_choose_two():
+    game = FakeGame(choose_two_request())
+    response = adapter_for(game).handle({"action": "submit_action", "action_index": 1})
+    assert not response["ok"]
+    assert "multiple modes" in response["error"]
+    assert game.submits() == []
+
+
+def test_old_plugin_rejects_multi_modes_without_single_mode_fallback():
+    bridge = GREBridge()
+    commands = []
+    bridge._send_safe = lambda command: commands.append(command) or {"ok": False, "error": "Unknown command"}
+    assert not bridge.submit_casting_options([1, 2], expected=[{}, {}])
+    assert [command["action"] for command in commands] == ["submit_casting_options"]

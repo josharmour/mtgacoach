@@ -5,7 +5,7 @@ Root cause: ``_format_board_card`` skipped oracle text for ALL lands
 abilities — like Evendo, Waking Haven whose ability requires 12+ charge
 counters from stationing — were invisible to the model beyond name/type.
 
-The fix lets non-basic lands with abilities through, capped at 300 chars.
+Non-basic land rules remain complete so late abilities and conditions survive.
 """
 
 from __future__ import annotations
@@ -201,8 +201,8 @@ class TestBattlefieldLandOracleDisplay:
         full_text = "\n".join(lines)
         assert "12+" in full_text, "Recent ETB oracle should be visible even in planner mode"
 
-    def test_oracle_capped_at_300_chars_for_lands(self) -> None:
-        """Very long land oracle text is capped at 300 chars."""
+    def test_long_land_oracle_remains_complete(self) -> None:
+        """An arbitrary length cutoff can remove a land's activated ability."""
         long_oracle = "X" * 500  # Simulate a very verbose oracle
         card = _land(
             "Verbose Land",
@@ -212,9 +212,7 @@ class TestBattlefieldLandOracleDisplay:
         lines = _format_lines(card)
         full_text = "\n".join(lines)
 
-        # The "X" * 300 + "..." should be present, not 500
-        # After reminder removal (no parens), we check length of the oracle line
+        # Rules after the old 300-character cutoff must remain available.
         oracle_line = [l for l in lines if "X" in l]
         assert len(oracle_line) == 1
-        # The line should contain at most 300 X's plus ellipsis
-        assert oracle_line[0].count("X") <= 300
+        assert oracle_line[0].count("X") == 500

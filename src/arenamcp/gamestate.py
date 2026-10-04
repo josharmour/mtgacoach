@@ -188,6 +188,10 @@ class GameState(_GameStateAnnotationsMixin):
         "event_id": "",
         # Deck list
         "deck_cards": list,
+        # Connection deck provenance. ConnectResp can precede the room ID,
+        # including between two known matches, and carries no match ID itself.
+        "_connection_deck_metadata": None,
+        "_awaiting_connection_match_id": None,
         # Annotation-derived event tracking
         "recent_events": list,
         "raw_gre_events": list,
@@ -283,6 +287,51 @@ class GameState(_GameStateAnnotationsMixin):
         self.turn_info = TurnInfo()
         self._raw_gre_sequence = 0
         self.publish_snapshot()
+
+    def capture_connection_deck(self) -> None:
+        """Remember fresh GRE deck metadata until its match identity is known.
+
+        A preceding room event consumes the connection immediately. Otherwise
+        only the next new room or authoritative gameInfo can associate it; no
+        elapsed-time guess or prior deck contents establishes ownership.
+        """
+        bound_match = self._awaiting_connection_match_id
+        self._connection_deck_metadata = {
+            "match_id": bound_match,
+            "unbound": bound_match is None,
+            "deck_cards": list(self.deck_cards),
+            "sideboard_cards": list(self.sideboard_cards),
+            "commander_grp_ids": list(self.commander_grp_ids),
+            "format_profile": self.format_profile,
+            "local_seat_id": self.local_seat_id,
+            "seat_source": self._seat_source,
+            "card_name_cache": dict(self._card_name_cache),
+        }
+        self._awaiting_connection_match_id = None
+
+    def connection_deck_for_match(self, match_id: str) -> dict | None:
+        """Return only fresh or explicitly associated metadata for a boundary."""
+        metadata = self._connection_deck_metadata
+        if metadata and (
+            metadata.get("unbound")
+            or metadata.get("match_id") == match_id
+            or (self.match_id is None and metadata.get("match_id") is None)
+        ):
+            return dict(metadata)
+        return None
+
+    def restore_connection_deck(self, metadata: dict, match_id: str) -> None:
+        """Restore this connection's deck facts after clearing the previous game."""
+        self.deck_cards = list(metadata["deck_cards"])
+        self.sideboard_cards = list(metadata["sideboard_cards"])
+        self.commander_grp_ids = list(metadata["commander_grp_ids"])
+        self.format_profile = metadata["format_profile"]
+        self._card_name_cache = dict(metadata["card_name_cache"])
+        if metadata.get("local_seat_id") is not None:
+            self.local_seat_id = metadata["local_seat_id"]
+            self._seat_source = metadata["seat_source"]
+        self._connection_deck_metadata = dict(metadata, match_id=match_id, unbound=False)
+        self._awaiting_connection_match_id = None
 
     def prepare_for_game_end(self) -> None:
         """Capture final state and infer result BEFORE reset().
@@ -581,6 +630,9 @@ class GameState(_GameStateAnnotationsMixin):
                             for item in zone_data.get("object_instance_ids", [])
                             if _coerce_int(item, 0)
                         ],
+                        object_ids_known=bool(
+                            zone_data.get("object_ids_known", bool(zone_data.get("object_instance_ids")))
+                        ),
                     )
 
                 played_cards = checkpoint.get("played_cards") or {}
@@ -912,6 +964,21 @@ class GameState(_GameStateAnnotationsMixin):
                         result.append(obj)
         return result
 
+    def get_zone_card_count(self, zone_type: ZoneType, owner: int) -> int | None:
+        """Count complete GRE zone membership, including hidden card IDs.
+
+        Hidden library cards need not have materialized GameObjects. An absent
+        zone or an unobserved member list provides no evidence of an empty deck.
+        """
+        zones = [
+            zone
+            for zone in self.zones.values()
+            if zone.zone_type == zone_type and zone.owner_seat_id == owner
+        ]
+        if not zones or any(not z.object_ids_known for z in zones):
+            return None
+        return len({instance_id for zone in zones for instance_id in zone.object_instance_ids})
+
     def get_player_objects(self, seat_id: int) -> list[GameObject]:
         """Get all game objects owned by a specific player.
 
@@ -1108,6 +1175,9 @@ class GameState(_GameStateAnnotationsMixin):
         """
         self._prune_engine_busy_locked()
         opponent_seat = self.opponent_seat_id
+        library_count = (
+            self.get_zone_card_count(ZoneType.LIBRARY, self.local_seat_id) if self.local_seat_id else None
+        )
 
         players_list = []
         for p in self.players.values():
@@ -1141,9 +1211,8 @@ class GameState(_GameStateAnnotationsMixin):
                     dict(obj.to_dict(), commander_casts=self.commander_casts.get(obj.grp_id, 0))
                     for obj in self.command
                 ],
-                "library_count": len(self.get_objects_in_zone(ZoneType.LIBRARY, self.local_seat_id))
-                if self.local_seat_id
-                else "?",
+                "library_count": library_count if library_count is not None else "?",
+                "library_count_source": "log_zone_membership" if library_count is not None else "unknown",
             },
             "pending_decision": self.pending_decision,
             "_log_game_state_id": getattr(self, "log_game_state_id", 0),
@@ -1267,6 +1336,7 @@ class GameState(_GameStateAnnotationsMixin):
             "exile": [enrich_obj(o) for o in zones.get("exile", [])],
             "command": [enrich_obj(o) for o in zones.get("command", [])],
             "library_count": zones.get("library_count", "?"),
+            "library_count_source": zones.get("library_count_source", "unknown"),
         }
         return raw
 
@@ -1441,8 +1511,33 @@ class GameState(_GameStateAnnotationsMixin):
             # Ensure lands_played is correct even when Arena omits player data
             self._infer_lands_played()
 
+            # ConnectResp often omits commanderGrpIds. Learn physical cards
+            # from our command zone once, retaining their identity after they
+            # move to the stack/battlefield. Emblems and abilities also live
+            # here, but are not commanders or part of the submitted deck.
+            if self.local_seat_id is not None:
+                for card in self.command:
+                    if (
+                        card.owner_seat_id == self.local_seat_id
+                        and card.object_kind in (GameObjectKind.CARD, GameObjectKind.UNKNOWN)
+                        and card.grp_id > 4
+                        and card.grp_id not in self.commander_grp_ids
+                    ):
+                        self.commander_grp_ids.append(card.grp_id)
+                if self._connection_deck_metadata is not None:
+                    self._connection_deck_metadata["commander_grp_ids"] = list(self.commander_grp_ids)
+
             # Process gameInfo after players so team/status data is available.
             game_info = message.get("gameInfo")
+            metadata = self._connection_deck_metadata
+            if metadata and metadata.get("match_id") is None:
+                observed_match = (game_info or {}).get("matchID") or (game_info or {}).get("matchId")
+                if observed_match:
+                    metadata["match_id"] = observed_match
+                # Gameplay consumed this connection. Without an explicit ID,
+                # retain its deck for this game but never carry it speculatively
+                # across a later match boundary.
+                metadata["unbound"] = False
             if game_info:
                 self._process_game_info(game_info)
 
@@ -1743,18 +1838,24 @@ class GameState(_GameStateAnnotationsMixin):
         # Object Instance IDs
         # Critical: If missing, must preserve existing list to avoid wiping zone
         # GRE protobuf may send a single int instead of a list for single-element zones
-        if "objectInstanceIds" in zone_data:
-            object_instance_ids = _ensure_int_list(zone_data["objectInstanceIds"])
+        if zone_data.get("objectInstanceIds") is not None:
+            raw_ids = zone_data["objectInstanceIds"]
+            object_instance_ids = _ensure_int_list(raw_ids)
+            raw_ids = raw_ids if isinstance(raw_ids, (list, tuple)) else [raw_ids]
+            object_ids_known = len(object_instance_ids) == len(raw_ids)
         elif existing_zone:
             object_instance_ids = existing_zone.object_instance_ids
+            object_ids_known = existing_zone.object_ids_known
         else:
             object_instance_ids = []
+            object_ids_known = False
 
         zone = Zone(
             zone_id=zone_id,
             zone_type=zone_type,
             owner_seat_id=owner_seat_id,
             object_instance_ids=object_instance_ids,
+            object_ids_known=object_ids_known,
         )
 
         self.zones[zone_id] = zone

@@ -8,11 +8,12 @@ import re
 import threading
 import time
 from collections import Counter, deque
-from dataclasses import asdict, replace
+from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
 from arenamcp.autopilot_models import AutopilotConfig, AutopilotState
 from arenamcp.backend_health import is_backend_error_text
+from arenamcp.narration import action_narration
 from arenamcp.native_mac_input import DesktopAction, DesktopUnavailable, NativeMacInput, frame_changed
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,8 @@ Include point for mouse/scroll, end only for drag. Key may be space, enter, esca
 backspace, delete. Text may only be a numeric game choice (0..999); focus/select its input
 first using a separate action. Scroll amount is -6..6 nonzero (negative scrolls down).
 No action arrays or sequences. After this input you will get a fresh screenshot.
+Write reason as first-person intent for this input, not an instruction to the human.
+A click is an attempt, not proof a spell resolved, a target died, or a tutor card arrived.
 """
 
 GROUNDING_PROMPT = """Locate a specified mouse target in a Magic Arena screenshot.
@@ -199,6 +202,7 @@ class NativeMacAutopilot:
         get_game_state: Any,
         config: AutopilotConfig | None = None,
         ui_advice_fn: Any = None,
+        speak_fn: Any = None,
         controller: Any = None,
         planner: Any = None,
     ) -> None:
@@ -209,6 +213,7 @@ class NativeMacAutopilot:
         self._config = config or AutopilotConfig()
         self._controller = controller if controller is not None else NativeMacInput()
         self._ui_advice_fn = ui_advice_fn
+        self._speak_fn = speak_fn
         # Log-first decisions: an ActionPlanner (same one the Windows bridge
         # autopilot uses) picks the play from Player.log legal actions; vision
         # only finds and operates it. Without it the vision model chose the
@@ -218,6 +223,8 @@ class NativeMacAutopilot:
         # ('NativeMacAutopilot' has no attribute '_get_legal_actions', 159x
         # in the 2026-09-22 live session).
         self._log_planner = planner
+        # Standalone shares the coach's manager with both autopilot backends.
+        self._game_plan_mgr: Any | None = None
         self._plan_cache: tuple[str, Any] | None = None
         self._lock = threading.Lock()
         self._lock_owner_thread_id: int | None = None
@@ -230,6 +237,7 @@ class NativeMacAutopilot:
         self._next_poll = 0.0
         self._paused_reason = ""
         self._paused_signature: str | None = None
+        self._stuck_report_fn = None
         self._last_notice = ""
         self._inputs_sent = 0
         self._vision_failures = 0
@@ -312,6 +320,12 @@ class NativeMacAutopilot:
             "pause_reason": self._paused_reason,
             "last_notice": self._last_notice,
             "last_proposal": self._last_proposal,
+            "committed_play": (
+                asdict(self._plan_cache[1])
+                if self._plan_cache and is_dataclass(self._plan_cache[1])
+                else None
+            ),
+            "plan_cache_signature": self._plan_cache[0] if self._plan_cache else None,
             "window": asdict(self._last_frame.window) if self._last_frame else None,
             "image_size": list(self._last_frame.image.size) if self._last_frame else None,
             "recent_inputs": list(self._history),
@@ -356,6 +370,7 @@ class NativeMacAutopilot:
 
             legal = [str(a) for a in (RulesEngine.get_legal_actions(state) or [])]
             if legal and not all(a.startswith("Wait") for a in legal):
+                self._refresh_game_plan(state)
                 plan = self._log_planner.plan_actions(
                     state, trigger or "decision_required", legal, state.get("decision_context")
                 )
@@ -368,6 +383,28 @@ class NativeMacAutopilot:
         self._plan_cache = (signature, action)
         return action
 
+    def _refresh_game_plan(self, state: dict[str, Any]) -> None:
+        mgr = self._game_plan_mgr
+        if mgr is None:
+            return
+        try:
+            mgr.observe(state)
+            provider = getattr(self._log_planner, "_deck_strategy_fn", None)
+            if callable(provider):
+                mgr.seed(provider())
+            if self._log_planner is not None:
+                self._log_planner.set_game_plan(mgr.plan_text())
+            if self._afk or self._land_only:
+                return
+
+            def updated() -> None:
+                if self._log_planner is not None:
+                    self._log_planner.set_game_plan(mgr.plan_text())
+
+            mgr.request_reform(state, on_updated=updated)
+        except Exception as error:
+            logger.debug("Native Mac game-plan refresh skipped: %s", error)
+
     @staticmethod
     def _is_pass(action: Any) -> bool:
         value = getattr(getattr(action, "action_type", None), "value", "")
@@ -375,18 +412,36 @@ class NativeMacAutopilot:
 
     def _send(self, frame: Any, action: DesktopAction) -> bool:
         """Repeat guard, dry-run, execute and record one input."""
+        if self._abort_event.is_set():
+            return False
         command = asdict(action)
         repeat_key = json.dumps(
             {key: value for key, value in command.items() if key not in {"reason", "confidence"}},
             sort_keys=True,
         )
         if self._attempts[repeat_key] >= 3 or sum(self._attempts.values()) >= 24:
-            self._pause("Inputs are not advancing the logged decision. Complete the current choice manually.")
-            return False
-        if self._abort_event.is_set():
+            reason = "Inputs are not advancing the logged decision. Complete the current choice manually."
+            self._pause(reason)
+            self.on_abort()
+            callback = self._stuck_report_fn
+            if callable(callback):
+                try:
+                    callback(
+                        reason,
+                        {
+                            "native_input_progress": {
+                                "repeated_attempts": self._attempts[repeat_key],
+                                "total_attempts": sum(self._attempts.values()),
+                                "last_command": command,
+                                "decision_signature": self._last_signature,
+                            }
+                        },
+                    )
+                except Exception:
+                    logger.exception("Automatic native-input capture failed")
             return False
         if self._config.dry_run:
-            self._notify("Preview only: " + action.reason)
+            self._notify("Preview only: " + action_narration(action.reason, planned=True))
             self._next_poll = time.monotonic() + 2
             return True
         self._state = AutopilotState.EXECUTING
@@ -396,7 +451,21 @@ class NativeMacAutopilot:
         logger.info("Native Mac autoplay: sent %s input #%s", action.kind, self._inputs_sent)
         self._attempts[repeat_key] += 1
         self._history.append(command)
-        self._notify(action.reason)
+        # A physical input is only an attempt toward the play. Keep intent
+        # framing until logs or a fresh screenshot confirm the game outcome.
+        narration = action_narration(action.reason, planned=True)
+        new_notice = narration != self._last_notice
+        self._notify(narration)
+        if (
+            new_notice
+            and action.kind not in {"move", "scroll"}
+            and self._config.enable_tts_preview
+            and self._speak_fn
+        ):
+            try:
+                self._speak_fn(narration, False)
+            except Exception as error:
+                logger.debug("Native input narration failed: %s", error)
         self._next_poll = time.monotonic() + max(0.35, self._config.post_action_delay)
         return True
 
@@ -463,8 +532,30 @@ class NativeMacAutopilot:
                 mode = "AFK mode: only pass priority/resolve or wait. Do not cast or play cards."
             elif self._land_only:
                 mode = "Land-only mode: only play a legal land, complete its choices, or wait. Do not cast spells or pass."
+            strategic_context = {}
+            system_prompt = DESKTOP_PROMPT
+            if committed is None and not self._afk and not self._land_only:
+                from arenamcp.match_context import STRATEGIC_POLICY, prepare_match_context
+
+                # Without a log commitment the visual model chooses the play,
+                # so it needs the same strategic facts as the tactical planner.
+                # Grounding a committed play remains a small execution request.
+                state = prepare_match_context(state)
+                self._refresh_game_plan(state)
+                strategic_context = {
+                    "deck_reference": state.get("deck_reference", ""),
+                    "library_summary": state.get("library_summary", ""),
+                    "game_plan": self._game_plan_mgr.plan_text() if self._game_plan_mgr else "",
+                }
+                provider = getattr(self._log_planner, "_deck_strategy_fn", None)
+                if callable(provider):
+                    strategy = provider()
+                    if isinstance(strategy, str):
+                        strategic_context["deck_strategy"] = strategy
+                system_prompt += "\n" + STRATEGIC_POLICY
             prompt = json.dumps(
                 {
+                    **strategic_context,
                     "mode": mode,
                     **({"committed_play": str(committed)} if committed is not None else {}),
                     "game_state": observed_state(state),
@@ -476,7 +567,7 @@ class NativeMacAutopilot:
             analysis_started = time.monotonic()
             logger.info("Native Mac autoplay: analyzing screenshot %sx%s", *frame.image.size)
             response = self._backend.complete_with_image(
-                DESKTOP_PROMPT,
+                system_prompt,
                 prompt,
                 frame.png(),
                 request_timeout_s=min(self._config.planning_timeout, 15.0),
@@ -524,7 +615,7 @@ class NativeMacAutopilot:
                 action.reason,
             )
             if action.kind == "wait":
-                self._notify(action.reason)
+                self._notify(action_narration(action.reason))
                 self._next_poll = time.monotonic() + 1.5
                 return True
             if action.kind == "stop" or action.confidence < 0.8:

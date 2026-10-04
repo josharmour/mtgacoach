@@ -176,7 +176,7 @@ def removal_lacks_opponent_target(card: dict, state: dict, *, activation: bool =
     return not RulesEngine._match_battlefield_targets(opposing, local_seat, None, requirements)
 
 
-def _animation_has_visible_payoff(state: dict, card: dict) -> bool:
+def _animation_has_visible_payoff(state: dict, card: dict, metadata: dict) -> bool:
     # Creature status may matter outside combat (sacrifices, untap tricks,
     # activation triggers, or responding to a targeted spell). Only payable
     # hand spells establish an immediate payoff when Arena supplies a menu.
@@ -188,6 +188,47 @@ def _animation_has_visible_payoff(state: dict, card: dict) -> bool:
         if has_autotap_solution(action)
         and str(action.get("actionType", "")).removeprefix("ActionType_") == "Cast"
     }
+
+    # Becoming every creature type can increase a tribal mana engine even
+    # when the animated land is tapped. Newly entered/tapped Hobbits cannot
+    # cash in that benefit before the animation expires.
+    current_creature = any(
+        str(kind).removeprefix("CardType_") == "Creature" for kind in card.get("card_types") or []
+    )
+    if not current_creature and "with all creature types" in str(card.get("oracle_text") or "").lower():
+        creature_subtypes = {
+            str(subtype).lower()
+            for permanent in state.get("battlefield") or []
+            if any(
+                str(kind).removeprefix("CardType_") == "Creature"
+                for kind in permanent.get("card_types") or []
+            )
+            for subtype in permanent.get("subtypes") or []
+        }
+        turn_number = (state.get("turn") or {}).get("turn_number")
+        payment_taps = {payment.get("instanceId") for payment in metadata.get("autoTapActions") or []}
+        for producer in state.get("battlefield") or []:
+            if (
+                local is None
+                or (producer.get("controller_seat_id") or producer.get("owner_seat_id")) != local
+            ):
+                continue
+            if producer.get("is_tapped") or producer.get("instance_id") in payment_taps:
+                continue
+            sick = producer.get("summoning_sickness") or (
+                isinstance(turn_number, int)
+                and turn_number > 0
+                and producer.get("turn_entered_battlefield") == turn_number
+            )
+            if sick and not has_combat_keyword(producer, "haste"):
+                continue
+            tribal_mana = re.search(
+                r"\badd\b[^.\n]*\bfor each (?:other )?(\w+) you control",
+                str(producer.get("oracle_text") or ""),
+                re.I,
+            )
+            if tribal_mana and tribal_mana[1].lower() in creature_subtypes:
+                return True
 
     def ongoing_text(other: dict) -> str:
         lines = []
@@ -266,15 +307,16 @@ def pointless_self_animation(state: dict, card: dict, metadata: dict) -> str:
     name = re.escape(str(card.get("name") or "").lower())
     match = re.fullmatch(
         rf"(?:this (?:artifact|land|permanent)|cardname|{name}) becomes (?:a|an) "
-        r"(\d+)/(\d+) (?:[\w-]+ )*creature until end of turn\.?",
+        r"(\d+)/(\d+) (?:[\w-]+ )*creature(?: with all creature types)? until end of turn\.?"
+        r"(?:\s+it['’]s still (?:a|an) (?:land|artifact)\.?)?",
         effect,
     )
     if not crew and not match:
         return ""
-    if _animation_has_visible_payoff(state, card):
+    if _animation_has_visible_payoff(state, card, metadata):
         return ""
 
-    if "CardType_Creature" in (card.get("card_types") or []):
+    if any(str(kind).removeprefix("CardType_") == "Creature" for kind in card.get("card_types") or []):
         if crew:
             return "Vehicle is already a creature, with no visible benefit to crewing again"
         power, toughness = card.get("power"), card.get("toughness")
@@ -289,6 +331,12 @@ def pointless_self_animation(state: dict, card: dict, metadata: dict) -> str:
         return "temporary animation leaves this source tapped, with no visible attack, block, or other payoff"
     turn = state.get("turn") or {}
     turn_number = turn.get("turn_number")
+    if (
+        _local_seat(state) is not None
+        and turn.get("active_player") == _local_seat(state)
+        and str(turn.get("phase") or "").removeprefix("Phase_") in {"Main2", "Ending"}
+    ):
+        return "temporary animation expires this turn, with no remaining combat or other visible payoff"
     if (
         _local_seat(state) is not None
         and turn.get("active_player") == _local_seat(state)

@@ -460,13 +460,20 @@ class _ActionLegalityMixin:
         legal_names, in_combat_context = self._collect_combat_legal_names(action.action_type, legal_actions)
         if not in_combat_context:
             return False
+        if action.action_type == ActionType.DECLARE_BLOCKERS and action.blocker_instance_assignments:
+            return len(action.blocker_instance_assignments) == len(action.blocker_assignments)
+        if action.action_type == ActionType.DECLARE_ATTACKERS and action.attacker_instance_ids:
+            return len(action.attacker_instance_ids) == len(action.attacker_names)
 
         if action.action_type == ActionType.DECLARE_ATTACKERS:
             plan_names = {n.strip().lower() for n in action.attacker_names if n and n.strip()}
         else:
             plan_names = {k.strip().lower() for k in action.blocker_assignments if k and k.strip()}
 
+        from arenamcp.combat_identity import plain_combat_name
+
         for name in plan_names:
+            name = plain_combat_name(name)
             base = re.sub(r"\s*#\d+\s*$", "", name).strip()
             if name not in legal_names and base not in legal_names:
                 return False

@@ -265,10 +265,10 @@ def test_escape_blocked_on_young_window(monkeypatch):
     assert eng._maybe_escape_stuck_window(gs) is False
     assert bridge.auto_respond_calls == 0
 
-    # Same window, genuinely old → escape allowed.
+    # Old polling without attempted submissions is still not evidence of a loop.
     eng._window_first_seen_at = time.monotonic() - 60.0
-    assert eng._maybe_escape_stuck_window(gs) is True
-    assert bridge.auto_respond_calls == 1
+    assert eng._maybe_escape_stuck_window(gs) is False
+    assert bridge.auto_respond_calls == 0
 
 
 def test_runaway_protection_stands_down_for_turn(monkeypatch):

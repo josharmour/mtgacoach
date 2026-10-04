@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from arenamcp.mac_game_state import (
     ZONE_GETTERS,
-    assemble_state,
+    _card_entry,
     build_state_ops,
     fetch_game_state,
 )
@@ -31,6 +33,43 @@ def nullable(value: int | None) -> Any:
     if value is None:
         return None
     return {"$c": "System.Nullable`1[System.UInt32]", "$struct": True, "hasValue": True, "value": value}
+
+
+@pytest.mark.parametrize("raw, expected", [("12", 12), ("6", 6), ("0", 0), ("-2", -2), ("*", None)])
+def test_card_stats_use_raw_text_when_reflected_nullable_loses_value(raw, expected):
+    stat = {
+        "$c": "StringBackedInt",
+        "$struct": True,
+        "RawText": raw,
+        "DefinedValue": {"hasValue": True, "value": 0},
+    }
+    entry = _card_entry(card(890, power=stat, toughness=stat))
+    assert entry.get("power") == expected
+    assert entry.get("toughness") == expected
+
+
+def test_reflected_large_attacker_is_not_removed_as_zero_power():
+    from arenamcp.combat_strategy import unproductive_attackers
+
+    stat = {"RawText": "12", "DefinedValue": {"hasValue": True, "value": 0}}
+    entry = _card_entry(card(890, power=stat, toughness=stat))
+    entry.update(owner_seat_id=1, controller_seat_id=1)
+    state = {
+        "players": [{"seat_id": 1, "is_local": True}],
+        "battlefield": [entry],
+        "decision_context": {
+            "type": "declare_attackers",
+            "raw_attackers": [
+                {
+                    "attackerInstanceId": 890,
+                    "legalDamageRecipients": [{"type": "Player", "playerSystemSeatId": 2}],
+                }
+            ],
+        },
+    }
+    assert unproductive_attackers(state) == set()
+    entry["power"] = 0
+    assert unproductive_attackers(state) == {890}
 
 
 def card(instance: int, grp: int = 700, **extra: Any) -> dict:
@@ -98,6 +137,7 @@ def zone(zone_id: int, zone_type: str, *cards: dict, card_ids: list[int] | None 
         "id_": zone_id,
         "cardIds_": listing(*(card_ids or [c["instanceId"] for c in cards])),
         "visibleCards_": listing(*cards),
+        "TotalCardCount": len(card_ids if card_ids is not None else cards),
     }
 
 
@@ -146,7 +186,9 @@ class FakeProbe:
     node object (assembly keys on ``$h``, not identity).
     """
 
-    def __init__(self, manager: dict | None, zones: dict[str, Any], players: list[dict], scalars: dict[str, Any]):
+    def __init__(
+        self, manager: dict | None, zones: dict[str, Any], players: list[dict], scalars: dict[str, Any]
+    ):
         self.manager = manager
         self.zones = zones
         self.players = players
@@ -194,6 +236,10 @@ class FakeProbe:
                         results.append(self.scalars[member])
                         objects.append(None)
                         continue
+                if isinstance(target, dict) and member == "TotalCardCount":
+                    results.append(target.get(member))
+                    objects.append(None)
+                    continue
                 results.append(None)
                 objects.append(None)
             else:
@@ -225,6 +271,8 @@ def scripted_probe() -> tuple[FakeProbe, dict[str, Any]]:
         "OpponentGraveyard": og,
         "Exile": exile_z,
         "Command": command_z,
+        "LocalLibrary": zone(39, "Library", card_ids=list(range(1000, 1090))),
+        "OpponentLibrary": zone(40, "Library", card_ids=list(range(2000, 2090))),
     }
     scalars = {
         "__state__": state_node(77),
@@ -248,10 +296,24 @@ def scripted_probe() -> tuple[FakeProbe, dict[str, Any]]:
             "deciding_player": 1,
         },
         "players": [
-            {"seat_id": 1, "life_total": 17, "is_local": True, "status": "Ready",
-             "mulligan_count": 0, "timeout_count": 0, "entity_id": 51},
-            {"seat_id": 2, "life_total": 22, "is_local": False, "status": "Ready",
-             "mulligan_count": 0, "timeout_count": 0, "entity_id": 52},
+            {
+                "seat_id": 1,
+                "life_total": 17,
+                "is_local": True,
+                "status": "Ready",
+                "mulligan_count": 0,
+                "timeout_count": 0,
+                "entity_id": 51,
+            },
+            {
+                "seat_id": 2,
+                "life_total": 22,
+                "is_local": False,
+                "status": "Ready",
+                "mulligan_count": 0,
+                "timeout_count": 0,
+                "entity_id": 52,
+            },
         ],
     }
     return probe, expected
@@ -297,6 +359,29 @@ def test_full_board_assembly():
     assert hand["cards"][0]["grp_id"] == 555
     # Combat maps derived from card state.
     assert response["attack_info"] == {"300": "2"}
+    assert zones["local_library"]["total_count"] == 90
+    assert zones["local_library"]["cards"] == []
+
+
+@pytest.mark.parametrize("count, expected", [(53, 53), (0, 0), (None, None), (True, None), (-1, None)])
+def test_library_count_uses_total_count_not_visible_or_truncated_ids(count, expected):
+    probe, _ = scripted_probe()
+    library = probe.zones["LocalLibrary"]
+    library["TotalCardCount"] = count
+    library["cardIds_"] = listing(1000, 1001)
+    library["visibleCards_"] = listing()
+    response = fetch_game_state(probe.send, None)
+    assert response["zones"]["local_library"]["total_count"] == expected
+    assert len(probe.batches) == 1
+
+
+def test_library_string_backed_count_does_not_use_broken_nullable_zero():
+    probe, _ = scripted_probe()
+    probe.zones["LocalLibrary"]["TotalCardCount"] = {
+        "RawText": "53",
+        "DefinedValue": {"hasValue": True, "value": 0},
+    }
+    assert fetch_game_state(probe.send, None)["zones"]["local_library"]["total_count"] == 53
 
 
 def test_no_game_returns_plugin_error_shape():
@@ -326,14 +411,20 @@ def test_counters_and_attachments_shaped():
     buffed = card(
         400,
         grp=600,
-        counterDatas_=listing({"$c": "GreClient.Rules.CounterData", "$struct": True, "type_": enum("+1/+1"), "count_": 2}),
+        counterDatas_=listing(
+            {"$c": "GreClient.Rules.CounterData", "$struct": True, "type_": enum("+1/+1"), "count_": 2}
+        ),
         attachedToId=401,
         attachedWithIds_=listing(),
         targetIds_=listing(402),
         damage=3,
         isDamagedThisTurn=True,
         hasSummoningSickness=True,
-        faceDownState_={"$c": "GreClient.CardData.FaceDownState", "$h": 5400, "reasonFaceDown_": enum("Morph")},
+        faceDownState_={
+            "$c": "GreClient.CardData.FaceDownState",
+            "$h": 5400,
+            "reasonFaceDown_": enum("Morph"),
+        },
     )
     aura = card(401, grp=601)
     bf = zone(31, "Battlefield", buffed, aura)
@@ -358,5 +449,3 @@ def test_counters_and_attachments_shaped():
     assert buffed_row["damaged_this_turn"] is True
     assert buffed_row["summoning_sickness"] is True
     assert buffed_row["face_down"] is True
-
-

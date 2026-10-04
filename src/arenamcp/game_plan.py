@@ -8,20 +8,22 @@ conditions and the concrete path to each, plus the current threat assessment and
 autopilot/coach *develop toward a win* instead of reacting one snapshot at a
 time.
 
-Cadence is deliberately slow: a plan is (re)formed only on **material** board
-changes — a new turn where creatures/life/power actually moved, a key threat
-resolving, or the plan going stale — not on every priority window. This keeps the
-plan coherent and avoids paying the ~5s LLM cost per pass.
+Cadence is deliberately slow: a plan is (re)formed only on **material** changes
+with a cooldown and one background call at a time. Tactical decisions keep
+using the existing plan and current state while it refreshes.
 
-Both the autopilot (``action_planner``) and the coach (``coach.py``) construct
-their own :class:`GamePlanManager` from the same backend, so there is exactly one
-implementation of the strategic layer feeding both paths.
+The autopilot and coach can share one :class:`GamePlanManager`, preserving the
+same strategy across modes without competing background model requests.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
+from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -37,6 +39,8 @@ Given the current board, hand, mana, life totals and deck archetype, decide HOW 
 
 Think a few turns ahead, not just this decision. Pick the realistic win condition for THIS board, then the steps to reach it, the biggest thing that can stop you, and the single most important thing to develop next.
 Each turn's planned play MUST be mana-legal. Do NOT list multiple spells for a single turn unless their COMBINED mana cost is <= total available mana for that turn.
+Use the complete deck and remaining library to identify realistic engines, outs and backup plans; cards in the library are possibilities, not cards in hand or guaranteed draws. Preserve the prior plan when still sound, and adapt when its assumptions change.
+Removal and tutoring are conditional decisions: compare the current threat, timing, mana and opportunity cost. Hold interaction when that protects the winning line; remove a threat when it prevents loss or unlocks progress. A tutor should find the currently useful legal card still in the library, with a feasible follow-up, rather than repeat an old preferred target.
 
 Respond with ONLY a JSON object, no prose, no markdown:
 {
@@ -75,10 +79,11 @@ class GamePlan:
         if self.develop_next:
             lines.append(f"  Develop next: {self.develop_next}")
         lines.append(
-            "  Choose the action that best ADVANCES this plan. Develop toward the "
-            "win — do NOT just react. Do NOT pass a turn that fails to advance the "
-            "plan when a plan-advancing play (a castable creature/spell, a land "
-            "drop, an attack) is legal."
+            "  Develop toward this win, but treat the plan as conditional guidance. "
+            "The current board, stack, legal choices and immediate survival/lethal "
+            "override an older line. Re-evaluate removal targets and tutor choices "
+            "now; do not spend interaction or tutor just because it is available. "
+            "Holding mana or passing is correct when it protects the stronger line."
         )
         return "\n".join(lines)
 
@@ -117,7 +122,8 @@ class GamePlanManager:
 
     Reform cadence is gated by a *material-change signature* of the board so the
     LLM is only consulted when the strategic picture actually shifted, and at
-    most once per turn — never once per priority window.
+    on meaningful changes, with background requests rate-limited independently
+    of tactical decisions.
     """
 
     # Material-change thresholds (deltas vs the signature at last reform).
@@ -127,6 +133,7 @@ class GamePlanManager:
     # Force a refresh at least this often even if the board looks static, so a
     # long grind doesn't run forever on a turn-2 plan.
     _STALE_TURNS = 4
+    _REFRESH_INTERVAL_S = 15.0
 
     # After this many consecutive stalls on plan-advancing plays, force a
     # reform and tell the model its current line is unexecutable so it picks a
@@ -145,15 +152,42 @@ class GamePlanManager:
         # couldn't be executed, so the next reform avoids the stuck line.
         self._stall_count: int = 0
         self._stall_hint: str = ""
+        self._lock = threading.RLock()
+        self._generation = 0
+        self._match_id: str | None = None
+        self._observed_turn = 0
+        self._last_seed: str | None = None
+        self._inflight = False
+        self._last_attempt_at: float | None = None
 
     # ----- lifecycle -------------------------------------------------------
     def reset(self) -> None:
         """Clear all per-game state (call at the start of a new match)."""
-        self._plan = None
-        self._last_sig = None
-        self._last_reform_turn = -1
-        self._stall_count = 0
-        self._stall_hint = ""
+        with self._lock:
+            self._generation += 1
+            self._plan = None
+            self._seed = None
+            self._last_seed = None
+            self._last_sig = None
+            self._last_reform_turn = -1
+            self._stall_count = 0
+            self._stall_hint = ""
+            self._match_id = None
+            self._observed_turn = 0
+            self._last_attempt_at = None
+
+    def observe(self, game_state: dict[str, Any]) -> None:
+        """Invalidate old-match plans before any tactical prompt can use them."""
+        match_id = game_state.get("match_id")
+        turn = _round((game_state.get("turn") or {}).get("turn_number"))
+        with self._lock:
+            if (match_id and self._match_id and match_id != self._match_id) or (
+                0 < turn < self._observed_turn
+            ):
+                self.reset()
+            if match_id:
+                self._match_id = match_id
+            self._observed_turn = max(turn, self._observed_turn)
 
     def note_stall(self, what: str) -> None:
         """Record that a plan-advancing play could not be executed.
@@ -162,14 +196,48 @@ class GamePlanManager:
         decision the plan wanted. Enough of these forces the next reform to pick
         a different, executable line rather than re-emitting the stuck plan.
         """
-        self._stall_count += 1
-        if what:
-            self._stall_hint = what.strip()
+        with self._lock:
+            self._stall_count += 1
+            if what:
+                self._stall_hint = what.strip()
 
     def seed(self, deck_strategy: str | None) -> None:
         """Store the static deck archetype summary used to seed the first plan."""
-        if deck_strategy and deck_strategy.strip():
-            self._seed = deck_strategy.strip()
+        with self._lock:
+            self._seed = (
+                deck_strategy.strip() if isinstance(deck_strategy, str) and deck_strategy.strip() else None
+            )
+
+    def export_for_reload(self) -> dict:
+        """Retain strategy, not pending actions or an in-flight model request."""
+        from dataclasses import asdict
+
+        with self._lock:
+            return {
+                "plan": asdict(self._plan) if self._plan else None,
+                "seed": self._seed,
+                "last_sig": self._last_sig,
+                "last_reform_turn": self._last_reform_turn,
+            }
+
+    def restore_after_reload(self, saved: dict, state: dict) -> None:
+        """Restore a validated same-match handoff without an extra model call."""
+
+        def freeze(value):
+            return tuple(freeze(item) for item in value) if isinstance(value, list) else value
+
+        with self._lock:
+            self.observe(state)
+            raw_plan = saved.get("plan")
+            if isinstance(raw_plan, dict):
+                self._plan = GamePlan(
+                    **{key: value for key, value in raw_plan.items() if key in GamePlan.__dataclass_fields__}
+                )
+            self.seed(saved.get("seed"))
+            self._last_seed = self._seed
+            self._last_sig = freeze(saved.get("last_sig"))
+            self._last_reform_turn = saved.get("last_reform_turn", -1)
+            self._last_attempt_at = time.monotonic()
 
     @property
     def current(self) -> GamePlan | None:
@@ -177,13 +245,73 @@ class GamePlanManager:
 
     def plan_text(self) -> str:
         """Planner-prompt block for the current plan ("" if none yet)."""
-        return self._plan.as_planner_block() if self._plan else ""
+        plan = self._plan
+        return plan.as_planner_block() if plan else ""
 
     def coach_intro(self) -> str:
-        return self._plan.as_coach_intro() if self._plan else ""
+        plan = self._plan
+        return plan.as_coach_intro() if plan else ""
 
     # ----- reform decision -------------------------------------------------
-    def maybe_reform(self, game_state: dict[str, Any], *, force: bool = False) -> GamePlan | None:
+    def request_reform(
+        self,
+        game_state: dict[str, Any],
+        *,
+        on_updated: Callable[[], None] | None = None,
+    ) -> bool:
+        """Schedule one bounded background refresh without delaying a decision.
+
+        Repeated windows do not queue work. A live stack takes priority over
+        speculative strategy, and failures share the cooldown with successes.
+        """
+        with self._lock:
+            self.observe(game_state)
+            suspended = getattr(self, "background_suspended_fn", None)
+            if callable(suspended) and suspended():
+                return False
+            if self._inflight or game_state.get("stack") or game_state.get("game_over"):
+                return False
+            if not _round((game_state.get("turn") or {}).get("turn_number")):
+                return False
+            now = time.monotonic()
+            if self._last_attempt_at is not None and now - self._last_attempt_at < self._REFRESH_INTERVAL_S:
+                return False
+            sig = self._signature(game_state)
+            if self._stall_count < self._STALL_REFORM_THRESHOLD and not self._should_reform(sig):
+                return False
+            snapshot = deepcopy(game_state)
+            generation = self._generation
+            self._inflight = True
+            self._last_attempt_at = now
+
+        def refresh() -> None:
+            try:
+                self.maybe_reform(snapshot, _expected_generation=generation)
+                with self._lock:
+                    publish = generation == self._generation
+                if publish and on_updated is not None:
+                    on_updated()
+            except Exception as error:
+                logger.debug("background game-plan refresh failed: %s", error)
+            finally:
+                with self._lock:
+                    self._inflight = False
+
+        try:
+            threading.Thread(target=refresh, daemon=True, name="game-plan-reform").start()
+        except Exception:
+            with self._lock:
+                self._inflight = False
+            raise
+        return True
+
+    def maybe_reform(
+        self,
+        game_state: dict[str, Any],
+        *,
+        force: bool = False,
+        _expected_generation: int | None = None,
+    ) -> GamePlan | None:
         """(Re)form the plan iff the board changed materially; else return current.
 
         Cheap to call on every trigger — the LLM is only invoked when
@@ -196,40 +324,49 @@ class GamePlanManager:
             return self._plan
 
         turn_num = sig[0]
-        # New game detection: turn counter went backwards => fresh match.
-        if self._last_reform_turn >= 0 and turn_num < self._last_reform_turn:
-            self.reset()
-
-        # Execution feedback: a plan that repeatedly can't be enacted must be
-        # reconsidered even if the board looks materially unchanged.
-        stalled = self._stall_count >= self._STALL_REFORM_THRESHOLD
-
-        if not (force or stalled or self._should_reform(sig)):
-            return self._plan
+        with self._lock:
+            if _expected_generation is not None and _expected_generation != self._generation:
+                return self._plan
+            # request_reform already observed the snapshot before dispatch.
+            # Re-observing an older snapshot after a new turn arrives would
+            # mistake normal background lag for the next match starting.
+            if _expected_generation is None:
+                self.observe(game_state)
+            generation = self._generation
+            stalled = self._stall_count >= self._STALL_REFORM_THRESHOLD
+            if not (force or stalled or self._should_reform(sig)):
+                return self._plan
+            seed = self._seed
+            stall_count = self._stall_count
 
         plan = self._reform(game_state, turn_num)
-        if plan is not None:
-            self._plan = plan
-            self._last_sig = sig
-            self._last_reform_turn = turn_num
-        # Clear stall feedback after a reform attempt regardless of outcome, so
-        # we don't immediately reform again next window.
-        self._stall_count = 0
-        self._stall_hint = ""
-        return self._plan
+        with self._lock:
+            if generation != self._generation:
+                return self._plan
+            if plan is not None:
+                self._plan = plan
+                self._last_sig = sig
+                self._last_seed = seed
+                self._last_reform_turn = turn_num
+            self._stall_count = max(0, self._stall_count - stall_count)
+            if not self._stall_count:
+                self._stall_hint = ""
+            return self._plan
 
     def _should_reform(self, sig: tuple) -> bool:
         if self._plan is None or self._last_sig is None:
             return True
+        if self._seed != self._last_seed:
+            return True
         turn_num = sig[0]
-        # At most once per turn — avoids missing our own main-phase window to a
-        # mid-turn re-plan during think time.
-        if turn_num <= self._last_reform_turn:
-            return False
         if turn_num - self._last_reform_turn >= self._STALE_TURNS:
             return True
-        (_, my_life, opp_life, my_cr, opp_cr, my_pow, opp_pow, hand) = sig
-        (_, l_my_life, l_opp_life, l_my_cr, l_opp_cr, l_my_pow, l_opp_pow, l_hand) = self._last_sig
+        # Identity matters: a tutor changes one hand card without changing hand
+        # size, and a noncreature engine can change the entire winning line.
+        if sig[8:] != self._last_sig[8:]:
+            return True
+        (_, my_life, opp_life, my_cr, opp_cr, my_pow, opp_pow, hand) = sig[:8]
+        (_, l_my_life, l_opp_life, l_my_cr, l_opp_cr, l_my_pow, l_opp_pow, l_hand) = self._last_sig[:8]
         if my_cr != l_my_cr or opp_cr != l_opp_cr:
             return True
         if abs(my_life - l_my_life) >= self._LIFE_DELTA:
@@ -274,7 +411,13 @@ class GamePlanManager:
                 else []
             )
         for card in bf:
-            if "creature" not in str(card.get("type_line", "")).lower():
+            types = card.get("card_types") or []
+            is_creature = (
+                any(str(t).removeprefix("CardType_") == "Creature" for t in types)
+                if types
+                else "creature" in str(card.get("type_line", "")).lower()
+            )
+            if not is_creature:
                 continue
             controller = card.get("controller_seat_id") or card.get("owner_seat_id")
             power = _round(card.get("power", 0))
@@ -295,7 +438,35 @@ class GamePlanManager:
             if isinstance(hand, list):
                 hand_size = len(hand)
 
-        return (turn_num, my_life, opp_life, my_cr, opp_cr, my_pow, opp_pow, hand_size)
+        def identities(cards: list[dict]) -> tuple:
+            # Deliberately omit tapped status and state ids: paying mana and
+            # passing priority should not trigger another strategy request.
+            return tuple(
+                sorted(
+                    (
+                        str(card.get("instance_id") or card.get("grp_id") or card.get("name") or ""),
+                        str(card.get("name") or ""),
+                        str(card.get("controller_seat_id") or card.get("owner_seat_id") or ""),
+                    )
+                    for card in cards
+                    if isinstance(card, dict)
+                )
+            )
+
+        return (
+            turn_num,
+            my_life,
+            opp_life,
+            my_cr,
+            opp_cr,
+            my_pow,
+            opp_pow,
+            hand_size,
+            identities(bf),
+            identities(game_state.get("hand") or []),
+            identities(game_state.get("graveyard") or []),
+            identities(game_state.get("exile") or []),
+        )
 
     # ----- LLM call --------------------------------------------------------
     def _build_context(self, game_state: dict[str, Any]) -> str:
@@ -319,10 +490,15 @@ class GamePlanManager:
         )
 
     def _reform(self, game_state: dict[str, Any], turn_num: int) -> GamePlan | None:
+        from arenamcp.match_context import prepare_match_context, with_deck_reference
+
+        game_state = prepare_match_context(game_state)
         context = self._build_context(game_state)
         user_parts = [context]
         if self._seed:
             user_parts.append(f"\nDECK ARCHETYPE:\n{self._seed}")
+        if self._plan:
+            user_parts.append(self._plan.as_planner_block())
         if self._stall_count >= self._STALL_REFORM_THRESHOLD and self._stall_hint:
             user_parts.append(
                 f"\nPRIOR PLAN STALLED: the previous plan-advancing play "
@@ -331,7 +507,7 @@ class GamePlanManager:
                 f"executable win condition / next play this time."
             )
         user_parts.append("\nForm the GAME PLAN as JSON now.")
-        user_message = "\n".join(user_parts)
+        user_message = with_deck_reference("\n".join(user_parts), game_state)
 
         try:
             response = self._complete(GAME_PLAN_PROMPT, user_message)

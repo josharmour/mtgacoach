@@ -56,6 +56,8 @@ def test_is_passive_advice():
     p = StandaloneCoach._is_passive_advice
     # Passive "do nothing" lines
     assert p("pass priority.") is True
+    assert p("I'm passing.") is True
+    assert p("I plan to pass priority.") is True
     assert p("Wait.") is True
     assert p("Wait (Opponent has priority)") is True
     assert p("No actions available.") is True
@@ -75,6 +77,8 @@ def test_is_pass_narration():
     assert n("Nothing to do here — pass priority and let their Swordsman's Steel resolve.") is True
     assert n("Just let your own trigger resolve — pass priority.") is True
     assert n("Passing priority to let their spell resolve.") is True
+    assert n("I'm passing. There is no useful response in this window.") is True
+    assert n("I plan to pass priority and let the spell resolve.") is True
     # Passing alongside a real instruction is advice, not narration.
     assert n("Decline the optional action and pass priority.") is False
     assert n("Pass priority, then cast Lightning Bolt at end of turn.") is False

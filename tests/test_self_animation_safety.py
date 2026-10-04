@@ -322,3 +322,76 @@ def test_new_vehicle_board_display_explains_attack_restriction_before_crewing():
     assert "5/4 when crewed" in lines[0]
     assert "ENTERED THIS TURN — needs haste to attack if animated" in lines[0]
     assert "CREATURE NOW" not in lines[0]
+
+
+def mutavault_board():
+    state, land, action = board()
+    land.update(
+        name="Mutavault",
+        type_line="Land",
+        card_types=["Land"],
+        oracle_text="{oT}: Add {oC}.\n{o1}: This land becomes a 2/2 creature with all creature types "
+        "until end of turn. It's still a land.",
+        power=2,
+        toughness=2,
+    )
+    state["stack"] = []
+    state["hand"] = [
+        {
+            "instance_id": 700,
+            "name": "The Great Henge",
+            "oracle_text": "This spell costs {X} less to cast, where X is the greatest power among creatures you control.",
+        }
+    ]
+    return state, land, action
+
+
+@pytest.mark.parametrize("case", ["tapped", "payment_taps", "new_land", "postcombat"])
+def test_mutavault_cannot_be_animated_for_a_future_henge_discount(case):
+    state, land, action = mutavault_board()
+    if case != "tapped":
+        land["is_tapped"] = False
+    if case == "payment_taps":
+        action["autoTapActions"] = [{"instanceId": land["instance_id"]}]
+    elif case == "new_land":
+        land["turn_entered_battlefield"] = state["turn"]["turn_number"]
+    elif case == "postcombat":
+        state["turn"]["phase"] = "Phase_Main2"
+    pending = decision(action)
+    assert unsafe_play_reason(state, land, "Activate", action)
+    assert filter_play_options(pending, state).option_ids() == {"pass"}
+
+
+@pytest.mark.parametrize("kind", ["Creature", "CardType_Creature"])
+def test_mutavault_redundant_animation_recognizes_both_type_encodings(kind):
+    state, land, action = mutavault_board()
+    land.update(is_tapped=False, card_types=["Land", kind])
+    assert "already a creature" in unsafe_play_reason(state, land, "Activate", action)
+
+
+@pytest.mark.parametrize("producer_state", ["ready", "tapped", "summoning_sick", "payment_taps"])
+def test_mutavault_tribal_mana_payoff_requires_a_ready_producer(producer_state):
+    state, land, action = mutavault_board()
+    state["battlefield"].append(
+        {
+            "instance_id": 775,
+            "name": "The Notary Hobbits",
+            "owner_seat_id": 2,
+            "controller_seat_id": 2,
+            "card_types": ["Creature"],
+            "subtypes": ["Halfling", "Advisor"],
+            "is_tapped": producer_state == "tapped",
+            "turn_entered_battlefield": 7 if producer_state == "summoning_sick" else 5,
+            "oracle_text": "{oT}: Add {oC} for each Halfling you control.",
+        }
+    )
+    if producer_state == "payment_taps":
+        action["autoTapActions"] = [{"instanceId": 775}]
+    reason = unsafe_play_reason(state, land, "Activate", action)
+    assert bool(reason) is (producer_state != "ready")
+
+
+def test_untapped_mutavault_can_still_animate_for_combat():
+    state, land, action = mutavault_board()
+    land["is_tapped"] = False
+    assert unsafe_play_reason(state, land, "Activate", action) == ""

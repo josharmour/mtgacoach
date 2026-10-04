@@ -44,6 +44,10 @@ namespace MtgaCoachBridge
                     HandleSubmitAction(cmd);
                     break;
 
+                case "submit_casting_options":
+                    HandleSubmitCastingOptions(cmd);
+                    break;
+
                 case "submit_pass":
                     HandleSubmitPass(cmd);
                     break;
@@ -782,6 +786,84 @@ namespace MtgaCoachBridge
             cmd.SetResponse(resp);
         }
 
+        private void HandleSubmitCastingOptions(PipeCommand cmd)
+        {
+            var request = FindPendingInteraction();
+            if (!(request is CastingTimeOptionRequest castingReq))
+            {
+                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "No pending casting request" });
+                return;
+            }
+            long expectedGameState = cmd.Json.Value<long?>("expected_game_state_id") ?? 0;
+            long expectedMessage = cmd.Json.Value<long?>("expected_msg_id") ?? 0;
+            if ((expectedGameState > 0 && (long)castingReq.OriginalMessage.GameStateId != expectedGameState)
+                || (expectedMessage > 0 && (long)castingReq.OriginalMessage.MsgId != expectedMessage))
+            {
+                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Stale casting request" });
+                return;
+            }
+            var indices = cmd.Json["action_indices"] as JArray;
+            var expected = cmd.Json["expected_options"] as JArray;
+            var entries = BuildCastingTimeOptionEntries(castingReq);
+            if (indices == null || indices.Count == 0 || expected == null || expected.Count != indices.Count)
+            {
+                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Missing casting option identities" });
+                return;
+            }
+            var seen = new HashSet<int>();
+            var groups = new List<uint>();
+            int childIndex = -1;
+            for (int i = 0; i < indices.Count; i++)
+            {
+                int index = indices[i].Value<int>();
+                if (index < 0 || index >= entries.Count || !seen.Add(index))
+                {
+                    cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Invalid casting option indices" });
+                    return;
+                }
+                var payload = entries[index].Payload;
+                int selectedChild = payload.Value<int>("childIndex");
+                if (payload.Value<string>("choiceKind") != "modal" || (childIndex >= 0 && selectedChild != childIndex))
+                {
+                    cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Casting modes must share one modal child" });
+                    return;
+                }
+                foreach (string key in new[] { "childIndex", "choiceKind", "optionIndex", "grpId" })
+                {
+                    if (!JToken.DeepEquals(expected[i][key], payload[key]))
+                    {
+                        cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Casting option identity changed" });
+                        return;
+                    }
+                }
+                childIndex = selectedChild;
+                groups.Add(payload.Value<uint>("grpId"));
+            }
+            if (childIndex < 0 || childIndex >= castingReq.ChildRequests.Count
+                || !(castingReq.ChildRequests[childIndex] is CastingTimeOption_ModalRequest modal))
+            {
+                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Missing modal child request" });
+                return;
+            }
+            if (groups.Count < modal.Min || groups.Count > modal.Max)
+            {
+                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Wrong number of casting modes" });
+                return;
+            }
+            // Submit the complete choice once. Repeated singleton submissions
+            // are rejected by choose-two requests such as Titan of Industry.
+            modal.SubmitModal(groups.ToArray());
+            lock (_interactionLock) { _lastKnownRequest = null; }
+            var submitted = new JArray();
+            foreach (uint group in groups) submitted.Add(group);
+            cmd.SetResponse(new JObject
+            {
+                ["ok"] = true,
+                ["submitted_type"] = "CastingTimeOptions",
+                ["submitted_grp_ids"] = submitted
+            });
+        }
+
         private void HandleSubmitAction(PipeCommand cmd)
         {
             BaseUserRequest request;
@@ -852,6 +934,11 @@ namespace MtgaCoachBridge
 
                 var entry = entries[actionIndex];
                 string choiceKind = entry.Payload.Value<string>("choiceKind") ?? "unknown";
+                if (choiceKind == "modal" && (entry.Payload.Value<int?>("min") ?? 1) > 1)
+                {
+                    cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Submit all required modes together" });
+                    return;
+                }
                 int submittedGrpId = entry.Payload.Value<int?>("grpId") ?? 0;
                 _log.LogInfo($"Submitting casting-time option [{actionIndex}]: {choiceKind} grpId={submittedGrpId}");
 

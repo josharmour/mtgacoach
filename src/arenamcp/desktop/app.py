@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 
 _LOG_HANDLE = None
@@ -205,7 +206,10 @@ def _restore_existing_instance_window() -> bool:
     return False
 
 
-def _launch_native_mac_session() -> None:
+def _launch_native_mac_session(
+    on_status: Callable[[str], None] | None = None,
+    on_error: Callable[[str], None] | None = None,
+) -> None:
     try:
         from arenamcp.android_link import game_device
 
@@ -215,11 +219,16 @@ def _launch_native_mac_session() -> None:
             return
         from .runtime import launch_native_mac_session
 
-        launched = launch_native_mac_session()
+        launched = launch_native_mac_session(on_status=on_status)
         if launched:
-            _write_log(f"started MTGA with native autoplay bridge: {launched}")
+            _write_log(f"MTGA launch/reconnect request completed: {launched}")
     except Exception as exc:
         _write_log(f"MTGA automatic launch failed: {exc}")
+        message = f"Arena could not start: {exc}. Check Setup & Repair, then try launching again."
+        for callback in (on_status, on_error):
+            if callback is not None:
+                with contextlib.suppress(Exception):
+                    callback(message)
 
 
 def main() -> int:
@@ -295,7 +304,17 @@ def main() -> int:
     window = MainWindow()
     window.show()
     if sys.platform == "darwin":
-        threading.Thread(target=_launch_native_mac_session, name="mtga-launch", daemon=True).start()
+        # Emit Qt signals from the worker; widget changes stay on the GUI thread.
+        session = window.coach_panel.session
+        threading.Thread(
+            target=_launch_native_mac_session,
+            kwargs={
+                "on_status": lambda message: session.statusChanged.emit("ARENA", message),
+                "on_error": lambda message: session.logEmitted.emit(message, "error"),
+            },
+            name="mtga-launch",
+            daemon=True,
+        ).start()
     exit_code = app.exec()
     if exit_code == RESTART_EXIT_CODE:
         relaunch_application()

@@ -176,6 +176,8 @@ class Zone:
     zone_type: ZoneType
     owner_seat_id: int | None = None
     object_instance_ids: list[int] = field(default_factory=list)
+    # Missing GRE membership is different from an explicitly empty zone.
+    object_ids_known: bool = False
 
     def to_dict(self) -> dict:
         """Convert to simple dict for snapshot."""
@@ -184,6 +186,7 @@ class Zone:
             "zone_type": self.zone_type.name,  # Enum to string
             "owner_seat_id": self.owner_seat_id,
             "object_instance_ids": self.object_instance_ids,
+            "object_ids_known": self.object_ids_known,
         }
 
 

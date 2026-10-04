@@ -48,10 +48,16 @@ class _CoachAnalysisMixin:
         be = backend or self._backend
 
         # Build context (honors MTGACOACH_PROMPT_VARIANT)
-        context = self._build_context(game_state)
+        from arenamcp.match_context import prepare_match_context, with_deck_reference
+
+        game_state = prepare_match_context(game_state)
+        context = with_deck_reference(self._build_context(game_state), game_state)
 
         # Build system prompt with turn count injected
+        from arenamcp.narration import narration_policy
+
         system_prompt = WIN_PLAN_PROMPT.format(n=turns)
+        system_prompt += "\n\n" + narration_policy(getattr(self, "narration_mode", "advisor"))
 
         # Inject deck strategy if available
         if self._deck_strategy:
@@ -62,7 +68,7 @@ class _CoachAnalysisMixin:
 
         # Build user message with game context and library
         user_message = context
-        if library_summary:
+        if library_summary and not game_state.get("library_summary"):
             user_message += f"\n\nLIBRARY REMAINING:\n{library_summary}"
         user_message += f"\n\nCreate a plan to win in exactly {turns} turns."
 
@@ -117,6 +123,7 @@ class _CoachAnalysisMixin:
         backend: Any | None = None,
         missed_decisions: list[dict] | None = None,
         replay_context: str | None = None,
+        narration_mode: str | None = None,
     ) -> str:
         """Generate a post-match strategic analysis from the advice log.
 
@@ -137,6 +144,16 @@ class _CoachAnalysisMixin:
         import concurrent.futures
 
         be = backend or self._backend
+
+        mode = narration_mode or getattr(self, "narration_mode", "advisor")
+        analysis_prompt = POST_MATCH_ANALYSIS_PROMPT
+        if mode == "autopilot":
+            analysis_prompt += (
+                "\n\nThis match was driven by autopilot. Explain the autopilot's decisions in "
+                "first person or as an observer; do not attribute its errors to the human. "
+                "Advice and planned actions are not proof of execution. Distinguish confirmed "
+                "events from recommendations, and identify uncertainty when execution is unknown."
+            )
 
         # Build chronological match narrative
         lines = []
@@ -251,13 +268,13 @@ class _CoachAnalysisMixin:
             submit_kwargs = {"request_timeout_s": api_timeout} if isinstance(be, ProxyBackend) else {}
             future = executor.submit(
                 be.complete,
-                POST_MATCH_ANALYSIS_PROMPT,
+                analysis_prompt,
                 user_message,
                 4096,
                 **submit_kwargs,
             )
         else:
-            future = executor.submit(be.complete, POST_MATCH_ANALYSIS_PROMPT, user_message)
+            future = executor.submit(be.complete, analysis_prompt, user_message)
         try:
             response = future.result(timeout=api_timeout)
         except concurrent.futures.TimeoutError:
@@ -407,7 +424,10 @@ class _CoachAnalysisMixin:
         if be is None:
             return ""
 
-        context = self._build_context(game_state)
+        from arenamcp.match_context import prepare_match_context, with_deck_reference
+
+        game_state = prepare_match_context(game_state)
+        context = with_deck_reference(self._build_context(game_state), game_state)
 
         system_prompt = (
             "You are an expert MTG analyst. Evaluate the current game state and estimate "

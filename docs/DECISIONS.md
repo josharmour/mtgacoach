@@ -7,6 +7,35 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-10-04 — Keep ETB searches fresh and preserve every selected card ID
+
+- Worldwagon report `bug_20261004_005836`: accepting its optional ETB opened
+  Search, but the next trigger in the same batch reused the consumed Accept
+  prompt. A generic button submission then failed against Search and marked
+  the new search as requiring manual input. A handled autopilot trigger now
+  ends the batch so the loop re-polls. Connected bridge transitions own the
+  window; an idle/error poll cannot fall through to stale legacy planning.
+  Optional buttons are checked again before submission, and fresh typed
+  choices receive the matching request context instead of old prompt fields.
+- Vorinclex at 01:01:01 and 01:01:06: the model chose Forest instances
+  `[480, 475]`, but Player.log recorded outgoing Search responses with
+  `[480, 0]` and explicit `FailureReason_InvalidOptionSelection` rejections.
+  The earlier 00:35 capture likewise sent `[671, 0]` for `[671, 692]`.
+  These are bridge serialization failures, independent of the strategic choice.
+  The native converter used the array class where IL2CPP expects its element
+  class, writing 32-bit values at pointer-sized offsets. Both array reading
+  and writing now use element size. For an already loaded older bridge, the
+  Python adapter constructs exact-length uint arrays through managed scalar
+  Add calls, covering searches, modal choices, ordering and other uint lists.
+  The universal probe was rebuilt and staged atomically; the running Arena
+  process is not replaced. Reloading the engine activates the uint workaround,
+  while Arena's next launch loads the native fix for all primitive arrays.
+  A returned method call alone is still not proof Arena accepted the choice.
+- Regression coverage includes Optional → idle → Search, fresh two-Forest
+  selection after a pre-cast snapshot, stale Accept against Search, and
+  trigger-batch re-polling. Native acceptance still requires a live observation;
+  no user match is driven by tests.
+
 ## 2026-09-29 — Require a usable body before temporary animation or crew
 
 - Report `bug_20260929_211332`: Firdoch Core tapped to help cast Badgermole

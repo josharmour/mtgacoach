@@ -8,12 +8,14 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
 from arenamcp.decisions import expand_target_selection
+from arenamcp.match_context import STRATEGIC_POLICY, prepare_match_context, with_deck_reference
 from arenamcp.play_safety import filter_play_options, find_source, unsafe_play_reason
 from arenamcp.target_effects import target_effect_is_harmful
 
@@ -97,6 +99,9 @@ class GameAction:
     # Play (#39, live 2026-07-06).
     mdfc: bool = False
     commander_return: bool = False
+    # Bound at planning time, then revalidated against the live combat request.
+    attacker_instance_ids: list[int] = field(default_factory=list)
+    blocker_instance_assignments: dict[int, int] = field(default_factory=dict)
 
     def __str__(self) -> str:
         parts = [self.action_type.value]
@@ -416,7 +421,7 @@ RULES:
   nothing else to cast", "get the doubler down before next turn's counters") —
   a correct play that sounds random loses the user's trust.
 - VOICE CLARITY: voice_advice must state ONE concrete action in plain spoken language and name the specific creatures involved. For blocks: either name the block ("Block their <attacker> with your <blocker>") or, if not blocking, say "Don't block — take <N> from <attacker>". For attacks, name who swings. Never give self-contradictory advice (e.g. saying both "let it trade" and "take the hit"), and never reference a creature that is not on the board. Your voice_advice must match your actual assignments; explain any deviation from the solver's recommendation.
-- DESTRUCTIVE TARGETING (destroy, exile, deals damage, -N/-N): When choosing targets for a destructive spell or ability (e.g. Cityscape Leveler, removal, fight spells), you MUST target an OPPONENT permanent. NEVER target your own permanents (e.g. your own tokens or creatures) unless there are zero legal opponent targets on the board.
+- DESTRUCTIVE TARGETING (destroy, exile, deals damage, -N/-N): Ground each target in its current controller and instance ID. Prefer opposing threats. An intentional friendly target requires a concrete benefit (such as a death trigger or the friendly fighter in a fight effect); explicitly acknowledge that it is yours. No legal opponent targets does not justify destroying your own creature. Decline optional targeting when there is no useful target.
 - TUTORS & SEARCH LIBRARY: When searching your library for an X-cost tutor (e.g. Green Sun's Zenith, Finale of Devastation, Chord of Calling), you may ONLY select a card whose mana value (CMC) is less than or equal to X. Never propose a card whose mana value exceeds X.
 - LAND PLAY PRIORITY: On Precombat Main (Main1), if you have not played a land this turn and hold a land in hand, playing your land MUST be the FIRST step before casting spells that require that mana.
 - Output ONLY JSON matching the schema. No prose, no markdown, no commentary.
@@ -490,6 +495,7 @@ class ActionPlanner(_ActionLegalityMixin):
         backend: Any,
         timeout: float = 5.0,
         land_drop_first: bool = True,
+        deck_strategy_fn: Callable[[], str | None] | None = None,
     ):
         """Initialize the action planner.
 
@@ -499,10 +505,13 @@ class ActionPlanner(_ActionLegalityMixin):
             land_drop_first: When True, deterministically play a land if one is
                 legal and we've played 0 lands this turn — short-circuits the
                 LLM. Set False for landfall-synergy decks.
+            deck_strategy_fn: Read the current match's deck analysis, including
+                results that arrive asynchronously after the planner is created.
         """
         self._backend = backend
         self._timeout = timeout
         self._land_drop_first = land_drop_first
+        self._deck_strategy_fn = deck_strategy_fn
         # Recent planning diagnostics ring buffer for debug reports
         self._recent_diagnostics: list[dict[str, Any]] = []
         # R3: the numbered menu shown in the most recent prompt; {"pick": N}
@@ -550,6 +559,16 @@ class ActionPlanner(_ActionLegalityMixin):
 
     def clear_game_plan(self) -> None:
         self._game_plan = ""
+
+    def _strategy_context(self) -> str:
+        parts = []
+        provider = getattr(self, "_deck_strategy_fn", None)
+        strategy = provider() if provider else None
+        if strategy:
+            parts.append(f"DECK STRATEGY:\n{strategy}")
+        if getattr(self, "_game_plan", ""):
+            parts.append(self._game_plan)
+        return "\n\n".join(parts)
 
     def plan_actions(
         self,
@@ -707,7 +726,7 @@ class ActionPlanner(_ActionLegalityMixin):
             self._turn_plan_attempted_for_turn = current_turn
 
         # Build the prompt
-        system_prompt = AUTOPILOT_SYSTEM_PROMPT
+        system_prompt = AUTOPILOT_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY
         user_message = self._build_action_prompt(
             game_state, trigger, effective_legal_actions, decision_context
         )
@@ -811,6 +830,7 @@ class ActionPlanner(_ActionLegalityMixin):
             effective_legal_actions,
             decision_context=decision_context,
             bridge_request=game_state.get("_bridge_request_type"),
+            game_state=game_state,
         )
         plan.trigger = trigger
         plan.turn_number = game_state.get("turn", {}).get("turn_number", 0)
@@ -833,6 +853,7 @@ class ActionPlanner(_ActionLegalityMixin):
                         effective_legal_actions,
                         decision_context=decision_context,
                         bridge_request=game_state.get("_bridge_request_type"),
+                        game_state=game_state,
                     )
                     plan.trigger = trigger
                     plan.turn_number = current_turn
@@ -985,6 +1006,7 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         import concurrent.futures
 
+        game_state = prepare_match_context(game_state)
         current_turn = (game_state.get("turn") or {}).get("turn_number", 0) or 0
 
         # Build a lightweight prompt: reuse the same context formatter as
@@ -1011,7 +1033,7 @@ class ActionPlanner(_ActionLegalityMixin):
             '"target_names": [], "rationale": "early pressure"}'
             "]}}"
         )
-        game_plan_block = f"{self._game_plan}\n\n" if self._game_plan else ""
+        game_plan_block = self._strategy_context() + "\n\n"
         user_message = (
             f"TRIGGER: turn_plan (turn {current_turn})\n\n"
             f"{context}\n\n"
@@ -1021,11 +1043,12 @@ class ActionPlanner(_ActionLegalityMixin):
             f"Output ONLY a JSON object matching this shape (no prose, no markdown):\n"
             f"{schema_example}"
         )
+        user_message = with_deck_reference(user_message, game_state)
 
         def _complete() -> str:
             try:
                 return self._backend.complete(
-                    TURN_PLAN_SYSTEM_PROMPT,
+                    TURN_PLAN_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY,
                     user_message,
                     4096,
                     temperature=0.0,
@@ -1035,10 +1058,12 @@ class ActionPlanner(_ActionLegalityMixin):
             except TypeError:
                 try:
                     return self._backend.complete(
-                        TURN_PLAN_SYSTEM_PROMPT, user_message, 4096, temperature=0.0
+                        TURN_PLAN_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY, user_message, 4096, temperature=0.0
                     )
                 except TypeError:
-                    return self._backend.complete(TURN_PLAN_SYSTEM_PROMPT, user_message)
+                    return self._backend.complete(
+                        TURN_PLAN_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY, user_message
+                    )
 
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -1668,6 +1693,7 @@ class ActionPlanner(_ActionLegalityMixin):
         itself carries a ``_legacy_render_mode`` key (set by
         gate_play_decisions.build_user_message) it wins over this argument.
         """
+        game_state = prepare_match_context(game_state)
         # Import and use CoachEngine's formatter for consistency. The planner
         # variant drops heavy GRE JSON dumps and trims oracle text on
         # long-resident permanents — see _format_game_context(for_planner).
@@ -1731,6 +1757,9 @@ class ActionPlanner(_ActionLegalityMixin):
 
         # Build trigger description
         dec_ctx = decision_context or game_state.get("decision_context") or {}
+        from arenamcp.combat_identity import combat_identity_prompt
+
+        context += combat_identity_prompt(game_state, dec_ctx)
         dec_type = str(dec_ctx.get("type") or "").lower()
         trigger_descriptions = {
             "new_turn": "Your turn started (Main Phase 1). Plan your plays.",
@@ -1771,8 +1800,9 @@ class ActionPlanner(_ActionLegalityMixin):
         # tactical decision serves. Placed before the per-turn intent so the
         # model reads "here is how we win this game" first, then "here is the
         # plan for this turn", then the immediate decision.
-        if self._game_plan:
-            parts.append(self._game_plan)
+        strategy_context = self._strategy_context()
+        if strategy_context:
+            parts.append(strategy_context)
 
         # Locked turn intent: a single high-level plan for the whole turn,
         # captured on the first non-trivial LLM call of the turn. Subsequent
@@ -1836,7 +1866,7 @@ class ActionPlanner(_ActionLegalityMixin):
 
         parts.append("\nRespond with ONLY a JSON action plan matching the schema.")
 
-        return "\n".join(parts)
+        return with_deck_reference("\n".join(parts), game_state)
 
     def _fallback_format(self, game_state: dict[str, Any]) -> str:
         """Fallback game state formatter if CoachEngine is unavailable."""
@@ -1912,6 +1942,7 @@ class ActionPlanner(_ActionLegalityMixin):
         legal_actions: list[str],
         decision_context: dict[str, Any] | None = None,
         bridge_request: str | None = None,
+        game_state: dict[str, Any] | None = None,
     ) -> ActionPlan:
         """Parse LLM response into an ActionPlan.
 
@@ -2006,6 +2037,12 @@ class ActionPlanner(_ActionLegalityMixin):
                     )
             if action is None:
                 action = self._parse_action(action_data)
+            if action and game_state and game_state.get("battlefield"):
+                try:
+                    self._bind_combat_identities(action, game_state, decision_context or {})
+                except (ValueError, TypeError, KeyError) as error:
+                    logger.warning("Rejecting ambiguous combat assignment: %s", error)
+                    continue
             if action and self._is_action_legal(action, legal_actions, decision_context, bridge_request):
                 plan.actions.append(action)
             elif action:
@@ -2046,6 +2083,26 @@ class ActionPlanner(_ActionLegalityMixin):
         plan.voice_advice = plan.spoken_actions()
         return plan
 
+    @staticmethod
+    def _bind_combat_identities(action: GameAction, state: dict, context: dict) -> None:
+        from arenamcp.combat_identity import blocker_id_assignments, resolve_combatant
+
+        if action.action_type == ActionType.DECLARE_BLOCKERS and context.get("raw_blockers"):
+            action.blocker_instance_assignments = blocker_id_assignments(
+                action.blocker_assignments, state, context["raw_blockers"]
+            )
+        if action.action_type == ActionType.DECLARE_ATTACKERS:
+            identities = context.get("legal_attacker_ids") or [
+                a["attackerInstanceId"] for a in context.get("raw_attackers") or []
+            ]
+            if identities:
+                action.attacker_instance_ids = [
+                    resolve_combatant(name, state, identities, local_side=True)
+                    for name in action.attacker_names
+                ]
+                if len(set(action.attacker_instance_ids)) != len(action.attacker_instance_ids):
+                    raise ValueError("The same attacker was selected more than once")
+
     def _record_diagnostic(self, diag: dict[str, Any]) -> None:
         """Append a planning diagnostic entry to the ring buffer."""
         self._recent_diagnostics.append(diag)
@@ -2065,7 +2122,10 @@ class ActionPlanner(_ActionLegalityMixin):
         if not legal_actions:
             logger.debug("Planner fallback: no legal actions available")
             return plan
-        if any(entry.lower().startswith("block with:") for entry in legal_actions):
+        if any(
+            entry.lower().startswith(("block with:", "attack with:", "declare attackers:"))
+            for entry in legal_actions
+        ):
             return plan
 
         # A backend error sentinel is not advice — auto-picking a real game
@@ -2119,6 +2179,17 @@ class ActionPlanner(_ActionLegalityMixin):
         if ")" in s:
             parts = re.split(r"\)\s*,\s*", s)
             return [(p if p.rstrip().endswith(")") else p + ")").strip() for p in parts if p.strip()]
+        # Duplicate ordinals are unambiguous boundaries even when the names
+        # contain commas ("Hei Bai, Forest Guardian #1, ... #2").
+        boundaries = list(re.finditer(r"(#\d+)\s*,\s*", s))
+        if boundaries:
+            names, start = [], 0
+            for boundary in boundaries:
+                names.append(s[start : boundary.end(1)].strip())
+                start = boundary.end()
+            names.append(s[start:].strip())
+            if all(re.search(r"#\d+$", name) for name in names):
+                return names
         return [s]
 
     @staticmethod
@@ -2162,25 +2233,19 @@ class ActionPlanner(_ActionLegalityMixin):
         unavailable or unparseable — the caller picks the conservative
         default for the effect type.
         """
-        local_seat = game_state.get("local_seat_id")
-        own: list[str] = []
-        theirs: list[str] = []
-        for obj in game_state.get("battlefield", []) or []:
-            name = obj.get("name") or "?"
-            pt = ""
-            if obj.get("power") is not None or obj.get("toughness") is not None:
-                pt = f" ({obj.get('power')}/{obj.get('toughness')})"
-            ctrl = obj.get("controller_seat_id") or obj.get("owner_seat_id")
-            (own if ctrl == local_seat else theirs).append(f"{name}{pt}")
-        user_message = "\n".join(
-            [
-                f"Optional cost from: {source_name or 'unknown source'}",
-                f"Effect text: {oracle_text or 'unknown'}",
-                f"Your battlefield: {', '.join(own) or '(empty)'}",
-                f"Opponent battlefield: {', '.join(theirs) or '(empty)'}",
-                "",
-                "Should you pay this optional cost?",
-            ]
+        game_state = prepare_match_context(game_state)
+        user_message = with_deck_reference(
+            "\n".join(
+                [
+                    f"Optional cost from: {source_name or 'unknown source'}",
+                    f"Effect text: {oracle_text or 'unknown'}",
+                    self._decision_game_context(game_state),
+                    self._strategy_context(),
+                    "",
+                    "Should you pay this optional cost?",
+                ]
+            ),
+            game_state,
         )
         try:
             try:
@@ -2226,6 +2291,14 @@ class ActionPlanner(_ActionLegalityMixin):
         "auto-pay'. Arena-confirmed payable options are authoritative: do not "
         "reject them based on estimated mana or printed costs. Each option is "
         "payable individually now, not necessarily together; reassess after each play. "
+        "Use the deck strategy to compare plays. A commander in the command zone is an available "
+        "engine, not a future draw: when payable, compare deploying it against other setup spells. "
+        "Count the bodies and abilities from token copies, including how they increase mana production "
+        "on later turns; respect summoning sickness and colored mana requirements. Prefer establishing "
+        "a useful engine over repeated setup unless survival, interaction, or a stronger concrete line "
+        "justifies waiting. When choosing another spell over a payable commander, explain that tradeoff. "
+        "Searching lands into hand supplies future land drops; it does not add mana sources to the "
+        "battlefield or bypass land-drop limits. Do not call it immediate mana acceleration. "
         "Crew activates a Vehicle already on the battlefield; it does not cast it "
         "again or retrigger its enters ability. Crew only for a concrete benefit "
         "such as attacking, blocking, or a synergy, not merely because an opponent "
@@ -2237,6 +2310,10 @@ class ActionPlanner(_ActionLegalityMixin):
         "If it is tapped or the payment taps it, it cannot attack or block without an actual untap effect. "
         "Check current card types: leftover power/toughness does not mean a temporary animation is still active. "
         "Do not pay to animate it without a concrete combat or other payoff. Payable does not mean free. "
+        "Until-end-of-turn animation expires this turn: it cannot supply a future-turn blocker or "
+        "Great Henge discount. Name a use before it expires; compare any discount with the activation "
+        "cost and the greatest power you already control. All-creature-types animation can increase "
+        "tribal mana such as The Notary Hobbits only if those producers can actually tap this turn. "
         "For haste-granting equipment, reassess after the wearer taps or new creatures enter: "
         "moving it to an untapped summoning-sick creature can enable a useful attack or tap ability. "
         "Equip only when Arena offers it. Do not shuffle equipment without a concrete benefit, "
@@ -2263,6 +2340,9 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._last_decision_reasoning = ""
         self._last_decision_option_ids = []
+        self._last_decision_target_controllers = {}
+        self._last_decision_unusual_targets = {}
+        self._last_decision_trace = {}
         decision = filter_play_options(decision, game_state)
         if not decision.options:
             if decision.request_type == "Search" and decision.selection_is_valid([]):
@@ -2278,7 +2358,7 @@ class ActionPlanner(_ActionLegalityMixin):
             valid = decision.option_ids()
             if decision.request_type == "ActionsAvailable":
                 valid = {option.option_id for option in decision.options if option.payable is not False}
-            if decision.request_type == "Search":
+            if decision.request_type in {"Search", "CastingTimeOptions"}:
                 # Never silently truncate, substitute the first card, or
                 # narrate reasoning for a different set than we submit.
                 return chosen if decision.selection_is_valid(chosen) else [DECLINE_DECISION]
@@ -2290,6 +2370,10 @@ class ActionPlanner(_ActionLegalityMixin):
                 chosen = []
             if chosen and decision.request_type == "SelectTargets":
                 chosen = self._gate_harmful_llm_target_picks(decision, game_state, chosen)
+                self._last_decision_trace["validated_ids"] = [] if chosen == [DECLINE_DECISION] else chosen
+                self._last_decision_trace["target_validation"] = (
+                    "declined" if chosen == [DECLINE_DECISION] else "validated"
+                )
                 if chosen == [DECLINE_DECISION]:
                     return chosen
                 if not expand_target_selection(decision, chosen):
@@ -2323,6 +2407,9 @@ class ActionPlanner(_ActionLegalityMixin):
         return ""
 
     def _decision_source_is_harmful(self, decision: Any, game_state: dict[str, Any]) -> bool | None:
+        return target_effect_is_harmful(self._decision_source_oracle(decision, game_state))
+
+    def _decision_source_oracle(self, decision: Any, game_state: dict[str, Any]) -> str:
         """Classify the targeting decision's source spell as harmful.
 
         Source resolution: decision source_label matched on the stack/hand/command,
@@ -2348,7 +2435,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 )
                 if picked_entry is not None:
                     break
-        if picked_entry is None and source_label:
+        if picked_entry is None and source_label and not source_id:
             for zone in ("stack", "hand", "command", "battlefield"):
                 for entry in game_state.get(zone, []) or []:
                     if str(entry.get("name") or "").strip().lower() == source_label:
@@ -2356,13 +2443,24 @@ class ActionPlanner(_ActionLegalityMixin):
                         break
                 if picked_entry is not None:
                     break
-        if picked_entry is None and stack:
+        if picked_entry is None and stack and not source_id:
             picked_entry = stack[-1]
         context = game_state.get("decision_context") or {}
+        context_source = _as_int(context.get("source_id") or context.get("sourceId"))
+        context_matches = not source_id or source_id == context_source
+        parent_id = _as_int((picked_entry or {}).get("parent_instance_id"))
+        parent = self._target_objects(game_state).get(parent_id, {})
         oracle = str(
-            context.get("source_oracle_text") or (picked_entry or {}).get("oracle_text") or ""
+            (
+                (context.get("source_oracle_text") or context.get("source_card_oracle_text"))
+                if context_matches
+                else ""
+            )
+            or (picked_entry or {}).get("oracle_text")
+            or parent.get("oracle_text")
+            or ""
         ).lower()
-        return target_effect_is_harmful(oracle)
+        return oracle
 
     @staticmethod
     def _decision_source_instance(game_state: dict[str, Any]) -> int:
@@ -2385,14 +2483,35 @@ class ActionPlanner(_ActionLegalityMixin):
                     local_seat = p.get("seat_id")
                     break
         controllers: dict[int, int | None] = {}
-        for c in game_state.get("battlefield", []) or []:
+        for c in self._target_objects(game_state).values():
             try:
                 iid = int(c.get("instance_id") or 0)
             except (TypeError, ValueError):
                 continue
             if iid:
-                controllers[iid] = c.get("controller_seat_id") or c.get("owner_seat_id")
+                # Ownership does not establish current control of a stolen
+                # permanent. Unknown control must remain unknown.
+                controllers[iid] = _as_int(c.get("controller_seat_id")) or None
+        for player in game_state.get("players", []) or []:
+            seat = _as_int(player.get("seat_id"))
+            if seat:
+                controllers[seat] = seat
         return local_seat, controllers
+
+    @staticmethod
+    def _target_objects(game_state: dict[str, Any]) -> dict[int, dict]:
+        objects = {}
+        zones = game_state.get("zones") or {}
+        for zone in ("battlefield", "stack", "graveyard", "exile", "command", "hand"):
+            cards = game_state.get(zone, zones.get(zone, [])) or []
+            for card in cards:
+                if isinstance(card, dict) and (iid := _as_int(card.get("instance_id"))):
+                    objects.setdefault(iid, card)
+        return objects
+
+    def get_last_decision_trace(self) -> dict:
+        """Bounded targeting facts, not a full prompt or backend configuration."""
+        return dict(getattr(self, "_last_decision_trace", {}))
 
     def _gate_harmful_llm_target_picks(
         self,
@@ -2402,13 +2521,18 @@ class ActionPlanner(_ActionLegalityMixin):
     ) -> list[str]:
         """Override mis-targeted LLM picks (harmful spells on own board or beneficial on enemy)."""
         is_harmful = self._decision_source_is_harmful(decision, game_state)
-        if is_harmful is None:
-            return chosen
+        if not self._decision_source_oracle(decision, game_state):
+            logger.warning("Declining targets: effect source is unresolved")
+            return [DECLINE_DECISION]
         local_seat, controllers = self._battlefield_controllers(game_state)
         if local_seat is None:
-            return chosen
+            logger.warning("Declining targets: local seat is unknown")
+            return [DECLINE_DECISION]
         picked_own = False
         picked_opp = False
+        intent = getattr(self, "_last_decision_target_controllers", {})
+        exceptions = getattr(self, "_last_decision_unusual_targets", {})
+        intentional_own = intentional_opp = True
         for oid in chosen:
             if not str(oid).startswith("tgt:"):
                 continue
@@ -2417,18 +2541,40 @@ class ActionPlanner(_ActionLegalityMixin):
             except ValueError:
                 continue
             ctrl = controllers.get(iid)
+            if ctrl is None:
+                logger.warning("Declining target %s: current controller is unknown", oid)
+                return [DECLINE_DECISION]
+            expected = "self" if ctrl == local_seat else "opponent"
+            acknowledged = intent.get(oid)
+            if acknowledged is not None and acknowledged != expected:
+                logger.warning(
+                    "Declining target %s: intended controller %r disagrees with seat %s",
+                    oid,
+                    acknowledged,
+                    ctrl,
+                )
+                return [DECLINE_DECISION]
+            if is_harmful is None and acknowledged != expected:
+                logger.warning("Declining unclassified target %s without explicit controller intent", oid)
+                return [DECLINE_DECISION]
+            justification = exceptions.get(oid)
+            justified = (
+                acknowledged == expected and isinstance(justification, str) and bool(justification.strip())
+            )
             if ctrl == local_seat:
                 picked_own = True
+                intentional_own = intentional_own and justified
             elif ctrl is not None:
                 picked_opp = True
+                intentional_opp = intentional_opp and justified
 
-        if is_harmful and picked_own:
+        if is_harmful and picked_own and not intentional_own:
             override = self._targeting_fallback_pick(decision, game_state)
             if override:
                 logger.warning(f"Overriding harmful LLM target pick {chosen} (own permanent) with {override}")
                 return override
 
-        if not is_harmful and picked_opp:
+        if is_harmful is False and picked_opp and not intentional_opp:
             override = self._targeting_fallback_pick(decision, game_state)
             if override:
                 logger.warning(
@@ -2479,16 +2625,7 @@ class ActionPlanner(_ActionLegalityMixin):
             except (TypeError, ValueError):
                 return 0
 
-        own = [
-            iid
-            for iid in candidates
-            if local_seat is not None
-            and (
-                battlefield.get(iid, {}).get("controller_seat_id")
-                or battlefield.get(iid, {}).get("owner_seat_id")
-            )
-            == local_seat
-        ]
+        own = [iid for iid in candidates if controllers.get(iid) == local_seat]
         theirs = [iid for iid in candidates if controllers.get(iid) not in (None, local_seat)]
 
         if harmful:
@@ -2515,6 +2652,7 @@ class ActionPlanner(_ActionLegalityMixin):
         return picked if expand_target_selection(decision, picked) else [DECLINE_DECISION]
 
     def _llm_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
+        game_state = prepare_match_context(game_state)
         lines = [
             f"PENDING DECISION: {decision.request_type}"
             + (f" (source: {decision.source_label})" if decision.source_label else ""),
@@ -2540,12 +2678,36 @@ class ActionPlanner(_ActionLegalityMixin):
         # permanents from the opponent's in a target list (live 2026-07-06:
         # it aimed Utter Insignificance at the user's own Nessian Wanderer).
         local_seat, controllers = self._battlefield_controllers(game_state)
+        target_objects = self._target_objects(game_state)
+        target_trace = []
+        if decision.request_type == "SelectTargets":
+            lines.insert(1, f"YOU ARE SEAT {local_seat}; control determines YOURS/opponent, not ownership.")
+            lines.insert(
+                2,
+                "SOURCE EFFECT: " + (self._decision_source_oracle(decision, game_state) or "unknown"),
+            )
+            lines.append(
+                "For each selected target also return target_controllers keyed by option_id, "
+                "with value self or opponent matching its CURRENT controller below. "
+                "For deliberately harming your own target or benefiting an opponent, include "
+                "unusual_target_reasons keyed by that same option_id explaining the concrete benefit. "
+                "Do not call your own creature an opponent's threat. Unknown control is not permission "
+                "to infer a side from the card name or deck reference."
+            )
+        commander_ids = {
+            card.get("instance_id")
+            for card in game_state.get("command", []) or []
+            if local_seat is not None and card.get("owner_seat_id") == local_seat
+        }
         for o in decision.options:
             note = ""
+            label = o.label
             if o.payable is False:
                 note = "  [cannot auto-pay — do not pick]"
             elif o.payable is True:
                 note = "  [Arena confirms payable now]"
+            if o.meta.get("actionType") == "ActionType_Cast" and o.meta.get("instanceId") in commander_ids:
+                note += "  [YOUR COMMANDER — command zone]"
             if "weight" in o.meta:
                 note += f"  [contribution: {o.meta['weight']}]"
             if o.meta.get("actionType") == "ActionType_Activate":
@@ -2565,14 +2727,33 @@ class ActionPlanner(_ActionLegalityMixin):
             if decision.request_type in {"CastingTimeOptions", "OptionalAction", "Search"}:
                 note += " " + json.dumps(o.meta, ensure_ascii=False)
             side = ""
-            if o.option_id.startswith("tgt:") and local_seat is not None:
+            if o.option_id.startswith("tgt:"):
                 try:
                     ctrl = controllers.get(int(o.option_id[4:]))
                 except ValueError:
                     ctrl = None
-                if ctrl is not None:
+                if ctrl is not None and local_seat is not None:
                     side = " (YOURS)" if ctrl == local_seat else " (opponent's)"
-            lines.append(f"- {o.option_id}: {o.label}{side}{note}")
+                else:
+                    side = " (CURRENT CONTROLLER UNKNOWN)"
+                card = target_objects.get(int(o.option_id[4:]), {})
+                label = card.get("name") or label
+                facts = {
+                    "option_id": o.option_id,
+                    "name": label,
+                    "controller_seat_id": ctrl,
+                    "owner_seat_id": card.get("owner_seat_id"),
+                }
+                target_trace.append(facts)
+                note += " " + json.dumps(
+                    {key: value for key, value in facts.items() if key not in {"option_id", "name"}}
+                )
+            lines.append(f"- {o.option_id}: {label}{side}{note}")
+        if decision.request_type == "CastingTimeOptions":
+            lines.append(
+                "Choose all required modes together from the SAME childIndex. "
+                "Honor that child's min/max counts; do not mix modes with Done or another child."
+            )
         lines.append("")
         lines.append("GAME STATE:")
         context_state = game_state
@@ -2591,7 +2772,21 @@ class ActionPlanner(_ActionLegalityMixin):
                 ],
             }
         lines.append(self._decision_game_context(context_state))
-        user_message = "\n".join(lines)
+        strategy_context = self._strategy_context()
+        if strategy_context:
+            lines.append(strategy_context)
+        user_message = with_deck_reference("\n".join(lines), game_state)
+        self._last_decision_trace = {
+            "request_type": decision.request_type,
+            "request_id": list(decision.request_id),
+            "source": decision.source_label,
+            "source_instance_id": self._decision_source_instance(game_state),
+            "source_oracle_text": self._decision_source_oracle(decision, game_state)[:1200]
+            if decision.request_type == "SelectTargets"
+            else "",
+            "local_seat_id": local_seat,
+            "targets": target_trace[:80],
+        }
 
         try:
             # Tighter than the general planning timeout: typed decisions
@@ -2600,7 +2795,7 @@ class ActionPlanner(_ActionLegalityMixin):
             # before the window closes (2026-07-01: mulligan window expired
             # while the LLM call was still blocked).
             response = self._backend.complete(
-                self._DECISION_SYSTEM_PROMPT,
+                self._DECISION_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY,
                 user_message,
                 512,
                 temperature=0.0,
@@ -2608,7 +2803,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 raise_on_error=True,
             )
         except TypeError:
-            response = self._backend.complete(self._DECISION_SYSTEM_PROMPT, user_message)
+            response = self._backend.complete(
+                self._DECISION_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY, user_message
+            )
 
         # P1-1: models prose-prefix the JSON despite "reply ONLY with JSON"
         # (0/5 typed-decision parses on 2026-07-05, one reply in Chinese) —
@@ -2631,8 +2828,19 @@ class ActionPlanner(_ActionLegalityMixin):
             raise ValueError("typed-decision option_ids must contain only ids")
         chosen = [str(option_id) for option_id in ids]
         reason = data.get("reasoning")
+        self._last_decision_target_controllers = (
+            data.get("target_controllers") if isinstance(data.get("target_controllers"), dict) else {}
+        )
+        self._last_decision_unusual_targets = (
+            data.get("unusual_target_reasons") if isinstance(data.get("unusual_target_reasons"), dict) else {}
+        )
         self._last_decision_reasoning = " ".join(reason.split()[:50]) if isinstance(reason, str) else ""
         self._last_decision_option_ids = chosen
+        self._last_decision_trace.update(
+            selected_ids=chosen,
+            reasoning=self._last_decision_reasoning,
+            target_controllers=self._last_decision_target_controllers,
+        )
         logger.info(
             "typed-decision choice %s: %s", chosen, self._last_decision_reasoning or "reason not supplied"
         )
