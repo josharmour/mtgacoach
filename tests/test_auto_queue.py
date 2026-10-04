@@ -265,14 +265,12 @@ def test_report_result_wait_dismisses_overlay_then_requeues_and_hands_off(title)
 @pytest.mark.parametrize(
     "changes",
     [
-        {"screen": "match"},
         {"screen": "reward"},
         {"result_visible": False},
         {"result_visible": "true"},
         {"result_visible": None},
         {"label": "Play"},
         {"confidence": 0.89},
-        {"point": [1.1, 0.5]},
     ],
 )
 def test_result_dismissal_requires_a_confident_result_title_on_a_visible_overlay(changes):
@@ -320,6 +318,135 @@ def test_normalized_result_dismissal_rechecks_match_and_screen_before_click(chan
 
     controller.capture.side_effect = capture
     step(nav)
+    controller.execute.assert_not_called()
+
+
+@pytest.mark.parametrize("screen", ["results", "match"])
+@pytest.mark.parametrize("kind", ["wait", "continue", "open_play", "dismiss_result"])
+def test_result_title_dismisses_without_any_button_or_model_coordinates(screen, kind):
+    data, action = parse_queue_action(
+        proposal(
+            kind,
+            screen,
+            label="Click anywhere",  # An instruction, not a visible button.
+            result_title="DEFEAT",
+            result_visible=True,
+            point=[0.97, 0.98],  # Ignore a guessed button position behind the overlay.
+        )
+    )
+    assert data["screen"] == "results"
+    assert data["action"] == "dismiss_result"
+    assert data["label"] == "DEFEAT"
+    assert action.point == (0.5, 0.5)
+
+
+def test_result_click_is_not_reported_as_closed_until_next_screen_is_observed():
+    nav, controller, backend, _, statuses = navigator()
+    arm(nav)
+    backend.complete_with_image.return_value = proposal(
+        "continue", "results", label=None, result_title="DEFEAT", result_visible=True, point=None
+    )
+    step(nav)
+    assert nav.get_debug_info()["awaiting_result_dismissal"]
+    assert "waiting for it to close" in statuses[-1]
+    # The first click can start an animation; that isn't evidence of Home yet.
+    backend.complete_with_image.return_value = proposal("wait", "match", point=None)
+    step(nav)
+    controller.execute.assert_called_once()
+    assert nav.get_debug_info()["awaiting_result_dismissal"]
+    backend.complete_with_image.return_value = proposal("open_play", "home")
+    step(nav)
+    request = json.loads(backend.complete_with_image.call_args.args[1])
+    assert request["awaiting_result_dismissal"] is True
+    assert not nav.get_debug_info()["awaiting_result_dismissal"]
+    assert "Result screen closed; continuing to Recently Played" in statuses
+    assert controller.execute.call_count == 2
+
+
+def test_rejected_label_is_preserved_and_given_to_next_observation_for_repair():
+    nav, controller, backend, _, _ = navigator()
+    arm(nav)
+    rejected = proposal("open_play", "home", label="Play Brawl")
+    backend.complete_with_image.return_value = rejected
+    step(nav)
+    controller.execute.assert_not_called()
+    debug = nav.get_debug_info()
+    assert debug["last_proposal"] == json.loads(rejected)
+    assert "Play Brawl" in debug["last_rejection"]["error"]
+    assert "expected one of ['play']" in debug["last_rejection"]["error"]
+    backend.complete_with_image.return_value = proposal("open_play", "home")
+    step(nav)
+    request = json.loads(backend.complete_with_image.call_args.args[1])
+    assert request["previous_rejection"] == debug["last_rejection"]
+    assert request["supported_actions"]["open_play"] == {"screens": ["home"], "labels": ["play"]}
+    controller.execute.assert_called_once()
+    assert nav.get_debug_info()["last_rejection"] is None
+
+
+def test_toggle_retries_the_paused_finished_match_without_a_new_completion():
+    nav, controller, backend, _, statuses = navigator()
+    arm(nav)
+    backend.complete_with_image.return_value = proposal("open_play", "home", label="Play Brawl")
+    for _ in range(3):
+        step(nav)
+    assert nav.paused_reason
+    old_generation, old_abort = nav._generation, nav._abort
+    nav.set_enabled(False)
+    nav.set_enabled(True)
+    assert nav.active and not nav.paused_reason
+    assert old_abort.is_set() and nav._generation != old_generation
+    assert nav.get_debug_info()["failures"] == 0
+    assert statuses[-1] == "Retrying navigation for the finished match"
+    backend.complete_with_image.return_value = proposal("open_play", "home")
+    nav._step(old_generation, old_abort)
+    controller.execute.assert_not_called()
+    step(nav)
+    controller.execute.assert_called_once()
+
+
+def test_resuming_after_user_started_a_new_match_never_clicks_the_old_target():
+    nav, controller, backend, state, _ = navigator()
+    arm(nav)
+    nav.set_enabled(False)
+    state["match_id"] = "next"
+    nav.set_enabled(True)
+    assert not nav.process_tick(state)
+    backend.complete_with_image.assert_not_called()
+    controller.execute.assert_not_called()
+    nav.set_enabled(False)
+    nav.set_enabled(True)
+    assert not nav.active  # Handoff consumed the old completion.
+
+
+def test_loading_after_defeat_does_not_wait_thirty_seconds_or_prove_matchmaking(monkeypatch):
+    nav, controller, backend, _, statuses = navigator()
+    arm(nav)
+    monkeypatch.setattr("arenamcp.auto_queue.time.monotonic", lambda: 100.0)
+    backend.complete_with_image.return_value = proposal(
+        "wait", "queue", label="Waiting for the Server...", point=None
+    )
+    step(nav)
+    assert nav._next_poll == 103.0
+    assert not nav.get_debug_info()["queue_observed"]
+    assert statuses[-1] == "Waiting for Arena to finish loading"
+    # A loading screen cannot authorize a visual handoff to the ended board.
+    backend.complete_with_image.return_value = proposal("wait", "match", point=None)
+    step(nav)
+    assert nav.active
+    controller.execute.assert_not_called()
+
+
+def test_actual_matchmaking_can_wait_and_prove_a_subsequent_visual_handoff(monkeypatch):
+    nav, controller, backend, _, _ = navigator()
+    arm(nav)
+    monkeypatch.setattr("arenamcp.auto_queue.time.monotonic", lambda: 100.0)
+    backend.complete_with_image.return_value = proposal("wait", "queue", point=None, matchmaking_visible=True)
+    step(nav)
+    assert nav._next_poll == 130.0
+    assert nav.get_debug_info()["queue_observed"]
+    backend.complete_with_image.return_value = proposal("wait", "match", point=None)
+    step(nav)
+    assert not nav.active
     controller.execute.assert_not_called()
 
 

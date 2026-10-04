@@ -7,6 +7,42 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-10-04 — Verify result dismissal, retry queueing, and group combat speech (v3.1.4)
+
+- The 10:14 match-end log shows a `DEFEAT` click delivered at 10:14:47,
+  followed by three `Unexpected navigation button label` failures. A delivered
+  click did not prove the overlay closed, and the rejected label was not logged.
+  The user confirmed the result animation has no button and accepts one click.
+- Separate the observed `result_title` from proposed button labels. A verified
+  Victory/Defeat/Draw title identifies a click-anywhere overlay, even if the model
+  calls the old battlefield `match` or invents a Continue label. Click its center,
+  wait for the animation, and report closure only after a fresh observation of
+  the next screen with the result absent. Existing input and new-match guards apply.
+- Supply the validator's allowed actions/screens/labels to the model. Retain and
+  log rejected proposals, then include the specific rejection in the next request
+  so retries can correct it instead of repeating an unexplained invalid choice.
+- Disabling navigation retains an already trusted unfinished match completion.
+  Re-enabling retries that navigation, with a new cancellation generation and a
+  fresh observation. Startup still cannot initiate a game; a newly detected match
+  consumes the old completion and prevents stale navigation input.
+- The next live sequence at 10:27:55 classified the post-result loading screen
+  as `queue` before any queue-start click. That imposed a 30-second wait. Generic
+  loading now polls again after three seconds and cannot establish a new match;
+  only a submitted queue start or confidently observed matchmaking gets the
+  longer wait and visual handoff. The 10:28:18 toggle did successfully resume
+  the already finished match; the subsequent Play click was withheld because
+  the screen changed. A complete automatic requeue is not yet verified live.
+- The user's three-attacker example repeated "I'm attacking" once per creature.
+  Group validated attackers/blockers by recipient and describe each declaration
+  as one sentence. Strip execution IDs from speech while retaining them in the
+  action, preserve token/copy distinctions, and use my/mine for local-player
+  possessives. Do not rewrite card titles such as Your Temple Is Under Attack.
+- Validation: 254 queue, runtime, native-input, narration, combat-identity and
+  version tests passed, including result-title dismissal without a button,
+  confirmation after the click, proposal repair, toggle retry, loading versus
+  matchmaking, grouped speech, and new-match/cancellation guards. Ruff and format
+  checks pass.
+
 ## 2026-10-04 — Dismiss result overlays before requeueing (v3.1.3)
 
 - Logs show the navigator repeatedly classified the ended battlefield as

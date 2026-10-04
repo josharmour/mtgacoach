@@ -177,6 +177,8 @@ class ActionPlan:
 
     def spoken_actions(self) -> str:
         """Describe validated actions, never a separate model-generated recommendation."""
+        from arenamcp.narration import combat_declaration, spoken_list, spoken_name
+
         lines = []
         for action in self.actions:
             kind = action.action_type
@@ -190,23 +192,19 @@ class ActionPlan:
                 line = f"Target {', '.join(action.target_names)}"
             elif kind == ActionType.DECLARE_ATTACKERS:
                 line = (
-                    f"Attack with {', '.join(action.attacker_names)}"
+                    f"Attack with {spoken_list([spoken_name(name) for name in action.attacker_names])}"
                     if action.attacker_names
                     else "Don't attack"
                 )
                 if action.attacker_targets:
-                    line = "; ".join(
-                        f"Attack {target} with {name}" for name, target in action.attacker_targets.items()
-                    )
+                    line = combat_declaration("Attack", action.attacker_targets)
                 elif action.target_names:
-                    line += " at " + ", ".join(action.target_names)
+                    line += " at " + spoken_list([spoken_name(name) for name in action.target_names])
             elif kind == ActionType.DECLARE_BLOCKERS:
                 line = (
-                    "; ".join(
-                        f"Block {attacker} with {blocker}"
-                        for blocker, attacker in action.blocker_assignments.items()
-                    )
-                    or "Don't block"
+                    combat_declaration("Block", action.blocker_assignments)
+                    if action.blocker_assignments
+                    else "Don't block"
                 )
             elif kind == ActionType.NUMERIC_INPUT:
                 line = f"Choose {action.numeric_value}"

@@ -78,6 +78,29 @@ def test_disable_cancels_pending_navigation_and_protocol_uses_boolean(navigator)
     adapter._coach.set_auto_queue.assert_called_with(False)
 
 
+def test_explicit_toggle_preserves_trusted_completion_for_retry(monkeypatch):
+    from arenamcp.auto_queue import AutoQueueNavigator
+
+    runtime = Runtime()
+    nav = AutoQueueNavigator(backend=Mock(), get_game_state=Mock())
+    nav.process_tick = Mock(return_value=True)  # No background desktop worker.
+    runtime._auto_queue_navigator = nav
+    monkeypatch.setattr("arenamcp.idle_sleep.SleepInhibitor", Mock())
+    monkeypatch.setattr(server, "_completed_match_for_navigation", {})
+    runtime._poll_auto_queue({"match_id": "one", "turn": {"turn_number": 10}})
+    event = {"match_id": "one", "completed_at": time.time(), "match_complete": True}
+    monkeypatch.setattr(server, "_completed_match_for_navigation", event)
+    runtime._poll_auto_queue({"match_id": "one"})
+    assert nav.active
+    nav._pause("Could not verify the next Arena navigation step")
+    runtime.set_auto_queue(False)
+    runtime.set_auto_queue(True)
+    assert event["completed_at"] < runtime._auto_queue_since
+    runtime._poll_auto_queue({"match_id": "one"})
+    assert nav.active and not nav.paused_reason
+    assert nav.get_debug_info()["stage"] == "resuming"
+
+
 @pytest.mark.parametrize(
     "scope,result,completed",
     [

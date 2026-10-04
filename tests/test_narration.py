@@ -19,7 +19,7 @@ from arenamcp.narration import action_narration, narration_policy, submission_na
         ("Don't block.", "I'm not blocking."),
         (
             "Attack Jace with Bear; Attack opponent with Dragon.",
-            "I'm attacking Jace with Bear; I'm attacking opponent with Dragon.",
+            "I'm attacking Jace with Bear, and opponent with Dragon.",
         ),
         ("Block Dragon with Giant.", "I'm blocking Dragon with Giant."),
         ("Choose The Notary Hobbits.", "I'm choosing The Notary Hobbits."),
@@ -48,6 +48,41 @@ def test_submission_reason_is_plan_instead_of_an_instruction_to_viewer():
     )
     assert submission_narration("Choose Forest.", "This supports the next land drop.") == (
         "I'm choosing Forest. This supports the next land drop."
+    )
+
+
+def test_report_attack_is_one_sentence_grouped_by_target_without_protocol_labels():
+    assignments = {
+        "Llanowar Elves [id:700]": "Opponent",
+        "Badgermole Cub [id:701]": "Opponent",
+        "*Rhino Warrior [id:702]": "Nicol Bolas, Dragon-God [774]",
+    }
+    action = GameAction(action_type=ActionType.DECLARE_ATTACKERS, attacker_targets=assignments.copy())
+    speech = submission_narration(ActionPlan(actions=[action]).spoken_actions())
+    assert speech == (
+        "I'm attacking the opponent with Llanowar Elves and Badgermole Cub, "
+        "and Nicol Bolas, Dragon-God with Rhino Warrior token."
+    )
+    assert action.attacker_targets == assignments  # Rendering cannot alter execution identity.
+
+
+def test_multiple_blockers_share_one_action_and_preserve_the_other_attacker():
+    action = GameAction(
+        action_type=ActionType.DECLARE_BLOCKERS,
+        blocker_assignments={"Bear #1": "Giant [id:10]", "Bear #2": "Giant [id:10]", "Elf": "Goblin [id:11]"},
+    )
+    assert submission_narration(ActionPlan(actions=[action]).spoken_actions()) == (
+        "I'm blocking Giant with Bear #1 and Bear #2, and Goblin with Elf."
+    )
+
+
+def test_autopilot_uses_my_in_actions_and_rationale_without_rewriting_card_titles():
+    assert submission_narration("Return your commander.", "Your creatures can protect your life total.") == (
+        "I'm returning my commander. My creatures can protect my life total."
+    )
+    assert action_narration("Cast Your Temple Is Under Attack.") == "I'm casting Your Temple Is Under Attack."
+    assert submission_narration("Choose Forest.", "That land is yours.") == (
+        "I'm choosing Forest. That land is mine."
     )
 
 
