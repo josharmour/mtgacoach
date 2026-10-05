@@ -39,6 +39,13 @@ EVENT_PATTERNS = [
     # The user's own queue choice (event + deck), sent just before EventJoin.
     (re.compile(r"==> EventSetDeckV3\b"), "EventSetDeckV3"),
     (re.compile(r"==> EventAiBotMatch\b"), "EventAiBotMatch"),
+    # Front-door replies that carry event courses (stage, wins, card pool).
+    (
+        re.compile(
+            r"<== (?:EventGetCoursesV2|EventJoin|EventSetDeckV3|DraftCompleteDraft|EventClaimPrize)\b"
+        ),
+        "EventCourse",
+    ),
 ]
 
 

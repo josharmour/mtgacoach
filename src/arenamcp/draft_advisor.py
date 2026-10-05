@@ -45,6 +45,10 @@ density, removal, mana requirements, and top-end saturation. Avoid a deck of fiv
 creatures and buffs with no early board. Off-color cards need realistic fixing.
 Do not spend picks on ordinary basic lands while useful spells remain in the pack.
 
+When set_strategy is supplied it is this set's pre-draft analysis (17lands data plus card
+rules): its archetype tiers, payoffs, enablers, synergy notes and traps say which lanes
+win and what each needs. Use it to choose and support a lane; prefer open tier-1
+archetypes. heuristic_rankings already combine it with card quality and the pool lane.
 Heuristic scores and win rates are supporting evidence, not instructions. Missing
 17lands ratings are UNKNOWN, not zero strength. Do not claim win-rate evidence
 when none is supplied. If card rules are missing, say so and avoid invented synergy.
@@ -141,6 +145,7 @@ class DraftAdvisor:
                 "target_size": 40,
                 "previous_plan": self._plan,
                 "supported_synergies": synergy_graph(pool),
+                "set_strategy": fallback.get("set_strategy") or {},
                 "pool": [{**_card_details(card), "count": counts[grp_id]} for grp_id, card in unique.items()],
             },
             ensure_ascii=False,
@@ -189,6 +194,7 @@ class DraftAdvisor:
                 "pool_summary": pool_summary(pool),
                 "pack": [_card_details(card) for card in cards],
                 "heuristic_rankings": fallback.get("evaluations") or [],
+                "set_strategy": pack.get("set_strategy") or {},
             },
             ensure_ascii=False,
         )

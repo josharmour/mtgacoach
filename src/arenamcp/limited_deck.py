@@ -19,6 +19,9 @@ two-color plan, early creatures, interaction, supported enablers/payoffs, and a 
 mana base. No unsupported splashes. Read full rules and related_faces, not card names.
 Hybrid mana can use either color. Adding loyalty counters is not a loyalty activation.
 Honor the previous theme only if this actual pool supports it. Missing ratings are unknown.
+When set_strategy is supplied (this set's 17lands data plus card-rules analysis), prefer its
+stronger archetypes the pool supports, include its payoffs only with enough enablers, and
+avoid its traps unless the pool has nothing better.
 Use supported_synergies as grounded links, checking the supplied rules' conditions and
 costs. For unmodeled interactions, describe roles rather than inventing a verified combo.
 Return JSON only: {"main_deck": [{"grp_id":123,"count":2}],

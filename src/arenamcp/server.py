@@ -474,6 +474,19 @@ def stop_draft_helper() -> None:
 _completed_match_for_navigation: dict[str, Any] = {}
 _last_queue_selection: dict[str, Any] = {}
 _match_event_ids: dict[str, str] = {}
+_course_tracker = None
+
+
+def get_course_tracker():
+    """Event course progress parsed from Player.log (see event_course.py)."""
+    global _course_tracker
+    if _course_tracker is None:
+        from arenamcp.event_course import CourseTracker
+
+        _course_tracker = CourseTracker()
+    return _course_tracker
+
+
 _QUEUE_SELECTION_LINE = re.compile(r"==> (EventSetDeckV3|EventAiBotMatch) (\{.*\})\s*$")
 
 
@@ -870,6 +883,7 @@ def start_watching() -> None:
     parser.register_handler("MatchGameRoomStateChangedEvent", _handle_match_created)
     parser.register_handler("ClientToMatchServiceMessage", _handle_match_created)
     parser.register_handler("EventSetDeckV3", _handle_queue_selection)
+    parser.register_handler("EventCourse", lambda payload: get_course_tracker().observe(payload))
     parser.register_handler(
         "EventAiBotMatch", lambda payload: _handle_queue_selection(payload, "EventAiBotMatch")
     )
@@ -1992,7 +2006,8 @@ def get_draft_pack() -> dict[str, Any]:
 
     if bridge_draft and bridge_draft.get("ok") and bridge_draft.get("pack_cards"):
         pack_cards = bridge_draft.get("pack_cards", [])
-        picked_cards = bridge_draft.get("picked_cards", [])
+        # The Mac bridge reads the pack, not the pool; the log keeps the picks.
+        picked_cards = bridge_draft.get("picked_cards") or draft_state.picked_cards
         pack_number = bridge_draft.get("pack_number", pack_number)
         pick_number = bridge_draft.get("pick_number", pick_number)
         is_active = True
@@ -2346,6 +2361,23 @@ def get_sealed_pool() -> dict[str, Any]:
         "spoken_advice": spoken,
         "detailed_text": detailed,
     }
+
+
+def limited_pool_cards(grp_ids: list[int], set_code: str | None) -> list[dict[str, Any]]:
+    """Card details (rules + 17lands) for a limited pool, one dict per copy."""
+    draft_stats_cache = _get_draft_stats()
+    pool_cards = []
+    for grp_id in grp_ids:
+        card_info = enrich_with_oracle_text(grp_id)
+        card_info["grp_id"] = grp_id
+        if set_code and card_info.get("name"):
+            stats = draft_stats_cache.get_draft_rating(card_info["name"], set_code)
+            if stats:
+                card_info["gih_wr"] = stats.gih_wr
+                card_info["alsa"] = stats.alsa
+                card_info["iwd"] = stats.iwd
+        pool_cards.append(card_info)
+    return pool_cards
 
 
 def analyze_draft_pool() -> dict[str, Any]:

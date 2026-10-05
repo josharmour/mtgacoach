@@ -46,6 +46,16 @@ class _AutoQueueMixin:
             return False
         if getattr(self, "_auto_queue_faulted", False):
             return False
+        draft_driver = getattr(self, "_draft_event_driver", None)
+        if (
+            draft_driver is not None
+            and draft_driver.enabled
+            and draft_driver.run.event_name
+            and not draft_driver.run.finished
+        ):
+            # Draft autoplay owns navigation between its event's matches.
+            self._suspend_auto_queue()
+            return False
         try:
             from arenamcp.auto_queue import AutoQueueNavigator
             from arenamcp.idle_sleep import SleepInhibitor

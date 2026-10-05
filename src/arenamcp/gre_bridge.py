@@ -1393,6 +1393,18 @@ class GREBridge:
             logger.debug("get_deck_editor: %s", exc)
         return self._deck_editor_snapshot
 
+    def draft_command(self, action: str, timeout: float | None = 8.0, **fields: Any) -> dict[str, Any]:
+        """Limited-event hands on the Mac bridge (see mac_bridge_adapter draft events).
+
+        Actions: get_screen, get_draft_state, submit_draft_pick, get_limited_pool,
+        set_limited_deck, submit_limited_deck, get_event_page, event_play, go_to_event.
+        Never raises; failures come back as {"ok": False, "error": ...}.
+        """
+        try:
+            return self._send_safe({"action": action, **fields}, timeout=timeout)
+        except GREBridgeError as exc:
+            return {"ok": False, "error": str(exc)}
+
     def get_draft_state(self) -> dict[str, Any] | None:
         """Get draft state directly from DraftContentController via MTGA bridge.
 

@@ -173,6 +173,15 @@ class DraftStatsCache:
         self._stats_cache[set_code] = self._parse_json(cards_data, set_code)
         return self._stats_cache[set_code]
 
+    def get_raw_ratings(self, set_code: str) -> list[dict[str, Any]]:
+        """The cached 17lands rows as downloaded (mtga_id, ATA, ALSA, GIH, IWD...)."""
+        set_code = set_code.upper()
+        cache_path = self._get_cache_path(set_code)
+        if cache_path.exists() and not self._is_cache_stale(set_code):
+            with open(cache_path, encoding="utf-8") as f:
+                return json.load(f)
+        return self._download_set_data(set_code)
+
     def load_set(self, set_code: str) -> None:
         """Pre-load a set's data into memory.
 

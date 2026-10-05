@@ -65,6 +65,7 @@ from arenamcp.standalone_auto_queue import _AutoQueueMixin
 from arenamcp.standalone_autopilot_capture import _AutopilotCaptureMixin
 from arenamcp.standalone_deck import _DeckAnalysisMixin
 from arenamcp.standalone_diagnostics import _DiagnosticsMixin
+from arenamcp.standalone_draft_event import _DraftEventMixin
 from arenamcp.standalone_hotkeys import _StandaloneHotkeysMixin
 from arenamcp.standalone_mcp import MCPClient
 from arenamcp.standalone_postmatch import _PostMatchMixin
@@ -90,6 +91,7 @@ logger = logging.getLogger(__name__)
 
 class StandaloneCoach(
     _AutoQueueMixin,
+    _DraftEventMixin,
     _AutopilotCaptureMixin,
     _StartupMixin,
     _DeckAnalysisMixin,
@@ -1494,6 +1496,12 @@ class StandaloneCoach(
                 # Check for active draft/sealed first
                 draft_pack = self._mcp.get_draft_pack()
                 self._emit_pipe_snapshots(draft_state=draft_pack)
+
+                # Autoplay of a joined draft event owns its picks, deck and
+                # event screens; advice-only draft handling stays out of its way.
+                if self._poll_draft_event(draft_pack):
+                    time.sleep(0.5)
+                    continue
 
                 if draft_pack.get("is_building"):
                     self.ui.status("DECK", "Building a 40-card draft deck")

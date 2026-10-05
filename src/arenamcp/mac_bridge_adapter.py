@@ -363,6 +363,294 @@ class MacBridgeAdapter:
             raise AdapterError(f"Pending is {snapshot.request_class}, not {'/'.join(classes)}")
         return snapshot
 
+    # -- draft events --------------------------------------------------------
+    # Hands for limited events, through the client's own UI handlers (see
+    # re-output DraftContentController / DeckBuilderWidget / MainButtonComponent):
+    # a pick is ReserveCardAndLockIn (the double-click path, which commits the
+    # pick to the deck manager), a deck is DeckBuilderModel edits plus the Done
+    # button, and the event page's Play button runs MainButton_OnPlayButtonClicked,
+    # which has no Join/Pay case. Entry-fee paths are never called.
+
+    def _find(self, class_name: str, timeout: float | None) -> int | None:
+        ops = _Ops()
+        ops.add("find", **{"class": class_name}, depth=0, optional=True)
+        return handle(self._run(ops, timeout)[0])
+
+    _SCREENS = (
+        ("match_end", "MatchEndScene"),
+        ("draft", "DraftContentController"),
+        ("deck_builder", "DeckBuilderWidget"),
+        ("event_page", "EventPageContentController"),
+        ("home", "HomePageContentController"),
+    )
+
+    def _cmd_get_screen(self, command: dict, timeout: float | None) -> dict:
+        """Which wrapper screens are active, in one read-only batch."""
+        ops = _Ops()
+        refs = [ops.add("find", **{"class": cls}, depth=0, optional=True) for _key, cls in self._SCREENS]
+        values = self._run(ops, timeout)
+        found = {
+            key: bool(handle(values[ref["ref"]]))
+            for (key, _cls), ref in zip(self._SCREENS, refs, strict=True)
+        }
+        if found["deck_builder"]:
+            ops = _Ops()
+            active = ops.get(H(handle(values[refs[2]["ref"]])), "_isActive", optional=True)
+            found["deck_builder"] = bool(self._run(ops, timeout)[active["ref"]])
+        return {"ok": True, **found}
+
+    def _cmd_get_draft_state(self, command: dict, timeout: float | None) -> dict:
+        found = self._find("DraftContentController", timeout)
+        if not found:
+            return {"ok": True, "is_open": False}
+        controller = H(found)
+        ops = _Ops()
+        ok_to_pick = ops.get(controller, "_okToPickCard")
+        holder = ops.get(controller, "_draftPackHolder", optional=True)
+        animating = ops.get(holder, "IsAnimating", optional=True)
+        pod = ops.get(controller, "DraftPod", optional=True)
+        to_take = ops.get(pod, "PickNumCardsToTake", optional=True)
+        manager = ops.get(controller, "_draftDeckManager", optional=True)
+        reserved = ops.call(manager, "ReservedCardCount")
+        views = ops.get(holder, "CardViews", depth=1, optional=True)
+        values = self._run(ops, timeout)
+        pod_node = values[pod["ref"]]
+        mode = (
+            "Human" if "Human" in short_class(pod_node) else "Bot" if "Bot" in short_class(pod_node) else ""
+        )
+        view_nodes = [node for node in items(values[views["ref"]]) if handle(node)]
+
+        ops = _Ops()
+        refs = []
+        for node in view_nodes:
+            card = ops.get(H(handle(node)), "Card", optional=True)
+            refs.append(
+                (handle(node), ops.get(card, "GrpId", optional=True), ops.get(card, "TitleId", optional=True))
+            )
+        seconds = pack_ref = pick_ref = None
+        if mode == "Human" and handle(pod_node):
+            # PickInfo fields verified in the live client's metadata (2026-10-05).
+            pick_info = ops.get(H(handle(pod_node)), "_currentPickInfo", optional=True)
+            pack_ref = ops.get(pick_info, "SelfPack", optional=True)
+            pick_ref = ops.get(pick_info, "SelfPick", optional=True)
+            seconds = ops.get(H(handle(pod_node)), "PickSecondsRemaining", optional=True)
+        elif mode == "Bot" and handle(pod_node):
+            pack_ref = ops.get(H(handle(pod_node)), "_currentPack", optional=True)
+            pick_ref = ops.get(H(handle(pod_node)), "_currentPick", optional=True)
+        details = self._run(ops, timeout) if ops.ops else []
+
+        pack_views = [
+            {"view": view, "grp_id": num(details[grp["ref"]]), "title_id": num(details[title["ref"]])}
+            for view, grp, title in refs
+            if num(details[grp["ref"]]) > 0
+        ]
+        response = {
+            "ok": True,
+            "is_open": True,
+            "controller": found,
+            "draft_mode": mode,
+            "ok_to_pick": bool(values[ok_to_pick["ref"]]),
+            "animating": bool(values[animating["ref"]]),
+            "reserved_count": num(values[reserved["ref"]]),
+            "pick_num_cards_to_take": num(values[to_take["ref"]]) or 1,
+            "pack_views": pack_views,
+            "pack_cards": [view["grp_id"] for view in pack_views],
+        }
+        if seconds is not None:
+            response["pack_number"] = num(details[pack_ref["ref"]])
+            response["pick_number"] = num(details[pick_ref["ref"]])
+            response["pick_seconds_remaining"] = num(details[seconds["ref"]])
+        elif pack_ref is not None:
+            # Bot pods count from zero; report 1-based like Draft.Notify.
+            response["pack_number"] = num(details[pack_ref["ref"]]) + 1
+            response["pick_number"] = num(details[pick_ref["ref"]]) + 1
+        return response
+
+    def _cmd_submit_draft_pick(self, command: dict, timeout: float | None) -> dict:
+        wanted = [card for card in command.get("cards") or [] if int(card.get("grp_id") or 0) > 0]
+        state = self._cmd_get_draft_state({}, timeout)
+        if not state.get("is_open"):
+            raise AdapterError("No draft pick screen is open")
+        if not state["ok_to_pick"] or state["animating"]:
+            raise AdapterError("The draft pack is not ready to pick yet")
+        if state["reserved_count"]:
+            raise AdapterError("Cards are already reserved in this pack; not mixing with a manual pick")
+        if len(wanted) != state["pick_num_cards_to_take"]:
+            raise AdapterError(
+                f"This pick takes {state['pick_num_cards_to_take']} card(s), not {len(wanted)}"
+            )
+        chosen: list[dict] = []
+        for card in wanted:
+            free = [view for view in state["pack_views"] if view not in chosen]
+            title_id = int(card.get("title_id") or 0)
+            match = next((v for v in free if v["grp_id"] == int(card["grp_id"])), None) or next(
+                (v for v in free if title_id and v["title_id"] == title_id), None
+            )
+            if match is None:
+                raise AdapterError(f"Card {card['grp_id']} is not in the current pack")
+            chosen.append(match)
+        ops = _Ops()
+        controller = H(state["controller"])
+        ops.expect_member(controller, "_okToPickCard", True)
+        for view in chosen:
+            ops.call(controller, "ReserveCardAndLockIn", H(view["view"]), {"null": True})
+        self._run(ops, timeout)
+        return {"ok": True, "submitted_type": "DraftPick", "grp_ids": [view["grp_id"] for view in chosen]}
+
+    def _limited_editor(self, timeout: float | None) -> tuple[dict, dict]:
+        """The open, editable limited deck builder's widget and model handles."""
+        found = self._find("DeckBuilderWidget", timeout)
+        if not found:
+            raise AdapterError("The deck builder is not open")
+        widget = H(found)
+        ops = _Ops()
+        ops.expect_member(widget, "_isActive", True)
+        context = ops.get(widget, "Context")
+        ops.expect_member(context, "IsLimited", True)
+        ops.expect_member(context, "IsSideboarding", False)
+        ops.expect_member(context, "IsReadOnly", False)
+        provider = ops.get(widget, "ModelProvider")
+        model = ops.get(provider, "_model", depth=0)
+        values = self._run(ops, timeout)
+        model_handle = handle(values[model["ref"]])
+        if not model_handle:
+            raise AdapterError("The limited deck model is unavailable")
+        return widget, H(model_handle)
+
+    def _cmd_get_limited_pool(self, command: dict, timeout: float | None) -> dict:
+        """Main deck, sideboard and how many of each candidate basic the pool holds."""
+        widget, model = self._limited_editor(timeout)
+        ops = _Ops()
+        deck = ops.call(model, "GetServerModel")
+        main = ops.get(deck, "mainDeck", depth=2)
+        side = ops.get(deck, "sideboard", depth=2)
+        candidates = [int(grp_id) for grp_id in command.get("basic_candidates") or [] if int(grp_id) > 0]
+        quantities = [ops.call(model, "GetQuantityInCardPool", U(grp_id)) for grp_id in candidates]
+        values = self._run(ops, timeout)
+
+        def entries(reference: dict) -> list[dict]:
+            return [
+                {"grp_id": num(field(entry, "Id")), "count": num(field(entry, "Quantity"))}
+                for entry in items(values[reference["ref"]])
+                if num(field(entry, "Id")) > 0 and num(field(entry, "Quantity")) > 0
+            ]
+
+        return {
+            "ok": True,
+            "main_deck": entries(main),
+            "sideboard": entries(side),
+            "basics_in_pool": {
+                str(grp_id): num(values[quantity["ref"]])
+                for grp_id, quantity in zip(candidates, quantities, strict=True)
+                if num(values[quantity["ref"]]) > 0
+            },
+        }
+
+    def _cmd_set_limited_deck(self, command: dict, timeout: float | None) -> dict:
+        """Replace the limited main deck with exact grpId counts, then read it back."""
+        target = {
+            int(e["grp_id"]): int(e["count"]) for e in command.get("main_deck") or [] if int(e["count"]) > 0
+        }
+        if sum(target.values()) < 40:
+            raise AdapterError("A limited deck needs at least 40 cards")
+        current = self._cmd_get_limited_pool({}, timeout)
+        widget, model = self._limited_editor(timeout)
+        ops = _Ops()
+        ops.expect_member(widget, "_isActive", True)
+        for entry in current["main_deck"]:
+            ops.call(model, "RemoveCardFromMainDeck", U(entry["grp_id"]), U(entry["count"]))
+        for grp_id, count in target.items():
+            ops.call(model, "AddCardToMainDeck", U(grp_id), U(count))
+        ops.call(model, "UpdateMainDeck")
+        self._run(ops, timeout)
+        result = self._cmd_get_limited_pool({}, timeout)
+        actual = {entry["grp_id"]: entry["count"] for entry in result["main_deck"]}
+        missing = {grp_id: count for grp_id, count in target.items() if actual.get(grp_id, 0) != count}
+        return {"ok": not missing, "main_deck": result["main_deck"], "mismatched": missing}
+
+    def _cmd_submit_limited_deck(self, command: dict, timeout: float | None) -> dict:
+        widget, _model = self._limited_editor(timeout)
+        ops = _Ops()
+        ops.expect_member(widget, "_isActive", True)
+        ops.call(widget, "DoneButton_OnClick")
+        self._run(ops, timeout)
+        return {"ok": True, "submitted_type": "LimitedDeckDone"}
+
+    _EVENT_PLAY_MODULES = {
+        "Draft",
+        "HumanDraft",
+        "DeckSelect",
+        "TransitionToMatches",
+        "WinLossGate",
+        "WinNoGate",
+        "ClaimPrize",
+    }
+
+    def _cmd_get_event_page(self, command: dict, timeout: float | None) -> dict:
+        found = self._find("EventPageContentController", timeout)
+        if not found:
+            return {"ok": True, "is_open": False}
+        ops = _Ops()
+        context = ops.get(H(found), "_currentEventContext")
+        player_event = ops.get(context, "PlayerEvent")
+        course = ops.get(player_event, "CourseData")
+        module = ops.get(course, "CurrentModule")
+        info = ops.get(player_event, "EventInfo")
+        name = ops.get(info, "InternalEventName")
+        values = self._run(ops, timeout)
+        return {
+            "ok": True,
+            "is_open": True,
+            "event_name": str(values[name["ref"]] or ""),
+            "module": enum_name(values[module["ref"]]),
+        }
+
+    def _cmd_event_play(self, command: dict, timeout: float | None) -> dict:
+        """Press the event page's Play button, only in a stage that cannot pay."""
+        page = self._cmd_get_event_page({}, timeout)
+        if not page.get("is_open"):
+            raise AdapterError("The event page is not open")
+        expected = str(command.get("event_name") or "")
+        if expected and page["event_name"] != expected:
+            raise AdapterError(f"Event page shows {page['event_name']}, not {expected}")
+        if page["module"] not in self._EVENT_PLAY_MODULES:
+            raise AdapterError(f"Event stage {page['module'] or 'unknown'} is not one autoplay may advance")
+        button = self._find("MainButtonComponent", timeout)
+        if not button:
+            raise AdapterError("The event page has no Play button")
+        ops = _Ops()
+        delegate = ops.get(H(button), "PlayButton_OnClick")
+        ops.call(delegate, "Invoke")
+        self._run(ops, timeout)
+        return {
+            "ok": True,
+            "submitted_type": "EventPlay",
+            "module": page["module"],
+            "event_name": page["event_name"],
+        }
+
+    def _cmd_leave_match(self, command: dict, timeout: float | None) -> dict:
+        """Leave the match result screen (the client returns to the event page)."""
+        found = self._find("MatchEndScene", timeout)
+        if not found:
+            raise AdapterError("No match result screen is open")
+        ops = _Ops()
+        ops.call(H(found), "LeaveMatch")
+        self._run(ops, timeout)
+        return {"ok": True}
+
+    def _cmd_go_to_event(self, command: dict, timeout: float | None) -> dict:
+        event_name = str(command.get("event_name") or "")
+        if not event_name:
+            raise AdapterError("An event name is required")
+        home = self._find("HomePageContentController", timeout)
+        if not home:
+            raise AdapterError("Arena is not on the home screen")
+        ops = _Ops()
+        ops.call(H(home), "GoToEventScreen", {"str": event_name})
+        self._run(ops, timeout)
+        return {"ok": True, "event_name": event_name}
+
     # -- observation ---------------------------------------------------------
 
     def _cmd_get_deck_editor(self, command: dict, timeout: float | None) -> dict:
