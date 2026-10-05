@@ -16,8 +16,23 @@ _BENEFICIAL = re.compile(
     r"|\b(?:target|enchanted|equipped) [^.]*?\b(?:gains?|has|have) "
     r"(?:hexproof|indestructible|flying|lifelink|vigilance|trample|haste|first strike|double strike|protection)\b"
     r"|\bput [^.]*?\+1/\+1 counters? on [^.]*?\btarget\b"
+    r"|\battach [^.]*?\bto target creature you control\b"
 )
 _BLINK = re.compile(r"\bexile[^.]*?\breturn (?:it|them|that card|those cards)\b[^.]*?to the battlefield")
+_ATTACH_KEYWORD = re.compile(r"^\s*(?:equip|reconfigure)\b[^\n]*$", re.IGNORECASE)
+
+
+def source_effect_text(oracle: str, parent_oracle: str = "") -> str:
+    """Rules text that decides target polarity for a request's source.
+
+    Arena's equip ability object carries only its keyword line ("Equip {o0}"),
+    which names no effect, so Lightning Greaves' equip read as unclassified
+    and was cancelled (2026-10-04 22:50). By rule it attaches the parent to a
+    creature you control; the parent's own text says what that grants.
+    """
+    if _ATTACH_KEYWORD.match(re.sub(r"<[^>]*>", "", oracle or "").strip()):
+        return f"Attach to target creature you control.\n{parent_oracle or ''}".strip()
+    return oracle or ""
 
 
 def target_effect_is_harmful(oracle: str) -> bool | None:

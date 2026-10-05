@@ -17,7 +17,7 @@ from arenamcp.backend_health import is_backend_error_text
 from arenamcp.decisions import expand_target_selection
 from arenamcp.match_context import STRATEGIC_POLICY, prepare_match_context, with_deck_reference
 from arenamcp.play_safety import filter_play_options, find_source, unsafe_play_reason
-from arenamcp.target_effects import target_effect_is_harmful
+from arenamcp.target_effects import source_effect_text, target_effect_is_harmful
 
 logger = logging.getLogger(__name__)
 
@@ -2597,8 +2597,14 @@ class ActionPlanner(_ActionLegalityMixin):
             or (picked_entry or {}).get("oracle_text")
             or parent.get("oracle_text")
             or ""
-        ).lower()
-        return oracle
+        )
+        parent_oracle = str(
+            (context.get("source_card_oracle_text") if context_matches else "")
+            or parent.get("oracle_text")
+            or ((picked_entry or {}).get("source_card") or {}).get("oracle_text")
+            or ""
+        )
+        return source_effect_text(oracle, parent_oracle).lower()
 
     @staticmethod
     def _decision_source_instance(game_state: dict[str, Any]) -> int:

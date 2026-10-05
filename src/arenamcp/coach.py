@@ -60,7 +60,12 @@ from arenamcp.coach_structured import (
 from arenamcp.coach_tracker import WordUsageTracker
 from arenamcp.coach_triggers import GameStateTrigger
 from arenamcp.combat_keywords import printed_combat_keywords
-from arenamcp.mana import get_local_seat_id, has_autotap_solution, mana_cost_to_cmc
+from arenamcp.mana import (
+    get_local_seat_id,
+    has_autotap_solution,
+    haste_equipment_mana_hint,
+    mana_cost_to_cmc,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2793,6 +2798,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             )
         else:
             lines.extend(mana_lines)
+        haste_mana = haste_equipment_mana_hint(battlefield, local_seat, turn_num)
+        if haste_mana:
+            lines.append(haste_mana)
 
         # Land drop status. P2-9: lands_played is inferred post-message and
         # lags for seconds after a drop — the CURRENT window's menu is the

@@ -39,7 +39,7 @@ from arenamcp.gre_bridge import (
     enrich_snapshot_from_pending_response,
     get_bridge,
 )
-from arenamcp.target_effects import target_effect_is_harmful
+from arenamcp.target_effects import source_effect_text, target_effect_is_harmful
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +131,7 @@ class AutopilotEngine(
         # Activated-ability submissions this turn, keyed (turn, "iid"|"name", key).
         self._activation_counts: dict[tuple[int, str, Any], int] = {}
         self._equipment_activation_states: set[tuple] = set()
+        self._last_activation_note: tuple | None = None
         self._max_fallback_bugs_per_match: int = 5
 
         # State
@@ -528,19 +529,53 @@ class AutopilotEngine(
         turn = self._turn_number(game_state)
         self._activation_counts = {k: v for k, v in self._activation_counts.items() if k[0] == turn}
         name = (name or "").strip().lower()
+        equipment_key = None
         if self._activation_limit(game_state, instance_id, name) == self._EQUIPMENT_ACTIVATIONS_PER_STATE:
             self._equipment_activation_states = {
                 key for key in getattr(self, "_equipment_activation_states", set()) if key[0] == turn
             }
-            self._equipment_activation_states.add(
-                self._equipment_activation_key(game_state, instance_id, name)
-            )
+            equipment_key = self._equipment_activation_key(game_state, instance_id, name)
+            self._equipment_activation_states.add(equipment_key)
         if instance_id:
             key = (turn, "iid", instance_id)
             self._activation_counts[key] = self._activation_counts.get(key, 0) + 1
         if name:
             key = (turn, "name", name)
             self._activation_counts[key] = self._activation_counts.get(key, 0) + 1
+        self._last_activation_note = (time.monotonic(), turn, instance_id, name, equipment_key)
+
+    # A cancel this soon after an activation is that activation's own
+    # targets/costs step being backed out, not a later request's.
+    _ACTIVATION_ROLLBACK_MAX_AGE_S = 10.0
+
+    def _undo_activation_after_cancel(self, game_state: dict[str, Any], why: str) -> None:
+        """A cancelled follow-up rolls the activation back; it used nothing.
+
+        2026-10-04 22:50: Greaves' equip was cancelled at its target step, yet
+        still counted, so the guard hid the equip for the rest of the window.
+        """
+        note = getattr(self, "_last_activation_note", None)
+        self._last_activation_note = None
+        if not note:
+            return
+        noted_at, turn, instance_id, name, equipment_key = note
+        if time.monotonic() - noted_at > self._ACTIVATION_ROLLBACK_MAX_AGE_S:
+            return
+        if turn != self._turn_number(game_state):
+            return
+        context = game_state.get("decision_context") or {}
+        try:
+            parent = int(context.get("source_parent_instance_id") or 0)
+        except (TypeError, ValueError):
+            parent = 0
+        if parent and instance_id and parent != instance_id:
+            return
+        if equipment_key is not None:
+            getattr(self, "_equipment_activation_states", set()).discard(equipment_key)
+        for key in ((turn, "iid", instance_id) if instance_id else None, (turn, "name", name) if name else None):
+            if key is not None and self._activation_counts.get(key, 0) > 0:
+                self._activation_counts[key] -= 1
+        logger.info("Repeat-activation guard: %r was rolled back (%s); not counting it", name or instance_id, why)
 
     @staticmethod
     def _activation_source_name(label: str) -> str:
@@ -927,7 +962,13 @@ class AutopilotEngine(
             picked = stack[-1]  # top of stack
 
         if picked:
-            oracle = str(picked.get("oracle_text") or "").lower()
+            matched = bool(source_id) and str(picked.get("instance_id")) == str(source_id)
+            parent_oracle = str(
+                (picked.get("source_card") or {}).get("oracle_text")
+                or (ctx.get("source_card_oracle_text") if matched else "")
+                or ""
+            )
+            oracle = source_effect_text(str(picked.get("oracle_text") or ""), parent_oracle).lower()
             name = str(picked.get("name") or "")
 
         # Bridge may include oracle in target_candidates / request payload;
@@ -3713,6 +3754,10 @@ class AutopilotEngine(
                     ExecutionPath.GRE_AWARE,
                     f"typed-decision {decision.request_type}: declined (cancel)",
                 )
+                if decision.request_type != "ActionsAvailable":
+                    self._undo_activation_after_cancel(
+                        game_state, f"{decision.request_type} cancelled"
+                    )
                 self._record_autopilot_decision(
                     game_state,
                     trigger,
