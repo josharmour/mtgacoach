@@ -928,6 +928,9 @@ class ActionPlanner(_ActionLegalityMixin):
                     f"{len(effective_legal_actions)} legal actions"
                 )
 
+        self._check_block_survival(
+            plan, game_state, decision_context or game_state.get("decision_context") or {}
+        )
         self._check_block_recovery(
             plan, game_state, decision_context or game_state.get("decision_context") or {}
         )
@@ -962,6 +965,71 @@ class ActionPlanner(_ActionLegalityMixin):
 
         logger.info(f"Planned {len(plan.actions)} actions: {plan.overall_strategy}")
         return plan
+
+    def _check_block_survival(self, plan: ActionPlan, state: dict, context: dict) -> None:
+        """Never submit blocks that let lethal damage through when a legal block survives.
+
+        2026-10-04 23:32: at 25 life against a 9/9 and an unblockable 18/19
+        flyer, the planner declined to chump the 9/9 ("absorb 9 damage") and
+        took 27. Damage counts every attacker, not only the blockable ones.
+        """
+        if len(plan.actions) != 1 or plan.actions[0].action_type != ActionType.DECLARE_BLOCKERS:
+            return
+        from arenamcp.combat_solver import _resolve_attacker, blocker_allowed_attackers_map, optimal_blocks
+
+        local = next((p for p in state.get("players", []) if p.get("is_local")), None)
+        life = (local or {}).get("life_total")
+        if type(life) is not int or life <= 0:
+            return
+        local_seat = local.get("seat_id")
+        cards = {c.get("instance_id"): c for c in state.get("battlefield", [])}
+        attackers = [
+            c
+            for c in cards.values()
+            if c.get("is_attacking") and (c.get("controller_seat_id") or c.get("owner_seat_id")) != local_seat
+        ]
+        legal_ids = {int(i) for i in context.get("legal_blocker_ids") or [] if str(i).isdigit()}
+        blockers = [cards[i] for i in legal_ids if i in cards]
+        if not attackers or not blockers:
+            return
+        if any(not isinstance(c.get("power"), int) for c in attackers):
+            return
+        action = plan.actions[0]
+        planned = action.blocker_instance_assignments or {}
+        through = sum(
+            _resolve_attacker(
+                atk, [cards[b] for b, a in planned.items() if a == atk["instance_id"] and b in cards]
+            ).damage_through
+            for atk in attackers
+        )
+        if through < life:
+            return
+        allowed = blocker_allowed_attackers_map(context.get("raw_blockers") or [])
+        survival = optimal_blocks(attackers, blockers, life, blocker_allowed_attackers=allowed or None)
+        if survival is None or survival.damage_through >= life or not survival.assignments:
+            return
+
+        def label(iid):
+            card = cards[iid]
+            token = card.get("is_token") or "token" in str(card.get("object_kind", "")).lower()
+            return f"{'*' if token else ''}{card.get('name', 'Creature')} [id:{iid}]"
+
+        logger.warning(
+            "Lethal block guard: planned blocks %s let %d damage through at %d life; using %s",
+            planned,
+            through,
+            life,
+            survival.explanation,
+        )
+        action.blocker_instance_assignments = dict(survival.assignments)
+        action.blocker_assignments = {label(b): label(a) for b, a in survival.assignments.items()}
+        action.reasoning = (
+            f"Planned blocks were lethal ({through} damage at {life} life); {survival.explanation}."
+        )
+        plan.fallback_reason = "planner_lethal_block"
+        plan.overall_strategy = f"Survive combat: {survival.explanation}."
+        blocks = "; ".join(f"{label(b)} against {label(a)}" for b, a in survival.assignments.items())
+        plan.voice_advice = f"Blocking with {blocks}; not blocking was lethal."
 
     def _check_block_recovery(self, plan: ActionPlan, state: dict, context: dict) -> None:
         """Price supported recovery before committing a same-outcome trade."""

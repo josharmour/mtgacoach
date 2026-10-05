@@ -810,10 +810,11 @@ def collect_attackers(game_state: dict[str, Any]) -> list[dict]:
 
 
 def collect_attackers_from_raw_blockers(game_state: dict[str, Any], raw_blockers: list[dict]) -> list[dict]:
-    """Derive attacker objects from the GRE declareBlockersReq payload.
+    """Derive the BLOCKABLE attackers from the GRE declareBlockersReq payload.
 
-    Each entry in raw_blockers exposes `attackerInstanceIds` — the union
-    of those IDs is the full attacker set.
+    Each entry in raw_blockers exposes `attackerInstanceIds`, so the union
+    omits attackers no blocker can block (e.g. a flyer vs. no reach). Use
+    `collect_attackers` for the damage that actually comes through.
     """
     battlefield = game_state.get("battlefield", [])
     attacker_ids: set[int] = set()

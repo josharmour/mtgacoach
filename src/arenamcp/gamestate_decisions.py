@@ -362,15 +362,25 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
                 blocker_names.append(game_state._resolve_card_name(obj.grp_id))
                 blocker_ids.append(obj_id)
             # Each Blocker entry names the attackers it may legally block
-            # (GreProtobuf Blocker.attackerInstanceIds). Their union is the
-            # authoritative attacker set for this combat — the only place
-            # the log states it during DeclareBlockers (issue #420).
+            # (GreProtobuf Blocker.attackerInstanceIds). Their union is every
+            # BLOCKABLE attacker, even if attackState was missed (issue #420).
             if isinstance(blk, dict):
                 attacker_id_set.update(_ensure_int_list(blk.get("attackerInstanceIds", [])))
 
-        # Clear stale is_attacking on all objects before flagging current attackers
+        # blockers[].attackerInstanceIds lists only attackers some blocker CAN
+        # block. An unblockable attacker (a flyer vs. no reach) is absent, yet
+        # still deals damage: 2026-10-04 23:32 this handler cleared Mechtitan's
+        # log attackState, the solver saw 9 of 27 damage and "not blocking"
+        # lost at 25 life. Keep the attacking player's log-flagged attackers
+        # (flags reset each turn); only the defender's creatures are stale.
+        attacking_seat = game_state.turn_info.active_player
         for obj in game_state.game_objects.values():
-            if obj.is_attacking and obj.instance_id not in attacker_id_set:
+            if not obj.is_attacking or obj.instance_id in attacker_id_set:
+                continue
+            controller = obj.controller_seat_id or obj.owner_seat_id
+            if attacking_seat and controller == attacking_seat:
+                attacker_id_set.add(obj.instance_id)
+            else:
                 obj.is_attacking = False
 
         attacker_names, attacker_ids = [], []
