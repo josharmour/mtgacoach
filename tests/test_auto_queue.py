@@ -19,7 +19,6 @@ def proposal(action="start_queue", screen="deck", **changes):
         "point": [0.5, 0.7],
         "confidence": 0.98,
         "reason": "Use the visible most recent queue with the current deck",
-        "recent_index": 0,
         "recent_selected": True,
         "deck_selected": True,
         "free_entry": True,
@@ -48,9 +47,12 @@ def navigator():
     return nav, controller, backend, state, statuses
 
 
+ENDED = {"match_id": "ended", "event_id": "Ladder", "deck_name": "Current deck"}
+
+
 def arm(nav):
     nav.set_enabled(True)
-    assert nav.note_match_end({"match_id": "ended"}, confirmed_match_end=True)
+    assert nav.note_match_end(dict(ENDED), confirmed_match_end=True)
 
 
 def step(nav):
@@ -128,19 +130,35 @@ def test_already_selected_recent_queue_can_use_play_directly_without_changing_de
     ],
 )
 def test_invalid_or_unverified_queue_action_is_rejected(changes):
+    parse_queue_action(proposal(), expected_deck="Current deck")
     with pytest.raises(ValueError):
-        parse_queue_action(proposal(**changes))
+        parse_queue_action(proposal(**changes), expected_deck="Current deck")
 
 
 @pytest.mark.parametrize("label", ["Premier Draft", "Traditional Sealed", "Buy Entry"])
 def test_paid_or_limited_recent_tile_is_rejected(label):
     with pytest.raises(ValueError):
-        parse_queue_action(proposal("select_recent", "recent", label=label))
+        parse_queue_action(proposal("select_recent", "recent", label=label), expected_deck="Current deck")
 
 
-def test_only_first_most_recent_tile_and_free_earned_reward_can_be_selected():
+def test_only_the_ended_matchs_deck_tile_and_free_earned_reward_can_be_selected():
+    # 2026-10-04 23:15:20: the leftmost tile (another deck and event) was
+    # taken for the most recent one. Position is not trusted; the deck is.
+    expected = "The Notary Hobbits Digital"
+    for action, label in (("select_recent", "Brawl"), ("start_queue", "Play")):
+        tile = proposal(action, "recent", label=label, deck_name="Michelangelo, Weirdness to 11")
+        with pytest.raises(ValueError):
+            parse_queue_action(tile, expected_deck=expected)
+        with pytest.raises(ValueError):
+            parse_queue_action(proposal(action, "recent", label=label, deck_name=expected))
+        for visible in (expected, "the notary hobbits digital", "The Notary Hobbits Dig…"):
+            parse_queue_action(
+                proposal(action, "recent", label=label, deck_name=visible), expected_deck=expected
+            )
     with pytest.raises(ValueError):
-        parse_queue_action(proposal("select_recent", "recent", recent_index=1, label="Standard"))
+        parse_queue_action(
+            proposal("select_recent", "recent", label="Brawl", deck_name="The"), expected_deck=expected
+        )
     with pytest.raises(ValueError):
         parse_queue_action(proposal("claim", "reward", label="Claim", free_entry=False))
 
@@ -651,3 +669,98 @@ def test_click_without_visible_effect_is_reported_to_the_next_observation():
     step(nav)
     request = json.loads(backend.complete_with_image.call_args.args[1])
     assert request["previous_click_had_no_visible_effect"] is None
+
+
+def test_unknown_deck_pauses_instead_of_choosing_a_recently_played_tile():
+    nav, controller, backend, _, _ = navigator()
+    nav.set_enabled(True)
+    assert nav.note_match_end({"match_id": "ended", "event_id": "Ladder"}, confirmed_match_end=True)
+    step(nav)
+    controller.execute.assert_not_called()
+    assert "did not show which deck" in nav.paused_reason
+
+
+def test_expected_queue_from_the_log_is_given_to_the_model():
+    nav, _, backend, _, _ = navigator()
+    arm(nav)
+    step(nav)
+    request = json.loads(backend.complete_with_image.call_args.args[1])
+    assert request["expected_queue"] == {"event_id": "Ladder", "deck_name": "Current deck"}
+
+
+def test_refinement_cannot_hop_to_another_tiles_control():
+    # Observed 23:15:20: estimate (0.272, 0.886) refined to (0.173, 0.922).
+    nav, controller, backend = refining_navigator(json.dumps({"found": True, "point": [0.02, 0.6]}))
+    backend.complete_with_image.side_effect = [
+        proposal(point=[0.272, 0.886]),
+        json.dumps({"found": True, "point": [0.17, 0.62]}),
+    ]
+    arm(nav)
+    step(nav)
+    controller.execute.assert_not_called()
+    assert "moved" in nav.get_debug_info()["last_rejection"]["error"]
+
+
+def queued_navigator(selection):
+    nav, controller, backend, state, statuses = navigator()
+    nav._queue_selection = lambda: selection
+    arm(nav)
+    step(nav)  # clicks start_queue
+    assert controller.execute.call_count == 1
+    backend.complete_with_image.return_value = proposal("wait", "queue", point=None, matchmaking_visible=True)
+    return nav, controller, backend
+
+
+def test_log_confirms_the_queue_the_click_joined():
+    import time
+
+    nav, _, backend = queued_navigator(
+        {"event_id": "Ladder", "deck_name": "Current deck", "recorded_at": time.time() + 1}
+    )
+    step(nav)
+    assert not nav.paused_reason
+    assert nav._queue_confirmed
+
+
+def test_log_showing_a_different_deck_or_event_pauses_navigation():
+    import time
+
+    for selection in (
+        {"event_id": "Play_Brawl_Historic", "deck_name": "Current deck"},
+        {"event_id": "Ladder", "deck_name": "Michelangelo, Weirdness to 11"},
+    ):
+        nav, controller, backend = queued_navigator({**selection, "recorded_at": time.time() + 1})
+        calls = backend.complete_with_image.call_count
+        step(nav)
+        assert "Leave that queue" in nav.paused_reason
+        assert backend.complete_with_image.call_count == calls
+        assert controller.execute.call_count == 1
+
+
+def test_a_selection_from_before_the_click_is_not_evidence():
+    nav, _, _ = queued_navigator({"event_id": "Other", "deck_name": "Old deck", "recorded_at": 1.0})
+    step(nav)
+    assert not nav.paused_reason
+
+
+def test_same_deck_in_another_known_queue_is_rejected():
+    # The same deck can be on a Competitive Brawl tile and a Brawl tile.
+    tile = proposal("start_queue", "recent", deck_name="The Notary Hobbits Digital")
+    expected = {"expected_deck": "The Notary Hobbits Digital", "expected_event": "Brawl_Ladder"}
+    with pytest.raises(ValueError):
+        parse_queue_action(proposal(**{**json.loads(tile), "queue_name": "Brawl"}), **expected)
+    parse_queue_action(proposal(**{**json.loads(tile), "queue_name": "Competitive  Brawl"}), **expected)
+    # Unmapped events rely on the deck name alone.
+    parse_queue_action(
+        proposal(**{**json.loads(tile), "queue_name": "Bot Match"}),
+        expected_deck="The Notary Hobbits Digital",
+        expected_event="AIBotMatch",
+    )
+
+
+def test_bot_match_requeue_requires_the_bot_match_tile():
+    tile = json.loads(proposal("start_queue", "recent", deck_name="Mono-White Auras"))
+    expected = {"expected_deck": "Mono-White Auras", "expected_event": "AIBotMatch"}
+    parse_queue_action(proposal(**{**tile, "queue_name": "Bot Match"}), **expected)
+    with pytest.raises(ValueError):
+        parse_queue_action(proposal(**{**tile, "queue_name": "Brawl"}), **expected)

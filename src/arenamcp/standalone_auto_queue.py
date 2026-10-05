@@ -49,7 +49,7 @@ class _AutoQueueMixin:
         try:
             from arenamcp.auto_queue import AutoQueueNavigator
             from arenamcp.idle_sleep import SleepInhibitor
-            from arenamcp.server import get_completed_match_for_navigation
+            from arenamcp.server import get_completed_match_for_navigation, get_last_queue_selection
 
             inhibitor = getattr(self, "_auto_queue_sleep_inhibitor", None)
             if inhibitor is None:
@@ -63,6 +63,7 @@ class _AutoQueueMixin:
                     backend=backend,
                     get_game_state=self._mcp.get_game_state,
                     status_fn=lambda detail: self.ui.status("AUTO_QUEUE_DETAIL", detail),
+                    queue_selection=get_last_queue_selection,
                 )
             navigator.set_enabled(True)
             if not navigator.paused_reason:

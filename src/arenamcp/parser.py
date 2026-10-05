@@ -36,6 +36,9 @@ EVENT_PATTERNS = [
     # Sealed pool events
     (re.compile(r"CardPool"), "CardPool"),
     (re.compile(r"InternalEventName"), "InternalEventName"),
+    # The user's own queue choice (event + deck), sent just before EventJoin.
+    (re.compile(r"==> EventSetDeckV3\b"), "EventSetDeckV3"),
+    (re.compile(r"==> EventAiBotMatch\b"), "EventAiBotMatch"),
 ]
 
 

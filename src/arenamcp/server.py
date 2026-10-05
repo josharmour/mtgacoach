@@ -6,7 +6,9 @@ while the LLM provides strategic analysis.
 """
 
 import copy
+import json
 import logging
+import re
 import threading
 import time
 from collections import deque
@@ -470,11 +472,122 @@ def stop_draft_helper() -> None:
 
 
 _completed_match_for_navigation: dict[str, Any] = {}
+_last_queue_selection: dict[str, Any] = {}
+_QUEUE_SELECTION_LINE = re.compile(r"==> (EventSetDeckV3|EventAiBotMatch) (\{.*\})\s*$")
 
 
 def get_completed_match_for_navigation() -> dict[str, Any]:
     """Latest authoritative match completion, distinct from a BO3 game ending."""
     return dict(_completed_match_for_navigation)
+
+
+def get_last_queue_selection() -> dict[str, Any]:
+    """The event and deck Arena was last asked to queue with (EventSetDeckV3)."""
+    return dict(_last_queue_selection)
+
+
+def parse_queue_selection(payload: dict, kind: str = "EventSetDeckV3") -> dict[str, Any] | None:
+    """Read a queue request: {"id":..., "request": "<json>"}.
+
+    EventSetDeckV3 names the event and deck. A bot match (EventAiBotMatch,
+    observed 2026-10-04 23:32:59) sends only {"deckId", "botDeckId"}; its
+    deck name is resolved from the log's deck summaries when needed.
+    """
+    request = payload.get("request")
+    if isinstance(request, str):
+        try:
+            request = json.loads(request)
+        except ValueError:
+            return None
+    if not isinstance(request, dict):
+        return None
+    if kind == "EventAiBotMatch":
+        deck_id = request.get("deckId")
+        if not deck_id:
+            return None
+        return {
+            "event_id": "AIBotMatch",
+            "deck_name": "",
+            "deck_id": str(deck_id),
+            "recorded_at": time.time(),
+        }
+    summary = request.get("Summary")
+    if not isinstance(summary, dict):
+        return None
+    event_id, deck_name = request.get("EventName"), summary.get("Name")
+    if not event_id or not deck_name:
+        return None
+    return {
+        "event_id": str(event_id),
+        "deck_name": str(deck_name),
+        "deck_id": str(summary.get("DeckId") or ""),
+        "recorded_at": time.time(),
+    }
+
+
+def _handle_queue_selection(payload: dict, kind: str = "EventSetDeckV3") -> None:
+    global _last_queue_selection
+    selection = parse_queue_selection(payload, kind)
+    if selection:
+        _last_queue_selection = selection
+        logger.info(
+            "Queue selection: %s with deck %r (%s)",
+            selection["event_id"],
+            selection["deck_name"],
+            selection["deck_id"],
+        )
+
+
+def _log_path():
+    from pathlib import Path
+
+    from arenamcp.watcher import DEFAULT_LOG_PATH
+
+    return watcher.log_path if watcher is not None else Path(DEFAULT_LOG_PATH)
+
+
+def _deck_name_from_log(deck_id: str) -> str:
+    """Latest name the log gives this deck id (deck summaries, upserts, set-deck requests)."""
+    pattern = re.compile(
+        r'DeckId\\?":\s*\\?"' + re.escape(deck_id) + r'\\?"(?:,\s*\\?"Mana\\?":\s*\\?"[^"\\]*\\?")?'
+        r',\s*\\?"Name\\?":\s*\\?"((?:[^"\\]|\\(?!"))+)'
+    )
+    try:
+        with open(_log_path(), encoding="utf-8", errors="replace") as log:
+            names = pattern.findall(log.read())
+    except OSError as error:
+        logger.info("Could not scan Player.log for deck %s: %s", deck_id, error)
+        return ""
+    return names[-1] if names else ""
+
+
+def _queue_selection_from_log() -> dict[str, Any] | None:
+    """Fallback when the watcher started after the queue: the log's last queue request."""
+    try:
+        with open(_log_path(), encoding="utf-8", errors="replace") as log:
+            lines = log.readlines()
+    except OSError as error:
+        logger.info("Could not scan Player.log for the last queue selection: %s", error)
+        return None
+    for line in reversed(lines):
+        match = _QUEUE_SELECTION_LINE.search(line)
+        if match:
+            try:
+                return parse_queue_selection(json.loads(match.group(2)), match.group(1))
+            except ValueError:
+                return None
+    return None
+
+
+def _queue_selection_for_event(event_id: str) -> dict[str, Any] | None:
+    selection = _last_queue_selection or None
+    if not selection or selection.get("event_id") != event_id:
+        selection = _queue_selection_from_log()
+    if not selection or selection.get("event_id") != event_id:
+        return None
+    if not selection.get("deck_name") and selection.get("deck_id"):
+        selection = {**selection, "deck_name": _deck_name_from_log(selection["deck_id"])}
+    return selection if selection.get("deck_name") else None
 
 
 def _handle_match_created(payload: dict) -> None:
@@ -635,9 +748,13 @@ def _handle_match_created(payload: dict) -> None:
     ):
         global _completed_match_for_navigation
         if _completed_match_for_navigation.get("match_id") != match_id:
+            selection = _queue_selection_for_event(game_state.event_id) if game_state.event_id else None
             _completed_match_for_navigation = {
                 "match_id": match_id,
                 "event_id": game_state.event_id,
+                # Requeue must reuse this deck; Recently Played order is not trusted.
+                "deck_name": (selection or {}).get("deck_name", ""),
+                "deck_id": (selection or {}).get("deck_id", ""),
                 "completed_at": time.time(),
                 "match_complete": True,
             }
@@ -725,6 +842,10 @@ def start_watching() -> None:
     parser.register_handler("MatchCreated", _handle_match_created)
     parser.register_handler("MatchGameRoomStateChangedEvent", _handle_match_created)
     parser.register_handler("ClientToMatchServiceMessage", _handle_match_created)
+    parser.register_handler("EventSetDeckV3", _handle_queue_selection)
+    parser.register_handler(
+        "EventAiBotMatch", lambda payload: _handle_queue_selection(payload, "EventAiBotMatch")
+    )
 
     # Wire up the draft handler as default to catch all draft events
     draft_handler = create_draft_handler(draft_state)
