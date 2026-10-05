@@ -221,6 +221,11 @@ class _BridgeSubmitMixin:
                 game_state.get("_bridge_request_type") or game_state.get("_bridge_request_class") or ""
             )
             if action.action_type == ActionType.CLICK_BUTTON and request_type:
+                if "SelectReplacement" in request_type:
+                    # Order Replacement's "Done" keeps Arena's first/default
+                    # replacement; submit_pass is refused on this request
+                    # (2026-10-04 22:50:48 MANUAL REQUIRED). Decline stays decline.
+                    return self._try_gre_bridge_select_replacement(action, game_state)
                 if "DeclareAttacker" in request_type:
                     # "Done (confirm attackers)" — MTGA may have auto-selected
                     # attackers. Submitting empty clears those selections and
@@ -880,6 +885,54 @@ class _BridgeSubmitMixin:
         )
         return submitted, [entry for _, entry in pairs]
 
+    def _await_attack_selection(
+        self, bridge: Any, request_key: tuple, entries: list[dict], native: bool, *, require_submit: bool
+    ) -> tuple[str, tuple]:
+        """Wait for Arena to acknowledge an UpdateAttacker: acknowledged, advanced or timeout.
+
+        One early poll is not proof of rejection, and a successful method return
+        alone is not proof that Arena accepted the chosen recipients.
+        """
+        from arenamcp.combat_targets import recipient_key
+
+        expected = {
+            int(entry["attackerInstanceId"]): recipient_key(entry["damageRecipient"]) for entry in entries
+        }
+        for attempt in range(6):
+            abort = getattr(self, "_abort_event", None)
+            if abort is not None and abort.is_set():
+                return "aborted", request_key
+            time.sleep(0.4 if attempt == 0 else 0.2)
+            try:
+                refreshed = bridge.get_pending_actions()
+            except Exception:
+                logger.warning("Bridge declare_attackers: cannot read selection acknowledgment")
+                return "unreadable", request_key
+            if not refreshed or refreshed.get("ok") is False:
+                continue
+            if not (
+                refreshed.get("has_pending") and "DeclareAttacker" in str(refreshed.get("request_class", ""))
+            ):
+                return "advanced", request_key
+            if not native:
+                return "acknowledged", request_key
+            refreshed_key = (refreshed.get("game_state_id"), refreshed.get("msg_id"))
+            try:
+                selected = {
+                    int(entry["attackerInstanceId"]): recipient_key(entry["selectedDamageRecipient"])
+                    for entry in refreshed.get("attackers") or []
+                    if entry.get("selectedDamageRecipient")
+                }
+            except (ValueError, TypeError, KeyError):
+                logger.warning("Bridge declare_attackers: accepted selection is unreadable")
+                return "unreadable", request_key
+            if refreshed_key == request_key or selected != expected:
+                continue
+            if require_submit and not refreshed.get("can_submit"):
+                continue
+            return "acknowledged", refreshed_key
+        return "timeout", request_key
+
     def _try_bridge_declare_attackers(self, action: GameAction) -> ClickResult | None:
         """Submit attacker declarations via GRE bridge (two-step NPE handler pattern).
 
@@ -957,71 +1010,53 @@ class _BridgeSubmitMixin:
             )
             return ClickResult(True, 0, 0, "attackers", "GRE bridge", submitted_action=submitted_action)
 
-        # Step 1: UpdateAttacker (declare attackers with damage recipients)
-        resp = bridge.submit_attackers_raw(attacker_entries)
-        if not resp or not resp.get("ok"):
-            logger.warning(f"Bridge declare_attackers step 1 failed: {resp}")
-            return None
+        # Step 1: UpdateAttacker (declare attackers with damage recipients).
+        # Arena's own UI sends one UpdateAttacker per clicked recipient (every
+        # pending attacker -> that player/planeswalker). One update mixing
+        # recipients was rejected with FailureReason_InvalidDamageRecipient
+        # (2026-10-04 22:53:01: Hobbit -> player, Surrak -> Liliana), so the
+        # native bridge declares one recipient group per acknowledged update.
+        from arenamcp.combat_targets import recipient_key
 
-        if resp.get("needs_finalize"):
-            # Give the native update a bounded chance to round-trip. One early
-            # poll is not proof of rejection, and a successful method return
-            # alone is not proof that Arena accepted the chosen recipients.
-            for attempt in range(6):
-                abort = getattr(self, "_abort_event", None)
-                if abort is not None and abort.is_set():
-                    return None
-                time.sleep(0.4 if attempt == 0 else 0.2)
-                try:
-                    refreshed = bridge.get_pending_actions()
-                except Exception:
-                    logger.warning("Bridge declare_attackers: cannot read selection acknowledgment")
-                    return None
-                if not refreshed or refreshed.get("ok") is False:
-                    continue
-                if not (
-                    refreshed.get("has_pending")
-                    and "DeclareAttacker" in str(refreshed.get("request_class", ""))
-                ):
-                    # Arena advanced; never send an empty declaration into a
-                    # different request. The caller verifies the transition.
-                    return ClickResult(
-                        True, 0, 0, "attackers", "GRE bridge", submitted_action=submitted_action
-                    )
-                native = refreshed.get("bridge_runtime") in ("il2cpp-macos", "il2cpp-android")
-                if native:
-                    from arenamcp.combat_targets import recipient_key
+        native = pending.get("bridge_runtime") in ("il2cpp-macos", "il2cpp-android")
+        steps = [attacker_entries]
+        if native:
+            groups: dict[tuple, list[dict]] = {}
+            for entry in attacker_entries:
+                groups.setdefault(recipient_key(entry["damageRecipient"]), []).append(entry)
+            cumulative: list[dict] = []
+            steps = []
+            for group in groups.values():
+                cumulative = cumulative + group
+                steps.append(cumulative)
 
-                    original_key = (pending.get("game_state_id"), pending.get("msg_id"))
-                    refreshed_key = (refreshed.get("game_state_id"), refreshed.get("msg_id"))
-                    try:
-                        selected = {
-                            int(entry["attackerInstanceId"]): recipient_key(entry["selectedDamageRecipient"])
-                            for entry in refreshed.get("attackers") or []
-                            if entry.get("selectedDamageRecipient")
-                        }
-                    except (ValueError, TypeError, KeyError):
-                        logger.warning("Bridge declare_attackers: accepted selection is unreadable")
-                        return None
-                    expected = {
-                        int(entry["attackerInstanceId"]): recipient_key(entry["damageRecipient"])
-                        for entry in attacker_entries
-                    }
-                    if (
-                        refreshed_key == original_key
-                        or selected != expected
-                        or not refreshed.get("can_submit")
-                    ):
-                        continue
+        request_key = (pending.get("game_state_id"), pending.get("msg_id"))
+        needs_finalize = False
+        for index, step_entries in enumerate(steps):
+            resp = bridge.submit_attackers_raw(step_entries)
+            if not resp or not resp.get("ok"):
+                logger.warning(f"Bridge declare_attackers step 1 failed: {resp}")
+                return None
+            needs_finalize = bool(resp.get("needs_finalize"))
+            if not needs_finalize:
                 break
-            else:
+            outcome, request_key = self._await_attack_selection(
+                bridge, request_key, step_entries, native, require_submit=index == len(steps) - 1
+            )
+            if outcome == "advanced":
+                # Arena advanced; never send an empty declaration into a
+                # different request. The caller verifies the transition.
+                return ClickResult(True, 0, 0, "attackers", "GRE bridge", submitted_action=submitted_action)
+            if outcome != "acknowledged":
                 logger.warning("Bridge declare_attackers: selection was not acknowledged; refusing finalize")
                 return None
+
+        if needs_finalize:
             # Bind native confirmation to the acknowledged request and exact
             # selection, so a newer request cannot receive an empty "Done".
             resp2 = (
                 bridge.submit_attackers_raw(
-                    attacker_entries, expected_request_id=refreshed_key, finalize_only=True
+                    attacker_entries, expected_request_id=request_key, finalize_only=True
                 )
                 if native
                 else bridge.submit_attackers_raw([])

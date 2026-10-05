@@ -182,7 +182,13 @@ def test_native_attack_finalize_requires_server_acknowledgment(monkeypatch, ack)
 
 
 @pytest.mark.parametrize("accepted", [True, False])
-def test_mixed_player_planeswalker_attack_waits_for_exact_acknowledgment(monkeypatch, accepted):
+def test_mixed_player_planeswalker_attack_declares_one_recipient_per_update(monkeypatch, accepted):
+    """Arena rejects one UpdateAttacker that mixes recipients.
+
+    Player.log 2026-10-04 22:53:01: Hobbit -> player + Surrak -> Liliana in one
+    DeclareAttackersResp got FailureReason_InvalidDamageRecipient. Arena's UI
+    sends each recipient's attackers as its own update; so does the bridge.
+    """
     sleeps = []
     monkeypatch.setattr("arenamcp.autopilot_bridge.time.sleep", sleeps.append)
     walker = {"type": "PlanesWalker", "planeswalkerInstanceId": 1022}
@@ -208,13 +214,19 @@ def test_mixed_player_planeswalker_attack_waits_for_exact_acknowledgment(monkeyp
             for iid in (693, 803)
         ],
     }
-    acknowledgment = deepcopy(pending)
-    acknowledgment.update(game_state_id=468, msg_id=665)
-    acknowledgment["attackers"][0]["selectedDamageRecipient"] = PLAYER
-    acknowledgment["attackers"][1]["selectedDamageRecipient"] = walker if accepted else PLAYER
+    first = deepcopy(pending)
+    first.update(game_state_id=468, msg_id=665)
+    first["attackers"][0]["selectedDamageRecipient"] = PLAYER
+    second = deepcopy(first)
+    second.update(game_state_id=469, msg_id=667)
+    second["attackers"][1]["selectedDamageRecipient"] = walker if accepted else PLAYER
     engine = pilot(state, pending)
-    engine._gre_bridge.get_pending_actions.side_effect = [pending, pending] + [acknowledgment] * 5
-    engine._gre_bridge.submit_attackers_raw.side_effect = [{"ok": True, "needs_finalize": True}, {"ok": True}]
+    engine._gre_bridge.get_pending_actions.side_effect = [pending, pending, first] + [second] * 6
+    engine._gre_bridge.submit_attackers_raw.side_effect = [
+        {"ok": True, "needs_finalize": True},
+        {"ok": True, "needs_finalize": True},
+        {"ok": True},
+    ]
     action = GameAction(
         ActionType.DECLARE_ATTACKERS,
         attacker_names=["Vaultborn Tyrant", "Chomping Changeling"],
@@ -226,15 +238,16 @@ def test_mixed_player_planeswalker_attack_waits_for_exact_acknowledgment(monkeyp
     )
     result = engine._try_bridge_declare_attackers(action)
     assert bool(result and result.success) is accepted
-    assert engine._gre_bridge.submit_attackers_raw.call_count == (2 if accepted else 1)
-    assert sum(sleeps) <= 1.5
+    calls = engine._gre_bridge.submit_attackers_raw.call_args_list
+    to_player = {"attackerInstanceId": 693, "damageRecipient": PLAYER}
+    to_walker = {"attackerInstanceId": 803, "damageRecipient": walker}
+    assert calls[0].args[0] == [to_player] and not calls[0].kwargs
+    assert calls[1].args[0] == [to_player, to_walker] and not calls[1].kwargs
+    assert len(calls) == (3 if accepted else 2)
+    assert sum(sleeps) <= 2.0
     if accepted:
-        confirmed = engine._gre_bridge.submit_attackers_raw.call_args
-        assert confirmed.kwargs == {"expected_request_id": (468, 665), "finalize_only": True}
-        assert confirmed.args[0] == [
-            {"attackerInstanceId": 693, "damageRecipient": PLAYER},
-            {"attackerInstanceId": 803, "damageRecipient": walker},
-        ]
+        assert calls[2].kwargs == {"expected_request_id": (469, 667), "finalize_only": True}
+        assert calls[2].args[0] == [to_player, to_walker]
 
 
 def test_prompt_exposes_instance_ids_for_eligible_blocks():

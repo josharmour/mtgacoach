@@ -473,6 +473,7 @@ def stop_draft_helper() -> None:
 
 _completed_match_for_navigation: dict[str, Any] = {}
 _last_queue_selection: dict[str, Any] = {}
+_match_event_ids: dict[str, str] = {}
 _QUEUE_SELECTION_LINE = re.compile(r"==> (EventSetDeckV3|EventAiBotMatch) (\{.*\})\s*$")
 
 
@@ -577,6 +578,21 @@ def _queue_selection_from_log() -> dict[str, Any] | None:
             except ValueError:
                 return None
     return None
+
+
+def _match_event_from_log(match_id: str) -> str:
+    """The eventId Arena logged for this match's room (when the watcher missed its start)."""
+    pattern = re.compile(r'"eventId":\s*"([^"]+)"')
+    try:
+        with open(_log_path(), encoding="utf-8", errors="replace") as log:
+            for line in log:
+                if match_id in line:
+                    found = pattern.search(line)
+                    if found:
+                        return found.group(1)
+    except OSError as error:
+        logger.info("Could not scan Player.log for match %s: %s", match_id, error)
+    return ""
 
 
 def _queue_selection_for_event(event_id: str) -> dict[str, Any] | None:
@@ -704,17 +720,20 @@ def _handle_match_created(payload: dict) -> None:
         logger.info(f"Captured local seat ID {seat_id} from match message")
 
     # ── Match format and event tracking ──
+    # Arena puts the event on each reserved player, not the room config.
     event_id = (
         game_room_config.get("eventId")
         or room_info.get("eventId")
         or event_payload.get("eventId")
         or payload.get("eventId")
-        or ""
+        or next((p.get("eventId") for p in participants if isinstance(p, dict) and p.get("eventId")), "")
     )
     if event_id:
         game_state.event_id = str(event_id)
         clean_fmt = str(event_id).replace("_", " ").replace("Play ", "").strip()
         game_state.format_name = clean_fmt
+        if match_id:
+            _match_event_ids[str(match_id)] = str(event_id)
 
     # ── Opponent name tracking ──
     for participant in participants:
@@ -748,10 +767,18 @@ def _handle_match_created(payload: dict) -> None:
     ):
         global _completed_match_for_navigation
         if _completed_match_for_navigation.get("match_id") != match_id:
-            selection = _queue_selection_for_event(game_state.event_id) if game_state.event_id else None
+            # MatchCompleted's gameRoomConfig holds only matchId/reservedPlayers
+            # and game state has usually been reset by then (2026-10-04 23:58):
+            # use the event recorded when this match started.
+            match_event = (
+                game_state.event_id
+                or _match_event_ids.get(str(match_id))
+                or _match_event_from_log(str(match_id))
+            )
+            selection = _queue_selection_for_event(match_event) if match_event else None
             _completed_match_for_navigation = {
                 "match_id": match_id,
-                "event_id": game_state.event_id,
+                "event_id": match_event,
                 # Requeue must reuse this deck; Recently Played order is not trusted.
                 "deck_name": (selection or {}).get("deck_name", ""),
                 "deck_id": (selection or {}).get("deck_id", ""),

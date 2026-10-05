@@ -2207,8 +2207,13 @@ class ActionPlanner(_ActionLegalityMixin):
                         logger.debug(f"Menu pick {pick} → {self._last_menu[idx]!r}")
                 if action is None:
                     logger.warning(
-                        f"Planner pick {pick!r} out of menu range "
-                        f"(1..{len(self._last_menu)}); trying structured fields"
+                        f"Planner pick {pick!r} "
+                        + (
+                            f"({self._last_menu[idx]!r}) has no executable mapping"
+                            if 0 <= idx < len(self._last_menu)
+                            else f"out of menu range (1..{len(self._last_menu)})"
+                        )
+                        + "; trying structured fields"
                     )
             if action is None:
                 action = self._parse_action(action_data)
@@ -2863,6 +2868,8 @@ class ActionPlanner(_ActionLegalityMixin):
         picked = [f"tgt:{iid}" for iid in pool[:n]]
         return picked if expand_target_selection(decision, picked) else [DECLINE_DECISION]
 
+    _DECISION_MAX_TOKENS = 2048
+
     def _llm_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         game_state = prepare_match_context(game_state)
         lines = [
@@ -3006,10 +3013,14 @@ class ActionPlanner(_ActionLegalityMixin):
             # windows, and the deterministic fallback needs time to submit
             # before the window closes (2026-07-01: mulligan window expired
             # while the LLM call was still blocked).
+            # 512 tokens left no room for the answer: glm-5.3-flash spent all
+            # 512 on reasoning (finish_reason=length, 7x on 2026-10-04) and the
+            # autopilot passed its turn 12 with Tooth and Nail castable. The
+            # time budget above, not the token cap, bounds latency.
             response = self._backend.complete(
                 self._DECISION_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY,
                 user_message,
-                512,
+                self._DECISION_MAX_TOKENS,
                 temperature=0.0,
                 request_timeout_s=min(self._timeout, 12.0),
                 raise_on_error=True,

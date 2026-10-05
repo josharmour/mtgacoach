@@ -195,6 +195,10 @@ class _ActionLegalityMixin:
             # double-faced card in hand. The name isn't in the menu line;
             # the matcher resolves via the raw PlayMDFC action.
             return GameAction(action_type=ActionType.PLAY_LAND, mdfc=True)
+        if lower.startswith("select replacement"):
+            # rules_engine's Order Replacement menu: "Select replacement effect
+            # order" had no mapping, so the planner's pick fell through to Done.
+            return GameAction(action_type=ActionType.SELECT_REPLACEMENT, modal_index=0)
         if lower.startswith("pay costs for") or "auto-pay" in lower:
             return GameAction(action_type=ActionType.PAY_COSTS)
         if "choose: play" in lower:
