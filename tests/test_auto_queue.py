@@ -39,7 +39,11 @@ def navigator():
     backend = SimpleNamespace(complete_with_image=Mock(return_value=proposal()))
     statuses = []
     nav = AutoQueueNavigator(
-        backend=backend, controller=controller, get_game_state=lambda: state, status_fn=statuses.append
+        backend=backend,
+        controller=controller,
+        get_game_state=lambda: state,
+        status_fn=statuses.append,
+        refine_target=lambda frame, data, action: action,
     )
     return nav, controller, backend, state, statuses
 
@@ -568,3 +572,82 @@ def test_other_platform_without_injected_controller_is_explicitly_unsupported(mo
     step(nav)
     assert "macOS" in nav.paused_reason
     backend.complete_with_image.assert_not_called()
+
+
+def refining_navigator(refined):
+    """A navigator whose refinement pass hits the (fake) model, like production."""
+    nav, controller, backend, state, statuses = navigator()
+    nav._refine_target = nav._refine_with_model
+    backend.complete_with_image.side_effect = [proposal(point=[0.897, 0.846]), refined]
+    controller.capture.side_effect = lambda: make_frame(size=(1600, 935))
+    return nav, controller, backend
+
+
+def test_click_is_regrounded_on_a_zoomed_crop_before_input():
+    from io import BytesIO
+
+    from PIL import Image
+
+    from arenamcp.auto_queue import REFINE_PROMPT
+
+    nav, controller, backend = refining_navigator(json.dumps({"found": True, "point": [0.68, 0.55]}))
+    arm(nav)
+    step(nav)
+    refine_call = backend.complete_with_image.call_args_list[1]
+    assert refine_call.args[0] == REFINE_PROMPT
+    assert json.loads(refine_call.args[1])["target_label"] == "Play"
+    assert Image.open(BytesIO(refine_call.args[2])).size == (480, 280)
+    # The crop is clamped to the right edge: left=1120, top=651.
+    point = controller.execute.call_args.args[1].point
+    assert point == pytest.approx(((1120 + 0.68 * 480) / 1600, (651 + 0.55 * 280) / 935))
+
+
+def test_target_missing_from_zoomed_crop_prevents_input_and_is_fed_back():
+    nav, controller, backend = refining_navigator(json.dumps({"found": False, "point": None}))
+    arm(nav)
+    step(nav)
+    controller.execute.assert_not_called()
+    rejection = nav.get_debug_info()["last_rejection"]
+    assert "Could not confirm 'Play'" in rejection["error"]
+    assert nav._failures == 1
+
+
+@pytest.mark.parametrize(
+    "refined",
+    ["not json", "[BACKEND ERROR] timeout", json.dumps({"found": True, "point": [480, 140]})],
+)
+def test_failed_refinement_keeps_the_full_frame_estimate(refined):
+    nav, controller, _ = refining_navigator(refined)
+    arm(nav)
+    step(nav)
+    assert controller.execute.call_args.args[1].point == (0.897, 0.846)
+
+
+def test_result_dismissal_skips_refinement():
+    nav, controller, backend, _, _ = navigator()
+    nav._refine_target = nav._refine_with_model
+    arm(nav)
+    backend.complete_with_image.return_value = proposal(
+        "dismiss_result", "results", label="VICTORY", result_title="VICTORY", result_visible=True
+    )
+    step(nav)
+    assert backend.complete_with_image.call_count == 1
+    assert controller.execute.call_args.args[1].point == (0.5, 0.5)
+
+
+def test_click_without_visible_effect_is_reported_to_the_next_observation():
+    nav, controller, backend, _, _ = navigator()
+    arm(nav)
+    step(nav)
+    controller.execute.assert_called_once()
+    step(nav)
+    request = json.loads(backend.complete_with_image.call_args.args[1])
+    assert request["previous_click_had_no_visible_effect"] == {"action": "start_queue", "label": "Play"}
+
+    nav, controller, backend, _, _ = navigator()
+    arm(nav)
+    step(nav)
+    controller.capture.side_effect = lambda: make_frame(color="red")
+    step(nav)
+    request = json.loads(backend.complete_with_image.call_args.args[1])
+    assert request["previous_click_had_no_visible_effect"] is None
