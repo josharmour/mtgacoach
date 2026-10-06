@@ -729,6 +729,10 @@ class GREBridge:
                 ):
                     if expected.get(source) is not None:
                         command[key] = expected[source]
+                # A planeswalker's loyalty abilities share instanceId and
+                # grpId; only the ability id tells a stale index apart.
+                if expected.get("abilityGrpId"):
+                    command["expected_ability_grp_id"] = expected["abilityGrpId"]
         try:
             resp = self._send_safe(command)
             if resp.get("ok"):
@@ -1586,8 +1590,12 @@ class GREBridge:
 
         Scoring:
         - action_type match is required
+        - a requested ability_grp_id is required: another ability of the
+          same permanent is a different action, not a close match
         - Each additional field match adds 1 to score
         - Returns index of highest-scoring action, or None
+        - Activations tied for best that are *different* abilities are
+          ambiguous: returns None rather than submitting the first one
         """
         # Normalize action_type: accept both "Cast" and "ActionType_Cast"
         at_normalized = action_type
@@ -1597,6 +1605,7 @@ class GREBridge:
 
         best_idx = None
         best_score = -1
+        tied_abilities: set[int] = set()
 
         for idx, act in enumerate(actions):
             act_type = act.get("actionType", "")
@@ -1613,19 +1622,39 @@ class GREBridge:
                 if act_short != at_short:
                     continue
 
+            if ability_grp_id and act.get("abilityGrpId") != ability_grp_id:
+                continue
+
             score = 0
 
             if grp_id and act.get("grpId") == grp_id:
                 score += 1
             if instance_id and act.get("instanceId") == instance_id:
                 score += 1
-            if ability_grp_id and act.get("abilityGrpId") == ability_grp_id:
+            if ability_grp_id:
                 score += 1
 
+            ability = int(act.get("abilityGrpId") or 0)
             if score > best_score:
                 best_score = score
                 best_idx = idx
+                tied_abilities = {ability}
+            elif score == best_score:
+                tied_abilities.add(ability)
 
+        if (
+            best_idx is not None
+            and len(tied_abilities) > 1
+            and at_normalized.replace("ActionType_", "").lower() == "activate"
+        ):
+            logger.warning(
+                "Refusing ambiguous %s match (grpId=%s instanceId=%s): abilities %s tie",
+                action_type,
+                grp_id,
+                instance_id,
+                sorted(tied_abilities),
+            )
+            return None
         return best_idx
 
 

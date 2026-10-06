@@ -1117,6 +1117,11 @@ class MacBridgeAdapter:
                 raise AdapterError(f"identity mismatch: action {index} is {info}")
         if command.get("expected_action_type") and command["expected_action_type"] != info["actionType"]:
             raise AdapterError(f"identity mismatch: action {index} is {info}")
+        # Loyalty abilities of one planeswalker share instanceId and grpId.
+        if command.get("expected_ability_grp_id") is not None and int(
+            command["expected_ability_grp_id"]
+        ) != int(info.get("abilityGrpId") or 0):
+            raise AdapterError(f"identity mismatch: action {index} is {info}")
         if (
             command.get("expected_game_state_id") not in (None, -1)
             and int(command["expected_game_state_id"]) != snapshot.game_state_id

@@ -11,13 +11,18 @@ Option-id scheme (family-agnostic; the executor dispatches on prefix):
     tgt:<iid>      — SelectTargets candidate instance id (submit_targets)
     sel:<id>       — SelectN / Search id (submit_selection, multi-select)
     mull:keep|mull — Mulligan decision (submit_mulligan)
+    grp:<iid>      — London-mulligan card to bottom (submit_group)
+    grp:<iid>:<to> — scry/surveil/split: send card <iid> to destination <to>
+                     (one per card; submit_group answers every GroupSpec)
     pass           — pass priority (submit_pass)
 """
 
 from __future__ import annotations
 
+import itertools
 import logging
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -103,6 +108,8 @@ class PendingDecision:
             minimum, maximum = casting_selection_bounds(first)
             if not minimum <= len(selected) <= maximum:
                 return False
+        if self.request_type == "Group" and any("spec_index" in o.meta for o in self.options):
+            return destination_groups(self, chosen) is not None
         weight = sum(int(self.find(option_id).meta.get("weight", 1)) for option_id in chosen)
         return (self.min_weight is None or weight >= self.min_weight) and (
             self.max_weight is None or weight <= self.max_weight
@@ -131,6 +138,209 @@ def _default_name_resolver(grp_id: int) -> str:
     return str(_default_card_resolver(grp_id).get("name") or "")
 
 
+# --- Log-derived identity of bridge instance ids ------------------------------
+# The bridge poll carries bare instance ids. Player.log (the source of truth
+# for observation) already revealed what they are — e.g. the surveilled card
+# is a Visibility_Private library object in the same GRE event as the
+# GroupReq — so labels resolve them from this process's log-fed GameState.
+
+
+def _live_game_state() -> Any:
+    try:
+        from arenamcp import server
+
+        return server.game_state
+    except Exception:
+        return None
+
+
+def _live_object(instance_id: int) -> Any:
+    state = _live_game_state()
+    try:
+        return state.game_objects.get(int(instance_id)) if state is not None else None
+    except Exception:
+        return None
+
+
+def _default_instance_zone(instance_id: int) -> str:
+    """'Hand' / 'Battlefield' / ... for an instance, or '' when unknown."""
+    obj = _live_object(instance_id)
+    if obj is None:
+        return ""
+    try:
+        zone = _live_game_state().zones.get(obj.zone_id)
+        return _zone_name(getattr(zone.zone_type, "value", "")) if zone is not None else ""
+    except Exception:
+        return ""
+
+
+def _default_instance_card(instance_id: int) -> dict[str, Any]:
+    """{grp_id, name, type_line, mana_cost, cmc} for an instance, or {}."""
+    grp_id = int(getattr(_live_object(instance_id), "grp_id", 0) or 0)
+    if not grp_id:
+        return {}
+    info = _default_card_resolver(grp_id) or {}
+    card: dict[str, Any] = {"grp_id": grp_id}
+    if not info.get("error"):
+        card.update(
+            {k: info[k] for k in ("name", "type_line", "mana_cost", "cmc") if info.get(k) not in (None, "")}
+        )
+    return card
+
+
+_ZONE_NAMES = {
+    "battlefield",
+    "hand",
+    "graveyard",
+    "exile",
+    "library",
+    "stack",
+    "command",
+    "limbo",
+    "pending",
+    "revealed",
+}
+
+
+def _enum_text(raw: Any) -> str:
+    if isinstance(raw, dict):  # mac adapter enum dump {"e": name, "v": value}
+        raw = raw.get("e") or ""
+    return str(raw or "").strip()
+
+
+def _zone_name(raw: Any) -> str:
+    """'ZoneType_Library' / 'Library' -> 'Library'; '' when unrecognized."""
+    text = _enum_text(raw).removeprefix("ZoneType_")
+    return text.capitalize() if text.lower() in _ZONE_NAMES else ""
+
+
+def _sub_zone_name(raw: Any) -> str:
+    """'SubZoneType_Top' / 'Top' -> 'Top'; None/absent -> ''."""
+    text = _enum_text(raw).removeprefix("SubZoneType_")
+    return "" if text.lower() in ("", "none") else text.capitalize()
+
+
+# --- Rules text -------------------------------------------------------------
+
+_ARENA_MANA = re.compile(r"\{(o[^{}]*)\}")
+
+
+def _arena_symbols(group: str) -> str:
+    """Arena's '{o1o(U/R)o(U/R)}' -> '{1}{U/R}{U/R}'."""
+    symbols = re.findall(r"o(\([^)]*\)|\d+|[A-Za-z])", group)
+    return "".join("{" + s.strip("()") + "}" for s in symbols) if symbols else "{" + group + "}"
+
+
+def clean_rules_text(text: str, name: str = "") -> str:
+    """Arena localization text as players read it: no markup, {2} not {o2}."""
+    text = re.sub(r"<[^>]*>", "", text or "")
+    text = _ARENA_MANA.sub(lambda m: _arena_symbols(m.group(1)), text)
+    text = text.replace("CARDNAME", name or "this card")
+    return " ".join(text.split())
+
+
+def _default_ability_description(ability_grp_id: int) -> tuple[str, str]:
+    """(loyalty cost, rules text) — the same lookup the sibling-activation
+    labels in autopilot use, so both label paths agree."""
+    if not ability_grp_id:
+        return "", ""
+    try:
+        from arenamcp import gre_action_matcher
+
+        cost, text = gre_action_matcher.describe_ability(int(ability_grp_id))
+        return str(cost or ""), str(text or "")
+    except Exception:
+        pass
+    try:
+        from arenamcp.card_db import get_card_database
+
+        return "", get_card_database().get_ability_text(int(ability_grp_id)) or ""
+    except Exception:
+        return "", ""
+
+
+# Keyword abilities activated away from the battlefield. The model read
+# "Activate: Undulating Witness" (Basic landcycling, from hand) as a pump, as
+# impossible "since it's still in hand", or as a graveyard ability
+# (2026-10-06). The zone is implied when the log can't place the card.
+_KEYWORD_ACTIVATIONS: tuple[tuple[str, str, str], ...] = (
+    (r"basic landcycling", "discard it to search for a basic land card and put it into your hand", "Hand"),
+    (r"(\w+)cycling", "discard it to search for a {0} card and put it into your hand", "Hand"),
+    (r"cycling", "discard it to draw a card", "Hand"),
+    (r"channel", "", "Hand"),
+    (r"forecast", "", "Hand"),
+    (
+        r"(?:commander )?ninjutsu",
+        "return an unblocked attacker you control to hand to put this onto the battlefield tapped and attacking",
+        "Hand",
+    ),
+    (r"transmute", "discard it to search for a card with the same mana value; sorcery speed", "Hand"),
+    (
+        r"bloodrush",
+        "discard it: target attacking creature gets this card's power, toughness and abilities",
+        "Hand",
+    ),
+    (r"reinforce", "discard it to put +1/+1 counters on target creature", "Hand"),
+    (
+        r"unearth",
+        "return it to the battlefield with haste; it's exiled at end of turn; sorcery speed",
+        "Graveyard",
+    ),
+    (r"embalm", "exile it to create a token copy of it; sorcery speed", "Graveyard"),
+    (r"eternalize", "exile it to create a 4/4 black Zombie token copy of it; sorcery speed", "Graveyard"),
+    (
+        r"scavenge",
+        "exile it to put +1/+1 counters equal to its power on target creature; sorcery speed",
+        "Graveyard",
+    ),
+    (r"encore", "exile it to create token copies that attack this turn; sorcery speed", "Graveyard"),
+)
+
+_FROM_ZONE = {
+    "Hand": "from hand",
+    "Graveyard": "from graveyard",
+    "Exile": "from exile",
+    "Command": "from command zone",
+    "Library": "from library",
+}
+
+
+def _keyword_activation(text: str) -> tuple[str, str]:
+    """(short reminder, implied source zone) for a keyword ability's text."""
+    lowered = text.lower()
+    for pattern, reminder, zone in _KEYWORD_ACTIVATIONS:
+        match = re.match(pattern + r"\b", lowered)
+        if match:
+            kind = match.group(1).capitalize() if match.groups() else ""
+            return reminder.format(kind), zone
+    return "", ""
+
+
+def _activation_label(name: str, ability_grp_id: int, zone: str, *, describe: bool) -> str:
+    """'Activate: <Name> [from hand: <cost>: <ability text> — <reminder>]'.
+
+    The source name stays right after "Activate:" and everything else is in
+    one bracket, so autopilot's _activation_source_name (which stops at "[")
+    and the coach's bracket stripping keep reading the bare name. ``describe``
+    is False for a permanent offering several abilities: autopilot's
+    _label_sibling_activations appends their "[cost: text]" itself.
+    """
+    cost, raw_text = _default_ability_description(ability_grp_id) if ability_grp_id else ("", "")
+    text = clean_rules_text(raw_text, name).replace("[", "(").replace("]", ")")
+    reminder, implied_zone = _keyword_activation(text)
+    where = _FROM_ZONE.get(_zone_name(zone) or implied_zone, "")
+    detail = ""
+    if describe and text:
+        detail = text if len(text) <= 160 else text[:157].rstrip() + "…"
+        if cost:
+            detail = f"{cost}: {detail}"
+        if reminder and "(" not in text:
+            detail += f" — {reminder}"
+    inner = ": ".join(part for part in (where, detail) if part)
+    base = f"Activate: {name or 'ability'}"
+    return f"{base} [{inner}]" if inner else base
+
+
 _ACTIONS_AVAILABLE_TYPES = {
     "ActionsAvailable",
     "ActionsAvailableReq",
@@ -156,13 +366,20 @@ def build_pending_decision(
     *,
     resolve_name: Callable[[int], str] = _default_name_resolver,
     resolve_instance: Callable[[int], str] | None = None,
+    resolve_zone: Callable[[int], str] | None = None,
+    resolve_card: Callable[[int], dict[str, Any]] | None = None,
 ) -> PendingDecision | None:
     """Build a PendingDecision from a raw get_pending_actions() response.
 
     Returns None when nothing is pending or the request family isn't
     structurally mapped yet (callers keep their legacy path as fallback —
     fable-improvements.md migration note).
+
+    ``resolve_zone`` / ``resolve_card`` map a bridge instance id to its zone
+    and card identity for labels; both default to the log-fed GameState.
     """
+    resolve_zone = resolve_zone or _default_instance_zone
+    resolve_card = resolve_card or _default_instance_card
     if not poll or not poll.get("has_pending"):
         return None
 
@@ -216,7 +433,9 @@ def build_pending_decision(
         )
 
     if rtype in _ACTIONS_AVAILABLE_TYPES or (not rtype and poll.get("actions")):
-        return _build_actions_available(poll, request_id, can_pass, can_cancel, source_label, resolve_name)
+        return _build_actions_available(
+            poll, request_id, can_pass, can_cancel, source_label, resolve_name, resolve_zone
+        )
     if rtype in _SELECT_TARGETS_TYPES or request_class in _SELECT_TARGETS_TYPES:
         source_id = int(
             poll.get("source_instance_id") or (poll.get("request_payload") or {}).get("sourceId") or 0
@@ -231,7 +450,7 @@ def build_pending_decision(
             poll, request_id, rtype, can_cancel, source_label, resolve_name, resolve_instance
         )
     if rtype in _GROUP_TYPES or request_class in _GROUP_TYPES:
-        return _build_group(poll, request_id, can_cancel, source_label, resolve_instance)
+        return _build_group(poll, request_id, can_cancel, source_label, resolve_instance, resolve_card)
     if rtype in _MULLIGAN_TYPES or request_class in _MULLIGAN_TYPES:
         return PendingDecision(
             request_id=request_id,
@@ -266,10 +485,21 @@ def _build_actions_available(
     can_cancel: bool,
     source_label: str,
     resolve_name: Callable[[int], str],
+    resolve_zone: Callable[[int], str] | None = None,
 ) -> PendingDecision | None:
     options: list[DecisionOption] = []
     saw_pass = False
-    for i, action in enumerate(poll.get("actions") or []):
+    actions = poll.get("actions") or []
+    # Permanents offering several different abilities (Jace's loyalty
+    # abilities): autopilot's _label_sibling_activations names those.
+    abilities_by_source: dict[int, set[int]] = {}
+    for action in actions:
+        if str(action.get("actionType") or "").removeprefix("ActionType_") == "Activate":
+            abilities_by_source.setdefault(int(action.get("instanceId") or 0), set()).add(
+                int(action.get("abilityGrpId") or 0)
+            )
+    siblings = {iid for iid, ids in abilities_by_source.items() if iid and len(ids) > 1}
+    for i, action in enumerate(actions):
         atype = str(action.get("actionType") or "")
         if atype and not atype.startswith("ActionType_"):
             atype = f"ActionType_{atype}"
@@ -296,7 +526,19 @@ def _build_actions_available(
             label = f"Play land: {name or 'land'}"
         elif atype == "ActionType_Activate":
             payable = True if has_autotap_solution(action) else None
-            label = f"Activate: {name or 'ability'}"
+            source_id = int(action.get("instanceId") or 0)
+            zone = ""
+            if source_id and resolve_zone is not None:
+                try:
+                    zone = resolve_zone(source_id) or ""
+                except Exception:
+                    zone = ""
+            label = _activation_label(
+                name,
+                int(action.get("abilityGrpId") or 0),
+                zone,
+                describe=source_id not in siblings,
+            )
         else:
             label = atype.replace("ActionType_", "") or f"Action {i}"
         options.append(
@@ -482,20 +724,90 @@ def _build_select_n(
     )
 
 
+@dataclass(frozen=True)
+class _GroupSpec:
+    """One GroupSpecification: a destination with its card-count bounds."""
+
+    index: int
+    zone: str  # "Library", "Graveyard", "Hand", ... ("" = unrecognized)
+    sub_zone: str  # "Top", "Bottom" or ""
+    lower: int
+    upper: int  # 0 = unbounded
+
+
+def _bound(spec: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = spec.get(key)
+        if isinstance(value, dict):
+            value = value.get("v", 0)
+        try:
+            number = int(value or 0)
+        except (TypeError, ValueError):
+            number = 0
+        if number:
+            return number
+    return 0
+
+
+def _group_specs(raw_specs: Iterable[Any] | None) -> list[_GroupSpec] | None:
+    specs: list[_GroupSpec] = []
+    for index, spec in enumerate(raw_specs or []):
+        if not isinstance(spec, dict):
+            return None
+        specs.append(
+            _GroupSpec(
+                index=index,
+                zone=_zone_name(spec.get("zoneType") or spec.get("zone")),
+                sub_zone=_sub_zone_name(
+                    spec.get("subZoneType") or spec.get("subZone") or spec.get("sub_zone")
+                ),
+                lower=_bound(spec, "lowerBound", "lower_bound"),
+                upper=_bound(spec, "upperBound", "upper_bound"),
+            )
+        )
+    return specs
+
+
+def is_london_group(raw_specs: Iterable[Any] | None, context: Any = "") -> bool:
+    """London-mulligan bottoming: [Hand keep, Library/Bottom put-back].
+
+    Only this shape means "chosen cards go to the bottom". Scry
+    ([Library/Top, Library/Bottom]) and surveil ([Library/Top, Graveyard])
+    must be answered spec by spec — treating any Library spec as the bottom
+    slot sent 7 of 7 surveilled cards to the graveyard on 2026-10-06.
+    """
+    if "LondonMulligan" in _enum_text(context):
+        return True
+    specs = _group_specs(raw_specs) or []
+    return (
+        len(specs) == 2
+        and any(s.zone == "Hand" for s in specs)
+        and any(s.zone == "Library" and s.sub_zone == "Bottom" for s in specs)
+    )
+
+
+def _group_context_name(context: str) -> str:
+    text = context.removeprefix("GroupingContext_")
+    return text if text in ("Scry", "Surveil") else ""
+
+
 def _build_group(
     poll: dict[str, Any],
     request_id: tuple[int, int],
     can_cancel: bool,
     source_label: str,
     resolve_instance: Callable[[int], str] | None,
+    resolve_card: Callable[[int], dict[str, Any]] | None = None,
 ) -> PendingDecision | None:
-    """GroupRequest — London mulligan bottoming and ordering windows.
+    """GroupRequest — London bottoming, scry/surveil and other split windows.
 
-    Option semantics: each option is a card; CHOSEN options go to the
-    bottom group (Library/Bottom), the rest keep (Hand/Top) — mirroring
-    MTGA's LondonWorkflow response shape. Only bottoming-shaped requests
-    (a bottom spec with a positive bound) are mapped; pure ordering
-    windows fall back to the legacy safe-default handler.
+    London mulligan: each option is a card; CHOSEN options go to the bottom
+    group (Library/Bottom), the rest keep (Hand/Top), mirroring MTGA's
+    LondonWorkflow. Every other request with two or more destination specs
+    becomes one ``grp:<iid>:<dest>`` option per card per destination; the
+    planner picks exactly one destination per card and the response answers
+    the specs in their own order, as MTGA's Scry/Surveil/GroupWorkflow do.
+    Single-spec ordering windows fall back to the legacy safe-default handler.
     """
     payload = poll.get("request_payload") or {}
     raw_ids = poll.get("group_instance_ids") or payload.get("instanceIds") or []
@@ -505,32 +817,34 @@ def _build_group(
             iid = int(v)
         except (TypeError, ValueError):
             continue
-        if iid:
+        if iid and iid not in instance_ids:
             instance_ids.append(iid)
     if not instance_ids:
         return None
 
-    specs = poll.get("group_specs") or payload.get("groupSpecs") or []
-    context = str(poll.get("group_context") or payload.get("context") or "")
+    raw_specs = poll.get("group_specs") or payload.get("groupSpecs") or []
+    context = _enum_text(poll.get("group_context") or payload.get("context"))
+    if not is_london_group(raw_specs, context):
+        return _build_destination_group(
+            instance_ids,
+            raw_specs,
+            context,
+            request_id,
+            can_cancel,
+            source_label,
+            resolve_instance,
+            resolve_card,
+        )
 
-    bottom_count = 0
-    for spec in specs:
-        if not isinstance(spec, dict):
-            continue
-        zone = str(spec.get("zoneType") or spec.get("zone") or "")
-        sub = str(spec.get("subZoneType") or spec.get("subZone") or "")
-        if "Bottom" in sub or "Library" in zone:
-            for key in ("lowerBound", "upperBound", "lower_bound", "upper_bound"):
-                try:
-                    b = int(spec.get(key) or 0)
-                except (TypeError, ValueError):
-                    b = 0
-                if b > 0:
-                    bottom_count = max(bottom_count, b)
+    specs = _group_specs(raw_specs) or []
+    bottom_count = max(
+        (max(s.lower, s.upper) for s in specs if s.zone == "Library" and s.sub_zone == "Bottom"),
+        default=0,
+    )
     if bottom_count <= 0 and "LondonMulligan" in context:
         bottom_count = max(0, len(instance_ids) - 7)
     if bottom_count <= 0 or bottom_count > len(instance_ids):
-        return None  # ordering/unknown shape → legacy safe-default path
+        return None  # unknown shape → legacy safe-default path
 
     options = []
     for iid in instance_ids:
@@ -556,6 +870,336 @@ def _build_group(
         can_cancel=can_cancel,
         source_label=source_label or context,
     )
+
+
+def _group_card(
+    iid: int,
+    resolve_instance: Callable[[int], str] | None,
+    resolve_card: Callable[[int], dict[str, Any]] | None,
+) -> dict[str, Any]:
+    card: dict[str, Any] = {}
+    if resolve_card is not None:
+        try:
+            card = dict(resolve_card(iid) or {})
+        except Exception:
+            card = {}
+    name = ""
+    if resolve_instance is not None:
+        try:
+            name = resolve_instance(iid) or ""
+        except Exception:
+            name = ""
+    name = name or str(card.get("name") or "")
+    known = bool(name) and not is_unknown_card_name(name)
+    card["name"] = name if known else ""
+    card["display"] = name if known else f"card #{iid}"
+    return card
+
+
+def _destination_slug(spec: _GroupSpec) -> str:
+    if spec.zone == "Library":
+        return {"Top": "top", "Bottom": "bottom"}.get(spec.sub_zone, "library")
+    return spec.zone.lower() + (f"_{spec.sub_zone.lower()}" if spec.sub_zone else "")
+
+
+def _destination_label(card: dict[str, Any], spec: _GroupSpec, context: str) -> str:
+    name = card["display"]
+    zone, sub = spec.zone, spec.sub_zone
+    if zone == "Library" and sub == "Top":
+        # Scry/surveil cards are already on top: leaving them is a real choice.
+        text = f"Keep {name} on top of your library" if context else f"Put {name} on top of your library"
+    elif zone == "Library" and sub == "Bottom":
+        text = f"Put {name} on the bottom of your library"
+    elif zone == "Library":
+        text = f"Put {name} into your library"
+    elif zone == "Graveyard":
+        text = f"Put {name} into your graveyard"
+    elif zone == "Hand":
+        text = f"Put {name} into your hand"
+    elif zone == "Exile":
+        text = f"Exile {name}"
+    elif zone == "Battlefield":
+        text = f"Put {name} onto the battlefield"
+    else:
+        text = f"Put {name} into {zone.lower()}" + (f" ({sub.lower()})" if sub else "")
+    facts = " ".join(
+        part
+        for part in (clean_rules_text(str(card.get("mana_cost") or "")), str(card.get("type_line") or ""))
+        if part
+    )
+    return f"{text} ({facts})" if facts else text
+
+
+def _build_destination_group(
+    instance_ids: list[int],
+    raw_specs: Iterable[Any],
+    context: str,
+    request_id: tuple[int, int],
+    can_cancel: bool,
+    source_label: str,
+    resolve_instance: Callable[[int], str] | None,
+    resolve_card: Callable[[int], dict[str, Any]] | None,
+) -> PendingDecision | None:
+    specs = _group_specs(raw_specs)
+    if not specs or len(specs) < 2 or any(not spec.zone for spec in specs):
+        return None  # ordering window or unreadable specs → legacy path
+    count = len(instance_ids)
+    if sum(s.lower for s in specs) > count or (
+        all(s.upper for s in specs) and sum(s.upper for s in specs) < count
+    ):
+        return None
+    slugs: list[str] = []
+    for spec in specs:
+        slug = _destination_slug(spec)
+        slugs.append(slug if slug not in slugs else f"{slug}{spec.index}")
+    kind = _group_context_name(context)
+    cards = {iid: _group_card(iid, resolve_instance, resolve_card) for iid in instance_ids}
+    options = []
+    # Destination-major: the first N options send every card to the first
+    # spec (Library/Top for scry/surveil, i.e. "change nothing"), so a
+    # take-the-first-N fallback is always a complete, harmless answer.
+    for spec in specs:
+        for iid in instance_ids:
+            card = cards[iid]
+            options.append(
+                DecisionOption(
+                    option_id=f"grp:{iid}:{slugs[spec.index]}",
+                    label=_destination_label(card, spec, kind),
+                    meta={
+                        "instance_id": iid,
+                        "spec_index": spec.index,
+                        "zone": spec.zone,
+                        "sub_zone": spec.sub_zone,
+                        "lower": spec.lower,
+                        "upper": spec.upper,
+                        "card_name": card["name"],
+                        "card_grp_id": int(card.get("grp_id") or 0),
+                        "type_line": str(card.get("type_line") or ""),
+                        "mana_cost": str(card.get("mana_cost") or ""),
+                        "cmc": card.get("cmc"),
+                    },
+                )
+            )
+    origin = source_label if source_label and not source_label.startswith("{") else ""
+    title = f"{kind} {count}" if kind else "Split cards"
+    if origin and origin not in (context, kind):
+        title += f" from {origin}"
+    rule = "choose exactly one destination for each card"
+    if count > 1 and any(s.zone == "Library" and s.sub_zone == "Top" for s in specs):
+        rule += "; cards kept on top are stacked in the order listed (first = top)"
+    return PendingDecision(
+        request_id=request_id,
+        request_type="Group",
+        options=tuple(options),
+        min_select=count,
+        max_select=count,
+        can_cancel=can_cancel,
+        source_label=f"{title} — {rule}",
+    )
+
+
+def destination_groups(decision: PendingDecision, chosen: list[str]) -> list[dict[str, Any]] | None:
+    """The GroupResp groups for a destination choice, or None if incomplete.
+
+    Every card must get exactly one destination and every spec's bounds must
+    hold. Groups come back in spec order with the spec's own zone/subZone —
+    Arena reads them positionally (2026-10-06: a Library/Bottom group in the
+    second slot of a surveil was read as the Graveyard slot).
+    """
+    picked = [decision.find(option_id) for option_id in chosen]
+    if not picked or any(o is None or "spec_index" not in o.meta for o in picked):
+        return None
+    specs = {o.meta["spec_index"]: o.meta for o in decision.options if "spec_index" in o.meta}
+    cards = {o.meta["instance_id"] for o in decision.options if "spec_index" in o.meta}
+    ids = [o.meta["instance_id"] for o in picked]
+    if len(ids) != len(set(ids)) or set(ids) != cards:
+        return None
+    members: dict[int, list[int]] = {index: [] for index in specs}
+    for option in picked:
+        members[option.meta["spec_index"]].append(option.meta["instance_id"])
+    groups = []
+    for index in sorted(specs):
+        spec = specs[index]
+        size = len(members[index])
+        if size < int(spec.get("lower") or 0) or (spec.get("upper") and size > int(spec["upper"])):
+            return None
+        groups.append({"ids": members[index], "zone": spec["zone"], "sub_zone": spec.get("sub_zone") or None})
+    return groups
+
+
+def _card_mana_value(card: dict[str, Any]) -> float | None:
+    value = card.get("cmc")
+    if value in (None, ""):
+        cost = str(card.get("mana_cost") or "")
+        if not cost:
+            return None
+        value = 0
+        for symbol in re.findall(r"\{([^}]*)\}", cost):
+            if symbol.isdigit():
+                value += int(symbol)
+            elif symbol.upper() not in ("X", "Y", "Z"):
+                value += 1
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_land_card(card: dict[str, Any]) -> bool:
+    front = str(card.get("type_line") or "").split("//")[0]
+    return "Land" in front or "Land" in (card.get("card_types") or [])
+
+
+def _mana_profile(game_state: dict[str, Any] | None) -> tuple[int, int] | None:
+    """(lands in play + in hand, biggest nonland mana value in hand)."""
+    if not isinstance(game_state, dict) or "battlefield" not in game_state or "hand" not in game_state:
+        return None
+    seat = game_state.get("local_seat_id") or next(
+        (p.get("seat_id") for p in game_state.get("players") or [] if p.get("is_local")), None
+    )
+    in_play = sum(
+        1
+        for card in game_state.get("battlefield") or []
+        if isinstance(card, dict)
+        and _is_land_card(card)
+        and (seat is None or (card.get("controller_seat_id") or card.get("owner_seat_id")) == seat)
+    )
+    hand = [card for card in game_state.get("hand") or [] if isinstance(card, dict)]
+    in_hand = sum(1 for card in hand if _is_land_card(card))
+    biggest = max(
+        (_card_mana_value(card) or 0 for card in hand if not _is_land_card(card)),
+        default=0,
+    )
+    return in_play + in_hand, int(biggest)
+
+
+def _worth_keeping(meta: dict[str, Any], profile: tuple[int, int] | None) -> bool:
+    if profile is None or not meta.get("type_line"):
+        return True  # unknown card or board: leaving it on top changes nothing
+    lands, biggest = profile
+    if _is_land_card(meta):
+        return lands < max(4, min(6, biggest))
+    mana_value = _card_mana_value(meta)
+    return mana_value is None or mana_value <= lands + 1
+
+
+def default_group_choice(
+    decision: PendingDecision | None, game_state: dict[str, Any] | None = None
+) -> list[str]:
+    """Safe scry/surveil answer when the planner gives no usable choice.
+
+    Lands the hand still needs and spells castable within about a turn stay
+    on top; excess lands and spells far above the mana in reach go to the
+    other destination (graveyard for surveil, bottom for scry). Unknown cards
+    and an unknown board leave everything on top — the same as not
+    surveilling. Returns [] for London/ordering decisions.
+    """
+    if decision is None or decision.request_type != "Group":
+        return []
+    by_card: dict[int, dict[int, DecisionOption]] = {}
+    for option in decision.options:
+        if "spec_index" not in option.meta:
+            return []
+        by_card.setdefault(option.meta["instance_id"], {})[option.meta["spec_index"]] = option
+    if not by_card:
+        return []
+    spec_meta = {o.meta["spec_index"]: o.meta for o in decision.options}
+    order = sorted(spec_meta)
+    keep_index = next(
+        (i for i in order if spec_meta[i]["zone"] == "Library" and spec_meta[i]["sub_zone"] == "Top"),
+        order[0],
+    )
+    away_index = next((i for i in order if i != keep_index), keep_index)
+    profile = _mana_profile(game_state)
+    keep, away = [], []
+    for destinations in by_card.values():
+        meta = destinations[keep_index].meta
+        if _worth_keeping(meta, profile):
+            keep.append(destinations[keep_index].option_id)
+        else:
+            away.append(destinations[away_index].option_id)
+    for choice in (keep + away, [d[keep_index].option_id for d in by_card.values()]):
+        if decision.selection_is_valid(choice):
+            return choice
+    if len(by_card) <= 6:
+        for combo in itertools.product(order, repeat=len(by_card)):
+            choice = [d[i].option_id for d, i in zip(by_card.values(), combo, strict=True)]
+            if decision.selection_is_valid(choice):
+                return choice
+    return []
+
+
+_LEAD_VERBS = {
+    "cast": "ActionType_Cast",
+    "casting": "ActionType_Cast",
+    "play": "ActionType_Play",
+    "playing": "ActionType_Play",
+    "activate": "ActionType_Activate",
+    "activating": "ActionType_Activate",
+    "cycle": "ActionType_Activate",
+    "cycling": "ActionType_Activate",
+    "landcycle": "ActionType_Activate",
+    "landcycling": "ActionType_Activate",
+    "channel": "ActionType_Activate",
+    "channeling": "ActionType_Activate",
+}
+
+
+def reasoning_choice_conflict(
+    decision: PendingDecision,
+    chosen: list[str],
+    reasoning: str,
+    resolve_name: Callable[[int], str] = _default_name_resolver,
+) -> list[str]:
+    """Options the reasoning's lead clause describes when the chosen id is another card.
+
+    2026-10-06 G1 T8: "Cycling Undulating Witness for {2} digs for a land
+    drop…; Tam's Resistance has no creature to buff." arrived with idx:1 —
+    Cast Tam's Resistance — and that is what was submitted. Deliberately
+    narrow: only a single ActionsAvailable pick, only when the reasoning
+    opens with an action verb (cast/play/activate/cycle…) naming a card the
+    chosen option's card is absent from, and only options of that verb's
+    action type. Returns [] whenever the intent is unclear.
+    """
+    if decision.request_type != "ActionsAvailable" or len(chosen) != 1:
+        return []
+    picked = decision.find(chosen[0])
+    if picked is None or not picked.meta.get("grpId"):
+        return []
+    lead = re.split(r"[.;!?](?:\s|$)|\s[—–]\s", (reasoning or "").strip(), maxsplit=1)[0]
+    verb = re.match(r"\s*(?:i(?:'ll| will| plan to)\s+)?([a-z]+)\b", lead, re.I)
+    action_type = _LEAD_VERBS.get(verb.group(1).lower()) if verb else None
+    if not action_type:
+        return []
+    rest = lead[verb.end() :].lower()
+
+    def names(option: DecisionOption) -> list[str]:
+        try:
+            full = (resolve_name(int(option.meta.get("grpId") or 0)) or "").strip().lower()
+        except Exception:
+            return []
+        short = full.split(",")[0].strip()
+        return [n for n in dict.fromkeys((full, short)) if len(n) >= 4]
+
+    picked_names = names(picked)
+    if not picked_names or any(n in lead.lower() for n in picked_names):
+        return []
+    first: tuple[int, int] | None = None  # (position, grpId) of the first card the lead names
+    for option in decision.options:
+        for name in names(option):
+            position = rest.find(name)
+            if position >= 0 and (first is None or position < first[0]):
+                first = (position, int(option.meta.get("grpId") or 0))
+    if first is None:
+        return []
+    return [
+        option.option_id
+        for option in decision.options
+        if int(option.meta.get("grpId") or 0) == first[1]
+        and option.meta.get("actionType") == action_type
+        and option.payable is not False
+        and option.option_id != picked.option_id
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -762,7 +1406,7 @@ def submit_option(
         # native Mac bridge) refuses a stale index instead of submitting
         # whatever now sits at that position.
         meta = decision.find(first).meta
-        expected = {k: meta[k] for k in ("instanceId", "grpId") if meta.get(k)}
+        expected = {k: meta[k] for k in ("instanceId", "grpId", "abilityGrpId") if meta.get(k)}
         if decision.request_type == "CastingTimeOptions":
             expected = {**meta, "gameStateId": decision.request_id[0], "msgId": decision.request_id[1]}
         index = int(first.split(":", 1)[1])
@@ -780,6 +1424,14 @@ def submit_option(
             return False
         ids = [int(o.split(":", 1)[1]) for o in chosen if o.startswith("sel:")]
         return bool(bridge.submit_selection(ids))
+    if first.startswith("grp:") and "spec_index" in decision.find(first).meta:
+        groups = destination_groups(decision, chosen)
+        if groups is None:
+            logger.warning(
+                "submit_option: refusing incomplete group assignment %s (%s)", chosen, decision.source_label
+            )
+            return False
+        return bool(bridge.submit_group(groups))
     if first.startswith("grp:"):
         # Chosen = bottom; the rest of the option set keeps (LondonWorkflow
         # response shape: [Hand/Top keep group, Library/Bottom group]).

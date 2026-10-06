@@ -1068,10 +1068,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 if mapped:
                     dec_type = mapped
             _simple = {
-                "mulligan_bottom": lambda ctx: [
-                    f"!!! DECISION: MULLIGAN - PUT {max(1, 7 - len(game_state.get('hand', [])) + 1)} CARD(S) ON BOTTOM !!!",
-                    "Keep: lands + on-curve plays | Bottom: expensive/off-color/redundant",
-                ],
+                "mulligan_bottom": lambda ctx: self._format_mulligan_bottom(ctx, game_state),
                 "assign_damage": lambda ctx: [
                     "!!! DECISION: ASSIGN COMBAT DAMAGE !!!",
                     "Order: kill most important blocker/attacker first",
@@ -1237,39 +1234,41 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             lines.extend(self._format_mulligan_hand(game_state))
         return lines
 
-    def _format_mulligan_hand(self, game_state: dict[str, Any]) -> list[str]:
-        """Format mulligan hand summary lines."""
-        import re as _re
+    def _format_mulligan_bottom(self, context: dict[str, Any], game_state: dict[str, Any]) -> list[str]:
+        """London bottoming: the real count (the old formula always said 1) and a land/curve pick."""
+        from arenamcp import mulligan_policy
 
-        lines: list[str] = []
-        my_hand = game_state.get("hand", [])
-        if not my_hand:
-            lines.append("Waiting for hand...")
-            return lines
-        lands = [c for c in my_hand if "land" in c.get("type_line", "").lower()]
-        creatures = [c for c in my_hand if "creature" in c.get("type_line", "").lower()]
-        spells = [c for c in my_hand if c not in lands and c not in creatures]
-        cmcs = []
-        for c in my_hand:
-            cost = c.get("mana_cost", "")
-            if cost:
-                generic = sum(int(g) for g in _re.findall(r"\{(\d+)\}", cost))
-                pips = len(_re.findall(r"\{[WUBRGC]\}", cost))
-                cmcs.append(generic + pips)
-            else:
-                cmcs.append(0)
-        avg_cmc = sum(cmcs) / len(cmcs) if cmcs else 0
-        land_names = [c.get("name", "?") for c in lands]
-        nonland_names = [
-            f"{c.get('name', '?')} ({c.get('mana_cost', '')})" for c in my_hand if c not in lands
+        count = 0
+        for spec in (context.get("raw") or {}).get("groupSpecs") or []:
+            if isinstance(spec, dict) and "Bottom" in str(spec.get("subZoneType") or ""):
+                try:
+                    count = max(count, int(spec.get("upperBound") or spec.get("lowerBound") or 0))
+                except (TypeError, ValueError):
+                    pass
+        count = count or mulligan_policy.mulligans_from_state(game_state) or 1
+        lines = [
+            f"!!! DECISION: MULLIGAN - PUT {count} CARD(S) ON BOTTOM !!!",
+            "Keep: lands toward 2-3, cheap castable plays, bombs | Bottom: expensive/uncastable/redundant",
         ]
-        lines.append(
-            f"MULLIGAN HAND: {len(lands)} lands, {len(creatures)} creatures, {len(spells)} spells, avg CMC {avg_cmc:.1f}"
-        )
-        lines.append(f"  Lands: {', '.join(land_names) if land_names else 'NONE'}")
-        lines.append(f"  Nonland: {', '.join(nonland_names) if nonland_names else 'NONE'}")
-        lines.append("Decide: KEEP or MULLIGAN based on curve, colors, and land count")
+        hand = [card for card in game_state.get("hand") or [] if isinstance(card, dict)]
+        ids = [int(card.get("instance_id") or 0) for card in hand]
+        suggested = mulligan_policy.bottom_choice(game_state, ids, count)
+        if suggested:
+            lines.append("Land/curve suggestion: bottom " + mulligan_policy.card_names(game_state, suggested))
         return lines
+
+    def _format_mulligan_hand(self, game_state: dict[str, Any]) -> list[str]:
+        """Mulligan facts: count and resulting hand size, play/draw, per-card castability.
+
+        The old summary gave only land/creature counts and an average CMC, so
+        on 2026-10-06 the model called five-drops with Basic landcycling {2}
+        "redundant 4-drops" and mulliganed two clear six-card keeps.
+        """
+        from arenamcp.mulligan_policy import describe
+
+        if not game_state.get("hand"):
+            return ["Waiting for hand..."]
+        return [*describe(game_state), "Decide: KEEP or MULLIGAN for the hand size you would keep."]
 
     def _format_mana_info(
         self, your_cards: list[dict], turn_num: int

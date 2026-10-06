@@ -179,9 +179,15 @@ RULES:
 DECISION_PROMPTS = {
     "mulligan": """
 MULLIGAN DECISION: Evaluate this hand and decide KEEP or MULLIGAN.
-Consider: land count (2-3 ideal), mana curve (can you cast spells turns 1-3?), synergy with deck plan.
-- KEEP if: Playable lands + early plays that advance the game plan
-- MULLIGAN if: 0-1 lands, 5+ lands, no plays before turn 3, completely off-plan
+London mulligan: you always see 7; after N mulligans you keep 7-N and bottom N, so each mulligan
+costs a card and the bar for a keep DROPS. Read MULLIGAN STATUS for the hand size you would keep.
+- Keeping 7: keep 3-4 lands with spells those lands can cast early; keep 2 lands on the draw with
+  cheap plays; 5 lands with castable spells is usually a keep (especially on the draw).
+  MULLIGAN 0-1 or 6-7 lands. 5 lands is NOT an automatic mulligan; 6+ is.
+- Keeping 6: keep any 2-4 lander with a play castable by turn 3.
+- Keeping 5: keep unless unplayable (0 lands, all lands, or 1 land with no cheap plays).
+- Never go to 4 except for 0-land or near-all-land hands.
+Use the real mana values shown; landcycling cards count as about half a land, cheap instants are early plays.
 Answer: "KEEP" or "MULLIGAN" with a one-sentence reason.
 """,
     "mulligan_bottom": """

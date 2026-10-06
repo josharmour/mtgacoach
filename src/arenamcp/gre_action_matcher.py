@@ -11,7 +11,8 @@ Phase 1 of the RE-driven autopilot refactor.  This module provides:
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -236,6 +237,149 @@ def _resolve_instance_name(
 
 
 # ---------------------------------------------------------------------------
+# Ability identity: one permanent, several activations
+#
+# A planeswalker offers one Activate action per loyalty ability, all with the
+# same instanceId and grpId; only abilityGrpId tells them apart. Matching by
+# source alone submitted Jace's -1 Surveil when the plan asked for his -3
+# draw (bug_20261006_140351). An ability is identified by abilityGrpId, its
+# loyalty cost, or its full rules text — never by position.
+# ---------------------------------------------------------------------------
+
+# (loyalty cost, rules text) for an abilityGrpId; blanks when unknown.
+AbilityDescriber = Callable[[int], tuple[str, str]]
+
+# Minus sign / en dash as written in rules text and by models -> ASCII hyphen.
+_DASHES = str.maketrans({"\u2212": "-", "\u2013": "-"})
+_LOYALTY_COST_RE = re.compile(r"(?<![\w/])([+-](?:\d+|x)|0(?=\s*:))(?![\w/])")
+
+
+def _ability_grp_id(raw: dict) -> int:
+    return int(raw.get("abilityGrpId") or 0)
+
+
+def _normalize_cost(cost: Any) -> str:
+    text = str(cost or "").strip().lower().translate(_DASHES)
+    return text if _LOYALTY_COST_RE.fullmatch(text) or text == "0" else ""
+
+
+def _clean_ability_text(text: str) -> str:
+    text = re.sub(r"<[^>]*>", "", text or "").replace("CARDNAME", "this")
+    return " ".join(text.split())
+
+
+def _norm_words(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
+
+
+def describe_ability(ability_grp_id: int) -> tuple[str, str]:
+    """Loyalty cost and rules text of an ability from the local MTGA database."""
+    if not ability_grp_id:
+        return "", ""
+    cost = text = ""
+    try:
+        from arenamcp.card_db import get_card_database
+
+        db = get_card_database()
+        text = db.get_ability_text(int(ability_grp_id)) or ""
+        # Loyalty costs live only in the raw Abilities table; card text omits them.
+        raw = db.get_raw_mtgadb()
+        conn, lock = getattr(raw, "_conn", None), getattr(raw, "_conn_lock", None)
+        if conn is not None and lock is not None:
+            with lock:
+                row = conn.execute(
+                    "SELECT LoyaltyCost FROM Abilities WHERE Id = ?", (int(ability_grp_id),)
+                ).fetchone()
+            cost = str(row[0] or "") if row else ""
+    except Exception as exc:
+        logger.debug("Ability lookup failed for %s: %s", ability_grp_id, exc)
+    return _normalize_cost(cost), _clean_ability_text(text)
+
+
+def ability_label(cost: str, text: str) -> str:
+    """'-3: Draw a card.' — the form the planner and narration show."""
+    return f"{cost}: {text}" if cost else text
+
+
+def sibling_activation_groups(actions: Iterable[dict]) -> dict[int, list[int]]:
+    """instanceId -> indices of its Activate actions, for permanents offering
+    two or more *different* abilities (distinct abilityGrpIds)."""
+    action_list = list(actions)
+    by_source: dict[int, list[int]] = {}
+    for index, raw in enumerate(action_list):
+        if _norm_atype(str(raw.get("actionType") or "")) != "activate":
+            continue
+        source = int(raw.get("instanceId") or 0)
+        if source:
+            by_source.setdefault(source, []).append(index)
+    return {
+        source: indices
+        for source, indices in by_source.items()
+        if len({_ability_grp_id(action_list[i]) for i in indices}) > 1
+    }
+
+
+def resolve_activation(
+    candidates: list[dict],
+    *,
+    ability_grp_id: int = 0,
+    hint: str = "",
+    describe: AbilityDescriber | None = None,
+) -> dict | None:
+    """The one candidate activation whose ability the request names.
+
+    Candidates that share one abilityGrpId are interchangeable. Otherwise the
+    ability must be named by ``ability_grp_id`` or by a loyalty cost / full
+    rules text in ``hint``; anything less returns None so the caller refuses
+    instead of submitting a different ability.
+    """
+    if not candidates:
+        return None
+    if ability_grp_id:
+        return next((raw for raw in candidates if _ability_grp_id(raw) == int(ability_grp_id)), None)
+    distinct = list(dict.fromkeys(_ability_grp_id(raw) for raw in candidates))
+    if len(distinct) == 1:
+        return candidates[0]
+    if not hint:
+        return None
+    describe = describe or describe_ability
+    lowered = hint.lower().translate(_DASHES)
+    hint_costs = set(_LOYALTY_COST_RE.findall(lowered))
+    hint_words = f" {_norm_words(hint)} "
+    named: list[int] = []
+    for ability_id in distinct:
+        cost, text = describe(ability_id) if ability_id else ("", "")
+        words = _norm_words(text)
+        if (cost and cost in hint_costs) or (words and f" {words} " in hint_words):
+            named.append(ability_id)
+    if len(named) != 1:
+        return None
+    return next(raw for raw in candidates if _ability_grp_id(raw) == named[0])
+
+
+def activation_candidates(
+    action: Any,
+    raw_actions: list[dict],
+    game_objects: dict[int, dict],
+    scryfall_lookup: Callable[[int], str | None] | None = None,
+) -> list[dict]:
+    """Activate actions whose source permanent is the one ``action`` names."""
+    if not action.card_name:
+        return []
+    named = []
+    for raw in raw_actions:
+        if _norm_atype(str(raw.get("actionType") or "")) != "activate":
+            continue
+        source_id = raw.get("sourceId", 0) or raw.get("instanceId", 0)
+        source_name = _resolve_instance_name(source_id, game_objects, scryfall_lookup)
+        if not source_name and raw.get("grpId") and scryfall_lookup:
+            source_name = _resolve_card_name(raw["grpId"], {}, scryfall_lookup)
+        if _name_matches(action.card_name, source_name):
+            named.append(raw)
+    return named
+
+
+# ---------------------------------------------------------------------------
 # Main matcher
 # ---------------------------------------------------------------------------
 
@@ -332,28 +476,33 @@ def match_action_to_gre(
 
     # --- ACTIVATE ABILITY ----------------------------------------------
     if atype == ActionType.ACTIVATE_ABILITY:
-        for raw in raw_actions:
-            if _norm_atype(raw.get("actionType", "")) != "activate":
-                continue
-            # Try to match by source card name
-            source_id = raw.get("sourceId", 0) or raw.get("instanceId", 0)
-            source_name = _resolve_instance_name(source_id, game_objects, scryfall_lookup)
-            if action.card_name and _name_matches(action.card_name, source_name):
-                ref = GREActionRef.from_raw(raw)
-                logger.info(
-                    f"Matched ACTIVATE_ABILITY '{action.card_name}' -> sourceId={source_id} '{source_name}'"
-                )
-                return ref
-        # Fallback: sole activate
         activates = [r for r in raw_actions if _norm_atype(r.get("actionType", "")) == "activate"]
-        if len(activates) == 1:
-            ref = GREActionRef.from_raw(activates[0])
-            logger.info(f"Matched ACTIVATE_ABILITY '{action.card_name}' -> sole ActionType_Activate")
-            return ref
-        logger.warning(
-            f"Could not match ACTIVATE_ABILITY '{action.card_name}' among {len(activates)} Activate actions"
+        named = activation_candidates(action, activates, game_objects, scryfall_lookup)
+        if not named and len(activates) == 1:
+            named = activates  # sole activate
+        if not named:
+            logger.warning(
+                f"Could not match ACTIVATE_ABILITY '{action.card_name}' among {len(activates)} Activate actions"
+            )
+            return None
+        raw = resolve_activation(
+            named,
+            ability_grp_id=int(getattr(action, "ability_grp_id", 0) or 0),
+            hint=action.card_name or "",
         )
-        return None
+        if raw is None:
+            logger.warning(
+                "Refusing ACTIVATE_ABILITY '%s': its source offers abilities %s and the plan "
+                "does not say which (no abilityGrpId, loyalty cost, or ability text)",
+                action.card_name,
+                sorted({_ability_grp_id(r) for r in named}),
+            )
+            return None
+        logger.info(
+            f"Matched ACTIVATE_ABILITY '{action.card_name}' -> instanceId={raw.get('instanceId', 0)} "
+            f"abilityGrpId={_ability_grp_id(raw)}"
+        )
+        return GREActionRef.from_raw(raw)
 
     # --- DECLARE ATTACKERS ---------------------------------------------
     if atype == ActionType.DECLARE_ATTACKERS:

@@ -586,6 +586,108 @@ class AutopilotEngine(
                 return text[len(prefix) :].split("[")[0].strip()
         return ""
 
+    @staticmethod
+    def _label_sibling_activations(decision: Any, describe: Any = None) -> Any:
+        """Name each ability when one permanent offers several activations.
+
+        Every activation was labelled "Activate: <source>", so a planeswalker's
+        loyalty abilities were identical options: the model asked for Jace's
+        draw and picked his surveil (bug_20261006_140351). Each sibling gets
+        its loyalty cost and rules text in brackets (label parsers stop at
+        "["); one that can't be told apart from its siblings is withheld.
+        """
+        from arenamcp.gre_action_matcher import ability_label, describe_ability, sibling_activation_groups
+
+        groups = sibling_activation_groups(option.meta for option in decision.options)
+        if not groups:
+            return decision
+        describe = describe or describe_ability
+        options = list(decision.options)
+        withheld: set[int] = set()
+        for indices in groups.values():
+            abilities = {int(options[i].meta.get("abilityGrpId") or 0) for i in indices}
+            texts = {aid: ability_label(*describe(aid)) if aid else "" for aid in abilities}
+            for i in indices:
+                text = texts[int(options[i].meta.get("abilityGrpId") or 0)]
+                if not text or sum(other.lower() == text.lower() for other in texts.values()) > 1:
+                    withheld.add(i)
+                else:
+                    options[i] = dataclasses.replace(options[i], label=f"{options[i].label} [{text}]")
+        if withheld:
+            logger.warning(
+                "Ambiguous activations: withholding %s — their abilities can't be told apart",
+                [(options[i].label, options[i].meta.get("abilityGrpId")) for i in sorted(withheld)],
+            )
+        return dataclasses.replace(
+            decision, options=tuple(option for i, option in enumerate(options) if i not in withheld)
+        )
+
+    def _pin_activation_ability(self, action: GameAction, game_state: dict[str, Any]) -> bool:
+        """Bind a planned activation to one ability before it executes.
+
+        The bridge's no-ref fallback submits the first Activate whose card
+        name matches, so an unresolved planeswalker activation would go out as
+        whichever loyalty ability Arena listed first. Returns False when the
+        source offers several abilities and the plan doesn't name one.
+        """
+        if action.action_type != ActionType.ACTIVATE_ABILITY:
+            return True
+        from arenamcp.gre_action_matcher import GREActionRef, activation_candidates, resolve_activation
+
+        actions = self._bridge_preloaded_actions
+        if not actions and self._gre_bridge is not None:
+            try:
+                live = self._gre_bridge.get_pending_actions() or {}
+            except Exception:
+                live = {}
+            actions = live.get("actions") if live.get("has_pending") else None
+        if not actions:
+            return True
+
+        def lookup(grp_id: int) -> str | None:
+            try:
+                from arenamcp import server
+
+                return server.get_card_info(grp_id).get("name")
+            except Exception:
+                return None
+
+        ref = getattr(action, "gre_action_ref", None)
+        ref_ability = int(getattr(ref, "ability_grp_id", 0) or 0)
+        ref_instance = int(getattr(ref, "instance_id", 0) or 0)
+        if ref_ability and ref_instance:
+            candidates = [
+                raw
+                for raw in actions
+                if str(raw.get("actionType", "")).removeprefix("ActionType_") == "Activate"
+                and int(raw.get("instanceId") or 0) == ref_instance
+            ]
+        else:
+            game_objects = {
+                int(card.get("instance_id") or 0): card
+                for zone in ("battlefield", "command")
+                for card in game_state.get(zone) or []
+                if isinstance(card, dict)
+            }
+            candidates = activation_candidates(action, actions, game_objects, lookup)
+        if len({int(raw.get("abilityGrpId") or 0) for raw in candidates}) < 2:
+            return True
+        raw = resolve_activation(
+            candidates,
+            ability_grp_id=ref_ability or int(getattr(action, "ability_grp_id", 0) or 0),
+            hint=action.card_name or "",
+        )
+        if raw is None:
+            logger.warning(
+                "Refusing to activate %r: it offers abilities %s and the plan does not say which",
+                action.card_name,
+                sorted({int(r.get("abilityGrpId") or 0) for r in candidates}),
+            )
+            return False
+        if ref_ability != int(raw.get("abilityGrpId") or 0):
+            action.gre_action_ref = GREActionRef.from_raw(raw)
+        return True
+
     def _play_controlled_opponent_turn(self, game_state: dict[str, Any]) -> bool:
         """Answer the opponent's requests while we control their turn.
 
@@ -3085,6 +3187,15 @@ class AutopilotEngine(
                         self._actions_skipped += 1
                         continue
 
+                if not self._pin_activation_ability(action, game_state):
+                    self._notify(
+                        "AUTOPILOT",
+                        f"Not activating {action.card_name}: the plan didn't say which ability",
+                    )
+                    self._mark_action_blocked(action, game_state, "ability not identified")
+                    self._actions_skipped += 1
+                    continue
+
                 # Snapshot state before action (for verification)
                 pre_state = self._get_game_state() if self._config.verify_after_action else None
 
@@ -3687,6 +3798,7 @@ class AutopilotEngine(
                     [o.label for o in decision.options if o not in kept],
                 )
                 decision = dataclasses.replace(decision, options=kept)
+            decision = self._label_sibling_activations(decision)
 
         if not self._request_tracker.may_submit(fp):
             if self._request_tracker.exhausted(fp):
@@ -3728,8 +3840,16 @@ class AutopilotEngine(
                 llm_ids = []
             valid = decision.option_ids()
             option_ids = [o for o in llm_ids if o in valid][: decision.max_select]
-            if len(option_ids) != decision.min_select:
-                return None  # legacy group-default path handles it
+            if len(option_ids) != decision.min_select or not decision.selection_is_valid(option_ids):
+                if "LondonMulligan" in str(decision.source_label or ""):
+                    return None  # legacy group-default path ranks the worst cards to bottom
+                # Scry/surveil: a bad model answer gets the safe default
+                # (2026-10-06 14:01:15 fell through to MANUAL REQUIRED).
+                from arenamcp.decisions import default_group_choice
+
+                option_ids = default_group_choice(decision, game_state)
+                if not option_ids:
+                    return None
         else:
             option_ids = self._planner.plan_decision_options(decision, game_state)
         from arenamcp.action_planner import DECLINE_DECISION

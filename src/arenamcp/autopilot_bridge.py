@@ -860,8 +860,15 @@ class _BridgeSubmitMixin:
     def _prepare_attack_submission(
         self, action: GameAction, names: list[str], entries: list[dict], state: dict, pending: dict
     ) -> tuple[GameAction, list[dict]]:
-        """Remove known dead-weight attackers and retain exactly what will be sent."""
-        from arenamcp.combat_strategy import unproductive_attackers
+        """Remove known dead-weight attackers and retain exactly what will be sent.
+
+        Every bridge attack passes here: planner plans, the auto-confirm
+        "declare every legal attacker" path, solver attacks and planeswalker
+        recipients. ``_attack_override`` only reviews player-only attacks
+        without explicit recipients, so losing attackers are filtered here too
+        (bug_20261006_135027: a 1/1 sent at a Jace past an untapped 3/2).
+        """
+        from arenamcp.combat_strategy import losing_attackers, unproductive_attackers
         from arenamcp.combat_targets import recipient_label
 
         unproductive = unproductive_attackers(state, pending)
@@ -872,6 +879,17 @@ class _BridgeSubmitMixin:
         ]
         if len(pairs) != len(entries):
             logger.info("Omitting zero-power attackers with no visible attack payoff")
+        losing = losing_attackers(state, [entry["attackerInstanceId"] for _, entry in pairs], pending)
+        for name, entry in pairs:
+            if entry["attackerInstanceId"] in losing:
+                logger.warning(
+                    "Losing-attack guard (bridge): not attacking with %s [%d] -> %s: %s",
+                    name,
+                    entry["attackerInstanceId"],
+                    recipient_label(entry["damageRecipient"], state),
+                    losing[entry["attackerInstanceId"]],
+                )
+        pairs = [(name, entry) for name, entry in pairs if entry["attackerInstanceId"] not in losing]
         submitted = replace(
             action,
             action_type=ActionType.DECLARE_ATTACKERS,
@@ -2113,8 +2131,9 @@ class _BridgeSubmitMixin:
           - London mulligan bottoming: put the worst N cards on the bottom of
             the library, keep the rest in hand. N = GroupSpecs[bottom].LowerBound
             (the slot the client requires us to fill).
-          - Any other ordering Group (scry / surveil / trigger ordering): accept
-            the cards in the order/zones already presented (nothing to bottom).
+          - Scry / surveil / other multi-spec splits: decisions.default_group_choice
+            (needed lands and castable spells stay on top), answered per spec.
+          - Single-spec ordering: accept the cards in the order/zones presented.
 
         Returns a ClickResult (success flag set), or None if not a GroupRequest.
         """
@@ -2159,11 +2178,36 @@ class _BridgeSubmitMixin:
             sub = str(spec.get("subZoneType") or spec.get("subZone") or "")
             return "Bottom" in sub or "Library" in zone
 
+        from arenamcp.decisions import (
+            build_pending_decision,
+            default_group_choice,
+            is_london_group,
+            submit_option,
+        )
+
+        london = is_london_group(specs, context)
+        if not london and instance_ids:
+            # Scry / surveil / split windows: answer each GroupSpec with its own
+            # zone, in spec order. Counting any Library spec as the "bottom"
+            # slot put 7 of 7 surveilled cards into the graveyard (2026-10-06).
+            decision = build_pending_decision(pending)
+            choice = default_group_choice(decision, game_state)
+            if decision is not None and choice:
+                if submit_option(bridge, decision, choice):
+                    self._log_execution_path(
+                        ExecutionPath.GRE_AWARE,
+                        f"group: {'; '.join(decision.find(o).label for o in choice)} "
+                        f"(ctx={context or '?'}) via GRE bridge",
+                    )
+                    return ClickResult(True, 0, 0, "group", "GRE bridge")
+                self._gre_bridge_failed_methods.add("group")
+                return ClickResult(False, 0, 0, "group", "GRE bridge")
+
         # Determine how many cards must go to the bottom. Prefer the bottom
         # spec's bound (LondonWorkflow reads GroupSpecs[1].LowerBound); fall
         # back to hand_size - 7 for a London mulligan when specs are opaque.
         bottom_count = 0
-        for spec in specs:
+        for spec in specs if london else []:
             if isinstance(spec, dict) and _is_bottom_spec(spec):
                 bottom_count += _spec_bound(spec)
         if bottom_count <= 0 and "LondonMulligan" in context:

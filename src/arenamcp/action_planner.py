@@ -983,6 +983,9 @@ class ActionPlanner(_ActionLegalityMixin):
         self._check_block_recovery(
             plan, game_state, decision_context or game_state.get("decision_context") or {}
         )
+        self._check_losing_attacks(
+            plan, game_state, decision_context or game_state.get("decision_context") or {}
+        )
 
         # Attach GRE action refs if raw actions are available. If the bridge says
         # the current request has no actions (e.g. PayCostsReq), do not fall back
@@ -1099,6 +1102,81 @@ class ActionPlanner(_ActionLegalityMixin):
         blocks = "; ".join(f"{label(b)} against {label(a)}" for b, a in survival.assignments.items())
         risk = "not blocking was lethal" if lethal else f"not blocking left us at {life - through} life"
         plan.voice_advice = f"Blocking with {blocks}; {risk}."
+
+    def _check_losing_attacks(self, plan: ActionPlan, state: dict, context: dict) -> None:
+        """Hold back attackers that only feed an untapped blocker.
+
+        bug_20261006_135027: the model sent a 1/1 Fblthp at a 1-loyalty Jace
+        token past an untapped 3/2 Keeper of the Quiet Hour with no mana up
+        ("Trade Fblthp into Jace"). Keeper blocked; Fblthp died; nothing else
+        happened. The bridge's solver override skips attacks with explicit or
+        planeswalker recipients, and the zero-power filter ignores 1-power
+        creatures, so the plan went straight to submission.
+
+        Runs only at a live DeclareAttackers decision, where the board is the
+        one the declaration will meet; main-phase plans may still change it.
+        See ``combat_strategy.losing_attackers`` for the conservative rules.
+        """
+        if str(context.get("type") or "").lower() != "declare_attackers":
+            return
+        from arenamcp.combat_identity import resolve_combatant
+        from arenamcp.combat_strategy import losing_attackers
+
+        eligible = [int(i) for i in context.get("legal_attacker_ids") or [] if str(i).isdigit()] or [
+            int(entry.get("attackerInstanceId") or 0) for entry in context.get("raw_attackers") or []
+        ]
+        for action in plan.actions:
+            if action.action_type != ActionType.DECLARE_ATTACKERS or not action.attacker_names:
+                continue
+            identities = list(action.attacker_instance_ids)
+            if len(identities) != len(action.attacker_names):
+                try:
+                    identities = [
+                        resolve_combatant(name, state, eligible, local_side=True)
+                        for name in action.attacker_names
+                    ]
+                except (ValueError, TypeError, KeyError):
+                    continue  # cannot tell which creatures attack: keep the plan
+            losing = losing_attackers(state, identities)
+            if not losing:
+                continue
+            kept = [
+                (name, identity)
+                for name, identity in zip(action.attacker_names, identities, strict=True)
+                if identity not in losing
+            ]
+            dropped = [
+                (name, identity)
+                for name, identity in zip(action.attacker_names, identities, strict=True)
+                if identity in losing
+            ]
+            for name, identity in dropped:
+                logger.warning(
+                    "Losing-attack guard: not attacking with %s [%d] (planned target: %s): %s",
+                    name,
+                    identity,
+                    action.attacker_targets.get(name) or ", ".join(action.target_names) or "unspecified",
+                    losing[identity],
+                )
+            action.attacker_names = [name for name, _ in kept]
+            action.attacker_instance_ids = [identity for _, identity in kept]
+            action.attacker_targets = {
+                name: target
+                for name, target in action.attacker_targets.items()
+                if name in action.attacker_names
+            }
+            if not kept:
+                action.target_names = []
+            from arenamcp.narration import spoken_list, spoken_name
+
+            held = spoken_list([spoken_name(name) for name, _ in dropped])
+            outcome = "they would die to blocks" if len(dropped) > 1 else "it would die to a block"
+            action.reasoning = f"Held back {held}: " + "; ".join(losing[i] for _, i in dropped) + "."
+            plan.fallback_reason = "planner_losing_attack"
+            plan.overall_strategy = f"Hold back {held}: {outcome} for nothing."
+            plan.voice_advice = f"Not attacking with {held}: {outcome} for nothing." + (
+                f" {plan.spoken_actions()}" if kept else ""
+            )
 
     def _check_block_recovery(self, plan: ActionPlan, state: dict, context: dict) -> None:
         """Price supported recovery before committing a same-outcome trade."""
@@ -2623,6 +2701,12 @@ class ActionPlanner(_ActionLegalityMixin):
             self._last_decision_trace = {"policy": "commander_return", "validated_ids": ["optional:accept"]}
             logger.info("typed-decision: returning %s to the command zone without an LLM choice", names)
             return ["optional:accept"]
+        if decision.request_type == "Mulligan" and {"mull:keep", "mull:mull"} <= decision.option_ids():
+            return self._plan_mulligan(decision, game_state)
+        if decision.request_type == "Group" and "LondonMulligan" in str(decision.source_label or ""):
+            bottom = self._plan_mulligan_bottom(decision, game_state)
+            if bottom:
+                return bottom
         decision = filter_play_options(decision, game_state)
         if not decision.options:
             if decision.request_type == "Search" and decision.selection_is_valid([]):
@@ -2643,6 +2727,25 @@ class ActionPlanner(_ActionLegalityMixin):
                 # narrate reasoning for a different set than we submit.
                 return chosen if decision.selection_is_valid(chosen) else [DECLINE_DECISION]
             chosen = [c for c in chosen if c in valid]
+            if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
+                from arenamcp.decisions import reasoning_choice_conflict
+
+                # 2026-10-06 G1 T8: the reasoning said "Cycling Undulating
+                # Witness" but the answer was idx:1 (Tam's Resistance).
+                meant = [
+                    option
+                    for option in reasoning_choice_conflict(decision, chosen, self._last_decision_reasoning)
+                    if option in valid
+                ]
+                if meant:
+                    logger.warning(
+                        "typed-decision: reasoning describes %s but chose %s; following the reasoning (%s)",
+                        meant,
+                        chosen,
+                        self._last_decision_reasoning[:160],
+                    )
+                    chosen = meant[:1]
+                    self._last_decision_option_ids = chosen
             if chosen and decision.min_weight is not None:
                 chosen = list(dict.fromkeys(chosen))
                 if decision.selection_is_valid(chosen):
@@ -2681,6 +2784,111 @@ class ActionPlanner(_ActionLegalityMixin):
                 return picked
             return [DECLINE_DECISION]
         return self.deterministic_option_pick(decision)
+
+    def _mulligans_taken(self, game_state: dict[str, Any]) -> int | None:
+        """Mulligans already taken this game: the GRE count, else the ones we submitted.
+
+        The macOS bridge snapshot carries the player's MulliganCount; the log
+        state does not, so fall back to what this planner chose this game.
+        """
+        from arenamcp.mulligan_policy import mulligans_from_state
+
+        known = mulligans_from_state(game_state)
+        if known is not None:
+            return known
+        track = getattr(self, "_mulligan_track", None)
+        if track and track[0] == (game_state.get("match_id") or ""):
+            return track[1]
+        return None
+
+    def _note_mulligan(self, game_state: dict[str, Any], option: str, taken: int | None) -> None:
+        match = game_state.get("match_id") or ""
+        self._mulligan_track = (match, (taken or 0) + 1) if option == "mull:mull" else (match, 0)
+
+    def _plan_mulligan(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
+        """Keep or mulligan: a deterministic policy for clear hands, else the LLM.
+
+        2026-10-06 (match 3da54de9) both games started on five cards: the LLM,
+        with no mulligan policy, count, or per-card costs, mulliganed two
+        clear six-card keeps. See arenamcp.mulligan_policy.
+        """
+        from arenamcp import mulligan_policy
+
+        taken = self._mulligans_taken(game_state)
+        state = {**game_state, "_mulligans_taken": taken} if taken is not None else game_state
+        verdict = mulligan_policy.mulligan_verdict(mulligan_policy.situation(state))
+        if verdict is not None:
+            choice, reason = verdict
+            option = "mull:keep" if choice == "keep" else "mull:mull"
+            self._last_decision_option_ids = [option]
+            self._last_decision_reasoning = reason[:1].upper() + reason[1:] + "."
+            self._last_decision_trace = {
+                "policy": "mulligan_guard",
+                "mulligans_taken": taken,
+                "validated_ids": [option],
+                "reasoning": reason,
+            }
+            logger.warning(
+                "Mulligan guard: %s (mulligans taken: %s): %s — deterministic policy, LLM not consulted",
+                choice.upper(),
+                "unknown" if taken is None else taken,
+                reason,
+            )
+            self._note_mulligan(game_state, option, taken)
+            return [option]
+        chosen: list[str] = []
+        try:
+            answer = self._llm_decision_options(decision, state)
+            chosen = [c for c in answer if c in decision.option_ids()][:1]
+        except Exception as error:
+            logger.info("mulligan LLM path failed: %s", error)
+        if not chosen:
+            chosen = self.deterministic_option_pick(decision)
+        self._note_mulligan(game_state, chosen[0], taken)
+        return chosen
+
+    def _plan_mulligan_bottom(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
+        """London-mulligan bottoming: the LLM's pick unless it is clearly worse than the land/curve pick."""
+        from arenamcp import mulligan_policy
+
+        ids = [int(option.meta.get("instance_id") or 0) for option in decision.options]
+        count = int(decision.min_select or 0)
+        suggested = mulligan_policy.bottom_choice(game_state, ids, count)
+        if not suggested or count != decision.max_select:
+            return []
+        suggested_ids = [f"grp:{identity}" for identity in suggested]
+        chosen: list[str] = []
+        try:
+            answer = self._llm_decision_options(decision, game_state)
+            chosen = list(dict.fromkeys(c for c in answer if c in decision.option_ids()))
+        except Exception as error:
+            logger.info("mulligan bottom LLM path failed: %s", error)
+        if len(chosen) == count:
+            picked = [int(c[4:]) for c in chosen]
+            score = mulligan_policy.kept_score(game_state, ids, picked)
+            best = mulligan_policy.kept_score(game_state, ids, suggested)
+            lands = mulligan_policy.kept_land_count(game_state, ids, picked)
+            total = mulligan_policy.kept_land_count(game_state, ids, [])
+            needed = min(total, 2)
+            if score is not None and best is not None and best - score <= 1.0 and lands >= needed:
+                return chosen
+            logger.warning(
+                "Mulligan bottom guard: model bottomed %s (keeps %d land(s), score %.1f); bottoming %s "
+                "instead (score %.1f)",
+                mulligan_policy.card_names(game_state, picked),
+                lands,
+                score if score is not None else float("nan"),
+                mulligan_policy.card_names(game_state, suggested),
+                best if best is not None else float("nan"),
+            )
+        reason = (
+            f"Bottom {mulligan_policy.card_names(game_state, suggested)}: keep lands toward two or three "
+            "and the cheapest castable plays."
+        )
+        self._last_decision_option_ids = suggested_ids
+        self._last_decision_reasoning = reason
+        self._last_decision_trace = {"policy": "mulligan_bottom", "validated_ids": suggested_ids}
+        return suggested_ids
 
     def get_decision_reasoning(self, option_ids: list[str]) -> str:
         """Return the model's reason only for the options it actually selected."""
@@ -3100,6 +3308,27 @@ class ActionPlanner(_ActionLegalityMixin):
                 "Choose all required modes together from the SAME childIndex. "
                 "Honor that child's min/max counts; do not mix modes with Done or another child."
             )
+        if decision.request_type == "Mulligan":
+            from arenamcp.mulligan_policy import MULLIGAN_POLICY
+
+            # The hand facts (count, resulting size, play/draw, per-card
+            # castability) come from the GAME STATE mulligan section below.
+            lines.append(MULLIGAN_POLICY)
+        elif decision.request_type == "Group" and "LondonMulligan" in str(decision.source_label or ""):
+            from arenamcp import mulligan_policy
+
+            ids = [int(o.meta.get("instance_id") or 0) for o in decision.options]
+            suggested = mulligan_policy.bottom_choice(game_state, ids, decision.min_select)
+            lines.append(
+                f"LONDON MULLIGAN BOTTOM: the option_ids you choose go to the BOTTOM of your library; you keep "
+                f"{len(ids) - decision.min_select}. Keep lands toward 2-3 (3 when keeping 6), cheap castable "
+                "plays and bombs; bottom expensive, uncastable, or redundant cards."
+            )
+            lines.extend(mulligan_policy.describe(game_state, decision.min_select)[1:])
+            if suggested:
+                lines.append(
+                    "Land/curve suggestion: bottom " + mulligan_policy.card_names(game_state, suggested) + "."
+                )
         lines.append("")
         lines.append("GAME STATE:")
         context_state = game_state

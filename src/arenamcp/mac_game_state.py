@@ -350,8 +350,6 @@ def _card_entry(node: dict[str, Any]) -> dict[str, Any]:
 
     loyalty = _nullable_int(field(node, "Loyalty"))
     defense = _nullable_int(field(node, "Defense"))
-    if loyalty is not None:
-        entry["loyalty"] = loyalty
     if defense is not None:
         entry["defense"] = defense
 
@@ -410,6 +408,18 @@ def _card_entry(node: dict[str, Any]) -> dict[str, Any]:
             counters[name] = counters.get(name, 0) + num(field(datum, "Count"))
     if counters:
         entry["counters"] = counters
+
+    # Loyalty IS the loyalty counter (the client itself keeps it in
+    # Counters[CounterType.Loyalty]). The reflected Nullable<uint> Loyalty
+    # field can lose its value to IL2CPP boxing: bug_20261006_135027's
+    # Jace token read loyalty 0 beside a Loyalty counter of 1, so combat
+    # analysis valued killing it at nothing. Never report a planeswalker's
+    # zero from that field; unknown is safer than a false zero.
+    counted = next((count for kind, count in counters.items() if kind.lower().endswith("loyalty")), None)
+    if counted is not None:
+        entry["loyalty"] = counted
+    elif loyalty is not None and not (loyalty <= 0 and "Planeswalker" in card_types):
+        entry["loyalty"] = loyalty
 
     production = _enum_list(field(node, "ColorProduction"))
     if production:
