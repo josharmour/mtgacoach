@@ -19,6 +19,9 @@
 // - Diagnostics: text commands on 127.0.0.1:44223 (MTGACOACH_PROBE_PORT).
 // Game calls run on Unity's main thread with a deadline shorter than Python's
 // 5 s read timeout; a job that misses it is dropped, never executed late.
+// Probe threads are attached to the IL2CPP domain only for the duration of a
+// call (ScopedAttach), never while they block on a socket: il2cpp_shutdown joins
+// every attached thread, so a parked attached thread hangs quitting the game.
 // Log: ~/.arenamcp/il2cpp_probe.log (override with MTGACOACH_PROBE_LOG).
 
 #include <arpa/inet.h>
@@ -94,7 +97,9 @@ static const int kSendFlags = 0;
 // ---------------------------------------------------------------------------
 
 static FILE* g_log = nullptr;
-static std::mutex g_log_mutex;
+// State shared with the socket threads is never destroyed: exit() runs static
+// destructors while those detached threads may still be logging or queueing work.
+[[clang::no_destroy]] static std::mutex g_log_mutex;
 
 static void plog(const char* fmt, ...) {
     std::lock_guard<std::mutex> lock(g_log_mutex);
@@ -390,6 +395,11 @@ class JsonParser {
 IL2CPP_FUNCS(IL2CPP_DECLARE)
 #undef IL2CPP_DECLARE
 
+// Resolved on its own so a runtime without it still gets a working probe (whose
+// quit would then hang, as before this was added).
+using il2cpp_thread_detach_fn = void (*)(void*);
+static il2cpp_thread_detach_fn il2cpp_thread_detach = nullptr;
+
 static void* g_game_assembly = nullptr;
 
 #if defined(__APPLE__)
@@ -487,8 +497,31 @@ static bool resolve_api() {
     }
     IL2CPP_FUNCS(IL2CPP_RESOLVE)
 #undef IL2CPP_RESOLVE
+    il2cpp_thread_detach = reinterpret_cast<il2cpp_thread_detach_fn>(game_symbol("il2cpp_thread_detach"));
+    if (complete && !il2cpp_thread_detach) plog("missing export il2cpp_thread_detach; quitting the game may hang");
     return complete;
 }
+
+// Attaches the calling thread to the IL2CPP domain for one scope.
+// il2cpp_shutdown (Runtime::Shutdown -> Thread::KillAllBackgroundThreadsAndWait-
+// ForForegroundThreads) joins every attached thread but the finalizer, re-queuing
+// an abort APC every 10 ms. An APC only runs inside an IL2CPP wait, so a thread
+// left attached while parked in accept()/recv() is never joined and Cmd-Q, the
+// window's close button and the in-game Exit all hang (spindumps 2026-09-29..10-06:
+// main thread in that join loop, probe thread in accept()). Detaching removes the
+// thread from the list that shutdown snapshots. Do not nest.
+class ScopedAttach {
+  public:
+    ScopedAttach() : thread_(il2cpp_thread_attach(il2cpp_domain_get())) {}
+    ~ScopedAttach() {
+        if (thread_ && il2cpp_thread_detach) il2cpp_thread_detach(thread_);
+    }
+    ScopedAttach(const ScopedAttach&) = delete;
+    ScopedAttach& operator=(const ScopedAttach&) = delete;
+
+  private:
+    void* thread_;
+};
 
 // Il2CppTypeEnum values used when reading scalars.
 enum : int {
@@ -723,7 +756,7 @@ using UpdateFn = void (*)(void*, const void*);
 static UpdateFn g_original_update = nullptr;
 static std::atomic<uint64_t> g_ticks{0};
 static std::atomic<bool> g_hooked{false};
-static std::string g_hook_error = "not attempted";
+[[clang::no_destroy]] static std::string g_hook_error = "not attempted";
 
 struct Job {
     std::function<std::string()> run;
@@ -733,8 +766,8 @@ struct Job {
     std::mutex mutex;
     std::condition_variable finished;
 };
-static std::mutex g_jobs_mutex;
-static std::deque<std::shared_ptr<Job>> g_jobs;
+[[clang::no_destroy]] static std::mutex g_jobs_mutex;
+[[clang::no_destroy]] static std::deque<std::shared_ptr<Job>> g_jobs;
 
 static void drain_jobs() {
     std::deque<std::shared_ptr<Job>> batch;
@@ -1030,7 +1063,7 @@ static std::string command_call_request(const char* expected_class, const char* 
 // Bridge protocol (same commands and fields as the BepInEx plugin; main thread)
 // ---------------------------------------------------------------------------
 
-static const char* kBridgeVersion = "mac-il2cpp-0.3.0";
+static const char* kBridgeVersion = "mac-il2cpp-0.3.1";  // 0.3.1: probe threads no longer stay attached (quit hang)
 static const int kMainThreadBudgetMs = 3500;  // under gre_bridge.py's 5 s default read timeout
 static std::atomic<bool> g_bridge_connected{false};
 
@@ -2149,14 +2182,30 @@ static std::vector<std::string> split_words(const std::string& line) {
     return words;
 }
 
+// Diagnostics that touch managed state run on a thread that is legitimately
+// attached: Unity's main thread once hooked, otherwise this socket thread for
+// just this call (it must not stay attached while it waits in accept()).
+static std::string run_managed(std::function<std::string()> run) {
+    if (g_hooked) return run_on_main(std::move(run));
+    ScopedAttach attach;
+    return run();
+}
+
 static std::string dispatch(const std::string& line) {
     std::vector<std::string> words = split_words(line);
     if (words.empty()) return error_json("empty command");
     const std::string& command = words[0];
     auto ns_arg = [](const std::string& value) { return value == "-" ? std::string() : value; };
+    // ping reads only the assembly table (metadata), as startup does before attaching.
     if (command == "ping") return command_ping();
-    if (command == "class" && words.size() == 3) return command_describe(ns_arg(words[1]), words[2]);
-    if (command == "static" && words.size() == 4) return command_static(ns_arg(words[1]), words[2], words[3]);
+    if (command == "class" && words.size() == 3) {
+        std::string ns = ns_arg(words[1]), name = words[2];
+        return run_managed([=] { return command_describe(ns, name); });
+    }
+    if (command == "static" && words.size() == 4) {
+        std::string ns = ns_arg(words[1]), name = words[2], field = words[3];
+        return run_managed([=] { return command_static(ns, name, field); });
+    }
     if (command == "pending") return run_on_main(command_pending);
     if (command == "submit_action" && words.size() >= 2) {
         int index = atoi(words[1].c_str());
@@ -2348,29 +2397,29 @@ static void* startup(void*) {
     plog("il2cpp runtime initialized");
     sleep(3);  // let il2cpp_init finish registering assemblies before touching the domain
     void* papa = nullptr;
-    bool attached = false;
     for (int attempt = 0; attempt < 600 && !papa; attempt++) {
         size_t count = 0;
         il2cpp_domain_get_assemblies(il2cpp_domain_get(), &count);
         if (count > 0 && has_image("Core.dll")) {
-            if (!attached) {
-                il2cpp_thread_attach(il2cpp_domain_get());
-                attached = true;
-            }
+            // Attached only for discovery and hooking, never across the sleep
+            // below or the accept() loop this thread ends in (see ScopedAttach).
+            ScopedAttach attach;
             papa = find_class("", "PAPA");
+            if (papa) {
+                init_reflection();
+#if defined(__ANDROID__)
+                speed_up_log_file();
+#endif
+                if (!install_update_hook(papa)) plog("main-thread hook failed: %s", g_hook_error.c_str());
+            }
         }
         if (!papa) sleep(1);
     }
-    if (papa) init_reflection();
-#if defined(__ANDROID__)
-    if (papa) speed_up_log_file();
-#endif
     if (!papa) {
         g_hook_error = "PAPA class not found";
         plog("PAPA class not found; serving diagnostics only");
-    } else if (!install_update_hook(papa)) {
-        plog("main-thread hook failed: %s", g_hook_error.c_str());
     }
+    plog("startup thread detached from il2cpp (detach export %s)", il2cpp_thread_detach ? "found" : "MISSING");
     pthread_t bridge_thread;
     if (pthread_create(&bridge_thread, nullptr, bridge_client, nullptr) == 0) pthread_detach(bridge_thread);
     serve();
