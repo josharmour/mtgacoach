@@ -1043,9 +1043,9 @@ def review_world(primer, review, *, screens=None, writes=None, advisor=None):
                 "sideboard": sideboard,
                 "basics_in_pool": {"7001": 99, "7002": 99, "7003": 99},
             },
-            "set_limited_deck": lambda fields: writes.pop(0)
-            if writes
-            else {"ok": True, "main_deck": fields["main_deck"]},
+            "set_limited_deck": lambda fields: (
+                writes.pop(0) if writes else {"ok": True, "main_deck": fields["main_deck"]}
+            ),
             "submit_limited_deck": {"ok": True},
         }
     )
@@ -1172,3 +1172,44 @@ def test_claimed_event_waits_for_reentry_instead_of_pausing(primer):
     driver._next_poll = 0.0
     driver._step()
     assert any(a == "submit_draft_pick" for a, _f in bridge.sent)
+
+
+@pytest.mark.parametrize("auto_queue", [False, True])
+def test_matches_are_queued_only_with_auto_queue_on(primer, auto_queue):
+    """2026-10-06: Auto-queue was off but every PremierDraft match was queued."""
+    bridge = FakeBridge(
+        {
+            "get_screen": {"ok": True, "event_page": True},
+            "get_event_page": {
+                "ok": True,
+                "is_open": True,
+                "module": "WinLossGate",
+                "event_name": "PremierDraft_TST",
+            },
+            "event_play": {"ok": True},
+        }
+    )
+    driver = driver_for(bridge, primer, queue_fn=lambda: auto_queue)
+    driver.run.event_name = "PremierDraft_TST"
+    driver._step()
+    assert any(a == "event_play" for a, _f in bridge.sent) is auto_queue
+    assert not driver.paused_reason
+
+
+def test_prize_is_claimed_even_with_auto_queue_off(primer):
+    bridge = FakeBridge(
+        {
+            "get_screen": {"ok": True, "event_page": True},
+            "get_event_page": {
+                "ok": True,
+                "is_open": True,
+                "module": "ClaimPrize",
+                "event_name": "PremierDraft_TST",
+            },
+            "event_play": {"ok": True},
+        }
+    )
+    driver = driver_for(bridge, primer, queue_fn=lambda: False)
+    driver.run.event_name = "PremierDraft_TST"
+    driver._step()
+    assert any(a == "event_play" for a, _f in bridge.sent)

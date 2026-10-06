@@ -84,6 +84,7 @@ class _DraftEventMixin:
             commentary_fn=lambda: bool(
                 getattr(self, "settings", None) and self.settings.get("draft_commentary", True)
             ),
+            queue_fn=lambda: bool(getattr(self, "_auto_queue_enabled", False)),
         )
         return driver
 

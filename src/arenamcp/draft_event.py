@@ -92,6 +92,7 @@ class DraftEventDriver:
         speak_fn: Callable[[str], None] | None = None,
         review_fn: Callable[[str, Callable[[], bool]], bool] | None = None,
         commentary_fn: Callable[[], bool] = lambda: True,
+        queue_fn: Callable[[], bool] = lambda: True,
     ) -> None:
         self._bridge_fn = bridge_fn
         self._tracker_fn = tracker_fn
@@ -111,6 +112,8 @@ class DraftEventDriver:
         self._review_fn = review_fn
         # Whether picks are explained aloud (setting draft_commentary).
         self._commentary_fn = commentary_fn
+        # Whether the player wants the next match queued (the Auto-queue toggle).
+        self._queue_fn = queue_fn
         self._narrator = DraftNarrator()
         self._control = 0
         self._lock = threading.Lock()
@@ -716,6 +719,12 @@ class DraftEventDriver:
             # Wait for the player to enter; that entry starts a fresh run.
             self.run = DraftRun()
             self._status(f"{event_name}: waiting for you to enter; autoplay never pays")
+            self._wait(5.0, owns=False)
+            return
+        if module in MATCH_MODULES and not self._queue_fn():
+            # 2026-10-06: with Auto-queue off, autoplay still queued every
+            # PremierDraft match. Picks, the deck and prizes stay automatic.
+            self._status(f"Auto-queue is off: press Play when you're ready for the next {event_name} match")
             self._wait(5.0, owns=False)
             return
         if module in MATCH_MODULES and run.queued_at and time.monotonic() - run.queued_at < QUEUE_WAIT_S:
