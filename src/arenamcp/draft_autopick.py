@@ -3,9 +3,14 @@
 Industry-standard bot drafting, made explicit and explainable:
 
 - Card quality: the card's 17lands games-in-hand win rate as a z-score within
-  the set (``SetCard.baseline``); rarity priors when a card is unrated.
-- Lane: the pool's colors, weighted by card quality. Commitment grows with the
-  pool, so early picks stay flexible and late off-color picks are discounted.
+  the set (``SetCard.baseline``). A card 17lands leaves unrated is usually one
+  nobody plays, so it starts well below average unless its play rate or game
+  win rate says otherwise; scarce rares and mythics keep a modest prior.
+- Lane: the pool's colors, weighted by card quality and by what each mana cost
+  actually requires. Commitment grows with the pool, so early picks stay
+  flexible and late off-color picks are discounted. A weak second color stays
+  open through pack 2 and is re-chosen every pick (pool quality, signals and
+  the set's pair win rates), so an open pair can still take over.
 - Archetype role: payoffs, enablers and key commons the primer lists for the
   archetype the pool is heading toward (or the format's best archetypes early).
 - Synergy: primer synergy notes and archetype lists shared with picked cards.
@@ -18,15 +23,51 @@ unavailable or its answer fails validation, this ranking makes the pick.
 
 from __future__ import annotations
 
+import html
+import re
+import statistics
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
+from arenamcp.draft_guidance import normalize_card
+from arenamcp.limited_rules import rules_profile
 from arenamcp.set_primer import COLOR_ORDER, SetPrimer, normalize_colors
 
-RARITY_PRIOR = {"M": 0.3, "R": 0.2, "U": -0.15, "C": -0.4}
+RARITY_PRIOR = {"M": 0.3, "R": 0.2, "U": -0.15, "C": -0.4}  # only when there is no primer at all
 ROLE_WEIGHT = {"payoffs": 0.35, "enablers": 0.3, "key_uncommons": 0.25, "key_commons": 0.25}
 TIER_WEIGHT = {1: 1.0, 2: 0.7, 3: 0.4}
+
+# 17lands hides GIH below ~500 games in hand. In a mature format a common or
+# uncommon that short of games is one drafters leave in the sideboard
+# (2026-10-06 FRA: Winter, Team Player 27% played / 49.9% game win rate,
+# Arni 20% / 48.5%, Yargle 5%), so "unrated" means "assume below average".
+UNRATED_PRIOR = -1.0
+UNRATED_RARE_PRIOR = {"M": 0.2, "R": 0.0}
+RARELY_PLAYED_PRIOR = -1.4
+RARELY_PLAYED_RATE = 0.35  # 17lands play rate; the median rated card is ~0.7
+RARELY_PLAYED_SHARE = 0.45  # games vs. the median rated card of the same rarity
+UNRATED_ROLE_CAP = 0.1  # the model-written primer's roles cannot carry an unrated card
+SECOND_COLOR_FLOOR = 0.25  # least hold on any second color (an undecided one too)
+REMOVAL_SHARE = 0.12  # ~3 removal spells per 23-25 playables
+
+_REMOVAL_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\bdestroy target\b",
+        r"\bexile target (?:[a-z]+ )*?(?:creature|planeswalker|permanent)\b",
+        r"\bdeals? (?:\d+|x) damage to (?:any target|(?:up to one )?target (?:[a-z]+ )*?(?:creature|planeswalker))",
+        r"\btarget creature\b[^.]*?\bgets -(?:\d+|x)/-(?:[1-9]\d*|x)\b",
+        r"\b(?:target|each) opponent sacrifices (?:a|an|one) (?:[a-z]+ )*?(?:creature|planeswalker)",
+        r"\bbase power and toughness 0/0\b",
+        r"\bfights? (?:up to one )?(?:other )?target (?:[a-z]+ )*?creature",
+    )
+)
+
+
+def is_ordinary_basic(name: str) -> bool:
+    """These five basics can be added freely after drafting, even without ratings."""
+    return name.strip().casefold() in {"plains", "island", "swamp", "mountain", "forest"}
 
 
 @dataclass
@@ -50,24 +91,161 @@ class Lane:
     colors: str
     weights: dict[str, float]
     commitment: float
+    main: str = ""
+    # How firmly the weaker lane color is held: 0 = still open, 1 = settled.
+    second_hold: float = 1.0
 
 
-def pool_lane(pool: list[int], primer: SetPrimer | None) -> Lane:
-    """The pool's two strongest colors and how committed the drafter should be to them."""
+@dataclass
+class _SetStats:
+    median_games: dict[str, float]
+    game_wr_mean: float | None
+    game_wr_sd: float | None
+
+
+def _set_stats(primer: SetPrimer | None) -> _SetStats:
+    """What a typical rated card of each rarity looks like, to judge unrated ones."""
+    if primer is None:
+        return _SetStats({}, None, None)
+    rated = [card for card in primer.cards.values() if card.baseline is not None]
+    median_games = {}
+    for rarity in {card.rarity for card in rated}:
+        games = [card.games for card in rated if card.rarity == rarity and card.games > 0]
+        if len(games) >= 3:
+            median_games[rarity] = float(statistics.median(games))
+    game_wrs = [card.game_wr for card in rated if card.game_wr is not None]
+    if len(game_wrs) >= 10 and statistics.pstdev(game_wrs) > 0:
+        return _SetStats(median_games, statistics.fmean(game_wrs), statistics.pstdev(game_wrs))
+    return _SetStats(median_games, None, None)
+
+
+def _rarely_played(card: Any, stats: _SetStats) -> str | None:
+    """Why an unrated card looks like one drafters leave out, or None."""
+    if card.play_rate is not None:
+        if card.play_rate < RARELY_PLAYED_RATE:
+            return f"{card.play_rate:.0%} of drafted copies played"
+        return None
+    median = stats.median_games.get(card.rarity)
+    if median and card.games / median < RARELY_PLAYED_SHARE:
+        return f"{card.games / median:.0%} of a typical card's games"
+    return None
+
+
+def card_value(card: Any, stats: _SetStats) -> tuple[float, str, bool]:
+    """(base score in z units, reason, rated) for a primer card."""
+    if card.baseline is not None:
+        return card.baseline, f"GIH {card.gih_wr:.1%} (z {card.baseline:+.2f})", True
+    if "Land" in card.types and not card.colors and card.rarity in {"C", ""}:
+        return -2.0, "basic/utility land", False
+    rarely = _rarely_played(card, stats)
+    if rarely:
+        return RARELY_PLAYED_PRIOR, f"unrated; rarely played ({rarely})", False
+    if card.game_wr is not None and stats.game_wr_sd:
+        z = max(-2.0, min(1.5, (card.game_wr - stats.game_wr_mean) / stats.game_wr_sd))
+        return round(z, 3), f"unrated; game win rate {card.game_wr:.1%}", False
+    if card.rarity in UNRATED_RARE_PRIOR:
+        return UNRATED_RARE_PRIOR[card.rarity], "unrated rare; rarity prior", False
+    return UNRATED_PRIOR, "unrated; assumed below average", False
+
+
+def is_removal(card: Any) -> bool:
+    """Kills, exiles, shrinks or forces a sacrifice of an opponent's creature, from rules text."""
+    text = html.unescape(re.sub(r"<[^>]*>", "", str(getattr(card, "oracle", "") or ""))).lower()
+    for sentence in re.split(r"[.\n]", text):
+        if "you control" in sentence:
+            continue
+        if any(pattern.search(sentence) for pattern in _REMOVAL_PATTERNS):
+            return True
+    return False
+
+
+def _mana_needs(card: Any, mana_costs: dict[int, str]) -> list[set[str]]:
+    """Each colored mana symbol as the set of colors that can pay it.
+
+    Generic, colorless, {2/X} and Phyrexian symbols need no color. Without an
+    Arena cost the card's colors are all treated as required.
+    """
+    cost = mana_costs.get(card.grp_id)
+    if not cost:
+        return [{color} for color in card.colors]
+    cost = normalize_card({"mana_cost": cost}).mana_cost
+    needs = []
+    for symbol in re.findall(r"\{([^}]+)\}", cost):
+        choices = set(symbol.upper().split("/"))
+        if choices & {"2", "P"}:
+            continue
+        colors = choices & set(COLOR_ORDER)
+        if colors:
+            needs.append(colors)
+    return needs
+
+
+def _payable(needs: list[set[str]], colors: set[str] | str) -> bool:
+    return all(symbol & set(colors) for symbol in needs)
+
+
+def _pair_factor(primer: SetPrimer | None, pair: str) -> float:
+    """Tie-break between candidate second colors by the set's pair win rates (about +-25%)."""
+    rates = [row.get("win_rate") for row in (primer.pair_stats if primer else {}).values()]
+    rates = [rate for rate in rates if isinstance(rate, (int, float))]
+    rate = ((primer.pair_stats if primer else {}).get(pair) or {}).get("win_rate")
+    if len(rates) < 3 or not isinstance(rate, (int, float)):
+        return 1.0
+    return max(0.75, min(1.3, 1.0 + 8.0 * (rate - statistics.fmean(rates))))
+
+
+def pool_lane(pool: list[int], primer: SetPrimer | None, mana_costs: dict[int, str] | None = None) -> Lane:
+    """The pool's main color, its best second color, and how committed the drafter should be.
+
+    A card adds weight (its quality) only to colors its mana cost requires. A
+    hybrid symbol credits a color the pool already plays when it can, since
+    the card does not need the other one; otherwise it splits.
+    """
+    mana_costs = mana_costs or {}
+    stats = _set_stats(primer)
     weights = {color: 0.0 for color in COLOR_ORDER}
+    deferred: list[tuple[float, set[str]]] = []
     for grp_id in pool:
         card = primer.card(grp_id) if primer else None
-        if card is None or not card.colors:
+        if card is None or is_ordinary_basic(card.name):
             continue
-        quality = max(0.25, 1.0 + (card.baseline if card.baseline is not None else -0.5))
-        for color in card.colors:
-            weights[color] += quality / len(card.colors)
+        needs = _mana_needs(card, mana_costs)
+        if not needs:
+            continue
+        quality = max(0.1 if card.baseline is None else 0.25, 1.0 + card_value(card, stats)[0])
+        for symbol in needs:
+            if len(symbol) == 1:
+                weights[next(iter(symbol))] += quality / len(needs)
+            else:
+                deferred.append((quality / len(needs), symbol))
+    firm = dict(weights)
+    for share, symbol in deferred:
+        held = [color for color in symbol if firm[color] > 0]
+        if held:
+            weights[max(held, key=lambda color: firm[color])] += share
+        else:
+            for color in symbol:
+                weights[color] += share / len(symbol)
     ranked = sorted((color for color in COLOR_ORDER if weights[color] > 0), key=lambda c: -weights[c])
-    colors = normalize_colors("".join(ranked[:2]))
+    main = ranked[0] if ranked else ""
+    second = max(
+        ranked[1:],
+        key=lambda color: weights[color] * _pair_factor(primer, normalize_colors(main + color)),
+        default="",
+    )
+    colors = normalize_colors(main + second)
     total = sum(weights.values())
     focus = (sum(weights[c] for c in colors) / total) if total else 0.0
     commitment = min(1.0, len(pool) / 14) * (0.6 + 0.4 * focus)
-    return Lane(colors=colors, weights=weights, commitment=round(commitment, 3))
+    ratio = weights[second] / weights[main] if second and weights[main] else 0.0
+    second_hold = max(0.0, min(1.0, (ratio - 0.15) / 0.45))
+    return Lane(
+        colors=colors,
+        weights=weights,
+        commitment=round(commitment, 3),
+        main=main,
+        second_hold=round(second_hold, 3),
+    )
 
 
 def color_openness(pack: list[int], pick_number: int, primer: SetPrimer | None) -> dict[str, float]:
@@ -95,45 +273,102 @@ def rank_pack(
     pack_number: int = 1,
     pick_number: int = 1,
     names: dict[int, str] | None = None,
+    mana_costs: dict[int, str] | None = None,
 ) -> list[PickScore]:
     """Best pick first; never returns cards outside the pack."""
     names = names or {}
-    lane = pool_lane(pool, primer)
+    mana_costs = mana_costs or {}
+    stats = _set_stats(primer)
+    lane = pool_lane(pool, primer, mana_costs)
+    main = lane.main or (lane.colors[:1] if lane.colors else "")
+    second = "".join(color for color in lane.colors if color != main)
+    # The weaker color stays open through pack 2; pack 3 settles it by pick 8.
+    hold = lane.second_hold
+    if pack_number >= 3:
+        hold = max(hold, min(1.0, max(0.0, (pick_number - 2) / 6)))
+    soft_hold = max(hold, SECOND_COLOR_FLOOR)
+
+    def fits_lane(card):
+        return _payable(_mana_needs(card, mana_costs), lane.colors) if lane.colors else True
+
     openness = color_openness(pack, pick_number, primer)
     pool_names = (
         Counter(primer.card(g).name.lower() for g in pool if primer and primer.card(g))
         if primer
         else Counter()
     )
+    playable_pool = [
+        card
+        for grp_id in pool
+        if primer
+        and (card := primer.card(grp_id)) is not None
+        and not is_ordinary_basic(card.name)
+        and "Land" not in card.types
+        and (lane.commitment < 0.5 or fits_lane(card))
+    ]
+
+    def provides_body(card):
+        return rules_profile({"type_line": card.types, "oracle_text": card.oracle})["unconditional_body"]
+
+    bodies = sum(provides_body(card) for card in playable_pool)
+    early_bodies = sum(
+        provides_body(card) and card.cmc is not None and card.cmc <= 3 for card in playable_pool
+    )
+    cheap_bodies = sum(
+        provides_body(card) and card.cmc is not None and card.cmc <= 2 for card in playable_pool
+    )
+    expensive = sum(card.cmc is not None and card.cmc >= 5 for card in playable_pool)
+    removal = sum(is_removal(card) for card in playable_pool)
     scores: dict[int, PickScore] = {}
     for grp_id in pack:
         if grp_id in scores:
             continue
         card = primer.card(grp_id) if primer else None
         name = card.name if card else names.get(grp_id, f"Card {grp_id}")
+        if is_ordinary_basic(name):
+            scores[grp_id] = PickScore(
+                grp_id=grp_id,
+                name=name,
+                score=-1000.0,
+                reasons=["ordinary basic land; available freely when building the deck"],
+            )
+            continue
         reasons: list[str] = []
-        if card is not None and card.baseline is not None:
-            base = card.baseline
-            reasons.append(f"GIH {card.gih_wr:.1%} (z {card.baseline:+.2f})")
-        elif card is not None and "Land" in card.types and not card.colors and card.rarity in {"C", ""}:
-            base = -2.0
-            reasons.append("basic/utility land")
+        rated, rarely = True, False
+        if card is not None:
+            base, note, rated = card_value(card, stats)
+            rarely = "rarely played" in note
+            reasons.append(note)
+        elif primer is not None:
+            base = UNRATED_PRIOR
+            reasons.append("not in the set data; assumed below average")
+            rated = False
         else:
-            base = RARITY_PRIOR.get(card.rarity if card else "", -0.5)
+            base = RARITY_PRIOR.get("", -0.5)
             reasons.append("unrated; rarity prior")
         score = base
 
         colors = card.colors if card else ""
         commitment = lane.commitment
-        if not colors:
+        needs = _mana_needs(card, mana_costs) if card is not None else []
+        if not needs:
             fit = 0.1
         elif not lane.colors:
-            fit = -0.15 if len(colors) > 1 else 0.0
-        elif set(colors) <= set(lane.colors):
+            fit = 0.0 if any(_payable(needs, color) for color in COLOR_ORDER) else -0.15
+        elif _payable(needs, main):
             fit = 0.6 * commitment
             reasons.append(f"in lane {lane.colors}")
-        elif set(colors) & set(lane.colors):
-            fit = -0.3 * commitment
+        elif second and _payable(needs, main + second):
+            fit = 0.6 * commitment * hold
+            reasons.append(f"in lane {lane.colors}")
+        elif any(_payable(needs, main + color) for color in COLOR_ORDER if color not in lane.colors):
+            # A candidate second color: discounted only as firmly as the
+            # current second color is held.
+            fit = -1.2 * commitment * soft_hold
+            if commitment * soft_hold > 0.3:
+                reasons.append(f"off lane {lane.colors}")
+            elif commitment > 0.3:
+                reasons.append(f"second color still open (lane {lane.colors})")
         else:
             fit = -1.2 * commitment
             if commitment > 0.3:
@@ -141,6 +376,32 @@ def rank_pack(
         score += fit
 
         if primer is not None and card is not None:
+            if len(playable_pool) >= 4 and fits_lane(card):
+                if provides_body(card):
+                    if bodies < len(playable_pool) * 0.6:
+                        score += 0.45
+                        reasons.append("pool needs more creatures")
+                    if (
+                        card.cmc is not None
+                        and card.cmc <= 2
+                        and cheap_bodies < max(2, len(playable_pool) * 0.18)
+                    ):
+                        score += 0.45
+                        reasons.append("fills the early creature curve; needs one- and two-mana bodies")
+                    elif (
+                        card.cmc is not None
+                        and card.cmc <= 3
+                        and early_bodies < max(3, len(playable_pool) * 0.25)
+                    ):
+                        score += 0.35
+                        reasons.append("fills the early creature curve")
+                if card.cmc is not None and card.cmc >= 5 and expensive >= max(2, len(playable_pool) * 0.2):
+                    score -= 0.5
+                    reasons.append("pool already has enough expensive spells")
+                if is_removal(card) and removal < max(2.0, len(playable_pool) * REMOVAL_SHARE):
+                    cheap = card.cmc is not None and card.cmc <= 3
+                    score += 0.4 if cheap else 0.2
+                    reasons.append(f"pool needs removal ({removal} so far)")
             best_role = 0.0
             role_notes = []
             for arch_colors, role in primer.card_roles(card.name):
@@ -156,6 +417,11 @@ def rank_pack(
                     role_notes = [
                         f"{role.rstrip('s').replace('_', ' ')} for {archetype.get('name', arch_colors)}"
                     ]
+            if not rated:
+                # The primer's archetype lists are model-written; they cannot
+                # lift a card the data says nobody plays.
+                best_role = min(best_role, 0.0 if rarely else UNRATED_ROLE_CAP)
+                role_notes = role_notes if best_role > 0 else []
             score += best_role
             reasons += role_notes
 
@@ -167,9 +433,9 @@ def rank_pack(
                     if partners:
                         synergy += 0.2 * partners
                         reasons.append(f"synergy: {note.get('why', '')[:80]}")
-            score += min(synergy, 0.6)
+            score += min(synergy, 0.6 if rated else 0.0 if rarely else UNRATED_ROLE_CAP)
 
-            if pack_number == 1 and 4 <= pick_number <= 10 and colors:
+            if pack_number <= 2 and 4 <= pick_number <= 10 and colors:
                 signal = 0.3 * max(openness[c] for c in colors)
                 if signal >= 0.15:
                     reasons.append(f"{colors} looks open")
@@ -179,7 +445,7 @@ def rank_pack(
                 score -= 0.4
                 reasons.append("primer trap")
         scores[grp_id] = PickScore(grp_id=grp_id, name=name, score=round(score, 4), reasons=reasons)
-    return sorted(scores.values(), key=lambda pick: -pick.score)
+    return sorted(scores.values(), key=lambda pick: (is_ordinary_basic(pick.name), -pick.score))
 
 
 def choose_picks(

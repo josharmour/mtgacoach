@@ -1,5 +1,6 @@
 """Counted, validated forty-card builds and spoken cuts for Limited pools."""
 
+import html
 import re
 from collections import Counter
 from itertools import combinations
@@ -11,19 +12,23 @@ from arenamcp.limited_rules import rules_profile, synergy_evidence
 BASIC_NAMES = {"W": "Plains", "U": "Islands", "B": "Swamps", "R": "Mountains", "G": "Forests"}
 COLOR_NAMES = {"W": "white", "U": "blue", "B": "black", "R": "red", "G": "green"}
 
-DECK_SYSTEM_PROMPT = """Build exactly 40 cards for this Limited draft from the ACTUAL counted pool.
-Use only available copies. Ordinary basic lands can be added freely through basic_lands;
+DECK_SYSTEM_PROMPT = """Build exactly 40 cards for this Limited deck (draft or sealed) from the ACTUAL
+counted pool. Use only available copies. Ordinary basic lands can be added freely through basic_lands;
 nonbasic lands and every spell must come from the pool. Aim for 23 spells and 17 total
 lands, adjusting within 15-19 lands only when the curve warrants it. Prioritize a coherent
 two-color plan, early creatures, interaction, supported enablers/payoffs, and a castable
-mana base. No unsupported splashes. Read full rules and related_faces, not card names.
+mana base. Splash a third color only for a few high-impact cards (bombs, premium removal)
+with a single pip of that color, never early drops, and with at least three sources of it
+(basics, on-color dual lands, or fixing). Sealed pools are deeper and games slower: bombs
+and removal matter more than in draft. Read full rules and related_faces, not card names.
 Hybrid mana can use either color. Adding loyalty counters is not a loyalty activation.
 Honor the previous theme only if this actual pool supports it. Missing ratings are unknown.
 When set_strategy is supplied (this set's 17lands data plus card-rules analysis), prefer its
 stronger archetypes the pool supports, include its payoffs only with enough enablers, and
 avoid its traps unless the pool has nothing better.
-scored_candidates are complete counted builds per color pair, scored on 17lands card quality,
-bombs, removal, creature count, cheap plays and archetype win rate. Start from the highest
+scored_candidates are complete counted builds per color pair (some with a supported splash),
+scored on 17lands card quality, bombs, removal, creature count, cheap plays, archetype win
+rate and splash consistency; "format" says draft or sealed. Start from the highest
 scoring candidate; change colors or cards only for a concrete reason (a bomb, real synergy,
 missing early plays) and say why in plan.
 Use supported_synergies as grounded links, checking the supplied rules' conditions and
@@ -39,6 +44,19 @@ the pool is already in the editor: this is a proposed build, not a verified edit
 
 def _nonbasics(pool: list[dict]) -> list[dict]:
     return [card for card in pool if "basic land" not in card.get("type_line", "").lower()]
+
+
+def _produces(card: dict) -> set[str]:
+    """Colors a land or fixing card can make (Arena writes mana as {oG}, Scryfall as {G})."""
+    colors = {color for color in (card.get("produced_mana") or []) if color in "WUBRG"}
+    text = html.unescape(re.sub(r"<[^>]*>", "", card.get("oracle_text", ""))).lower()
+    for clause in re.findall(r"\badd\b[^.\n]*", text):
+        colors.update(symbol.upper() for symbol in re.findall(r"\{o?([wubrg])\}", clause))
+        if "any color" in clause or "chosen color" in clause:
+            colors.update("WUBRG")
+    if re.search(r"search your library for (?:a|up to \w+) basic land", text):
+        colors.update("WUBRG")
+    return colors
 
 
 def _castable(card: dict, colors: tuple[str, ...]) -> bool:
@@ -70,11 +88,7 @@ def validate_deck(payload: dict, pool: list[dict], *, source: str) -> dict[str, 
     for grp_id in kept:
         card = by_id[grp_id]
         if "land" in card.get("type_line", "").lower():
-            mana_colors.update(card.get("produced_mana") or [])
-            for clause in re.findall(r"\badd\b[^.\n]*", card.get("oracle_text", "").lower()):
-                mana_colors.update(symbol.upper() for symbol in re.findall(r"\{([wubrgc])\}", clause))
-                if "any color" in clause:
-                    mana_colors.update("WUBRG")
+            mana_colors.update(_produces(card))
     uncastable = [
         by_id[grp_id]["name"] for grp_id in kept if not _castable(by_id[grp_id], tuple(mana_colors))
     ]
@@ -170,9 +184,55 @@ def _is_legendary(card: dict) -> bool:
     return "legendary" in card.get("type_line", "").lower()
 
 
-def _build_for_colors(spells: list[dict], colors: tuple[str, ...]) -> list[dict]:
-    candidates = [card for card in spells if card.get("type_line") and _castable(card, colors)]
-    chosen: list[dict] = []
+# Sealed games run longer and pools are deeper: bombs and removal carry more,
+# a missing two-drop matters less, and a slightly larger splash is acceptable.
+FORMAT_WEIGHTS = {
+    "draft": {"bomb": 4, "removal_cap": 6, "cheap_penalty": 2, "max_splash": 2},
+    "sealed": {"bomb": 6, "removal_cap": 8, "cheap_penalty": 1, "max_splash": 3},
+}
+SPLASH_CARD_COST = 2.5  # consistency lost per splashed card
+SPLASH_BASICS_ONLY_COST = 3.0  # splashing without a dual land or fixing spell
+
+
+def _symbols(card: dict) -> list[set[str]]:
+    return [set(symbol.split("/")) for symbol in re.findall(r"\{([^}]+)\}", card.get("mana_cost", ""))]
+
+
+def _splash_pips(card: dict, base: tuple[str, ...], color: str) -> int:
+    """Symbols that only the splash color can pay."""
+    return sum(color in options and not options & (set(base) | {"2", "P"}) for options in _symbols(card))
+
+
+def _splash_worthy(card: dict) -> bool:
+    """Only bombs and premium removal justify weakening the mana."""
+    gih = _gih(card)
+    removal = _interaction_kind(card) == "removal"
+    if gih is not None:
+        return gih >= BOMB_GIH - 1 or (removal and gih >= 57.0)
+    return str(card.get("rarity") or "").lower() in {"rare", "mythic"} and (
+        removal or "evasion" in normalize_card(card).tags
+    )
+
+
+def _required_colors(card: dict) -> set[str]:
+    return {
+        next(iter(options)) for options in _symbols(card) if len(options) == 1 and options <= set("WUBRG")
+    }
+
+
+def _color_roles(chosen: list[dict]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(main colors, splash colors) from what the deck's cards actually require."""
+    needed = Counter(color for card in chosen for color in _required_colors(card))
+    ranked = [color for color, _count in needed.most_common()]
+    main = tuple(sorted(ranked[:2], key="WUBRG".index))
+    return main, tuple(sorted(ranked[2:], key="WUBRG".index))
+
+
+def _build_for_colors(spells: list[dict], colors: tuple[str, ...], preset: tuple = ()) -> list[dict]:
+    candidates = [
+        card for card in spells if card.get("type_line") and _castable(card, colors) and card not in preset
+    ]
+    chosen: list[dict] = list(preset)
     while candidates and len(chosen) < 23:
         bodies = sum(rules_profile(card)["unconditional_body"] for card in chosen)
         early = sum(
@@ -202,9 +262,16 @@ def _build_for_colors(spells: list[dict], colors: tuple[str, ...]) -> list[dict]
 
 
 def deck_quality(
-    chosen: list[dict], colors: tuple[str, ...] = (), pair_win_rates: dict | None = None
+    chosen: list[dict],
+    colors: tuple[str, ...] = (),
+    pair_win_rates: dict | None = None,
+    *,
+    fmt: str = "draft",
+    splash: tuple[str, ...] = (),
+    fixing: int = 0,
 ) -> dict:
-    """Whole-deck evaluation: card quality, bombs, removal, bodies, curve, archetype data."""
+    """Whole-deck evaluation: card quality, bombs, removal, bodies, curve, archetype data, splash cost."""
+    weights = FORMAT_WEIGHTS.get(fmt, FORMAT_WEIGHTS["draft"])
     values = [_card_value(card) for card in chosen]
     gihs = [g for g in (_gih(card) for card in chosen) if g is not None]
     creatures = sum(rules_profile(card)["unconditional_body"] for card in chosen)
@@ -217,9 +284,18 @@ def deck_quality(
         for index, first in enumerate(chosen)
         for second in chosen[index + 1 :]
     )
-    score = sum(values) + 4 * len(bombs) + 2 * min(removal, 6) + min(12, support)
-    score -= 3 * max(0, 14 - creatures) + 2 * max(0, 4 - cheap) + 3 * max(0, expensive - 4)
-    key = "".join(color for color in "WUBRG" if color in colors)
+    score = (
+        sum(values)
+        + weights["bomb"] * len(bombs)
+        + 2 * min(removal, weights["removal_cap"])
+        + min(12, support)
+    )
+    score -= 3 * max(0, 14 - creatures) + weights["cheap_penalty"] * max(0, 4 - cheap)
+    score -= 3 * max(0, expensive - 4)
+    splashed = [card["name"] for card in chosen if _required_colors(card) & set(splash)]
+    if splashed:
+        score -= SPLASH_CARD_COST * len(splashed) + (0 if fixing else SPLASH_BASICS_ONLY_COST)
+    key = "".join(color for color in "WUBRG" if color in colors and color not in splash)
     if pair_win_rates and key in pair_win_rates:
         rates = list(pair_win_rates.values())
         score += 50 * (pair_win_rates[key] - sum(rates) / len(rates))
@@ -233,53 +309,166 @@ def deck_quality(
         "bombs": bombs,
         "synergy_links": support,
         "spells": len(chosen),
+        "splash": "".join(splash),
+        "splash_cards": splashed,
+        "format": fmt,
     }
 
 
-def candidate_decks(pool: list[dict], pair_win_rates: dict | None = None, top: int = 3) -> list[dict]:
-    """The best few two-color builds, each scored as a whole deck."""
-    spells = [card for card in _nonbasics(pool) if "land" not in card.get("type_line", "").lower()]
+def candidate_decks(
+    pool: list[dict], pair_win_rates: dict | None = None, top: int = 3, *, fmt: str = "draft"
+) -> list[dict]:
+    """The best few two-color builds, plus supported splashes, each scored as a whole deck."""
+    weights = FORMAT_WEIGHTS.get(fmt, FORMAT_WEIGHTS["draft"])
+    nonbasics = _nonbasics(pool)
+    spells = [card for card in nonbasics if "land" not in card.get("type_line", "").lower()]
+    lands = [card for card in nonbasics if "land" in card.get("type_line", "").lower()]
     ranked = []
     for colors in combinations("WUBRG", 2):
-        chosen = _build_for_colors(spells, colors)
-        if len(chosen) >= 21:
+        base = _build_for_colors(spells, colors)
+        if len(base) < 21:
+            continue
+        ranked.append(
+            {
+                "colors": colors,
+                "splash": (),
+                "chosen": base,
+                "quality": deck_quality(base, colors, pair_win_rates, fmt=fmt),
+            }
+        )
+        weakest = min(_card_value(card) for card in base)
+        for color in "WUBRG":
+            if color in colors:
+                continue
+            splashable = sorted(
+                (
+                    card
+                    for card in spells
+                    if not _castable(card, colors)
+                    and _castable(card, colors + (color,))
+                    and _splash_pips(card, colors, color) == 1
+                    and normalize_card(card).cmc >= 2
+                    and _splash_worthy(card)
+                    and _card_value(card) >= weakest + 3
+                ),
+                key=_card_value,
+                reverse=True,
+            )
+            unique = list({card["name"]: card for card in splashable}.values())[: weights["max_splash"]]
+            fixing = sum(color in _produces(card) for card in lands) + sum(
+                color in _produces(card) and _castable(card, colors) for card in spells
+            )
+            if not unique or (
+                fmt == "draft" and not fixing and not any((_gih(c) or 0) >= BOMB_GIH for c in unique)
+            ):
+                continue
+            chosen = _build_for_colors(spells, colors, preset=tuple(unique))
+            if len(chosen) < 21:
+                continue
             ranked.append(
-                {"colors": colors, "chosen": chosen, "quality": deck_quality(chosen, colors, pair_win_rates)}
+                {
+                    "colors": colors + (color,),
+                    "splash": (color,),
+                    "chosen": chosen,
+                    "quality": deck_quality(
+                        chosen, colors + (color,), pair_win_rates, fmt=fmt, splash=(color,), fixing=fixing
+                    ),
+                }
             )
     ranked.sort(key=lambda item: (len(item["chosen"]), item["quality"]["score"]), reverse=True)
     return ranked[:top]
 
 
-def fallback_deck(pool: list[dict], pair_win_rates: dict | None = None) -> dict[str, Any]:
-    candidates = candidate_decks(pool, pair_win_rates)
-    best = (None, candidates[0]["colors"], candidates[0]["chosen"]) if candidates else None
-    if best is None or len(best[2]) < 21:
+def fallback_deck(
+    pool: list[dict], pair_win_rates: dict | None = None, *, fmt: str = "draft"
+) -> dict[str, Any]:
+    candidates = candidate_decks(pool, pair_win_rates, top=12, fmt=fmt)
+    if not candidates:
         return {
             "spoken_advice": "I don't yet have enough castable spells to verify a balanced 40-card build. Check that the full draft pool is available.",
             "detailed_text": "No verified 40-card build is available from this pool.",
             "reasoning_source": "heuristic",
             "basis": "drafted_pool",
         }
-    _, colors, chosen = best
-    kept = Counter(card["grp_id"] for card in chosen)
-    weights = Counter({color: 0 for color in colors})
+    # The alternatives worth comparing are a different color pair and, for a
+    # splash, the same pair without it; never three near-copies of one deck.
+    best = candidates[0]
+    pair = tuple(c for c in best["colors"] if c not in best.get("splash", ()))
+    others = [c for c in candidates[1:] if set(c["colors"]) - set(c.get("splash", ())) != set(pair)]
+    variants = [c for c in candidates[1:] if c not in others]
+    ordered = [best] + others[:1] + variants[:1] + others[1:] + variants[1:]
+    options = []
+    signatures = set()
+    for candidate in ordered:
+        option = _build_candidate(pool, candidate)
+        signature = (
+            tuple(sorted((entry["grp_id"], entry["count"]) for entry in option["main_deck"])),
+            tuple(sorted((color, count) for color, count in option["basic_lands"].items() if count)),
+        )
+        if signature not in signatures:
+            options.append(option)
+            signatures.add(signature)
+        if len(options) == 3:
+            break
+    result = dict(options[0])
+    result["deck_options"] = options
+    result["candidates"] = [
+        {
+            **option["quality"],
+            "main_deck": option["main_deck"],
+            "basic_lands": option["basic_lands"],
+            "cards": [entry["name"] for entry in option["main_deck"] for _ in range(entry["count"])],
+        }
+        for option in options
+    ]
+    return result
+
+
+def _build_candidate(pool: list[dict], candidate: dict) -> dict:
+    """Allocate lands (on-color duals and fixing first) and validate every option."""
+    colors, chosen = tuple(candidate["colors"]), candidate["chosen"]
+    splash = tuple(candidate.get("splash") or ())
+    main = tuple(color for color in colors if color not in splash)
+    land_slots = 40 - len(chosen)
+    # A nonbasic land earns a slot by making two of our colors or a splash color;
+    # a land that only makes one main color is no better than its basic.
+    useful = [
+        card
+        for card in _nonbasics(pool)
+        if "land" in card.get("type_line", "").lower()
+        and (len(_produces(card) & set(colors)) >= 2 or _produces(card) & set(splash))
+    ]
+    nonbasic = useful[:4]
+    kept = Counter(card["grp_id"] for card in chosen + nonbasic)
+    sources = Counter(color for card in nonbasic for color in _produces(card) & set(colors))
+    fixers = Counter(color for card in chosen for color in _produces(card) & set(splash))
+    basics: Counter = Counter()
+    for color in splash:
+        basics[color] = max(0 if sources[color] else 1, 3 - sources[color] - fixers[color])
+    remaining = land_slots - len(nonbasic) - sum(basics.values())
+    weights = Counter({color: 0 for color in main})
     for card in chosen:
-        for symbol in re.findall(r"\{([^}]+)\}", card.get("mana_cost", "")):
-            payable = set(symbol.split("/")) & set(colors)
+        for options in _symbols(card):
+            payable = options & set(main)
             for color in payable:
                 weights[color] += 1 / len(payable)
-    land_count = 40 - len(chosen)
     total_weight = sum(weights.values())
-    first_count = round(land_count * weights[colors[0]] / total_weight) if total_weight else land_count // 2
-    if all(weights[color] for color in colors):
-        first_count = min(land_count - 6, max(6, first_count))
-    basics = {colors[0]: first_count, colors[1]: land_count - first_count}
+    first = round(remaining * weights[main[0]] / total_weight) if total_weight else remaining // 2
+    if all(weights[color] for color in main):
+        first = min(remaining - max(0, 6 - sources[main[1]]), max(6 - sources[main[0]], first))
+    basics[main[0]] += first
+    basics[main[1]] += remaining - first
+    in_deck = {card["grp_id"] for card in chosen + nonbasic}
     cuts = []
     for card in _nonbasics(pool):
-        if not _castable(card, colors):
+        if card["grp_id"] in in_deck and kept[card["grp_id"]] >= sum(
+            c["grp_id"] == card["grp_id"] for c in _nonbasics(pool)
+        ):
+            continue
+        if "land" in card.get("type_line", "").lower():
+            reason = "basics make this deck's colors more reliably than this land"
+        elif not _castable(card, colors):
             reason = "outside the chosen colors without a supported mana base"
-        elif "land" in card.get("type_line", "").lower():
-            reason = "this starting build uses basic lands for consistent colored mana"
         elif normalize_card(card).cmc >= 5:
             reason = "reduce expensive cards and preserve earlier plays"
         else:
@@ -288,26 +477,21 @@ def fallback_deck(pool: list[dict], pair_win_rates: dict | None = None) -> dict[
     result = validate_deck(
         {
             "main_deck": [{"grp_id": grp_id, "count": count} for grp_id, count in kept.items()],
-            "basic_lands": basics,
+            "basic_lands": {color: count for color, count in basics.items() if count},
             "cuts": cuts,
-            "plan": _plan_text(colors, candidates[0]["quality"]),
+            "plan": _plan_text(main, candidate["quality"], splash),
         },
         pool,
         source="heuristic",
     )
-    result["quality"] = candidates[0]["quality"]
-    result["candidates"] = [
-        {
-            **candidate["quality"],
-            "cards": [card["name"] for card in candidate["chosen"]],
-        }
-        for candidate in candidates
-    ]
+    result["quality"] = candidate["quality"]
     return result
 
 
-def _plan_text(colors: tuple[str, ...], quality: dict) -> str:
+def _plan_text(colors: tuple[str, ...], quality: dict, splash: tuple[str, ...] = ()) -> str:
     names = "/".join(COLOR_NAMES[color] for color in colors)
+    if splash and quality.get("splash_cards"):
+        names += f" splashing {COLOR_NAMES[splash[0]]} for {', '.join(quality['splash_cards'][:3])}"
     parts = [f"{names}: avg GIH {quality['avg_gih']}%" if quality.get("avg_gih") else names]
     parts.append(f"{quality['creatures']} creatures, {quality['removal']} removal")
     if quality.get("bombs"):
@@ -315,21 +499,228 @@ def _plan_text(colors: tuple[str, ...], quality: dict) -> str:
     return "; ".join(parts) + "."
 
 
-def score_deck(main_deck: list[dict], pool: list[dict], pair_win_rates: dict | None = None) -> dict:
-    """deck_quality for a validated deck given as [{grp_id, count}]."""
+def score_deck(
+    main_deck: list[dict], pool: list[dict], pair_win_rates: dict | None = None, *, fmt: str = "draft"
+) -> dict:
+    """deck_quality for a validated deck given as [{grp_id, count}], splash included."""
     by_id = {card["grp_id"]: card for card in _nonbasics(pool)}
-    chosen = []
+    chosen, lands = [], []
     for entry in main_deck:
         card = by_id.get(entry["grp_id"])
-        if card is not None and "land" not in card.get("type_line", "").lower():
-            chosen += [card] * int(entry.get("count") or 1)
-    colors = set()
-    for card in chosen:
-        for symbol in re.findall(r"\{([^}]+)\}", card.get("mana_cost", "")):
-            options = set(symbol.split("/")) & set("WUBRG")
-            if len(options) == 1:
-                colors |= options
-    return deck_quality(chosen, tuple(sorted(colors)), pair_win_rates)
+        if card is not None:
+            target = lands if "land" in card.get("type_line", "").lower() else chosen
+            target += [card] * int(entry.get("count") or 1)
+    main, splash = _color_roles(chosen)
+    fixing = sum(bool(_produces(card) & set(splash)) for card in lands + chosen)
+    return deck_quality(chosen, main + splash, pair_win_rates, fmt=fmt, splash=splash, fixing=fixing)
+
+
+def _interaction_kind(card: dict) -> str | None:
+    """Removal deals with a permanent for good; tempo (bounce, tap, counters) buys time."""
+    text = html.unescape(re.sub(r"<[^>]*>", "", card.get("oracle_text", ""))).lower()
+    if "removal" in normalize_card(card).tags or (
+        "target" in text and "library" in text and ("bottom" in text or "shuffles it into" in text)
+    ):
+        return "removal"
+    if (
+        "counter target" in text
+        or ("return target" in text and "hand" in text)
+        or "tap target creature" in text
+        or re.search(r"target creature gets -\d+/-0", text)
+    ):
+        return "tempo"
+    return None
+
+
+def _deck_cards(build: dict, pool: list[dict]) -> list[dict]:
+    by_id = {card["grp_id"]: card for card in _nonbasics(pool)}
+    return [
+        by_id[entry["grp_id"]]
+        for entry in build.get("main_deck", [])
+        if entry["grp_id"] in by_id and "land" not in by_id[entry["grp_id"]].get("type_line", "").lower()
+        for _ in range(entry["count"])
+    ]
+
+
+def _deck_profile(build: dict, pool: list[dict]) -> dict | None:
+    """What the narration may claim, counted from the deck's actual cards and rules."""
+    chosen = _deck_cards(build, pool)
+    if not chosen:
+        return None
+    bodies = [card for card in chosen if rules_profile(card)["unconditional_body"]]
+    kinds = Counter(_interaction_kind(card) for card in chosen)
+    leaders = list(
+        dict.fromkeys(card.get("name", "") for card in sorted(bodies, key=_card_value, reverse=True))
+    )
+    main, splash = _color_roles(chosen)
+    colors = list(main + splash)
+    color_text = "-".join(COLOR_NAMES[c] for c in main) or "colorless"
+    if splash:
+        splashed = list(
+            dict.fromkeys(card["name"] for card in chosen if _required_colors(card) & set(splash))
+        )
+        color_text += (
+            f" splashing {' and '.join(COLOR_NAMES[c] for c in splash)} for {' and '.join(splashed[:2])}"
+        )
+    return {
+        "cards": chosen,
+        "colors": colors,
+        "color_text": color_text,
+        "bodies": len(bodies),
+        "early_bodies": sum(normalize_card(card).cmc <= 3 for card in bodies),
+        "evasive": [card["name"] for card in bodies if "evasion" in normalize_card(card).tags],
+        "removal": kinds["removal"],
+        "tempo": kinds["tempo"],
+        "card_advantage": sum("card_advantage" in normalize_card(card).tags for card in chosen),
+        "top_end": sum(normalize_card(card).cmc >= 5 for card in chosen),
+        "leaders": [name for name in leaders if name][:2],
+        "quality": build.get("quality") or deck_quality(chosen, tuple(colors)),
+    }
+
+
+def _one_clause(text: str, max_words: int = 25) -> str:
+    """A model plan reduced to one clause so the spoken summary stays two sentences."""
+    first = re.split(r"(?<=[.!?])\s", " ".join(str(text).split()), maxsplit=1)[0]
+    words = first.replace(";", ",").replace(":", ",").split()[:max_words]
+    return " ".join(words).rstrip(".!?,; ")
+
+
+def _concerns(profile: dict) -> list[str]:
+    concerns = []
+    if profile["bodies"] < 13:
+        concerns.append(f"only {profile['bodies']} creatures")
+    if profile["early_bodies"] < 5:
+        concerns.append(f"only {profile['early_bodies']} creatures costing three or less")
+    if profile["removal"] < 2:
+        concerns.append("few permanent answers to opposing bombs")
+    if profile["top_end"] >= 5:
+        concerns.append(f"{profile['top_end']} cards costing five or more")
+    return concerns[:2]
+
+
+def deck_choice_summary(
+    build: dict, pool: list[dict], *, option: int | None = None, compared_to: dict | None = None
+) -> str:
+    """Two spoken sentences grounded in the deck's actual cards, never a win-rate forecast.
+
+    With ``compared_to``, the first sentence names the best cards this deck
+    has that the other one lacks, so two options sharing a color sound different.
+    """
+    profile = _deck_profile(build, pool)
+    if profile is None:
+        return "Deck submitted. I couldn't verify enough card details to explain its strategy."
+    featured = "led by " + " and ".join(profile["leaders"]) if profile["leaders"] else ""
+    if compared_to is not None:
+        shared = {card.get("name") for card in _deck_cards(compared_to, pool)}
+        splashed = {
+            card["name"] for card in profile["cards"] if _required_colors(card) - set(profile["colors"][:2])
+        }
+        unique = [
+            name
+            for name in dict.fromkeys(
+                card.get("name", "") for card in sorted(profile["cards"], key=_card_value, reverse=True)
+            )
+            if name and name not in shared and name not in splashed
+        ]
+        if unique:
+            featured = "swapping in " + " and ".join(unique[:2])
+    interaction = _count(profile["removal"], "removal spell")
+    if profile["tempo"]:
+        interaction += " and " + _count(profile["tempo"], "bounce, tap, or counter spell")
+    subject = (
+        f"Option {option} is {profile['color_text']}"
+        if option is not None
+        else f"I built {profile['color_text']}"
+    )
+    first = (
+        f"{subject}{', ' + featured if featured else ''}, with {profile['bodies']} creature or token spells, "
+        f"{profile['early_bodies']} of them costing three or less, and {interaction}."
+    )
+    if build.get("reasoning_source") == "card_rules" and build.get("plan"):
+        plan = _one_clause(build["plan"])
+    elif len(profile["evasive"]) >= 4:
+        plan = "win with evasive threats while trading on the ground"
+    elif profile["early_bodies"] >= 7:
+        plan = "curve out with early creatures and keep attacking"
+    elif profile["card_advantage"] >= 4 and profile["removal"] + profile["tempo"] >= 4:
+        plan = "trade early, answer threats, and win the long game on card advantage"
+    elif profile["bodies"]:
+        plan = "build a board and win through creature combat"
+    else:
+        plan = "lean on spells, though it lacks reliable creatures to finish games"
+    concerns = _concerns(profile)
+    risk = (
+        f"but its weak point{'s are' if len(concerns) > 1 else ' is'} " + " and ".join(concerns)
+        if concerns
+        else "with no clear gap in creatures, curve, or interaction"
+    )
+    lead = "Its plan is to " if build.get("reasoning_source") != "card_rules" else "Its plan: "
+    return f"{first} {lead}{plan}, {risk}."
+
+
+def _same_deck(first: dict, second: dict) -> bool:
+    def signature(build):
+        return Counter({e["grp_id"]: e["count"] for e in build.get("main_deck") or []}), {
+            c: n for c, n in (build.get("basic_lands") or {}).items() if n
+        }
+
+    return signature(first) == signature(second)
+
+
+def deck_review_narration(build: dict, options: list[dict], pool: list[dict]) -> tuple[str, list[dict]]:
+    """Describe the deck to submit and its strongest distinct alternative, then why.
+
+    ``build`` is the deck that will be submitted; ``options`` are the counted,
+    validated builds (fallback_deck's deck_options). Returns (text, decks described).
+    """
+    alternatives = [option for option in options if not _same_deck(option, build)]
+    first = deck_choice_summary(build, pool, option=1)
+    if not alternatives:
+        return f"Only one legal 40-card build fits this pool. {first} Submitting it.", [build]
+    other = alternatives[0]
+    second = deck_choice_summary(other, pool, option=2, compared_to=build)
+    mine, theirs = _deck_profile(build, pool), _deck_profile(other, pool)
+    if mine is None or theirs is None:
+        return f"{first} {second} Submitting option 1.", [build, other]
+    better, worse = [], []
+    for label, key, margin in (
+        ("better 17Lands card quality", "avg_gih", 0.3),
+        ("more bombs", "bombs", 1),
+        ("more creatures", "creatures", 2),
+    ):
+        a = mine["quality"].get(key)
+        b = theirs["quality"].get(key)
+        a, b = (len(a), len(b)) if isinstance(a, list) and isinstance(b, list) else (a, b)
+        if a is None or b is None:
+            continue
+        if a >= b + margin:
+            better.append(label)
+        elif b >= a + margin:
+            worse.append(label)
+    for label, key, margin in (("a faster curve", "early_bodies", 2), ("more removal", "removal", 1)):
+        if mine[key] >= theirs[key] + margin:
+            better.append(label)
+        elif theirs[key] >= mine[key] + margin:
+            worse.append(label)
+    score_gap = (mine["quality"].get("score") or 0) - (theirs["quality"].get("score") or 0)
+    if score_gap >= 3:
+        better.append("a higher combined build score")
+    if build.get("reasoning_source") == "card_rules":
+        why = "it is the deck advisor's refined build, which held up against the counted builds"
+    elif better:
+        why = "it has " + _join(better[:3])
+    else:
+        why = "its overall build score is higher once card quality, curve, interaction, and color-pair data are combined"
+    tradeoff = f", although option 2 has {_join(worse[:2])}" if worse else ""
+    return f"{first} {second} I'm submitting option 1 because {why}{tradeoff}.", [build, other]
+
+
+def _count(number: int, noun: str) -> str:
+    return f"{number} {noun}" + ("" if number == 1 else "s")
+
+
+def _join(parts: list[str]) -> str:
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
 
 
 def reconcile_logged_deck(build: dict) -> dict:

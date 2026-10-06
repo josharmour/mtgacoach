@@ -187,6 +187,28 @@ def test_ranking_takes_quality_early_and_stays_in_lane_late(primer):
     assert any("trap" in reason for pick in rank_pack([6], [], primer) for reason in pick.reasons)
 
 
+@pytest.mark.parametrize("basic", ["Plains", "Island", "Swamp", "Mountain", "Forest"])
+@pytest.mark.parametrize("has_primer", [False, True])
+def test_unrated_basics_lose_to_even_weak_off_color_spells(primer, basic, has_primer):
+    # Live P1p10/P1p13: a Forest absent from 17lands got the unknown-card
+    # prior and beat weak spells. Basic lands are freely available later.
+    picks = choose_picks(
+        [999, 6],
+        [1, 2] * 10,
+        primer if has_primer else None,
+        names={999: basic, 6: "Shiny Trap"},
+    )
+    assert picks[0].grp_id == 6
+
+
+def test_basics_can_be_taken_when_only_basics_remain(primer):
+    names = {998: "Island", 999: "Forest"}
+    picks = choose_picks([998, 999], [], primer, picks_required=2, names=names)
+    assert {p.grp_id for p in picks} == {998, 999}
+    picks = choose_picks([998, 6, 999], [], primer, picks_required=2, names=names)
+    assert picks[0].grp_id == 6 and picks[1].grp_id in names
+
+
 def test_pick_two_takes_two_distinct_pack_cards(primer):
     picks = choose_picks([1, 3, 12, 13], [], primer, picks_required=2)
     assert len(picks) == 2 and len({p.grp_id for p in picks}) == 2
@@ -558,6 +580,81 @@ def test_driver_ranks_against_picks_made_before_it_took_over(primer):
     assert submits[0]["cards"][0]["grp_id"] == 3
 
 
+@pytest.mark.parametrize("pack_number", [1, 3])
+def test_model_takeover_sees_all_picks_and_current_pack_signals(primer, pack_number):
+    logged_pool = [4] * 8 + [13, 18, 3]
+    seen = {}
+
+    def pool_cards(ids, set_code):
+        seen["pool_ids"] = ids
+        return [{"grp_id": g, "name": f"Card {g}"} for g in ids]
+
+    def recommend(details, fallback):
+        seen["details"] = details
+        seen["rankings"] = fallback["evaluations"]
+        return {
+            "reasoning_source": "card_rules",
+            "recommendations": [{"grp_id": 3, "reason": "Support our red creatures."}],
+            "plan": "Red creatures with interaction.",
+            "needs": ["Removal"],
+        }
+
+    bridge = FakeBridge(
+        {
+            "get_screen": {"ok": True, "draft": True},
+            "get_draft_state": {
+                **PICK_STATE,
+                "pack_number": pack_number,
+                "pick_number": 6,
+                "pick_seconds_remaining": 60,
+            },
+            "submit_draft_pick": {"ok": True},
+        }
+    )
+    driver = driver_for(
+        bridge,
+        primer,
+        picked_fn=lambda: logged_pool,
+        pool_cards_fn=pool_cards,
+        pick_advisor_fn=lambda: SimpleNamespace(recommend=recommend),
+        pack_fn=lambda: {
+            "pack_number": pack_number,
+            "pick_number": 6,
+            "cards": [{"grp_id": g} for g in PICK_STATE["pack_cards"]],
+        },
+    )
+    driver.run.pool = [3]
+    driver._step()
+
+    assert seen["pool_ids"] == logged_pool
+    assert len(seen["details"]["picked_cards"]) == len(logged_pool)
+    assert seen["details"]["set_strategy"]
+    has_signal = any("looks open" in row["reason"] for row in seen["rankings"])
+    assert has_signal == (pack_number == 1)
+    assert driver.run.picks[-1]["source"] == "model"
+    assert driver.run.picks[-1]["grp_ids"] == [3]
+
+
+def test_model_cannot_override_ranking_with_an_ordinary_basic(primer):
+    bridge = FakeBridge({})
+    driver = driver_for(
+        bridge,
+        primer,
+        pack_fn=lambda: {"cards": [{"grp_id": 999}, {"grp_id": 6}]},
+        pick_advisor_fn=lambda: SimpleNamespace(
+            recommend=lambda *args: {
+                "reasoning_source": "card_rules",
+                "recommendations": [{"grp_id": 999, "reason": "We need lands."}],
+            }
+        ),
+    )
+    driver._db = SimpleNamespace(get_card=lambda g: SimpleNamespace(name="Forest" if g == 999 else "Spell"))
+    assert driver._refine_pick([999, 6], primer, [], [], 1) is None
+    assert driver._refine_pick([999], primer, [], [], 1) is None  # stale pack refused
+    driver._pack_fn = lambda: {"cards": [{"grp_id": 999}]}
+    assert driver._refine_pick([999], primer, [], [], 1)[0] == [999]
+
+
 def test_driver_pauses_after_a_pick_does_not_register_twice(primer):
     bridge = FakeBridge(
         {
@@ -623,7 +720,7 @@ def test_driver_builds_and_submits_a_forty_card_deck(primer, monkeypatch):
         "basic_lands": {"U": 9, "R": 8},
         "plan": "Izzet tempo",
     }
-    monkeypatch.setattr("arenamcp.limited_deck.fallback_deck", lambda cards, *_: dict(build))
+    monkeypatch.setattr("arenamcp.limited_deck.fallback_deck", lambda cards, *_, **__: dict(build))
     driver = driver_for(bridge, primer, pool_cards_fn=lambda ids, code: [{"grp_id": g} for g in ids])
     driver._basics = {7001: "U", 7002: "R"}
     driver._step()
@@ -924,3 +1021,127 @@ def test_in_match_gate_ignores_a_finished_match_and_an_open_draft(monkeypatch):
         server, "get_completed_match_for_navigation", lambda: {"match_id": "m-0", "match_complete": True}
     )
     assert harness.in_match() is True
+
+
+# ---------------------------------------------------------------------------
+# Deck review narration gates the submission (2026-10-06 FRA draft)
+# ---------------------------------------------------------------------------
+
+
+def review_world(primer, review, *, screens=None, writes=None, advisor=None):
+    pool = sealed_pool()
+    sideboard = [{"grp_id": g, "count": n} for g, n in Counter(c["grp_id"] for c in pool).items()]
+    by_id = {c["grp_id"]: c for c in pool}
+    screens = list(screens or [])
+    writes = list(writes or [])
+    bridge = FakeBridge(
+        {
+            "get_screen": lambda fields: screens.pop(0) if screens else {"ok": True, "deck_builder": True},
+            "get_limited_pool": {
+                "ok": True,
+                "main_deck": [],
+                "sideboard": sideboard,
+                "basics_in_pool": {"7001": 99, "7002": 99, "7003": 99},
+            },
+            "set_limited_deck": lambda fields: writes.pop(0)
+            if writes
+            else {"ok": True, "main_deck": fields["main_deck"]},
+            "submit_limited_deck": {"ok": True},
+        }
+    )
+    spoken: list[str] = []
+    kwargs = {"deck_advisor_fn": (lambda: advisor)} if advisor else {}
+    driver = driver_for(
+        bridge,
+        primer,
+        pool_cards_fn=lambda ids, code: [by_id[g] for g in ids],
+        review_fn=review,
+        speak_fn=spoken.append,
+        **kwargs,
+    )
+    driver._basics = {7001: "R", 7002: "G", 7003: "W"}
+    return driver, bridge, spoken
+
+
+def actions(bridge):
+    return [action for action, _ in bridge.sent]
+
+
+def test_deck_is_submitted_only_after_the_review_has_been_heard(primer):
+    heard: list[tuple[str, list[str]]] = []
+    holder: dict = {}
+
+    def review(text, cancelled):
+        assert not cancelled()
+        heard.append((text, actions(holder["bridge"])))
+        return True
+
+    driver, bridge, spoken = review_world(primer, review)
+    holder["bridge"] = bridge
+    driver._step()
+    text, before = heard[0]
+    assert "set_limited_deck" not in before and "submit_limited_deck" not in before
+    assert "Option 1 is" in text and "Option 2 is" in text and "I'm submitting option 1" in text
+    after = actions(bridge)[len(before) :]
+    # Arena is re-read after the narration, then the deck is written and submitted.
+    assert after == ["get_screen", "get_limited_pool", "set_limited_deck", "submit_limited_deck"]
+    assert spoken == ["Deck submitted."]
+
+
+def test_stopped_review_pauses_without_submitting(primer):
+    driver, bridge, _ = review_world(primer, lambda text, cancelled: False)
+    driver._step()
+    assert "set_limited_deck" not in actions(bridge)
+    assert "turn autoplay off and on" in driver.paused_reason
+
+
+def test_turning_autoplay_off_during_review_cancels_quietly(primer):
+    seen = {}
+
+    def review(text, cancelled):
+        driver.set_enabled(False)
+        seen["cancelled"] = cancelled()
+        return False
+
+    driver, bridge, _ = review_world(primer, review)
+    driver._step()
+    assert seen["cancelled"]
+    assert "set_limited_deck" not in actions(bridge)
+    assert not driver.paused_reason
+
+
+def test_review_is_repeated_if_arena_left_the_deck_builder_meanwhile(primer):
+    reviews = []
+    driver, bridge, _ = review_world(
+        primer,
+        lambda text, cancelled: reviews.append(text) or True,
+        screens=[{"ok": True, "deck_builder": True}, {"ok": True, "home": True}],
+    )
+    driver._step()  # first screen read routes to the deck step; the post-review read sees home
+    assert "set_limited_deck" not in actions(bridge)
+    driver._next_poll = 0.0
+    driver._step()
+    assert len(reviews) == 2 and "submit_limited_deck" in actions(bridge)
+
+
+def test_retried_submission_reuses_the_narrated_build_without_rereviewing(primer):
+    reviews = []
+    calls = []
+
+    class Advisor:
+        def recommend_deck(self, build):
+            calls.append(build)
+            return build
+
+    driver, bridge, _ = review_world(
+        primer,
+        lambda text, cancelled: reviews.append(text) or True,
+        writes=[{"ok": False, "error": "builder busy"}],
+        advisor=Advisor(),
+    )
+    driver._step()
+    driver._step()
+    written = [fields["main_deck"] for action, fields in bridge.sent if action == "set_limited_deck"]
+    assert len(written) == 2 and written[0] == written[1]
+    assert len(reviews) == 1 and len(calls) == 1
+    assert "submit_limited_deck" in actions(bridge)

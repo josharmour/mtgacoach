@@ -149,6 +149,9 @@ class MainWindow(QMainWindow):
             stop_autoplay_act = tools_menu.addAction("Stop Autoplay\tF11")
             stop_autoplay_act.triggered.connect(lambda: self._session.send_command("force_stop"))
         tools_menu.addSeparator()
+        tts_server_act = tools_menu.addAction("Remote TTS Server…")
+        tts_server_act.triggered.connect(self._configure_remote_tts)
+        tools_menu.addSeparator()
         debug_act = tools_menu.addAction("Report a Bug\tF12")
         debug_act.triggered.connect(self._session.trigger_debug_report)
 
@@ -222,6 +225,22 @@ class MainWindow(QMainWindow):
         except RuntimeError as exc:
             message = str(exc)
         QMessageBox.information(self, "Autoplay Permissions", message)
+
+    def _configure_remote_tts(self) -> None:
+        current_url = str(self._settings.get("tts_server_url") or "")
+        url, accepted = QInputDialog.getText(
+            self,
+            "Remote TTS Server",
+            "OpenAI-compatible speech endpoint URL (e.g. http://10.0.0.2:8000/v1):\n"
+            "Leave blank to use local Kokoro voice only.",
+            text=current_url,
+        )
+        if accepted:
+            clean_url = url.strip()
+            self._settings.set("tts_server_url", clean_url)
+            status_text = f"Remote TTS: {clean_url}" if clean_url else "Local TTS"
+            if self.statusBar():
+                self.statusBar().showMessage(status_text, 3000)
 
     def _setup_hotkeys(self) -> None:
         self._hotkeys = HotkeyManager(self)

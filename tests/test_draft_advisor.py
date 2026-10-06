@@ -69,9 +69,7 @@ def test_pick_two_explains_rules_interactions_and_pool_needs():
     assert result["alternative"]["name"] == "Expensive Body"
 
 
-@pytest.mark.parametrize(
-    "failure", ["absent_card", "duplicate", "missing_reason", "unsupported_synergy", "wrong_count"]
-)
+@pytest.mark.parametrize("failure", ["absent_card", "duplicate", "missing_reason", "wrong_count"])
 def test_invalid_model_choices_keep_explained_heuristic_fallback(failure):
     payload = response()
     if failure == "absent_card":
@@ -80,8 +78,6 @@ def test_invalid_model_choices_keep_explained_heuristic_fallback(failure):
         payload["picks"][1]["grp_id"] = 1
     elif failure == "missing_reason":
         payload["picks"][0]["reason"] = ""
-    elif failure == "unsupported_synergy":
-        payload["picks"][0]["synergy_with"] = [999]
     else:
         payload["picks"].pop()
     backend = Mock()

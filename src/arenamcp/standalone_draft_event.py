@@ -80,8 +80,47 @@ class _DraftEventMixin:
             in_match_fn=self._draft_event_in_match,
             status_fn=status,
             speak_fn=lambda text: self.speak_advice(text, blocking=False),
+            review_fn=self._narrate_deck_review,
         )
         return driver
+
+    def _narrate_deck_review(self, text: str, cancelled: Any) -> bool:
+        """Speak the deck comparison; True only once it has been heard.
+
+        The desktop owns audio, so completion comes back over the pipe as
+        speech_status acknowledgments (speech_completion.py).
+        """
+        from arenamcp.speech_completion import narrate_and_wait
+
+        ui = getattr(self, "ui", None)
+        voice = getattr(self, "_voice_output", None)
+        completion = getattr(ui, "speech_completion", None)
+        emit = getattr(ui, "emit_speech_request", None)
+        logger.info("SPEAK (deck review): %r", text[:160])
+        if voice is None:
+            return narrate_and_wait(text, send=None, completion=None, cancelled=cancelled)
+        muted = bool(getattr(voice, "muted", False))
+        if completion is not None and callable(emit):
+            voice_id, voice_name = voice.current_voice
+            speed = float(getattr(voice, "speed", 1.0) or 1.0)
+
+            def send(narration: str, speech_id: str) -> None:
+                emit(
+                    text=narration,
+                    voice_id=voice_id,
+                    voice_name=voice_name,
+                    speed=speed,
+                    speech_id=speech_id,
+                )
+
+            return narrate_and_wait(
+                text, send=send, completion=completion, cancelled=cancelled, speed=speed, muted=muted
+            )
+        if muted:
+            return narrate_and_wait(text, send=None, completion=None, cancelled=cancelled, muted=True)
+        # In-process TTS (no desktop) plays synchronously when blocking.
+        voice.speak(text, blocking=True)
+        return not cancelled()
 
     @staticmethod
     def _draft_bridge_ready() -> bool:

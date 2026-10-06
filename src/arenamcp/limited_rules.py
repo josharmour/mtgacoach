@@ -37,12 +37,14 @@ def _rules_profile(type_line: str, oracle_text: str) -> dict:
             if re.search(pattern, trigger):
                 payoffs.add(mechanic)
         for kind in ("artifact", "creature"):
+            # Older Oracle wording ("... enters the battlefield under your
+            # control") and current wording ("another creature you control
+            # enters"). Color/type qualifiers stay excluded: a restricted
+            # trigger is not generic support for every body.
+            subject = r"whenever (?:an? |another |one or more )(?:other )?" + kind + r"s? "
             if re.fullmatch(
-                r"whenever (?:an? |one or more )(?:other )?"
-                + kind
-                + r"s? enters?(?: the battlefield)? under your control",
-                trigger,
-            ):
+                subject + r"enters?(?: the battlefield)? under your control", trigger
+            ) or re.fullmatch(subject + r"you control enters?(?: the battlefield)?", trigger):
                 payoffs.add(kind + "_entry")
         for mechanic, pattern in (
             ("scry", r"\bscry \d"),

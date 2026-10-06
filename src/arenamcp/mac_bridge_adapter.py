@@ -36,6 +36,8 @@ MESSAGING = "Wotc.Mtgo.Gre.External.Messaging."
 DRAFT_CONTROLLER = "Wotc.Mtga.Wrapper.Draft.DraftContentController"
 EVENT_PAGE_CONTROLLER = "EventPage.EventPageContentController"
 EVENT_MAIN_BUTTON = "EventPage.Components.MainButtonComponent"
+# Sealed pool reveal after joining (members verified in live IL2CPP metadata 2026-10-06).
+SEALED_OPEN = "SealedBoosterOpenAnimation"
 # Request fields never needed for the protocol and bulky or recursive to dump.
 SNAPSHOT_SKIP = ["OriginalMessage", "ParentRequest", "_outboundMessage", "OnSubmit", "OnRequestSubmit"]
 SNAPSHOT_DEPTH = 7
@@ -387,6 +389,7 @@ class MacBridgeAdapter:
         ("deck_builder", "DeckBuilderWidget"),
         ("event_page", EVENT_PAGE_CONTROLLER),
         ("home", "HomePageContentController"),
+        ("sealed_open", SEALED_OPEN),
     )
 
     def _cmd_get_screen(self, command: dict, timeout: float | None) -> dict:
@@ -633,6 +636,37 @@ class MacBridgeAdapter:
             "module": page["module"],
             "event_name": page["event_name"],
         }
+
+    def _cmd_finish_sealed_open(self, command: dict, timeout: float | None) -> dict:
+        """Reveal the granted sealed pool, then press Done to reach the deck builder.
+
+        One button per call: Open while packs are closed, Done once the reveal
+        has finished. Neither path can purchase anything; the pool was already
+        granted when the player entered the event.
+        """
+        found = self._find(SEALED_OPEN, timeout)
+        if not found:
+            raise AdapterError("The sealed pool opening screen is not open")
+        ops = _Ops()
+        screen = H(found)
+        buttons = {}
+        for name in ("_openButton", "_doneButton"):
+            button = ops.get(screen, name, optional=True)
+            shown = ops.get(ops.get(button, "gameObject", optional=True), "activeSelf", optional=True)
+            buttons[name] = (shown, ops.get(button, "Interactable", optional=True))
+        gems = ops.get(screen, "_gemsAdded", optional=True)
+        values = self._run(ops, timeout)
+
+        def ready(name: str) -> bool:
+            shown, interactable = buttons[name]
+            return bool(values[shown["ref"]]) and bool(values[interactable["ref"]])
+
+        step = "done" if ready("_doneButton") else "open" if ready("_openButton") else "revealing"
+        if step != "revealing":
+            ops = _Ops()
+            ops.call(screen, "DoneButton_OnClick" if step == "done" else "OpenButton_OnClick")
+            self._run(ops, timeout)
+        return {"ok": True, "step": step, "gems_added": int(values[gems["ref"]] or 0)}
 
     def _cmd_leave_match(self, command: dict, timeout: float | None) -> dict:
         """Leave the match result screen (the client returns to the event page)."""

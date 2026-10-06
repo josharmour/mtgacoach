@@ -52,6 +52,7 @@ class CoachSession(QObject):
         self._process.exited.connect(self._handle_exited)
 
         self._tts = TtsManager(self)
+        self._tts.speechStatus.connect(self._report_speech_status)
         # Lazy-start: TtsManager.request_speech() starts the Kokoro worker on
         # demand (and start() re-arms it). Eagerly spawning a worker per
         # CoachSession means every Constructed test panel owns a live Kokoro
@@ -182,6 +183,11 @@ class CoachSession(QObject):
     def send_command(self, command: str, *args: Any) -> None:
         """Send a JSON command to the coach subprocess."""
         self._process.send_command(command, *args)
+
+    def _report_speech_status(self, speech_id: str, state: str) -> None:
+        """Tell the engine how an utterance it is waiting on ended (or started)."""
+        if speech_id:
+            self._process.send_payload({"cmd": "speech_status", "speech_id": speech_id, "state": state})
 
     def toggle_autopilot(self) -> None:
         self.send_command("toggle_autopilot")
@@ -484,8 +490,15 @@ class CoachSession(QObject):
 
         elif ev_type in ("speak_request", "speak", "speak_audio"):
             text = str(event.get("text") or event.get("data") or "")
+            # The engine waits on utterances that carry a speech_id (deck
+            # review narration); every path must acknowledge them.
+            speech_id = str(event.get("speech_id") or "")
+            if not text and speech_id:
+                self._report_speech_status(speech_id, "failed")
             if text:
                 self.spokenLine.emit(text)
+                if self._muted and speech_id:
+                    self._report_speech_status(speech_id, "muted")
                 if not self._muted:
                     speed = float(event.get("speed") or 1.0)
                     voice_id = str(event.get("voice_id") or "af_heart")
@@ -498,6 +511,9 @@ class CoachSession(QObject):
                         extra_kwargs["priority"] = event.get("priority")
                     if "identity" in event:
                         extra_kwargs["identity"] = event.get("identity")
+                    if speech_id:
+                        extra_kwargs["speech_id"] = speech_id
+                        self._report_speech_status(speech_id, "accepted")
                     self._tts.request_speech(
                         text=text,
                         voice_id=voice_id,

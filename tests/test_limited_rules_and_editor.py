@@ -42,7 +42,7 @@ def test_opponent_actions_and_restricted_entries_are_not_generic_synergies():
     )
 
 
-def test_unsubstantiated_named_synergy_is_rejected_even_for_owned_cards():
+def test_unsubstantiated_named_synergy_is_stripped_even_for_owned_cards():
     backend = Mock()
     backend.complete.return_value = json.dumps(
         {
@@ -56,7 +56,10 @@ def test_unsubstantiated_named_synergy_is_rejected_even_for_owned_cards():
         "picks_per_pack": 1,
     }
     result = DraftAdvisor(backend).recommend(pack, {"spoken_advice": "Use grounded fallback"})
-    assert result["reasoning_source"] == "heuristic"
+    # 2026-10-06: the claim is dropped and flagged; the pick itself is still judged.
+    pick = result["recommendations"][0]
+    assert pick["synergy_with"] == [] and pick["unsupported_synergy"] == ["Card 2"]
+    assert pick["reason"].endswith("(synergy unverified)")
 
 
 def test_token_producers_keep_slots_over_excess_empty_board_buffs():

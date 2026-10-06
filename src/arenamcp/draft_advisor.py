@@ -55,12 +55,14 @@ when none is supplied. If card rules are missing, say so and avoid invented syne
 
 Return ONLY JSON:
 {"picks": [{"grp_id": 123, "reason": "1-2 concise sentences explaining why",
-"synergy_with": [456]}], "plan": "one sentence describing the deck's supported theme",
+"synergy_with": []}], "plan": "one sentence describing the deck's supported theme",
 "needs": ["up to three concrete remaining needs"],
 "alternative": {"grp_id": 789, "reason": "why it loses to the chosen pick(s)"}}
-synergy_with must contain only ids of actual pool cards or the other chosen card.
-Only assert named synergies present in supported_synergies; it lists conservative
-rules-text enabler/payoff links, not guaranteed trigger frequency. Explain the
+synergy_with may contain only ids of actual pool cards (or the other chosen card)
+that supported_synergies links to this pick; when supported_synergies is empty,
+synergy_with must be []. Unsupported ids are discarded. Only assert named synergies
+present in supported_synergies; it lists conservative rules-text enabler/payoff
+links, not guaranteed trigger frequency. Explain the
 actual condition and costs. For unmodeled interactions, explain card roles instead
 of claiming a verified synergy. Loyalty counters never substitute for +1/+1 counters.
 An alternative is optional. Keep each explanation under 40 words.
@@ -89,6 +91,32 @@ def _card_details(card: dict[str, Any]) -> dict[str, Any]:
         "related_faces": card.get("related_faces") or [],
         "rules_roles": rules_profile(card),
     }
+
+
+def _answer_summary(payload: Any, cards: list[dict[str, Any]]) -> str:
+    """A rejected answer in card names, so later reviews can judge the model, not just the error."""
+    if not isinstance(payload, dict):
+        return _text(json.dumps(payload, ensure_ascii=False, default=str), 60)
+    names = {card["grp_id"]: card.get("name", "Unknown") for card in cards}
+
+    def name(grp_id: Any) -> Any:
+        return names.get(grp_id, grp_id) if isinstance(grp_id, int) else grp_id
+
+    picks = payload.get("picks") if isinstance(payload.get("picks"), list) else []
+    summary = [
+        {
+            "pick": name(pick.get("grp_id")),
+            "synergy_with": [name(g) for g in pick.get("synergy_with") or []]
+            if isinstance(pick.get("synergy_with"), list)
+            else pick.get("synergy_with"),
+            "reason": _text(pick.get("reason"), 40),
+        }
+        for pick in picks
+        if isinstance(pick, dict)
+    ]
+    return json.dumps(
+        {"picks": summary, "plan": _text(payload.get("plan"), 30)}, ensure_ascii=False, default=str
+    )
 
 
 def pool_summary(cards: list[dict[str, Any]]) -> dict[str, Any]:
@@ -200,23 +228,33 @@ class DraftAdvisor:
             if grp_id not in counted_pool:
                 counted_pool[grp_id] = {**_card_details(card), "copies": 0}
             counted_pool[grp_id]["copies"] += 1
-        message = json.dumps(
+        graph = synergy_graph(cards + pool)
+        request: dict[str, Any] = {
+            "event": event_name,
+            "pack_number": pack.get("pack_number"),
+            "pick_number": pack.get("pick_number"),
+            "picks_required": required,
+            "supported_synergies": graph,
+        }
+        if not graph:
+            # 2026-10-06 FRA draft: the graph was empty at every pick, yet the
+            # model kept naming partners and 18 of 22 answers were discarded.
+            request["synergy_rule"] = "supported_synergies is empty: every synergy_with must be []"
+        request.update(
             {
-                "event": event_name,
-                "pack_number": pack.get("pack_number"),
-                "pick_number": pack.get("pick_number"),
-                "picks_required": required,
-                "supported_synergies": synergy_graph(cards + pool),
                 "previous_plan": self._plan,
                 "actual_pool": list(counted_pool.values()),
                 "pool_summary": pool_summary(pool),
                 "pack": [_card_details(card) for card in cards],
                 "heuristic_rankings": fallback.get("evaluations") or [],
                 "set_strategy": pack.get("set_strategy") or {},
-            },
-            ensure_ascii=False,
+            }
         )
-        self._pending = self._executor.submit(self._complete, message)
+        message = json.dumps(request, ensure_ascii=False)
+        self._pending = self._executor.submit(
+            self._complete, message, DRAFT_SYSTEM_PROMPT, 1200, {"type": "json_object"}
+        )
+        response, payload = "", None
         try:
             response = self._pending.result(timeout=self._timeout)
             start = response.find("{")
@@ -226,6 +264,10 @@ class DraftAdvisor:
             result = self._validate(payload, cards, pool, required)
         except Exception as exc:
             logger.warning("Draft reasoning unavailable; using card-text guidance: %s", exc)
+            if payload is not None:
+                logger.warning("Rejected draft answer: %s", _answer_summary(payload, cards + pool))
+            elif isinstance(response, str) and response:
+                logger.warning("Unparsed draft answer: %.300s", response)
             return {**fallback, "reasoning_source": "heuristic"}
         self._plan = result["plan"]
         advice = f"Pack {pack.get('pack_number')}, Pick {pack.get('pick_number')}. "
@@ -269,18 +311,40 @@ class DraftAdvisor:
         owned = {card["grp_id"] for card in pool} | {pick["grp_id"] for pick in selected}
         by_id = {card["grp_id"]: card for card in cards + pool}
         for pick, raw in zip(selected, picks, strict=True):
-            synergy = raw.get("synergy_with") or []
-            if not isinstance(synergy, list) or any(
-                type(grp_id) is not int or grp_id not in owned or grp_id == pick["grp_id"]
-                for grp_id in synergy
-            ):
-                raise ValueError("Draft synergy references a card outside the actual pool or chosen pair")
-            pick["synergy_with"] = synergy
-            evidence = [
-                edge for grp_id in synergy for edge in synergy_evidence(by_id[pick["grp_id"]], by_id[grp_id])
-            ]
-            if any(not synergy_evidence(by_id[pick["grp_id"]], by_id[grp_id]) for grp_id in synergy):
-                raise ValueError("Draft synergy lacks a supported rules-text enabler/payoff link")
+            # synergy_with explains a pick; it does not make it. A partner that
+            # is outside the pool or lacks a rules-text link is dropped and
+            # logged, and the pick is still judged on everything else.
+            claimed = raw.get("synergy_with") or []
+            if not isinstance(claimed, list):
+                claimed = [claimed]
+            kept: list[int] = []
+            dropped: list[Any] = []
+            evidence: list[dict] = []
+            for grp_id in claimed:
+                edges = (
+                    synergy_evidence(by_id[pick["grp_id"]], by_id[grp_id])
+                    if type(grp_id) is int and grp_id in owned and grp_id != pick["grp_id"]
+                    else []
+                )
+                if edges and grp_id not in kept:
+                    kept.append(grp_id)
+                    evidence.extend(edges)
+                elif not edges:
+                    dropped.append(grp_id)
+            if dropped:
+                partners = [
+                    by_id[grp_id].get("name", grp_id) if type(grp_id) is int and grp_id in by_id else grp_id
+                    for grp_id in dropped
+                ]
+                logger.warning(
+                    "Draft synergy claim stripped: %s with %s has no rules-text link in the pool; reason was: %s",
+                    pick["name"],
+                    partners,
+                    pick["reason"],
+                )
+                pick["unsupported_synergy"] = partners
+                pick["reason"] = f"{pick['reason']} (synergy unverified)"
+            pick["synergy_with"] = kept
             pick["synergy_evidence"] = evidence
         plan = _text(payload.get("plan"))
         if not plan:

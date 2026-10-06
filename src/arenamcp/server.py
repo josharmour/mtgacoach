@@ -2414,7 +2414,7 @@ def analyze_draft_pool() -> dict[str, Any]:
 
     from arenamcp.limited_deck import fallback_deck
 
-    build = fallback_deck(pool_cards)
+    build = fallback_deck(pool_cards, fmt="sealed" if draft_state.is_sealed else "draft")
 
     return {
         "pool_size": len(pool_cards),

@@ -1423,7 +1423,8 @@ class GREBridge:
         """Limited-event hands on the Mac bridge (see mac_bridge_adapter draft events).
 
         Actions: get_screen, get_draft_state, submit_draft_pick, get_limited_pool,
-        set_limited_deck, submit_limited_deck, get_event_page, event_play, go_to_event.
+        set_limited_deck, submit_limited_deck, get_event_page, event_play, go_to_event,
+        finish_sealed_open.
         Never raises; failures come back as {"ok": False, "error": ...}.
         """
         try:

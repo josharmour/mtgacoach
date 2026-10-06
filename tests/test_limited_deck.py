@@ -6,7 +6,7 @@ import pytest
 
 from arenamcp.draft_advisor import DraftAdvisor
 from arenamcp.draftstate import DraftState, create_draft_handler
-from arenamcp.limited_deck import fallback_deck, validate_deck
+from arenamcp.limited_deck import deck_choice_summary, fallback_deck, validate_deck
 from arenamcp.standalone_deck import _DeckAnalysisMixin
 
 
@@ -84,6 +84,29 @@ def test_unrated_pool_still_gets_named_cuts_and_land_counts():
     assert result["cuts"][0]["name"] == "Expensive red dragon"
     assert result["cuts"][0]["count"] == 2
     assert result["basic_lands"]["G"] == 17
+
+
+def test_deck_explanation_uses_selected_cards_and_states_a_real_weakness():
+    build = fallback_deck(pool())
+    explanation = deck_choice_summary(build, pool())
+    assert explanation.startswith("I built green, led by Green creature")
+    assert "with 23 creature or token spells, 23 of them costing three or less" in explanation
+    assert "curve out with early creatures" in explanation
+    assert "few permanent answers" in explanation
+    assert "Expensive red dragon" not in explanation
+    assert "GIH" not in explanation and "%" not in explanation
+    assert len(explanation.split()) <= 100
+
+
+def test_deck_explanation_preserves_accepted_model_strategy():
+    build = validate_deck(model_build(), pool(), source="card_rules")
+    explanation = deck_choice_summary(build, pool())
+    assert "Its plan: Green creature pressure with a low curve, " in explanation
+    assert "Green creature 1" in explanation
+
+
+def test_deck_explanation_does_not_invent_details_for_unknown_cards():
+    assert "couldn't verify" in deck_choice_summary({"main_deck": [{"grp_id": 999, "count": 23}]}, pool())
 
 
 def test_required_colorless_mana_cannot_be_paid_with_forests():

@@ -97,6 +97,11 @@ class SetCard:
     oh_wr: float | None = None
     games: int = 0
     baseline: float | None = None
+    # 17lands game win rate and play rate (share of drafted copies that made a
+    # deck). Present even when GIH is suppressed for a small sample, so they
+    # tell a rarely played card from a strong rare that is simply scarce.
+    game_wr: float | None = None
+    play_rate: float | None = None
 
 
 @dataclass
@@ -254,6 +259,8 @@ def collect_set_cards(
             ata=row.get("avg_pick"),
             oh_wr=row.get("opening_hand_win_rate"),
             games=int(row.get("ever_drawn_game_count") or 0),
+            game_wr=row.get("win_rate"),
+            play_rate=row.get("play_rate"),
         )
     rated = [c.gih_wr for c in cards.values() if c.gih_wr is not None and c.games >= MIN_RATED_GAMES]
     if len(rated) >= 10:

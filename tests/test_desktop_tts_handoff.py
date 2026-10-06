@@ -139,3 +139,67 @@ def test_tts_worker_exit_after_stop_does_not_fallback(qapp, monkeypatch):
 
     manager._on_finished(1, None)
     fallback.assert_not_called()
+
+
+def test_remote_tts_offload_when_server_configured_and_lag_detected(qapp, monkeypatch):
+    manager = TtsManager()
+    settings_dict = {
+        "tts_server_url": "http://10.0.0.99:8000/v1",
+        "tts_mode": "auto",
+        "tts_lag_threshold_ms": 1000,
+    }
+    monkeypatch.setattr("arenamcp.settings.get_settings", lambda: Mock(get=lambda k, d=None: settings_dict.get(k, d)))
+    manager._last_local_latencies = [2.5, 3.1, 2.8]
+
+    remote_mock = Mock()
+    monkeypatch.setattr(manager, "_request_remote_speech", remote_mock)
+
+    manager.request_speech(text="Cast Lightning Bolt", voice_id="af_heart", voice_name="Heart", speed=1.0)
+    remote_mock.assert_called_once()
+    assert remote_mock.call_args[1]["text"] == "Cast Lightning Bolt"
+
+
+def test_remote_tts_does_not_offload_when_no_server(qapp, monkeypatch):
+    manager = TtsManager()
+    settings_dict = {
+        "tts_server_url": "",
+        "tts_mode": "auto",
+        "tts_lag_threshold_ms": 1000,
+    }
+    monkeypatch.setattr("arenamcp.settings.get_settings", lambda: Mock(get=lambda k, d=None: settings_dict.get(k, d)))
+    manager._last_local_latencies = [2.5, 3.1, 2.8]
+    monkeypatch.setattr(TtsManager, "is_running", property(lambda self: True))
+    dispatch_mock = Mock()
+    monkeypatch.setattr(manager, "_dispatch_pending", dispatch_mock)
+
+    remote_mock = Mock()
+    monkeypatch.setattr(manager, "_request_remote_speech", remote_mock)
+
+    manager.request_speech(text="Cast Lightning Bolt", voice_id="af_heart", voice_name="Heart", speed=1.0)
+    remote_mock.assert_not_called()
+    dispatch_mock.assert_called_once()
+
+
+def test_remote_tts_fallback_to_local_on_error(qapp, monkeypatch):
+    manager = TtsManager()
+    monkeypatch.setattr(TtsManager, "is_running", property(lambda self: True))
+    dispatch_mock = Mock()
+    monkeypatch.setattr(manager, "_dispatch_pending", dispatch_mock)
+
+    manager._generation = 5
+    manager._busy = True
+    manager._on_remote_failed(
+        generation=5,
+        text="Attack with all",
+        voice_id="af_heart",
+        voice_name="Heart",
+        speed=1.0,
+        priority=None,
+        identity=None,
+        err_msg="Connection refused",
+    )
+
+    assert not manager._busy
+    assert manager._pending_request is not None
+    assert manager._pending_request["text"] == "Attack with all"
+    dispatch_mock.assert_called_once()

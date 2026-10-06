@@ -47,6 +47,9 @@ DEFAULTS = {
     "device_index": None,
     "desktop_theme": "system",
     "desktop_debug_logging": False,
+    "tts_server_url": "",
+    "tts_mode": "auto",
+    "tts_lag_threshold_ms": 1000,
     # Language for TTS and STT (e.g., "en", "nl", "es", "fr", "de", "ja")
     "language": "en",
     # The app is online-only (local mode removed 2026-06-11); "mode" is kept

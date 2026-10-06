@@ -82,6 +82,10 @@ class PipeAdapter:
         import queue
 
         self._write_queue: queue.Queue[str] = queue.Queue(maxsize=500)
+        from arenamcp.speech_completion import SpeechCompletion
+
+        # Desktop acknowledgments for speech the engine must wait on.
+        self.speech_completion = SpeechCompletion()
 
     def bind_coach(self, coach: StandaloneCoach) -> None:
         """Bind to a coach instance for command dispatch."""
@@ -196,6 +200,7 @@ class PipeAdapter:
         speed: float,
         priority: Any = None,
         identity: Any = None,
+        speech_id: str | None = None,
     ) -> None:
         payload: dict[str, Any] = {
             "type": "speak_request",
@@ -209,6 +214,9 @@ class PipeAdapter:
             payload["priority"] = priority
         if identity is not None:
             payload["identity"] = identity
+        if speech_id:
+            # The desktop answers with speech_status commands for this id.
+            payload["speech_id"] = speech_id
         self._emit(payload)
 
     def emit_speech_stop(self) -> None:
@@ -641,6 +649,8 @@ class PipeAdapter:
                     getattr(conversation, "verbosity", verbosity) if conversation is not None else verbosity
                 )
                 self.status("VERBOSITY", resulting)
+            elif action == "speech_status":
+                self.speech_completion.update(str(cmd.get("speech_id") or ""), str(cmd.get("state") or ""))
             elif action == "stop_speech":
                 voice_session = getattr(coach, "voice_session", None)
                 if voice_session is not None:

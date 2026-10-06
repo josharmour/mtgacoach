@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +15,8 @@ from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signa
 from .audio import AudioPlayback
 from .runtime import find_python_executable, get_app_root, get_runtime_root
 
+logger = logging.getLogger(__name__)
+
 
 class TtsManager(QObject):
     log_line = Signal(str)
@@ -19,6 +24,9 @@ class TtsManager(QObject):
     error_line = Signal(str)
     speechStarted = Signal()
     speechStopped = Signal()
+    # (speech_id, state) for utterances the engine waits on: "started", then
+    # one of "finished" / "stopped" / "superseded" / "failed".
+    speechStatus = Signal(str, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -43,6 +51,19 @@ class TtsManager(QObject):
         self._say_process: subprocess.Popen | None = None
         self._last_text: str = ""
         self._last_speed: float = 1.0
+
+        # Latency tracking for adaptive remote TTS offloading
+        self._last_local_latencies: list[float] = []
+        self._last_render_start: float = 0.0
+
+        # One tracked utterance at a time: (generation, speech_id). It ends
+        # when its audio (or system-voice fallback) finishes playing, or when
+        # it is stopped or replaced — never merely when it starts.
+        self._tracked: tuple[int, str] | None = None
+        self._playing_generation = -1
+        self._playback_watch = QTimer(self)
+        self._playback_watch.setInterval(150)
+        self._playback_watch.timeout.connect(self._check_playback)
 
         # Tier 5: TTS Speech Worker Stall Watchdog (auto-restarts stuck worker)
         self._busy_timer = QTimer(self)
@@ -103,16 +124,34 @@ class TtsManager(QObject):
         speed: float,
         priority: str | None = None,
         identity: dict[str, Any] | None = None,
+        speech_id: str | None = None,
     ) -> None:
         if self._closing or not text or not text.strip():
+            if speech_id:
+                self.speechStatus.emit(speech_id, "failed")
             return
 
         self._last_text = text
         self._last_speed = float(speed)
         self._last_text_generation = self._generation
 
+        if self._should_offload_to_remote():
+            self._resolve_tracked("superseded")
+            self._request_remote_speech(
+                text=text,
+                voice_id=voice_id,
+                voice_name=voice_name,
+                speed=float(speed),
+                priority=priority,
+                identity=identity,
+            )
+            self._track(speech_id)
+            return
+
         if self._worker_failed:
+            self._resolve_tracked("superseded")
             self._speak_fallback(text, speed)
+            self._track_fallback(speech_id)
             return
 
         if not self.is_running:
@@ -122,7 +161,9 @@ class TtsManager(QObject):
                 self._worker_failed = True
                 self.error_line.emit(str(exc))
                 self.status_line.emit("Kokoro unavailable — using system voice fallback.")
+                self._resolve_tracked("superseded")
                 self._speak_fallback(text, speed)
+                self._track_fallback(speech_id)
                 return
 
         # Conversation-mode arbitration (contract: "question" > "urgent" >
@@ -132,6 +173,8 @@ class TtsManager(QObject):
         if pending is not None:
             pending_priority = str(pending.get("priority") or "")
             if priority == "proactive" and pending_priority == "question":
+                if speech_id:
+                    self.speechStatus.emit(speech_id, "superseded")
                 return
             # Mode-change effect: an identity whose session_id differs from
             # the last one we stored makes the older pending request stale —
@@ -151,6 +194,7 @@ class TtsManager(QObject):
                     self._generation += 1
                     self._pending_request = None
 
+        self._resolve_tracked("superseded")
         self._generation += 1
         self._pending_request = {
             "cmd": "render",
@@ -164,9 +208,55 @@ class TtsManager(QObject):
         }
         self._stop_playback()
         self._stop_say()
+        self._track(speech_id)
         self._dispatch_pending()
 
+    def _track(self, speech_id: str | None) -> None:
+        if speech_id:
+            self._tracked = (self._generation, speech_id)
+
+    def _track_fallback(self, speech_id: str | None) -> None:
+        if not speech_id:
+            return
+        if self._say_process is None:
+            self.speechStatus.emit(speech_id, "failed")
+            return
+        self._tracked = (self._generation, speech_id)
+        self.speechStatus.emit(speech_id, "started")
+
+    def _resolve_tracked(self, state: str) -> None:
+        tracked, self._tracked = self._tracked, None
+        if tracked is not None:
+            self.speechStatus.emit(tracked[1], state)
+
+    def _complete(self, generation: int, state: str) -> None:
+        if self._tracked is not None and self._tracked[0] == generation:
+            self._resolve_tracked(state)
+
+    def _playback_started(self, generation: int) -> None:
+        self._playing_generation = generation
+        self._playback_watch.start()
+        if self._tracked is not None and self._tracked[0] == generation:
+            self.speechStatus.emit(self._tracked[1], "started")
+
+    def _check_playback(self) -> None:
+        """Notice natural end of playback; stop() paths resolve their own utterance."""
+        if self._current_audio_path is not None:
+            if AudioPlayback.is_playing():
+                return
+            path, self._current_audio_path = self._current_audio_path, None
+            self._cleanup_path(path)
+            self.speechStopped.emit()
+            self._complete(self._playing_generation, "finished")
+        elif self._say_process is not None:
+            if self._say_process.poll() is None:
+                return
+            self._say_process = None
+            self._complete(self._playing_generation, "finished")
+        self._playback_watch.stop()
+
     def stop_speech(self) -> None:
+        self._resolve_tracked("stopped")
         self._generation += 1
         self._pending_request = None
         # Forget the last text: the say/SAPI fallback paths must never
@@ -176,6 +266,7 @@ class TtsManager(QObject):
         self._last_text_generation = -1
         self._stop_playback()
         self._stop_say()
+        self._playback_watch.stop()
 
     def _speak_fallback(self, text: str, speed: float) -> None:
         if sys.platform == "darwin":
@@ -200,6 +291,8 @@ class TtsManager(QObject):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            self._playing_generation = self._generation
+            self._playback_watch.start()
         except Exception as exc:
             self.error_line.emit(f"Windows speech fallback failed: {exc}")
 
@@ -212,6 +305,8 @@ class TtsManager(QObject):
             assert self._say_process.stdin is not None
             self._say_process.stdin.write(text.encode("utf-8"))
             self._say_process.stdin.close()
+            self._playing_generation = self._generation
+            self._playback_watch.start()
         except Exception as exc:
             self.error_line.emit(f"macOS say fallback failed: {exc}")
 
@@ -223,9 +318,11 @@ class TtsManager(QObject):
                 proc.terminate()
 
     def shutdown(self) -> None:
+        self._resolve_tracked("stopped")
         self._closing = True
         self._generation += 1
         self._busy_timer.stop()
+        self._playback_watch.stop()
         self._pending_request = None
         self._last_text = ""
         self._last_speed = 1.0
@@ -263,6 +360,159 @@ class TtsManager(QObject):
         self._process.write(line.encode("utf-8", errors="replace"))
         self._busy = True
         self._busy_timer.start()
+        self._last_render_start = time.monotonic()
+
+    def _should_offload_to_remote(self) -> bool:
+        from arenamcp.settings import get_settings
+
+        settings = get_settings()
+        server_url = str(settings.get("tts_server_url") or "").strip()
+        if not server_url:
+            return False
+
+        mode = str(settings.get("tts_mode", "auto")).strip().lower()
+        if mode == "local":
+            return False
+        if mode == "remote":
+            return True
+
+        # mode == "auto": offload if local worker failed, is busy, or average latency > threshold
+        if self._worker_failed or not self.is_running:
+            return True
+        if self._busy:
+            return True
+
+        threshold_s = float(settings.get("tts_lag_threshold_ms", 1000)) / 1000.0
+        if self._last_local_latencies:
+            recent = self._last_local_latencies[-3:]
+            avg_latency = sum(recent) / len(recent)
+            if avg_latency > threshold_s:
+                return True
+
+        return False
+
+    def _request_remote_speech(
+        self,
+        *,
+        text: str,
+        voice_id: str,
+        voice_name: str,
+        speed: float,
+        priority: str | None = None,
+        identity: dict[str, Any] | None = None,
+    ) -> None:
+        self._generation += 1
+        gen = self._generation
+        self._stop_playback()
+        self._stop_say()
+
+        self._busy = True
+        self._busy_timer.start()
+        self.status_line.emit("Generating speech via inference server…")
+
+        def _worker() -> None:
+            import tempfile
+            import urllib.error
+            import urllib.request
+
+            from arenamcp.settings import get_settings
+
+            settings = get_settings()
+            base_url = str(settings.get("tts_server_url") or "").strip().rstrip("/")
+            url = f"{base_url}/audio/speech" if not base_url.endswith("/audio/speech") else base_url
+
+            payload = {
+                "model": "kokoro",
+                "input": text,
+                "voice": voice_id or "af_heart",
+                "speed": float(speed or 1.0),
+                "response_format": "wav",
+            }
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            api_key = settings.get("local_api_key") or settings.get("license_key")
+            if api_key:
+                req.add_header("Authorization", f"Bearer {api_key}")
+
+            t0 = time.monotonic()
+            try:
+                with urllib.request.urlopen(req, timeout=6.0) as resp:
+                    audio_bytes = resp.read()
+                elapsed = time.monotonic() - t0
+
+                tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+                tmp.write(audio_bytes)
+                tmp.close()
+                tmp_path = tmp.name
+
+                QTimer.singleShot(0, lambda: self._on_remote_rendered(gen, tmp_path, elapsed))
+            except Exception as exc:
+                err_msg = str(exc)
+                logger.warning("Remote TTS request failed: %s", exc)
+                QTimer.singleShot(
+                    0,
+                    lambda: self._on_remote_failed(
+                        gen, text, voice_id, voice_name, speed, priority, identity, err_msg
+                    ),
+                )
+
+        t = threading.Thread(target=_worker, daemon=True, name="remote-tts")
+        t.start()
+
+    def _on_remote_rendered(self, generation: int, path: str, elapsed: float) -> None:
+        self._busy = False
+        self._busy_timer.stop()
+        if not self._closing and generation == self._generation and path:
+            self._stop_say()
+            if AudioPlayback.play_file(path):
+                self._current_audio_path = Path(path)
+                self.speechStarted.emit()
+                self._playback_started(generation)
+                self.status_line.emit(f"Speech ready ({elapsed:.2f}s remote)")
+            else:
+                self.error_line.emit(f"Remote audio playback failed: {path}")
+                self._cleanup_path(Path(path))
+                self._complete(generation, "failed")
+        else:
+            self._cleanup_path(Path(path))
+
+    def _on_remote_failed(
+        self,
+        generation: int,
+        text: str,
+        voice_id: str,
+        voice_name: str,
+        speed: float,
+        priority: str | None,
+        identity: dict[str, Any] | None,
+        err_msg: str,
+    ) -> None:
+        self._busy = False
+        self._busy_timer.stop()
+        if self._closing or generation != self._generation:
+            return
+        self.error_line.emit(f"Remote TTS failed: {err_msg} — falling back to local")
+        if self._worker_failed or not self.is_running:
+            self._speak_fallback(text, speed)
+            if self._say_process is None:
+                self._complete(generation, "failed")
+        else:
+            self._pending_request = {
+                "cmd": "render",
+                "generation": generation,
+                "text": text,
+                "voice_id": voice_id,
+                "voice_name": voice_name,
+                "speed": float(speed),
+                "priority": priority,
+                "identity": identity,
+            }
+            self._dispatch_pending()
 
     def _on_busy_timeout(self) -> None:
         if not self._busy:
@@ -320,6 +570,12 @@ class TtsManager(QObject):
         if event_type == "rendered":
             self._busy = False
             self._busy_timer.stop()
+            if self._last_render_start > 0:
+                elapsed = time.monotonic() - self._last_render_start
+                self._last_local_latencies.append(elapsed)
+                if len(self._last_local_latencies) > 10:
+                    self._last_local_latencies.pop(0)
+                self._last_render_start = 0.0
             generation = int(payload.get("generation", 0))
             path = str(payload.get("path", "")).strip()
             if not self._closing and generation == self._generation and path:
@@ -327,9 +583,11 @@ class TtsManager(QObject):
                 if AudioPlayback.play_file(path):
                     self._current_audio_path = Path(path)
                     self.speechStarted.emit()
+                    self._playback_started(generation)
                 else:
                     self.error_line.emit(f"Kokoro audio playback failed: {path}")
                     self._cleanup_path(Path(path))
+                    self._complete(generation, "failed")
             else:
                 self._cleanup_path(Path(path))
             self._dispatch_pending()
@@ -371,6 +629,8 @@ class TtsManager(QObject):
                 ):
                     self.status_line.emit("Kokoro unavailable — using macOS voice.")
                     self._speak_via_say(self._last_text, self._last_speed)
+                if self._say_process is None:
+                    self._complete(self._generation, "failed")
                 return
             if (
                 sys.platform == "darwin"
@@ -380,6 +640,8 @@ class TtsManager(QObject):
                 # Transient render failure: keep Kokoro for next time, but
                 # don't lose this utterance.
                 self._speak_via_say(self._last_text, self._last_speed)
+            if generation in (0, self._generation) and self._say_process is None:
+                self._complete(self._generation, "failed")
             self._dispatch_pending()
             return
 
@@ -410,6 +672,9 @@ class TtsManager(QObject):
                 ):
                     self.status_line.emit("Kokoro unavailable — using macOS voice.")
                     self._speak_via_say(self._last_text, self._last_speed)
+            if self._current_audio_path is None and self._say_process is None:
+                # The worker died before this utterance could be heard.
+                self._complete(self._generation, "failed")
 
     def _on_error(self, _error: QProcess.ProcessError) -> None:
         if self._process is not None:
