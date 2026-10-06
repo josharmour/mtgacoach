@@ -113,8 +113,30 @@ def test_lethal_no_block_plan_is_replaced_by_a_surviving_chump():
     assert "27 damage at 25 life" in action.reasoning
 
 
+def test_danger_zone_no_block_plan_is_replaced_by_a_chump():
+    # 2026-10-05: kept a Dragon back from a 13/11 and went 16 -> 3. Here 27
+    # damage at 30 life leaves 3; chumping the Construct keeps 12.
+    state, context = board(30)
+    plan = no_blocks()
+    ActionPlanner(Mock())._check_block_survival(plan, state, context)
+    action = plan.actions[0]
+    assert set(action.blocker_instance_assignments.values()) == {CONSTRUCT}
+    assert plan_fallback_reason(plan) == "planner_danger_block"
+    assert "left us at 3" in action.reasoning
+
+
+def test_a_done_click_counts_as_declining_every_block():
+    state, context = board(30)
+    plan = ActionPlan(actions=[GameAction(action_type=ActionType.CLICK_BUTTON, card_name="done")])
+    ActionPlanner(Mock())._check_block_survival(plan, state, context)
+    action = plan.actions[0]
+    assert action.action_type == ActionType.DECLARE_BLOCKERS
+    assert set(action.blocker_instance_assignments.values()) == {CONSTRUCT}
+    assert plan_fallback_reason(plan) == "planner_danger_block"
+
+
 def test_nonlethal_or_unwinnable_combat_keeps_the_planner_choice():
-    for life in (30, 18):  # 27 is survivable at 30; even a chump leaves 18 at 18
+    for life in (40, 18):  # 27 at 40 leaves 13; even a chump leaves 18 at 18
         state, context = board(life)
         plan = no_blocks()
         ActionPlanner(Mock())._check_block_survival(plan, state, context)

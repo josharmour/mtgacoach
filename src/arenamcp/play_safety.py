@@ -350,6 +350,105 @@ def pointless_self_animation(state: dict, card: dict, metadata: dict) -> str:
     return ""
 
 
+_FIXED_DAMAGE = re.compile(
+    r"\bdeals (\d+) damage to (?:another )?target (creature or planeswalker|creature|planeswalker)\b"
+)
+_VARIABLE_DAMAGE = ("x damage", "where x", "for each", "instead", "divided", "any target", "choose ", "up to")
+
+
+def fixed_damage_removal(card: dict) -> tuple[int, bool] | None:
+    """(damage, may target planeswalkers) for plain fixed-damage removal; None otherwise."""
+    oracle = "\n".join(
+        line for line in str(card.get("oracle_text") or "").lower().splitlines() if ":" not in line
+    )
+    match = _FIXED_DAMAGE.search(oracle)
+    if not match or any(phrase in oracle for phrase in _VARIABLE_DAMAGE):
+        return None
+    return int(match.group(1)), "planeswalker" in match.group(2)
+
+
+def damage_would_kill(creature: dict, damage: int) -> bool | None:
+    """True/False when the board proves it; None when damage already marked or combat could change it."""
+    from arenamcp.combat_keywords import has_combat_keyword
+
+    toughness = creature.get("toughness")
+    if type(toughness) is not int:
+        return None
+    if has_combat_keyword(creature, "indestructible"):
+        return False
+    if toughness <= damage:
+        return True
+    if creature.get("damaged_this_turn") or creature.get("is_attacking") or creature.get("is_blocking"):
+        return None
+    return False
+
+
+def damage_removal_kills_nothing(card: dict, state: dict) -> str:
+    """Withhold fixed-damage removal when no opposing target would die.
+
+    2026-10-05 Arena Direct: Wrath of the Bloodmane (4 damage) was cast at a
+    5/5 Uldaros Theorix; it survived and its flying damage was lethal next turn.
+    """
+    parsed = fixed_damage_removal(card)
+    type_line = str(card.get("type_line") or "").lower()
+    local_seat = _local_seat(state)
+    if not parsed or local_seat is None or not any(kind in type_line for kind in ("instant", "sorcery")):
+        return ""
+    damage, hits_walkers = parsed
+    opposing = [
+        permanent
+        for permanent in state.get("battlefield", []) or []
+        if (permanent.get("controller_seat_id") or permanent.get("owner_seat_id")) != local_seat
+    ]
+    if hits_walkers and any("planeswalker" in str(p.get("type_line") or "").lower() for p in opposing):
+        return ""
+    creatures = [p for p in opposing if "creature" in str(p.get("type_line") or "").lower()]
+    if not creatures or any(damage_would_kill(creature, damage) is not False for creature in creatures):
+        return ""
+    toughness = sorted(creature["toughness"] for creature in creatures)
+    return f"{damage} damage kills no opposing creature (toughness {toughness})"
+
+
+POWER_ONLY_DEBUFF = re.compile(r"\bgets? [-\u2212]\d+/[-\u2212]0\b", re.IGNORECASE)
+_COUNTER_MODE = re.compile(r"^\W*counter target\b[^.]*\bspell\b", re.IGNORECASE)
+_POWER_ONLY_MODE = re.compile(
+    r"^target creature(?: an opponent controls| you don't control)? gets? [-\u2212]\d+/[-\u2212]0"
+    r" until end of turn\.?$",
+    re.IGNORECASE,
+)
+
+
+def power_only_debuff_wasted(card: dict, state: dict) -> str:
+    """Withhold a spell whose only effects are -N/-0 (or a counter with nothing to counter) outside combat.
+
+    2026-10-05 Premier Draft: Icy Reception's "-5/-0 until end of turn" was
+    cast in main phase 1 "to kill" Carnivorous Cultivator. Power-only
+    shrinking never kills, and nothing attacked that turn.
+    """
+    type_line = str(card.get("type_line") or "").lower()
+    text = re.sub(r"<[^>]*>", "", str(card.get("oracle_text") or ""))
+    if not any(kind in type_line for kind in ("instant", "sorcery")) or not POWER_ONLY_DEBUFF.search(text):
+        return ""
+    effects = []
+    for line in re.split(r"\n|•", text):
+        line = line.strip(" \t-—")
+        if line and line not in effects and not re.match(r"^choose (?:one|two|up to)", line, re.IGNORECASE):
+            effects.append(line)
+    counters = [line for line in effects if _COUNTER_MODE.search(line)]
+    others = [line for line in effects if line not in counters]
+    if not others or any(not _POWER_ONLY_MODE.match(line) for line in others):
+        return ""  # another effect (draw, damage, a second clause) may be the point
+    local_seat = _local_seat(state)
+    if counters and any(
+        (entry.get("controller_seat_id") or entry.get("owner_seat_id")) not in (None, local_seat)
+        for entry in state.get("stack", []) or []
+    ):
+        return ""
+    if any(c.get("is_attacking") or c.get("is_blocking") for c in state.get("battlefield", []) or []):
+        return ""
+    return "-N/-0 only shrinks power for this turn's combat (it never kills); hold it until creatures attack or block"
+
+
 def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict | None = None) -> str:
     """Return a reason to withhold a play, not a claim of full MTG legality."""
     action_type = action_type.removeprefix("ActionType_").lower()
@@ -367,6 +466,10 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
     )
     if removal_lacks_opponent_target(card, state, activation=action_type == "activate"):
         return "mandatory removal has no opposing target"
+    if action_type == "cast":
+        reason = damage_removal_kills_nothing(card, state) or power_only_debuff_wasted(card, state)
+        if reason:
+            return reason
     if action_type == "activate":
         return pointless_self_animation(state, card, metadata)
     if action_type != "cast" or _tutor_requirement(card) is None:

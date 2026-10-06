@@ -19,6 +19,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from arenamcp.card_db import is_unknown_card_name
+from arenamcp.combat_keywords import ability_keywords
 from arenamcp.gamestate_annotations import _GameStateAnnotationsMixin
 from arenamcp.gamestate_decisions import (
     _DECISION_RESPONSE_TYPES,
@@ -611,6 +612,7 @@ class GameState(_GameStateAnnotationsMixin):
                         color_production=[
                             str(item) for item in obj_data.get("color_production", []) if item is not None
                         ],
+                        keywords=[str(item) for item in obj_data.get("keywords", []) if item],
                     )
                     self.game_objects[instance_id] = game_object
 
@@ -1600,6 +1602,7 @@ class GameState(_GameStateAnnotationsMixin):
             is_blocking = existing_obj.is_blocking
             object_kind = existing_obj.object_kind
             counters = existing_obj.counters.copy()
+            keywords = list(existing_obj.keywords)
         else:
             grp_id = 0
             zone_id = 0
@@ -1618,6 +1621,7 @@ class GameState(_GameStateAnnotationsMixin):
             is_blocking = False
             object_kind = GameObjectKind.UNKNOWN
             counters = {}
+            keywords = []
 
         # 2. Overwrite with present data
         if "grpId" in obj_data:
@@ -1715,6 +1719,15 @@ class GameState(_GameStateAnnotationsMixin):
             if value is not None:
                 counters["Loyalty"] = _coerce_int(value, 0)
 
+        # GRE objects list every ability they have now, granted ones included
+        # (Medic's Kitesail's flying shows up as grpId 8 on the wearer).
+        if "uniqueAbilities" in obj_data or "abilities" in obj_data:
+            ability_ids = []
+            for entry in _ensure_list(obj_data.get("uniqueAbilities")) + _ensure_list(obj_data.get("abilities")):
+                raw_id = entry.get("grpId") if isinstance(entry, dict) else entry
+                ability_ids.append(_coerce_int(raw_id, 0))
+            keywords = ability_keywords(ability_ids)
+
         game_object = GameObject(
             instance_id=instance_id,
             grp_id=grp_id,
@@ -1734,6 +1747,7 @@ class GameState(_GameStateAnnotationsMixin):
             is_blocking=is_blocking,
             object_kind=object_kind,
             counters=counters,
+            keywords=keywords,
         )
 
         self.game_objects[instance_id] = game_object

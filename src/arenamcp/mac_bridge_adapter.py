@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 SendFn = Callable[[dict[str, Any], "float | None"], dict[str, Any]]
 
 MESSAGING = "Wotc.Mtgo.Gre.External.Messaging."
+# Namespaced wrapper classes: the probe resolves a bare name only in the global
+# namespace, and an optional find of an unknown class reads as "screen closed".
+DRAFT_CONTROLLER = "Wotc.Mtga.Wrapper.Draft.DraftContentController"
+EVENT_PAGE_CONTROLLER = "EventPage.EventPageContentController"
+EVENT_MAIN_BUTTON = "EventPage.Components.MainButtonComponent"
 # Request fields never needed for the protocol and bulky or recursive to dump.
 SNAPSHOT_SKIP = ["OriginalMessage", "ParentRequest", "_outboundMessage", "OnSubmit", "OnRequestSubmit"]
 SNAPSHOT_DEPTH = 7
@@ -378,9 +383,9 @@ class MacBridgeAdapter:
 
     _SCREENS = (
         ("match_end", "MatchEndScene"),
-        ("draft", "DraftContentController"),
+        ("draft", DRAFT_CONTROLLER),
         ("deck_builder", "DeckBuilderWidget"),
-        ("event_page", "EventPageContentController"),
+        ("event_page", EVENT_PAGE_CONTROLLER),
         ("home", "HomePageContentController"),
     )
 
@@ -400,7 +405,7 @@ class MacBridgeAdapter:
         return {"ok": True, **found}
 
     def _cmd_get_draft_state(self, command: dict, timeout: float | None) -> dict:
-        found = self._find("DraftContentController", timeout)
+        found = self._find(DRAFT_CONTROLLER, timeout)
         if not found:
             return {"ok": True, "is_open": False}
         controller = H(found)
@@ -587,7 +592,7 @@ class MacBridgeAdapter:
     }
 
     def _cmd_get_event_page(self, command: dict, timeout: float | None) -> dict:
-        found = self._find("EventPageContentController", timeout)
+        found = self._find(EVENT_PAGE_CONTROLLER, timeout)
         if not found:
             return {"ok": True, "is_open": False}
         ops = _Ops()
@@ -615,7 +620,7 @@ class MacBridgeAdapter:
             raise AdapterError(f"Event page shows {page['event_name']}, not {expected}")
         if page["module"] not in self._EVENT_PLAY_MODULES:
             raise AdapterError(f"Event stage {page['module'] or 'unknown'} is not one autoplay may advance")
-        button = self._find("MainButtonComponent", timeout)
+        button = self._find(EVENT_MAIN_BUTTON, timeout)
         if not button:
             raise AdapterError("The event page has no Play button")
         ops = _Ops()

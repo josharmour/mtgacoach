@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import Counter
 from types import SimpleNamespace
 from typing import Any
 
@@ -325,7 +326,7 @@ def draft_world(ok=True, reserved=0, human=True) -> World:
         _currentPack=0,
         _currentPick=3,
     )
-    world.finds["DraftContentController"] = world.add(
+    world.finds["Wotc.Mtga.Wrapper.Draft.DraftContentController"] = world.add(
         100,
         "DraftContentController",
         _okToPickCard=ok,
@@ -428,11 +429,11 @@ def event_world(module: str) -> World:
     course = world.add(71, "CourseData", CurrentModule={"e": module, "v": 1})
     player_event = world.add(72, "LimitedPlayerEvent", CourseData=Obj(course), EventInfo=Obj(info))
     context = world.add(73, "EventContext", PlayerEvent=Obj(player_event))
-    world.finds["EventPageContentController"] = world.add(
+    world.finds["EventPage.EventPageContentController"] = world.add(
         74, "EventPageContentController", _currentEventContext=Obj(context)
     )
     delegate = world.add(75, "System.Action")
-    world.finds["MainButtonComponent"] = world.add(
+    world.finds["EventPage.Components.MainButtonComponent"] = world.add(
         76,
         "MainButtonComponent",
         PlayButton_OnClick=Obj(delegate),
@@ -540,6 +541,23 @@ def test_driver_picks_the_ranked_card_once_and_waits_for_it_to_land(primer):
     assert len([a for a, _f in bridge.sent if a == "submit_draft_pick"]) == 1
 
 
+def test_driver_ranks_against_picks_made_before_it_took_over(primer):
+    # 2026-10-05: autoplay joined at P2p13 of a mostly blue pool and, seeing
+    # only its own picks, drafted black/red. Player.log has every pick.
+    bridge = FakeBridge(
+        {
+            "get_screen": {"ok": True, "draft": True},
+            "get_draft_state": {**PICK_STATE, "pack_number": 3, "pick_number": 1},
+            "submit_draft_pick": {"ok": True},
+        }
+    )
+    red_pool = [4] * 8 + [13, 18, 3]
+    driver = driver_for(bridge, primer, picked_fn=lambda: red_pool)
+    driver._step()
+    submits = [f for a, f in bridge.sent if a == "submit_draft_pick"]
+    assert submits[0]["cards"][0]["grp_id"] == 3
+
+
 def test_driver_pauses_after_a_pick_does_not_register_twice(primer):
     bridge = FakeBridge(
         {
@@ -605,7 +623,7 @@ def test_driver_builds_and_submits_a_forty_card_deck(primer, monkeypatch):
         "basic_lands": {"U": 9, "R": 8},
         "plan": "Izzet tempo",
     }
-    monkeypatch.setattr("arenamcp.limited_deck.fallback_deck", lambda cards: dict(build))
+    monkeypatch.setattr("arenamcp.limited_deck.fallback_deck", lambda cards, *_: dict(build))
     driver = driver_for(bridge, primer, pool_cards_fn=lambda ids, code: [{"grp_id": g} for g in ids])
     driver._basics = {7001: "U", 7002: "R"}
     driver._step()
@@ -669,3 +687,240 @@ def test_driver_waits_for_the_builder_pool_to_load(primer):
     assert not driver.paused_reason
     driver._step()
     assert "only 0 spells" in driver.paused_reason
+
+
+# ---------------------------------------------------------------------------
+# Limited deck choice (2026-10-05 Arena Direct sealed)
+# ---------------------------------------------------------------------------
+
+
+def spell(grp_id, name, cost, *, gih=None, rarity="common", type_line="Creature — Bear", text="Vigilance"):
+    card = {
+        "grp_id": grp_id,
+        "name": name,
+        "mana_cost": cost,
+        "type_line": type_line,
+        "oracle_text": text,
+        "rarity": rarity,
+    }
+    if gih is not None:
+        card["gih_wr"] = gih
+    return card
+
+
+def sealed_pool():
+    # Ordinary commons: an unrated mythic should beat these, a vanilla 2-drop should not.
+    red = [spell(i, f"Red {i}", "{1}{R}", gih=0.52) for i in range(1, 13)]
+    green = [spell(100 + i, f"Green {i}", "{1}{G}", gih=0.51) for i in range(1, 13)]
+    white = [spell(200 + i, f"White {i}", "{1}{W}", gih=0.48) for i in range(1, 13)]
+    extras = [
+        spell(300, "Unrated Mythic", "{4}{R}", rarity="mythic", type_line="Creature — Dragon", text="Flying"),
+        spell(301, "Legend", "{1}{G}", gih=0.60, type_line="Legendary Creature — Elf"),
+        spell(301, "Legend", "{1}{G}", gih=0.60, type_line="Legendary Creature — Elf"),
+    ]
+    return red + green + white + extras
+
+
+def test_builder_scores_whole_decks_and_considers_unrated_bombs():
+    from arenamcp.limited_deck import candidate_decks, fallback_deck
+
+    pool = sealed_pool()
+    ranked = candidate_decks(pool)
+    assert ranked[0]["quality"]["colors"] == "RG"
+    assert ranked[0]["quality"]["score"] > ranked[-1]["quality"]["score"]
+    build = fallback_deck(pool)
+    names = Counter(entry["name"] for entry in build["main_deck"] for _ in range(entry["count"]))
+    assert names["Unrated Mythic"] == 1  # rarity prior, not zero
+    assert names["Legend"] == 1  # a second copy of a legendary card is cut first
+    assert build["quality"]["colors"] == "RG" and build["candidates"][0]["colors"] == "RG"
+    assert "avg GIH" in build["plan"]
+
+
+def test_archetype_win_rates_break_close_calls():
+    from arenamcp.limited_deck import candidate_decks
+
+    pool = sealed_pool()
+    plain = {c["quality"]["colors"]: c["quality"]["score"] for c in candidate_decks(pool, top=10)}
+    shifted = {
+        c["quality"]["colors"]: c["quality"]["score"]
+        for c in candidate_decks(pool, {"RG": 0.50, "WR": 0.60, "WG": 0.55}, top=10)
+    }
+    assert shifted["WR"] - plain["WR"] > shifted["RG"] - plain["RG"]
+
+
+class ScriptedDeckBackend:
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.calls = []
+
+    def complete(self, system, message, max_tokens, **kwargs):
+        self.calls.append((max_tokens, kwargs.get("response_format")))
+        return self.replies.pop(0)
+
+
+def test_deck_review_has_room_to_answer_and_retries_bad_json():
+    from arenamcp.draft_advisor import DraftAdvisor
+    from arenamcp.limited_deck import fallback_deck
+
+    pool = sealed_pool()
+    build = {**fallback_deck(pool), "pool_cards": pool}
+    good = json.dumps(
+        {
+            "main_deck": [{"grp_id": e["grp_id"], "count": e["count"]} for e in build["main_deck"]],
+            "basic_lands": build["basic_lands"],
+            "plan": "Red-green bodies.",
+            "cuts": [{"grp_id": c["grp_id"], "reason": "weaker card"} for c in build["cuts"]],
+        }
+    )
+    backend = ScriptedDeckBackend(['{"main_deck": [', good])
+    result = DraftAdvisor(backend, timeout=5).recommend_deck(build)
+    assert result is not build and result["plan"] == "Red-green bodies."
+    assert backend.calls == [(8000, {"type": "json_object"})] * 2
+
+
+def test_driver_keeps_the_counted_build_when_the_model_deck_scores_much_worse(primer, monkeypatch):
+    from arenamcp.limited_deck import fallback_deck
+
+    pool = sealed_pool()
+    sideboard = [{"grp_id": g, "count": n} for g, n in Counter(c["grp_id"] for c in pool).items()]
+    bridge = FakeBridge(
+        {
+            "get_screen": {"ok": True, "deck_builder": True},
+            "get_limited_pool": {
+                "ok": True,
+                "main_deck": [],
+                "sideboard": sideboard,
+                "basics_in_pool": {"7001": 99, "7002": 99, "7003": 99},
+            },
+            "set_limited_deck": lambda fields: {"ok": True, "main_deck": fields["main_deck"]},
+            "submit_limited_deck": {"ok": True},
+        }
+    )
+    by_id = {c["grp_id"]: c for c in pool}
+    white = [g for g in by_id if 200 < g < 300]
+    weak = {
+        "main_deck": [{"grp_id": g, "count": 1} for g in white]
+        + [{"grp_id": g, "count": 1} for g in range(1, 12)],
+        "basic_lands": {"W": 9, "R": 8},
+        "plan": "White weenies",
+    }
+    advisor = SimpleNamespace(recommend_deck=lambda build: {**build, **weak})
+    driver = driver_for(
+        bridge,
+        primer,
+        pool_cards_fn=lambda ids, code: [by_id[g] for g in ids],
+        deck_advisor_fn=lambda: advisor,
+    )
+    driver._basics = {7001: "R", 7002: "G", 7003: "W"}
+    driver._step()
+    written = [f["main_deck"] for a, f in bridge.sent if a == "set_limited_deck"][0]
+    assert {e["grp_id"] for e in written} & set(white) == set()  # counted RG build kept
+    counted = {e["grp_id"] for e in fallback_deck(pool)["main_deck"]}
+    assert counted <= {e["grp_id"] for e in written}
+
+
+# ---------------------------------------------------------------------------
+# Damage removal must kill something (2026-10-05 Arena Direct, Wrath at a 5/5)
+# ---------------------------------------------------------------------------
+
+WRATH = {
+    "name": "Wrath of the Bloodmane",
+    "type_line": "Instant",
+    "oracle_text": "This spell costs {1} less to cast if you control a legendary creature.\n"
+    "Wrath of the Bloodmane deals 4 damage to target creature or planeswalker.",
+}
+
+
+def board(*creatures, walker=False):
+    battlefield = [
+        {
+            "instance_id": iid,
+            "name": name,
+            "type_line": "Creature",
+            "power": p,
+            "toughness": t,
+            "controller_seat_id": 1,
+            **extra,
+        }
+        for iid, name, p, t, extra in creatures
+    ]
+    if walker:
+        battlefield.append(
+            {
+                "instance_id": 900,
+                "name": "Walker",
+                "type_line": "Legendary Planeswalker",
+                "controller_seat_id": 1,
+            }
+        )
+    return {
+        "players": [{"seat_id": 2, "is_local": True}, {"seat_id": 1, "is_local": False}],
+        "battlefield": battlefield,
+    }
+
+
+def test_fixed_damage_removal_is_withheld_when_nothing_dies():
+    from arenamcp.play_safety import damage_removal_kills_nothing, fixed_damage_removal
+
+    assert fixed_damage_removal(WRATH) == (4, True)
+    big = board((275, "Uldaros", 5, 5, {}), (276, "Ruric", 4, 6, {}))
+    assert "kills no opposing creature" in damage_removal_kills_nothing(WRATH, big)
+    assert (
+        damage_removal_kills_nothing(WRATH, board((275, "Uldaros", 5, 5, {}), (300, "Geist", 1, 2, {}))) == ""
+    )
+    assert damage_removal_kills_nothing(WRATH, board((275, "Uldaros", 5, 5, {"is_attacking": True}))) == ""
+    assert damage_removal_kills_nothing(WRATH, board((275, "Uldaros", 5, 5, {}), walker=True)) == ""
+    burn = {**WRATH, "oracle_text": "Deals 4 damage to any target."}
+    assert damage_removal_kills_nothing(burn, big) == ""
+
+
+def test_damage_removal_is_pointed_at_a_creature_it_kills():
+    from arenamcp.action_planner import DECLINE_DECISION, ActionPlanner
+
+    planner = ActionPlanner.__new__(ActionPlanner)
+    planner._decision_source_oracle = lambda decision, state: WRATH["oracle_text"].lower()
+    state = board((275, "Uldaros", 5, 5, {}), (276, "Ruric", 4, 6, {}), (300, "Geist", 1, 2, {}))
+    decision = SimpleNamespace(options=[SimpleNamespace(option_id=f"tgt:{i}") for i in (275, 276, 300)])
+    assert planner._prefer_lethal_damage_target(decision, state, ["tgt:275"]) == ["tgt:300"]
+    assert planner._prefer_lethal_damage_target(decision, state, ["tgt:300"]) == ["tgt:300"]
+    no_kill = board((275, "Uldaros", 5, 5, {}), (276, "Ruric", 4, 6, {}))
+    two = SimpleNamespace(options=[SimpleNamespace(option_id=f"tgt:{i}") for i in (275, 276)])
+    assert planner._prefer_lethal_damage_target(two, no_kill, ["tgt:275"]) == [DECLINE_DECISION]
+
+
+# -- the coach's in-match gate ------------------------------------------------
+
+
+class _InMatchHarness:
+    def __init__(self, state):
+        from arenamcp.standalone_draft_event import _DraftEventMixin
+
+        self._mixin = _DraftEventMixin
+        self._mcp = SimpleNamespace(get_game_state=lambda: state)
+
+    def in_match(self, pack=None):
+        self._draft_event_pack = pack
+        return self._mixin._draft_event_in_match(self)
+
+
+def test_in_match_gate_ignores_a_finished_match_and_an_open_draft(monkeypatch):
+    from arenamcp import server
+
+    # 2026-10-05: the sealed match ended, its result was consumed, and the
+    # board (match_id, turn 16) stayed until the next match: the Premier
+    # Draft joined right after was never picked.
+    state = {"match_id": "m-1", "turn": {"turn_number": 16}, "last_game_result": None}
+    monkeypatch.setattr(server, "get_completed_match_for_navigation", lambda: {})
+    harness = _InMatchHarness(state)
+    assert harness.in_match() is True
+    assert harness.in_match({"is_active": True}) is False
+    assert harness.in_match({"is_building": True}) is False
+
+    monkeypatch.setattr(
+        server, "get_completed_match_for_navigation", lambda: {"match_id": "m-1", "match_complete": True}
+    )
+    assert harness.in_match() is False
+    monkeypatch.setattr(
+        server, "get_completed_match_for_navigation", lambda: {"match_id": "m-0", "match_complete": True}
+    )
+    assert harness.in_match() is True

@@ -35,6 +35,11 @@ def _as_int(value: Any) -> int:
 # candidates were the user's own permanents must not be auto-submitted.
 DECLINE_DECISION = "__decline__"
 
+# Blocks leaving this much life or less are replaced when the solver's blocks
+# keep at least BLOCK_DANGER_MARGIN more (see _check_block_survival).
+BLOCK_DANGER_LIFE = 5
+BLOCK_DANGER_MARGIN = 5
+
 
 _ACTIONS_AVAILABLE_BRIDGE_REQUESTS = {
     "ActionsAvailable",
@@ -481,6 +486,50 @@ def _strip_attacker_annotations(tail: str) -> str:
 
 
 from arenamcp.action_legality import _ActionLegalityMixin
+
+
+def linked_cast_note(game_state: dict[str, Any], meta: dict[str, Any], lookup: Any = None) -> str:
+    """Rules for a cast whose card is not its source object (prepared spell, Adventure, back face).
+
+    2026-10-05: "Cast Peer Review" (Prudent Fateseer's prepared spell) reached the
+    model as a bare name; the spell is not in hand, so no zone listed its rules.
+    """
+    source = find_source(game_state, meta)
+    cast_grp = meta.get("grpId")
+    if not source or not cast_grp or not source.get("grp_id") or cast_grp == source.get("grp_id"):
+        return ""
+    if lookup is None:
+        from arenamcp.match_context import _local_card
+
+        def lookup(grp_id: int) -> dict[str, Any]:
+            return _local_card(grp_id, int(time.monotonic() // 30))
+
+    spell = lookup(int(cast_grp)) or {}
+    if not spell.get("oracle_text"):
+        return ""
+    return " " + json.dumps(
+        {
+            "casts": spell.get("name"),
+            "from": source.get("name"),
+            "mana_cost": spell.get("mana_cost"),
+            "type": spell.get("type_line"),
+            "rules": " ".join(str(spell.get("oracle_text")).split())[:300],
+        },
+        ensure_ascii=False,
+    )
+
+
+POWER_ONLY_NOTE = (
+    "  [-N/-0 lowers POWER only; toughness is unchanged, so it never kills. "
+    "It only matters in this turn's combat]"
+)
+
+
+def power_only_note(text: Any) -> str:
+    """Flag -N/-0 effects: 2026-10-05 the model cast Icy Reception's -5/-0 "to kill" a 2/3."""
+    from arenamcp.play_safety import POWER_ONLY_DEBUFF
+
+    return POWER_ONLY_NOTE if POWER_ONLY_DEBUFF.search(str(text or "")) else ""
 
 
 class ActionPlanner(_ActionLegalityMixin):
@@ -972,8 +1021,20 @@ class ActionPlanner(_ActionLegalityMixin):
         2026-10-04 23:32: at 25 life against a 9/9 and an unblockable 18/19
         flyer, the planner declined to chump the 9/9 ("absorb 9 damage") and
         took 27. Damage counts every attacker, not only the blockable ones.
+
+        Blocks that leave us at BLOCK_DANGER_LIFE or less are also replaced
+        when the solver keeps BLOCK_DANGER_MARGIN more life: 2026-10-05 the
+        planner kept a 6/5 Dragon back from a 13/11 and went 16 -> 3, then
+        died to the next attack. That plan was a bare "done" click, which
+        declines every block just like an empty declaration.
         """
-        if len(plan.actions) != 1 or plan.actions[0].action_type != ActionType.DECLARE_BLOCKERS:
+        if len(plan.actions) != 1:
+            return
+        declined = context.get("type") == "declare_blockers" and plan.actions[0].action_type in (
+            ActionType.CLICK_BUTTON,
+            ActionType.PASS_PRIORITY,
+        )
+        if plan.actions[0].action_type != ActionType.DECLARE_BLOCKERS and not declined:
             return
         from arenamcp.combat_solver import _resolve_attacker, blocker_allowed_attackers_map, optimal_blocks
 
@@ -995,19 +1056,22 @@ class ActionPlanner(_ActionLegalityMixin):
         if any(not isinstance(c.get("power"), int) for c in attackers):
             return
         action = plan.actions[0]
-        planned = action.blocker_instance_assignments or {}
+        planned = {} if declined else action.blocker_instance_assignments or {}
         through = sum(
             _resolve_attacker(
                 atk, [cards[b] for b, a in planned.items() if a == atk["instance_id"] and b in cards]
             ).damage_through
             for atk in attackers
         )
-        if through < life:
+        lethal = through >= life
+        if not lethal and life - through > BLOCK_DANGER_LIFE:
             return
         allowed = blocker_allowed_attackers_map(context.get("raw_blockers") or [])
         survival = optimal_blocks(attackers, blockers, life, blocker_allowed_attackers=allowed or None)
         if survival is None or survival.damage_through >= life or not survival.assignments:
             return
+        if not lethal and survival.damage_through > through - BLOCK_DANGER_MARGIN:
+            return  # the solver's blocks do not keep meaningfully more life
 
         def label(iid):
             card = cards[iid]
@@ -1015,21 +1079,26 @@ class ActionPlanner(_ActionLegalityMixin):
             return f"{'*' if token else ''}{card.get('name', 'Creature')} [id:{iid}]"
 
         logger.warning(
-            "Lethal block guard: planned blocks %s let %d damage through at %d life; using %s",
+            "%s block guard: planned blocks %s let %d damage through at %d life; using %s",
+            "Lethal" if lethal else "Danger-zone",
             planned,
             through,
             life,
             survival.explanation,
         )
+        if declined:
+            action = plan.actions[0] = GameAction(action_type=ActionType.DECLARE_BLOCKERS)
         action.blocker_instance_assignments = dict(survival.assignments)
         action.blocker_assignments = {label(b): label(a) for b, a in survival.assignments.items()}
+        outcome = "were lethal" if lethal else f"left us at {life - through}"
         action.reasoning = (
-            f"Planned blocks were lethal ({through} damage at {life} life); {survival.explanation}."
+            f"Planned blocks {outcome} ({through} damage at {life} life); {survival.explanation}."
         )
-        plan.fallback_reason = "planner_lethal_block"
+        plan.fallback_reason = "planner_lethal_block" if lethal else "planner_danger_block"
         plan.overall_strategy = f"Survive combat: {survival.explanation}."
         blocks = "; ".join(f"{label(b)} against {label(a)}" for b, a in survival.assignments.items())
-        plan.voice_advice = f"Blocking with {blocks}; not blocking was lethal."
+        risk = "not blocking was lethal" if lethal else f"not blocking left us at {life - through} life"
+        plan.voice_advice = f"Blocking with {blocks}; {risk}."
 
     def _check_block_recovery(self, plan: ActionPlan, state: dict, context: dict) -> None:
         """Price supported recovery before committing a same-outcome trade."""
@@ -2581,6 +2650,8 @@ class ActionPlanner(_ActionLegalityMixin):
                 chosen = []
             if chosen and decision.request_type == "SelectTargets":
                 chosen = self._gate_harmful_llm_target_picks(decision, game_state, chosen)
+                if chosen != [DECLINE_DECISION]:
+                    chosen = self._prefer_lethal_damage_target(decision, game_state, chosen)
                 self._last_decision_trace["validated_ids"] = [] if chosen == [DECLINE_DECISION] else chosen
                 self._last_decision_trace["target_validation"] = (
                     "declined" if chosen == [DECLINE_DECISION] else "validated"
@@ -2729,6 +2800,55 @@ class ActionPlanner(_ActionLegalityMixin):
     def get_last_decision_trace(self) -> dict:
         """Bounded targeting facts, not a full prompt or backend configuration."""
         return dict(getattr(self, "_last_decision_trace", {}))
+
+    def _prefer_lethal_damage_target(
+        self, decision: Any, game_state: dict[str, Any], chosen: list[str]
+    ) -> list[str]:
+        """Point fixed-damage removal at a creature it kills, or keep the spell.
+
+        2026-10-05: Wrath of the Bloodmane (4 damage) was aimed at a 5/5 while
+        a 1/2 it would kill was also attacking; the 5/5's damage was lethal.
+        """
+        from arenamcp.play_safety import damage_would_kill, fixed_damage_removal
+
+        parsed = fixed_damage_removal({"oracle_text": self._decision_source_oracle(decision, game_state)})
+        targets = [oid for oid in chosen if str(oid).startswith("tgt:")]
+        if not parsed or len(targets) != 1:
+            return chosen
+        damage = parsed[0]
+        cards = {card.get("instance_id"): card for card in game_state.get("battlefield", []) or []}
+        local_seat, controllers = self._battlefield_controllers(game_state)
+
+        def killable(iid: int) -> bool | None:
+            card = cards.get(iid)
+            if card is None or controllers.get(iid) == local_seat:
+                return None
+            if "planeswalker" in str(card.get("type_line") or "").lower():
+                return True
+            if "creature" not in str(card.get("type_line") or "").lower():
+                return None
+            return damage_would_kill(card, damage)
+
+        picked = int(str(targets[0])[4:])
+        if killable(picked) is not False:
+            return chosen
+        alternatives = []
+        for option in decision.options:
+            oid = str(option.option_id)
+            if oid.startswith("tgt:") and oid != targets[0] and killable(int(oid[4:])) is True:
+                card = cards[int(oid[4:])]
+                alternatives.append(
+                    (card.get("power") or 0, card.get("toughness") or 0, oid, card.get("name"))
+                )
+        name = cards.get(picked, {}).get("name", picked)
+        if not alternatives:
+            logger.warning(
+                "Keeping the spell: %d damage kills no legal opposing target (picked %s)", damage, name
+            )
+            return [DECLINE_DECISION]
+        best = max(alternatives)
+        logger.warning("Retargeting: %d damage does not kill %s; %s dies instead", damage, name, best[3])
+        return [best[2]]
 
     def _gate_harmful_llm_target_picks(
         self,
@@ -2903,7 +3023,9 @@ class ActionPlanner(_ActionLegalityMixin):
             lines.insert(1, f"YOU ARE SEAT {local_seat}; control determines YOURS/opponent, not ownership.")
             lines.insert(
                 2,
-                "SOURCE EFFECT: " + (self._decision_source_oracle(decision, game_state) or "unknown"),
+                "SOURCE EFFECT: "
+                + (self._decision_source_oracle(decision, game_state) or "unknown")
+                + power_only_note(self._decision_source_oracle(decision, game_state)),
             )
             lines.append(
                 "For each selected target also return target_controllers keyed by option_id, "
@@ -2929,6 +3051,11 @@ class ActionPlanner(_ActionLegalityMixin):
                 note += "  [YOUR COMMANDER — command zone]"
             if "weight" in o.meta:
                 note += f"  [contribution: {o.meta['weight']}]"
+            if o.meta.get("actionType") == "ActionType_Cast":
+                note += linked_cast_note(game_state, o.meta)
+                note += power_only_note((find_source(game_state, o.meta) or {}).get("oracle_text"))
+            if decision.request_type == "CastingTimeOptions":
+                note += power_only_note(label)
             if o.meta.get("actionType") == "ActionType_Activate":
                 source = find_source(game_state, o.meta)
                 note += " " + json.dumps(

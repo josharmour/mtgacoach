@@ -119,20 +119,26 @@ class DraftAdvisor:
         self._plan = ""
 
     def _complete(
-        self, message: str, system_prompt: str = DRAFT_SYSTEM_PROMPT, max_tokens: int = 1200
+        self,
+        message: str,
+        system_prompt: str = DRAFT_SYSTEM_PROMPT,
+        max_tokens: int = 1200,
+        response_format: dict | None = None,
     ) -> str:
         try:
-            return self._backend.complete(
-                system_prompt,
-                message,
-                max_tokens,
-                temperature=0.0,
-                request_timeout_s=self._timeout,
-            )
+            kwargs: dict[str, Any] = {"temperature": 0.0, "request_timeout_s": self._timeout}
+            if response_format:
+                kwargs["response_format"] = response_format
+            return self._backend.complete(system_prompt, message, max_tokens, **kwargs)
         except TypeError:
             return self._backend.complete(system_prompt, message)
 
+    # 2026-10-05 sealed: 2400 tokens let glm-5.3-flash spend 1284 on reasoning
+    # and truncate the JSON (finish_reason=length), so the model review never ran.
+    DECK_MAX_TOKENS = 8000
+
     def recommend_deck(self, fallback: dict[str, Any]) -> dict[str, Any]:
+        """Model review of the counted build: compares the scored candidates, validated, one retry."""
         from arenamcp.limited_deck import DECK_SYSTEM_PROMPT, validate_deck
 
         pool = fallback.get("pool_cards") or []
@@ -146,22 +152,34 @@ class DraftAdvisor:
                 "previous_plan": self._plan,
                 "supported_synergies": synergy_graph(pool),
                 "set_strategy": fallback.get("set_strategy") or {},
+                "scored_candidates": fallback.get("candidates") or [],
                 "pool": [{**_card_details(card), "count": counts[grp_id]} for grp_id, card in unique.items()],
             },
             ensure_ascii=False,
         )
-        self._pending = self._executor.submit(self._complete, message, DECK_SYSTEM_PROMPT, 2400)
-        try:
-            response = self._pending.result(timeout=self._timeout)
-            start = response.find("{")
-            if start < 0:
-                raise ValueError("Deck response has no JSON object")
-            payload, _end = json.JSONDecoder().raw_decode(response[start:])
-            result = validate_deck(payload, pool, source="card_rules")
-            return {**fallback, **result}
-        except Exception as exc:
-            logger.warning("Deck reasoning unavailable; keeping counted fallback build: %s", exc)
-            return fallback
+        error: Exception | None = None
+        for _attempt in range(2):
+            prompt = message
+            if error is not None:
+                prompt += f"\n\nYour previous answer was rejected ({error}). Return ONLY valid JSON for a legal deck."
+            self._pending = self._executor.submit(
+                self._complete, prompt, DECK_SYSTEM_PROMPT, self.DECK_MAX_TOKENS, {"type": "json_object"}
+            )
+            try:
+                response = self._pending.result(timeout=self._timeout)
+                start = response.find("{")
+                if start < 0:
+                    raise ValueError("Deck response has no JSON object")
+                payload, _end = json.JSONDecoder().raw_decode(response[start:])
+                result = validate_deck(payload, pool, source="card_rules")
+                return {**fallback, **result}
+            except concurrent.futures.TimeoutError as exc:
+                error = exc
+                break
+            except Exception as exc:
+                error = exc
+        logger.warning("Deck reasoning unavailable; keeping counted fallback build: %s", error)
+        return fallback
 
     def recommend(self, pack: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
         cards = pack.get("cards") or []

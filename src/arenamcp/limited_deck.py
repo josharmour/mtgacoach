@@ -22,6 +22,10 @@ Honor the previous theme only if this actual pool supports it. Missing ratings a
 When set_strategy is supplied (this set's 17lands data plus card-rules analysis), prefer its
 stronger archetypes the pool supports, include its payoffs only with enough enablers, and
 avoid its traps unless the pool has nothing better.
+scored_candidates are complete counted builds per color pair, scored on 17lands card quality,
+bombs, removal, creature count, cheap plays and archetype win rate. Start from the highest
+scoring candidate; change colors or cards only for a concrete reason (a bomb, real synergy,
+missing early plays) and say why in plan.
 Use supported_synergies as grounded links, checking the supplied rules' conditions and
 costs. For unmodeled interactions, describe roles rather than inventing a verified combo.
 Return JSON only: {"main_deck": [{"grp_id":123,"count":2}],
@@ -71,8 +75,15 @@ def validate_deck(payload: dict, pool: list[dict], *, source: str) -> dict[str, 
                 mana_colors.update(symbol.upper() for symbol in re.findall(r"\{([wubrgc])\}", clause))
                 if "any color" in clause:
                     mana_colors.update("WUBRG")
-    if any(not _castable(by_id[grp_id], tuple(mana_colors)) for grp_id in kept):
-        raise ValueError("Deck includes colors its proposed mana base cannot produce")
+    uncastable = [
+        by_id[grp_id]["name"] for grp_id in kept if not _castable(by_id[grp_id], tuple(mana_colors))
+    ]
+    if uncastable:
+        # Named so a model retry can fix the exact cards (2026-10-05 sealed review).
+        raise ValueError(
+            f"Deck includes colors its proposed mana base ({''.join(sorted(mana_colors)) or 'none'}) "
+            f"cannot produce: {', '.join(uncastable[:6])}"
+        )
     total = sum(kept.values()) + sum(basics.values())
     lands = sum(
         count for grp_id, count in kept.items() if "land" in by_id[grp_id].get("type_line", "").lower()
@@ -129,52 +140,119 @@ def validate_deck(payload: dict, pool: list[dict], *, source: str) -> dict[str, 
     }
 
 
-def fallback_deck(pool: list[dict]) -> dict[str, Any]:
-    spells = [card for card in _nonbasics(pool) if "land" not in card.get("type_line", "").lower()]
+RARITY_PRIOR = {"mythic": 6.0, "rare": 4.0, "uncommon": 1.0}
+BOMB_GIH = 61.0
 
-    def score(card):
-        normalized = normalize_card(card)
-        value = (normalized.gih_wr_pct - 50) if normalized.gih_wr_pct is not None else 0
-        value += 4 if rules_profile(card)["unconditional_body"] else 0
-        value += 4 if "removal" in normalized.tags else 0
-        value += 2 if "card_advantage" in normalized.tags else 0
-        value += 2 if normalized.cmc <= 3 else -max(0, normalized.cmc - 4)
-        return value
 
-    best = None
-    for colors in combinations("WUBRG", 2):
-        candidates = [card for card in spells if card.get("type_line") and _castable(card, colors)]
-        chosen = []
-        while candidates and len(chosen) < 23:
-            bodies = sum(rules_profile(card)["unconditional_body"] for card in chosen)
-            early = sum(
-                rules_profile(card)["unconditional_body"] and normalize_card(card).cmc <= 3 for card in chosen
-            )
-            expensive = sum(normalize_card(card).cmc >= 5 for card in chosen)
+def _gih(card: dict) -> float | None:
+    return normalize_card(card).gih_wr_pct
 
-            def fit(card, bodies=bodies, early=early, expensive=expensive, chosen=tuple(chosen)):
-                profile = rules_profile(card)
-                cost = normalize_card(card).cmc
-                value = score(card)
-                if profile["unconditional_body"]:
-                    value += 5 if bodies < 14 else 0
-                    value += 4 if early < 6 and cost <= 3 else 0
-                if cost >= 5 and expensive >= 4:
-                    value -= 6
-                value += min(4, sum(bool(synergy_evidence(card, other)) for other in chosen))
-                return value
 
-            picked = max(candidates, key=fit)
-            candidates.remove(picked)
-            chosen.append(picked)
-        support = sum(
-            bool(synergy_evidence(first, second))
-            for index, first in enumerate(chosen)
-            for second in chosen[index + 1 :]
+def _card_value(card: dict) -> float:
+    """Card quality in GIH points above 50; unrated rares/mythics get a prior, not zero.
+
+    2026-10-05 sealed: an unrated mythic (Craterclaw Colossus) scored 0 and was
+    never considered, while ordinary commons with data outranked it.
+    """
+    normalized = normalize_card(card)
+    if normalized.gih_wr_pct is not None:
+        value = normalized.gih_wr_pct - 50
+    else:
+        value = RARITY_PRIOR.get(str(card.get("rarity") or "").lower(), 0.0)
+    value += 4 if rules_profile(card)["unconditional_body"] else 0
+    value += 4 if "removal" in normalized.tags else 0
+    value += 2 if "card_advantage" in normalized.tags else 0
+    value += 2 if normalized.cmc <= 3 else -max(0, normalized.cmc - 4)
+    return value
+
+
+def _is_legendary(card: dict) -> bool:
+    return "legendary" in card.get("type_line", "").lower()
+
+
+def _build_for_colors(spells: list[dict], colors: tuple[str, ...]) -> list[dict]:
+    candidates = [card for card in spells if card.get("type_line") and _castable(card, colors)]
+    chosen: list[dict] = []
+    while candidates and len(chosen) < 23:
+        bodies = sum(rules_profile(card)["unconditional_body"] for card in chosen)
+        early = sum(
+            rules_profile(card)["unconditional_body"] and normalize_card(card).cmc <= 3 for card in chosen
         )
-        ranking = (len(chosen), sum(score(card) for card in chosen) + min(12, support))
-        if best is None or ranking > best[0]:
-            best = (ranking, colors, chosen)
+        expensive = sum(normalize_card(card).cmc >= 5 for card in chosen)
+        legends = Counter(card["name"] for card in chosen if _is_legendary(card))
+
+        def fit(card, bodies=bodies, early=early, expensive=expensive, chosen=tuple(chosen), legends=legends):
+            profile = rules_profile(card)
+            cost = normalize_card(card).cmc
+            value = _card_value(card)
+            if profile["unconditional_body"]:
+                value += 5 if bodies < 14 else 0
+                value += 4 if early < 6 and cost <= 3 else 0
+            if cost >= 5 and expensive >= 4:
+                value -= 6
+            if legends[card["name"]]:
+                value -= 10  # a second copy of a legendary card is dead while the first is in play
+            value += min(4, sum(bool(synergy_evidence(card, other)) for other in chosen))
+            return value
+
+        picked = max(candidates, key=fit)
+        candidates.remove(picked)
+        chosen.append(picked)
+    return chosen
+
+
+def deck_quality(
+    chosen: list[dict], colors: tuple[str, ...] = (), pair_win_rates: dict | None = None
+) -> dict:
+    """Whole-deck evaluation: card quality, bombs, removal, bodies, curve, archetype data."""
+    values = [_card_value(card) for card in chosen]
+    gihs = [g for g in (_gih(card) for card in chosen) if g is not None]
+    creatures = sum(rules_profile(card)["unconditional_body"] for card in chosen)
+    removal = sum("removal" in normalize_card(card).tags for card in chosen)
+    cheap = sum(normalize_card(card).cmc <= 2 for card in chosen)
+    expensive = sum(normalize_card(card).cmc >= 6 for card in chosen)
+    bombs = [card["name"] for card in chosen if (_gih(card) or 0) >= BOMB_GIH]
+    support = sum(
+        bool(synergy_evidence(first, second))
+        for index, first in enumerate(chosen)
+        for second in chosen[index + 1 :]
+    )
+    score = sum(values) + 4 * len(bombs) + 2 * min(removal, 6) + min(12, support)
+    score -= 3 * max(0, 14 - creatures) + 2 * max(0, 4 - cheap) + 3 * max(0, expensive - 4)
+    key = "".join(color for color in "WUBRG" if color in colors)
+    if pair_win_rates and key in pair_win_rates:
+        rates = list(pair_win_rates.values())
+        score += 50 * (pair_win_rates[key] - sum(rates) / len(rates))
+    return {
+        "colors": key,
+        "score": round(score, 2),
+        "avg_gih": round(sum(gihs) / len(gihs), 1) if gihs else None,
+        "creatures": creatures,
+        "removal": removal,
+        "cheap_plays": cheap,
+        "bombs": bombs,
+        "synergy_links": support,
+        "spells": len(chosen),
+    }
+
+
+def candidate_decks(pool: list[dict], pair_win_rates: dict | None = None, top: int = 3) -> list[dict]:
+    """The best few two-color builds, each scored as a whole deck."""
+    spells = [card for card in _nonbasics(pool) if "land" not in card.get("type_line", "").lower()]
+    ranked = []
+    for colors in combinations("WUBRG", 2):
+        chosen = _build_for_colors(spells, colors)
+        if len(chosen) >= 21:
+            ranked.append(
+                {"colors": colors, "chosen": chosen, "quality": deck_quality(chosen, colors, pair_win_rates)}
+            )
+    ranked.sort(key=lambda item: (len(item["chosen"]), item["quality"]["score"]), reverse=True)
+    return ranked[:top]
+
+
+def fallback_deck(pool: list[dict], pair_win_rates: dict | None = None) -> dict[str, Any]:
+    candidates = candidate_decks(pool, pair_win_rates)
+    best = (None, candidates[0]["colors"], candidates[0]["chosen"]) if candidates else None
     if best is None or len(best[2]) < 21:
         return {
             "spoken_advice": "I don't yet have enough castable spells to verify a balanced 40-card build. Check that the full draft pool is available.",
@@ -207,16 +285,51 @@ def fallback_deck(pool: list[dict]) -> dict[str, Any]:
         else:
             reason = "keep the stronger on-color creatures and interaction in this starting build"
         cuts.append({"grp_id": card["grp_id"], "reason": reason})
-    return validate_deck(
+    result = validate_deck(
         {
             "main_deck": [{"grp_id": grp_id, "count": count} for grp_id, count in kept.items()],
             "basic_lands": basics,
             "cuts": cuts,
-            "plan": f"A curve-based {'/'.join(COLOR_NAMES[color] for color in colors)} starting build; refine synergies from the full rules.",
+            "plan": _plan_text(colors, candidates[0]["quality"]),
         },
         pool,
         source="heuristic",
     )
+    result["quality"] = candidates[0]["quality"]
+    result["candidates"] = [
+        {
+            **candidate["quality"],
+            "cards": [card["name"] for card in candidate["chosen"]],
+        }
+        for candidate in candidates
+    ]
+    return result
+
+
+def _plan_text(colors: tuple[str, ...], quality: dict) -> str:
+    names = "/".join(COLOR_NAMES[color] for color in colors)
+    parts = [f"{names}: avg GIH {quality['avg_gih']}%" if quality.get("avg_gih") else names]
+    parts.append(f"{quality['creatures']} creatures, {quality['removal']} removal")
+    if quality.get("bombs"):
+        parts.append("bombs " + ", ".join(quality["bombs"][:3]))
+    return "; ".join(parts) + "."
+
+
+def score_deck(main_deck: list[dict], pool: list[dict], pair_win_rates: dict | None = None) -> dict:
+    """deck_quality for a validated deck given as [{grp_id, count}]."""
+    by_id = {card["grp_id"]: card for card in _nonbasics(pool)}
+    chosen = []
+    for entry in main_deck:
+        card = by_id.get(entry["grp_id"])
+        if card is not None and "land" not in card.get("type_line", "").lower():
+            chosen += [card] * int(entry.get("count") or 1)
+    colors = set()
+    for card in chosen:
+        for symbol in re.findall(r"\{([^}]+)\}", card.get("mana_cost", "")):
+            options = set(symbol.split("/")) & set("WUBRG")
+            if len(options) == 1:
+                colors |= options
+    return deck_quality(chosen, tuple(sorted(colors)), pair_win_rates)
 
 
 def reconcile_logged_deck(build: dict) -> dict:

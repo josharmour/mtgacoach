@@ -106,6 +106,8 @@ class GameObject:
     targeting: list[int] = field(default_factory=list)
     # Color production (mana abilities)
     color_production: list[str] = field(default_factory=list)
+    # Combat keywords the object has now (printed or granted), from its GRE abilities
+    keywords: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Convert to simple dict for snapshot serialization."""
@@ -145,6 +147,8 @@ class GameObject:
             result["modified_name"] = self.modified_name
         if self.granted_abilities:
             result["granted_abilities"] = self.granted_abilities
+        if self.keywords:
+            result["keywords"] = list(self.keywords)
         if self.removed_abilities:
             result["removed_abilities"] = self.removed_abilities
         if self.damaged_this_turn:
