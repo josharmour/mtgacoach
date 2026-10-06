@@ -192,6 +192,10 @@ class CoachSession(QObject):
     def toggle_autopilot(self) -> None:
         self.send_command("toggle_autopilot")
 
+    def set_voice(self, voice_id: str) -> None:
+        """Select a Kokoro voice by id in the running engine (saved there too)."""
+        self._process.send_payload({"cmd": "sync_voice_preferences", "voice": str(voice_id)})
+
     def set_draft_commentary(self, enabled: bool) -> None:
         """Turn spoken draft-pick explanations on or off in the running engine."""
         self._process.send_payload({"cmd": "set_draft_commentary", "enabled": bool(enabled)})

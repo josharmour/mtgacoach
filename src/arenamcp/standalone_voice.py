@@ -9,6 +9,8 @@ import subprocess
 import sys
 from typing import Any
 
+from arenamcp.kokoro_voices import KOKORO_VOICES, voice_index
+
 logger = logging.getLogger(__name__)
 
 
@@ -183,23 +185,24 @@ class _SAPIVoice:
 class _PipeVoiceOutput:
     """Lightweight voice delegate for pipe mode — avoids duplicate ONNX model loading."""
 
-    _VOICES = [
-        ("af_heart", "Heart (Female)"),
-        ("af_bella", "Bella (Female)"),
-        ("af_nicole", "Nicole (Female)"),
-        ("af_aoede", "Aoede (Female)"),
-        ("am_fenrir", "Fenrir (Male)"),
-        ("am_puck", "Puck (Male)"),
-        ("am_michael", "Michael (Male)"),
-        ("am_eric", "Eric (US Male)"),
-    ]
+    # The full Kokoro list (2026-10-06: a hand-picked 8-voice list here hid
+    # Adam, Sky, Onyx and the UK voices from the desktop app).
+    _VOICES = KOKORO_VOICES
     SPEED_PRESETS = [0.8, 1.0, 1.2, 1.4, 1.6]
 
     def __init__(self, ui: Any, inner: Any = None):
         self._ui = ui
         self._inner = inner
-        self._voice_index = 7
-        self._speed = 1.0
+        # Start from the saved voice and speed, not a fixed default.
+        saved_voice, saved_speed = None, 1.0
+        with contextlib.suppress(Exception):
+            from arenamcp.settings import get_settings
+
+            settings = get_settings()
+            saved_voice = settings.get("voice")
+            saved_speed = float(settings.get("voice_speed", 1.0) or 1.0)
+        self._voice_index = voice_index(saved_voice)
+        self._speed = saved_speed
         self._muted = False
 
     def __getattr__(self, name: str) -> Any:
@@ -244,7 +247,33 @@ class _PipeVoiceOutput:
         if self._inner is not None and hasattr(self._inner, "next_voice"):
             return self._inner.next_voice()
         self._voice_index = (self._voice_index + 1) % len(self._VOICES)
+        self._save("voice", self.current_voice[0])
         return self.current_voice
+
+    def set_voice(self, voice_id: str) -> tuple[str, str]:
+        """Select a voice by id (desktop voice picker); unknown ids are refused."""
+        if self._inner is not None and hasattr(self._inner, "set_voice"):
+            return self._inner.set_voice(voice_id)
+        ids = [voice for voice, _label in self._VOICES]
+        if voice_id not in ids:
+            raise ValueError(f"Unknown Kokoro voice: {voice_id}")
+        self._voice_index = ids.index(voice_id)
+        self._save("voice", voice_id)
+        return self.current_voice
+
+    def set_speed(self, speed: float) -> float:
+        if self._inner is not None and hasattr(self._inner, "set_speed"):
+            return self._inner.set_speed(speed)
+        self._speed = max(0.5, min(2.0, float(speed)))
+        self._save("voice_speed", self._speed)
+        return self._speed
+
+    @staticmethod
+    def _save(key: str, value: Any) -> None:
+        with contextlib.suppress(Exception):
+            from arenamcp.settings import get_settings
+
+            get_settings().set(key, value)
 
     def toggle_mute(self) -> bool:
         if self._inner is not None and hasattr(self._inner, "toggle_mute"):

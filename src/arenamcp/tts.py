@@ -21,6 +21,8 @@ import threading
 import wave
 from pathlib import Path
 
+from arenamcp.kokoro_voices import KOKORO_VOICES
+
 # Lazy numpy import — module-level import hangs in subprocess contexts
 np = None
 
@@ -334,34 +336,7 @@ class VoiceOutput:
     """
 
     # Available Kokoro voices (name, description)
-    VOICES = [
-        ("af_sky", "Sky (US Female)"),
-        ("af_nicole", "Nicole (US Female)"),
-        ("af_heart", "Heart (US Female)"),
-        ("af_bella", "Bella (US Female)"),
-        ("af_aoede", "Aoede (US Female)"),
-        ("af_kore", "Kore (US Female)"),
-        ("af_sarah", "Sarah (US Female)"),
-        ("af_alloy", "Alloy (US Female)"),
-        ("af_river", "River (US Female)"),
-        ("am_adam", "Adam (US Male)"),
-        ("am_echo", "Echo (US Male)"),
-        ("am_eric", "Eric (US Male)"),
-        ("am_fenrir", "Fenrir (US Male)"),
-        ("am_liam", "Liam (US Male)"),
-        ("am_michael", "Michael (US Male)"),
-        ("am_onyx", "Onyx (US Male)"),
-        ("am_puck", "Puck (US Male)"),
-        ("am_santa", "Santa (US Male)"),
-        ("bf_emma", "Emma (UK Female)"),
-        ("bf_isabella", "Isabella (UK Female)"),
-        ("bf_alice", "Alice (UK Female)"),
-        ("bf_lily", "Lily (UK Female)"),
-        ("bm_george", "George (UK Male)"),
-        ("bm_fable", "Fable (UK Male)"),
-        ("bm_lewis", "Lewis (UK Male)"),
-        ("bm_daniel", "Daniel (UK Male)"),
-    ]
+    VOICES = KOKORO_VOICES
 
     def __init__(
         self,

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -398,8 +399,8 @@ class CompactCoachPanel(QWidget):
 
         self.voice_btn = QPushButton("Voice: Auto")
         self.voice_btn.setObjectName("voiceButton")
-        self.voice_btn.setToolTip("Cycle the text-to-speech voice")
-        self.voice_btn.clicked.connect(self._session.cycle_voice)
+        self.voice_btn.setToolTip("Choose the text-to-speech voice (F6 cycles)")
+        self.voice_btn.setMenu(self._voice_menu())
         pop.add_button(self.voice_btn)
 
         saved_speed = settings.get_settings().get("voice_speed", 1.0)
@@ -430,6 +431,20 @@ class CompactCoachPanel(QWidget):
         )
         self.device_btn.clicked.connect(self._cycle_game_device)
         pop.add_button(self.device_btn)
+
+    def _voice_menu(self) -> QMenu:
+        """Every Kokoro voice, grouped by accent and gender."""
+        from arenamcp.kokoro_voices import KOKORO_VOICES, VOICE_GROUPS
+
+        menu = QMenu(self)
+        submenus: dict[str, QMenu] = {}
+        for voice_id, label in KOKORO_VOICES:
+            group = VOICE_GROUPS.get(voice_id[:2], "Other")
+            if group not in submenus:
+                submenus[group] = menu.addMenu(group)
+            action = submenus[group].addAction(label.split(" (")[0])
+            action.triggered.connect(lambda _checked=False, v=voice_id: self._session.set_voice(v))
+        return menu
 
     @staticmethod
     def _make_chip() -> QLabel:
