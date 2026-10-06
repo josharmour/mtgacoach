@@ -3326,6 +3326,24 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         return f"Game state (JSON):\n{body}{suffix}"
 
     @staticmethod
+    def _grounded_plan_text(mgr: Any, game_state: dict[str, Any]) -> str:
+        """The same grounded block the autopilot uses: ROLE + this turn + facts, then the plan.
+
+        Board facts (clocks, race, lethal flags) are recomputed from this
+        advice's snapshot by board_assessment; managers without
+        ``strategy_block`` fall back to the plain plan text.
+        """
+        block = getattr(mgr, "strategy_block", None)
+        if callable(block):
+            try:
+                text = block(game_state)
+                if isinstance(text, str):
+                    return text
+            except Exception as e:
+                logger.debug(f"Grounded plan block failed (using plan text): {e}")
+        return mgr.plan_text() or ""
+
+    @staticmethod
     def _plan_framing_instruction(plan_block: str, *, our_turn: bool, plan_changed: bool) -> str:
         """Return the GAME PLAN prompt suffix, gated by when to recite it aloud.
 
@@ -3624,7 +3642,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 )
                 self._last_advised_plan_intro = intro_after
                 dynamic_context += self._plan_framing_instruction(
-                    mgr.plan_text() or "", our_turn=our_turn, plan_changed=plan_changed
+                    self._grounded_plan_text(mgr, game_state), our_turn=our_turn, plan_changed=plan_changed
                 )
         except Exception as e:
             logger.debug(f"Game-plan injection failed (non-fatal): {e}")

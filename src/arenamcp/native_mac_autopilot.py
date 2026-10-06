@@ -383,6 +383,21 @@ class NativeMacAutopilot:
         self._plan_cache = (signature, action)
         return action
 
+    def _grounded_plan_text(self, state: dict[str, Any]) -> str:
+        """ROLE + this turn + board facts for ``state``, then the game plan."""
+        mgr = self._game_plan_mgr
+        if mgr is None:
+            return ""
+        block = getattr(mgr, "strategy_block", None)
+        if callable(block):
+            try:
+                text = block(state)
+                if isinstance(text, str):
+                    return text
+            except Exception as error:
+                logger.debug("Native Mac strategy block failed: %s", error)
+        return mgr.plan_text()
+
     def _refresh_game_plan(self, state: dict[str, Any]) -> None:
         mgr = self._game_plan_mgr
         if mgr is None:
@@ -394,6 +409,10 @@ class NativeMacAutopilot:
                 mgr.seed(provider())
             if self._log_planner is not None:
                 self._log_planner.set_game_plan(mgr.plan_text())
+                source = getattr(mgr, "strategy_block", None)
+                set_source = getattr(self._log_planner, "set_game_plan_source", None)
+                if callable(source) and callable(set_source):
+                    set_source(source)
             if self._afk or self._land_only:
                 return
 
@@ -545,7 +564,7 @@ class NativeMacAutopilot:
                 strategic_context = {
                     "deck_reference": state.get("deck_reference", ""),
                     "library_summary": state.get("library_summary", ""),
-                    "game_plan": self._game_plan_mgr.plan_text() if self._game_plan_mgr else "",
+                    "game_plan": self._grounded_plan_text(state),
                 }
                 provider = getattr(self._log_planner, "_deck_strategy_fn", None)
                 if callable(provider):

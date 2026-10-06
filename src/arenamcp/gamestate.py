@@ -1170,6 +1170,15 @@ class GameState(_GameStateAnnotationsMixin):
             }
         )
 
+    def _opponent_hand_count_locked(self, opponent_seat: int | None) -> int:
+        """Opponent hand size from GRE zone membership (hidden ids included)."""
+        if not opponent_seat:
+            return 0
+        counted = self.get_zone_card_count(ZoneType.HAND, opponent_seat)
+        if counted is not None:
+            return counted
+        return len(self.get_objects_in_zone(ZoneType.HAND, opponent_seat))
+
     def _build_raw_snapshot_locked(self) -> dict:
         """Build a complete serializable snapshot from mutable state.
 
@@ -1203,9 +1212,10 @@ class GameState(_GameStateAnnotationsMixin):
             "zones": {
                 "battlefield": [obj.to_dict() for obj in self.battlefield],
                 "my_hand": [obj.to_dict() for obj in self.hand] if self.local_seat_id else [],
-                "opponent_hand_count": len(self.get_objects_in_zone(ZoneType.HAND, opponent_seat))
-                if opponent_seat
-                else 0,
+                # Zone membership, not materialized objects: the opponent's
+                # private hand cards never arrive as GameObjects, so counting
+                # objects always reported 0 (2026-10-06 FRA games).
+                "opponent_hand_count": self._opponent_hand_count_locked(opponent_seat),
                 "stack": [obj.to_dict() for obj in self.stack],
                 "graveyard": [obj.to_dict() for obj in self.graveyard],
                 "exile": [obj.to_dict() for obj in self.get_objects_in_zone(ZoneType.EXILE)],

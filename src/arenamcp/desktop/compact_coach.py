@@ -55,6 +55,25 @@ _FEED_STYLE = {
     "debug": ("muted", "caption", 400),
 }
 
+# Strategic role (board_assessment) → tone on the plan card.
+_ROLE_TONES = {
+    "aggressor": "good",
+    "race": "accent",
+    "defender": "warn",
+    "control/stabilize": "bad",
+}
+
+
+def _plan_step_text(step: dict[str, Any]) -> str:
+    """'Island + Undulating Witness' for one validated game-plan turn."""
+    parts = [str(step.get("land") or "")] + [str(c) for c in step.get("cast") or []]
+    text = " + ".join(p for p in parts if p) or "—"
+    attack = str(step.get("attack") or "").strip()
+    if attack and attack.lower() not in ("none", "no", "-"):
+        text += f", attack: {attack}"
+    return text
+
+
 _NOW_EMPTY = "Advice shows up here when you have a decision to make."
 _BUG_REPORT_LABEL = "Debug report  ·  F12"
 
@@ -271,6 +290,14 @@ class CompactCoachPanel(QWidget):
         self.turn_plan_label.setTextFormat(Qt.RichText)
         self.turn_plan_label.hide()
         now_layout.addWidget(self.turn_plan_label)
+
+        # Strategy: role (who's the beatdown), clocks, and the 3-turn plan.
+        self.game_plan_label = QLabel()
+        self.game_plan_label.setObjectName("gamePlanLabel")
+        self.game_plan_label.setWordWrap(True)
+        self.game_plan_label.setTextFormat(Qt.RichText)
+        self.game_plan_label.hide()
+        now_layout.addWidget(self.game_plan_label)
         root.addWidget(self.now_card)
 
         # Board card: sized to its content.
@@ -697,12 +724,65 @@ class CompactCoachPanel(QWidget):
 
     def _sync_now_divider(self) -> None:
         self.now_divider.setVisible(
-            not self.mcts_pill_label.isHidden() or not self.turn_plan_label.isHidden()
+            not self.mcts_pill_label.isHidden()
+            or not self.turn_plan_label.isHidden()
+            or not self.game_plan_label.isHidden()
         )
 
     def _on_game_plan_changed(self, plan: Any) -> None:
         if isinstance(plan, dict):
             self._game_plan = plan
+            self._render_game_plan()
+
+    def _render_game_plan(self) -> None:
+        """Role + clocks + the next three of our turns, from the game_plan event."""
+        plan = self._game_plan if isinstance(self._game_plan, dict) else {}
+        facts = plan.get("facts") if isinstance(plan.get("facts"), dict) else {}
+        role = str(facts.get("role") or plan.get("role") or "")
+        steps = [s for s in plan.get("turn_plan") or [] if isinstance(s, dict)]
+        if not role and not steps:
+            self.game_plan_label.hide()
+            self._sync_now_divider()
+            return
+
+        def label(text: str) -> str:
+            return span(text, "muted", weight=700) + "&nbsp;&nbsp;"
+
+        lines = []
+        if role:
+            head = label("Role") + span(role.upper(), _ROLE_TONES.get(role, "accent"), weight=700)
+            reason = str(facts.get("role_reason") or plan.get("role_reason") or "")
+            if reason:
+                head += "&nbsp;" + span(f"— {reason}", "muted")
+            lines.append(block(head, size="caption"))
+        if facts:
+            theirs, ours = facts.get("their_clock"), facts.get("our_clock")
+            bits = [
+                f"they kill you in {theirs}" if theirs else "no clock on you",
+                f"you kill them in {ours}" if ours else "no clock on them",
+            ]
+            if facts.get("race"):
+                bits.append(f"race {facts['race']}")
+            lines.append(block(label("Clocks") + span(" · ".join(bits)), size="caption"))
+            flags = [str(f) for f in facts.get("flags") or [] if f]
+            if flags:
+                lines.append(block(span(" · ".join(flags[:2]), "bad", weight=600), size="caption"))
+        if steps:
+            turns = [f"T{s.get('turn')} {_plan_step_text(s)}" for s in steps[:3]]
+        else:
+            turns = [
+                f"T{s.get('turn')} {' + '.join(s.get('casts') or []) or '—'}"
+                for s in facts.get("lookahead") or []
+                if isinstance(s, dict)
+            ][:3]
+        if turns:
+            lines.append(block(label("Next 3") + span(" → ".join(turns)), size="caption"))
+        wins = [str(w) for w in plan.get("win_conditions") or [] if w]
+        if wins:
+            lines.append(block(label("Win") + span(wins[0], "muted"), size="caption"))
+        self.game_plan_label.setText("".join(lines))
+        self.game_plan_label.show()
+        self._sync_now_divider()
 
     def _on_status_changed(self, key: str, val: str) -> None:
         self._dot_values[key] = val
@@ -1048,6 +1128,7 @@ class CompactCoachPanel(QWidget):
         self._render_board(self._last_state)
         self._render_tactical_line()
         self._render_turn_plan()
+        self._render_game_plan()
         self._render_now()
         self._render_feed()
 

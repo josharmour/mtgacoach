@@ -270,16 +270,21 @@ class AutopilotEngine(
         """Currently active action plan."""
         return self._current_plan
 
-    def _announce_game_plan(self) -> None:
+    def _announce_game_plan(self, game_state: dict[str, Any] | None = None) -> None:
         """Show background strategy separately from submitted-action speech."""
         if self._game_plan_mgr is None:
             return
-        # Structured plan → UI strategy card. Independent of TTS wiring and
-        # deduped on payload so the card only repaints when the plan changes.
+        # Structured plan + current board facts (role, clocks, lookahead) →
+        # UI strategy card. Independent of TTS wiring and deduped on payload
+        # so the card only repaints when the plan or the facts change.
         if self._ui_game_plan_fn is not None:
             try:
-                plan = self._game_plan_mgr.current
-                payload = dict(plan.as_payload(), source="autopilot") if plan else {}
+                payload_fn = getattr(self._game_plan_mgr, "ui_payload", None)
+                payload = payload_fn(game_state) if callable(payload_fn) else None
+                if not isinstance(payload, dict):
+                    plan = self._game_plan_mgr.current
+                    payload = dict(plan.as_payload()) if plan else {}
+                payload = dict(payload, source="autopilot") if payload else {}
                 if payload != self._last_emitted_game_plan:
                     self._last_emitted_game_plan = payload
                     self._ui_game_plan_fn(payload)
@@ -297,13 +302,19 @@ class AutopilotEngine(
             if callable(provider):
                 mgr.seed(provider())
             self._planner.set_game_plan(mgr.plan_text())
-            self._announce_game_plan()
+            # Each prompt re-renders ROLE + this turn + facts from its own
+            # snapshot (board_assessment), then this plan.
+            source = getattr(mgr, "strategy_block", None)
+            set_source = getattr(self._planner, "set_game_plan_source", None)
+            if callable(source) and callable(set_source):
+                set_source(source)
+            self._announce_game_plan(game_state)
             if self._config.afk_mode or self._config.land_drop_mode:
                 return
 
             def updated() -> None:
                 self._planner.set_game_plan(mgr.plan_text())
-                self._announce_game_plan()
+                self._announce_game_plan(game_state)
 
             mgr.request_reform(game_state, on_updated=updated)
         except Exception as error:

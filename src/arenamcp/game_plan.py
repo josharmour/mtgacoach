@@ -14,17 +14,29 @@ using the existing plan and current state while it refreshes.
 
 The autopilot and coach can share one :class:`GamePlanManager`, preserving the
 same strategy across modes without competing background model requests.
+
+Grounding (2026-10-06): plans used to be free-form ("Empty-library Fblthp win"
+with 25 cards in the library, "ramp via Murmuring Volume" while dying). Every
+plan is now formed from :mod:`arenamcp.board_assessment` facts (clocks, race,
+role, lethal flags, mana budget per turn), must name a role and a mana-legal
+T/T+1/T+2 turn plan, and is validated against those facts before use:
+unrealistic win conditions are dropped, a role that contradicts a lethal or
+dead-in-two assessment is replaced, and unaffordable or not-in-hand casts are
+trimmed. Per-decision prompts lead with the freshly recomputed ROLE, this
+turn's step and the facts (:meth:`GamePlanManager.strategy_block`).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
@@ -35,21 +47,31 @@ logger = logging.getLogger(__name__)
 # Strong, compact instruction. The model returns STRICT JSON so we can render a
 # stable prompt block for the planner and a one-line intro for spoken advice.
 GAME_PLAN_PROMPT = """You are a Magic: The Gathering strategic planner forming a PERSISTENT GAME PLAN.
-Given the current board, hand, mana, life totals and Oracle-grounded deck playbook, decide HOW THIS GAME IS WON and the concrete path to get there.
+Given the current board, hand, mana, life totals, the deterministic BOARD FACTS and the Oracle-grounded deck playbook, decide WHO IS THE BEATDOWN, how this game is won, and what to do on each of our next three turns, like a strong human player looking 2-3 turns ahead.
 
-Think a few turns ahead, not just this decision. Pick the realistic win condition for THIS board, then the steps to reach it, the biggest thing that can stop you, and the single most important thing to develop next.
-Each turn's planned play MUST be mana-legal. Do NOT list multiple spells for a single turn unless their COMBINED mana cost is <= total available mana for that turn.
+BOARD FACTS are computed from the live board (clocks through best blocks, race, lethal flags, mana budget per turn). Treat them as hard facts:
+- ROLE must equal the ASSESSED ROLE unless role_reason names a concrete board fact the assessment missed. If the facts say OPPONENT HAS LETHAL ON BOARD or DEAD IN 2, the role is defender or control/stabilize unless we have lethal first.
+- The turn plan covers T (this turn if it is ours, else our next turn), T+1 and T+2 (our following turns). Each turn's "cast" list may name ONLY cards in our hand now (or castable from our graveyard), each card at most once, and their combined mana value must fit that turn's MANA BUDGET with the colours available. A card we hope to draw goes in "hold" as "if drawn: <name>", never in "cast".
+- As defender/control, prioritise creatures that block and removal on attackers over card draw, mana rocks or cycling until the clock is under control. As aggressor, maximise damage; spend removal on blockers.
+- Win conditions must be realistic for the CURRENT state: no empty-library/alternate wins while the library is large, and no combo whose pieces are not in hand or on the battlefield (label a needed draw explicitly).
 Use the complete deck and remaining library to identify realistic engines, outs and backup plans; cards in the library are possibilities, not cards in hand or guaranteed draws. Preserve the prior plan when still sound, and adapt when its assumptions change.
 Removal and tutoring are conditional decisions: compare the current threat, timing, mana and opportunity cost. Hold interaction when that protects the winning line; remove a threat when it prevents loss or unlocks progress. A tutor should find the currently useful legal card still in the library, with a feasible follow-up, rather than repeat an old preferred target.
-
-Use the playbook's conditional decision rules, not just its archetype or finishers. Identify which mechanisms are currently available, which resources must survive, which may be spent/recovered, and assumptions that would invalidate this line. Evaluate commander deployment/recovery from its actual rules and current tax. Do not treat a desirable library card as an available plan.
+Use the playbook's conditional decision rules, not just its archetype or finishers. Evaluate commander deployment/recovery from its actual rules and current tax. Do not treat a desirable library card as an available plan.
 
 Respond with ONLY a JSON object, no prose, no markdown:
 {
-  "win_conditions": ["primary win con (<=8 words)", "optional backup win con"],
-  "path": "concrete path to the primary win con in turn shorthand (<=25 words), e.g. 'race for lethal ~T6 with creatures + auras, attack every turn'",
+  "role": "aggressor | defender | race | control/stabilize",
+  "role_reason": "<=20 words; required when role differs from the assessed role",
+  "turns": [
+    {"turn": "T", "land": "land from hand to play or ''", "cast": ["exact card names from hand"], "attack": "who attacks, or 'none'", "hold": "mana/cards held back and why, or ''"},
+    {"turn": "T+1", "land": "", "cast": [], "attack": "", "hold": ""},
+    {"turn": "T+2", "land": "", "cast": [], "attack": "", "hold": ""}
+  ],
+  "win_conditions": ["primary win con realistic now (<=8 words)", "optional backup"],
+  "path": "concrete path to the primary win con in turn shorthand (<=25 words)",
   "threat": "the opponent's biggest threat / what beats us (<=15 words)",
-  "develop_next": "the single most important thing to develop or set up next (<=12 words)",
+  "develop_next": "the single most important thing to develop next (<=12 words)",
+  "switch_if": ["board change that flips the role or plan, e.g. 'they lose their flyer -> attack'"],
   "active_mechanisms": ["relevant deck playbook mechanism ID and current applicability"],
   "resource_priorities": ["what to preserve versus spend/recover, with a reason"],
   "assumptions": ["mana, timing, survival or availability condition to recheck"]
@@ -69,19 +91,41 @@ class GamePlan:
     active_mechanisms: list[str] = field(default_factory=list)
     resource_priorities: list[str] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
+    # Grounded fields (board_assessment): role, the validated T/T+1/T+2 steps
+    # (absolute turn numbers), when to switch, and what validation repaired.
+    role: str = ""
+    role_reason: str = ""
+    turn_plan: list[dict] = field(default_factory=list)
+    switch_if: list[str] = field(default_factory=list)
+    issues: list[str] = field(default_factory=list)
+    facts: dict = field(default_factory=dict)
 
     def is_empty(self) -> bool:
-        return not (self.win_conditions or self.path or self.develop_next)
+        return not (self.win_conditions or self.path or self.develop_next or self.turn_plan)
 
-    def as_planner_block(self) -> str:
-        """Multi-line block injected into the ActionPlanner per-decision prompt."""
+    def step_for(self, turn: int) -> dict | None:
+        return next((step for step in self.turn_plan if step.get("turn") == turn), None)
+
+    def as_planner_block(self, *, with_role_and_turns: bool = True) -> str:
+        """Multi-line block injected into the ActionPlanner per-decision prompt.
+
+        ``with_role_and_turns=False`` omits the role and turn-plan lines when
+        :func:`compose_strategy_block` has already rendered them up front.
+        """
         wins = "; ".join(w for w in self.win_conditions if w) or "(undetermined)"
-        lines = [
-            f"\nGAME PLAN (formed turn {self.turn_formed} — your strategic spine for this game):",
-            f"  Win condition(s): {wins}",
-        ]
+        lines = [f"\nGAME PLAN (formed turn {self.turn_formed} — your strategic spine for this game):"]
+        if self.role and with_role_and_turns:
+            reason = f" — {self.role_reason}" if self.role_reason else ""
+            lines.append(f"  Role: {self.role.upper()}{reason}")
+        if self.turn_plan and with_role_and_turns:
+            lines.append(
+                "  Turn plan: " + " | ".join(f"T{step['turn']}: {step_text(step)}" for step in self.turn_plan)
+            )
+        lines.append(f"  Win condition(s): {wins}")
         if self.path:
             lines.append(f"  Path to win: {self.path}")
+        if self.switch_if:
+            lines.append("  Switch if: " + "; ".join(self.switch_if))
         if self.threat:
             lines.append(f"  Biggest threat: {self.threat}")
         if self.develop_next:
@@ -121,7 +165,387 @@ class GamePlan:
             "active_mechanisms": self.active_mechanisms,
             "resource_priorities": self.resource_priorities,
             "assumptions": self.assumptions,
+            "role": self.role,
+            "role_reason": self.role_reason,
+            "turn_plan": [dict(step) for step in self.turn_plan],
+            "switch_if": list(self.switch_if),
+            "issues": list(self.issues),
         }
+
+
+def step_text(step: dict) -> str:
+    """'play Island; cast Undulating Witness; attack: none; hold: UU for Countersculpt'."""
+    bits = []
+    if step.get("land"):
+        bits.append(f"play {step['land']}")
+    casts = [c for c in step.get("cast") or [] if c]
+    bits.append("cast " + " + ".join(casts) if casts else "no cast")
+    attack = str(step.get("attack") or "").strip()
+    if attack:
+        bits.append(f"attack: {attack}")
+    hold = str(step.get("hold") or "").strip()
+    if hold:
+        bits.append(f"hold: {hold}")
+    return "; ".join(bits)
+
+
+# --- validation against board facts -------------------------------------------
+
+# Our-library alternate wins ("win when the trigger resolves with an empty
+# library", "mill-out", "draw out the deck"). Opponent-library mill is a
+# different plan and is not rejected here.
+_LIBRARY_WIN = re.compile(
+    r"empty[- ]library|library (?:is |to |at )?(?:zero|0|empty)|\bmill[- ]?out\b|library[- ]out"
+    r"|deck(?:s|ing)? (?:my|our)sel(?:f|ves)|draw (?:out )?(?:our|my) (?:whole |entire )?(?:deck|library)"
+    r"|(?:my|our) library (?:runs|is) out|deplet\w* (?:our |my |the )?library|empty (?:our|my|the) library"
+    r"|mill (?:ourselves|myself|our library|my library)",
+    re.IGNORECASE,
+)
+_OPPONENT_LIBRARY = re.compile(
+    r"\b(?:opponent|opp|their)(?:'s)? (?:library|deck)\b|\bmill (?:the )?(?:opponent|them)\b", re.I
+)
+_DRAW_LABEL = re.compile(
+    r"\bif drawn\b|\bdraw(?:s|ing)? into\b|\bdrawn\b|\btop-?deck|\bdig\b|\bfind\b|\btutor|\bsearch|\bredraw",
+    re.I,
+)
+# A library this small can realistically run out within the plan's horizon.
+_SMALL_LIBRARY = 5
+
+
+def _plain(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+def _card_names(cards: list) -> dict[str, dict]:
+    """Lookup of a card by full name and by the part before a comma."""
+    names: dict[str, dict] = {}
+    for card in cards or []:
+        if not isinstance(card, dict) or not card.get("name"):
+            continue
+        full = _plain(card["name"])
+        names.setdefault(full, card)
+        short = _plain(str(card["name"]).split(",")[0])
+        if len(short) >= 4:
+            names.setdefault(short, card)
+    return names
+
+
+def _mentions(text: str, name: str) -> bool:
+    return bool(name) and re.search(rf"(?:^| ){re.escape(name)}(?: |$)", _plain(text)) is not None
+
+
+def _library_only_names(state: dict) -> set[str]:
+    """Our deck cards not visible in hand/battlefield/graveyard/exile/stack (so in the library)."""
+    catalog = state.get("deck_catalog") if isinstance(state.get("deck_catalog"), dict) else {}
+    local = state.get("local_seat_id") or next(
+        (p.get("seat_id") for p in state.get("players") or [] if isinstance(p, dict) and p.get("is_local")),
+        None,
+    )
+    visible = set()
+    for zone in ("hand", "battlefield", "graveyard", "exile", "stack", "command"):
+        for card in state.get(zone) or []:
+            if isinstance(card, dict) and card.get("owner_seat_id", local) == local and card.get("name"):
+                visible.add(_plain(card["name"]))
+                visible.add(_plain(str(card["name"]).split(",")[0]))
+    names = set()
+    for info in catalog.values():
+        name = info.get("name") if isinstance(info, dict) else None
+        if not name or "land" in str(info.get("type_line") or "").lower():
+            continue
+        full, short = _plain(name), _plain(str(name).split(",")[0])
+        if full not in visible and short not in visible:
+            names.add(full)
+            if len(short) >= 4:
+                names.add(short)
+    return names
+
+
+def _flashback_cost(card: dict) -> str | None:
+    text = str(card.get("oracle_text") or "")
+    match = re.search(r"flashback\s*[\u2014\-—:]?\s*((?:\{[^}]*\})+)", text, re.I)
+    return match.group(1) if match else None
+
+
+def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
+    """Repair ``plan`` in place against the board facts; record what changed in ``plan.issues``.
+
+    * role: unknown roles take the assessed role; aggressor is rejected while
+      the opponent has lethal / we are dead in two (unless we have lethal);
+      lethal-now forces aggressor; any other disagreement needs a reason.
+    * win conditions: our-library alternate wins are dropped while the library
+      has more than a handful of cards; wins naming a card that is still in the
+      library are dropped unless labelled as a draw. If none survive, a
+      grounded win condition from the assessment replaces them.
+    * turn plan: casts must be in hand (or flashback-able from our graveyard),
+      used once, and fit that turn's mana budget and colours; a library card is
+      moved to "hold: if drawn: X"; the most expensive excess is trimmed.
+    """
+    from arenamcp.board_assessment import ROLE_AGGRESSOR, ROLE_CONTROL, ROLE_DEFENDER, ROLES
+
+    issues: list[str] = []
+    if assessment is None:
+        if plan.turn_plan:
+            issues.append("turn plan dropped: no board facts to check it against")
+        plan.turn_plan = []
+        plan.issues = issues
+        return plan
+
+    # --- role -----------------------------------------------------------------
+    role = (plan.role or "").strip().lower()
+    aliases = {
+        "control": ROLE_CONTROL,
+        "stabilize": ROLE_CONTROL,
+        "beatdown": ROLE_AGGRESSOR,
+        "defense": ROLE_DEFENDER,
+    }
+    role = aliases.get(role, role)
+    in_danger = (
+        assessment.opp_lethal_on_board
+        or (assessment.dead_in is not None and assessment.dead_in <= 2)
+        or (
+            assessment.race == "behind" and assessment.their_clock is not None and assessment.their_clock <= 2
+        )
+    )
+    if role not in ROLES:
+        if role:
+            issues.append(f"role '{plan.role}' is not a known role; using the assessed {assessment.role}")
+        role = assessment.role
+    elif assessment.lethal_now and role != ROLE_AGGRESSOR:
+        issues.append(f"role {role} rejected: we have lethal on board now")
+        role = ROLE_AGGRESSOR
+    elif in_danger and role == ROLE_AGGRESSOR and not assessment.lethal_next_turn:
+        issues.append(f"role aggressor rejected: {'; '.join(assessment.flags) or assessment.role_reason}")
+        role = assessment.role
+    elif role != assessment.role and len((plan.role_reason or "").split()) < 3:
+        issues.append(f"role {role} differs from the assessed {assessment.role} without a concrete reason")
+        role = assessment.role
+    if role == assessment.role and not plan.role_reason:
+        plan.role_reason = assessment.role_reason
+    plan.role = role
+
+    # --- win conditions -------------------------------------------------------
+    library = assessment.library_count
+    library_only = _library_only_names(state)
+    kept: list[str] = []
+    for win in plan.win_conditions:
+        if _LIBRARY_WIN.search(win) and not _OPPONENT_LIBRARY.search(win):
+            if library is not None and library > _SMALL_LIBRARY:
+                issues.append(f"win condition '{win}' rejected: our library still has {library} cards")
+                continue
+        needed = sorted(name for name in library_only if _mentions(win, name))
+        if needed and not _DRAW_LABEL.search(win):
+            issues.append(f"win condition '{win}' rejected: needs {', '.join(needed)} (still in the library)")
+            continue
+        kept.append(win)
+    if not kept:
+        kept = [_grounded_win(assessment, state)]
+        issues.append(f"win condition replaced from board facts: {kept[0]}")
+    plan.win_conditions = kept[:2]
+    if plan.path and _LIBRARY_WIN.search(plan.path) and library is not None and library > _SMALL_LIBRARY:
+        issues.append(f"path rejected (library-out plan with {library} cards left): {plan.path}")
+        plan.path = ""
+
+    # --- turn plan ------------------------------------------------------------
+    plan.turn_plan = _validate_turns(plan.turn_plan, assessment, state, issues)
+    plan.issues = issues
+    return plan
+
+
+def _grounded_win(assessment: Any, state: dict) -> str:
+    from arenamcp.board_assessment import ROLE_AGGRESSOR, ROLE_RACE
+
+    local = state.get("local_seat_id") or next(
+        (p.get("seat_id") for p in state.get("players") or [] if isinstance(p, dict) and p.get("is_local")),
+        None,
+    )
+    ours = sorted(
+        (
+            c
+            for c in state.get("battlefield") or []
+            if isinstance(c, dict)
+            and (c.get("controller_seat_id") or c.get("owner_seat_id")) == local
+            and "creature" in f"{c.get('type_line') or ''} {c.get('card_types') or ''}".lower()
+        ),
+        key=lambda c: -(c.get("power") or 0),
+    )
+    if assessment.role in (ROLE_AGGRESSOR, ROLE_RACE) and ours:
+        names = " + ".join(str(c.get("name")) for c in ours[:2])
+        return f"Combat damage with {names} (our clock {assessment.our_clock or '—'})"
+    deploy = next((step.casts for step in assessment.lookahead if step.casts), [])
+    if deploy:
+        return f"Stabilize behind {deploy[0]}, then win with our biggest creatures"
+    return "Stabilize the board, then win with creature damage"
+
+
+def _turn_index(value: Any, k: int) -> int:
+    text = str(value or "").strip().upper().replace(" ", "")
+    if text in ("T", "T+0"):
+        return 0
+    match = re.fullmatch(r"T\+(\d)", text)
+    return int(match.group(1)) if match else k
+
+
+def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[str]) -> list[dict]:
+    from arenamcp.board_assessment import NON_BOARD_ROLES, card_role
+    from arenamcp.mulligan_policy import _pip_matching, hand_card
+
+    hand = [c for c in state.get("hand") or [] if isinstance(c, dict)]
+    hand_names = _card_names(hand)
+    local = state.get("local_seat_id") or next(
+        (p.get("seat_id") for p in state.get("players") or [] if isinstance(p, dict) and p.get("is_local")),
+        None,
+    )
+    graveyard = [
+        c
+        for c in state.get("graveyard") or []
+        if isinstance(c, dict) and c.get("owner_seat_id", local) == local and _flashback_cost(c)
+    ]
+    grave_names = _card_names(graveyard)
+    library_only = _library_only_names(state)
+    used: set[int] = set()
+    rocks: list[SimpleNamespace] = []
+    steps: list[dict] = []
+    for k, raw in enumerate(raw_turns[:3]):
+        if not isinstance(raw, dict):
+            continue
+        index = min(_turn_index(raw.get("turn"), k), len(assessment.lookahead) - 1)
+        if index < 0 or index >= len(assessment.lookahead):
+            continue
+        budget = assessment.lookahead[index]
+        label = budget.label
+        sources = [SimpleNamespace(produces=frozenset(colors)) for colors in budget.source_colors] + list(
+            rocks
+        )
+        casts_raw = raw.get("cast") or []
+        if isinstance(casts_raw, str):
+            casts_raw = [part.strip() for part in re.split(r",|\+| and ", casts_raw) if part.strip()]
+        holds = [str(raw.get("hold") or "").strip()] if str(raw.get("hold") or "").strip() else []
+        chosen: list[tuple[str, int, tuple, dict]] = []
+        for name in casts_raw:
+            key = _plain(name)
+            card = hand_names.get(key) or hand_names.get(_plain(str(name).split(",")[0]))
+            cost_text = None
+            if card is None:
+                card = grave_names.get(key) or grave_names.get(_plain(str(name).split(",")[0]))
+                cost_text = _flashback_cost(card) if card else None
+            if card is None:
+                if key in library_only or _plain(str(name).split(",")[0]) in library_only:
+                    holds.append(f"if drawn: {name}")
+                    issues.append(f"{label}: {name} is not in hand (library) — kept only as 'if drawn'")
+                else:
+                    issues.append(f"{label}: dropped {name} (not in hand or castable from the graveyard)")
+                continue
+            identity = id(card)
+            if identity in used:
+                issues.append(f"{label}: dropped {card.get('name')} (already cast earlier in the plan)")
+                continue
+            info = hand_card(dict(card, mana_cost=cost_text or card.get("mana_cost") or ""))
+            chosen.append((str(card.get("name")), info.mana_value, info.pips, card))
+        # Trim until the turn is mana-legal: when defending, card draw / rocks /
+        # selection go first; otherwise (and then) the most expensive cast.
+        survival = bool(getattr(assessment, "survival_mode", False))
+        colors = "".join(sorted(set("".join(budget.source_colors)) - {"C"}))
+        dropped = False
+        while chosen:
+            total = sum(c[1] for c in chosen)
+            pips = tuple(p for c in chosen for p in c[2])
+            if total <= len(sources) and _pip_matching(pips, sources):
+                break
+            drop = max(
+                chosen,
+                key=lambda c: (survival and card_role(c[3]) in NON_BOARD_ROLES, c[1]),
+            )
+            chosen.remove(drop)
+            dropped = True
+            issues.append(
+                f"{label}: dropped {drop[0]} — not mana-legal (plan needs {total} mana, "
+                f"budget {len(sources)}{f' {colors}' if colors else ''})"
+            )
+        if dropped and not chosen:
+            # Trimming emptied the turn: use the board-math deployment instead
+            # when it is still unused and affordable after this plan's earlier turns.
+            fill = []
+            for name in budget.casts:
+                card = hand_names.get(_plain(name))
+                if card is not None and id(card) not in used:
+                    info = hand_card(card)
+                    fill.append((str(card.get("name")), info.mana_value, info.pips, card))
+            total = sum(c[1] for c in fill)
+            if (
+                fill
+                and total <= len(sources)
+                and _pip_matching(tuple(p for c in fill for p in c[2]), sources)
+            ):
+                chosen = fill
+                holds.append("board-math deployment")
+                issues.append(
+                    f"{label}: filled with the board-math deployment: {', '.join(c[0] for c in fill)}"
+                )
+        for name, _mv, _pips, card in chosen:
+            used.add(id(card))
+            text = str(card.get("oracle_text") or "").lower()
+            type_line = str(card.get("type_line") or "").lower()
+            if "creature" not in type_line and re.search(r"\{o?t\}[^:]*:\s*add\b", text):
+                rocks.append(SimpleNamespace(produces=frozenset("WUBRGC")))
+        land = str(raw.get("land") or "").strip()
+        if land and _plain(land) not in hand_names:
+            if index == 0:
+                issues.append(f"{label}: land {land} is not in hand")
+            land = ""
+        steps.append(
+            {
+                "turn": budget.turn,
+                "label": label,
+                "land": land,
+                "cast": [c[0] for c in chosen],
+                "attack": str(raw.get("attack") or "").strip()[:80],
+                "hold": "; ".join(holds)[:120],
+                "mana": len(sources),
+            }
+        )
+    return steps
+
+
+def compose_strategy_block(assessment: Any, plan: GamePlan | None) -> str:
+    """ROLE + this turn + facts (fresh) followed by the game plan's spine.
+
+    The assessment is recomputed from the decision's own snapshot, so the role,
+    clocks and lethal flags are current even when the plan was formed earlier
+    in the turn. A validated plan step for this turn replaces the board-math
+    deployment suggestion.
+    """
+    if assessment is None:
+        return plan.as_planner_block().strip() if plan else ""
+    this_turn = next_turns = None
+    role_note = ""
+    if plan is not None and not plan.is_empty():
+        step = plan.step_for(assessment.plan_turn)
+        if step is not None:
+            this_turn = f"{step_text(step)} [game plan T{plan.turn_formed}]"
+        later = [s for s in plan.turn_plan if s.get("turn", 0) > assessment.plan_turn]
+        if later:
+            next_turns = " | ".join(f"T{s['turn']}: {step_text(s)}" for s in later)
+        if plan.role and plan.role != assessment.role:
+            role_note = (
+                f" [game plan (turn {plan.turn_formed}) said {plan.role.upper()}; "
+                "these board facts are newer — follow them]"
+            )
+    block = assessment.prompt_block(this_turn=this_turn, next_turns=next_turns, role_note=role_note)
+    if plan is not None and not plan.is_empty():
+        block += "\n" + plan.as_planner_block(with_role_and_turns=False)
+    return block
+
+
+def grounded_facts_block(game_state: dict | None) -> str:
+    """Fresh board facts (no game plan) for prompts without a plan manager."""
+    try:
+        from arenamcp.board_assessment import assess
+
+        assessment = assess(game_state) if isinstance(game_state, dict) else None
+    except Exception as error:  # never break a prompt on the strategic layer
+        logger.debug("board assessment unavailable: %s", error)
+        return ""
+    return assessment.prompt_block() if assessment else ""
 
 
 def _round(x: Any, default: int = 0) -> int:
@@ -155,9 +579,15 @@ class GamePlanManager:
     # Dread" for five turns while the executor never landed it).
     _STALL_REFORM_THRESHOLD = 3
 
-    def __init__(self, backend: Any, timeout: float = 10.0):
+    # The strategic call runs in the background once per turn, so it gets a
+    # larger reasoning/time budget than per-decision calls (12 s, 2048 tokens,
+    # low reasoning effort): full thinking, 6000 tokens, 45 s.
+    _PLAN_MAX_TOKENS = 6000
+    _PLAN_TIMEOUT_S = 45.0
+
+    def __init__(self, backend: Any, timeout: float | None = None):
         self._backend = backend
-        self._timeout = timeout
+        self._timeout = self._PLAN_TIMEOUT_S if timeout is None else timeout
         self._plan: GamePlan | None = None
         self._seed: str | None = None  # deck archetype summary, if available
         self._last_sig: tuple | None = None
@@ -266,6 +696,39 @@ class GamePlanManager:
         plan = self._plan
         return plan.as_coach_intro() if plan else ""
 
+    def strategy_block(self, game_state: dict[str, Any] | None) -> str:
+        """Fresh ROLE + this turn + facts for ``game_state``, then the plan spine."""
+        from arenamcp.board_assessment import assess
+
+        plan = self._plan
+        assessment = assess(game_state) if isinstance(game_state, dict) else None
+        return compose_strategy_block(assessment, plan)
+
+    def ui_payload(self, game_state: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Plan payload for the desktop plan card, with current board facts.
+
+        Facts (role, clocks, flags, board-math lookahead) are recomputed from
+        ``game_state`` so the card shows "behind on board" before the first
+        model plan arrives; ``{}`` when there is neither a plan nor a board.
+        """
+        payload: dict[str, Any] = dict(self._plan.as_payload()) if self._plan else {}
+        if isinstance(game_state, dict):
+            try:
+                from arenamcp.board_assessment import assess
+
+                assessment = assess(game_state)
+            except Exception as error:
+                logger.debug("game-plan facts unavailable: %s", error)
+                assessment = None
+            if assessment is not None:
+                payload["facts"] = assessment.as_payload()
+                payload.setdefault("role", assessment.role)
+                if not payload.get("role"):
+                    payload["role"] = assessment.role
+                if not payload.get("role_reason"):
+                    payload["role_reason"] = assessment.role_reason
+        return payload
+
     # ----- reform decision -------------------------------------------------
     def request_reform(
         self,
@@ -291,7 +754,10 @@ class GamePlanManager:
             if self._last_attempt_at is not None and now - self._last_attempt_at < self._REFRESH_INTERVAL_S:
                 return False
             sig = self._signature(game_state)
-            if self._stall_count < self._STALL_REFORM_THRESHOLD and not self._should_reform(sig):
+            our_turn = self._our_turn(game_state)
+            if self._stall_count < self._STALL_REFORM_THRESHOLD and not self._should_reform(
+                sig, our_turn=our_turn
+            ):
                 return False
             snapshot = deepcopy(game_state)
             generation = self._generation
@@ -348,7 +814,7 @@ class GamePlanManager:
                 self.observe(game_state)
             generation = self._generation
             stalled = self._stall_count >= self._STALL_REFORM_THRESHOLD
-            if not (force or stalled or self._should_reform(sig)):
+            if not (force or stalled or self._should_reform(sig, our_turn=self._our_turn(game_state))):
                 return self._plan
             seed = self._seed
             stall_count = self._stall_count
@@ -367,13 +833,16 @@ class GamePlanManager:
                 self._stall_hint = ""
             return self._plan
 
-    def _should_reform(self, sig: tuple) -> bool:
+    def _should_reform(self, sig: tuple, *, our_turn: bool = False) -> bool:
         if self._plan is None or self._last_sig is None:
             return True
         if self._seed != self._last_seed:
             return True
         turn_num = sig[0]
         if turn_num - self._last_reform_turn >= self._STALE_TURNS:
+            return True
+        # Re-plan at the start of each of our turns: T/T+1/T+2 moved on.
+        if our_turn and turn_num > self._last_reform_turn:
             return True
         # Identity matters: a tutor changes one hand card without changing hand
         # size, and a noncreature engine can change the entire winning line.
@@ -399,6 +868,11 @@ class GamePlanManager:
             if p.get("is_local"):
                 return p.get("seat_id")
         return None
+
+    def _our_turn(self, game_state: dict[str, Any]) -> bool:
+        local = game_state.get("local_seat_id") or self._local_seat(game_state)
+        active = (game_state.get("turn") or {}).get("active_player")
+        return local is not None and active == local
 
     def _signature(self, game_state: dict[str, Any]) -> tuple:
         """Compact tuple capturing the strategically-material board state."""
@@ -508,11 +982,28 @@ class GamePlanManager:
         )
 
     def _reform(self, game_state: dict[str, Any], turn_num: int) -> GamePlan | None:
+        from arenamcp.board_assessment import assess
         from arenamcp.match_context import prepare_match_context, with_deck_reference
 
         game_state = prepare_match_context(game_state)
         context = self._build_context(game_state)
+        assessment = assess(game_state)
         user_parts = [context]
+        if assessment is not None:
+            logger.info(
+                "Board facts (turn %d, %.1fms): %s | %s",
+                turn_num,
+                assessment.elapsed_ms,
+                assessment.headline(),
+                assessment.facts_line(),
+            )
+            when = "this turn" if assessment.our_turn else "our next turn"
+            user_parts.append(
+                "\nBOARD FACTS (deterministic; recomputed from the live board — treat as hard facts):\n"
+                + assessment.planning_block()
+                + f"\nT = turn {assessment.plan_turn} ({when}); T+1 = turn {assessment.plan_turn + 2}; "
+                f"T+2 = turn {assessment.plan_turn + 4}. ASSESSED ROLE: {assessment.role}."
+            )
         if self._seed:
             user_parts.append(f"\nDECK PLAYBOOK / STRATEGY:\n{self._seed}")
         if self._plan:
@@ -537,28 +1028,54 @@ class GamePlanManager:
         if plan is None or plan.is_empty():
             logger.debug("game-plan parse produced nothing usable")
             return None
+        try:
+            validate_plan(plan, assessment, game_state)
+        except Exception as error:  # a validator bug must not discard the plan
+            logger.warning("game-plan validation failed (plan kept unvalidated): %s", error)
+        if assessment is not None:
+            plan.facts = assessment.as_payload()
+        for issue in plan.issues:
+            logger.info("GamePlan validation (turn %d): %s", turn_num, issue)
         logger.info(
-            "GamePlan (turn %d): win=%s | path=%s",
+            "GamePlan (turn %d): role=%s | win=%s | path=%s | turns=%s",
             turn_num,
+            plan.role or "?",
             plan.win_conditions,
             plan.path,
+            " | ".join(f"T{step['turn']}: {step_text(step)}" for step in plan.turn_plan) or "-",
         )
         return plan
 
     def _complete(self, system_prompt: str, user_message: str) -> str:
-        """Call the backend, tolerating the small signature differences across clients."""
+        """Call the backend, tolerating the small signature differences across clients.
+
+        Background strategy: full reasoning and a larger token/time budget than
+        the per-decision calls, which stay on low reasoning effort.
+        """
         try:
             return self._backend.complete(
                 system_prompt,
                 user_message,
-                2048,
+                self._PLAN_MAX_TOKENS,
+                temperature=0.0,
+                request_timeout_s=self._timeout,
+                background=True,
+                enable_thinking=True,
+            )
+        except TypeError:
+            pass
+        try:
+            return self._backend.complete(
+                system_prompt,
+                user_message,
+                self._PLAN_MAX_TOKENS,
                 temperature=0.0,
                 request_timeout_s=self._timeout,
             )
         except TypeError:
             # Local backends may not accept request_timeout_s / temperature.
             try:
-                return self._backend.complete(system_prompt, user_message, 2048)
+                return self._backend.complete(system_prompt, user_message, self._PLAN_MAX_TOKENS)
             except TypeError:
                 return self._backend.complete(system_prompt, user_message)
 
@@ -607,6 +1124,12 @@ class GamePlanManager:
                 else []
             )
 
+        turns = data.get("turns") or data.get("turn_plan") or []
+        if isinstance(turns, dict):
+            turns = [
+                dict(value, turn=key) if isinstance(value, dict) else {"turn": key}
+                for key, value in turns.items()
+            ]
         return GamePlan(
             win_conditions=wins,
             path=str(data.get("path", "") or "").strip(),
@@ -617,4 +1140,9 @@ class GamePlanManager:
             active_mechanisms=items("active_mechanisms"),
             resource_priorities=items("resource_priorities"),
             assumptions=items("assumptions"),
+            role=str(data.get("role", "") or "").strip().lower(),
+            role_reason=str(data.get("role_reason", "") or "").strip(),
+            # Kept raw until validate_plan maps them to absolute turns.
+            turn_plan=[t for t in turns if isinstance(t, dict)][:3] if isinstance(turns, list) else [],
+            switch_if=items("switch_if"),
         )

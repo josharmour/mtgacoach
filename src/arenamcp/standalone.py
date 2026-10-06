@@ -530,19 +530,24 @@ class StandaloneCoach(
             self._startup_connection_error = str(e)
             logger.debug(f"Startup backend health probe failed (non-fatal): {e}")
 
-    def _emit_coach_game_plan(self) -> None:
+    def _emit_coach_game_plan(self, game_state: dict | None = None) -> None:
         """Push the coach's structured game plan to the UI strategy card.
 
         Advice-mode counterpart of the autopilot's ui_game_plan_fn emission:
-        deduped on payload, never raises into the coaching loop.
+        the plan plus board facts (role, clocks, lookahead) recomputed from
+        ``game_state``; deduped on payload, never raises into the coaching loop.
         """
         ui_fn = getattr(self.ui, "game_plan", None) if self.ui else None
         if not callable(ui_fn) or self._coach is None:
             return
         try:
             mgr = getattr(self._coach, "_game_plan_mgr", None)
-            plan = getattr(mgr, "current", None) if mgr is not None else None
-            payload = dict(plan.as_payload(), source="coach") if plan is not None else {}
+            payload_fn = getattr(mgr, "ui_payload", None) if mgr is not None else None
+            payload = payload_fn(game_state) if callable(payload_fn) else None
+            if not isinstance(payload, dict):
+                plan = getattr(mgr, "current", None) if mgr is not None else None
+                payload = dict(plan.as_payload()) if plan is not None else {}
+            payload = dict(payload, source="coach") if payload else {}
             if payload != getattr(self, "_last_coach_game_plan", None):
                 self._last_coach_game_plan = payload
                 ui_fn(payload)
@@ -2768,6 +2773,7 @@ class StandaloneCoach(
                                 advice = self._coach.get_advice(
                                     curr_state, trigger=trigger, style=self.advice_style
                                 )
+                                self._emit_coach_game_plan(curr_state)
                                 if advice and advice.strip().lower().rstrip(".").startswith(
                                     "no actionable play"
                                 ):

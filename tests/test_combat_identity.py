@@ -256,3 +256,74 @@ def test_prompt_exposes_instance_ids_for_eligible_blocks():
     )
     assert f"*{HOBBIT} [id:1162]" in text
     assert "Belladonna Took [id:500]" in text
+
+
+def _void_extrapolators(**second):
+    extrapolator = {
+        "name": "Void Extrapolator",
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "type_line": "Creature — Horror",
+        "power": 3,
+        "toughness": 3,
+        "is_tapped": True,
+        "is_attacking": True,
+        "keywords": ["haste"],
+        "counters": {"unknown": 1},
+        "object_kind": "CARD",
+        "oracle_text": "This creature enters prepared.\nThreshold — This creature gets +1/+1 as long as there "
+        "are seven or more cards in your graveyard.",
+    }
+    return {
+        "local_seat_id": 1,
+        "players": [{"seat_id": 1, "is_local": True}, {"seat_id": 2, "is_local": False}],
+        "battlefield": [
+            {
+                "name": "Dark Matter Manipulator",
+                "instance_id": 322,
+                "controller_seat_id": 1,
+                "type_line": "Creature — Horror",
+                "power": 3,
+                "toughness": 2,
+            },
+            {**extrapolator, "instance_id": 299},
+            {**extrapolator, "instance_id": 286, **second},
+            {"name": "Samut, Hazoret's Champion", "instance_id": 314, "controller_seat_id": 2, "power": 3},
+            {"name": "Rampart Hunter", "instance_id": 330, "controller_seat_id": 2, "power": 6},
+        ],
+    }
+
+
+def test_blocking_one_of_two_identical_attackers_binds_instead_of_going_manual():
+    """2026-10-06 15:23:16: 'Dark Matter Manipulator blocks Void Extrapolator'.
+
+    Two identical hasty 3/3 copies attacked; the name matched both, the block
+    was rejected as ambiguous, the planner returned 0 actions and the autopilot
+    went MANUAL REQUIRED. Either copy is the same block.
+    """
+    state = _void_extrapolators()
+    blockers = [{"blockerInstanceId": 322, "attackerInstanceIds": [299, 286, 314, 330], "maxAttackers": 1}]
+    context = {"type": "declare_blockers", "raw_blockers": blockers}
+    plan = parse(
+        {
+            "action_type": "declare_blockers",
+            "blocker_assignments": {"Dark Matter Manipulator": "Void Extrapolator"},
+            "reasoning": "Trade DMM for a 3/3; damage is lethal regardless",
+        },
+        ["Block with: Dark Matter Manipulator", "Done (confirm blockers)"],
+        state,
+        context,
+    )
+    assert len(plan.actions) == 1
+    assert plan.actions[0].blocker_instance_assignments == {322: 286}
+
+
+@pytest.mark.parametrize(
+    "difference",
+    [{"object_kind": "TOKEN"}, {"power": 5}, {"counters": {}}, {"is_tapped": False}, {"power": None}],
+)
+def test_attackers_that_differ_still_require_an_instance_id(difference):
+    with pytest.raises(ValueError, match="ambiguous"):
+        resolve_combatant(
+            "Void Extrapolator", _void_extrapolators(**difference), [299, 286], local_side=False
+        )

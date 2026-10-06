@@ -110,14 +110,23 @@ def test_first_call_seeds_then_no_reform_same_turn():
     assert p2 is p1
 
 
-def test_static_board_new_turn_does_not_reform():
+def test_static_board_opponent_turn_does_not_reform_but_our_next_turn_does():
     be = FakeBackend([_plan_json(), _plan_json("plan B")])
     mgr = GamePlanManager(be)
     mgr.maybe_reform(_state(turn=1))
     assert be.calls == 1
-    # Turn advances but nothing material changed -> still 1 call.
-    mgr.maybe_reform(_state(turn=2))
+    # The opponent's turn with nothing material changed -> still 1 call.
+    opponent_turn = _state(turn=2)
+    opponent_turn["turn"]["active_player"] = 2
+    mgr.maybe_reform(opponent_turn)
     assert be.calls == 1
+    # The start of OUR next turn re-plans: T/T+1/T+2 moved on.
+    mgr.maybe_reform(_state(turn=3))
+    assert be.calls == 2
+    assert mgr.current.path == "plan B"
+    # ...once per turn, not on every decision of that turn.
+    mgr.maybe_reform(_state(turn=3))
+    assert be.calls == 2
 
 
 def test_material_change_triggers_reform():

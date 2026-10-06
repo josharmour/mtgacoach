@@ -597,7 +597,19 @@ class ActionPlanner(_ActionLegalityMixin):
         # set_game_plan(); unlike _turn_intent it survives turn changes. "" when
         # no plan has been formed yet.
         self._game_plan: str = ""
+        # Optional live renderer (GamePlanManager.strategy_block): the plan
+        # plus board facts recomputed from each decision's own snapshot.
+        self._game_plan_source: Callable[[dict], str] | None = None
         self._planned_recovery: tuple[str, int, int, int] | None = None
+
+    def set_game_plan_source(self, source: Callable[[dict], str] | None) -> None:
+        """Render the strategy block per decision from the live snapshot.
+
+        ``source(state)`` returns ROLE + this turn's plan + board facts, then
+        the game plan. Without a source the static plan text from
+        :meth:`set_game_plan` follows freshly computed board facts.
+        """
+        self._game_plan_source = source
 
     def set_game_plan(self, plan_text: str | None) -> None:
         """Set the persistent strategic GAME PLAN block injected into prompts.
@@ -610,6 +622,7 @@ class ActionPlanner(_ActionLegalityMixin):
 
     def clear_game_plan(self) -> None:
         self._game_plan = ""
+        self._game_plan_source = None
 
     def _deck_playbook(self):
         provider = getattr(self, "_deck_playbook_fn", None)
@@ -644,6 +657,27 @@ class ActionPlanner(_ActionLegalityMixin):
             for c in state.get(zone, [])
         )
 
+    def _grounded_plan_block(self, state: dict | None) -> str:
+        """ROLE + this turn + clocks/lethal facts for ``state``, then the game plan."""
+        source = getattr(self, "_game_plan_source", None)
+        if state is not None and callable(source):
+            try:
+                block = source(state)
+                if isinstance(block, str) and block.strip():
+                    return block.strip()
+            except Exception as error:  # the strategic layer never blocks a decision
+                logger.debug("game-plan source failed: %s", error)
+        parts = []
+        if state is not None:
+            from arenamcp.game_plan import grounded_facts_block
+
+            facts = grounded_facts_block(state)
+            if facts:
+                parts.append(facts)
+        if getattr(self, "_game_plan", ""):
+            parts.append(self._game_plan)
+        return "\n".join(parts)
+
     def _strategy_context(self, state: dict | None = None) -> str:
         parts = []
         playbook = self._deck_playbook()
@@ -652,8 +686,9 @@ class ActionPlanner(_ActionLegalityMixin):
             strategy = provider() if provider else None
             if strategy:
                 parts.append(f"DECK STRATEGY:\n{strategy}")
-        if getattr(self, "_game_plan", ""):
-            parts.append(self._game_plan)
+        grounded = self._grounded_plan_block(state)
+        if grounded:
+            parts.append(grounded)
         if playbook is not None and state is not None:
             # The full Oracle reference already accompanies the live state.
             # Reuse just the plan and relevant rules instead of repeating the
@@ -2746,6 +2781,8 @@ class ActionPlanner(_ActionLegalityMixin):
                     )
                     chosen = meant[:1]
                     self._last_decision_option_ids = chosen
+            if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
+                chosen = self._apply_role_guard(decision, game_state, chosen)
             if chosen and decision.min_weight is not None:
                 chosen = list(dict.fromkeys(chosen))
                 if decision.selection_is_valid(chosen):
@@ -2784,6 +2821,37 @@ class ActionPlanner(_ActionLegalityMixin):
                 return picked
             return [DECLINE_DECISION]
         return self.deterministic_option_pick(decision)
+
+    def _apply_role_guard(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> list[str]:
+        """Behind on board: replace a card-draw/rock/cycling pick with a survival play.
+
+        Deterministic and narrow (see :func:`arenamcp.board_assessment.role_guard`):
+        only in survival mode, never with lethal on board, never over a land,
+        creature, removal, counter or pass, and only when the alternative lowers
+        the projected life loss over the next two opponent attacks.
+        """
+        try:
+            from arenamcp.board_assessment import assess, role_guard
+
+            verdict = role_guard(assess(game_state), decision, chosen[0], game_state)
+        except Exception as error:
+            logger.debug("role guard skipped: %s", error)
+            return chosen
+        if verdict is None or verdict.option_id == chosen[0]:
+            return chosen
+        replaced = decision.find(chosen[0])
+        logger.warning(
+            "%s [model chose %s: %s]",
+            verdict.reason,
+            replaced.label if replaced else chosen[0],
+            (self._last_decision_reasoning or "")[:160],
+        )
+        self._last_decision_reasoning = verdict.summary or verdict.reason.removeprefix("Role guard: ")
+        self._last_decision_option_ids = [verdict.option_id]
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace["role_guard"] = {"replaced": chosen[0], "with": verdict.option_id, "reason": verdict.reason}
+        return [verdict.option_id]
 
     def _mulligans_taken(self, game_state: dict[str, Any]) -> int | None:
         """Mulligans already taken this game: the GRE count, else the ones we submitted.

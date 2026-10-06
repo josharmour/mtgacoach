@@ -91,9 +91,53 @@ def resolve_combatant(label: str, state: dict, eligible: list[int], *, local_sid
                 or "token" in str(by_id[identity].get("object_kind", "")).lower()
             )
         }
+    if len(matches) > 1 and not local_side and matches <= set(eligible):
+        # 2026-10-06 15:23:16: "block Void Extrapolator" while two identical
+        # hasty 3/3 copies attacked was rejected as ambiguous, the planner
+        # produced no block and the autopilot went MANUAL REQUIRED. Blocking
+        # either of two interchangeable attackers is the same block.
+        copies = [by_id.get(identity) for identity in matches]
+        if _interchangeable(copies, state):
+            return min(matches)
     if len(matches) != 1 or next(iter(matches)) not in eligible:
         raise ValueError(f"Combat creature {label!r} is unavailable or ambiguous; use its instance ID")
     return next(iter(matches))
+
+
+def _interchangeable(cards: list, state: dict) -> bool:
+    """Identical copies: same name, known stats, text, keywords, counters, status; nothing attached.
+
+    A token copy and the original card are not interchangeable (killing the
+    original is worth more), and unknown power/toughness never counts as equal.
+    """
+    if len(cards) < 2 or any(not isinstance(card, dict) for card in cards):
+        return False
+    identities = {card.get("instance_id") for card in cards}
+    for permanent in state.get("battlefield", []) or []:
+        if isinstance(permanent, dict) and permanent.get("attached_to_id") in identities:
+            return False
+
+    def key(card: dict):
+        power, toughness = card.get("power"), card.get("toughness")
+        if not isinstance(power, int) or not isinstance(toughness, int) or card.get("attached_with_ids"):
+            return None
+        return (
+            str(card.get("name") or "").casefold(),
+            power,
+            toughness,
+            card.get("oracle_text") or "",
+            tuple(sorted(str(k) for k in card.get("keywords") or [])),
+            tuple(sorted((str(k), str(v)) for k, v in (card.get("counters") or {}).items())),
+            bool(card.get("is_tapped")),
+            bool(card.get("is_attacking")),
+            card.get("damage") or 0,
+            str(card.get("object_kind") or ""),
+            bool(card.get("is_token")),
+            tuple(sorted(str(a) for a in card.get("granted_abilities") or [])),
+        )
+
+    keys = {key(card) for card in cards}
+    return len(keys) == 1 and None not in keys
 
 
 def blocker_id_assignments(assignments: dict[str, str], state: dict, blockers: list[dict]) -> dict[int, int]:
