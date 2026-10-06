@@ -92,7 +92,7 @@ def test_deck_explanation_uses_selected_cards_and_states_a_real_weakness():
     assert explanation.startswith("I built green, led by Green creature")
     assert "with 23 creature or token spells, 23 of them costing three or less" in explanation
     assert "curve out with early creatures" in explanation
-    assert "few permanent answers" in explanation
+    assert "only 0 removal spells for opposing bombs" in explanation
     assert "Expensive red dragon" not in explanation
     assert "GIH" not in explanation and "%" not in explanation
     assert len(explanation.split()) <= 100
@@ -102,6 +102,13 @@ def test_deck_explanation_preserves_accepted_model_strategy():
     build = validate_deck(model_build(), pool(), source="card_rules")
     explanation = deck_choice_summary(build, pool())
     assert "Its plan: Green creature pressure with a low curve, " in explanation
+
+
+def test_model_plan_about_assembling_the_deck_is_not_spoken_as_a_game_plan():
+    """2026-10-06: "Play the top-scoring pure UG build ... keep the mana base fully legal"."""
+    payload = {**model_build(), "plan": "Play the top-scoring pure UG build to keep the mana base fully legal."}
+    explanation = deck_choice_summary(validate_deck(payload, pool(), source="card_rules"), pool())
+    assert "top-scoring" not in explanation and "Its plan is to curve out" in explanation
     assert "Green creature 1" in explanation
 
 

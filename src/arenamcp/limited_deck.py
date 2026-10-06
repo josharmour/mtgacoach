@@ -578,6 +578,11 @@ def _deck_profile(build: dict, pool: list[dict]) -> dict | None:
     }
 
 
+# A model "plan" about assembling the deck is not a plan for winning games
+# (2026-10-06: "Play the top-scoring pure UG build ... keep the mana base legal").
+_BUILD_TALK = re.compile(r"\b(build|mana base|legal|splash|top-scoring|score|candidate|counted)\b", re.I)
+
+
 def _one_clause(text: str, max_words: int = 25) -> str:
     """A model plan reduced to one clause so the spoken summary stays two sentences."""
     first = re.split(r"(?<=[.!?])\s", " ".join(str(text).split()), maxsplit=1)[0]
@@ -591,8 +596,8 @@ def _concerns(profile: dict) -> list[str]:
         concerns.append(f"only {profile['bodies']} creatures")
     if profile["early_bodies"] < 5:
         concerns.append(f"only {profile['early_bodies']} creatures costing three or less")
-    if profile["removal"] < 2:
-        concerns.append("few permanent answers to opposing bombs")
+    if profile["removal"] < 3:
+        concerns.append(f"only {_count(profile['removal'], 'removal spell')} for opposing bombs")
     if profile["top_end"] >= 5:
         concerns.append(f"{profile['top_end']} cards costing five or more")
     return concerns[:2]
@@ -636,8 +641,9 @@ def deck_choice_summary(
         f"{subject}{', ' + featured if featured else ''}, with {profile['bodies']} creature or token spells, "
         f"{profile['early_bodies']} of them costing three or less, and {interaction}."
     )
-    if build.get("reasoning_source") == "card_rules" and build.get("plan"):
-        plan = _one_clause(build["plan"])
+    model_plan = _one_clause(build.get("plan") or "") if build.get("reasoning_source") == "card_rules" else ""
+    if model_plan and not _BUILD_TALK.search(model_plan):
+        plan = model_plan
     elif len(profile["evasive"]) >= 4:
         plan = "win with evasive threats while trading on the ground"
     elif profile["early_bodies"] >= 7:
@@ -654,7 +660,7 @@ def deck_choice_summary(
         if concerns
         else "with no clear gap in creatures, curve, or interaction"
     )
-    lead = "Its plan is to " if build.get("reasoning_source") != "card_rules" else "Its plan: "
+    lead = "Its plan: " if plan == model_plan else "Its plan is to "
     return f"{first} {lead}{plan}, {risk}."
 
 
