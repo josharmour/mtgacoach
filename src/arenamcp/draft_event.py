@@ -28,7 +28,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from arenamcp.draft_autopick import choose_picks, is_ordinary_basic, pool_lane, rank_pack
+from arenamcp.draft_autopick import choose_picks, is_ordinary_basic, pool_lane, rank_pack, wheel_adjust
 from arenamcp.draft_narration import DraftNarrator
 from arenamcp.event_course import LIMITED_MARKERS
 from arenamcp.set_primer import SetPrimer
@@ -323,6 +323,7 @@ class DraftEventDriver:
             pick_number=pick_number,
             names={canonical[g]: self._card_name(g) for g in pack},
             mana_costs=self._mana_costs(pack + self._drafted_pool(), primer),
+            players=self._pod_size(),
         )
         to_actual = {}
         for actual, canon in canonical.items():
@@ -406,6 +407,11 @@ class DraftEventDriver:
             logger.debug("draft commentary unavailable: %s", exc)
             return brief
 
+    def _pod_size(self) -> int:
+        """Drafters sharing the packs: Pick-Two pods seat four, other drafts eight."""
+        name = self.run.event_name.lower().replace("_", "").replace("-", "")
+        return 4 if "picktwo" in name else 8
+
     def _drafted_pool(self) -> list[int]:
         """Every card picked this draft, including picks made before autoplay took over.
 
@@ -451,6 +457,15 @@ class DraftEventDriver:
                 pick_number=int(details.get("pick_number") or 1),
                 names={self._canonical(g, primer): self._card_name(g) for g in pack},
                 mana_costs=self._mana_costs(pack + self._drafted_pool(), primer),
+            )
+            # The model sees the same wheel plan the ranking would follow.
+            ranking = wheel_adjust(
+                ranking,
+                [self._canonical(g, primer) for g in pack],
+                primer,
+                pick_number=int(details.get("pick_number") or 1),
+                players=self._pod_size(),
+                picks_per_pass=required,
             )
             evaluations = [pick.as_evaluation() for pick in ranking[:10]]
             result = self._pick_advisor_fn().recommend(details, {"evaluations": evaluations})

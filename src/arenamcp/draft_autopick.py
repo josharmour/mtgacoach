@@ -24,6 +24,7 @@ unavailable or its answer fails validation, this ranking makes the pick.
 from __future__ import annotations
 
 import html
+import math
 import re
 import statistics
 from collections import Counter
@@ -448,21 +449,96 @@ def rank_pack(
     return sorted(scores.values(), key=lambda pick: (is_ordinary_basic(pick.name), -pick.score))
 
 
+# The value of whatever we would otherwise take when a pack comes back: late
+# picks are usually filler (score units, ~1 below an average playable).
+WHEEL_FILLER_SCORE = -1.0
+# Only trade the better card for a wheel when the expected gain is clear and
+# the two are close: average-last-seen comes from human pods and other drafters
+# vary, so a wheel is never certain (WHEEL_CONFIDENCE discounts it).
+WHEEL_MIN_GAIN = 0.15
+WHEEL_MAX_GAP = 0.5
+WHEEL_CONFIDENCE = 0.8
+
+
+def wheel_chance(card: Any, wheel_pick: int) -> float:
+    """How likely a card is still in the pack at ``wheel_pick`` (17Lands average last seen)."""
+    alsa = getattr(card, "alsa", None)
+    if alsa is None:
+        return 0.0
+    return 1.0 / (1.0 + math.exp(-(float(alsa) - wheel_pick) / 0.8))
+
+
+def wheel_adjust(
+    ranked: list[PickScore],
+    pack: list[int],
+    primer: SetPrimer | None,
+    *,
+    pick_number: int,
+    players: int = 8,
+    picks_per_pass: int = 1,
+) -> list[PickScore]:
+    """Take the second-best card now when the best one will likely come back.
+
+    A pack returns after every player has taken from it once, so at pick n the
+    cards left after ``players * picks_per_pass`` more picks reappear at pick
+    n + players. Expected value of taking A now is A plus (chance B wheels) x B,
+    otherwise filler; we swap only when taking B now is clearly better.
+    """
+    if primer is None or len(ranked) < 2 or picks_per_pass != 1:
+        return ranked
+    if len(pack) <= players * picks_per_pass:
+        return ranked  # this pack will not come back with anything for us
+    wheel_pick = pick_number + players
+    first, second = ranked[0], ranked[1]
+    card_a, card_b = primer.card(first.grp_id), primer.card(second.grp_id)
+    if card_a is None or card_b is None or is_ordinary_basic(second.name):
+        return ranked
+    if first.score - second.score > WHEEL_MAX_GAP:
+        return ranked
+    p_a = WHEEL_CONFIDENCE * wheel_chance(card_a, wheel_pick)
+    p_b = WHEEL_CONFIDENCE * wheel_chance(card_b, wheel_pick)
+    filler = WHEEL_FILLER_SCORE
+    take_a = first.score + p_b * second.score + (1 - p_b) * filler
+    take_b = second.score + p_a * first.score + (1 - p_a) * filler
+    if take_b - take_a < WHEEL_MIN_GAIN:
+        return ranked
+    swapped = PickScore(
+        grp_id=second.grp_id,
+        name=second.name,
+        score=second.score,
+        reasons=second.reasons
+        + [
+            f"{first.name} likely wheels ({p_a:.0%} by 17Lands last-seen); expecting it back at pick {wheel_pick}"
+        ],
+    )
+    return [swapped, first] + ranked[2:]
+
+
 def choose_picks(
     pack: list[int],
     pool: list[int],
     primer: SetPrimer | None,
     picks_required: int = 1,
+    players: int = 8,
     **kwargs: Any,
 ) -> list[PickScore]:
     """Top picks; for pick-two the second is re-ranked with the first already in the pool."""
     chosen: list[PickScore] = []
     remaining = list(pack)
     working_pool = list(pool)
-    for _ in range(max(1, min(picks_required, len(pack)))):
+    for index in range(max(1, min(picks_required, len(pack)))):
         ranked = rank_pack(remaining, working_pool, primer, **kwargs)
         if not ranked:
             break
+        if index == 0:
+            ranked = wheel_adjust(
+                ranked,
+                remaining,
+                primer,
+                pick_number=int(kwargs.get("pick_number") or 1),
+                players=players,
+                picks_per_pass=picks_required,
+            )
         best = ranked[0]
         chosen.append(best)
         remaining.remove(best.grp_id)
