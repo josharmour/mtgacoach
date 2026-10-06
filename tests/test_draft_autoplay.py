@@ -1145,3 +1145,30 @@ def test_retried_submission_reuses_the_narrated_build_without_rereviewing(primer
     assert len(written) == 2 and written[0] == written[1]
     assert len(reviews) == 1 and len(calls) == 1
     assert "submit_limited_deck" in actions(bridge)
+
+
+def test_claimed_event_waits_for_reentry_instead_of_pausing(primer):
+    """2026-10-06 15:23: after claiming the prize the event showed Join; the
+    pause outlived the player's re-entry and P1p1 went unpicked."""
+    page = {"ok": True, "is_open": True, "module": "ClaimPrize", "event_name": "PremierDraft_TST"}
+    bridge = FakeBridge(
+        {
+            "get_screen": {"ok": True, "event_page": True},
+            "get_event_page": lambda fields: dict(page),
+            "event_play": {"ok": True},
+        }
+    )
+    driver = driver_for(bridge, primer)
+    driver._step()  # adopts the finished event and claims its prize
+    assert ("event_play", {"event_name": "PremierDraft_TST", "timeout": 8.0}) in bridge.sent
+    page["module"] = "Join"
+    driver._next_poll = 0.0
+    driver._step()
+    assert not driver.paused_reason and not driver.run.event_name
+    assert driver.tick() is False or not driver.paused_reason  # still running, not paused
+    bridge.replies["get_screen"] = {"ok": True, "draft": True}
+    bridge.replies["get_draft_state"] = dict(PICK_STATE)
+    bridge.replies["submit_draft_pick"] = {"ok": True}
+    driver._next_poll = 0.0
+    driver._step()
+    assert any(a == "submit_draft_pick" for a, _f in bridge.sent)

@@ -654,7 +654,13 @@ class DraftEventDriver:
             self._wait(10.0, owns=False)
             return
         if module in UNPAID_MODULES:
-            self._pause(f"{event_name} needs an entry; autoplay never pays")
+            # Not a failure: after the prize is claimed the event returns to
+            # its entry stage. Pausing here outlived the player's next entry
+            # (2026-10-06 15:23: P1p1 of the re-entered draft went unpicked).
+            # Wait for the player to enter; that entry starts a fresh run.
+            self.run = DraftRun()
+            self._status(f"{event_name}: waiting for you to enter; autoplay never pays")
+            self._wait(5.0, owns=False)
             return
         if module in MATCH_MODULES and run.queued_at and time.monotonic() - run.queued_at < QUEUE_WAIT_S:
             self._wait(3.0)  # queued: pressing Play again could cancel the queue
