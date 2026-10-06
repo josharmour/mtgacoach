@@ -48,6 +48,10 @@ QUEUE_WAIT_S = 240.0
 # A model deck is kept only if it scores within this of the best counted build
 # (scores run ~250-280; a couple of card swaps move them a few points).
 DECK_SCORE_TOLERANCE = 8.0
+# The 17Lands deck-strength model ranks two builds of one pool well in sealed
+# (slope 0.82 vs real results) but weakly in draft (0.30), so it may overrule
+# the counted builder's first choice by these predicted win-rate margins.
+STRENGTH_OVERRIDE_MARGIN = {"sealed": 0.005, "draft": 0.015}
 
 
 @dataclass
@@ -610,12 +614,26 @@ class DraftEventDriver:
         build["pool_cards"] = cards
         options = build.get("deck_options") or []
         source = "counted build"
+        strength = self._strength_scorer(cards, fmt, primer)
+        preferred = self._strongest_option(options, strength, fmt)
+        if preferred is not None:
+            extras = {key: build[key] for key in ("set_strategy", "format", "pool_cards") if key in build}
+            options = [preferred] + [option for option in options if option is not preferred]
+            build = {**build, **preferred, **extras, "deck_options": options, "strength_preferred": True}
+            source = "counted build, 17Lands deck model"
         best = build.get("quality") or {}
         if self._deck_advisor_fn:
             refined = self._deck_advisor_fn().recommend_deck(build)
             if refined is not build and refined.get("main_deck"):
                 quality = score_deck(refined["main_deck"], cards, pair_rates, fmt=fmt)
-                if quality["score"] >= best.get("score", 0) - DECK_SCORE_TOLERANCE:
+                weaker = (
+                    strength is not None
+                    and fmt == "sealed"
+                    and (strength(refined) < strength(build) - STRENGTH_OVERRIDE_MARGIN["sealed"])
+                )
+                if weaker:
+                    logger.info("Model deck rated weaker by the 17Lands deck model; keeping %s", source)
+                elif quality["score"] >= best.get("score", 0) - DECK_SCORE_TOLERANCE:
                     build, source, best = {**refined, "quality": quality}, "model", quality
                 else:
                     logger.info(
@@ -635,6 +653,43 @@ class DraftEventDriver:
         except Exception as exc:
             logger.warning("Deck strength unavailable: %s", exc)
         return {"build": build, "source": source, "options": options, "cards": cards}
+
+    @staticmethod
+    def _strength_scorer(cards: list[dict], fmt: str, primer: SetPrimer | None):
+        """Predicted win rate of a build (17Lands deck model), or None when it cannot load."""
+        try:
+            from arenamcp.deck_strength import SetContext, evaluate_build, set_context_from_primer
+
+            ctx = set_context_from_primer(primer) if primer is not None else SetContext()
+
+            def score(build: dict) -> float:
+                return evaluate_build(build, cards, ctx, fmt).win_rate
+
+            return score
+        except Exception as exc:
+            logger.info("Deck strength model unavailable: %s", exc)
+            return None
+
+    @staticmethod
+    def _strongest_option(options: list[dict], strength, fmt: str) -> dict | None:
+        """An option clearly stronger than the counted builder's first choice, if any."""
+        if strength is None or len(options) < 2:
+            return None
+        try:
+            rated = [(strength(option), index) for index, option in enumerate(options)]
+        except Exception as exc:
+            logger.info("Deck strength scoring failed: %s", exc)
+            return None
+        top_rate, top_index = max(rated)
+        if top_index == 0 or top_rate < rated[0][0] + STRENGTH_OVERRIDE_MARGIN.get(fmt, 0.015):
+            return None
+        logger.info(
+            "17Lands deck model prefers option %d (%.1f%%) over the counted first choice (%.1f%%)",
+            top_index + 1,
+            top_rate * 100,
+            rated[0][0] * 100,
+        )
+        return options[top_index]
 
     def _limited_format(self, pool_ids: list[int]) -> str:
         """Sealed pools come from six packs; a draft pool is the picks (about 42-45 cards)."""

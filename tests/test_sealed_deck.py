@@ -144,10 +144,11 @@ class Bridge:
     connected = True
 
     def __init__(self, replies):
-        self.replies, self.sent = replies, []
+        self.replies, self.sent, self.sent_fields = replies, [], []
 
     def draft_command(self, action, **fields):
         self.sent.append(action)
+        self.sent_fields.append((action, fields))
         reply = self.replies.get(action, {"ok": False, "error": "unscripted"})
         return reply(fields) if callable(reply) else reply
 
@@ -269,3 +270,65 @@ def test_bridge_presses_open_then_done_and_never_both():
         reply = MacBridgeAdapter(world.send).handle({"action": "finish_sealed_open"})
         assert reply["ok"] and reply["step"] == step
         assert world.calls == ([(10, method)] if method else [])
+
+
+# ---------------------------------------------------------------------------
+# The 17Lands deck-strength model chooses among the counted builds
+# ---------------------------------------------------------------------------
+
+
+def _options(*names):
+    return [
+        {"main_deck": [{"grp_id": i, "count": 1}], "basic_lands": {}, "label": n} for i, n in enumerate(names)
+    ]
+
+
+def test_strongest_option_needs_a_clear_margin_and_more_in_draft():
+    rates = {"A": 0.560, "B": 0.567, "C": 0.570}
+    options = _options("A", "B", "C")
+    score = lambda build: rates[build["label"]]  # noqa: E731
+    assert DraftEventDriver._strongest_option(options, score, "sealed")["label"] == "C"
+    assert DraftEventDriver._strongest_option(options, score, "draft") is None  # +1.0 pp < 1.5 pp
+    rates["C"] = 0.563
+    rates["B"] = 0.562
+    assert DraftEventDriver._strongest_option(options, score, "sealed") is None  # +0.3 pp
+    assert DraftEventDriver._strongest_option(options, None, "sealed") is None
+
+
+def test_sealed_deck_follows_the_model_and_says_why(monkeypatch):
+    pool = sealed_pool()
+    by_id = {c["grp_id"]: c for c in pool}
+    sideboard = [{"grp_id": g, "count": n} for g, n in Counter(c["grp_id"] for c in pool).items()]
+    narrations = []
+    bridge = Bridge(
+        {
+            "get_screen": {"ok": True, "deck_builder": True},
+            "get_limited_pool": {
+                "ok": True,
+                "main_deck": [],
+                "sideboard": sideboard,
+                "basics_in_pool": {"7001": 99, "7002": 99, "7003": 99, "7004": 99, "7005": 99},
+            },
+            "set_limited_deck": lambda fields: {"ok": True, "main_deck": fields["main_deck"]},
+            "submit_limited_deck": {"ok": True},
+        }
+    )
+    d = driver(
+        bridge,
+        pool_cards_fn=lambda ids, code: [by_id[g] for g in ids],
+        review_fn=lambda text, cancelled: narrations.append(text) or True,
+    )
+    d.run.event_name = "Sealed_TST"
+    d._basics = {7001: "U", 7002: "R", 7003: "B", 7004: "W", 7005: "G"}
+
+    def scorer(cards, fmt, primer):
+        # Rate any build without blue-red higher, so the counted second choice wins.
+        return lambda build: 0.60 if "R" not in (build.get("basic_lands") or {}) else 0.55
+
+    monkeypatch.setattr(DraftEventDriver, "_strength_scorer", staticmethod(scorer))
+    d._step()
+    written = [f for a, f in bridge.sent_fields if a == "set_limited_deck"]
+    assert written, bridge.sent
+    assert "R" not in d.run.deck_plan["build"]["basic_lands"]
+    assert "17Lands deck model" in d.run.deck_plan["source"]
+    assert "the stronger rating from 17Lands deck results" in narrations[0]

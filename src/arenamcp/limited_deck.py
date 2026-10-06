@@ -721,6 +721,8 @@ def deck_review_narration(build: dict, options: list[dict], pool: list[dict]) ->
     score_gap = (mine["quality"].get("score") or 0) - (theirs["quality"].get("score") or 0)
     if score_gap >= 3:
         better.append("a higher combined build score")
+    if build.get("strength_preferred"):
+        better.insert(0, "the stronger rating from 17Lands deck results")
     if build.get("reasoning_source") == "card_rules":
         why = "it is the deck advisor's refined build, which held up against the counted builds"
     elif better:
