@@ -192,6 +192,14 @@ FORMAT_WEIGHTS = {
 }
 SPLASH_CARD_COST = 2.5  # consistency lost per splashed card
 SPLASH_BASICS_ONLY_COST = 3.0  # splashing without a dual land or fixing spell
+# Consistency lost by adding a third color at all, in the score's GIH-point units.
+# 17Lands games (tools/deck_benchmark, 2026-10-06): a splash color costs ~0.12 logit at
+# equal card quality, about 11 GIH points spread over 23 spells; with 0 the builder
+# splashed one card in ~80% of sealed pools (humans ~40-55%) and scored below its own
+# unsplashed builds. 8 (+2.5 per card) was best on older sets and held up on newer ones.
+SPLASH_BASE_COST = 8.0
+SPLASH_MIN_GIH = BOMB_GIH - 1  # a splash card must be about bomb quality...
+SPLASH_REMOVAL_MIN_GIH = 57.0  # ...or premium removal
 
 
 def _symbols(card: dict) -> list[set[str]]:
@@ -208,7 +216,7 @@ def _splash_worthy(card: dict) -> bool:
     gih = _gih(card)
     removal = _interaction_kind(card) == "removal"
     if gih is not None:
-        return gih >= BOMB_GIH - 1 or (removal and gih >= 57.0)
+        return gih >= SPLASH_MIN_GIH or (removal and gih >= SPLASH_REMOVAL_MIN_GIH)
     return str(card.get("rarity") or "").lower() in {"rare", "mythic"} and (
         removal or "evasion" in normalize_card(card).tags
     )
@@ -294,7 +302,9 @@ def deck_quality(
     score -= 3 * max(0, expensive - 4)
     splashed = [card["name"] for card in chosen if _required_colors(card) & set(splash)]
     if splashed:
-        score -= SPLASH_CARD_COST * len(splashed) + (0 if fixing else SPLASH_BASICS_ONLY_COST)
+        score -= (
+            SPLASH_BASE_COST + SPLASH_CARD_COST * len(splashed) + (0 if fixing else SPLASH_BASICS_ONLY_COST)
+        )
     key = "".join(color for color in "WUBRG" if color in colors and color not in splash)
     if pair_win_rates and key in pair_win_rates:
         rates = list(pair_win_rates.values())

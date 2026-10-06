@@ -628,6 +628,12 @@ class DraftEventDriver:
         logger.info(
             "Limited %s deck chosen (%s): %s; candidates %s", fmt, source, best, build.get("candidates")
         )
+        try:  # 17Lands deck-strength estimate: logs only, never spoken, never blocks the deck
+            from arenamcp.deck_strength import log_build_strength
+
+            log_build_strength(build, options, cards, fmt, primer)
+        except Exception as exc:
+            logger.warning("Deck strength unavailable: %s", exc)
         return {"build": build, "source": source, "options": options, "cards": cards}
 
     def _limited_format(self, pool_ids: list[int]) -> str:

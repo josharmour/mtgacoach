@@ -181,6 +181,8 @@ class MTGADatabase:
         self._conn_lock = threading.RLock()
         self._card_cache: dict[int, MTGACard] = {}
         self._rarity_cache: dict[str, str | None] = {}
+        # Lowercased English title -> [(grp_id, expansion)], built on first use.
+        self._name_index: dict[str, list[tuple[int, str]]] | None = None
         self._available = False
         self._error_count = 0  # Track consecutive errors for reconnection
         # Whether this DB build exposes the printed-type-line localization
@@ -599,11 +601,50 @@ class MTGADatabase:
 
         return None
 
+    def grp_ids_by_name(self, name: str, expansion: str | None = None) -> list[int]:
+        """Non-token GrpIds printed with this English name, ``expansion``'s printings first.
+
+        For tools that only know card names (17Lands public game data). A
+        double-faced or split name ("Front // Back") also matches its front
+        face. The name index is built once per connection; misses return [].
+        """
+        key = re.sub(r"\s+", " ", (name or "").split(" // ")[0]).strip().lower()
+        if not key:
+            return []
+        with self._conn_lock:
+            if self._name_index is None:
+                self._name_index = {}
+                if not self._available or not self._conn:
+                    return []
+                try:
+                    rows = self._conn.execute(
+                        """
+                        SELECT c.GrpId, c.ExpansionCode, l.Loc
+                        FROM Cards c
+                        JOIN Localizations_enUS l ON c.TitleId = l.LocId AND l.Formatted = 1
+                        WHERE c.IsToken = 0
+                    """
+                    ).fetchall()
+                except Exception as e:
+                    logger.warning(f"Name index query failed: {e}")
+                    return []
+                for row in rows:
+                    title = re.sub(r"<[^>]+>", "", row["Loc"] or "").strip().lower()
+                    if title:
+                        self._name_index.setdefault(title, []).append(
+                            (int(row["GrpId"]), str(row["ExpansionCode"] or ""))
+                        )
+            matches = self._name_index.get(key, [])
+        wanted = (expansion or "").upper()
+        ordered = sorted(matches, key=lambda item: (item[1].upper() != wanted, -item[0]))
+        return [grp_id for grp_id, _expansion in ordered]
+
     def clear_cache(self) -> None:
         """Clear internal in-memory card lookup cache."""
         with self._conn_lock:
             self._card_cache.clear()
             self._rarity_cache.clear()
+            self._name_index = None
 
     def get_ability_text(self, ability_id: int) -> str | None:
         """Look up text for an ability ID (e.g. stack object).

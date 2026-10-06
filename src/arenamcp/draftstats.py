@@ -234,6 +234,10 @@ class DraftStatsCache:
             name = row.get("color_name", "")
             if row.get("is_summary"):
                 continue
+            # "Azorius (WU) + Splash" parses to the same letters as "Azorius (WU)"
+            # and used to overwrite it, so every pair rate was its splash variant.
+            if "splash" in name.lower() or str(row.get("short_name") or "").endswith("+"):
+                continue
             key = _parse_color_key(name)
             if key is None:
                 continue
