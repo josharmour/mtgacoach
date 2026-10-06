@@ -62,8 +62,8 @@ def test_pick_two_explains_rules_interactions_and_pool_needs():
     assert "Still need: More two-mana creatures" in result["detailed_advice"]
     message = json.loads(backend.complete.call_args.args[1])
     assert message["picks_required"] == 2
-    assert message["actual_pool"][0]["copies"] == 2
-    assert message["actual_pool"][0]["oracle_text"].startswith("Whenever you scry")
+    assert message["already_drafted_not_pickable"][0]["copies"] == 2
+    assert message["already_drafted_not_pickable"][0]["oracle_text"].startswith("Whenever you scry")
     assert message["pool_summary"]["five_plus_mana"] == 2
     assert message["pool_summary"]["early_plays"] == 0
     assert result["alternative"]["name"] == "Expensive Body"
@@ -99,7 +99,7 @@ def test_theme_follows_actual_picks_and_resets_for_new_draft():
     advisor.recommend(pack, {})
     message = json.loads(backend.complete.call_args.args[1])
     assert message["previous_plan"] == response()["plan"]
-    assert [picked["grp_id"] for picked in message["actual_pool"]] == [4, 9]
+    assert [picked["pool_grp_id"] for picked in message["already_drafted_not_pickable"]] == [4, 9]
     pack["event_name"] = "NewDraft"
     pack["picked_cards"] = []
     advisor.recommend(pack, {})
@@ -232,4 +232,34 @@ def test_prepared_spell_rules_and_cost_are_included_in_reasoning():
     backend.complete.return_value = json.dumps(response())
     DraftAdvisor(backend).recommend(pack, {})
     message = json.loads(backend.complete.call_args.args[1])
-    assert message["pack"][0]["related_faces"] == pack["cards"][0]["related_faces"]
+    assert message["pack_choices"][0]["related_faces"] == pack["cards"][0]["related_faces"]
+
+
+def test_pack_choices_come_first_and_pool_ids_cannot_pass_for_pickable_ones():
+    """2026-10-06 P1p8-9: the model picked Geist of Saint Thalia from its own pool twice."""
+    from arenamcp.draft_advisor import DraftAdvisor
+
+    captured = {}
+
+    class Backend:
+        def complete(self, system, message, max_tokens=None, **kwargs):
+            captured["system"], captured["message"] = system, json.loads(message)
+            return json.dumps(
+                {"picks": [{"grp_id": 7, "reason": "Best pick here.", "synergy_with": []}], "plan": "x"}
+            )
+
+    pack = {
+        "cards": [{"grp_id": 7, "name": "Pack Card", "type_line": "Creature", "oracle_text": ""}],
+        "picked_cards": [{"grp_id": 3, "name": "Pool Card", "type_line": "Creature", "oracle_text": ""}],
+        "pack_number": 1,
+        "pick_number": 8,
+    }
+    result = DraftAdvisor(Backend(), timeout=5).recommend(pack, {"evaluations": []})
+    message = captured["message"]
+    keys = list(message)
+    assert keys.index("pack_choices") < keys.index("already_drafted_not_pickable")
+    assert message["pickable_grp_ids"] == [7]
+    assert "grp_id" not in message["already_drafted_not_pickable"][0]
+    assert message["already_drafted_not_pickable"][0]["pool_grp_id"] == 3
+    assert "pickable_grp_ids" in captured["system"]
+    assert result["recommendations"][0]["grp_id"] == 7

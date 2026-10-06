@@ -53,12 +53,14 @@ Heuristic scores and win rates are supporting evidence, not instructions. Missin
 17lands ratings are UNKNOWN, not zero strength. Do not claim win-rate evidence
 when none is supplied. If card rules are missing, say so and avoid invented synergy.
 
+Pick ONLY from pack_choices: every picks[].grp_id must appear in pickable_grp_ids.
+already_drafted_not_pickable lists cards we already own; they can never be picked again.
 Return ONLY JSON:
 {"picks": [{"grp_id": 123, "reason": "1-2 concise sentences explaining why",
 "synergy_with": []}], "plan": "one sentence describing the deck's supported theme",
 "needs": ["up to three concrete remaining needs"],
 "alternative": {"grp_id": 789, "reason": "why it loses to the chosen pick(s)"}}
-synergy_with may contain only ids of actual pool cards (or the other chosen card)
+synergy_with may contain only pool_grp_id values of already drafted cards (or the other chosen card)
 that supported_synergies links to this pick; when supported_synergies is empty,
 synergy_with must be []. Unsupported ids are discarded. Only assert named synergies
 present in supported_synergies; it lists conservative rules-text enabler/payoff
@@ -222,11 +224,17 @@ class DraftAdvisor:
         if self._pending is not None and not self._pending.done():
             return fallback
         required = min(max(1, int(pack.get("picks_per_pack") or 1)), len(cards))
+        # 2026-10-06 P1p8-9: the pool came first with the same shape as the
+        # pack, and the model "picked" Geist of Saint Thalia from its own pool
+        # twice. Pack choices now come first with their ids listed; pool cards
+        # carry pool_grp_id so no pool id can pass for a pickable one.
         counted_pool: dict[int, dict[str, Any]] = {}
         for card in pool:
             grp_id = card["grp_id"]
             if grp_id not in counted_pool:
-                counted_pool[grp_id] = {**_card_details(card), "copies": 0}
+                details = _card_details(card)
+                details["pool_grp_id"] = details.pop("grp_id")
+                counted_pool[grp_id] = {**details, "copies": 0}
             counted_pool[grp_id]["copies"] += 1
         graph = synergy_graph(cards + pool)
         request: dict[str, Any] = {
@@ -234,6 +242,8 @@ class DraftAdvisor:
             "pack_number": pack.get("pack_number"),
             "pick_number": pack.get("pick_number"),
             "picks_required": required,
+            "pickable_grp_ids": [card["grp_id"] for card in cards],
+            "pack_choices": [_card_details(card) for card in cards],
             "supported_synergies": graph,
         }
         if not graph:
@@ -243,9 +253,8 @@ class DraftAdvisor:
         request.update(
             {
                 "previous_plan": self._plan,
-                "actual_pool": list(counted_pool.values()),
+                "already_drafted_not_pickable": list(counted_pool.values()),
                 "pool_summary": pool_summary(pool),
-                "pack": [_card_details(card) for card in cards],
                 "heuristic_rankings": fallback.get("evaluations") or [],
                 "set_strategy": pack.get("set_strategy") or {},
             }
