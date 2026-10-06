@@ -134,7 +134,13 @@ namespace MtgaCoachBridge
                 var endScene = UnityEngine.Object.FindObjectOfType<MatchEndScene>();
                 if (endScene == null)
                 {
-                    return Fail(log, "no MatchEndScene active — not on the match-result screen");
+                    var home = UnityEngine.Object.FindObjectOfType<HomePageContentController>();
+                    if (home != null)
+                    {
+                        log?.LogInfo("[PracticeMatchBridge] ReturnToHome: Already at HomePageContentController");
+                        return new JObject { ["ok"] = true, ["already_home"] = true };
+                    }
+                    return Fail(log, "no MatchEndScene or HomePageContentController active — not on the match-result screen");
                 }
                 endScene.LeaveMatch();
                 log?.LogInfo("[PracticeMatchBridge] ReturnToHome: LeaveMatch() invoked");
@@ -149,7 +155,7 @@ namespace MtgaCoachBridge
         // Default: prefer a complete constructed deck (>= 60 main cards), most
         // recently played first. If contents aren't loaded for any cached deck
         // (main count unknown / 0), fall back to the most recently played deck.
-        private static Client_Deck PickDefaultDeck(List<Client_Deck> decks)
+        internal static Client_Deck PickDefaultDeck(List<Client_Deck> decks)
         {
             var constructed = decks
                 .Where(d => d != null && MainCount(d) >= 60)

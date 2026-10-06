@@ -88,7 +88,7 @@ def test_explicit_toggle_preserves_trusted_completion_for_retry(monkeypatch):
     monkeypatch.setattr("arenamcp.idle_sleep.SleepInhibitor", Mock())
     monkeypatch.setattr(server, "_completed_match_for_navigation", {})
     runtime._poll_auto_queue({"match_id": "one", "turn": {"turn_number": 10}})
-    event = {"match_id": "one", "completed_at": time.time(), "match_complete": True}
+    event = {"match_id": "one", "completed_at": time.time() - 0.05, "match_complete": True}
     monkeypatch.setattr(server, "_completed_match_for_navigation", event)
     runtime._poll_auto_queue({"match_id": "one"})
     assert nav.active

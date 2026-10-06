@@ -592,6 +592,53 @@ def test_other_platform_without_injected_controller_is_explicitly_unsupported(mo
     backend.complete_with_image.assert_not_called()
 
 
+def test_parse_queue_action_normalizes_pixel_coordinates():
+    content = proposal(action="open_play", screen="home", label="Play", point=[1440, 900])
+    data, action = parse_queue_action(content, image_size=(1600, 1000))
+    assert action is not None
+    assert action.point == (0.9, 0.9)
+
+
+def test_parse_queue_action_normalizes_thousand_scale():
+    content = proposal(action="open_play", screen="home", label="Play", point=[850, 920])
+    data, action = parse_queue_action(content)
+    assert action is not None
+    assert action.point == (0.85, 0.92)
+
+
+def test_parse_queue_action_nudges_exact_boundary():
+    content = proposal(action="open_play", screen="home", label="Play", point=[0.9, 1.0])
+    data, action = parse_queue_action(content)
+    assert action is not None
+    assert action.point == (0.9, 0.999)
+
+
+def test_parse_queue_action_dismiss_result_always_centers():
+    content = proposal(
+        action="dismiss_result",
+        screen="results",
+        label="VICTORY",
+        result_title="VICTORY",
+        result_visible=True,
+        point=[800, 600],
+    )
+    data, action = parse_queue_action(content, image_size=(1600, 1000))
+    assert action is not None
+    assert action.point == (0.5, 0.5)
+
+
+def test_mac_platform_with_mac_bridge_uses_native_controller(monkeypatch):
+    monkeypatch.setattr("arenamcp.auto_queue.sys.platform", "darwin")
+    fake_bridge = SimpleNamespace(connected=True, client_runtime="il2cpp-macos")
+    nav, controller, backend, _, _ = navigator()
+    nav._bridge = fake_bridge
+    arm(nav)
+    step(nav)
+    # On macOS, il2cpp-macos bridge does not trigger _step_bridge; it uses the controller
+    assert controller.capture.call_count >= 1
+    controller.execute.assert_called_once()
+
+
 def refining_navigator(refined):
     """A navigator whose refinement pass hits the (fake) model, like production."""
     nav, controller, backend, state, statuses = navigator()

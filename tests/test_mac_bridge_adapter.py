@@ -1087,3 +1087,45 @@ def test_old_plugin_rejects_multi_modes_without_single_mode_fallback():
     bridge._send_safe = lambda command: commands.append(command) or {"ok": False, "error": "Unknown command"}
     assert not bridge.submit_casting_options([1, 2], expected=[{}, {}])
     assert [command["action"] for command in commands] == ["submit_casting_options"]
+
+
+def test_mac_bridge_return_to_home_calls_leave_match():
+    calls = []
+
+    def fake_send(command, timeout):
+        ops = command["ops"]
+        calls.append(ops)
+        if any(op.get("op") == "find" and op.get("class") == "MatchEndScene" for op in ops):
+            return {"ok": True, "results": [{"$h": 42, "$c": "MatchEndScene"}, None]}
+        if any(op.get("op") == "call" and op.get("method") == "LeaveMatch" for op in ops):
+            return {"ok": True, "results": [None]}
+        return {"ok": False, "error": "unexpected op"}
+
+    adapter = MacBridgeAdapter(fake_send)
+    resp = adapter.handle({"action": "return_to_home"})
+    assert resp["ok"] is True
+    assert any(op.get("method") == "LeaveMatch" for batch in calls for op in batch)
+
+
+def test_mac_bridge_return_to_home_already_home():
+    def fake_send(command, timeout):
+        ops = command["ops"]
+        if any(op.get("op") == "find" and op.get("class") == "MatchEndScene" for op in ops):
+            # MatchEndScene not found, HomePageContentController found
+            return {"ok": True, "results": [None, {"$h": 99, "$c": "HomePageContentController"}]}
+        return {"ok": False, "error": "unexpected op"}
+
+    adapter = MacBridgeAdapter(fake_send)
+    resp = adapter.handle({"action": "return_to_home"})
+    assert resp["ok"] is True
+    assert resp.get("already_home") is True
+
+
+def test_mac_bridge_return_to_home_fails_when_neither_scene():
+    def fake_send(command, timeout):
+        return {"ok": True, "results": [None, None]}
+
+    adapter = MacBridgeAdapter(fake_send)
+    resp = adapter.handle({"action": "return_to_home"})
+    assert resp["ok"] is False
+    assert "no MatchEndScene" in resp["error"]

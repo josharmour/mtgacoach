@@ -20,12 +20,13 @@ def _python_works(path: Path) -> bool:
 
 
 def find_best_pythonw() -> str:
+    repo_root = Path(__file__).resolve().parent.parent
     local_appdata = os.environ.get("LOCALAPPDATA", "")
     candidates = []
     if local_appdata:
         candidates.append(Path(local_appdata) / "mtgacoach" / "venv" / "Scripts" / "pythonw.exe")
     candidates.extend([
-        Path(r"Y:\mtgacoach\.venv\Scripts\pythonw.exe"),
+        repo_root / ".venv" / "Scripts" / "pythonw.exe",
         Path(r"C:\Program Files\mtgacoach\runtime\Scripts\pythonw.exe"),
     ])
     for c in candidates:
@@ -43,10 +44,10 @@ def find_best_pythonw() -> str:
 
 desktop = Path(os.path.expanduser("~")) / "Desktop"
 lnk_path = str(desktop / "mtgacoach (Dev).lnk")
-repo_root = r"Y:\mtgacoach"
+repo_root = Path(__file__).resolve().parent.parent
 local_pythonw = find_best_pythonw()
-launch_script = str(Path(repo_root) / "scripts" / "launch_desktop.py")
-icon_path = str(Path(repo_root) / "mtga_coach.ico")
+launch_script = str(repo_root / "scripts" / "launch_desktop.py")
+icon_path = str(repo_root / "mtga_coach.ico")
 
 shell = win32com.client.Dispatch("WScript.Shell")
 shortcut = shell.CreateShortCut(lnk_path)

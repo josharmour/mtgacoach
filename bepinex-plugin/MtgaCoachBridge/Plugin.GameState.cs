@@ -123,14 +123,47 @@ namespace MtgaCoachBridge
                     Guid.TryParse(deckIdStr, out deckId);
                 }
 
+                if (deckId == Guid.Empty)
+                {
+                    try
+                    {
+                        var deckProvider = Wizards.Mtga.Pantry.Get<Wizards.Mtga.Decks.DeckDataProvider>();
+                        if (deckProvider != null)
+                        {
+                            var allDecks = deckProvider.GetCachedDecks() ?? new List<Wizards.Mtga.Decks.Client_Deck>();
+                            var chosen = PracticeMatchBridge.PickDefaultDeck(allDecks);
+                            if (chosen != null)
+                            {
+                                deckId = chosen.Id;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogWarning($"[HandleQueueBotMatch] Default deck lookup warning: {ex.Message}");
+                    }
+                }
+
+                string eventName = cmd.Json.Value<string>("event");
+                if (string.IsNullOrEmpty(eventName))
+                {
+                    eventName = "AIBotMatch";
+                }
+
                 var method = typeof(HomePageContentController).GetMethod(
                     "JoinMatchMaking",
                     BindingFlags.NonPublic | BindingFlags.Instance);
 
                 if (method != null)
                 {
-                    method.Invoke(home, new object[] { "AIBotMatch", deckId });
-                    cmd.SetResponse(new JObject { ["ok"] = true });
+                    _log.LogInfo($"[HandleQueueBotMatch] Invoking JoinMatchMaking('{eventName}', {deckId})");
+                    method.Invoke(home, new object[] { eventName, deckId });
+                    cmd.SetResponse(new JObject
+                    {
+                        ["ok"] = true,
+                        ["event"] = eventName,
+                        ["deck_id"] = deckId.ToString()
+                    });
                 }
                 else
                 {

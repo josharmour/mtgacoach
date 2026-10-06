@@ -596,6 +596,14 @@ class LauncherGUI:
 
 
 def main() -> int:
+    import sys
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("arenamcp.mtgacoach.launcher")
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser(description=APP_NAME)
     parser.add_argument(
         "--setup",
@@ -605,6 +613,13 @@ def main() -> int:
     args = parser.parse_args()
 
     root = tk.Tk()
+    ico_path = REPO_DIR / "mtga_coach.ico"
+    if ico_path.exists():
+        try:
+            root.iconbitmap(str(ico_path))
+        except Exception:
+            pass
+
     LauncherGUI(root, setup_tab=args.setup)
     root.mainloop()
     return 0

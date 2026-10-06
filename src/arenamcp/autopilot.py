@@ -2033,10 +2033,18 @@ class AutopilotEngine(
             if self._maybe_escape_stuck_window(game_state):
                 return True
 
+            is_fallback = getattr(self._gre_bridge, "_fallback_mode", False)
             bridge_connected = bool(
-                game_state.get("_bridge_connected")
-                or game_state.get("bridge_connected")
-                or self._gre_bridge.connected
+                not is_fallback
+                and (
+                    game_state.get("_bridge_connected")
+                    or game_state.get("bridge_connected")
+                    or (
+                        self._gre_bridge.connected()
+                        if callable(getattr(self._gre_bridge, "connected", None))
+                        else bool(getattr(self._gre_bridge, "connected", False))
+                    )
+                )
             )
             bridge_has_pending = bool(
                 game_state.get("_bridge_has_pending")

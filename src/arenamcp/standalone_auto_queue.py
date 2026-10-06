@@ -69,9 +69,13 @@ class _AutoQueueMixin:
                 backend = getattr(self, "_autopilot_backend", None) or getattr(self._coach, "_backend", None)
                 if backend is None:
                     return False
+                from arenamcp.gre_bridge import get_bridge
+
+                bridge = get_bridge()
                 navigator = self._auto_queue_navigator = AutoQueueNavigator(
                     backend=backend,
                     get_game_state=self._mcp.get_game_state,
+                    bridge=bridge,
                     status_fn=lambda detail: self.ui.status("AUTO_QUEUE_DETAIL", detail),
                     queue_selection=get_last_queue_selection,
                 )

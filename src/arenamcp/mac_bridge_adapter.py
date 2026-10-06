@@ -658,6 +658,25 @@ class MacBridgeAdapter:
 
     # -- observation ---------------------------------------------------------
 
+    def _cmd_return_to_home(self, command: dict, timeout: float | None) -> dict:
+        ops = _Ops()
+        end_scene = ops.add("find", **{"class": "MatchEndScene"}, depth=0, optional=True)
+        home = ops.add("find", **{"class": "HomePageContentController"}, depth=0, optional=True)
+        results = self._run(ops, timeout)
+        found_end = handle(results[0])
+        found_home = handle(results[1])
+        if not found_end:
+            if found_home:
+                return {"ok": True, "already_home": True}
+            raise AdapterError(
+                "no MatchEndScene or HomePageContentController active — not on the match-result screen"
+            )
+
+        ops = _Ops()
+        ops.add("call", target=H(found_end), method="LeaveMatch")
+        self._run(ops, timeout)
+        return {"ok": True}
+
     def _cmd_get_deck_editor(self, command: dict, timeout: float | None) -> dict:
         ops = _Ops()
         widget = ops.add("find", **{"class": "DeckBuilderWidget"}, depth=0, optional=True)

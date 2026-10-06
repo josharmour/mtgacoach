@@ -42,3 +42,28 @@ def test_queue_bot_match_exception():
     result = bridge.queue_bot_match()
     assert result is False
     bridge._send_safe.assert_called_once_with({"action": "queue_bot_match"}, timeout=10.0)
+
+
+def test_queue_match_success():
+    bridge = GREBridge()
+    bridge._send_safe = MagicMock(return_value={"ok": True})
+
+    result = bridge.queue_match(event="Ladder", deck_id="test-deck-guid")
+    assert result is True
+    bridge._send_safe.assert_called_once_with(
+        {"action": "queue_match", "event": "Ladder", "deck_id": "test-deck-guid"},
+        timeout=10.0,
+    )
+
+
+def test_queue_match_default_event():
+    bridge = GREBridge()
+    bridge._send_safe = MagicMock(return_value={"ok": True})
+
+    result = bridge.queue_match()
+    assert result is True
+    bridge._send_safe.assert_called_once_with(
+        {"action": "queue_match", "event": "AIBotMatch"},
+        timeout=10.0,
+    )
+

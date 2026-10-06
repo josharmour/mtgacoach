@@ -7,6 +7,7 @@ owned by the normal coach/autopilot after the next match ID arrives.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import io
 import json
@@ -59,7 +60,8 @@ unfamiliar screen, do not click: report match, sideboard, queue, or blocked resp
 Set matchmaking_visible=true only for an actual search for an opponent. A generic
 "Waiting for the Server" spinner while returning home is loading, not matchmaking.
 For every click, quote the visible button/tile/result title and use its center coordinates
-normalized to the supplied image_size, except dismiss_result may use the overlay center.
+normalized to 0.0..1.0 (fractions of image width and height, e.g. [0.85, 0.92], NOT pixels
+and NOT 0..1000), except dismiss_result uses [0.5, 0.5].
 At most ONE action. Never claim a click already succeeded.
 The user message supplies supported_actions with the exact permitted screens and labels.
 Choose the action that matches the visible control: opening Play from home is open_play;
@@ -142,6 +144,7 @@ _LABELS = {
 
 def parse_queue_action(
     content: str,
+    image_size: tuple[int, int] | None = None,
     *,
     expected_deck: str | None = None,
     expected_event: str | None = None,
@@ -198,11 +201,11 @@ def parse_queue_action(
         if data.get("result_visible") is not True:
             raise ValueError("Result dismissal requires a visible result overlay")
         # Victory/Defeat/Draw covers the ended board and accepts a click
-        # anywhere. Use the center only for this verified overlay; other
+        # anywhere. Always use the center for this verified overlay; other
         # navigation targets still require image-grounded coordinates.
         data = {
             **data,
-            "point": [0.5, 0.5] if data.get("point") is None else data["point"],
+            "point": [0.5, 0.5],
             "reason": f"Dismiss the visible {label} result overlay",
         }
     if kind in _QUEUE_ACTIONS and not same_deck(data.get("deck_name"), expected_deck):
@@ -226,6 +229,37 @@ def parse_queue_action(
     ):
         raise ValueError("Queue must be free, use the expected deck's tile, and keep a selected deck")
 
+    raw_point = data.get("point")
+    if isinstance(raw_point, list) and len(raw_point) == 2:
+        try:
+            import math
+
+            px, py = float(raw_point[0]), float(raw_point[1])
+            if math.isfinite(px) and math.isfinite(py):
+                # 1. Normalize from pixel coordinates if image_size is known:
+                if (px >= 10.0 or py >= 10.0) and image_size and image_size[0] > 1 and image_size[1] > 1:
+                    w, h = image_size
+                    if px <= w * 1.05 and py <= h * 1.05:
+                        px = px / w
+                        py = py / h
+                # 2. Normalize from 0..1000 scale:
+                elif (px >= 10.0 or py >= 10.0) and px <= 1005.0 and py <= 1005.0:
+                    px = px / 1000.0
+                    py = py / 1000.0
+
+                # Nudge exact boundary 0.0/1.0 floats so they don't fail strict 0 < axis < 1:
+                if px == 1.0:
+                    px = 0.999
+                elif px == 0.0:
+                    px = 0.001
+                if py == 1.0:
+                    py = 0.999
+                elif py == 0.0:
+                    py = 0.001
+                data["point"] = [px, py]
+        except (TypeError, ValueError):
+            pass
+
     action = DesktopAction.from_dict(
         {
             "kind": "click",
@@ -248,6 +282,7 @@ class AutoQueueNavigator:
         backend: Any,
         get_game_state: Any,
         controller: Any = None,
+        bridge: Any = None,
         status_fn: Any = None,
         refine_target: Any = None,
         queue_selection: Any = None,
@@ -255,12 +290,14 @@ class AutoQueueNavigator:
         self._backend = backend
         self._get_game_state = get_game_state
         self._controller = controller
+        self._bridge = bridge
         self._refine_target = refine_target or self._refine_with_model
         # Latest EventSetDeckV3 from Player.log: what a queue click actually joined.
         self._queue_selection = queue_selection
         self._expected_queue: dict | None = None
         self._queue_clicked_at = 0.0
         self._queue_confirmed = False
+        self._last_event_id: str = ""
         self._status_fn = status_fn
         self._lock = threading.RLock()
         self._worker: threading.Thread | None = None
@@ -336,6 +373,8 @@ class AutoQueueNavigator:
             self._abort = threading.Event()
             self._generation += 1
             self._ended_match_id = match_id
+            if state.get("event_id"):
+                self._last_event_id = str(state.get("event_id"))
             deck_name = str(state.get("deck_name") or "")
             self._expected_queue = (
                 {"event_id": str(state.get("event_id") or ""), "deck_name": deck_name} if deck_name else None
@@ -499,9 +538,30 @@ class AutoQueueNavigator:
                 self._pause(wrong_queue)
                 return
 
+            bridge = self._bridge
+            if bridge is None:
+                with contextlib.suppress(Exception):
+                    from arenamcp.gre_bridge import get_bridge
+
+                    bridge = get_bridge()
+
+            # Bridge auto-queue is used on platforms without native desktop input (e.g. Windows via BepInEx),
+            # or when explicitly supported by the connected runtime (bepinex).
+            can_bridge_queue = (
+                bridge
+                and getattr(bridge, "connected", False)
+                and getattr(bridge, "client_runtime", "") == "bepinex"
+            )
+
+            if can_bridge_queue:
+                self._step_bridge(generation, aborted, bridge)
+                return
+
             if self._controller is None:
                 if sys.platform != "darwin":
-                    self._pause("Automatic post-match navigation currently requires native macOS Arena")
+                    self._pause(
+                        "Automatic post-match navigation currently requires native macOS Arena (or the MTGA bridge on Windows)"
+                    )
                     return
                 self._controller = NativeMacInput()
             if not callable(getattr(self._backend, "complete_with_image", None)):
@@ -527,6 +587,7 @@ class AutoQueueNavigator:
             user = json.dumps(
                 {
                     "image_size": list(frame.image.size),
+                    "coordinate_format": "normalized floats between 0.0 and 1.0 (e.g. [0.5, 0.5]), not pixels",
                     "previous_actions": list(self._history),
                     "previous_click_had_no_visible_effect": missed_click,
                     "expected_queue": self._expected_queue,
@@ -567,6 +628,7 @@ class AutoQueueNavigator:
                     return
             data, action = parse_queue_action(
                 response,
+                image_size=frame.image.size,
                 expected_deck=(self._expected_queue or {}).get("deck_name"),
                 expected_event=(self._expected_queue or {}).get("event_id"),
             )
@@ -725,6 +787,71 @@ class AutoQueueNavigator:
                     self._pause("Could not verify the next Arena navigation step")
                 else:
                     self._status("Checking Arena again before navigation")
+
+    def _step_bridge(self, generation: int, aborted: threading.Event, bridge: Any) -> None:
+        """Handle post-match screen dismissal and requeueing directly via GRE bridge."""
+        try:
+            if not self._current(generation, aborted):
+                return
+            if self._new_match(self._get_game_state() or {}):
+                self._handoff(generation, aborted)
+                return
+
+            # Stage 1: Results screen -> return to home
+            if self._stage == "results" or not self._queue_started:
+                self._status("Dismissing match results via bridge...")
+                ok = bridge.return_to_home()
+                if ok:
+                    self._stage = "home"
+                    self._failures = 0
+                    self._next_poll = time.monotonic() + 2.5
+                    self._status("Returned to Home screen; preparing to re-queue...")
+                    return
+                else:
+                    self._failures += 1
+                    if self._failures >= 5:
+                        self._pause("Could not dismiss match result screen via bridge")
+                    else:
+                        self._next_poll = time.monotonic() + 2.0
+                    return
+
+            # Stage 2: At Home screen -> join matchmaking
+            if self._stage == "home" and not self._queue_started:
+                event_name = self._last_event_id or "AIBotMatch"
+                self._status(f"Re-queueing for {event_name} via bridge...")
+                ok = bridge.queue_match(event=event_name)
+                if ok:
+                    self._queue_started = True
+                    self._queue_observed = True
+                    self._stage = "queue"
+                    self._failures = 0
+                    self._next_poll = time.monotonic() + 5.0
+                    self._status(f"Queued for {event_name}; waiting for match to start...")
+                    return
+                else:
+                    self._failures += 1
+                    if self._failures >= 3:
+                        self._pause(f"Failed to re-queue for {event_name} via bridge")
+                    else:
+                        self._next_poll = time.monotonic() + 2.0
+                    return
+
+            # Stage 3: In queue waiting for match
+            if self._stage == "queue":
+                if self._new_match(self._get_game_state() or {}):
+                    self._handoff(generation, aborted)
+                    return
+                self._next_poll = time.monotonic() + 3.0
+                self._status("Waiting for opponent / match to start...")
+        except Exception as error:
+            logger.info("Auto-queue bridge step failed: %s", error)
+            if self._current(generation, aborted):
+                self._failures += 1
+                self._next_poll = time.monotonic() + 3.0
+                if self._failures >= 4:
+                    self._pause(f"Bridge auto-queue error: {error}")
+                else:
+                    self._status("Checking Arena status again before navigation...")
 
     def get_debug_info(self) -> dict:
         with self._lock:

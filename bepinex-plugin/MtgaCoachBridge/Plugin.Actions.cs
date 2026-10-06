@@ -153,6 +153,7 @@ namespace MtgaCoachBridge
                     break;
 
                 case "queue_bot_match":
+                case "queue_match":
                     HandleQueueBotMatch(cmd);
                     break;
 
@@ -225,19 +226,25 @@ namespace MtgaCoachBridge
 
                 case "inspect_class":
                     {
-                        string typeName = cmd.Json.Value<string>("type") ?? "BotBattleScene";
+                        string typeName = cmd.Json.Value<string>("type") ?? "Plugin";
                         try
                         {
                             var type = Type.GetType(typeName);
                             if (type == null)
                             {
-                                // Try in the assembly of BotBattleScene
-                                type = typeof(BotBattleScene).Assembly.GetType(typeName);
+                                // Try in assembly of Plugin
+                                type = typeof(Plugin).Assembly.GetType(typeName);
                             }
                             if (type == null)
                             {
-                                // Try in assembly of Plugin
-                                type = typeof(Plugin).Assembly.GetType(typeName);
+                                foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
+                                {
+                                    if (a.GetName().Name == "Core")
+                                    {
+                                        type = a.GetType(typeName);
+                                        if (type != null) break;
+                                    }
+                                }
                             }
                             if (type == null)
                             {

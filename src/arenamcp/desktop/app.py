@@ -269,6 +269,13 @@ def main() -> int:
 
     _configure_logging()
 
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("arenamcp.mtgacoach")
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
     app.aboutToQuit.connect(_release_single_instance_lock)
 
@@ -289,8 +296,8 @@ def main() -> int:
 
     root = Path(get_app_root())
     for candidate in (
-        root / "assets" / "icon.png",
         root / "mtga_coach.ico",
+        root / "assets" / "icon.png",
         root / "icon.ico",
     ):
         if candidate.exists():
