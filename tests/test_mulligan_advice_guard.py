@@ -55,7 +55,9 @@ def test_hand_call_bad_keeps():
         return {"hand": hand}
 
     assert _mulligan_hand_call(gs(1)) == "MULLIGAN"
-    assert _mulligan_hand_call(gs(5)) == "MULLIGAN"
+    # mulligan_policy: 6+ lands of 7 is a mulligan; 5 is a judgement call.
+    assert _mulligan_hand_call(gs(6, 1)) == "MULLIGAN"
+    assert _mulligan_hand_call(gs(5, 2)) == "KEEP"
     assert _mulligan_hand_call(gs(2, 0)) == "MULLIGAN"
     assert _mulligan_hand_call(gs(3)) == "KEEP"
     assert _mulligan_hand_call(gs(2, 1)) == "KEEP"

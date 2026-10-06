@@ -1259,21 +1259,12 @@ class AutopilotEngine(
         # Don't auto_respond an ordinary priority window — those pass/play.
         if breq in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS or bcls in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS:
             return False
-        # Per-turn escape budget. Window signatures change every
-        # gameStateId, so a cross-window loop presents a "new" window each
-        # cycle and the once-per-window guard never limits anything —
-        # observed live 2026-06-09 as an escape every ~3s, each one
-        # cancelling the user's own cast.
-        turn = int(((game_state or {}).get("turn") or {}).get("turn_number", 0) or 0)
-        if turn != self._escape_budget_turn:
-            self._escape_budget_turn = turn
-            self._escape_count_this_turn = 0
-        if self._escape_count_this_turn >= self._MAX_ESCAPES_PER_TURN:
-            logger.warning(
-                "auto_respond escape budget exhausted for turn %s — leaving %s for the user",
-                turn,
-                breq or bcls,
-            )
+        # A MulliganReq accepts only a MulliganResp: AutoResp drew
+        # GREMessageType_IllegalRequest (FailureReason_UnexpectedMessage) live
+        # 2026-10-06 13:53:53. A truly stuck mulligan is kept instead.
+        if breq in self._MULLIGAN_REQUESTS or bcls in self._MULLIGAN_REQUESTS:
+            return self._escape_stuck_mulligan(game_state or {}, reason)
+        if not self._escape_budget_left(game_state, breq or bcls):
             return False
         try:
             if self._progress_bridge(game_state).auto_respond():
@@ -1294,6 +1285,84 @@ class AutopilotEngine(
         except Exception as e:
             logger.debug(f"auto_respond escape failed: {e}")
         return False
+
+    def _escape_budget_left(self, game_state: dict[str, Any] | None, label: str) -> bool:
+        """Whether this turn still allows an escape.
+
+        Window signatures change every gameStateId, so a cross-window loop
+        presents a "new" window each cycle and the once-per-window guard never
+        limits anything — observed live 2026-06-09 as an escape every ~3s,
+        each one cancelling the user's own cast.
+        """
+        turn = int(((game_state or {}).get("turn") or {}).get("turn_number", 0) or 0)
+        if turn != self._escape_budget_turn:
+            self._escape_budget_turn = turn
+            self._escape_count_this_turn = 0
+        if self._escape_count_this_turn >= self._MAX_ESCAPES_PER_TURN:
+            logger.warning(
+                "auto_respond escape budget exhausted for turn %s — leaving %s for the user",
+                turn,
+                label,
+            )
+            return False
+        return True
+
+    _MULLIGAN_REQUESTS = frozenset({"Mulligan", "MulliganReq", "MulliganRequest"})
+
+    def _escape_stuck_mulligan(self, game_state: dict[str, Any], reason: str) -> bool:
+        """Keep a mulligan Arena keeps re-presenting after our own answers; never AutoResp it.
+
+        2026-10-06 13:53:53 (match 3da54de9, game 2): the macOS bridge reports
+        game_state_id 0, so every mulligan round had one window signature. The
+        repeat counter (bumped on every state fetch) reached 12 while the GRE
+        waited ~15s for the opponent's mulligan; the first trigger for our NEXT
+        MulliganReq then "escaped" it with AutoResp, which the GRE answered
+        with IllegalRequest (FailureReason_UnexpectedMessage).
+
+        Stuck means the request tracker saw this exact request rejected
+        (re-presented after our submissions). A fresh request, or one whose
+        answer is still in flight, belongs to the planner.
+        """
+        tracker = getattr(self, "_request_tracker", None)
+        if tracker is None:
+            return False
+        if getattr(tracker, "_in_flight", None) is not None:
+            logger.info("Mulligan escape skipped: a submitted decision is still in flight (%s)", reason)
+            return False
+        from arenamcp.decisions import build_pending_decision
+        from arenamcp.request_tracker import decision_fingerprint
+
+        bridge = self._progress_bridge(game_state)
+        try:
+            decision = build_pending_decision(bridge.get_pending_actions() or {})
+        except Exception as error:
+            logger.debug("Mulligan escape: cannot read the live request: %s", error)
+            return False
+        if decision is None or decision.request_type != "Mulligan":
+            return False
+        fingerprint = decision_fingerprint(decision)
+        if not tracker.may_escape(fingerprint):
+            logger.info(
+                "Mulligan escape skipped: request %s has %d rejected answer(s), so it is not stuck (%s)",
+                decision.request_id,
+                tracker.rejections(fingerprint),
+                reason,
+            )
+            return False
+        if not self._escape_budget_left(game_state, "Mulligan"):
+            return False
+        try:
+            submitted = bridge.submit_mulligan(True)
+        except Exception as error:
+            logger.debug("Mulligan escape keep failed: %s", error)
+            return False
+        if not submitted:
+            return False
+        tracker.note_submitted(fingerprint)
+        self._escape_count_this_turn += 1
+        self._log_execution_path(ExecutionPath.GRE_AWARE, f"stuck Mulligan escape: Keep ({reason})")
+        self._state = AutopilotState.IDLE
+        return True
 
     def _maybe_escape_stuck_window(self, game_state: dict[str, Any]) -> bool:
         """If the same interactive window has repeated too many times, escape it.

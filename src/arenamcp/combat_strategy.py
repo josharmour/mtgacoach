@@ -587,3 +587,238 @@ def losing_attackers(state: dict, attacker_ids: list[int], pending: dict | None 
             reason += "; the opponent can block every planned attacker this way"
         losing[identity] = reason
     return losing
+
+
+# --- Declare-blockers safety ----------------------------------------------------
+#
+# 2026-10-06 G2 T10 (match 3da54de9): at 20 life the model chump-blocked a
+# trampling 4/4 Beast with Mindseeker Oculus (2/1). Three damage trampled
+# over anyway; the block saved one point of life for a creature.
+# 2026-10-06 15:23:16: a Declare Blockers request with a legal no-block and a
+# legal block went MANUAL REQUIRED because the planner returned no actions and
+# the safe default refused to declare anything. The helpers below give that
+# safe default a validated declaration and drop chump blocks that buy little.
+
+# At or below this life after combat, a chump that saves damage is kept.
+CHUMP_DANGER_LIFE = 5
+# The blocker's own text pays off dying or blocking: the chump has value.
+_BLOCKER_PAYOFF = re.compile(
+    r"\bwhen(?:ever)?\b[^.]*\b(?:dies|die|blocks?|is put into (?:a|your) graveyard|leaves the battlefield)\b"
+    r"|\b(?:undying|persist|afterlife)\b"
+    r"|:[^.\n]*\bgets? \+\d+/"
+)
+# Damage the attacker deals to a player is worth more than its number.
+_ATTACKER_HIT_PAYOFF = re.compile(
+    r"deals (?:combat )?damage to (?:a player|an opponent|that player|you)\b|\b(?:infect|toxic|poisonous)\b"
+)
+# An instant-speed trick that can turn a chump into a winning block.
+_BLOCK_TRICK = re.compile(
+    r"\bgets? \+(?:\d+|x)/\+(?:\d+|x)\b"
+    r"|\bgains? (?:first strike|double strike|deathtouch|indestructible)\b"
+    r"|\bprevent all combat damage\b"
+)
+
+
+def _local_player(state: dict) -> dict | None:
+    return next((player for player in state.get("players") or [] if player.get("is_local")), None)
+
+
+def _legal_block_map(state: dict, pending: dict | None) -> dict[int, set[int]] | None:
+    """Blocker id -> attacker ids it may block, from the live request or the logged one."""
+    from arenamcp.combat_solver import blocker_allowed_attackers_map
+
+    raw = pending.get("blockers") if isinstance(pending, dict) else None
+    if not isinstance(raw, list):
+        raw = (state.get("decision_context") or {}).get("raw_blockers")
+    if not isinstance(raw, list):
+        return None
+    return blocker_allowed_attackers_map(raw)
+
+
+def _incoming_attackers(
+    state: dict, local_seat: int | None, legal: dict[int, set[int]] | None
+) -> list[dict] | None:
+    """Opposing attackers this combat; None when one is named but not on the board."""
+    cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
+    ids: set[int] = set()
+    for identity in (state.get("decision_context") or {}).get("attacker_ids") or []:
+        if str(identity).isdigit():
+            ids.add(int(identity))
+    for allowed in (legal or {}).values():
+        ids.update(allowed)
+    for card in cards.values():
+        if card.get("is_attacking") and _controller(card) != local_seat:
+            ids.add(card.get("instance_id"))
+    if any(identity not in cards for identity in ids):
+        return None
+    return [cards[identity] for identity in sorted(ids)]
+
+
+def _known_body(card: dict | None) -> bool:
+    return card is not None and _is_int(card.get("power")) and _is_int(card.get("toughness"))
+
+
+def _damage_through(attackers: list[dict], assignments: dict[int, int], cards: dict) -> int:
+    total = 0
+    for attacker in attackers:
+        group = [
+            cards[blocker]
+            for blocker, target in assignments.items()
+            if target == attacker.get("instance_id") and blocker in cards
+        ]
+        total += _resolve_attacker(attacker, group).damage_through
+    return total
+
+
+def _affordable_block_trick(state: dict, local: dict) -> str:
+    """Name of an instant/flash pump or protection trick our untapped mana pays for."""
+    mana = _untapped_mana(state, local)
+    for card in state.get("hand") or []:
+        text = _rules_text(card)
+        flash = "flash" in (card.get("keywords") or ()) or re.search(r"(?m)^\s*flash\b", text)
+        if ("instant" in _types(card) or flash) and _BLOCK_TRICK.search(text):
+            if _mana_value(card.get("mana_cost") or "") <= mana:
+                return card.get("name") or "an instant"
+    return ""
+
+
+def _may_guard_planeswalker(attacker: dict, damage_with_block: int, cards: dict, local_seat) -> bool:
+    """The block may be protecting one of our planeswalkers rather than our life.
+
+    The log path does not record whom an attacker attacks, so an unknown
+    target is checked against every planeswalker we control.
+    """
+    target = attacker.get("attack_target_id")
+    if _is_int(target) and target in cards:
+        return True  # attacking a permanent of ours
+    if _is_int(target) and target > 0:
+        return False  # attacking a player
+    unblocked = _resolve_attacker(attacker, []).damage_through
+    for card in cards.values():
+        if _controller(card) != local_seat or "planeswalker" not in _types(card):
+            continue
+        remaining = loyalty(card)
+        if remaining is None or damage_with_block < remaining <= unblocked:
+            return True
+    return False
+
+
+def wasteful_chump_blocks(
+    state: dict, assignments: dict[int, int], pending: dict | None = None
+) -> dict[int, str]:
+    """Planned chump blocks that buy too little, as blocker id -> reason.
+
+    A chump block here is a single blocker that dies while its attacker
+    survives. It is dropped only when everything below holds:
+      - without it we are still above CHUMP_DANGER_LIFE after this combat
+        (not lethal or near-lethal) and still out of reach of the opponent's
+        surviving creatures next turn if the block kept us out of reach;
+      - the blocker has no death/block payoff or self-pump ability;
+      - the attacker has no damage-to-player payoff (or infect/toxic) that the
+        block fully stops;
+      - the block cannot be what keeps one of our planeswalkers alive (the
+        attacker is attacking us, or no walker's loyalty sits between the
+        damage with and without the block; unknown loyalty keeps the block);
+      - no instant-speed pump or protection trick in hand is affordable.
+    Gang blocks, trades, blocks that kill the attacker (deathtouch, first
+    strike) and anything with unknown power/toughness are always kept.
+    """
+    local = _local_player(state)
+    if local is None or not assignments:
+        return {}
+    life = local.get("life_total")
+    if not _is_int(life) or life <= 0:
+        return {}
+    local_seat = local.get("seat_id")
+    cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
+    attackers = _incoming_attackers(state, local_seat, _legal_block_map(state, pending))
+    if not attackers or not all(_known_body(card) for card in attackers):
+        return {}
+    if _affordable_block_trick(state, local):
+        return {}
+    groups: dict[int, list[int]] = {}
+    for blocker, attacker in assignments.items():
+        groups.setdefault(attacker, []).append(blocker)
+    through = _damage_through(attackers, assignments, cards)
+    # Every opposing creature (combat deaths ignored): roughly next turn's attack.
+    threats = [
+        card
+        for card in cards.values()
+        if _controller(card) not in (None, local_seat)
+        and "creature" in _types(card)
+        and _is_int(card.get("power"))
+    ]
+    wasteful: dict[int, str] = {}
+    for attacker_id, blockers in groups.items():
+        attacker, blocker = cards.get(attacker_id), cards.get(blockers[0])
+        if len(blockers) != 1 or not _known_body(attacker) or not _known_body(blocker):
+            continue
+        outcome = _resolve_attacker(attacker, [blocker])
+        if outcome.attacker_died or blocker not in outcome.blockers_died:
+            continue  # a trade, a kill or a blocker that survives
+        if _BLOCKER_PAYOFF.search(_rules_text(blocker)):
+            continue
+        if outcome.damage_through == 0 and _ATTACKER_HIT_PAYOFF.search(_rules_text(attacker)):
+            continue
+        if _may_guard_planeswalker(attacker, outcome.damage_through, cards, local_seat):
+            continue
+        without = {b: a for b, a in assignments.items() if b != blockers[0]}
+        through_without = _damage_through(attackers, without, cards)
+        life_without, life_with = life - through_without, life - through
+        if life_without <= CHUMP_DANGER_LIFE:
+            continue  # lethal or near-lethal: the chump buys survival
+        clock = sum(max(0, card["power"]) for card in threats)
+        if life_without <= clock < life_with:
+            continue  # the block keeps us out of lethal range next turn
+        saved = through_without - through
+        wasteful[blockers[0]] = (
+            f"{blocker.get('name') or 'blocker'} {blocker['power']}/{blocker['toughness']} would die to "
+            f"{attacker.get('name') or 'the attacker'} {attacker['power']}/{attacker['toughness']} without "
+            f"killing it to save {saved} damage; at {life} life we stay at {life_without} without the block"
+        )
+    return wasteful
+
+
+def safe_default_blocks(state: dict, pending: dict | None = None) -> tuple[dict[int, int], str] | None:
+    """A validated block declaration for a Declare Blockers request the planner could not answer.
+
+    Returns (blocker id -> attacker id, reason). An empty mapping declares no
+    blockers. Blocks come from the combat solver (survive lethal, then the
+    best material exchange) minus wasteful chumps. None when the board cannot
+    be checked (unknown life, attackers or power): no blind declaration then.
+    """
+    local = _local_player(state)
+    if local is None:
+        return None
+    life = local.get("life_total")
+    if not _is_int(life) or life <= 0:
+        return None
+    legal = _legal_block_map(state, pending)
+    if legal is None:
+        return None
+    legal = {blocker: allowed for blocker, allowed in legal.items() if allowed}
+    if not legal:
+        return {}, "no creature can block any attacker"
+    cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
+    attackers = _incoming_attackers(state, local.get("seat_id"), legal)
+    if not attackers or not all(_known_body(card) for card in attackers):
+        return None
+    blockers = [cards[blocker] for blocker in legal if _known_body(cards.get(blocker))]
+    unblocked = _damage_through(attackers, {}, cards)
+    if not blockers:
+        if unblocked >= life:
+            return None  # only unknown blockers could save us: leave it to a human
+        return {}, f"no blocker with known power and toughness; {unblocked} damage at {life} life"
+    plan = optimal_blocks(attackers, blockers, life, blocker_allowed_attackers=legal)
+    assignments = dict(plan.assignments) if plan is not None else {}
+    for blocker in wasteful_chump_blocks(state, assignments, pending):
+        assignments.pop(blocker, None)
+    through = _damage_through(attackers, assignments, cards)
+    if not assignments:
+        return {}, f"no blocks: {through} damage at {life} life"
+
+    def label(identity: int) -> str:
+        return cards[identity].get("name") or f"creature {identity}"
+
+    blocks = ", ".join(f"{label(b)} blocks {label(a)}" for b, a in assignments.items())
+    return assignments, f"{blocks}: {through} damage at {life} life (no-block {unblocked})"

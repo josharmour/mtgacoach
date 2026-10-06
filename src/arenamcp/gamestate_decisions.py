@@ -179,6 +179,13 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         game_state.decision_seat_id = game_state.local_seat_id
         game_state.decision_timestamp = _time.time()
         game_state.decision_context = {"type": "mulligan"}
+        if msg_type == "GREMessageType_MulliganReq":
+            # Mulligans already taken this game. The GRE omits the field on
+            # the first look (0). The log is the only source after a restart
+            # without the macOS bridge's player MulliganCount, and the
+            # deterministic mulligan policy needs it to know the keep size.
+            count = _coerce_int((msg.get("mulliganReq") or {}).get("mulliganCount", 0), 0)
+            game_state.decision_context["mulligan_count"] = max(0, count)
         return False
 
     elif msg_type == "GREMessageType_IntermissionReq":
@@ -767,6 +774,15 @@ def _handle_actions_available(game_state: "GameState", msg: dict) -> bool:
 
     req = msg.get("actionsAvailableReq", {})
     raw_actions = _ensure_dict_list(req.get("actions", []))
+
+    # A land play is legal only in our main phase with an empty stack, so any
+    # stack entry left at this point is a ghost (a spell that resolved in the
+    # same log batch, 2026-10-06 13:52:06). Coaching and play-safety checks
+    # must not answer it.
+    if any(str(action.get("actionType", "")).startswith("ActionType_Play") for action in raw_actions):
+        if game_state.stack:
+            logger.info("Land play on offer: the stack is empty; dropping stale stack entries")
+            game_state._clear_stale_stack(force=True)
 
     # ── Phase 1: Enrich raw actions with AutoTap + ability metadata ──
     enriched_actions = []

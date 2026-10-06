@@ -274,6 +274,9 @@ def mulligans_from_state(state: dict) -> int | None:
         seat = local_seat(state)
         player = next((p for p in state.get("players") or [] if p.get("seat_id") == seat), {})
         value = player.get("mulligan_count")
+    if value is None:
+        # Log-only path: the MulliganReq's mulliganCount (gamestate_decisions).
+        value = (state.get("decision_context") or {}).get("mulligan_count")
     if isinstance(value, bool):
         return None
     try:

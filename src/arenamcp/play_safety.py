@@ -418,12 +418,77 @@ _POWER_ONLY_MODE = re.compile(
 )
 
 
+def _live_menu(state: dict) -> list[dict]:
+    """The current request's actions: the bridge's live menu, else the log's."""
+    actions = state.get("_bridge_actions")
+    if actions is None:
+        actions = state.get("legal_actions_raw")
+    return [action for action in actions or [] if isinstance(action, dict)]
+
+
+def menu_proves_empty_stack(state: dict) -> bool:
+    """The live request offers a land play, which is legal only in a main phase with an empty stack.
+
+    Snapshots can trail the request. 2026-10-06 13:52:06 (match 3da54de9 G1
+    T10): Theoretical Necromancer was cast and resolved in one log batch; the
+    coach fired "stack_spell_opponent" on a board still showing it on the
+    stack while Arena's turn-10 request already offered Play:Island. Icy
+    Reception was cast "to counter" it, the counter mode was gone, and its
+    -5/-0 was spent in our own main phase.
+    """
+    return any(
+        str(action.get("actionType") or "").removeprefix("ActionType_").startswith("Play")
+        for action in _live_menu(state)
+    )
+
+
+def _is_spell(entry: dict) -> bool:
+    kind = str(entry.get("object_kind") or "").upper()
+    return kind != "ABILITY" and "ability" not in str(entry.get("type_line") or "").lower()
+
+
+def opponent_spell_on_stack(state: dict) -> bool:
+    """An opposing spell (not an ability) is on the stack in the current state."""
+    if menu_proves_empty_stack(state):
+        return False
+    local_seat = _local_seat(state)
+    return any(
+        (entry.get("controller_seat_id") or entry.get("owner_seat_id")) not in (None, local_seat)
+        and _is_spell(entry)
+        for entry in state.get("stack", []) or []
+    )
+
+
+def power_debuff_has_combat_use(state: dict) -> bool:
+    """A -N/-0 this turn can matter: we are in combat and an opposing creature attacks or blocks.
+
+    Unknown phase falls back to the combat flags alone. A land play on the
+    live menu means a main phase, whatever stale flags the snapshot holds.
+    """
+    if menu_proves_empty_stack(state):
+        return False
+    phase = str((state.get("turn") or {}).get("phase") or "")
+    if phase and "combat" not in phase.lower():
+        return False
+    local_seat = _local_seat(state)
+    return any(
+        (creature.get("is_attacking") or creature.get("is_blocking"))
+        and (
+            local_seat is None
+            or (creature.get("controller_seat_id") or creature.get("owner_seat_id")) != local_seat
+        )
+        for creature in state.get("battlefield", []) or []
+    )
+
+
 def power_only_debuff_wasted(card: dict, state: dict) -> str:
     """Withhold a spell whose only effects are -N/-0 (or a counter with nothing to counter) outside combat.
 
     2026-10-05 Premier Draft: Icy Reception's "-5/-0 until end of turn" was
     cast in main phase 1 "to kill" Carnivorous Cultivator. Power-only
-    shrinking never kills, and nothing attacked that turn.
+    shrinking never kills, and nothing attacked that turn. 2026-10-06: the
+    counter mode needs an opposing spell on the stack NOW (see
+    ``menu_proves_empty_stack``), not in a snapshot that trails the request.
     """
     type_line = str(card.get("type_line") or "").lower()
     text = re.sub(r"<[^>]*>", "", str(card.get("oracle_text") or ""))
@@ -438,15 +503,23 @@ def power_only_debuff_wasted(card: dict, state: dict) -> str:
     others = [line for line in effects if line not in counters]
     if not others or any(not _POWER_ONLY_MODE.match(line) for line in others):
         return ""  # another effect (draw, damage, a second clause) may be the point
-    local_seat = _local_seat(state)
-    if counters and any(
-        (entry.get("controller_seat_id") or entry.get("owner_seat_id")) not in (None, local_seat)
-        for entry in state.get("stack", []) or []
-    ):
+    if counters and opponent_spell_on_stack(state):
         return ""
-    if any(c.get("is_attacking") or c.get("is_blocking") for c in state.get("battlefield", []) or []):
+    if power_debuff_has_combat_use(state):
         return ""
+    if counters and menu_proves_empty_stack(state):
+        return (
+            "the stack is empty (a land play is on offer), so there is nothing to counter, and -N/-0 "
+            "outside combat never kills; hold it until a spell is cast or creatures attack or block"
+        )
     return "-N/-0 only shrinks power for this turn's combat (it never kills); hold it until creatures attack or block"
+
+
+def power_only_mode_label(label: str) -> bool:
+    """A casting-time mode label ("Mode 2: Target creature gets -5/-0 until end of turn.") that only shrinks power."""
+    text = re.sub(r"<[^>]*>", "", str(label or "")).strip()
+    text = re.sub(r"^(?:mode \d+|modal)\s*:\s*", "", text, flags=re.IGNORECASE)
+    return bool(_POWER_ONLY_MODE.match(text))
 
 
 def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict | None = None) -> str:
@@ -496,15 +569,24 @@ def filter_play_options(decision: Any, state: dict) -> Any:
 
     if decision.request_type == "CastingTimeOptions":
         source = pending_x_source(state)
-        return replace(
-            decision,
-            options=tuple(
-                option
-                for option in decision.options
-                if option.meta.get("numericValue") is None
-                or useful_tutor_x(state, source, int(option.meta["numericValue"]))
-            ),
+        options = tuple(
+            option
+            for option in decision.options
+            if option.meta.get("numericValue") is None
+            or useful_tutor_x(state, source, int(option.meta["numericValue"]))
         )
+        # A -N/-0 mode with no attacker or blocker to shrink wastes the card;
+        # with nothing left, the planner declines and the cast is cancelled.
+        if decision.can_cancel and not power_debuff_has_combat_use(state):
+            wasted = [
+                option
+                for option in options
+                if option.meta.get("choiceKind") == "modal" and power_only_mode_label(option.label)
+            ]
+            for option in wasted:
+                logger.info("Withholding %s: -N/-0 outside combat never kills", option.label)
+            options = tuple(option for option in options if option not in wasted)
+        return replace(decision, options=options)
     if decision.request_type != "ActionsAvailable":
         return decision
     state = {**state, "_bridge_actions": [option.meta for option in decision.options if option.meta]}

@@ -82,16 +82,44 @@ def _mulligan_keep_or_mulligan(advice: str, game_state: dict[str, Any]) -> str:
     return _mulligan_hand_call(game_state)
 
 
+def _mulligans_taken(game_state: dict[str, Any]) -> int | None:
+    """Mulligans taken this game: the snapshot's count, else the logged MulliganReq's."""
+    from arenamcp.mulligan_policy import mulligans_from_state
+
+    taken = mulligans_from_state(game_state)
+    if taken is None:
+        logged = (game_state.get("decision_context") or {}).get("mulligan_count")
+        if isinstance(logged, int) and not isinstance(logged, bool) and logged >= 0:
+            taken = logged
+    return taken
+
+
 def _mulligan_hand_call(game_state: dict[str, Any]) -> str:
-    """Minimal deterministic keep/mulligan from the opening hand (fallback)."""
+    """Minimal deterministic keep/mulligan from the opening hand (fallback).
+
+    Follows arenamcp.mulligan_policy: its verdict when the hand is clear,
+    else land counts that agree with it. 0-1 or 6+ lands of 7 is a
+    mulligan; 5 lands is a judgement call the policy usually keeps.
+    """
+    from arenamcp import mulligan_policy
+
     hand = game_state.get("hand", []) or []
+    taken = _mulligans_taken(game_state)
+    try:
+        verdict = mulligan_policy.mulligan_verdict(mulligan_policy.situation(game_state, taken))
+    except Exception:
+        verdict = None
+    if verdict is not None:
+        return "KEEP" if verdict[0] == "keep" else "MULLIGAN"
     lands = [c for c in hand if "land" in str(c.get("type_line") or "").lower()]
     creatures = [c for c in hand if "creature" in str(c.get("type_line") or "").lower()]
     n_lands = len(lands)
-    # Bad keeps: 0-1 lands, 5+ lands, or 2 lands with no creature to develop.
-    if n_lands <= 1 or n_lands >= 5:
+    if taken is not None and len(hand) - taken <= 4:
+        return "KEEP"  # never mulligan to three
+    if n_lands <= 1 or n_lands >= 6:
         return "MULLIGAN"
-    if n_lands == 2 and not creatures:
+    # 2 lands and nothing to develop is a mulligan on 7; a smaller keep takes it.
+    if n_lands == 2 and not creatures and not taken:
         return "MULLIGAN"
     return "KEEP"
 

@@ -1150,6 +1150,39 @@ class _BridgeSubmitMixin:
             logger.warning("GRE bridge blockers: %s; manual choice required", error)
             return None
 
+        # Last check before the declaration leaves: drop chump blocks that buy
+        # little (2026-10-06: a 2/1 chumped a trampling 4/4 at 20 life to save
+        # one damage). Blocks that prevent lethal or near-lethal stay.
+        from arenamcp.combat_strategy import wasteful_chump_blocks
+
+        submitted_action = None
+        chumps = wasteful_chump_blocks(game_state, dict(identities), pending)
+        if chumps:
+            for blocker_id, reason in chumps.items():
+                logger.warning("Chump-block guard: not blocking with [%d]: %s", blocker_id, reason)
+            kept = [
+                (names, ids)
+                for names, ids in zip(action.blocker_assignments.items(), identities.items(), strict=True)
+                if ids[0] not in chumps
+            ]
+            action = submitted_action = replace(
+                action,
+                blocker_assignments=dict(names for names, _ in kept),
+                blocker_instance_assignments=dict(ids for _, ids in kept),
+                reasoning="; ".join(chumps.values()),
+            )
+            assignments = [entry for entry in assignments if entry["blockerInstanceId"] not in chumps]
+            if not assignments:
+                if bridge.submit_blockers([]):
+                    self._log_execution_path(
+                        ExecutionPath.GRE_AWARE,
+                        "declare_blockers: [No Blocks] submitted via GRE bridge (chump blocks dropped)",
+                    )
+                    return ClickResult(
+                        True, 0, 0, "declare_blockers", "GRE bridge", submitted_action=submitted_action
+                    )
+                return None
+
         if bridge.submit_blockers(assignments):
             # Blockers are a two-step server round-trip, like attackers: the
             # DeclareBlockersResp update makes the GRE re-issue a fresh
@@ -1210,7 +1243,9 @@ class _BridgeSubmitMixin:
                 ExecutionPath.GRE_AWARE,
                 f"declare_blockers: {desc} submitted via GRE bridge (bridge-authoritative ids)",
             )
-            return ClickResult(True, 0, 0, "declare_blockers", "GRE bridge")
+            return ClickResult(
+                True, 0, 0, "declare_blockers", "GRE bridge", submitted_action=submitted_action
+            )
 
         logger.info("GRE bridge submit_blockers failed, surfacing manual-required to caller")
         self._gre_bridge_failed_methods.add("declare_blockers")
@@ -1996,8 +2031,6 @@ class _BridgeSubmitMixin:
         btype = str(game_state.get("_bridge_request_type") or pending.get("request_type") or "")
         bclass = str(game_state.get("_bridge_request_class") or pending.get("request_class") or "")
         label = btype or bclass or dec_type or "interactive"
-        if dec_type == "declare_blockers" or "DeclareBlock" in btype + bclass:
-            return False
         from arenamcp.play_safety import pending_x_source, useful_tutor_x
         from arenamcp.rules_engine import RulesEngine
 
@@ -2014,6 +2047,13 @@ class _BridgeSubmitMixin:
                 summary=f"{label}: {detail}",
             )
             return True
+
+        # Combat declarations: never MTGA's AutoRespond (unvalidated), but a
+        # declaration we can check against the board.
+        if dec_type == "declare_blockers" or "DeclareBlock" in btype + bclass:
+            return self._safe_default_blocks(game_state, pending, _ok)
+        if dec_type == "declare_attackers" or "DeclareAttack" in btype + bclass:
+            return self._safe_default_attacks(game_state, pending, _ok)
 
         # Group: London-mulligan bottoming / scry-surveil / ordering default.
         if "Group" in btype or "Group" in bclass or dec_type == "group_selection":
@@ -2075,6 +2115,92 @@ class _BridgeSubmitMixin:
         # Universal fallback: MTGA's own "do the default" for this request.
         if bridge.auto_respond():
             return _ok("auto_respond")
+        return False
+
+    def _safe_default_blocks(self, game_state: dict[str, Any], pending: dict[str, Any], ok: Any) -> bool:
+        """Declare solver-checked blocks (or none) when the planner produced no declaration.
+
+        2026-10-06 15:23:16: the planner's blocks failed to parse, and this
+        net refused every DeclareBlockers request, so a legal no-block and a
+        legal block both ended in MANUAL REQUIRED until a backstop retry.
+        Blocks come from ``combat_strategy.safe_default_blocks`` (survive
+        lethal, then sensible exchanges, minus wasteful chumps). An unknown
+        board still declines rather than guessing.
+        """
+        from arenamcp.combat_strategy import safe_default_blocks
+
+        choice = safe_default_blocks(game_state, pending)
+        if choice is None:
+            logger.info("Safe-default blocks: board not verifiable; leaving the declaration to the user")
+            return False
+        assignments, reason = choice
+        names = {card.get("instance_id"): card.get("name") for card in game_state.get("battlefield") or []}
+
+        def label(identity: int) -> str:
+            return f"{names.get(identity) or 'Creature'} [id:{identity}]"
+
+        action = GameAction(
+            action_type=ActionType.DECLARE_BLOCKERS,
+            blocker_assignments={label(b): label(a) for b, a in assignments.items()},
+            blocker_instance_assignments=dict(assignments),
+            reasoning=f"Safe default: {reason}",
+        )
+        logger.info("Safe-default blocks: %s", reason)
+        result = self._try_gre_bridge_blockers(action)
+        if result is not None and result.success:
+            return bool(ok(f"declare_blockers: {reason}"))
+        return False
+
+    def _safe_default_attacks(self, game_state: dict[str, Any], pending: dict[str, Any], ok: Any) -> bool:
+        """Declare no attackers (or only the ones that must attack) instead of AutoRespond.
+
+        AutoResp on a DeclareAttackersRequest (2026-10-05 22:19:14) was followed
+        by the same request again. An empty declaration is the legal "Done"
+        unless a creature must attack; then only those attack, at the opponent
+        when that is a legal recipient.
+        """
+        from arenamcp.combat_targets import attack_candidates, recipient_key, recipient_label
+
+        candidates = attack_candidates(game_state, pending) or []
+        if any(isinstance(entry, dict) and entry.get("selectedDamageRecipient") for entry in candidates):
+            logger.info(
+                "Safe-default attacks: an attack selection is already pending; not confirming it blindly"
+            )
+            return False
+        forced = [entry for entry in candidates if isinstance(entry, dict) and entry.get("mustAttack")]
+        if not forced:
+            bridge = _progress_bridge_for(self, game_state)
+            response = bridge.submit_attackers_raw([])
+            if response and response.get("ok"):
+                return bool(ok("declare_attackers: no attackers"))
+            logger.warning("Safe-default attacks: no-attack confirm failed: %s", response)
+            return False
+        names = {card.get("instance_id"): card.get("name") for card in game_state.get("battlefield") or []}
+        attacker_names, identities, targets = [], [], {}
+        for entry in forced:
+            identity = int(entry.get("attackerInstanceId") or 0)
+            legal = [r for r in entry.get("legalDamageRecipients") or [] if isinstance(r, dict)]
+            if not identity or not legal:
+                return False
+            try:
+                recipient = next((r for r in legal if recipient_key(r)[0] == "player"), legal[0])
+                target = recipient_label(recipient, game_state)
+            except (TypeError, ValueError):
+                return False
+            name = f"{names.get(identity) or 'Creature'} [id:{identity}]"
+            attacker_names.append(name)
+            identities.append(identity)
+            targets[name] = target
+        action = GameAction(
+            action_type=ActionType.DECLARE_ATTACKERS,
+            attacker_names=attacker_names,
+            attacker_instance_ids=identities,
+            attacker_targets=targets,
+            reasoning="Safe default: only the creatures that must attack",
+        )
+        result = self._try_bridge_declare_attackers(action)
+        if result is not None and result.success:
+            return bool(ok("declare_attackers: required attackers only"))
         return False
 
     @staticmethod
