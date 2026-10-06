@@ -195,3 +195,22 @@ def test_audio_playback_reports_when_a_clip_ends(tmp_path, monkeypatch):
     assert audio.AudioPlayback.is_playing()
     process.poll.return_value = 0
     assert not audio.AudioPlayback.is_playing()
+
+
+def test_draft_commentary_toggle_reaches_the_engine(qapp, monkeypatch):
+    monkeypatch.setattr(TtsManager, "start", Mock())
+    session = CoachSession()
+    try:
+        sent: list[dict] = []
+        monkeypatch.setattr(session._process, "send_payload", sent.append)
+        session.set_draft_commentary(False)
+        assert sent == [{"cmd": "set_draft_commentary", "enabled": False}]
+    finally:
+        session.shutdown()
+
+    stored = {}
+    adapter = PipeAdapter()
+    adapter._emit = lambda event: None  # type: ignore[method-assign]
+    adapter._coach = SimpleNamespace(settings=SimpleNamespace(set=lambda k, v: stored.__setitem__(k, v)))
+    adapter._dispatch({"cmd": "set_draft_commentary", "enabled": False})
+    assert stored == {"draft_commentary": False}

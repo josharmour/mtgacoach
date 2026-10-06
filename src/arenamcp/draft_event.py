@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from arenamcp.draft_autopick import choose_picks, is_ordinary_basic, pool_lane, rank_pack
+from arenamcp.draft_narration import DraftNarrator
 from arenamcp.event_course import LIMITED_MARKERS
 from arenamcp.set_primer import SetPrimer
 
@@ -90,6 +91,7 @@ class DraftEventDriver:
         status_fn: Callable[[str], None] | None = None,
         speak_fn: Callable[[str], None] | None = None,
         review_fn: Callable[[str, Callable[[], bool]], bool] | None = None,
+        commentary_fn: Callable[[], bool] = lambda: True,
     ) -> None:
         self._bridge_fn = bridge_fn
         self._tracker_fn = tracker_fn
@@ -107,6 +109,9 @@ class DraftEventDriver:
         # True only after it has been heard; cancelled() turns true when autoplay
         # is switched off or resumed meanwhile.
         self._review_fn = review_fn
+        # Whether picks are explained aloud (setting draft_commentary).
+        self._commentary_fn = commentary_fn
+        self._narrator = DraftNarrator()
         self._control = 0
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
@@ -344,8 +349,59 @@ class DraftEventDriver:
         logger.info(
             "Draft pick P%sp%s %s: %s", pack_number, pick_number, names, [reasons.get(g) for g in chosen]
         )
-        self._say(f"Taking {' and '.join(names)}.")
+        self._say(
+            self._pick_commentary(
+                chosen=chosen,
+                names=names,
+                pack=pack,
+                pool=pool,
+                primer=primer,
+                pack_number=pack_number,
+                pick_number=pick_number,
+                model_reason=reasons.get(chosen[0], "") if source == "model" and chosen else "",
+            )
+        )
         self._wait(1.2)
+
+    def _pick_commentary(
+        self, *, chosen, names, pack, pool, primer, pack_number, pick_number, model_reason
+    ) -> str:
+        """Why this pick and where the draft is heading, or just the card when commentary is off."""
+        brief = f"Taking {' and '.join(names)}."
+        try:
+            if not self._commentary_fn():
+                return brief
+            mana = self._mana_costs(pack + self._drafted_pool(), primer)
+            canon = {g: self._canonical(g, primer) for g in pack}
+            ranking = rank_pack(
+                [canon[g] for g in pack],
+                pool,
+                primer,
+                pack_number=pack_number,
+                pick_number=pick_number,
+                names={canon[g]: self._card_name(g) for g in pack},
+                mana_costs=mana,
+            )
+            by_id = {pick.grp_id: pick for pick in ranking}
+            taken = [canon[g] for g in chosen]
+            line = self._narrator.pick_line(
+                names=names,
+                chosen=[by_id[g] for g in taken if g in by_id],
+                ranking=ranking,
+                pool=pool + taken,
+                lane_before=pool_lane(pool, primer, mana),
+                lane_after=pool_lane(pool + taken, primer, mana),
+                primer=primer,
+                pack_number=pack_number,
+                pick_number=pick_number,
+                pack_size=pick_number + len(pack) - 1,
+                model_reason=model_reason,
+            )
+            logger.info("Draft commentary P%sp%s: %s", pack_number, pick_number, line)
+            return line
+        except Exception as exc:
+            logger.debug("draft commentary unavailable: %s", exc)
+            return brief
 
     def _drafted_pool(self) -> list[int]:
         """Every card picked this draft, including picks made before autoplay took over.

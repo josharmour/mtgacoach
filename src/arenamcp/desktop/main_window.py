@@ -149,6 +149,10 @@ class MainWindow(QMainWindow):
             stop_autoplay_act = tools_menu.addAction("Stop Autoplay\tF11")
             stop_autoplay_act.triggered.connect(lambda: self._session.send_command("force_stop"))
         tools_menu.addSeparator()
+        commentary_act = tools_menu.addAction("Draft Pick Commentary")
+        commentary_act.setCheckable(True)
+        commentary_act.setChecked(bool(self._settings.get("draft_commentary", True)))
+        commentary_act.toggled.connect(self._set_draft_commentary)
         tts_server_act = tools_menu.addAction("Remote TTS Server…")
         tts_server_act.triggered.connect(self._configure_remote_tts)
         tools_menu.addSeparator()
@@ -225,6 +229,11 @@ class MainWindow(QMainWindow):
         except RuntimeError as exc:
             message = str(exc)
         QMessageBox.information(self, "Autoplay Permissions", message)
+
+    def _set_draft_commentary(self, enabled: bool) -> None:
+        """Explain each draft pick aloud, or just name it; applies to the running engine."""
+        self._settings.set("draft_commentary", bool(enabled))
+        self._session.set_draft_commentary(bool(enabled))
 
     def _configure_remote_tts(self) -> None:
         current_url = str(self._settings.get("tts_server_url") or "")

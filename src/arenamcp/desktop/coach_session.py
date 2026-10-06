@@ -192,6 +192,10 @@ class CoachSession(QObject):
     def toggle_autopilot(self) -> None:
         self.send_command("toggle_autopilot")
 
+    def set_draft_commentary(self, enabled: bool) -> None:
+        """Turn spoken draft-pick explanations on or off in the running engine."""
+        self._process.send_payload({"cmd": "set_draft_commentary", "enabled": bool(enabled)})
+
     def set_auto_queue(self, enabled: bool) -> None:
         """Choose whether autoplay may repeat the recent queue after a match."""
         self._process.send_payload({"cmd": "set_auto_queue", "enabled": bool(enabled)})

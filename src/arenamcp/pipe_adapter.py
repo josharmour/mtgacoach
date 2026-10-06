@@ -649,6 +649,10 @@ class PipeAdapter:
                     getattr(conversation, "verbosity", verbosity) if conversation is not None else verbosity
                 )
                 self.status("VERBOSITY", resulting)
+            elif action == "set_draft_commentary":
+                enabled = cmd.get("enabled") is True
+                coach.settings.set("draft_commentary", enabled)
+                self.log(f"Draft pick commentary {'on' if enabled else 'off'}")
             elif action == "speech_status":
                 self.speech_completion.update(str(cmd.get("speech_id") or ""), str(cmd.get("state") or ""))
             elif action == "stop_speech":

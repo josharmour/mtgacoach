@@ -47,6 +47,9 @@ DEFAULTS = {
     "device_index": None,
     "desktop_theme": "system",
     "desktop_debug_logging": False,
+    # Draft autoplay explains each pick and where the draft is heading;
+    # off = just "Taking <card>." (Tools > Draft Pick Commentary).
+    "draft_commentary": True,
     "tts_server_url": "",
     "tts_mode": "auto",
     "tts_lag_threshold_ms": 1000,

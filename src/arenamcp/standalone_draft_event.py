@@ -81,6 +81,9 @@ class _DraftEventMixin:
             status_fn=status,
             speak_fn=lambda text: self.speak_advice(text, blocking=False),
             review_fn=self._narrate_deck_review,
+            commentary_fn=lambda: bool(
+                getattr(self, "settings", None) and self.settings.get("draft_commentary", True)
+            ),
         )
         return driver
 
