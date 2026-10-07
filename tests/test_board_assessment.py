@@ -9,10 +9,15 @@ Player.log).
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from copy import deepcopy
 
+import pytest
 from tests.strategic_states import (
+    BUG_135027,
+    BUG_174855,
+    BUG_180436,
     CARDS,
     G1_T8,
     G1_T10,
@@ -20,12 +25,17 @@ from tests.strategic_states import (
     G1_T12_AFTER_VOLUME,
     G1_T12_MENU,
     G1_T14,
+    G1_T14_MODE_STATE,
+    G1_T14_ON_STACK,
     G1_T15_FROM_OPPONENT,
+    G3_T10_BLOCKS,
     actions_decision,
     activate,
     after_land_drop,
     card,
     cast,
+    log_phase,
+    mac_phase,
     play,
 )
 
@@ -34,6 +44,7 @@ from arenamcp.board_assessment import (
     ROLE_AGGRESSOR,
     ROLE_CONTROL,
     ROLE_DEFENDER,
+    ROLE_RACE,
     assess,
     card_role,
     option_role,
@@ -363,3 +374,264 @@ def test_log_snapshot_counts_hidden_opponent_hand_cards():
     )
     snapshot = game.get_published_snapshot()
     assert snapshot["zones"]["opponent_hand_count"] == 4
+
+
+# --- bridge phase names (P0 phase fix) ----------------------------------------------
+#
+# The Mac bridge publishes CurrentPhase.ToString(): "Main1" with step "None",
+# "Combat"/"DeclareBlock" (all twelve bug_20261006_*.json game states do);
+# Player.log publishes "Phase_Main1"/"" and "Phase_Combat"/"Step_DeclareBlock".
+# The assessment matched only the log's names, so on the Mac no attack was ever
+# pending: no LETHAL AVAILABLE NOW, no life after the attack under way, and
+# their pending attack was played after our untap step with our whole board.
+
+LOG_NAMED = {
+    "G1_T8": G1_T8,
+    "G1_T10": G1_T10,
+    "G1_T12": G1_T12,
+    "G1_T12_AFTER_VOLUME": G1_T12_AFTER_VOLUME,
+    "G1_T14": G1_T14,
+    "G1_T14_ON_STACK": G1_T14_ON_STACK,
+    "G1_T14_MODE_STATE": G1_T14_MODE_STATE,
+    "G1_T15_FROM_OPPONENT": G1_T15_FROM_OPPONENT,
+    "G3_T10_BLOCKS": G3_T10_BLOCKS,
+}
+BRIDGE_NAMED = {"BUG_135027": BUG_135027, "BUG_174855": BUG_174855, "BUG_180436": BUG_180436}
+ALL_NAMED = {**LOG_NAMED, **BRIDGE_NAMED}
+
+ALL_IN = (
+    "ALL-IN: no defensive line survives their next attack — attack with everything; "
+    "holding back blockers changes nothing"
+)
+DEAD_NEXT = "DEAD NEXT ATTACK even after our best castable plays"
+
+# The greedy pipeline's facts, recorded before the phase fix: (role, lethal_now,
+# all_in, dead_in, our_life_now_attack, flags, lookahead as (land, casts, mana,
+# life_after)). The log-named rows must not move. The bridge-named rows are the
+# report's log-named copy, i.e. the corrected timing: their Main1 attack is
+# pending now. Before the fix those had no our_life_now_attack and played that
+# attack after our turn (lookahead lives 17/14/11 and 14/14/14 for 135027 and
+# 174855, -14 at T for 180436).
+BASELINE = {
+    "G1_T8": (
+        ROLE_DEFENDER, False, False, None, None, [],
+        [("", ["Theorix Metamage"], 3, 17), ("", ["Tetsuko Umezawa, Fugitive"], 3, 17), ("", ["Murmuring Volume"], 3, 17)],
+    ),
+    "G1_T10": (
+        ROLE_DEFENDER, False, False, None, None, [],
+        [("Forest", ["Theorix Metamage"], 4, 11), ("", ["Murmuring Volume"], 4, 10), ("", ["Undulating Witness"], 5, 10)],
+    ),
+    "G1_T12": (
+        ROLE_DEFENDER, False, False, None, None, ["their board kills us in 2 but our castable plays stabilize"],
+        [("Island", ["Undulating Witness"], 5, 7), ("", ["Murmuring Volume"], 5, 5), ("", ["Archive Arbiter"], 6, 5)],
+    ),
+    "G1_T12_AFTER_VOLUME": (
+        ROLE_CONTROL, False, False, 2, None, ["DEAD IN 2 TURNS UNLESS WE STABILIZE"],
+        [("Island", [], 3, 4), ("", ["Undulating Witness"], 6, -2), ("", ["Archive Arbiter"], 6, None)],
+    ),
+    "G1_T14": (
+        ROLE_CONTROL, False, False, 1, None,
+        ["OPPONENT HAS LETHAL ON BOARD (9 through our best blocks vs 4 life)", DEAD_NEXT],
+        [("Island", ["Archive Arbiter"], 7, -4), ("Island", [], 8, None), ("", [], 8, None)],
+    ),
+    "G1_T14_ON_STACK": (
+        ROLE_CONTROL, False, False, 1, None,
+        ["OPPONENT HAS LETHAL ON BOARD (9 through our best blocks vs 4 life)", DEAD_NEXT],
+        [("Island", [], 1, -5), ("Island", [], 8, None), ("", [], 8, None)],
+    ),
+    "G1_T14_MODE_STATE": (
+        ROLE_AGGRESSOR, False, True, 1, None,
+        ["OPPONENT HAS LETHAL ON BOARD (8 through our best blocks vs 4 life)", DEAD_NEXT, ALL_IN],
+        [("Island", [], 1, -4), ("Island", [], 8, None), ("", [], 8, None)],
+    ),
+    "G1_T15_FROM_OPPONENT": (
+        ROLE_AGGRESSOR, True, False, None, None, ["LETHAL AVAILABLE NOW (6 through their blocks vs 4 life)"],
+        [("", [], 5, 16), ("", [], 5, 16), ("", [], 5, 12)],
+    ),
+    "G3_T10_BLOCKS": (
+        ROLE_DEFENDER, False, False, None, 20, [],
+        [("Island", [], 6, 16), ("Room of Refuge", [], 6, 12), ("", [], 7, 10)],
+    ),
+    "BUG_135027": (
+        ROLE_DEFENDER, False, False, None, 17, [],
+        [("", ["Tam's Resistance"], 2, 14), ("", [], 2, 11), ("", [], 2, 8)],
+    ),
+    "BUG_174855": (
+        ROLE_RACE, False, False, None, 12, [],
+        [("Room of Refuge", ["Divining Duelist"], 4, 12), ("", ["Theorix Metamage"], 5, 12), ("", ["Mindseeker Oculus"], 5, 12)],
+    ),
+    "BUG_180436": (
+        ROLE_AGGRESSOR, False, True, 1, -14,
+        ["OPPONENT HAS LETHAL ON BOARD (17 through our best blocks vs 3 life)", DEAD_NEXT, ALL_IN],
+        [("Island", [], 11, None), ("", [], 11, None), ("", [], 11, None)],
+    ),
+}  # fmt: skip
+
+
+def _facts(assessment) -> dict:
+    """Every assessment field except the wall-clock timing."""
+    facts = dataclasses.asdict(assessment)
+    facts.pop("elapsed_ms")
+    return facts
+
+
+@pytest.mark.parametrize("name", list(BASELINE))
+def test_fixture_facts_match_the_log_named_baseline(name, monkeypatch):
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")  # the greedy pipeline these rows record
+    role, lethal_now, all_in, dead_in, now_life, flags, lookahead = BASELINE[name]
+    a = _fresh(ALL_NAMED[name])
+    assert (a.role, a.lethal_now, a.all_in, a.dead_in, a.our_life_now_attack) == (
+        role,
+        lethal_now,
+        all_in,
+        dead_in,
+        now_life,
+    )
+    assert a.flags == flags
+    assert [(p.land, p.casts, p.mana, p.life_after) for p in a.lookahead] == lookahead
+
+
+@pytest.mark.parametrize("name", list(ALL_NAMED))
+def test_mac_phase_names_match_log_phase_names(name):
+    state = ALL_NAMED[name]
+    bridge, log = _fresh(mac_phase(state)), _fresh(log_phase(state))
+    # BoardAssessment.phase holds the log's name whichever spelling came in.
+    assert bridge.phase == log.phase == log_phase(state)["turn"]["phase"]
+    assert _facts(bridge) == _facts(log)
+
+
+@pytest.mark.parametrize(
+    ("phase", "step", "expected"),
+    [
+        ("Main1", "None", "Phase_Main1"),
+        ("Combat", "DeclareBlock", "Phase_Combat"),
+        ("Phase_Main2", "", "Phase_Main2"),
+        ("None", "None", ""),
+        ("", "", ""),
+    ],
+)
+def test_assessment_phase_is_the_log_name(phase, step, expected):
+    state = deepcopy(G1_T12)
+    state["turn"].update(phase=phase, step=step)
+    assert _fresh(state).phase == expected
+
+
+@pytest.mark.parametrize(
+    ("phase", "step", "lethal"),
+    [
+        ("Main1", "None", True),
+        ("Beginning", "Upkeep", True),
+        ("Combat", "BeginCombat", True),
+        ("Combat", "DeclareAttack", True),
+        ("Combat", "CombatDamage", False),  # our attack is over
+        ("Main2", "None", False),
+    ],
+)
+def test_bridge_names_see_our_lethal_attack(phase, step, lethal):
+    state = deepcopy(G1_T15_FROM_OPPONENT)
+    state["turn"].update(phase=phase, step=step)
+    a = _fresh(state)
+    assert a.lethal_now is lethal  # never True on bridge names before the fix
+    assert _facts(a) == _facts(_fresh(log_phase(state)))
+    if lethal:
+        assert a.role == ROLE_AGGRESSOR and a.flags[0].startswith("LETHAL AVAILABLE NOW")
+        assert "ATTACK FOR LETHAL" in a.prompt_block()
+
+
+def _their_turn(phase: str, step: str, attackers: tuple[int, ...] = ()) -> dict:
+    """G1's T15, the opponent's turn, from our seat: 4 life and an untapped
+    Archive Arbiter vs five creatures; ``attackers`` are declared and tapped."""
+    state = deepcopy(G1_T15_FROM_OPPONENT)
+    state["local_seat_id"], state["opponent_seat_id"] = 1, 2
+    for player in state["players"]:
+        player["is_local"] = player["seat_id"] == 1
+    state["turn"].update(phase=phase, step=step)
+    for permanent in state["battlefield"]:
+        if permanent["instance_id"] in attackers:
+            permanent.update(is_attacking=True, is_tapped=True)
+    return state
+
+
+THEIR_ABLE = (280, 260, 238, 333)  # their untapped creatures that can attack
+
+
+@pytest.mark.parametrize(
+    ("bridge", "log", "attackers"),
+    [
+        (("Combat", "DeclareBlock"), ("Phase_Combat", "Step_DeclareBlock"), THEIR_ABLE),
+        (("Main1", "None"), ("Phase_Main1", ""), ()),
+    ],
+)
+def test_their_pending_attack_is_seen_under_bridge_names(bridge, log, attackers):
+    a = _fresh(_their_turn(*bridge, attackers))
+    assert not a.our_turn
+    assert a.our_life_now_attack is not None  # None on bridge names before the fix
+    assert a.opp_lethal_on_board and a.dead_in == 1
+    assert _facts(a) == _facts(_fresh(_their_turn(*log, attackers)))
+
+
+def test_only_their_declared_attackers_hit_us_this_combat(monkeypatch):
+    # They declared the 2/2 Cadet alone: Archive Arbiter blocks and we stay at
+    # 4; their whole board kills us next time. With the bridge names hidden,
+    # every creature "attacked" after our untap: lethal on board, all-in.
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")
+    a = _fresh(_their_turn("Combat", "DeclareBlock", (333,)))
+    assert a.our_life_now_attack == 4
+    assert a.their_clock == 2 and not a.opp_lethal_on_board
+    assert a.dead_in == 2 and not a.all_in
+    assert a.role == ROLE_CONTROL
+    assert _facts(a) == _facts(_fresh(_their_turn("Phase_Combat", "Step_DeclareBlock", (333,))))
+
+
+@pytest.mark.parametrize("name", list(BRIDGE_NAMED))
+def test_bridge_named_bug_reports_count_their_pending_attack(name):
+    a = _fresh(BRIDGE_NAMED[name])
+    assert BRIDGE_NAMED[name]["turn"]["phase"] == "Main1"  # the report's own spelling
+    assert a.phase == "Phase_Main1" and not a.our_turn
+    assert a.our_life_now_attack is not None
+
+
+# --- their first-strike damage step (review of the phase fix) -----------------------
+
+FIRST_STRIKE_STEPS = [("Combat", "FirstStrikeDamage"), ("Phase_Combat", "Step_FirstStrikeDamage")]
+
+
+@pytest.mark.parametrize(("phase", "step"), FIRST_STRIKE_STEPS)
+def test_first_strike_damage_already_dealt_is_not_counted_again(phase, step, monkeypatch):
+    # Their unblocked 3/3 flying first striker took us 6 -> 3 and our wall
+    # blocks their 2/2: we end the combat at 3 and Giant Spider stabilises.
+    # Counting the whole attack again read -2, DEAD NEXT ATTACK and ALL-IN,
+    # and validate_plan forced a control plan into an all-in attack.
+    from tests.test_board_model import _first_strike_board
+
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")
+    a = _fresh(_first_strike_board(phase, step))
+    assert a.our_life_now_attack == 3
+    assert a.dead_in != 1 and not a.all_in and not a.opp_lethal_on_board
+    assert not any(flag.startswith(("DEAD NEXT ATTACK", "ALL-IN")) for flag in a.flags)
+    assert a.role != ROLE_AGGRESSOR
+
+
+@pytest.mark.parametrize(("phase", "step"), FIRST_STRIKE_STEPS)
+def test_a_double_striker_hits_once_more_after_first_strike_damage(phase, step, monkeypatch):
+    # Unblocked 3/3 double striker, its first-strike half already taken (10 -> 7).
+    from tests.test_board_model import _first_strike_board
+
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")
+    state = _first_strike_board(phase, step, life=7, attackers=("Blade Knight",))
+    state["battlefield"] = [c for c in state["battlefield"] if c["name"] != "Wall of Wood"]
+    next(c for c in state["battlefield"] if c["name"] == "Llanowar Elves")["is_tapped"] = True
+    assert _fresh(state).our_life_now_attack == 4  # was 1: double damage again
+    state["turn"]["step"] = step.replace("FirstStrikeDamage", "DeclareBlock")
+    assert _fresh(state).our_life_now_attack == 1  # before first-strike damage: both halves
+
+
+def test_unseated_mac_board_gives_no_assessment():
+    # bug_20261005_223955: with every seat missing, our Mindseeker Oculus was
+    # counted as theirs (no blockers, '7 through', control/stabilize).
+    from tests.test_board_model import _bug_223955
+
+    assert _fresh(_bug_223955()) is None
+    seated = _fresh(_bug_223955(seated=True))
+    assert seated.our_creatures == 1 and seated.their_creatures == 4
+    assert seated.our_life_now_attack == -3 and seated.all_in

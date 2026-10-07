@@ -25,11 +25,12 @@ from tests.strategic_states import (
     after_land_drop,
     card,
     cast,
+    mac_phase,
 )
 
 from arenamcp import board_assessment as ba
 from arenamcp.action_planner import ActionPlanner
-from arenamcp.board_assessment import ROLE_CONTROL, ROLE_DEFENDER, assess
+from arenamcp.board_assessment import ROLE_AGGRESSOR, ROLE_CONTROL, ROLE_DEFENDER, assess
 from arenamcp.game_plan import GamePlan, GamePlanManager, compose_strategy_block, validate_plan
 
 
@@ -118,6 +119,18 @@ def test_role_disagreement_needs_a_concrete_reason():
     assert plan.role == ROLE_CONTROL
     plan = validate_plan(_parsed({**BAD_PLAN, "role": "control/stabilize"}), assess(state), state)
     assert plan.role == ROLE_CONTROL and plan.role_reason  # agrees: reason filled from the facts
+
+
+def test_bridge_phase_names_force_aggressor_when_we_have_lethal():
+    # The Mac bridge reports "Main1"/"None". Before the phase fix the board
+    # facts never saw our pending lethal attack, so a reasoned defender plan stood.
+    state = mac_phase(_with_catalog(G1_T15_FROM_OPPONENT))
+    reason = "hold every blocker back against their crackback"
+    plan = validate_plan(
+        _parsed({**BAD_PLAN, "role": "defender", "role_reason": reason}, 15), assess(state), state
+    )
+    assert plan.role == ROLE_AGGRESSOR
+    assert any("we have lethal on board now" in issue for issue in plan.issues)
 
 
 def test_turn_plan_is_trimmed_to_mana_legal_casts_from_hand():

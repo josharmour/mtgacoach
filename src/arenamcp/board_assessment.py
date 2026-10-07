@@ -782,79 +782,42 @@ def assess(state: dict | None) -> BoardAssessment | None:
 
 def _assess(state: dict) -> BoardAssessment | None:
     started = time.perf_counter()
-    local, opponent = _seats(state)
-    turn_info = state.get("turn") or {}
-    turn = _int(turn_info.get("turn_number")) or 0
-    if local is None or opponent is None or turn <= 0:
+    # Imported here: board_model builds on this module's helpers.
+    from arenamcp.board_model import build_board_model
+
+    # The board facts (seats, timing, bodies, mana, the hand's spells). Phase
+    # and step come back in the log's names, so a bridge snapshot ("Main1",
+    # step "None") gets the same attack timing as Player.log ("Phase_Main1").
+    model = build_board_model(state)
+    if model is None:
         return None
-    active = _int(turn_info.get("active_player"))
-    our_turn = active == local
-    phase = str(turn_info.get("phase") or "")
-    step = str(turn_info.get("step") or "")
-    our_life, opp_life = _life(state, local), _life(state, opponent)
-    battlefield = [c for c in state.get("battlefield") or [] if isinstance(c, dict)]
-    hand = [c for c in state.get("hand") or [] if isinstance(c, dict)]
-    unknowns: list[str] = []
-
-    attached: dict[int, list[dict]] = {}
-    for card in battlefield:
-        target = _int(card.get("attached_to_id"))
-        if target:
-            attached.setdefault(target, []).append(card)
-
-    our_rules = _side_rules(battlefield, local)
-    their_rules = _side_rules(battlefield, opponent)
-    ours: list[dict] = []
-    theirs: list[dict] = []
-    for card in battlefield:
-        if not _is_creature(card):
-            continue
-        rules = our_rules if _controller(card) == local else their_rules
-        body = _body(card, turn, rules, attached=attached)
-        if body is None:
-            unknowns.append(f"{_name(card)} has unknown power/toughness")
-            continue
-        (ours if _controller(card) == local else theirs).append(body)
-
-    # --- timing of the next attacks ---------------------------------------
-    any_ours_attacking = any(b["_attacking"] for b in ours)
-    any_theirs_attacking = any(b["_attacking"] for b in theirs)
-    pre_combat = phase in ("Phase_Beginning", "Phase_Main1") or (
-        phase == "Phase_Combat" and step in ("", "Step_BeginCombat", "Step_DeclareAttack")
-    )
-    in_combat_before_damage = phase == "Phase_Combat" and step not in (
-        "Step_CombatDamage",
-        "Step_EndCombat",
-    )
-    our_attack_pending = our_turn and pre_combat and not any_ours_attacking
-    their_attack_pending = (not our_turn) and (
-        pre_combat or (in_combat_before_damage and any_theirs_attacking)
-    )
-
-    def able_now(bodies: list[dict]) -> list[dict]:
-        if any(b["_attacking"] for b in bodies):
-            return [b for b in bodies if b["_attacking"]]
-        return [b for b in bodies if not b["_tapped"] and not b["_sick"]]
-
-    untapped_ours = [b for b in ours if not b["_tapped"]]
-    untapped_theirs = [b for b in theirs if not b["_tapped"]]
+    opponent, turn, our_turn, phase = model.opponent, model.turn, model.our_turn, model.phase
+    our_life, opp_life = model.our_life, model.opp_life
+    battlefield, hand = list(model.battlefield), list(model.hand)
+    our_rules = dict(model.our_rules)
+    ours, theirs = list(model.ours), list(model.theirs)
+    unknowns = model.unknowns  # a fresh list: unknown bodies, then X spells
+    our_attack_pending, their_attack_pending = model.our_attack_pending, model.their_attack_pending
+    first_our_attackers = None if model.first_our_attackers is None else list(model.first_our_attackers)
+    first_their_attackers = None if model.first_their_attackers is None else list(model.first_their_attackers)
+    untapped_theirs = list(model.untapped_theirs)
     # Our blockers for their next attack: what is untapped now when that
     # attack comes before our untap step, otherwise everything.
-    our_first_blockers = untapped_ours if (our_turn or their_attack_pending) else list(ours)
+    our_first_blockers = list(model.our_first_blockers)
 
     # --- clocks (board only) -------------------------------------------------
     our_clock, our_lives = _simulate_attacks(
         ours,
         theirs,
         opp_life,
-        first_attackers=able_now(ours) if our_attack_pending else None,
+        first_attackers=first_our_attackers,
         first_blockers=untapped_theirs if our_attack_pending else None,
     )
     their_clock, their_lives = _simulate_attacks(
         theirs,
         ours,
         our_life,
-        first_attackers=able_now(theirs) if their_attack_pending else None,
+        first_attackers=first_their_attackers,
         # On our turn, creatures that attacked stay tapped through theirs.
         first_blockers=our_first_blockers,
     )
@@ -897,42 +860,14 @@ def _assess(state: dict) -> BoardAssessment | None:
         race_detail = f"our clock {our_clock} vs their {their_clock}, {first}"
 
     # --- mana ----------------------------------------------------------------
-    our_permanents = [c for c in battlefield if _controller(c) == local]
-    sources_all = [s for c in our_permanents if (s := _mana_source(c, turn + 1))]
-    sources_now = [s for c in our_permanents if not c.get("is_tapped") and (s := _mana_source(c, turn))]
-    our_lands = sum(1 for c in our_permanents if _is_land(c) and not _is_creature(c))
-    their_lands = sum(
-        1 for c in battlefield if _controller(c) == opponent and _is_land(c) and not _is_creature(c)
-    )
-    hand_lands = [c for c in hand if _is_land(c) and not _is_creature(c)]
-    lands_played = _int(_player(state, local).get("lands_played")) or 0
-    land_drop_now = (not our_turn) or lands_played == 0
-    land_drop_available = bool(hand_lands) and land_drop_now
-    colors_all = set().union(*(s.produces for s in sources_all)) if sources_all else set()
-    for land in hand_lands:
-        colors_all |= set(_land_colors(land))
-
-    spells: list[_Spell] = []
-    for card in hand:
-        if _is_land(card) and not _is_creature(card):
-            continue
-        info = hand_card(card)
-        cost = str(card.get("mana_cost") or "")
-        if not cost and not _is_creature(card):
-            continue
-        spells.append(
-            _Spell(
-                card=card,
-                name=_name(card),
-                role=card_role(card),
-                mana_value=info.mana_value,
-                pips=info.pips,
-                has_x="x" in cost.lower(),
-            )
-        )
-    missing = sorted({c for s in spells for pip in s.pips for c in pip if not (pip & colors_all)})
-    if any(s.has_x for s in spells):
-        unknowns.append("X spells are not scheduled")
+    our_permanents = list(model.our_permanents)
+    sources_all, sources_now = list(model.sources_all), list(model.sources_now)
+    our_lands, their_lands = model.our_lands, model.their_lands
+    hand_lands = list(model.hand_lands)
+    land_drop_now, land_drop_available = model.land_drop_now, model.land_drop_available
+    colors_all = model.colors_all
+    spells = list(model.spells)
+    missing = list(model.missing_colors)
 
     # --- threats -------------------------------------------------------------
     our_air = any(_reach_or_flying(b) for b in ours)
@@ -970,7 +905,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         turn=turn,
         our_rules=our_rules,
         their_attack_pending=their_attack_pending,
-        first_their_attackers=able_now(theirs) if their_attack_pending else None,
+        first_their_attackers=first_their_attackers,
         untapped_ours=our_first_blockers,
     )
 
