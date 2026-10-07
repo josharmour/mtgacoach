@@ -506,6 +506,17 @@ def _full_answer(attackers: list[dict], blockers: list[dict]) -> dict[int, list[
     return None
 
 
+def _all_in(state: dict) -> bool:
+    """The board assessment's all-in verdict; False when it cannot be computed."""
+    try:
+        from arenamcp.board_assessment import assess
+
+        assessment = assess(state)
+    except Exception:
+        return False
+    return bool(assessment is not None and getattr(assessment, "all_in", False))
+
+
 def losing_attackers(state: dict, attacker_ids: list[int], pending: dict | None = None) -> dict[int, str]:
     """Planned attackers that only feed an untapped blocker, with the reason.
 
@@ -532,6 +543,8 @@ def losing_attackers(state: dict, attacker_ids: list[int], pending: dict | None 
     opponent = next((player for player in players if not player.get("is_local")), None)
     if local is None or opponent is None or not attacker_ids:
         return {}
+    if _all_in(state):
+        return {}  # nothing to lose: a chump attack still might matter
     cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
     attackers = [cards.get(identity) for identity in attacker_ids]
     if any(

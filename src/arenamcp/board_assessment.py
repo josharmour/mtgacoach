@@ -544,6 +544,9 @@ class BoardAssessment:
     board_advantage: int
     deck_curve: float | None
     flags: list[str] = field(default_factory=list)
+    # No defensive line survives the opponent's next attack, so holding back
+    # blockers gains nothing: attack with everything (bug_20261006_180436).
+    all_in: bool = False
     threats: list[Threat] = field(default_factory=list)
     lookahead: list[TurnProjection] = field(default_factory=list)
     unknowns: list[str] = field(default_factory=list)
@@ -999,9 +1002,27 @@ def _assess(state: dict) -> BoardAssessment | None:
             )
     elif their_clock is not None and their_clock <= 2 and dead_in is None:
         flags.append(f"their board kills us in {their_clock} but our castable plays stabilize")
+    # Nothing to lose: dead next attack even after our best castable plays,
+    # by a clear margin or to evasion we cannot block. Requires the facts to be
+    # unambiguous, since an all-in attack throws away blockers.
+    through = our_life - their_lives[0] if their_lives else 0
+    evasive = 0 if our_air else sum(b["power"] for b in theirs if _flying(b))
+    all_in = bool(
+        opp_lethal_on_board
+        and dead_in == 1
+        and not lethal_now
+        and our_power > 0
+        and (through >= our_life + 2 or evasive >= our_life)
+    )
+    if all_in:
+        flags.append(
+            "ALL-IN: no defensive line survives their next attack — attack with everything; "
+            "holding back blockers changes nothing"
+        )
 
     # --- role ----------------------------------------------------------------
     role, reason = _role(
+        all_in=all_in,
         lethal_now=lethal_now,
         opp_lethal=opp_lethal_on_board,
         dead_in=dead_in,
@@ -1053,6 +1074,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         lethal_now=lethal_now,
         lethal_next_turn=lethal_next_turn,
         opp_lethal_on_board=opp_lethal_on_board,
+        all_in=all_in,
         dead_in=dead_in,
         our_life_now_attack=now_life,
         card_advantage=card_advantage,
@@ -1372,6 +1394,7 @@ def _project(
 
 def _role(
     *,
+    all_in: bool = False,
     lethal_now: bool,
     opp_lethal: bool,
     dead_in: int | None,
@@ -1407,6 +1430,12 @@ def _role(
     if lethal_now:
         through = opp_life - (our_lives[0] if our_lives else opp_life)
         return ROLE_AGGRESSOR, f"lethal on board now ({through} through their best blocks vs {opp_life} life)"
+    if all_in:
+        through = our_life - (their_lives[0] if their_lives else our_life)
+        return ROLE_AGGRESSOR, (
+            f"all-in: {through} gets through our best blocks vs {our_life} life next attack whatever we do — "
+            f"attack with everything; blockers held back change nothing"
+        )
     if race == "ahead" and fast(our_clock) and (their_clock is None or our_clock <= 3):
         return ROLE_AGGRESSOR, (
             f"our clock {our_clock} beats their {text(their_clock)} ({board}) — we're the beatdown"

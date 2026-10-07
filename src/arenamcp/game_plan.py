@@ -313,7 +313,15 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
     elif assessment.lethal_now and role != ROLE_AGGRESSOR:
         issues.append(f"role {role} rejected: we have lethal on board now")
         role = ROLE_AGGRESSOR
-    elif in_danger and role == ROLE_AGGRESSOR and not assessment.lethal_next_turn:
+    elif getattr(assessment, "all_in", False) and role != ROLE_AGGRESSOR:
+        issues.append(f"role {role} rejected: no defensive line survives their next attack (all-in)")
+        role = ROLE_AGGRESSOR
+    elif (
+        in_danger
+        and role == ROLE_AGGRESSOR
+        and not assessment.lethal_next_turn
+        and not getattr(assessment, "all_in", False)
+    ):
         issues.append(f"role aggressor rejected: {'; '.join(assessment.flags) or assessment.role_reason}")
         role = assessment.role
     elif role != assessment.role and len((plan.role_reason or "").split()) < 3:

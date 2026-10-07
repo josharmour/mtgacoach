@@ -617,6 +617,48 @@ class _BridgeSubmitMixin:
             else None
         )
 
+    def _all_in_attack_action(self, game_state: dict[str, Any], planned: list[str]) -> GameAction | None:
+        """Every legal attacker at the opponent when no defensive line survives.
+
+        bug_20261006_180436: at 3 life facing a 3/3 flyer and 12 damage through
+        our best blocks, the planner held every blocker back and attacked with
+        nothing. The board assessment's all-in verdict overrides that.
+        """
+        try:
+            from arenamcp.board_assessment import assess
+
+            assessment = assess(game_state)
+        except Exception:
+            return None
+        if assessment is None or not getattr(assessment, "all_in", False):
+            return None
+        ctx = game_state.get("decision_context") or {}
+        legal = {int(i) for i in ctx.get("legal_attacker_ids") or [] if i}
+        battlefield = game_state.get("battlefield") or []
+        names = []
+        for card in battlefield:
+            identity = card.get("instance_id")
+            if identity not in legal:
+                continue
+            name = str(card.get("name") or "")
+            twins = sorted(
+                entry["instance_id"]
+                for entry in battlefield
+                if entry.get("name") == name and entry.get("owner_seat_id") == card.get("owner_seat_id")
+            )
+            names.append(f"{name} #{twins.index(identity) + 1}" if len(twins) > 1 else name)
+        if len(names) <= len(planned):
+            return None
+        logger.warning(
+            "All-in attack: %s instead of %s — %s", names, planned or "no attack", assessment.role_reason
+        )
+        return GameAction(
+            action_type=ActionType.DECLARE_ATTACKERS,
+            attacker_names=names,
+            target_names=["Opponent"],
+            reasoning="All in: no defensive line survives their next attack, so every creature attacks.",
+        )
+
     def _solver_attack_names(self, game_state: dict[str, Any]) -> list[str]:
         """Deterministic attack pick for auto-confirmed DeclareAttackers.
 
@@ -975,7 +1017,11 @@ class _BridgeSubmitMixin:
         game_state = self._get_game_state()
         attacker_names = list(action.attacker_names)
         try:
-            if not attacker_names:
+            all_in = self._all_in_attack_action(game_state, attacker_names)
+            if all_in is not None:
+                action = all_in
+                attacker_names = list(action.attacker_names)
+            elif not attacker_names:
                 from arenamcp.combat_strategy import combat_choice
 
                 if combat_choice(game_state) is not None:
@@ -985,7 +1031,8 @@ class _BridgeSubmitMixin:
             from arenamcp.combat_targets import recipient_key
 
             if (
-                attacker_entries
+                all_in is None
+                and attacker_entries
                 and not action.attacker_targets
                 and all(recipient_key(entry["damageRecipient"])[0] == "player" for entry in attacker_entries)
             ):
