@@ -24,6 +24,16 @@ unrealistic win conditions are dropped, a role that contradicts a lethal or
 dead-in-two assessment is replaced, and unaffordable or not-in-hand casts are
 trimmed. Per-decision prompts lead with the freshly recomputed ROLE, this
 turn's step and the facts (:meth:`GamePlanManager.strategy_block`).
+
+Lines (2026-10-07, multi-turn planning WP9): the plan call sees the line
+search's CANDIDATE LINES, and the validated turn plan is replayed through the
+search (``line_search.evaluate_plan``): each turn's mana comes from the plan's
+own land drops (a land that enters tapped pays from the next turn), and a plan
+whose line dies sooner than the best line has its T step replaced by the best
+one while we are surviving, but only with ARENAMCP_LINE_GUARD=on: the guards
+ship in shadow mode, which logs the replacement as an issue. The opponent's
+instant-speed interaction risk
+(``opponent_tricks``, advisory) is one more fact line, without card names.
 """
 
 from __future__ import annotations
@@ -34,6 +44,7 @@ import logging
 import re
 import threading
 import time
+from collections import Counter, OrderedDict
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -230,6 +241,7 @@ Given the current board, hand, mana, life totals, the deterministic BOARD FACTS 
 BOARD FACTS are computed from the live board (clocks through best blocks, race, lethal flags, mana budget per turn). Treat them as hard facts:
 - ROLE must equal the ASSESSED ROLE unless role_reason names a concrete board fact the assessment missed. If the facts say OPPONENT HAS LETHAL ON BOARD or DEAD IN 2, the role is defender or control/stabilize unless we have lethal first.
 - The turn plan covers T (this turn if it is ours, else our next turn), T+1 and T+2 (our following turns). Each turn's "cast" list may name ONLY cards in our hand now (or castable from our graveyard), each card at most once, and their combined mana value must fit that turn's MANA BUDGET with the colours available. A card we hope to draw goes in "hold" as "if drawn: <name>", never in "cast".
+- When BOARD FACTS lists CANDIDATE LINES (a deterministic 2-turn search), build "turns" from one of them and keep its attack/hold posture unless you name a concrete card or combat reason.
 - As defender/control, prioritise creatures that block and removal on attackers over card draw, mana rocks or cycling until the clock is under control. As aggressor, maximise damage; spend removal on blockers.
 - Win conditions must be realistic for the CURRENT state: no empty-library/alternate wins while the library is large, and no combo whose pieces are not in hand or on the battlefield (label a needed draw explicitly).
 Use the complete deck and remaining library to identify realistic engines, outs and backup plans; cards in the library are possibilities, not cards in hand or guaranteed draws. Preserve the prior plan when still sound, and adapt when its assumptions change.
@@ -456,7 +468,18 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
       grounded win condition from the assessment replaces them.
     * turn plan: casts must be in hand (or flashback-able from our graveyard),
       used once, and fit that turn's mana budget and colours; a library card is
-      moved to "hold: if drawn: X"; the most expensive excess is trimmed.
+      moved to "hold: if drawn: X"; the most expensive excess is trimmed. With
+      the line search, each turn's budget follows the plan's own land drops.
+      A creature cast that turn (without haste) is dropped from its attack.
+    * line check: the turn plan replayed through the line search is compared
+      with the best line. Dying sooner (or winning later) is an issue; while
+      surviving is the priority, the T step is replaced by the best line's
+      only with ARENAMCP_LINE_GUARD=on (shadow, the default, only notes what
+      it would replace), never against the +2/+0 trick proxy or for a modal
+      choice of a card with an unmodelled mode. A value gap of
+      ``PLAN_LINE_GAP`` in the same outcome is noted. A plan casting a card
+      whose effect the search does not model (:func:`unmodelled_effect`), or
+      noting a mode the replay did not choose, is not judged.
     """
     from arenamcp.board_assessment import ROLE_AGGRESSOR, ROLE_CONTROL, ROLE_DEFENDER, ROLES
 
@@ -533,6 +556,7 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
 
     # --- turn plan ------------------------------------------------------------
     plan.turn_plan = _validate_turns(plan.turn_plan, assessment, state, issues)
+    _check_plan_line(plan, assessment, state, issues)
     plan.issues = issues
     return plan
 
@@ -573,6 +597,7 @@ def _turn_index(value: Any, k: int) -> int:
 
 def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[str]) -> list[dict]:
     from arenamcp.board_assessment import NON_BOARD_ROLES, card_role
+    from arenamcp.combat_keywords import has_combat_keyword
     from arenamcp.mulligan_policy import _pip_matching, hand_card
 
     hand = [c for c in state.get("hand") or [] if isinstance(c, dict)]
@@ -588,6 +613,18 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
     ]
     grave_names = _card_names(graveyard)
     library_only = _library_only_names(state)
+    # The plan replayed through the line search: each planned turn's sources
+    # from the plan's own land drops (a land that enters tapped pays from the
+    # next turn), and the lands it can't play. Without it, the board math's.
+    replay = _evaluate_plan_line(raw_turns, assessment, state, keep_land_turns=True)
+    planned_sources = {b["label"]: list(b["source_colors"]) for b in (replay.budgets if replay else [])}
+    unplayable_lands = {
+        issue.split(":", 1)[0]
+        for issue in (replay.issues if replay else [])
+        if re.match(r"T(?:\+\d)?: land .* is not playable", issue)
+    }
+    creature_names = _our_creature_names(state)
+    haste_for_all = _our_global_haste(state)
     used: set[int] = set()
     rocks: list[SimpleNamespace] = []
     steps: list[dict] = []
@@ -599,25 +636,29 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
             continue
         budget = assessment.lookahead[index]
         label = budget.label
-        sources = [SimpleNamespace(produces=frozenset(colors)) for colors in budget.source_colors] + list(
-            rocks
-        )
+        source_colors = planned_sources.get(label, list(budget.source_colors))
+        sources = [SimpleNamespace(produces=frozenset(colors)) for colors in source_colors] + list(rocks)
         casts_raw = raw.get("cast") or []
         if isinstance(casts_raw, str):
             casts_raw = [part.strip() for part in re.split(r",|\+| and ", casts_raw) if part.strip()]
         holds = [str(raw.get("hold") or "").strip()] if str(raw.get("hold") or "").strip() else []
+        # (as stored: the card's name plus any note, mana value, pips, card)
         chosen: list[tuple[str, int, tuple, dict]] = []
         for name in casts_raw:
-            key = _plain(name)
-            card = hand_names.get(key) or hand_names.get(_plain(str(name).split(",")[0]))
+            # "Archive Arbiter (gain 4 life)" from CANDIDATE LINES, the line check's own
+            # "X (choose: …)" / "X (on Y)" and "landcycle X" name the card in hand.
+            base, note, cycle = _cast_parts(
+                str(name), lambda n: _named_card(n, hand_names) or _named_card(n, grave_names)
+            )
+            card = _named_card(base, hand_names)
             cost_text = None
-            if card is None:
-                card = grave_names.get(key) or grave_names.get(_plain(str(name).split(",")[0]))
+            if card is None and not cycle:
+                card = _named_card(base, grave_names)
                 cost_text = _flashback_cost(card) if card else None
             if card is None:
-                if key in library_only or _plain(str(name).split(",")[0]) in library_only:
-                    holds.append(f"if drawn: {name}")
-                    issues.append(f"{label}: {name} is not in hand (library) — kept only as 'if drawn'")
+                if _plain(base) in library_only or _plain(base.split(",")[0]) in library_only:
+                    holds.append(f"if drawn: {base}")
+                    issues.append(f"{label}: {base} is not in hand (library) — kept only as 'if drawn'")
                 else:
                     issues.append(f"{label}: dropped {name} (not in hand or castable from the graveyard)")
                 continue
@@ -626,11 +667,18 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
                 issues.append(f"{label}: dropped {card.get('name')} (already cast earlier in the plan)")
                 continue
             info = hand_card(dict(card, mana_cost=cost_text or card.get("mana_cost") or ""))
-            chosen.append((str(card.get("name")), info.mana_value, info.pips, card))
+            stored = str(card.get("name")) + (f" ({note})" if note else "")
+            if cycle:
+                if info.landcycling is None:
+                    issues.append(f"{label}: dropped {name} ({card.get('name')} has no landcycling)")
+                    continue
+                chosen.append((f"landcycle {card.get('name')}", info.landcycling, (), card))
+                continue
+            chosen.append((stored, info.mana_value, info.pips, card))
         # Trim until the turn is mana-legal: when defending, card draw / rocks /
         # selection go first; otherwise (and then) the most expensive cast.
         survival = bool(getattr(assessment, "survival_mode", False))
-        colors = "".join(sorted(set("".join(budget.source_colors)) - {"C"}))
+        colors = "".join(sorted(set("".join(source_colors)) - {"C"}))
         dropped = False
         while chosen:
             total = sum(c[1] for c in chosen)
@@ -671,20 +719,42 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
             used.add(id(card))
             text = str(card.get("oracle_text") or "").lower()
             type_line = str(card.get("type_line") or "").lower()
-            if "creature" not in type_line and re.search(r"\{o?t\}[^:]*:\s*add\b", text):
+            if (
+                not name.startswith("landcycle ")
+                and "creature" not in type_line
+                and re.search(r"\{o?t\}[^:]*:\s*add\b", text)
+            ):
                 rocks.append(SimpleNamespace(produces=frozenset("WUBRGC")))
         land = str(raw.get("land") or "").strip()
         if land and _plain(land) not in hand_names:
             if index == 0:
                 issues.append(f"{label}: land {land} is not in hand")
             land = ""
+        elif land and label in unplayable_lands:
+            issues.append(f"{label}: land {land} can't be played then (no land drop left, or played earlier)")
+            land = ""
+        # A creature cast this turn can't attack this turn (unless it has haste), but
+        # a copy of it already on our battlefield that can attack then still may.
+        attack = str(raw.get("attack") or "").strip()[:80]
+        ready = _ready_attacker_names(state, assessment, index)
+        sick = [
+            str(card.get("name"))
+            for name, _mv, _pips, card in chosen
+            if not name.startswith("landcycle ")
+            and "creature" in str(card.get("type_line") or "").lower()
+            and not haste_for_all
+            and not has_combat_keyword(card, "haste")
+            and str(card.get("name")) not in ready
+        ]
+        if sick and attack:
+            attack = _without_sick_attackers(attack, sick, creature_names, label, issues)
         steps.append(
             {
                 "turn": budget.turn,
                 "label": label,
                 "land": land,
                 "cast": [c[0] for c in chosen],
-                "attack": str(raw.get("attack") or "").strip()[:80],
+                "attack": attack,
                 "hold": "; ".join(holds)[:120],
                 "mana": len(sources),
             }
@@ -692,22 +762,592 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
     return steps
 
 
-def compose_strategy_block(assessment: Any, plan: GamePlan | None) -> str:
+# --- the plan's line (line_search) -------------------------------------------------
+
+# Same outcome and timing as the best line, but this much lower in value: noted.
+PLAN_LINE_GAP = 5.0
+
+_NO_ATTACK = re.compile(r"^(?:none|no attacks?|nobody|no one|nothing|hold|don t attack|do not attack)\b")
+_ALL_ATTACK = re.compile(r"\b(?:all|everything|everyone|all in)\b")
+_NAME_STOPWORDS = frozenset({"the", "of", "and", "with", "from", "into", "attack", "none", "hold", "token"})
+# A cast name's trailing note: the line check writes "Archive Arbiter (choose: gain 4 life)"
+# and "X (on Y)", CANDIDATE LINES "Archive Arbiter (gain 4 life)".
+_ANY_NOTE = re.compile(r"\s*\(([^()]*)\)\s*$")
+
+# A creature's triggered ability ("When this creature enters, ..."): the line
+# search values a creature spell by its body and its 'choose one' bullets only.
+_CREATURE_TRIGGER = re.compile(
+    r"\bwhen(?:ever)?\b[^.,]*?\b(?:enters|attacks|dies)\b[^.,]*,\s*(?P<effect>[^.]*)"
+)
+# Trigger effects that only move cards (no board or life change in the search's horizon).
+_CARD_FLOW = re.compile(
+    r"^(?:you may |then )?(?:draw|scry|surveil|look at|mill|discard|investigate|connive|reveal)\b"
+)
+
+
+def unmodelled_effect(card: dict | None, result: Any = None) -> str:
+    """What casting ``card`` does that the line search does not model; '' when it models it all.
+
+    ``line_search_moves.Moves._variants`` values a creature spell by its body
+    and its 'choose one' bullets, and a noncreature spell by removal, bounce,
+    life gain, a mana rock and damage to the opponent ('any target' spells).
+    Everything else counts as nothing, so a line starting with such a cast is
+    undervalued and must never be overridden, or tagged as worse, on the
+    search's word (review 2026-10-07: a sorcery making two hasty 3/1s that was
+    exactly lethal scored 'dead T11'). Unmodelled: a noncreature spell that
+    makes creature tokens; a creature's triggered enters/attacks/dies effect
+    outside its bullets (card flow such as draw or scry aside) or bullets that
+    are all unmodelled; a pump; a planeswalker; a noncreature 'other' card (an
+    aura like Pacifism); and damage to players the search has no face variant
+    for (with ``result``, the board's ``LineSearchResult``). Card draw,
+    selection and counters change nothing the search would value.
+    """
+    if not isinstance(card, dict) or not card.get("name"):
+        return ""
+    try:
+        from arenamcp.board_assessment import _int, _is_creature, _text, card_role, harms_players
+        from arenamcp.limited_rules import rules_profile
+        from arenamcp.line_search_moves import bullets, classify
+
+        role = card_role(card)
+        if role == "land":
+            return ""
+        if _is_creature(card):
+            modes = bullets(str(card.get("oracle_text") or ""))
+            if modes:
+                if all(classify(str(card["name"]), mode)[0] == "other" for mode in modes):
+                    return "its modes"
+            else:
+                for match in _CREATURE_TRIGGER.finditer(_text(card)):
+                    if not _CARD_FLOW.match(match.group("effect").strip()):
+                        return "its triggered ability"
+        elif role == "pump":
+            return "a combat trick"
+        elif role in ("other", "planeswalker"):
+            return "its effect"
+        elif rules_profile(card).get("body"):
+            return "its tokens"
+        if result is not None and harms_players(card):
+            iid = _int(card.get("instance_id"))
+            spells = getattr(getattr(result, "_search", None), "spells", None) or []
+            if not any(hs.iid == iid and any(v.face for v in hs.variants) for hs in spells):
+                return "its damage to players"
+        return ""
+    except Exception:  # unknown: the caller treats the card as modelled, as before
+        logger.debug("unmodelled-effect check failed", exc_info=True)
+        return ""
+
+
+def _local_seat(state: dict) -> Any:
+    return state.get("local_seat_id") or next(
+        (p.get("seat_id") for p in state.get("players") or [] if isinstance(p, dict) and p.get("is_local")),
+        None,
+    )
+
+
+def _is_creature_card(card: dict) -> bool:
+    return "creature" in f"{card.get('type_line') or ''} {card.get('card_types') or ''}".lower()
+
+
+def _our_creature_names(state: dict) -> list[str]:
+    """Our creatures on the battlefield and the creature cards in our hand, by name."""
+    local = _local_seat(state)
+    names: list[str] = []
+    for zone in ("battlefield", "hand"):
+        for card in state.get(zone) or []:
+            if not isinstance(card, dict) or not card.get("name") or not _is_creature_card(card):
+                continue
+            if (
+                zone == "battlefield"
+                and (card.get("controller_seat_id") or card.get("owner_seat_id")) != local
+            ):
+                continue
+            if card["name"] not in names:
+                names.append(str(card["name"]))
+    return names
+
+
+def _our_global_haste(state: dict) -> bool:
+    """A permanent of ours gives our creatures haste."""
+    from arenamcp.board_assessment import _side_rules
+
+    try:
+        battlefield = [c for c in state.get("battlefield") or [] if isinstance(c, dict)]
+        return bool(_side_rules(battlefield, _local_seat(state)).get("haste"))
+    except Exception:
+        return False
+
+
+def _named_creatures(text: str, candidates: list[str]) -> list[str]:
+    """The candidates ``text`` names: in full, by the part before a comma, or by a word no other has.
+
+    "attack Arbiter (opp tapped)" names Archive Arbiter (standalone.log
+    2026-10-06 15:44:49).
+    """
+    words = Counter(word for name in candidates for word in set(_plain(name).split()))
+    found = []
+    for name in candidates:
+        full, short = _plain(name), _plain(str(name).split(",")[0])
+        keys = {full} | ({short} if len(short) >= 4 else set())
+        keys |= {w for w in full.split() if len(w) >= 4 and words[w] == 1 and w not in _NAME_STOPWORDS}
+        if any(_mentions(text, key) for key in keys):
+            found.append(name)
+    return found
+
+
+def _without_sick_attackers(
+    attack: str, sick: list[str], creatures: list[str], label: str, issues: list[str]
+) -> str:
+    """``attack`` without a creature cast that turn: the other creatures it names, else ''."""
+    plain = _plain(attack)
+    if not plain or _NO_ATTACK.match(plain) or _ALL_ATTACK.search(plain):
+        return attack  # "everything": a creature that can't attack yet simply doesn't
+    named = _named_creatures(attack, list(dict.fromkeys([*creatures, *sick])))
+    cast_now = [name for name in named if name in sick]
+    if not cast_now:
+        return attack
+    for name in cast_now:
+        issues.append(f"{label}: {name} can't attack the turn it is cast")
+    return ", ".join(name for name in named if name not in sick)
+
+
+def _cast_names(value: Any) -> list[str]:
+    """A step's cast list as card names: split, without notes ("X (gain 4 life)") and landcycling."""
+    if isinstance(value, str):
+        parts = [part.strip() for part in re.split(r",|\+| and ", value) if part.strip()]
+    else:
+        parts = [str(part).strip() for part in value or [] if str(part).strip()]
+    return [_ANY_NOTE.sub("", part) for part in parts if not part.lower().startswith("landcycle ")]
+
+
+def _named_card(name: str, names: dict[str, dict]) -> dict | None:
+    """The card ``name`` names in a ``_card_names`` lookup (full name, or the part before a comma)."""
+    return names.get(_plain(name)) or names.get(_plain(str(name).split(",")[0]))
+
+
+def _cast_parts(entry: str, known: Callable[[str], Any]) -> tuple[str, str, bool]:
+    """(card name, trailing note, landcycled) of one plan cast entry.
+
+    "Archive Arbiter (gain 4 life)" (CANDIDATE LINES), "Archive Arbiter
+    (choose: gain 4 life)" / "X (on Y)" (the line check) and "landcycle X" all
+    name a card: the note is split off when the name without it is ``known``
+    (a card in hand or the graveyard) and the full text is not.
+    """
+    text = str(entry or "").strip()
+    cycle = text.lower().startswith("landcycle ")
+    if cycle:
+        text = text[len("landcycle ") :].strip()
+    if known(text):
+        return text, "", cycle
+    match = _ANY_NOTE.search(text)
+    if match is None:
+        return text, "", cycle
+    return text[: match.start()].strip(), match.group(1).strip(), cycle
+
+
+def _note_modes(note: str) -> list[str]:
+    """The mode(s) a cast note names: "choose: gain 4 life, on X" -> ["gain 4 life"]."""
+    text = re.sub(r"^\s*choose:\s*", "", str(note or ""), flags=re.I)
+    return [part.strip() for part in text.split(",") if part.strip() and not part.strip().startswith("on ")]
+
+
+def _ready_attacker_names(state: dict, assessment: Any, index: int) -> set[str]:
+    """Names of our creatures on the battlefield now that can attack on the plan's turn ``index``.
+
+    At T on our own turn: untapped and not summoning-sick (it entered before
+    this turn, or has haste). On a later turn, or at T when T is our next turn,
+    every creature of ours that is on the battlefield now.
+    """
+    from arenamcp.combat_keywords import has_combat_keyword
+
+    local = _local_seat(state)
+    turn = _round(getattr(assessment, "turn", None), -1)
+    now = index == 0 and bool(getattr(assessment, "our_turn", False))
+    haste_for_all = _our_global_haste(state) if now else False
+    names: set[str] = set()
+    for card in state.get("battlefield") or []:
+        if not isinstance(card, dict) or not card.get("name") or not _is_creature_card(card):
+            continue
+        if (card.get("controller_seat_id") or card.get("owner_seat_id")) != local:
+            continue
+        if now:
+            entered = _round(card.get("turn_entered_battlefield"), -1)
+            sick = entered >= 0 and entered >= turn
+            if card.get("is_tapped") or (
+                sick and not haste_for_all and not has_combat_keyword(card, "haste")
+            ):
+                continue
+        names.add(str(card["name"]))
+    return names
+
+
+def _is_hand_land(card: dict) -> bool:
+    types = f"{card.get('type_line') or ''} {card.get('card_types') or ''}".lower()
+    return "land" in types and "creature" not in types
+
+
+def _plan_eval_steps(
+    steps: list, assessment: Any, state: dict, *, keep_land_turns: bool = False
+) -> list[dict]:
+    """The plan's turns as ``line_search.evaluate_plan`` reads them.
+
+    Labels T/T+1/T+2, card names as in hand, attackers by full name. A turn
+    that names no land plays one from hand when one is left (an omitted land
+    drop is not a decision to skip it; at T only when the board math has a
+    drop). Turns after T with no cast are left out, so they play greedily:
+    the check judges the plan's choices, not its blanks ("if drawn: X").
+    ``keep_land_turns`` keeps such a turn when it names a land (the mana
+    budgets follow the plan's land drops).
+    """
+    from arenamcp.board_assessment import _enters_tapped
+    from arenamcp.line_search_moves import LABELS
+
+    hand = [c for c in state.get("hand") or [] if isinstance(c, dict) and c.get("name")]
+    hand_names = _card_names(hand)
+    lands_left = [c for c in hand if _is_hand_land(c)]
+    creatures = _our_creature_names(state)
+    lookahead = list(getattr(assessment, "lookahead", None) or [])
+    planned: dict[int, dict] = {}
+    for k, raw in enumerate(steps[: len(LABELS)]):
+        if not isinstance(raw, dict):
+            continue
+        label = str(raw.get("label") or "").replace(" ", "").upper()
+        index = LABELS.index(label) if label in LABELS else _turn_index(raw.get("turn"), k)
+        if 0 <= index < len(LABELS):
+            planned.setdefault(index, raw)
+    out = []
+    for index in sorted(planned):
+        raw = planned[index]
+        land = str(raw.get("land") or "").strip()
+        taken = next((c for c in lands_left if _plain(c["name"]) == _plain(land)), None) if land else None
+        if land and not any(_plain(c["name"]) == _plain(land) for c in hand if _is_hand_land(c)):
+            land = ""  # not a land in hand at all (validation drops it): as if omitted
+        # A filler drop never takes a copy a later planned turn names for itself.
+        reserved = Counter(_plain(planned[k].get("land")) for k in planned if k > index)
+        free = []
+        for c in lands_left:
+            if reserved[_plain(c["name"])] > 0:
+                reserved[_plain(c["name"])] -= 1
+            else:
+                free.append(c)
+        if not land and free and (index > 0 or (lookahead and lookahead[0].land)):
+            preferred = _plain(lookahead[index].land) if index < len(lookahead) else ""
+            taken = next((c for c in free if _plain(c["name"]) == preferred), None) or min(
+                free, key=lambda c: (_enters_tapped(c), lands_left.index(c))
+            )
+            land = str(taken["name"])
+        if taken is not None:
+            lands_left.remove(taken)
+        casts = []
+        for name in _cast_names(raw.get("cast")):
+            card = hand_names.get(_plain(name)) or hand_names.get(_plain(name.split(",")[0]))
+            casts.append(str(card["name"]) if card else name)
+        if index > 0 and not casts and not (keep_land_turns and str(raw.get("land") or "").strip()):
+            continue
+        plain = _plain(raw.get("attack"))
+        if not plain or _NO_ATTACK.match(plain):
+            attack = "none"
+        elif _ALL_ATTACK.search(plain):
+            attack = "all"
+        else:
+            attack = ", ".join(_named_creatures(str(raw.get("attack")), creatures)) or "none"
+        out.append({"label": LABELS[index], "land": land, "cast": casts, "attack": attack})
+    return out
+
+
+def _evaluate_plan_line(steps: list, assessment: Any, state: dict, *, keep_land_turns: bool = False) -> Any:
+    """``line_search.evaluate_plan`` for these steps, or None (no usable search, or it failed)."""
+    result = getattr(assessment, "line_search", None)
+    if result is None or getattr(result, "truncated", True) or getattr(result, "dead_now", False):
+        return None
+    try:
+        from arenamcp import line_search
+
+        replay = _plan_eval_steps(steps, assessment, state, keep_land_turns=keep_land_turns)
+        evaluation = line_search.evaluate_plan(result, replay, state)
+    except Exception as error:  # the line check is advisory: never break plan validation
+        logger.debug("plan line evaluation failed: %s", error, exc_info=True)
+        return None
+    return evaluation if evaluation.line is not None else None
+
+
+def _check_plan_line(plan: GamePlan, assessment: Any, state: dict, issues: list[str]) -> None:
+    """Compare the validated plan's line with the search's best line (see :func:`validate_plan`)."""
+    if not plan.turn_plan:
+        return
+    evaluation = _evaluate_plan_line(plan.turn_plan, assessment, state)
+    result = getattr(assessment, "line_search", None)
+    best = getattr(result, "best", None)
+    if evaluation is None or best is None:
+        return
+    try:
+        from arenamcp.board_assessment import _leaf_race
+        from arenamcp.line_search_moves import ALIVE
+
+        line = evaluation.line
+        skipped = _unchecked_plan(plan, line, result, state)
+        if skipped:
+            # The replay would undervalue (or misread) the plan: no verdict either way.
+            issues.append(f"line check skipped: {skipped}")
+            return
+        # The best line's value carries the race term on its leaf; so must the plan's.
+        race = _leaf_race(result, line) if line.cls == ALIVE else None
+        value = line.v + (race or 0.0)
+        if (line.cls, line.timing) < (best.cls, best.timing):
+            outcome = f"dies T{line.dead_turn}" if line.outcome == "dead" else line.outcome_text()
+            text = f"plan line {outcome}; best line {best.summary()}"
+            later: list[str] = []
+            if assessment.survival_mode:
+                text += _t_step_override(plan, assessment, state, line, best, later)
+            issues.append(text)
+            issues.extend(later)
+        elif (line.cls, line.timing) == (best.cls, best.timing) and best.v - value >= PLAN_LINE_GAP:
+            issues.append(
+                f"plan line {line.outcome_text()} trails the best line by {best.v - value:.1f} in value: "
+                f"{best.summary()}"
+            )
+    except Exception as error:
+        logger.debug("plan line check failed: %s", error, exc_info=True)
+
+
+def _unchecked_plan(plan: GamePlan, line: Any, result: Any, state: dict) -> str:
+    """Why the plan's replayed line can't be judged against the best line, or ''.
+
+    A planned cast whose effect the search does not model
+    (:func:`unmodelled_effect`: a token maker, an enters trigger, an aura...)
+    makes the plan's line look worse than it is; a cast note naming a mode
+    other than the one the replay chose ("X (choose: destroy …)" replayed as
+    gain 4 life) makes it look better.
+    """
+    hand = _card_names([c for c in state.get("hand") or [] if isinstance(c, dict)])
+    replayed = {step.label: dict(step.modes) for step in getattr(line, "steps", ()) or ()}
+    for step in plan.turn_plan:
+        for entry in step.get("cast") or []:
+            name, note, cycle = _cast_parts(str(entry), lambda n: _named_card(n, hand))
+            if cycle:
+                continue
+            card = _named_card(name, hand)
+            why = unmodelled_effect(card, result) if card is not None else ""
+            if why:
+                return f"{step.get('label')} {card.get('name')} ({why} not modelled)"
+            chose = replayed.get(step.get("label"), {}).get(str((card or {}).get("name") or name))
+            for mode in _note_modes(note):
+                if chose and not _same_mode(mode, chose):
+                    return f"{step.get('label')} {entry}: the replay chose {chose}"
+    return ""
+
+
+def _same_mode(note: str, label: str) -> bool:
+    """A cast note's mode and a line's mode label ('destroy target noncreature, nonland…') agree."""
+    a, b = _plain(note), _plain(str(label).rstrip("…"))
+    return bool(a and b) and (a.startswith(b) or b.startswith(a))
+
+
+def _t_step_override(
+    plan: GamePlan, assessment: Any, state: dict, line: Any, best: Any, issues: list[str]
+) -> str:
+    """The line check's T-step override, as the issue's suffix; it changes the plan only when on.
+
+    It is the line guard at plan time and follows ARENAMCP_LINE_GUARD
+    (shadow by default: the rewritten T step reaches every per-decision
+    prompt as 'THIS TURN …', so it waits for the user's review of the shadow
+    logs like the guard does). 'off': no override; 'shadow': ' — Line guard
+    (shadow): would replace T with …' and the plan is untouched; 'on': the T
+    step is replaced. Never when the override would not survive the guards'
+    own rules: worse under the +2/+0 trick proxy, or a modal choice of a card
+    with a mode the search can't value (the mode guard never applies those).
+    """
+    from arenamcp import line_guard
+
+    setting = line_guard.guard_mode("line")
+    if setting == "off":
+        return ""
+    blocker = _override_blocker(assessment.line_search, line, best, state)
+    if blocker:
+        return f" — T kept ({blocker})"
+    if setting != "on":
+        preview = _replace_t_step(deepcopy(plan), assessment, state, line, best, [])
+        return f" — Line guard (shadow): would replace T with {preview}" if preview else ""
+    replaced = _replace_t_step(plan, assessment, state, line, best, issues)
+    return f" — T replaced with {replaced}" if replaced else ""
+
+
+def _override_blocker(result: Any, line: Any, best: Any, state: dict) -> str:
+    """Why the best line's T step must not replace the plan's, or ''."""
+    from arenamcp.line_search import proxy_outcome
+    from arenamcp.line_search_moves import bullets, classify
+
+    step = best.steps[0] if best.steps else None
+    hand = _card_names([c for c in state.get("hand") or [] if isinstance(c, dict)])
+    for name, _mode in getattr(step, "modes", ()) or ():
+        card = _named_card(name, hand) or {}
+        modes = bullets(str(card.get("oracle_text") or ""))
+        if any(classify(str(name), mode)[0] == "other" for mode in modes):
+            return f"{name}'s other mode is not modelled"
+    trick_best, trick_plan = proxy_outcome(result, best), proxy_outcome(result, line)
+    if trick_best is None or trick_plan is None:
+        return "no +2/+0 trick replay"
+    if (trick_best.cls, trick_best.timing) < (trick_plan.cls, trick_plan.timing):
+        return f"+2/+0 trick: {trick_best.outcome_text()} vs {trick_plan.outcome_text()}"
+    return ""
+
+
+def _replace_t_step(
+    plan: GamePlan, assessment: Any, state: dict, line: Any, best: Any, issues: list[str]
+) -> str:
+    """Put the best line's T step (land, casts and modes, attack) into the plan's T step.
+
+    Returns the T step's text, or '' when there is nothing to replace (no T
+    step, or the plan already plays it). Later turns lose casts and lands the
+    new T step now uses.
+    """
+    step = plan.step_for(assessment.plan_turn)
+    if step is None or not best.steps or not line.steps:
+        return ""
+    new, old = best.steps[0], line.steps[0]
+    if new.turn != step.get("turn") or new.sig[1:] == old.sig[1:]:
+        return ""
+    displaced = [name for name in _cast_names(step.get("cast")) if name not in new.casts]
+    modes, targets = dict(new.modes), dict(new.targets)
+
+    def noted(name: str) -> str:
+        notes = [f"choose: {modes[name]}"] if modes.get(name) else []
+        notes += [f"on {targets[name]}"] if targets.get(name) else []
+        return f"{name} ({', '.join(notes)})" if notes else name
+
+    step["land"] = new.land
+    step["cast"] = [noted(name) for name in new.casts] + [f"landcycle {name}" for name in new.cycles]
+    step["attack"] = ", ".join(new.attack) or "none"
+    # The old hold planned around the old casts ("UU for Countersculpt" next to a 6-drop
+    # that taps 6 of 7): the best line's own held instants, if any.
+    step["hold"] = ", ".join(new.held)[:120]
+    step["mana"] = new.mana
+    # Each hand card once across the plan: later turns lose what T now uses.
+    in_hand = Counter(_plain(c.get("name")) for c in state.get("hand") or [] if isinstance(c, dict))
+    left = in_hand - Counter(_plain(name) for name in [*new.casts, *new.cycles, new.land] if name)
+    for later in [s for s in plan.turn_plan if s.get("turn", 0) > step["turn"]]:
+        kept = []
+        for entry in later.get("cast") or []:
+            name = _plain(_ANY_NOTE.sub("", str(entry)).removeprefix("landcycle "))
+            if not in_hand[name]:  # from the graveyard: not a hand card
+                kept.append(entry)
+            elif left[name] > 0:
+                left[name] -= 1
+                kept.append(entry)
+            else:
+                issues.append(
+                    f"{later.get('label')}: dropped {entry} (the line check casts it on T{step['turn']})"
+                )
+        later["cast"] = kept
+        land = _plain(later.get("land"))
+        if land and in_hand[land]:
+            if left[land] > 0:
+                left[land] -= 1
+            else:
+                issues.append(
+                    f"{later.get('label')}: dropped land {later['land']} (played on T{step['turn']})"
+                )
+                later["land"] = ""
+    _move_displaced(plan, best, displaced, state, issues)
+    return new.text()
+
+
+def _move_displaced(plan: GamePlan, best: Any, displaced: list[str], state: dict, issues: list[str]) -> None:
+    """The old T casts the best line plays on T+1 move to the plan's T+1 step, when its mana allows."""
+    from arenamcp.mulligan_policy import hand_card
+
+    if len(best.steps) < 2 or not displaced:
+        return
+    nxt = best.steps[1]
+    step = next((s for s in plan.turn_plan if s.get("turn") == nxt.turn), None)
+    if step is None:
+        return
+    hand = _card_names([c for c in state.get("hand") or [] if isinstance(c, dict)])
+    planned = Counter(_plain(name) for s in plan.turn_plan for name in _cast_names(s.get("cast")))
+
+    def cost(name: str) -> int:
+        card = _named_card(name, hand)
+        return hand_card(card).mana_value if card else 0
+
+    for name in displaced:
+        if name not in nxt.casts or planned[_plain(name)] or _named_card(name, hand) is None:
+            continue
+        casts = list(step.get("cast") or [])
+        if sum(cost(c) for c in _cast_names(casts)) + cost(name) > _round(step.get("mana"), 0):
+            continue
+        step["cast"] = [*casts, name]
+        planned[_plain(name)] += 1
+        issues.append(f"{step.get('label')}: casts {name} (the best line plays it then)")
+
+
+# --- render-time progress -------------------------------------------------------------
+
+_DONE = " ✓"
+
+
+def _with_progress(step: dict, assessment: Any, state: dict | None) -> dict:
+    """``step`` with what is already done this turn marked ✓: the land played, permanents cast."""
+    if not isinstance(state, dict) or not assessment.our_turn or step.get("turn") != assessment.turn:
+        return step
+    local = _local_seat(state)
+    lands_played = next(
+        (
+            _round(p.get("lands_played"))
+            for p in state.get("players") or []
+            if isinstance(p, dict) and (p.get("seat_id") == local or p.get("is_local"))
+        ),
+        0,
+    )
+    entered_lands: Counter[str] = Counter()
+    entered: Counter[str] = Counter()
+    for card in state.get("battlefield") or []:
+        if (
+            not isinstance(card, dict)
+            or (card.get("controller_seat_id") or card.get("owner_seat_id")) != local
+        ):
+            continue
+        if _round(card.get("turn_entered_battlefield"), -1) != assessment.turn:
+            continue
+        (entered_lands if _is_hand_land(card) else entered)[_plain(card.get("name"))] += 1
+    marked = dict(step)
+    land = str(step.get("land") or "")
+    if land and lands_played > 0 and entered_lands[_plain(land)] > 0:
+        marked["land"] = land + _DONE
+    casts = []
+    for entry in step.get("cast") or []:
+        name = _plain(_ANY_NOTE.sub("", str(entry)))
+        if entered[name] > 0:
+            entered[name] -= 1
+            entry = f"{entry}{_DONE}"
+        casts.append(entry)
+    marked["cast"] = casts
+    return marked
+
+
+def compose_strategy_block(
+    assessment: Any, plan: GamePlan | None, *, extra_facts: str = "", state: dict | None = None
+) -> str:
     """ROLE + this turn + facts (fresh) followed by the game plan's spine.
 
     The assessment is recomputed from the decision's own snapshot, so the role,
     clocks and lethal flags are current even when the plan was formed earlier
     in the turn. A validated plan step for this turn replaces the board-math
-    deployment suggestion.
+    deployment suggestion; with ``state``, what this turn already did is marked
+    ✓ (the land played, permanents cast). ``extra_facts`` (indented fact
+    lines, e.g. OPP INTERACTION) go with the facts, before the priority line.
     """
+    extra = extra_facts.rstrip()
     if assessment is None:
-        return plan.as_planner_block().strip() if plan else ""
+        block = plan.as_planner_block().strip() if plan else ""
+        return f"{block}\n{extra}" if block and extra else block or extra.strip()
     this_turn = next_turns = None
     role_note = ""
     if plan is not None and not plan.is_empty():
         step = plan.step_for(assessment.plan_turn)
         if step is not None:
-            this_turn = f"{step_text(step)} [game plan T{plan.turn_formed}]"
+            this_turn = (
+                f"{step_text(_with_progress(step, assessment, state))} [game plan T{plan.turn_formed}]"
+            )
         later = [s for s in plan.turn_plan if s.get("turn", 0) > assessment.plan_turn]
         if later:
             next_turns = " | ".join(f"T{s['turn']}: {step_text(s)}" for s in later)
@@ -717,6 +1357,9 @@ def compose_strategy_block(assessment: Any, plan: GamePlan | None) -> str:
                 "these board facts are newer — follow them]"
             )
     block = assessment.prompt_block(this_turn=this_turn, next_turns=next_turns, role_note=role_note)
+    if extra:
+        at = block.find("\n  Priority:")
+        block = f"{block[:at]}\n{extra}{block[at:]}" if at >= 0 else f"{block}\n{extra}"
     if plan is not None and not plan.is_empty():
         block += "\n" + plan.as_planner_block(with_role_and_turns=False)
     return block
@@ -732,6 +1375,89 @@ def grounded_facts_block(game_state: dict | None) -> str:
         logger.debug("board assessment unavailable: %s", error)
         return ""
     return assessment.prompt_block() if assessment else ""
+
+
+# --- opponent interaction (opponent_tricks, advisory) -------------------------------------
+#
+# Kept out of BoardAssessment: the assessment cache key has no mana pools and
+# no trick-table state, so a risk cached there would go stale (critique D4).
+
+_TRICK_CACHE: OrderedDict[tuple, Any] = OrderedDict()
+_TRICK_CACHE_LOCK = threading.Lock()
+_TRICK_CACHE_SIZE = 16
+
+
+def _trick_key(state: dict, table: Any) -> tuple:
+    """The assessment signature plus what else the estimate reads, and the table it used."""
+    from arenamcp.board_assessment import _signature
+
+    zones = state.get("zones") if isinstance(state.get("zones"), dict) else {}
+    pools = tuple(
+        (str(p.get("seat_id")), json.dumps(p.get("mana_pool") or {}, sort_keys=True, default=str))
+        for p in state.get("players") or []
+        if isinstance(p, dict)
+    )
+    return (
+        _signature(state),
+        (str(table.set_code), table.version, table.built_at, id(table)),
+        pools,
+        json.dumps(state.get("revealed_cards") or [], sort_keys=True, default=str),
+        zones.get("opponent_library_count"),
+        tuple(str(c.get("instance_id")) for c in state.get("stack") or [] if isinstance(c, dict)),
+        str(state.get("event_id") or state.get("format_name") or ""),
+    )
+
+
+def opponent_interaction(state: dict | None, service: Any) -> Any:
+    """``opponent_tricks.trick_risk`` for ``state`` with ``service``'s in-memory table, or None.
+
+    Never touches disk or network (the table is loaded by ``ensure`` off the
+    decision path); None when there is no table for the match's set yet.
+    """
+    if not isinstance(state, dict) or service is None:
+        return None
+    try:
+        from arenamcp.opponent_tricks import trick_risk
+
+        table = service.get_for_state(state)
+        if table is None:
+            return None
+        key = _trick_key(state, table)
+        with _TRICK_CACHE_LOCK:
+            cached = _TRICK_CACHE.get(key)
+            if cached is not None:
+                _TRICK_CACHE.move_to_end(key)
+                return cached
+        risk = trick_risk(state, table)
+        with _TRICK_CACHE_LOCK:
+            _TRICK_CACHE[key] = risk
+            while len(_TRICK_CACHE) > _TRICK_CACHE_SIZE:
+                _TRICK_CACHE.popitem(last=False)
+        return risk
+    except Exception as error:  # advisory: never break a prompt or the UI
+        logger.debug("opponent interaction risk unavailable: %s", error)
+        return None
+
+
+def _line_telemetry(assessment: Any) -> str:
+    """' | line: <best> (nodes=N, X ms[, bounded][, truncated])[ | greedy dead_in=X]' for the log."""
+    result = getattr(assessment, "line_search", None)
+    if result is None:
+        return ""
+    try:
+        stats = dict(getattr(assessment, "search_stats", None) or result.stats())
+        flags = "".join(f", {flag}" for flag in ("bounded", "truncated") if stats.get(flag))
+        text = (
+            f" | line: {result.best.summary()} "
+            f"(nodes={stats.get('nodes')}, {float(stats.get('ms') or 0.0):.1f} ms{flags})"
+        )
+        greedy = getattr(assessment, "dead_in_greedy", None)
+        if greedy != assessment.dead_in:
+            text += f" | greedy dead_in={'none' if greedy is None else greedy}"
+        return text
+    except Exception as error:
+        logger.debug("line telemetry unavailable: %s", error)
+        return ""
 
 
 def _round(x: Any, default: int = 0) -> int:
@@ -826,6 +1552,14 @@ class GamePlanManager:
         self._inflight_cancel: threading.Event | None = None
         self._inflight_lane: object | None = None
         self._inflight_plan_turn = 0
+        # The opponent-trick table service (None: TrickTableService.shared();
+        # tests inject their own) and its telemetry: the last 'Trick risk'
+        # line's (match, turn, step), that turn's predicted p_any, and the
+        # stack/graveyard ids at the last observe, for 'Trick observed'.
+        self.trick_service: Any = None
+        self._trick_logged: tuple | None = None
+        self._trick_predicted: tuple | None = None
+        self._trick_seen: tuple | None = None
 
     # ----- lifecycle -------------------------------------------------------
     def reset(self) -> None:
@@ -844,9 +1578,16 @@ class GamePlanManager:
             self._match_id = None
             self._observed_turn = 0
             self._last_attempt_at = None
+            self._trick_logged = None
+            self._trick_predicted = None
+            self._trick_seen = None
 
     def observe(self, game_state: dict[str, Any]) -> None:
-        """Invalidate old-match plans before any tactical prompt can use them."""
+        """Invalidate old-match plans before any tactical prompt can use them.
+
+        Also starts loading the match's opponent-trick table (non-blocking)
+        and writes the trick telemetry (:meth:`_observe_tricks`).
+        """
         match_id = game_state.get("match_id")
         turn = _round((game_state.get("turn") or {}).get("turn_number"))
         with self._lock:
@@ -857,6 +1598,81 @@ class GamePlanManager:
             if match_id:
                 self._match_id = match_id
             self._observed_turn = max(turn, self._observed_turn)
+            self._observe_tricks(game_state, turn)
+
+    def _tricks(self) -> Any:
+        """The opponent-trick table service, or None when it can't be had."""
+        if self.trick_service is not None:
+            return self.trick_service
+        try:
+            from arenamcp.opponent_tricks import TrickTableService
+
+            return TrickTableService.shared()
+        except Exception as error:
+            logger.debug("trick table service unavailable: %s", error)
+            return None
+
+    def _observe_tricks(self, game_state: dict[str, Any], turn: int) -> None:
+        """Trick telemetry, advisory only (caller holds the lock; never raises).
+
+        * ``ensure_for_state``: loads or builds the set's table off-thread.
+        * 'Trick risk (turn N, step): p_any=..., verdict=...' once per turn and
+          step, at DeclareAttack and DeclareBlock.
+        * 'Trick observed: <name> (predicted p_any=...)' when the opponent's
+          stack (or, after a combat snapshot this turn, graveyard) gains an
+          instant-speed card during combat.
+        """
+        try:
+            service = self._tricks()
+            if service is None or not isinstance(game_state, dict):
+                return
+            try:
+                service.ensure_for_state(game_state)
+            except Exception as error:  # a loader failure must not stop the telemetry
+                logger.debug("trick table loading skipped: %s", error)
+            from arenamcp.board_model import canonical_phase_step
+            from arenamcp.opponent_tricks import observed_tricks
+
+            phase, step = canonical_phase_step(game_state.get("turn") or {})
+            match = self._match_id
+            seen = self._trick_seen
+            if phase == "Phase_Combat" and seen is not None and seen[0] == (match, turn):
+                # Before this turn's first combat snapshot, only what is on the stack now is new in combat.
+                current = game_state if seen[1] == "Phase_Combat" else dict(game_state, graveyard=[])
+                predicted = self._trick_predicted
+                p_any = f"{predicted[2]:.3f}" if predicted and predicted[:2] == (match, turn) else "n/a"
+                for name in observed_tricks(seen[2], current):
+                    logger.info("Trick observed: %s (predicted p_any=%s)", name, p_any)
+            self._trick_seen = (
+                (match, turn),
+                phase,
+                {
+                    zone: [
+                        {"instance_id": c.get("instance_id"), "name": c.get("name")}
+                        for c in game_state.get(zone) or []
+                        if isinstance(c, dict)
+                    ]
+                    for zone in ("stack", "graveyard")
+                },
+            )
+            logged = (match, turn, step)
+            if step not in ("Step_DeclareAttack", "Step_DeclareBlock") or self._trick_logged == logged:
+                return
+            risk = opponent_interaction(game_state, service)
+            if risk is None or not risk.known:
+                return
+            self._trick_logged = logged
+            self._trick_predicted = (match, turn, risk.p_any)
+            logger.info(
+                "Trick risk (turn %d, %s): p_any=%.3f, verdict=%s | %s",
+                turn,
+                step.removeprefix("Step_"),
+                risk.p_any,
+                risk.verdict_line(),
+                risk.summary(),
+            )
+        except Exception as error:
+            logger.debug("trick telemetry skipped: %s", error)
 
     def note_stall(self, what: str) -> None:
         """Record that a plan-advancing play could not be executed.
@@ -922,12 +1738,20 @@ class GamePlanManager:
         return plan.as_coach_intro() if plan else ""
 
     def strategy_block(self, game_state: dict[str, Any] | None) -> str:
-        """Fresh ROLE + this turn + facts for ``game_state``, then the plan spine."""
+        """Fresh ROLE + this turn + facts for ``game_state``, then the plan spine.
+
+        Adds the opponent's instant-speed interaction verdict (no card names)
+        when the match's trick table is loaded.
+        """
         from arenamcp.board_assessment import assess
 
         plan = self._plan
-        assessment = assess(game_state) if isinstance(game_state, dict) else None
-        return compose_strategy_block(assessment, plan)
+        state = game_state if isinstance(game_state, dict) else None
+        assessment = assess(state) if state is not None else None
+        risk = opponent_interaction(state, self._tricks()) if state is not None else None
+        verdict = risk.verdict_line() if risk is not None and risk.known else ""
+        extra = f"  OPP INTERACTION: {verdict}" if verdict else ""
+        return compose_strategy_block(assessment, plan, extra_facts=extra, state=state)
 
     def ui_payload(self, game_state: dict[str, Any] | None = None) -> dict[str, Any]:
         """Plan payload for the desktop plan card, with current board facts.
@@ -952,6 +1776,10 @@ class GamePlanManager:
                     payload["role"] = assessment.role
                 if not payload.get("role_reason"):
                     payload["role_reason"] = assessment.role_reason
+                # The trick estimate for the card (card names allowed there).
+                risk = opponent_interaction(game_state, self._tricks())
+                if risk is not None and risk.known:
+                    payload["opp_interaction"] = risk.as_payload()
         return payload
 
     # ----- reform decision -------------------------------------------------
@@ -1405,14 +2233,19 @@ class GamePlanManager:
         game_state = prepare_match_context(game_state)
         context = self._build_context(game_state)
         assessment = assess(game_state)
-        user_parts = [context]
+        # Stable text first, for the server's prefix cache: system prompt,
+        # deck reference (with_deck_reference) and the deck playbook, then the
+        # volatile board.
+        user_parts = [f"DECK PLAYBOOK / STRATEGY:\n{self._seed}\n"] if self._seed else []
+        user_parts.append(context)
         if assessment is not None:
             logger.info(
-                "Board facts (turn %d, %.1fms): %s | %s",
+                "Board facts (turn %d, %.1fms): %s | %s%s",
                 turn_num,
                 assessment.elapsed_ms,
                 assessment.headline(),
                 assessment.facts_line(),
+                _line_telemetry(assessment),
             )
             when = "this turn" if assessment.our_turn else "our next turn"
             user_parts.append(
@@ -1421,8 +2254,6 @@ class GamePlanManager:
                 + f"\nT = turn {assessment.plan_turn} ({when}); T+1 = turn {assessment.plan_turn + 2}; "
                 f"T+2 = turn {assessment.plan_turn + 4}. ASSESSED ROLE: {assessment.role}."
             )
-        if self._seed:
-            user_parts.append(f"\nDECK PLAYBOOK / STRATEGY:\n{self._seed}")
         if self._plan:
             user_parts.append(self._plan.as_planner_block())
         if self._stall_count >= self._STALL_REFORM_THRESHOLD and self._stall_hint:
