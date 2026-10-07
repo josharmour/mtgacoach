@@ -9,6 +9,7 @@ from arenamcp.gamestate_transforms import (
     _coerce_optional_int,
     _coerce_str_list,
     _collapse_gre_value,
+    _counter_type_name,
     _ensure_dict_list,
     _ensure_int_list,
     _ensure_list,
@@ -101,9 +102,12 @@ class _GameStateAnnotationsMixin:
                             )
 
                 elif ann_type in ("AnnotationType_CounterAdded", "AnnotationType_CounterRemoved"):
-                    counter_type = detail_map.get("counterType", "unknown")
+                    counter_type = _counter_type_name(detail_map)
                     counter_count = _coerce_int(
-                        detail_map.get("counterCount", detail_map.get("count", 1)),
+                        detail_map.get(
+                            "counterCount",
+                            detail_map.get("transaction_amount", detail_map.get("count", 1)),
+                        ),
                         1,
                     )
                     is_added = "Added" in ann_type
@@ -118,6 +122,17 @@ class _GameStateAnnotationsMixin:
                                 obj.counters[counter_type] = max(0, current - counter_count)
                                 if obj.counters[counter_type] == 0:
                                     del obj.counters[counter_type]
+                                if (
+                                    counter_type == "Stun"
+                                    and self._in_untap_step
+                                    and self._untaps_this_step(
+                                        obj.controller_seat_id or obj.owner_seat_id, obj.zone_id
+                                    )
+                                ):
+                                    # The GRE removed a stun counter instead of
+                                    # untapping it (CR 122.1d), so it stays tapped
+                                    # even if the stun was never seen going on.
+                                    obj.is_tapped = True
                             self._add_event(
                                 {
                                     "type": "counter_added" if is_added else "counter_removed",
@@ -127,6 +142,20 @@ class _GameStateAnnotationsMixin:
                                     "amount": counter_count,
                                 }
                             )
+
+                elif ann_type == "AnnotationType_TappedUntappedPermanent":
+                    # The GRE's own record of a tap (tapped=1) or untap (tapped=0).
+                    # Player.log omits isTapped when it is false, so an untap is
+                    # otherwise invisible on the object. An untap also ends any
+                    # untap prevention inferred for the permanent.
+                    tapped = _coerce_optional_int(detail_map.get("tapped"))
+                    if tapped is not None:
+                        for obj_id in affected_ids:
+                            obj = self.game_objects.get(obj_id)
+                            if obj:
+                                obj.is_tapped = bool(tapped)
+                            if not tapped:
+                                self._untap_prevention.discard(obj_id)
 
                 elif ann_type == "AnnotationType_ControllerChanged":
                     for obj_id in affected_ids:

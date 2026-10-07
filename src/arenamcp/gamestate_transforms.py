@@ -110,6 +110,32 @@ def _parse_block_state(value: Any) -> bool:
     return str(value) in ("BlockState_Declared", "BlockState_Blocking")
 
 
+# GRE CounterType numbers (Wotc.Mtgo.Gre.External.Messaging.CounterType) that
+# Player.log counter annotations are decoded to. Only counters that change how
+# game state is tracked get a name; the rest keep the legacy "unknown" bucket.
+# Loyalty (7) is deliberately left out: the object's ``loyalty`` field already
+# sets it absolutely, so also applying the CounterAdded delta would double it.
+_DECODED_COUNTER_TYPES = {172: "Stun"}
+
+
+def _counter_type_name(detail_map: dict[str, Any]) -> str:
+    """Name the counter in a CounterAdded/CounterRemoved annotation.
+
+    Player.log sends ``counter_type`` as the GRE enum number; a ready-made
+    ``counterType`` name is used as-is.
+    """
+    named = detail_map.get("counterType")
+    if named not in (None, ""):
+        return str(named)
+    return _DECODED_COUNTER_TYPES.get(_coerce_optional_int(detail_map.get("counter_type")), "unknown")
+
+
+def _has_stun_counter(obj: Any) -> bool:
+    """True iff the object carries a stun counter ("Stun", "CounterType_Stun", ...)."""
+    counters = getattr(obj, "counters", None) or {}
+    return any("stun" in str(kind).lower() and _coerce_int(count, 0) > 0 for kind, count in counters.items())
+
+
 def _bounded_gre_copy(
     value: Any,
     *,

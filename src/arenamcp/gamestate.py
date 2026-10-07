@@ -62,6 +62,7 @@ from arenamcp.gamestate_transforms import (
     _ensure_dict_list,
     _ensure_int_list,
     _ensure_list,
+    _has_stun_counter,
     _parse_attack_state,
     _parse_block_state,
 )
@@ -1571,6 +1572,16 @@ class GameState(_GameStateAnnotationsMixin):
 
             self._published_snapshot = self._build_raw_snapshot_locked()
 
+    def _untaps_this_step(self, controller_seat_id: int | None, zone_id: int) -> bool:
+        """True iff a permanent with this controller and zone untaps in this untap step.
+
+        Only the active player's battlefield permanents untap (CR 502.3).
+        """
+        if not controller_seat_id or controller_seat_id != self.turn_info.active_player:
+            return False
+        zone = self.zones.get(zone_id)
+        return zone is not None and zone.zone_type == ZoneType.BATTLEFIELD
+
     def _update_game_object(self, obj_data: dict) -> None:
         """Update or create a game object from message data.
 
@@ -1670,14 +1681,18 @@ class GameState(_GameStateAnnotationsMixin):
 
         if "isTapped" in obj_data:
             is_tapped = obj_data["isTapped"]
-            # Track untap prevention: if MTGA says a permanent is still tapped
-            # during the untap step, it has an untap restriction (e.g. Blossombind).
-            # Skip blanket-untapping it on future turns.
-            if self._in_untap_step:
-                if is_tapped:
-                    self._untap_prevention.add(instance_id)
-                else:
-                    self._untap_prevention.discard(instance_id)
+            if not is_tapped:
+                # MTGA says it is untapped, so nothing is holding it tapped.
+                self._untap_prevention.discard(instance_id)
+            elif self._in_untap_step and self._untaps_this_step(controller_seat_id or owner_seat_id, zone_id):
+                # Still tapped right after ITS OWN untap step: something such as
+                # Blossombind stops it untapping, so the next blanket untap skips
+                # it. Only the active player's permanents untap, so another
+                # player's permanent that is still tapped proves nothing. On
+                # 2026-10-06 the opponent's Unflinching Hortimancer, tapped from
+                # attacking, was flagged at the start of OUR turn and then kept
+                # "tapped" through every later untap step of theirs.
+                self._untap_prevention.add(instance_id)
         if "parentId" in obj_data:
             parent_instance_id = obj_data["parentId"]
 
@@ -2327,10 +2342,13 @@ class GameState(_GameStateAnnotationsMixin):
             self._pending_combat_steps.clear()
 
         # UNTAP STEP: When turn changes, untap all permanents controlled by the new active player.
-        # Skip permanents in _untap_prevention — those that MTGA explicitly kept tapped last turn
-        # (e.g. creatures with "can't become untapped" from Blossombind-style effects).
-        # After blanket untap, _in_untap_step is set so that object diffs in this same message
-        # can update _untap_prevention for the NEXT turn's blanket untap.
+        # Player.log omits isTapped when it is false, so without this an untap is invisible.
+        # Keep tapped only what the GRE showed will not untap:
+        # - a stun counter it put on the permanent (one is removed instead, CR 122.1d), or
+        # - _untap_prevention: the permanent was still tapped right after its own previous
+        #   untap step (Blossombind-style "doesn't untap" effects).
+        # After blanket untap, _in_untap_step is set so that object diffs and annotations in
+        # this same message can correct it (TappedUntappedPermanent is the GRE's own record).
         if new_turn != prev_turn and new_active != 0:
             self._in_untap_step = True
             # Clean up _untap_prevention: remove instance_ids no longer on battlefield
@@ -2342,21 +2360,23 @@ class GameState(_GameStateAnnotationsMixin):
             self._untap_prevention &= battlefield_ids
 
             untapped_count = 0
-            skipped_count = 0
+            kept_tapped: list[str] = []
             for obj in self.game_objects.values():
                 controller = obj.controller_seat_id if obj.controller_seat_id else obj.owner_seat_id
                 if controller == new_active and obj.is_tapped:
                     zone = self.zones.get(obj.zone_id)
                     if zone and zone.zone_type == ZoneType.BATTLEFIELD:
-                        if obj.instance_id in self._untap_prevention:
-                            skipped_count += 1
+                        if _has_stun_counter(obj):
+                            kept_tapped.append(f"{obj.instance_id} stun counter")
+                        elif obj.instance_id in self._untap_prevention:
+                            kept_tapped.append(f"{obj.instance_id} untap prevention")
                         else:
                             obj.is_tapped = False
                             untapped_count += 1
-            if untapped_count > 0 or skipped_count > 0:
+            if untapped_count > 0 or kept_tapped:
                 msg = f"Untap step: untapped {untapped_count} permanents for seat {new_active}"
-                if skipped_count > 0:
-                    msg += f" (skipped {skipped_count} with untap prevention)"
+                if kept_tapped:
+                    msg += f" (kept {len(kept_tapped)} tapped: {', '.join(kept_tapped)})"
                 logger.info(msg)
 
         # Reset lands_played to 0 for all players when the turn changes.
