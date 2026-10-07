@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 PRIMER_DIR = Path.home() / ".arenamcp" / "cache" / "set_primers"
 PRIMER_VERSION = 1
 PRIMER_MAX_AGE_S = 7 * 24 * 3600
+# A primer missing pieces because the model was skipped (server down) or the
+# background lane dropped the call is kept in memory only, and rebuilt after this.
+PARTIAL_RETRY_S = 600.0
 MIN_RATED_GAMES = 200
 COLOR_ORDER = "WUBRG"
 TWO_COLOR_PAIRS = ("WU", "WB", "WR", "WG", "UB", "UR", "UG", "BR", "BG", "RG")
@@ -49,6 +52,9 @@ PAIR_NAMES = {
     "RG": "Gruul",
 }
 ROLE_KEYS = ("payoffs", "enablers", "key_commons", "key_uncommons")
+# Proxy call class (backends/proxy.py CALL_CLASSES): background priority, the
+# one-at-a-time background lane, and skipped while the model server is down.
+SET_PRIMER_CALL_CLASS = "background.set_primer"
 
 _ANALYST = """You are a professional Magic: The Gathering Limited analyst preparing the draft
 strategy a strong player reads BEFORE drafting this set. You get card rules text and 17lands
@@ -493,6 +499,31 @@ def merge_synthesis(primer: SetPrimer, payload: Any) -> SetPrimer:
     return primer
 
 
+def _call_labels(backend: Any) -> dict[str, Any]:
+    """The proxy call class, for backends whose complete() accepts it (older/test ones: none)."""
+    try:
+        from arenamcp.game_plan import accepted_call_kwargs
+    except Exception:  # pragma: no cover - the labels are optional
+        return {}
+    return accepted_call_kwargs(backend, call_class=SET_PRIMER_CALL_CLASS)
+
+
+def _runs_in_background_lane(backend: Any) -> bool:
+    """True when this backend's primer calls share the proxy's one-at-a-time background lane.
+
+    The lane runs one background call at a time, and a newer call of the
+    same class cancels the one in flight ("superseded"), so parallel primer
+    workers would cancel each other's requests.
+    """
+    if "call_class" not in _call_labels(backend):
+        return False
+    try:
+        from arenamcp.backends.proxy import background_lane_enabled
+    except Exception:  # pragma: no cover - a labelled backend is the proxy
+        return True
+    return background_lane_enabled()
+
+
 def _ask(backend: Any, system: str, message: str, timeout: float, max_tokens: int = 4000) -> str:
     try:
         return backend.complete(
@@ -502,6 +533,7 @@ def _ask(backend: Any, system: str, message: str, timeout: float, max_tokens: in
             temperature=0.0,
             request_timeout_s=timeout,
             response_format={"type": "json_object"},
+            **_call_labels(backend),
         )
     except TypeError:
         return backend.complete(system, message)
@@ -517,6 +549,18 @@ def _parse_payload(response: str | None) -> Any:
     return payload
 
 
+class _CallSkipped(Exception):
+    """The proxy never asked the model (server down) or dropped/cancelled the call."""
+
+
+def _is_skipped(response: Any) -> bool:
+    try:
+        from arenamcp.game_plan import is_skipped_call_text
+    except Exception:  # pragma: no cover - the check is optional
+        return False
+    return is_skipped_call_text(response)
+
+
 def _ask_validated(
     backend: Any,
     system: str,
@@ -525,7 +569,11 @@ def _ask_validated(
     timeout: float,
     attempts: int = 2,
 ) -> Any:
-    """One validated answer, retrying once with the failure quoted back."""
+    """One validated answer, retrying once with the failure quoted back.
+
+    Raises ``_CallSkipped`` (no retry) when the proxy skipped or dropped the
+    call: that piece is missing, not invalid.
+    """
     error: Exception | None = None
     for _attempt in range(attempts):
         prompt = (
@@ -533,23 +581,39 @@ def _ask_validated(
             if error is None
             else f"{message}\n\nYour previous answer was rejected ({error}). Return ONLY valid JSON."
         )
+        response = _ask(backend, system, prompt, timeout)
+        if _is_skipped(response):
+            raise _CallSkipped(str(response)[:160])
         try:
-            return validate(_parse_payload(_ask(backend, system, prompt, timeout)))
+            return validate(_parse_payload(response))
         except Exception as exc:
             error = exc
     raise ValueError(str(error))
 
 
-def synthesize(primer: SetPrimer, backend: Any, timeout: float = 120.0, workers: int = 3) -> SetPrimer:
+def synthesize(
+    primer: SetPrimer,
+    backend: Any,
+    timeout: float = 120.0,
+    workers: int = 3,
+    report: dict[str, Any] | None = None,
+) -> SetPrimer:
     """Per-archetype and format-level model passes, merged into the data primer.
 
     2026-10-05: one whole-set call returned four of ten archetypes once and
     degenerate JSON the next time, so each archetype is its own small, focused,
     validated call; any piece that fails keeps its data-only version.
+    ``report["skipped"]`` counts the pieces the proxy skipped or dropped
+    (server down, background lane busy) rather than answered invalidly.
     """
     from concurrent.futures import ThreadPoolExecutor
 
     names = _name_index(primer)
+    skipped: list[str] = []
+    if workers > 1 and _runs_in_background_lane(backend):
+        # One call in flight anyway, and same-class calls would supersede
+        # each other: ask the pieces one after another.
+        workers = 1
 
     def archetype_task(colors: str) -> dict | None:
         def validate(payload: dict) -> dict:
@@ -562,6 +626,10 @@ def synthesize(primer: SetPrimer, backend: Any, timeout: float = 120.0, workers:
             return _ask_validated(
                 backend, ARCHETYPE_PROMPT, archetype_prompt(primer, colors), validate, timeout
             )
+        except _CallSkipped as exc:
+            skipped.append(colors)
+            logger.info("Set primer %s %s archetype skipped: %s", primer.set_code, colors, exc)
+            return None
         except Exception as exc:
             logger.info("Set primer %s %s archetype synthesis failed: %s", primer.set_code, colors, exc)
             return None
@@ -574,6 +642,10 @@ def synthesize(primer: SetPrimer, backend: Any, timeout: float = 120.0, workers:
 
         try:
             return _ask_validated(backend, FORMAT_PROMPT, format_prompt(primer), validate, timeout)
+        except _CallSkipped as exc:
+            skipped.append("format")
+            logger.info("Set primer %s format skipped: %s", primer.set_code, exc)
+            return None
         except Exception as exc:
             logger.info("Set primer %s format synthesis failed: %s", primer.set_code, exc)
             return None
@@ -583,6 +655,8 @@ def synthesize(primer: SetPrimer, backend: Any, timeout: float = 120.0, workers:
         archetype_results = list(pool.map(archetype_task, TWO_COLOR_PAIRS))
         format_payload = format_future.result()
 
+    if report is not None:
+        report["skipped"] = len(skipped)
     synthesized = [entry for entry in archetype_results if entry]
     if not synthesized and not format_payload:
         logger.warning("Set primer synthesis for %s unavailable; using data primer", primer.set_code)
@@ -629,6 +703,8 @@ class SetPrimerService:
         self._primers: dict[str, SetPrimer] = {}
         self._building: dict[str, threading.Thread] = {}
         self._quick: dict[str, SetPrimer] = {}
+        # Primers built with pieces skipped: set code -> when to rebuild (monotonic).
+        self._partial: dict[str, float] = {}
 
     def _path(self, set_code: str) -> Path:
         return self._dir / f"{set_code.upper()}.json"
@@ -657,10 +733,15 @@ class SetPrimerService:
             return self._primers.get(key)
 
     def ensure(self, set_code: str | None) -> None:
-        """Start building a missing or stale primer; returns immediately."""
-        if not set_code or self.get(set_code) is not None:
+        """Start building a missing or stale primer (or a partial one, after PARTIAL_RETRY_S); returns at once."""
+        if not set_code:
             return
         key = set_code.upper()
+        if self.get(key) is not None:
+            with self._lock:
+                retry_at = self._partial.get(key)
+            if retry_at is None or time.monotonic() < retry_at:
+                return
         with self._lock:
             worker = self._building.get(key)
             if worker is not None and worker.is_alive():
@@ -700,12 +781,30 @@ class SetPrimerService:
                 logger.warning("Set primer for %s skipped: too little 17lands data", key)
                 return
             backend = self._backend_fn()
+            report: dict[str, Any] = {}
             if backend is not None:
-                primer = synthesize(primer, backend)
+                primer = synthesize(primer, backend, report=report)
+            skipped = int(report.get("skipped") or 0)
+            if skipped:
+                # Review 2026-10-07: written to disk, a primer built while the model
+                # was down served as complete for PRIMER_MAX_AGE_S (7 days).
+                with self._lock:
+                    self._primers[key] = primer
+                    self._partial[key] = time.monotonic() + PARTIAL_RETRY_S
+                logger.warning(
+                    "Set primer for %s built without %d skipped model piece(s) (%s); "
+                    "kept in memory only, rebuilt after %.0fs",
+                    key,
+                    skipped,
+                    primer.source,
+                    PARTIAL_RETRY_S,
+                )
+                return
             self._dir.mkdir(parents=True, exist_ok=True)
             self._path(key).write_text(primer.to_json(), encoding="utf-8")
             with self._lock:
                 self._primers[key] = primer
+                self._partial.pop(key, None)
             logger.info(
                 "Set primer for %s built (%s, %d cards, %d archetypes) in %.0fs",
                 key,

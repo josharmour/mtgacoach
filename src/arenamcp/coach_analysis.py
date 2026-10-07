@@ -16,8 +16,20 @@ from arenamcp.coach_prompts import (
     SIDEBOARD_RECOMMENDATION_PROMPT,
     WIN_PLAN_PROMPT,
 )
+from arenamcp.game_plan import accepted_call_kwargs
 
 logger = logging.getLogger(__name__)
+
+# Proxy call classes (backends/proxy.py CALL_CLASSES) for this mixin's calls.
+# 2026-10-06: 31 automatic win-in-N calls ran at full thinking and priority 0
+# on the one vLLM server, overlapping decisions, and none was ever read. A
+# "background." class gets background priority, the one-at-a-time background
+# lane, and is skipped while the server is down.
+WIN_PLAN_CALL_CLASS = "background.win_plan"
+WIN_PLAN_REASONING_EFFORT = "low"
+WIN_PROB_CALL_CLASS = "coach.win_prob"
+POSTMATCH_CALL_CLASS = "coach.postmatch"
+SIDEBOARD_CALL_CLASS = "coach.sideboard"
 
 
 class _CoachAnalysisMixin:
@@ -29,6 +41,9 @@ class _CoachAnalysisMixin:
         turns: int,
         library_summary: str = "",
         backend=None,
+        *,
+        call_class: str = WIN_PLAN_CALL_CLASS,
+        reasoning_effort: str | None = WIN_PLAN_REASONING_EFFORT,
     ) -> str:
         """Get a multi-turn strategic plan for winning in N turns.
 
@@ -38,9 +53,17 @@ class _CoachAnalysisMixin:
             library_summary: Compact summary of remaining library cards
             backend: Optional separate backend instance (e.g. thinking-enabled).
                      If provided, used instead of self._backend.
+            call_class: Proxy call class. The default "background.win_plan"
+                (the automatic worker) runs at background priority in the
+                proxy's background lane and is skipped while the model
+                server is down.
+            reasoning_effort: GLM effort; "low" so a plan nobody asked for
+                never runs at full thinking.
 
         Returns:
-            Strategic plan string from the LLM
+            Strategic plan string from the LLM (or the proxy's
+            "[BACKEND ERROR] ..." sentinel, unchanged, when the call failed
+            or was skipped).
         """
         import concurrent.futures
 
@@ -93,9 +116,12 @@ class _CoachAnalysisMixin:
                 user_message,
                 4096,
                 request_timeout_s=api_timeout,
+                call_class=call_class,
+                reasoning_effort=reasoning_effort,
             )
         else:
-            future = executor.submit(be.complete, system_prompt, user_message)
+            labels = accepted_call_kwargs(be, call_class=call_class, reasoning_effort=reasoning_effort)
+            future = executor.submit(be.complete, system_prompt, user_message, **labels)
         try:
             response = future.result(timeout=api_timeout)
         except concurrent.futures.TimeoutError:
@@ -103,13 +129,18 @@ class _CoachAnalysisMixin:
             response = ""
         executor.shutdown(wait=False)
         api_time = (time.perf_counter() - api_start) * 1000
+        response = response if isinstance(response, str) else ""
 
         total_time = (time.perf_counter() - total_start) * 1000
         logger.info(
             f"[TIMING] Win plan API: {api_time:.0f}ms, total: {total_time:.0f}ms, "
-            f"turns={turns}, response: {len(response)} chars"
+            f"turns={turns}, call_class={call_class}, response: {len(response)} chars"
         )
 
+        if is_backend_error_text(response):
+            # Skipped (model down), cancelled or failed: hand the sentinel back
+            # untouched so callers can tell it from a plan.
+            return response
         if getattr(self, "narration_mode", "advisor") == "autopilot":
             from arenamcp.narration import action_narration
 
@@ -128,6 +159,8 @@ class _CoachAnalysisMixin:
         missed_decisions: list[dict] | None = None,
         replay_context: str | None = None,
         narration_mode: str | None = None,
+        call_class: str = POSTMATCH_CALL_CLASS,
+        priority: int | None = None,
     ) -> str:
         """Generate a post-match strategic analysis from the advice log.
 
@@ -141,6 +174,13 @@ class _CoachAnalysisMixin:
             backend: Optional dedicated backend (avoids lock contention)
             missed_decisions: Vision watchdog detections (unmapped decision points)
             replay_context: Parsed replay decision-point summary (from .rply file)
+            call_class: Proxy call class (metrics label); a foreground class by
+                default because the player opens this analysis and reads it.
+            priority: vLLM scheduling priority (lower = sooner). The automatic
+                analysis passes the proxy's BACKGROUND_PRIORITY so it never
+                competes with the next match's decisions, without the
+                background lane (one call at a time, dropped after 30 s) that
+                a long 4096-token call would hold.
 
         Returns:
             Analysis string from the LLM, or "" on failure.
@@ -270,6 +310,7 @@ class _CoachAnalysisMixin:
         )
         if accepts_kwargs:
             submit_kwargs = {"request_timeout_s": api_timeout} if isinstance(be, ProxyBackend) else {}
+            submit_kwargs.update(accepted_call_kwargs(be, call_class=call_class, priority=priority))
             future = executor.submit(
                 be.complete,
                 analysis_prompt,
@@ -401,7 +442,12 @@ class _CoachAnalysisMixin:
                 p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
             )
             if accepts_kwargs:
-                rec = be.complete(SIDEBOARD_RECOMMENDATION_PROMPT, user_message, max_tokens=2048)
+                rec = be.complete(
+                    SIDEBOARD_RECOMMENDATION_PROMPT,
+                    user_message,
+                    max_tokens=2048,
+                    **accepted_call_kwargs(be, call_class=SIDEBOARD_CALL_CLASS),
+                )
             else:
                 rec = be.complete(SIDEBOARD_RECOMMENDATION_PROMPT, user_message)
 
@@ -464,6 +510,7 @@ class _CoachAnalysisMixin:
         api_timeout = 30
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         submit_kwargs = {"request_timeout_s": api_timeout} if isinstance(be, ProxyBackend) else {}
+        submit_kwargs.update(accepted_call_kwargs(be, call_class=WIN_PROB_CALL_CLASS))
         future = executor.submit(be.complete, system_prompt, user_message, 1000, **submit_kwargs)
         try:
             response = future.result(timeout=api_timeout)

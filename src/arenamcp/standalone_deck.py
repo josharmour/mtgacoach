@@ -82,11 +82,12 @@ class _DeckAnalysisMixin:
             self._deck_analysis_key = key
             self._deck_analysis_attempts = 0
             self._last_deck_analysis_attempt = 0.0
-            # A same-match deck/commander swap also invalidates the old plan.
-            if coach._deck_analysis_identity and (
-                coach._deck_analysis_identity != identity
-                or (prior_key is not None and prior_key[0] != key[0])
-            ):
+            # Only a different deck (or commander) invalidates the playbook
+            # here; a new match with the same deck keeps it. (The per-match
+            # clear_deck_strategy() in standalone.py still runs at match
+            # boundaries; the worker below then restores the playbook from
+            # the coach's cache without a model call, and announces it once.)
+            if coach._deck_analysis_identity and coach._deck_analysis_identity != identity:
                 coach.clear_deck_strategy()
             self._deck_analyzed = False
         if coach._deck_playbook and coach._deck_playbook.identity == identity:
@@ -120,9 +121,17 @@ class _DeckAnalysisMixin:
                     playbook = coach._deck_playbook
                 if playbook:
                     self.ui.status("DECK", playbook.data["archetype"][:60])
-                    brief = playbook.data["spoken_summary"]
-                    self.ui.log(f"\n[bold green]DECK STRATEGY:[/] {brief}\n")
-                    self.speak_advice(brief, blocking=False)
+                    if getattr(self, "_announced_deck_identity", None) == identity:
+                        # Same deck as the last announcement: the coach clears
+                        # per-match strategy at each match boundary and this
+                        # re-publish came from the playbook cache, not a new
+                        # analysis. Say it once per deck, not every game.
+                        logger.info("Deck playbook restored for the same deck; not announced again")
+                    else:
+                        self._announced_deck_identity = identity
+                        brief = playbook.data["spoken_summary"]
+                        self.ui.log(f"\n[bold green]DECK STRATEGY:[/] {brief}\n")
+                        self.speak_advice(brief, blocking=False)
                 else:
                     self.ui.log("Deck analysis incomplete; using current card rules while it retries.")
             except Exception as error:

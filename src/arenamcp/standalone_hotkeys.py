@@ -10,8 +10,15 @@ import traceback
 
 from arenamcp.backend_health import is_backend_error_text
 from arenamcp.coach import get_models_for_mode
+from arenamcp.game_plan import is_skipped_call_text
 
 logger = logging.getLogger(__name__)
+
+# A win-in-N plan the player asked for. Not "background.": that class waits
+# behind (or is dropped by) the proxy's background lane and is skipped while
+# the server is down. The automatic worker uses get_win_plan's
+# "background.win_plan" default.
+MANUAL_WIN_PLAN_CALL_CLASS = "coach.win_plan"
 
 # The `keyboard` package must never be imported on macOS: its darwin backend
 # calls abort() during import when the process lacks root/Accessibility
@@ -116,7 +123,14 @@ class _StandaloneHotkeysMixin:
                 logger.info(f"Win plan: requesting {turns}-turn plan")
 
                 library_summary = self._compute_library_summary(game_state)
-                plan = self._coach.get_win_plan(game_state, turns, library_summary)
+                # Asked for by the player, so a foreground class (never queued
+                # behind or dropped by the background lane); low effort still.
+                plan = self._coach.get_win_plan(
+                    game_state, turns, library_summary, call_class=MANUAL_WIN_PLAN_CALL_CLASS
+                )
+                if is_backend_error_text(plan):
+                    logger.warning(f"Win plan: model call failed: {str(plan)[:160]}")
+                    plan = ""
 
                 logger.info(f"Win plan: got response, {len(plan)} chars")
                 if plan:
@@ -175,7 +189,10 @@ class _StandaloneHotkeysMixin:
             library_summary = self._compute_library_summary(game_state)
             turn_num = game_state.get("turn", {}).get("turn_number", 0)
 
-            # Process 2-turn plan first; if viable, skip 3-turn plan to conserve bandwidth
+            # Process 2-turn plan first; if viable, skip 3-turn plan to conserve bandwidth.
+            # get_win_plan's defaults label these calls "background.win_plan" at
+            # low effort: background priority, the proxy's one-at-a-time
+            # background lane, and skipped while the model server is down.
             for n in (2, 3):
                 try:
                     plan = self._coach.get_win_plan(
@@ -188,6 +205,11 @@ class _StandaloneHotkeysMixin:
                     logger.warning(f"Win-in-{n} future failed: {e}")
                     continue
 
+                if is_skipped_call_text(plan):
+                    # Model down, or superseded/dropped by the background
+                    # lane: the next turn's worker tries again.
+                    logger.info(f"Win-in-{n} check not run: {str(plan)[:120]}")
+                    break
                 if not plan or is_backend_error_text(plan):
                     continue
 

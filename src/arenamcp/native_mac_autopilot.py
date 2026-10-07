@@ -13,10 +13,19 @@ from typing import Any
 
 from arenamcp.autopilot_models import AutopilotConfig, AutopilotState
 from arenamcp.backend_health import is_backend_error_text
+from arenamcp.game_plan import is_unavailable_text
 from arenamcp.narration import action_narration
 from arenamcp.native_mac_input import DesktopAction, DesktopUnavailable, NativeMacInput, frame_changed
 
 logger = logging.getLogger(__name__)
+
+# While the model is unavailable (circuit breaker open, or the planner's call
+# failed with the server down) the log planner's board-math line is the only
+# source of plays: vision still operates a committed play, but never chooses
+# one, and its failures are not counted toward the 3-failure pause
+# (bug_20261006_185403: an outage must not stop autoplay for good).
+MODEL_OFFLINE_NOTICE = "Model offline: playing only the board-math line until it is back."
+MODEL_OFFLINE_RETRY_S = 3.0
 
 DESKTOP_PROMPT = """You play Magic: The Gathering Arena through its native Mac UI.
 Use the supplied game state, legal actions, recent input history, and CURRENT screenshot.
@@ -242,6 +251,9 @@ class NativeMacAutopilot:
         self._inputs_sent = 0
         self._vision_failures = 0
         self._uncertain_frames = 0
+        # The planner's last call for this decision window failed because the
+        # model server could not answer (FALLBACK_LLM_UNAVAILABLE).
+        self._planner_offline = False
         self._last_frame = None
         self._last_proposal = None
         self._afk = self._config.afk_mode
@@ -294,6 +306,7 @@ class NativeMacAutopilot:
             reset_vision()
         self._vision_failures = 0
         self._uncertain_frames = 0
+        self._planner_offline = False
         self._abort_event.clear()
         self._history.clear()
         self._attempts.clear()
@@ -349,6 +362,8 @@ class NativeMacAutopilot:
             request_timeout_s=min(remaining, 10.0),
             json_mode=True,
         )
+        if is_backend_error_text(response) and self._model_unavailable(response):
+            raise DesktopUnavailable(MODEL_OFFLINE_NOTICE)
         grounded = ground_desktop_action(response, action, frame.image.size)
         logger.info(
             "Native Mac autoplay: located target point=%s end=%s confidence=%.2f",
@@ -359,12 +374,23 @@ class NativeMacAutopilot:
         return grounded
 
     def _committed_play(self, state: dict[str, Any], signature: str, trigger: str) -> Any | None:
-        """Plan the next play from the logs once per decision window; None = let vision decide."""
+        """Plan the next play from the logs once per decision window; None = let vision decide.
+
+        When the planner's model can't be reached (breaker open, or the call
+        failed with the circuit open or a connection error; see
+        ``action_planner.model_unreachable``), the board-math line commits
+        instead: land drop, then that line's payable spells, else pass (same
+        fallback as the bridge autopilot). Plain priority windows only;
+        targets, modes and combat wait for the model. Such a window is not
+        cached when nothing was committed, so the planner is asked again once
+        the model is back. A planning timeout leaves the window to vision.
+        """
         if self._log_planner is None:
             return None
         if self._plan_cache and self._plan_cache[0] == signature:
             return self._plan_cache[1]
         action = None
+        offline = False
         try:
             from arenamcp.rules_engine import RulesEngine
 
@@ -375,13 +401,64 @@ class NativeMacAutopilot:
                     state, trigger or "decision_required", legal, state.get("decision_context")
                 )
                 action = plan.actions[0] if plan.actions else None
+                if action is None and self._plan_says_model_unreachable(plan):
+                    offline = True
+                    action = self._board_math_play(state, legal, trigger)
                 if action is not None:
                     logger.info("Native Mac autoplay: log planner committed to %s", action)
         except Exception as exc:
             logger.warning("Native Mac autoplay: log planner failed (%s); vision decides", exc)
             action = None
+        self._planner_offline = offline
+        if offline and action is None:
+            return None
         self._plan_cache = (signature, action)
         return action
+
+    def _plan_says_model_unreachable(self, plan: Any) -> bool:
+        """The planner's model can't be reached (breaker open, connection failed), not merely slow.
+
+        A planning timeout leaves the decision to vision as before: with
+        "model offline" every 3 s poll would re-run the planner for its full
+        timeout and nothing would ever be sent (review 2026-10-07).
+        """
+        from arenamcp.action_planner import model_unreachable
+
+        return model_unreachable(plan, getattr(self._log_planner, "_backend", None))
+
+    @staticmethod
+    def _board_math_play(state: dict[str, Any], legal: list[str], trigger: str) -> Any | None:
+        """The board-math line's next play for a plain priority window, or None."""
+        dec_type = str((state.get("decision_context") or {}).get("type") or "")
+        if dec_type not in ("", "actions_available"):
+            return None
+        from arenamcp.action_planner import board_math_legacy_plan
+
+        plan = board_math_legacy_plan(state, legal, trigger or "decision_required")
+        return plan.actions[0] if plan.actions else None
+
+    def _model_unavailable(self, response: Any = None) -> bool:
+        """Whether the model cannot answer now: planner or vision breaker open, or the planner's call failed so.
+
+        ``response`` is a vision reply; the proxy's circuit-open skip
+        sentinel counts too. Only an explicit ``False`` from a backend's
+        ``available()`` counts, so backends without a breaker never read
+        as offline.
+        """
+        if self._planner_offline:
+            return True
+        if response is not None and is_unavailable_text(response):
+            return True
+        from arenamcp.action_planner import llm_circuit_open
+
+        planner_backend = getattr(self._log_planner, "_backend", None)
+        return llm_circuit_open(planner_backend) or llm_circuit_open(self._backend)
+
+    def _wait_for_model(self) -> bool:
+        """Say the model is offline and look again shortly; never a pause."""
+        self._notify(MODEL_OFFLINE_NOTICE)
+        self._next_poll = time.monotonic() + MODEL_OFFLINE_RETRY_S
+        return False
 
     def _grounded_plan_text(self, state: dict[str, Any]) -> str:
         """ROLE + this turn + board facts for ``state``, then the game plan."""
@@ -544,6 +621,9 @@ class NativeMacAutopilot:
                 )
                 self._last_proposal = asdict(action)
                 return self._send(frame, action)
+            if committed is None and self._model_unavailable():
+                # Vision would choose the play itself: not while the model is down.
+                return self._wait_for_model()
             frame = self._controller.capture()
             self._last_frame = frame
             mode = "Play the match to win."
@@ -599,6 +679,8 @@ class NativeMacAutopilot:
                 self._notify("Game state advanced; observing Arena again.")
                 return False
             if not isinstance(response, str) or is_backend_error_text(response):
+                if self._model_unavailable(response):
+                    return self._wait_for_model()
                 self._vision_failures += 1
                 if self._vision_failures >= 3:
                     self._pause(

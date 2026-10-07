@@ -15,6 +15,24 @@ from arenamcp.limited_rules import rules_profile, synergy_evidence, synergy_grap
 
 logger = logging.getLogger(__name__)
 
+# Proxy call classes (backends/proxy.py CALL_CLASSES) for the metrics lines.
+DRAFT_PICK_CALL_CLASS = "draft.pick"
+DRAFT_BUILD_CALL_CLASS = "draft.build"
+
+
+def _call_labels(backend: Any, call_class: str) -> dict[str, Any]:
+    """``call_class`` for backends whose complete() accepts it (older/test ones: none).
+
+    Passing an unknown keyword would hit the TypeError fallback below, which
+    also drops the budget and the JSON response format.
+    """
+    try:
+        from arenamcp.game_plan import accepted_call_kwargs
+    except Exception:  # pragma: no cover - the label is optional
+        return {}
+    return accepted_call_kwargs(backend, call_class=call_class)
+
+
 DRAFT_SYSTEM_PROMPT = """You are an expert Limited draft coach. Build a playable, coherent deck
 from the cards the player ACTUALLY picked. Card rules in the supplied pack and pool
 are authoritative; do not invent abilities or rely on memorized card names.
@@ -154,11 +172,13 @@ class DraftAdvisor:
         system_prompt: str = DRAFT_SYSTEM_PROMPT,
         max_tokens: int = 1200,
         response_format: dict | None = None,
+        call_class: str = DRAFT_PICK_CALL_CLASS,
     ) -> str:
         try:
             kwargs: dict[str, Any] = {"temperature": 0.0, "request_timeout_s": self._timeout}
             if response_format:
                 kwargs["response_format"] = response_format
+            kwargs.update(_call_labels(self._backend, call_class))
             return self._backend.complete(system_prompt, message, max_tokens, **kwargs)
         except TypeError:
             return self._backend.complete(system_prompt, message)
@@ -193,7 +213,12 @@ class DraftAdvisor:
             if error is not None:
                 prompt += f"\n\nYour previous answer was rejected ({error}). Return ONLY valid JSON for a legal deck."
             self._pending = self._executor.submit(
-                self._complete, prompt, DECK_SYSTEM_PROMPT, self.DECK_MAX_TOKENS, {"type": "json_object"}
+                self._complete,
+                prompt,
+                DECK_SYSTEM_PROMPT,
+                self.DECK_MAX_TOKENS,
+                {"type": "json_object"},
+                DRAFT_BUILD_CALL_CLASS,
             )
             try:
                 response = self._pending.result(timeout=self._timeout)
@@ -261,7 +286,7 @@ class DraftAdvisor:
         )
         message = json.dumps(request, ensure_ascii=False)
         self._pending = self._executor.submit(
-            self._complete, message, DRAFT_SYSTEM_PROMPT, 1200, {"type": "json_object"}
+            self._complete, message, DRAFT_SYSTEM_PROMPT, 1200, {"type": "json_object"}, DRAFT_PICK_CALL_CLASS
         )
         response, payload = "", None
         try:

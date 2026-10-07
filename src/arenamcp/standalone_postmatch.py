@@ -11,9 +11,24 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from arenamcp.game_plan import accepted_call_kwargs
 from arenamcp.logging_config import LOG_DIR, LOG_FILE
 
 logger = logging.getLogger(__name__)
+
+# The automatic small post-match calls (advice-quality score, 1-10 rating):
+# background priority and the proxy's one-at-a-time background lane, so they
+# never compete with the first decisions of the next match.
+POSTMATCH_BACKGROUND_CALL_CLASS = "background.postmatch"
+
+
+def _background_priority() -> int:
+    """The proxy's background vLLM priority (10 when the proxy can't be imported)."""
+    try:
+        from arenamcp.backends.proxy import BACKGROUND_PRIORITY
+    except Exception:  # pragma: no cover - the proxy ships with the app
+        return 10
+    return BACKGROUND_PRIORITY
 
 
 class _PostMatchMixin:
@@ -122,6 +137,7 @@ class _PostMatchMixin:
             daemon=True,
             name="post-match-analysis",
             args=(mid,),
+            kwargs={"automatic": reason.endswith("/auto")},
         )
         thread.start()
         logger.info(f"Started post-match analysis worker ({reason})")
@@ -286,11 +302,16 @@ class _PostMatchMixin:
             logger.warning(f"Failed to extract replay context: {e}", exc_info=True)
             return None
 
-    def _post_match_analysis_worker(self, match_id: str) -> None:
+    def _post_match_analysis_worker(self, match_id: str, automatic: bool = False) -> None:
         """Background worker: generate post-match strategic analysis.
 
         Spawned when a match ends. Uses a dedicated backend to avoid
-        lock contention with real-time coaching.
+        lock contention with real-time coaching. ``automatic`` (started by
+        auto_post_match_analysis, not the Analyze Match button): the call runs
+        at the proxy's background vLLM priority, so the next match's mulligan
+        and first decisions go first (review 2026-10-07). It keeps the
+        foreground 'coach.postmatch' class: the background lane would drop or
+        hold this long call, or have it superseded by the advice score.
         """
         # Pop our match_id from staged so no other worker can claim it.
         # This isolates each match's analysis from BO3 clobbering.
@@ -371,6 +392,7 @@ class _PostMatchMixin:
                 opponent_played_cards=opponent_cards,
                 missed_decisions=missed_decisions,
                 replay_context=replay_context,
+                **({"priority": _background_priority()} if automatic else {}),
             )
 
             if not analysis:
@@ -822,7 +844,14 @@ class _PostMatchMixin:
                 ' JSON only, with a single field: {"rating": int}.'
             )
             user = f"MATCH RESULT: {match_result}\n\nANALYSIS:\n{snippet}"
-            resp = be.complete(system, user, max_tokens=60, temperature=0.0, request_timeout_s=30)
+            resp = be.complete(
+                system,
+                user,
+                max_tokens=60,
+                temperature=0.0,
+                request_timeout_s=30,
+                **accepted_call_kwargs(be, call_class=POSTMATCH_BACKGROUND_CALL_CLASS),
+            )
             if not isinstance(resp, str):
                 return None
             start, end = resp.find("{"), resp.rfind("}")
@@ -881,7 +910,14 @@ class _PostMatchMixin:
                 " Penalize illegal, unclear, or strategically wrong advice. Output STRICT"
                 " JSON only: " + '{"rating": int, "reason": "one short sentence"}'
             )
-            resp = be.complete(system, user, max_tokens=120, temperature=0.0, request_timeout_s=30)
+            resp = be.complete(
+                system,
+                user,
+                max_tokens=120,
+                temperature=0.0,
+                request_timeout_s=30,
+                **accepted_call_kwargs(be, call_class=POSTMATCH_BACKGROUND_CALL_CLASS),
+            )
             if not isinstance(resp, str):
                 return
             start, end = resp.find("{"), resp.rfind("}")

@@ -73,6 +73,7 @@ _HOME_PATHS = (
     ("arenamcp.desktop.runtime", "_SETTINGS_FILE", "settings.json"),
     ("arenamcp.rules_db", "DB_PATH", "cache/rules.db"),
     ("arenamcp.ability_synthesizer", "AbilitySynthesizer._CACHE_DIR", "cache/abilities"),
+    ("arenamcp.opponent_tricks", "TRICK_DIR", "cache/trick_tables"),
 )
 # Copies of LOG_DIR made at import time. These modules are heavy, so they are
 # not imported here: they inherit the session redirect when something imports
@@ -102,10 +103,50 @@ def _redirect_arenamcp_home(mp: pytest.MonkeyPatch, sandbox: Path) -> None:
         mp.setattr(getattr(module, owner) if owner else module, attr, sandbox / rel if rel else sandbox)
 
 
+def _offline_trick_service(sandbox: Path):
+    """A TrickTableService that never reads a set primer, 17Lands data or the card database.
+
+    ``GamePlanManager.observe()`` calls ``TrickTableService.shared().ensure_for_state()``:
+    the real singleton builds a set's trick table from the user's primer and
+    17Lands caches (downloading when they are missing) and the MTGA card
+    database, on a background thread, and writes it to
+    ~/.arenamcp/cache/trick_tables (a real FRA.json was written that way on
+    2026-10-07 02:07). Tests that want a table register one on this service.
+    """
+    from arenamcp import opponent_tricks
+
+    return opponent_tricks.TrickTableService(
+        primer_fn=lambda code: None,
+        ratings_fn=lambda code: [],
+        color_ratings_fn=lambda code: None,
+        card_lookup=lambda grp: None,
+        cache_dir=sandbox / "cache" / "trick_tables",
+    )
+
+
 _SESSION_HOME = Path(tempfile.mkdtemp(prefix="arenamcp-pytest-home-"))
 atexit.register(shutil.rmtree, _SESSION_HOME, ignore_errors=True)
 # Deliberately never undone: daemon threads can outlive the session too.
 _redirect_arenamcp_home(pytest.MonkeyPatch(), _SESSION_HOME)
+with contextlib.suppress(Exception):
+    from arenamcp import opponent_tricks as _opponent_tricks
+
+    _opponent_tricks.TrickTableService._shared = _offline_trick_service(_SESSION_HOME)
+
+
+def pytest_collection_finish(session):
+    """Move everything alive after collection out of the cyclic GC's reach.
+
+    The imported modules and collected tests are ~800k tracked objects; one
+    full collection over them took 346 ms inside a line-search unit test with a
+    350 ms wall-clock deadline (2026-10-07 review), truncating its search. They
+    live for the whole session, so freezing them only spares each later
+    collection the walk over them.
+    """
+    import gc
+
+    gc.collect()
+    gc.freeze()
 
 
 @pytest.fixture(autouse=True)
@@ -138,6 +179,14 @@ def _sandbox_arenamcp_home(monkeypatch, tmp_path_factory):
     if match_packets is not None:
         monkeypatch.setattr(match_packets, "_current_packet", None)
         monkeypatch.setattr(match_packets, "_finalized_match_ids", set())
+    # A fresh offline trick table service (see _offline_trick_service), and no
+    # trick-risk verdict cached from another test's service.
+    opponent_tricks = sys.modules.get("arenamcp.opponent_tricks")
+    if opponent_tricks is not None:
+        monkeypatch.setattr(opponent_tricks.TrickTableService, "_shared", _offline_trick_service(sandbox))
+    game_plan = sys.modules.get("arenamcp.game_plan")
+    if game_plan is not None:
+        game_plan._TRICK_CACHE.clear()
 
     # MainWindow starts a UI stall watchdog that dumps to ~/.mtgacoach/anr_dumps
     # (computed in __init__, so there is no module constant to patch). Any test
@@ -154,6 +203,35 @@ def _sandbox_arenamcp_home(monkeypatch, tmp_path_factory):
         monkeypatch.setattr(ui_watchdog.UiAnrWatchdog, "__init__", _sandboxed_init)
 
     return sandbox
+
+
+def _reset_llm_gates() -> None:
+    """Forget the proxy's process-wide breaker, priority and background-lane state.
+
+    Only modules something already imported are touched (an unimported one
+    holds no state, and importing the proxy here would pull the SDK into every
+    test). Breakers are keyed by (base_url, model), so a test that trips the
+    breaker for a URL another test reuses would otherwise make that test's
+    calls fail fast, and one server rejection of "priority" would stop every
+    later test from sending it.
+    """
+    health = sys.modules.get("arenamcp.backends.health")
+    if health is not None:
+        health.reset_circuit_breakers()
+    proxy = sys.modules.get("arenamcp.backends.proxy")
+    if proxy is not None:
+        proxy.reset_priority_state()
+        # A request thread a test left behind may still hold the old lane;
+        # its release() on the new lane is a no-op.
+        proxy._BACKGROUND_LANE = proxy._BackgroundLane()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_llm_gates():
+    """Circuit breakers, the priority rejection and the background lane never leak between tests."""
+    _reset_llm_gates()
+    yield
+    _reset_llm_gates()
 
 
 @pytest.fixture(scope="session")
