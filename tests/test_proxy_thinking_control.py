@@ -166,3 +166,13 @@ def test_per_request_reasoning_override_does_not_change_the_backend_default(capt
     assert backend.enable_thinking is False
     backend.complete("Choose", "Board")
     assert captured["extra_body"]["chat_template_kwargs"]["reasoning_effort"] == "low"
+
+
+def test_per_request_reasoning_effort_overrides_the_default(captured):
+    """The background game plan asks for a bounded effort (unrestricted ran past 45 s)."""
+    be = ProxyBackend(
+        model="glm-5.3-flash", enable_thinking=True, base_url="http://127.0.0.1:9/v1", api_key="sk-test"
+    )
+    be.complete("sys", "user", max_tokens=256, reasoning_effort="low")
+    ctk = (captured.get("extra_body") or {})["chat_template_kwargs"]
+    assert ctk == {"thinking": True, "reasoning_effort": "low"}

@@ -376,6 +376,7 @@ class ProxyBackend:
         response_format: dict | None = None,
         background: bool = False,
         enable_thinking: bool | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         """Get completion from the API endpoint.
 
@@ -392,6 +393,8 @@ class ProxyBackend:
                 ordinary tactical requests retain their existing ceiling.
             enable_thinking: Per-request reasoning override; does not alter
                 the backend default for subsequent tactical requests.
+            reasoning_effort: GLM-style effort ("low", "medium", "high") for
+                this request; unrestricted thinking can outlast a turn.
             response_format: Optional structured output schema for callers
                 that also validate the returned JSON.
             raise_on_error: Re-raise API errors instead of returning the
@@ -454,7 +457,9 @@ class ProxyBackend:
             # :8002, the low-effort kwargs hurt it (dsv4 slowed with
             # thinking=true — the 2026-07-29 p50 6134ms bug); re-gate on the
             # served engine then.
-            if thinking_enabled:
+            if reasoning_effort:
+                extra["chat_template_kwargs"] = {"thinking": True, "reasoning_effort": reasoning_effort}
+            elif thinking_enabled:
                 extra["chat_template_kwargs"] = {"thinking": True}
             else:
                 extra["chat_template_kwargs"] = {"thinking": True, "reasoning_effort": "low"}

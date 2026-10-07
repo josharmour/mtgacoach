@@ -205,9 +205,9 @@ def test_reform_feeds_board_facts_and_uses_the_larger_background_budget():
     assert "ASSESSED ROLE: defender" in user
     assert "T = turn 12 (this turn); T+1 = turn 14; T+2 = turn 16" in user
     assert "MANA BUDGET BY TURN" in user and "T+1 = turn 14: 5 mana" in user
-    assert args == (6000,)
-    assert kwargs["enable_thinking"] is True and kwargs["background"] is True
-    assert kwargs["request_timeout_s"] == 45.0 and kwargs["temperature"] == 0.0
+    assert args == (3000,)
+    assert kwargs["reasoning_effort"] == "low" and kwargs["background"] is True
+    assert kwargs["request_timeout_s"] == 75.0 and kwargs["temperature"] == 0.0
     assert plan.role == ROLE_DEFENDER
     assert plan.turn_plan[0]["cast"] == ["Undulating Witness"]
     assert plan.facts["their_clock"] == 2

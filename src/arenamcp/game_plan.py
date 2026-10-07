@@ -582,8 +582,14 @@ class GamePlanManager:
     # The strategic call runs in the background once per turn, so it gets a
     # larger reasoning/time budget than per-decision calls (12 s, 2048 tokens,
     # low reasoning effort): full thinking, 6000 tokens, 45 s.
-    _PLAN_MAX_TOKENS = 6000
-    _PLAN_TIMEOUT_S = 45.0
+    # 2026-10-06 17:45: unrestricted thinking on a ~34k-char prompt ran past 45 s
+    # ("LLM streaming time budget exhausted") so no plan ever formed; low effort
+    # took ~33 s on a busy gateway. The board facts and lookahead come from
+    # board_assessment instantly; the model only writes the plan, in the
+    # background, during the opponent's turn so it is ready for ours.
+    _PLAN_MAX_TOKENS = 3000
+    _PLAN_TIMEOUT_S = 75.0
+    _PLAN_REASONING_EFFORT = "low"
 
     def __init__(self, backend: Any, timeout: float | None = None):
         self._backend = backend
@@ -841,8 +847,9 @@ class GamePlanManager:
         turn_num = sig[0]
         if turn_num - self._last_reform_turn >= self._STALE_TURNS:
             return True
-        # Re-plan at the start of each of our turns: T/T+1/T+2 moved on.
-        if our_turn and turn_num > self._last_reform_turn:
+        # Plan our coming turn during the opponent's turn, so it is ready when
+        # our turn starts (a plan call takes ~30 s on a busy gateway).
+        if not our_turn and turn_num > self._last_reform_turn:
             return True
         # Identity matters: a tutor changes one hand card without changing hand
         # size, and a noncreature engine can change the entire winning line.
@@ -1060,7 +1067,7 @@ class GamePlanManager:
                 temperature=0.0,
                 request_timeout_s=self._timeout,
                 background=True,
-                enable_thinking=True,
+                reasoning_effort=self._PLAN_REASONING_EFFORT,
             )
         except TypeError:
             pass
