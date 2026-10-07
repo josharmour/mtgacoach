@@ -207,6 +207,10 @@ class CoachSession(QObject):
         """Choose whether autoplay concedes a game the board math says is lost."""
         self._process.send_payload({"cmd": "set_auto_concede", "enabled": bool(enabled)})
 
+    def set_oops_emote(self, enabled: bool) -> None:
+        """Choose whether autoplay sends Arena's "Oops" emote when it gets stuck or blunders."""
+        self._process.send_payload({"cmd": "set_oops_emote", "enabled": bool(enabled)})
+
     def cancel_concede(self) -> None:
         """Stop a running auto-concede countdown and keep playing this game."""
         self._process.send_payload({"cmd": "cancel_concede"})

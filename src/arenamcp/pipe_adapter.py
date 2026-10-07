@@ -591,6 +591,14 @@ class PipeAdapter:
                 else:
                     coach.settings.set("auto_concede", enabled)
                 self.log(f"Auto-concede when lost {'on' if enabled else 'off'}")
+            elif action == "set_oops_emote":
+                enabled = cmd.get("enabled") is True
+                setter = getattr(coach, "set_oops_emote", None)
+                if callable(setter):
+                    setter(enabled)
+                else:
+                    coach.settings.set("oops_emote", enabled)
+                self.log(f"'Oops' emote when autoplay gets stuck or blunders {'on' if enabled else 'off'}")
             elif action == "analyze_screen":
                 threading.Thread(target=coach.take_screenshot_analysis, daemon=True).start()
             elif action == "debug_report":

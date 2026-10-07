@@ -62,6 +62,11 @@ class _ConcedeMixin:
         controller = getattr(self, "_concede", None)
         return bool(controller is not None and controller.armed)
 
+    def concede_in_progress(self, game_key: Any = None) -> bool:
+        """A countdown runs, or this game's concede was claimed (it is being sent or was sent)."""
+        controller = getattr(self, "_concede", None)
+        return bool(controller is not None and controller.concede_in_progress(game_key))
+
     def set_auto_concede(self, enabled: bool) -> bool:
         """Turn auto-concede on or off (saved); turning it off cancels a countdown."""
         enabled = bool(enabled)

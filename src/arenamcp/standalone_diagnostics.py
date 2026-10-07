@@ -521,6 +521,12 @@ class _DiagnosticsMixin:
                 info["concede"] = concede_snapshot()
             except Exception as e:
                 info["concede_error"] = str(e)
+        oops_snapshot = getattr(self, "_oops_snapshot", None)
+        if callable(oops_snapshot):
+            try:
+                info["oops"] = oops_snapshot()
+            except Exception as e:
+                info["oops_error"] = str(e)
         return info
 
     def _collect_bridge_state(self) -> dict:

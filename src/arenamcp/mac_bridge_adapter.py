@@ -38,6 +38,9 @@ EVENT_PAGE_CONTROLLER = "EventPage.EventPageContentController"
 EVENT_MAIN_BUTTON = "EventPage.Components.MainButtonComponent"
 # Sealed pool reveal after joining (members verified in live IL2CPP metadata 2026-10-06).
 SEALED_OPEN = "SealedBoosterOpenAnimation"
+# Emote ids a click on the emote wheel puts on the wire (onChat.text); members of
+# the emote path verified in live IL2CPP metadata 2026-10-06 (see _cmd_send_emote).
+EMOTE_IDS = {"oops": "Phrase_Basic_Oops"}
 # Request fields never needed for the protocol and bulky or recursive to dump.
 SNAPSHOT_SKIP = ["OriginalMessage", "ParentRequest", "_outboundMessage", "OnSubmit", "OnRequestSubmit"]
 SNAPSHOT_DEPTH = 7
@@ -678,6 +681,90 @@ class MacBridgeAdapter:
         self._run(ops, timeout)
         return {"ok": True}
 
+    # -- live game: shared guards for concede and emotes ----------------------
+
+    @staticmethod
+    def _live_game_reads(ops: _Ops) -> dict[str, dict]:
+        """Read-only ops that identify the game in play (every one optional)."""
+        refs: dict[str, dict] = {}
+        refs["manager"] = manager = ops.add("find", **{"class": "GameManager"}, depth=0, optional=True)
+        refs["match"] = match = ops.get(manager, "MatchManager", optional=True)
+        refs["match_state"] = ops.get(match, "MatchState", optional=True)
+        refs["scene"] = ops.get(
+            ops.get(manager, "MatchSceneManager", optional=True), "Current", optional=True
+        )
+        refs["game"] = game = ops.get(manager, "CurrentGameState", optional=True)
+        refs["stage"] = ops.get(game, "Stage", optional=True)
+        refs["turn"] = ops.get(game, "GameWideTurn", optional=True)
+        refs["info"] = info = ops.get(game, "GameInfo", optional=True)
+        refs["match_id"] = ops.get(info, "MatchID", optional=True)
+        refs["game_number"] = ops.get(info, "GameNumber", optional=True)
+        refs["gre"] = gre = ops.get(match, "GreInterface", optional=True)
+        refs["disposed"] = ops.get(gre, "_disposed", optional=True)
+        return refs
+
+    @staticmethod
+    def _live_game(
+        values: list[Any], refs: dict[str, dict], command: dict, what: str
+    ) -> tuple[str, int, int]:
+        """(match id, game number, turn) of a game in play, or AdapterError.
+
+        A game in progress in the duel scene, stage Play, a live GreInterface,
+        and the command's expected match/game/turn when it names them.
+        """
+
+        def value(name: str) -> Any:
+            index = refs[name]["ref"]
+            return values[index] if index < len(values) else None
+
+        if not handle(value("manager")):
+            raise AdapterError("Not in a match (no GameManager)")
+        if not handle(value("match")):
+            raise AdapterError("No MatchManager")
+        if enum_name(value("match_state")) != "GameInProgress":
+            raise AdapterError(
+                f"Match state is {enum_name(value('match_state')) or 'unknown'}, not GameInProgress"
+            )
+        if enum_name(value("scene")) != "DuelScene":
+            raise AdapterError(f"Not in the duel scene ({enum_name(value('scene')) or 'unknown'})")
+        if enum_name(value("stage")) != "Play":
+            raise AdapterError(f"Game stage is {enum_name(value('stage')) or 'unknown'}, not Play")
+        if not handle(value("gre")) or value("disposed") is not False:
+            raise AdapterError("No live GreInterface")
+        live_match = value("match_id")
+        live_turn = num(value("turn"), -1)
+        live_game = num(value("game_number"), -1)
+        if not isinstance(live_match, str) or not live_match or live_turn <= 0 or live_game <= 0:
+            raise AdapterError("Match, game or turn unknown")
+        wanted_match = command.get("expected_match_id")
+        if wanted_match and str(wanted_match) != live_match:
+            raise AdapterError(f"Stale {what}: the match changed")
+        for key, live, label in (
+            ("expected_game_number", live_game, "game"),
+            ("expected_turn", live_turn, "turn"),
+        ):
+            wanted = command.get(key)
+            if wanted not in (None, "", 0, -1) and num(wanted, -1) != live:
+                raise AdapterError(f"Stale {what}: the {label} changed ({wanted} -> {live})")
+        return live_match, live_game, live_turn
+
+    @staticmethod
+    def _expect_live_game(ops: _Ops, live_match: str, live_game: int, live_turn: int) -> dict[str, dict]:
+        """Guard ops: still that game, in play, on that turn, with a live GreInterface."""
+        manager = ops.add("find", **{"class": "GameManager"}, depth=0)
+        match = ops.get(manager, "MatchManager")
+        ops.expect_member(match, "MatchState", "GameInProgress")
+        ops.expect_member(ops.get(manager, "MatchSceneManager"), "Current", "DuelScene")
+        game = ops.get(manager, "CurrentGameState")
+        ops.expect_member(game, "Stage", "Play")
+        ops.expect_member(game, "GameWideTurn", live_turn)
+        info = ops.get(game, "GameInfo")
+        ops.expect_member(info, "MatchID", live_match)
+        ops.expect_member(info, "GameNumber", live_game)
+        gre = ops.get(match, "GreInterface")
+        ops.expect_member(gre, "_disposed", False)
+        return {"manager": manager, "match": match, "gre": gre}
+
     def _cmd_concede(self, command: dict, timeout: float | None) -> dict:
         """Concede the current game the way Arena's own Concede button does.
 
@@ -697,68 +784,12 @@ class MacBridgeAdapter:
         if str(command.get("scope") or "game").lower() != "game":
             raise AdapterError("Only conceding the current game is supported")
         ops = _Ops()
-        manager = ops.add("find", **{"class": "GameManager"}, depth=0, optional=True)
-        match = ops.get(manager, "MatchManager", optional=True)
-        match_state = ops.get(match, "MatchState", optional=True)
-        scene = ops.get(ops.get(manager, "MatchSceneManager", optional=True), "Current", optional=True)
-        game = ops.get(manager, "CurrentGameState", optional=True)
-        stage = ops.get(game, "Stage", optional=True)
-        turn = ops.get(game, "GameWideTurn", optional=True)
-        info = ops.get(game, "GameInfo", optional=True)
-        match_id = ops.get(info, "MatchID", optional=True)
-        game_number = ops.get(info, "GameNumber", optional=True)
-        gre = ops.get(match, "GreInterface", optional=True)
-        disposed = ops.get(gre, "_disposed", optional=True)
-        values = self._run(ops, timeout)
-
-        def value(reference: dict) -> Any:
-            index = reference["ref"]
-            return values[index] if index < len(values) else None
-
-        if not handle(value(manager)):
-            raise AdapterError("Not in a match (no GameManager)")
-        if not handle(value(match)):
-            raise AdapterError("No MatchManager")
-        if enum_name(value(match_state)) != "GameInProgress":
-            raise AdapterError(
-                f"Match state is {enum_name(value(match_state)) or 'unknown'}, not GameInProgress"
-            )
-        if enum_name(value(scene)) != "DuelScene":
-            raise AdapterError(f"Not in the duel scene ({enum_name(value(scene)) or 'unknown'})")
-        if enum_name(value(stage)) != "Play":
-            raise AdapterError(f"Game stage is {enum_name(value(stage)) or 'unknown'}, not Play")
-        if not handle(value(gre)) or value(disposed) is not False:
-            raise AdapterError("No live GreInterface")
-        live_match = value(match_id)
-        live_turn = num(value(turn), -1)
-        live_game = num(value(game_number), -1)
-        if not isinstance(live_match, str) or not live_match or live_turn <= 0 or live_game <= 0:
-            raise AdapterError("Match, game or turn unknown")
-        wanted_match = command.get("expected_match_id")
-        if wanted_match and str(wanted_match) != live_match:
-            raise AdapterError("Stale concede: the match changed")
-        for key, live, what in (
-            ("expected_game_number", live_game, "game"),
-            ("expected_turn", live_turn, "turn"),
-        ):
-            wanted = command.get(key)
-            if wanted not in (None, "", 0, -1) and num(wanted, -1) != live:
-                raise AdapterError(f"Stale concede: the {what} changed ({wanted} -> {live})")
+        refs = self._live_game_reads(ops)
+        live_match, live_game, live_turn = self._live_game(self._run(ops, timeout), refs, command, "concede")
 
         ops = _Ops()
-        manager = ops.add("find", **{"class": "GameManager"}, depth=0)
-        match = ops.get(manager, "MatchManager")
-        ops.expect_member(match, "MatchState", "GameInProgress")
-        ops.expect_member(ops.get(manager, "MatchSceneManager"), "Current", "DuelScene")
-        game = ops.get(manager, "CurrentGameState")
-        ops.expect_member(game, "Stage", "Play")
-        ops.expect_member(game, "GameWideTurn", live_turn)
-        info = ops.get(game, "GameInfo")
-        ops.expect_member(info, "MatchID", live_match)
-        ops.expect_member(info, "GameNumber", live_game)
-        gre = ops.get(match, "GreInterface")
-        ops.expect_member(gre, "_disposed", False)
-        ops.call(gre, "ConcedeGame")
+        guarded = self._expect_live_game(ops, live_match, live_game, live_turn)
+        ops.call(guarded["gre"], "ConcedeGame")
         logger.warning(
             "mac bridge: conceding game %s of %s on turn %s via GreInterface.ConcedeGame",
             live_game,
@@ -777,6 +808,135 @@ class MacBridgeAdapter:
             "ok": True,
             "submitted_type": "Concede",
             "scope": "Game",
+            "match_id": live_match,
+            "game_number": live_game,
+            "turn": live_turn,
+        }
+
+    def _cmd_send_emote(self, command: dict, timeout: float | None) -> dict:
+        """Send Arena's "Oops" emote exactly the way a click on the emote wheel does.
+
+        A wheel click runs ``EmoteOptionsController.EmoteClicked(id)``: it looks
+        the id up in the wheel (``_temporaryEmotes``, then ``_emotesByIdMap``)
+        and fires ``OnEmoteOptionClicked``, whose handler
+        ``LocalPlayerDialogController._sendEmoteDataPacket`` calls
+        ``UIMessageHandler.TrySendEmote`` -> ``GreInterface.SubmitUIMessage``
+        (UIMessage {OnChat {Text = id}} to the opponent's seat), counts the
+        use and shows our own speech bubble. "Phrase_Basic_Oops" is the id a
+        real Oops click puts on the wire (an opponent's, 2026-10-06 14:00:30).
+
+        Batch 1 (read-only): the concede guards; no tutorial (NPEDirector);
+        the UIMessageHandler's send delegate targets this game's GreInterface;
+        exactly one LocalPlayerDialogController among the handlers of its
+        EmoteRecievedCallback. Batch 2 (read-only): that controller uses this
+        UIMessageHandler, its wheel is live, and the Oops id is on it
+        (``_equippedEmoteOptions``, which the wheel keeps in step with
+        ``_emotesByIdMap``); otherwise nothing is sent. Batch 3: the guards
+        again, the same wheel entry still holding the Oops id, then
+        ``EmoteClicked`` in the same frame. Never retried: a failure at or
+        after the click is ``outcome_unknown``.
+        """
+        kind = str(command.get("emote") or "oops").strip().lower()
+        emote_id = EMOTE_IDS.get(kind)
+        if emote_id is None:
+            raise AdapterError(f"Unsupported emote: {kind}")
+        ops = _Ops()
+        refs = self._live_game_reads(ops)
+        npe = ops.get(refs["manager"], "_npeDirector", optional=True)
+        ui = ops.get(refs["manager"], "UIMessageHandler", optional=True)
+        channel = ops.get(ops.get(ui, "_sendUIMessage", optional=True), "m_target", optional=True)
+        receivers = ops.add(
+            "call",
+            target=ops.get(ui, "EmoteRecievedCallback", optional=True),
+            method="GetInvocationList",
+            args=[],
+            depth=2,
+            optional=True,
+        )
+        values = self._run(ops, timeout)
+        live_match, live_game, live_turn = self._live_game(values, refs, command, "emote")
+
+        def value(reference: dict) -> Any:
+            index = reference["ref"]
+            return values[index] if index < len(values) else None
+
+        if handle(value(npe)):
+            raise AdapterError("No emotes in the tutorial")
+        if not handle(value(ui)):
+            raise AdapterError("No UIMessageHandler")
+        if short_class(value(channel)) != "GreInterface" or handle(value(channel)) != handle(
+            value(refs["gre"])
+        ):
+            raise AdapterError("The emote channel is not this game's GreInterface")
+        dialogs = {
+            handle(target)
+            for target in (field(entry, "m_target") for entry in items(value(receivers)))
+            if short_class(target) == "LocalPlayerDialogController" and handle(target)
+        }
+        if len(dialogs) != 1:
+            raise AdapterError(f"Emote wheel unavailable ({len(dialogs)} local emote controllers)")
+        dialog = H(dialogs.pop())
+
+        ops = _Ops()
+        ops.expect_class(dialog, "LocalPlayerDialogController")
+        dialog_ui = ops.get(dialog, "_uiMessageHandler")
+        wheel = ops.get(dialog, "_emoteOptionsController")
+        wheel_disposed = ops.get(wheel, "Disposed")
+        equipped = ops.add("get", target=wheel, member="_equippedEmoteOptions", depth=2, max_items=64)
+        checks = self._run(ops, timeout)
+
+        def checked(reference: dict) -> Any:
+            index = reference["ref"]
+            return checks[index] if index < len(checks) else None
+
+        if handle(checked(dialog_ui)) != handle(value(ui)):
+            raise AdapterError("Emote wheel unavailable (another game's emote controller)")
+        if checked(wheel_disposed) is not False or not handle(checked(wheel)):
+            raise AdapterError("Emote wheel unavailable (disposed)")
+        options = checked(equipped)
+        on_wheel = [field(entry, "Id") for entry in items(options)]
+        if not isinstance(options, dict) or options.get("$n") != len(on_wheel):
+            raise AdapterError("Emote wheel unavailable (incomplete wheel)")
+        if emote_id not in on_wheel:
+            raise AdapterError(
+                f"{emote_id} is not on this deck's emote wheel ({', '.join(map(str, on_wheel)) or 'empty'})"
+            )
+        slot = on_wheel.index(emote_id)
+
+        ops = _Ops()
+        self._expect_live_game(ops, live_match, live_game, live_turn)
+        ops.expect_class(dialog, "LocalPlayerDialogController")
+        channel = ops.get(ops.get(ops.get(dialog, "_uiMessageHandler"), "_sendUIMessage"), "m_target")
+        ops.expect_class(channel, "GreInterface")
+        ops.expect_member(channel, "_disposed", False)
+        wheel = ops.get(dialog, "_emoteOptionsController")
+        ops.expect_member(wheel, "Disposed", False)
+        options = ops.get(wheel, "_equippedEmoteOptions")
+        ops.expect_member(options, "Count", len(on_wheel))
+        ops.expect_member(ops.call(options, "get_Item", I(slot), depth=1), "Id", emote_id)
+        click = len(ops.ops)
+        ops.call(wheel, "EmoteClicked", {"str": emote_id})
+        logger.warning(
+            "mac bridge: sending emote %s (game %s of %s, turn %s) via EmoteOptionsController.EmoteClicked",
+            emote_id,
+            live_game,
+            live_match,
+            live_turn,
+        )
+        response = self._send({"action": "reflect_batch", "ops": ops.ops}, timeout)
+        if not response.get("ok"):
+            error = str(response.get("error") or "reflect_batch failed")
+            failed = response.get("failed_op")
+            if "outcome unknown" in error or (isinstance(failed, int) and failed >= click):
+                logger.warning("mac bridge: emote outcome unknown: %s", error)
+                return {"ok": False, "outcome_unknown": True, "error": error}
+            raise AdapterError(f"Emote not sent: {error}")
+        logger.warning("mac bridge: emote %s sent (game %s of %s)", emote_id, live_game, live_match)
+        return {
+            "ok": True,
+            "submitted_type": "Emote",
+            "emote": kind,
+            "emote_id": emote_id,
             "match_id": live_match,
             "game_number": live_game,
             "turn": live_turn,

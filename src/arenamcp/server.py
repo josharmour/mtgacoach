@@ -1747,6 +1747,8 @@ def get_game_state() -> dict[str, Any]:
 
     response = {
         "match_id": snap.get("match_id"),
+        # Best-of-three games share match_id; the Oops checks tell them apart.
+        "game_number": snap.get("game_number"),
         "opponent_name": snap.get("opponent_name", ""),
         "format_name": snap.get("format_name", ""),
         "event_id": snap.get("event_id", ""),

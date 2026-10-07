@@ -97,6 +97,8 @@ class _StartupMixin:
             abort_concede("the engine is reloading")
         concede_export = getattr(self, "_concede_export", None)
         concede_record = concede_export() if callable(concede_export) else None
+        oops_export = getattr(self, "_oops_export", None)
+        oops_record = oops_export() if callable(oops_export) else None
         suspend_queue = getattr(self, "_suspend_auto_queue", None)
         if callable(suspend_queue):
             suspend_queue()
@@ -134,6 +136,7 @@ class _StartupMixin:
                 "game_plan": manager.export_for_reload() if manager else None,
                 "autopilot_paused": was_paused,
                 "concede": concede_record,
+                "oops": oops_record,
             }
             ENGINE_RESUME_PATH.parent.mkdir(parents=True, exist_ok=True)
             temporary = ENGINE_RESUME_PATH.with_suffix(f".{os.getpid()}.tmp")
@@ -160,6 +163,9 @@ class _StartupMixin:
                 resume_concede = getattr(self, "_concede_resume_from", None)
                 if callable(resume_concede):
                     resume_concede(data.get("concede"))
+                resume_oops = getattr(self, "_oops_resume_from", None)
+                if callable(resume_oops):
+                    resume_oops(data.get("oops"))
                 if data.get("autopilot_paused"):
                     # Do not resume inputs while restoring a previously paused engine.
                     self._autopilot_enabled = False

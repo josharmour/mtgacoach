@@ -161,6 +161,14 @@ class MainWindow(QMainWindow):
             "concedes after a countdown you can cancel. The coach still recommends it when off."
         )
         concede_act.toggled.connect(self._set_auto_concede)
+        oops_act = tools_menu.addAction("Send 'Oops' Emote")
+        oops_act.setCheckable(True)
+        oops_act.setChecked(bool(self._settings.get("oops_emote", True)))
+        oops_act.setToolTip(
+            "With autoplay on, send Arena's Oops emote to your opponent when the autopilot gets "
+            "stuck on something it can't do or makes a clear blunder (at most twice a game)."
+        )
+        oops_act.toggled.connect(self._set_oops_emote)
         tts_server_act = tools_menu.addAction("Remote TTS Server…")
         tts_server_act.triggered.connect(self._configure_remote_tts)
         tools_menu.addSeparator()
@@ -247,6 +255,11 @@ class MainWindow(QMainWindow):
         """Let autoplay concede a lost game after a countdown; applies to the running engine."""
         self._settings.set("auto_concede", bool(enabled))
         self._session.set_auto_concede(bool(enabled))
+
+    def _set_oops_emote(self, enabled: bool) -> None:
+        """Let autoplay send Arena's Oops emote when it's stuck or blunders; applies to the running engine."""
+        self._settings.set("oops_emote", bool(enabled))
+        self._session.set_oops_emote(bool(enabled))
 
     def _configure_remote_tts(self) -> None:
         current_url = str(self._settings.get("tts_server_url") or "")

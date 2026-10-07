@@ -15,6 +15,7 @@ import copy
 import logging
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -190,6 +191,8 @@ class GameState(_GameStateAnnotationsMixin):
         "legal_actions_raw": list,
         # Match tracking
         "match_id": None,
+        # gameInfo.gameNumber: 1, 2, 3 in a best-of-three (they share match_id)
+        "game_number": None,
         "opponent_name": "",
         "format_name": "",
         "event_id": "",
@@ -273,6 +276,13 @@ class GameState(_GameStateAnnotationsMixin):
         # before that reset; bounded to the last completed game only.
         self._last_game_played_cards: dict[int, list[int]] = {}
         self._last_game_opponent_seat: int | None = None
+
+        # Log facts for the Oops emote checks (arenamcp.oops): what our own
+        # spells killed, combat deaths and damage, actions during combat. Kept
+        # across reset(); each fact carries its match id, game number, turn
+        # and the time it was seen.
+        self._oops_facts: deque = deque(maxlen=64)
+        self._oops_fact_seq = 0
 
         # Published immutable snapshot for lock-safe readers
         self._state_lock = threading.RLock()
@@ -427,6 +437,7 @@ class GameState(_GameStateAnnotationsMixin):
             return {
                 "schema_version": 1,
                 "match_id": self.match_id,
+                "game_number": self.game_number,
                 "local_seat_id": self.local_seat_id,
                 "seat_source": self._seat_source,
                 "turn_info": self.turn_info.to_dict(),
@@ -506,6 +517,7 @@ class GameState(_GameStateAnnotationsMixin):
                 self.last_game_result = checkpoint.get("last_game_result")
 
                 self.match_id = checkpoint.get("match_id")
+                self.game_number = _coerce_optional_int(checkpoint.get("game_number"))
                 self.local_seat_id = _coerce_optional_int(checkpoint.get("local_seat_id"))
                 self._seat_source = _coerce_int(checkpoint.get("seat_source", 0), 0)
 
@@ -940,6 +952,9 @@ class GameState(_GameStateAnnotationsMixin):
         match_id = game_info.get("matchID") or game_info.get("matchId")
         if match_id and self.match_id is None:
             self.match_id = match_id
+        game_number = _coerce_optional_int(game_info.get("gameNumber"))
+        if game_number:
+            self.game_number = game_number
 
         results = game_info.get("results", [])
         if results:
@@ -1222,6 +1237,7 @@ class GameState(_GameStateAnnotationsMixin):
 
         return {
             "match_id": self.match_id,
+            "game_number": self.game_number,
             "opponent_name": self.opponent_name,
             "format_name": self.format_name,
             "event_id": self.event_id,
@@ -1579,6 +1595,7 @@ class GameState(_GameStateAnnotationsMixin):
             annotations = _ensure_list(message.get("annotations", []))
             if annotations:
                 self._process_annotations(annotations)
+                self._record_oops_facts(annotations)
             persistent_annotations = _ensure_list(message.get("persistentAnnotations", []))
             self._track_attachments(message, persistent_annotations)
             if persistent_annotations:
@@ -1593,6 +1610,64 @@ class GameState(_GameStateAnnotationsMixin):
                 self._cleanup_stale_objects()
 
             self._published_snapshot = self._build_raw_snapshot_locked()
+
+    def _record_oops_facts(self, annotations: list) -> None:
+        """Keep the facts the Oops blunder checks read (arenamcp.oops.message_facts)."""
+        try:
+            from arenamcp.oops import message_facts
+
+            def describe(instance_id: int) -> dict | None:
+                obj = self.game_objects.get(instance_id)
+                if obj is None:
+                    return None
+                card = obj
+                if obj.object_kind == GameObjectKind.ABILITY and obj.parent_instance_id:
+                    card = self.game_objects.get(obj.parent_instance_id) or obj
+                controller = (
+                    obj.controller_seat_id if obj.controller_seat_id is not None else obj.owner_seat_id
+                )
+                return {"controller": controller, "grp_id": card.grp_id, "types": list(obj.card_types or [])}
+
+            facts = message_facts(
+                annotations,
+                describe=describe,
+                name_of=self._resolve_card_name,
+                local_seat=self.local_seat_id,
+                seats=list(self.players),
+                match_id=self.match_id,
+                game_number=getattr(self, "game_number", None),
+                turn=self.turn_info.turn_number,
+                phase=self.turn_info.phase,
+                step=self.turn_info.step,
+                active_player=self.turn_info.active_player,
+            )
+            if not facts:
+                return
+            store = getattr(self, "_oops_facts", None)
+            if store is None:
+                store = self._oops_facts = deque(maxlen=64)
+            now = time.monotonic()
+            for fact in facts:
+                self._oops_fact_seq = getattr(self, "_oops_fact_seq", 0) + 1
+                fact["seq"] = self._oops_fact_seq
+                fact["at"] = now  # the controller judges only fresh facts
+                store.append(fact)
+                if fact.get("kind") == "self_harm":
+                    logger.info(
+                        "Log fact: our %s killed our own %s (%s)",
+                        fact.get("source_name"),
+                        fact.get("target_name"),
+                        fact.get("category"),
+                    )
+        except Exception as exc:  # observation must never break parsing
+            logger.debug("Oops fact detection failed: %s", exc)
+
+    def oops_facts_since(self, seq: int) -> tuple[list[dict], int]:
+        """Oops log facts newer than ``seq``, and the newest sequence number."""
+        with self._state_lock:
+            store = getattr(self, "_oops_facts", None) or ()
+            facts = [dict(fact) for fact in store if fact.get("seq", 0) > seq]
+            return facts, getattr(self, "_oops_fact_seq", 0)
 
     def _track_attachments(self, message: dict, persistent_annotations: list) -> None:
         """Follow AnnotationType_Attachment (aura/equipment -> what it is attached to).

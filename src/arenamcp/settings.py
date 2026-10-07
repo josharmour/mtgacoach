@@ -56,6 +56,9 @@ DEFAULTS = {
     "auto_concede": True,
     "concede_countdown_s": 10,  # clamped to 3-60
     "concede_threshold": 0.95,  # loss confidence needed; clamped to 0.90-0.99
+    # With autoplay on, send Arena's "Oops" emote when the autopilot gets stuck
+    # or makes a clear blunder (arenamcp.oops; Tools > Send 'Oops' Emote).
+    "oops_emote": True,
     "tts_server_url": "",
     "tts_mode": "auto",
     "tts_lag_threshold_ms": 1000,

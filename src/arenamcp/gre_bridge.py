@@ -38,6 +38,12 @@ UNMAPPED_INTERACTION_TYPE = "unmapped_interaction"
 CONCEDE_PLUGIN_VERSION = "0.6.4"
 # A queued concede older than this is refused on MTGA's main thread.
 CONCEDE_EXPIRES_MS = 4000
+# First BepInEx plugin version with the "send_emote" command (PluginInfo.Version).
+EMOTE_PLUGIN_VERSION = "0.6.5"
+# A queued emote older than this is refused on MTGA's main thread.
+EMOTE_EXPIRES_MS = 3000
+# Emotes the bridge can send (arenamcp.oops sends Arena's "Oops").
+EMOTE_KINDS = ("oops",)
 
 
 def _version_tuple(version: str | None) -> tuple[int, ...]:
@@ -176,6 +182,8 @@ class GREBridge:
         self.plugin_version: str | None = None
         # The connected client answered "Unknown action: concede"; reset on connect.
         self._concede_unsupported = False
+        # The connected client can't send emotes ("Unknown action: send_emote"); reset on connect.
+        self._emote_unsupported = False
         # No-plugin diagnostics: when the server listens but nothing ever
         # connects, the plugin isn't running (most often BepInEx isn't
         # injected). Warn once with an actionable hint instead of staying
@@ -239,6 +247,7 @@ class GREBridge:
                     self._mac_adapter = None
                     self.plugin_version = str(resp.get("version") or "") or None
                     self._concede_unsupported = False
+                    self._emote_unsupported = False
                     runtime = resp.get("runtime")
                     from arenamcp.android_link import ANDROID_RUNTIME, game_device
 
@@ -1459,6 +1468,73 @@ class GREBridge:
             resp = {**resp, "unsupported": True}
         logger.warning(f"GRE bridge concede refused: {error or resp}")
         return resp
+
+    @property
+    def emote_supported(self) -> bool:
+        """The connected client can send an emote: the native library's adapter, or a
+        BepInEx plugin at EMOTE_PLUGIN_VERSION or later."""
+        if not self._connected or getattr(self, "_emote_unsupported", False):
+            return False
+        if self._mac_adapter is not None:
+            return True
+        return _version_tuple(self.plugin_version) >= _version_tuple(EMOTE_PLUGIN_VERSION)
+
+    def send_emote(
+        self,
+        kind: str = "oops",
+        *,
+        expected_match_id: str | None = None,
+        expected_turn: int | None = None,
+        expected_game_number: int | None = None,
+        timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        """Send one of Arena's emotes to the opponent, as a click on the emote wheel does.
+
+        The client refuses unless a game is in play in the duel scene, the
+        emote is on this deck's wheel, and it is still the expected
+        match/game/turn when given. Sent exactly once (no reconnect-and-resend,
+        which could send it twice) and never raises: ``outcome_unknown`` is
+        set when the pipe failed after the command may have gone out, and
+        ``unsupported`` when the connected client has no emote command. Call
+        it off the coaching loop: the native bridge takes up to three batches.
+        """
+        sent = False
+        try:
+            kind = str(kind or "").strip().lower()
+            if kind not in EMOTE_KINDS:
+                return {"ok": False, "error": f"Unsupported emote: {kind or '?'}"}
+            if not self._connected and not self.connect():
+                return {"ok": False, "error": "GRE bridge not connected"}
+            if not self.emote_supported:
+                return {"ok": False, "unsupported": True, "error": "This bridge can't send emotes"}
+            cmd: dict[str, Any] = {"action": "send_emote", "emote": kind, "expires_in_ms": EMOTE_EXPIRES_MS}
+            if expected_match_id:
+                cmd["expected_match_id"] = str(expected_match_id)
+            if expected_turn:
+                cmd["expected_turn"] = int(expected_turn)
+            if expected_game_number:
+                cmd["expected_game_number"] = int(expected_game_number)
+            logger.info(f"GRE bridge: sending emote {cmd}")
+            sent = True
+            try:
+                resp = self._send_command(cmd, timeout=timeout)
+            except GREBridgeError as e:
+                logger.warning(f"GRE bridge emote error (outcome unknown, not retrying): {e}")
+                return {"ok": False, "outcome_unknown": True, "error": str(e)}
+            if not isinstance(resp, dict):
+                return {"ok": False, "outcome_unknown": True, "error": f"Unexpected emote response: {resp!r}"}
+            if resp.get("ok"):
+                logger.info(f"GRE bridge sent emote: {resp}")
+                return resp
+            error = str(resp.get("error") or "")
+            if "Unknown action" in error or resp.get("unsupported"):
+                self._emote_unsupported = True
+                resp = {**resp, "unsupported": True}
+            logger.info(f"GRE bridge emote refused: {error or resp}")
+            return resp
+        except Exception as e:  # never raise into the caller
+            logger.warning(f"GRE bridge emote failed: {e}", exc_info=True)
+            return {"ok": False, "outcome_unknown": sent, "error": str(e)}
 
     # -------------------------------------------------------------------
     # Phase 2: new game state commands

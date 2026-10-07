@@ -11,6 +11,7 @@ The autopilot layers onto the existing coaching loop without replacing it:
 
 import contextlib
 import dataclasses
+import hashlib
 import logging
 import re
 import threading
@@ -106,6 +107,13 @@ class AutopilotEngine(
         self._ui_advice_fn = ui_advice_fn
         self._bug_report_fn = bug_report_fn
         self._stuck_report_fn: Callable[[str, dict], None] | None = None
+        # Set by standalone: (kind, key, detail, game_state) -> None. Reports
+        # stuck/self-cancel incidents for the "Oops" emote (arenamcp.oops).
+        self._oops_fn: Callable[[str, Any, str, dict | None], Any] | None = None
+        # Evidence the Oops blunder checks match against log facts: targets the
+        # autopilot submitted, and the board each attack was declared on.
+        self._oops_targets: deque = deque(maxlen=16)
+        self._oops_attacks: deque = deque(maxlen=4)
         self._progress_guard = DecisionProgressGuard(clock=lambda: time.monotonic())
         self._progress_game_state: dict[str, Any] = {}
         self._progress_last_poll: dict[str, Any] | None = None
@@ -633,11 +641,24 @@ class AutopilotEngine(
             return
         if turn != self._turn_number(game_state):
             return
+        context = game_state.get("decision_context") or {}
         try:
-            parent = int((game_state.get("decision_context") or {}).get("source_parent_instance_id") or 0)
+            parent = int(context.get("source_parent_instance_id") or 0)
         except (TypeError, ValueError):
             parent = 0
         if kind == "ActionType_Activate" and parent and instance_id and parent != instance_id:
+            return
+        if kind == "ActionType_Cast" and (parent or self._request_source_is_ability(game_state, context)):
+            # The declined request belongs to an ability, not to the spell: a
+            # resolved creature's ETB trigger asking for targets. Cancelling it
+            # steps back to that trigger; the cast itself stands. 2026-10-06
+            # 18:11:46: Divining Duelist resolved, its trigger's target was
+            # declined, and the GRE re-asked for the trigger's mode.
+            logger.info(
+                "Self-cancel guard: the cancelled %s belonged to an ability, not to the cast of %r",
+                why,
+                name or instance_id,
+            )
             return
         self._self_cancelled_plays = {
             entry for entry in getattr(self, "_self_cancelled_plays", set()) if entry[0] == turn
@@ -650,6 +671,138 @@ class AutopilotEngine(
             why,
             turn,
         )
+        # One incident per play per game: the same misjudgement recurs on later
+        # turns (Theoretical Necromancer, 17:51, 17:52 and 18:57 today) and
+        # must not spend the game's Oops budget twice.
+        self._report_oops(
+            "self_cancel",
+            (kind, name or instance_id, ability_id),
+            f"the autopilot started {'casting' if kind == 'ActionType_Cast' else 'activating'} "
+            f"{name or instance_id!r} and cancelled it ({why})",
+            game_state,
+        )
+
+    @staticmethod
+    def _request_source_is_ability(game_state: dict[str, Any], context: dict[str, Any]) -> bool:
+        """The pending request's source is an ability on the stack (a trigger), not a spell."""
+        try:
+            source = int(context.get("source_id") or context.get("sourceId") or 0)
+        except (TypeError, ValueError):
+            return False
+        if not source:
+            return False
+        return any(
+            isinstance(entry, dict)
+            and int(entry.get("instance_id") or 0) == source
+            and (
+                str(entry.get("object_kind") or "").upper() == "ABILITY"
+                or int(entry.get("parent_instance_id") or 0) > 0
+            )
+            for entry in game_state.get("stack") or []
+        )
+
+    def _report_oops(
+        self, kind: str, key: Any, detail: str, game_state: dict[str, Any] | None = None
+    ) -> None:
+        """Tell the Oops emote controller about a stuck/self-cancel incident; never raises."""
+        callback = getattr(self, "_oops_fn", None)
+        if not callable(callback):
+            return
+        try:
+            callback(kind, key, detail, game_state)
+        except Exception:
+            logger.debug("Oops report failed", exc_info=True)
+
+    def _note_oops_targets(self, game_state: dict[str, Any], poll: dict | None, target_ids: Any) -> None:
+        """Remember targets the autopilot just submitted, with their source (for arenamcp.oops)."""
+        try:
+            # GREBridge.submit_targets takes one id or a list: the single-
+            # candidate auto-submit passes a bare int.
+            ids = target_ids if isinstance(target_ids, (list, tuple, set)) else [target_ids]
+            targets = [int(t) for t in ids if int(t or 0) > 0]
+            if not targets:
+                return
+            poll = poll or {}
+            source = 0
+            for context in (
+                poll.get("decision_context"),
+                poll.get("request_payload"),
+                game_state.get("decision_context"),
+            ):
+                if not source and isinstance(context, dict):
+                    source = int(context.get("source_id") or context.get("sourceId") or 0)
+            source = int(poll.get("source_instance_id") or 0) or source
+            self._note_oops_evidence(
+                self._oops_targets,
+                {
+                    "at": time.monotonic(),
+                    "match_id": game_state.get("match_id"),
+                    "game_number": game_state.get("game_number"),
+                    "turn": self._turn_number(game_state),
+                    "source_id": source,
+                    "targets": targets,
+                },
+            )
+        except Exception:
+            logger.debug("Oops target record failed", exc_info=True)
+
+    def _note_attack_declared(
+        self, game_state: dict[str, Any], attacker_ids: list[int], pending: dict | None = None
+    ) -> None:
+        """Remember the board an attack was declared on (for the Oops attack check)."""
+        try:
+            attackers = [int(a) for a in attacker_ids or [] if int(a or 0) > 0]
+            if attackers and isinstance(game_state, dict):
+                self._note_oops_evidence(
+                    self._oops_attacks,
+                    {
+                        "at": time.monotonic(),
+                        "match_id": game_state.get("match_id"),
+                        "game_number": game_state.get("game_number"),
+                        "turn": self._turn_number(game_state),
+                        "attackers": attackers,
+                        "state": game_state,
+                        "pending": pending,
+                    },
+                )
+        except Exception:
+            logger.debug("Oops attack record failed", exc_info=True)
+
+    @staticmethod
+    def _note_oops_evidence(store: deque, record: dict[str, Any]) -> None:
+        """Add a record, first dropping any from an earlier game.
+
+        A best-of-three's games share the match id and restart turn numbers:
+        a record from another game number, or from a later turn than this
+        one, belongs to a game that is over.
+        """
+        from arenamcp.oops import same_game
+
+        for old in [
+            old
+            for old in store
+            if not same_game(old, record) or int(old.get("turn") or 0) > int(record.get("turn") or 0)
+        ]:
+            store.remove(old)
+        store.append(record)
+
+    def oops_evidence(self) -> dict[str, list[dict]]:
+        """Targets submitted and attacks declared lately, for the Oops blunder checks."""
+        return {
+            "targets": list(getattr(self, "_oops_targets", ()) or ()),
+            "attacks": list(getattr(self, "_oops_attacks", ()) or ()),
+        }
+
+    def window_still_given_up(self, game_state: dict[str, Any]) -> bool:
+        """is_window_given_up without its side effect: never clears the stand-down."""
+        semantic = getattr(self, "_given_up_semantics", None)
+        try:
+            if semantic is not None:
+                return semantic == decision_semantics(self._progress_poll_from_state(game_state), game_state)
+            sig = getattr(self, "_given_up_window_sig", None)
+            return sig is not None and self._priority_window_signature(game_state) == sig
+        except Exception:
+            return False
 
     def _self_cancel_withheld(
         self, game_state: dict[str, Any], kind: str, instance_id: int = 0, ability_id: int = 0, name: str = ""
@@ -1685,6 +1838,11 @@ class AutopilotEngine(
         logger.warning("Autopilot manual required: %s%s", reason, details)
         suffix = f" [{hint}]" if hint else ""
         self._notify("AUTOPILOT", f"MANUAL REQUIRED: {reason}{suffix}")
+        if game_state is not None:
+            window = repr((self._given_up_window_sig, self._given_up_semantics)).encode("utf-8", "replace")
+            self._report_oops(
+                "stuck_manual", (reason, hashlib.sha1(window).hexdigest()[:16]), reason, game_state
+            )
 
     def is_window_given_up(self, game_state: dict[str, Any]) -> bool:
         """True if MANUAL REQUIRED was already declared for the current window.
@@ -2021,6 +2179,8 @@ class AutopilotEngine(
             self.on_abort()
             self._state = AutopilotState.PAUSED
             self._notify("AUTOPILOT", f"Autoplay paused: {reason} Recording this issue for manual recovery.")
+            # Before the capture below, which turns autoplay off.
+            self._report_oops("stuck_loop", proof.get("signature") or reason, reason, game_state)
             callback = getattr(self, "_stuck_report_fn", None)
             if callable(callback):
                 try:
@@ -2052,7 +2212,11 @@ class AutopilotEngine(
             self._progress_guard.note_attempt(command, {"args": args, "kwargs": kwargs})
             return True
 
-        return ProgressBridge(self._gre_bridge, before_submit, poll=poll)
+        def after_submit(observed, command, args, kwargs, result):
+            if command == "submit_targets" and result and args:
+                self._note_oops_targets(state, observed or poll, args[0])
+
+        return ProgressBridge(self._gre_bridge, before_submit, poll=poll, after_submit=after_submit)
 
     def on_spacebar(self) -> None:
         """Handle spacebar press (confirm current action/plan)."""

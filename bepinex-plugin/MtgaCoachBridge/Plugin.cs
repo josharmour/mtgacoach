@@ -143,7 +143,8 @@ namespace MtgaCoachBridge
         public const string GUID = "com.mtgacoach.grebridge";
         public const string Name = "MtgaCoach GRE Bridge";
         // 0.6.4: "concede" command (gre_bridge.CONCEDE_PLUGIN_VERSION).
-        public const string Version = "0.6.4";
+        // 0.6.5: "send_emote" command (gre_bridge.EMOTE_PLUGIN_VERSION).
+        public const string Version = "0.6.5";
     }
 
 }

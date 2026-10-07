@@ -185,9 +185,17 @@ class DecisionProgressGuard:
 class ProgressBridge:
     """Local forwarding view; never changes the engine's shared GRE bridge."""
 
-    def __init__(self, bridge: Any, before_submit: Callable, *, poll: dict | None = None):
+    def __init__(
+        self,
+        bridge: Any,
+        before_submit: Callable,
+        *,
+        poll: dict | None = None,
+        after_submit: Callable | None = None,
+    ):
         self._bridge = bridge
         self._before_submit = before_submit
+        self._after_submit = after_submit
         self._poll = poll
 
     def __getattr__(self, name: str) -> Any:
@@ -207,6 +215,11 @@ class ProgressBridge:
                 if not self._before_submit(self._poll, name, args, kwargs):
                     return False
                 result = method(*args, **kwargs)
+                if self._after_submit is not None:
+                    try:
+                        self._after_submit(self._poll, name, args, kwargs, result)
+                    except Exception:
+                        pass  # bookkeeping only; never fails a submission
                 return result
 
             return submit

@@ -1111,6 +1111,7 @@ class _BridgeSubmitMixin:
             if outcome == "advanced":
                 # Arena advanced; never send an empty declaration into a
                 # different request. The caller verifies the transition.
+                self._note_declared_attack(game_state, step_entries, pending)
                 return ClickResult(True, 0, 0, "attackers", "GRE bridge", submitted_action=submitted_action)
             if outcome != "acknowledged":
                 logger.warning("Bridge declare_attackers: selection was not acknowledged; refusing finalize")
@@ -1139,7 +1140,16 @@ class _BridgeSubmitMixin:
             for name, entry in zip(attacker_names, attacker_entries, strict=True)
         )
         self._log_execution_path(ExecutionPath.GRE_AWARE, f"declare_attackers: [{names_str}] via GRE bridge")
+        self._note_declared_attack(game_state, attacker_entries, pending)
         return ClickResult(True, 0, 0, "attackers", "GRE bridge", submitted_action=submitted_action)
+
+    def _note_declared_attack(
+        self, game_state: dict[str, Any], entries: list[dict], pending: dict | None
+    ) -> None:
+        """Hand the declared attackers and their board to the Oops attack check."""
+        note = getattr(self, "_note_attack_declared", None)
+        if callable(note):
+            note(game_state, [entry.get("attackerInstanceId") for entry in entries or []], pending)
 
     def _try_gre_bridge_blockers(self, action: GameAction) -> ClickResult | None:
         """Submit blocker assignments via the GRE bridge.

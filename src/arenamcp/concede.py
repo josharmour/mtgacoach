@@ -1152,6 +1152,16 @@ class ConcedeController:
     def armed(self) -> bool:
         return self._armed is not None
 
+    def concede_in_progress(self, game_key: Any = None) -> bool:
+        """An offer or countdown runs, or this game's concede was claimed (sending, sent, confirming).
+
+        ``armed`` turns False the moment the countdown claims itself, before
+        the concede is sent and confirmed; anything that must stay quiet
+        through the concede (the "Oops" emote) asks this instead.
+        """
+        with self._lock:
+            return self._armed is not None or (game_key is not None and game_key in self._conceded)
+
     def recommended(self, game_key: Any) -> bool:
         with self._lock:
             return game_key in self._recommended

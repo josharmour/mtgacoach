@@ -156,6 +156,10 @@ namespace MtgaCoachBridge
                     HandleConcede(cmd);
                     break;
 
+                case "send_emote":
+                    HandleSendEmote(cmd);
+                    break;
+
                 case "queue_bot_match":
                 case "queue_match":
                     HandleQueueBotMatch(cmd);
@@ -2452,6 +2456,158 @@ namespace MtgaCoachBridge
                 ["ok"] = true,
                 ["submitted_type"] = "Concede",
                 ["scope"] = "Game",
+                ["match_id"] = info.MatchID,
+                ["game_number"] = info.GameNumber,
+                ["turn"] = gs.GameWideTurn
+            });
+        }
+
+        // Send Arena's "Oops" emote exactly the way a click on the emote wheel does:
+        // EmoteOptionsController.EmoteClicked(id) -> OnEmoteOptionClicked ->
+        // LocalPlayerDialogController._sendEmoteDataPacket -> UIMessageHandler.TrySendEmote
+        // -> GreInterface.SubmitUIMessage (UIMessage { OnChat { Text = id } } to the
+        // opponent's seat). Refuses outside a game in play, in the tutorial, and when
+        // Oops is not on this deck's wheel. Mirrors MacBridgeAdapter._cmd_send_emote.
+        private const string OopsEmoteId = "Phrase_Basic_Oops";
+
+        private void HandleSendEmote(PipeCommand cmd)
+        {
+            JObject Fail(string error) => new JObject { ["ok"] = false, ["error"] = error };
+            const BindingFlags Members = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+
+            string kind = (cmd.Json.Value<string>("emote") ?? "oops").Trim().ToLowerInvariant();
+            if (kind != "oops")
+            {
+                cmd.SetResponse(Fail($"Unsupported emote: {kind}"));
+                return;
+            }
+            long expiresMs = cmd.Json.Value<long?>("expires_in_ms") ?? 3000;
+            if (cmd.AgeMs > expiresMs)
+            {
+                _log.LogWarning($"Emote expired: waited {cmd.AgeMs} ms for the main thread (limit {expiresMs} ms)");
+                cmd.SetResponse(Fail($"Emote expired before the main thread ran it ({cmd.AgeMs} ms)"));
+                return;
+            }
+            var gm = GetGameManager();
+            if (gm == null) { cmd.SetResponse(Fail("Not in a match (no GameManager)")); return; }
+            var mm = gm.MatchManager;
+            if (mm == null) { cmd.SetResponse(Fail("No MatchManager")); return; }
+            if (mm.MatchState != MatchState.GameInProgress)
+            {
+                cmd.SetResponse(Fail($"Match state is {mm.MatchState}, not GameInProgress"));
+                return;
+            }
+            var scene = MatchSceneManager.Instance;
+            if (scene == null || scene.Current != MatchSceneManager.SubScene.DuelScene)
+            {
+                cmd.SetResponse(Fail("Not in the duel scene"));
+                return;
+            }
+            var gs = gm.CurrentGameState;
+            if (gs == null || gs.Stage != GameStage.Play) { cmd.SetResponse(Fail("Game is not in Play")); return; }
+            var info = gs.GameInfo;
+            if (info == null || string.IsNullOrEmpty(info.MatchID)) { cmd.SetResponse(Fail("Match unknown")); return; }
+            var wantMatch = cmd.Json.Value<string>("expected_match_id");
+            if (!string.IsNullOrEmpty(wantMatch) && info.MatchID != wantMatch)
+            {
+                cmd.SetResponse(Fail("Stale emote: the match changed"));
+                return;
+            }
+            long wantGame = cmd.Json.Value<long?>("expected_game_number") ?? 0;
+            if (wantGame > 0 && info.GameNumber != (uint)wantGame)
+            {
+                cmd.SetResponse(Fail($"Stale emote: the game changed ({wantGame} -> {info.GameNumber})"));
+                return;
+            }
+            long wantTurn = cmd.Json.Value<long?>("expected_turn") ?? 0;
+            if (wantTurn > 0 && gs.GameWideTurn != (uint)wantTurn)
+            {
+                cmd.SetResponse(Fail($"Stale emote: the turn changed ({wantTurn} -> {gs.GameWideTurn})"));
+                return;
+            }
+            if (gm.NpeDirector != null) { cmd.SetResponse(Fail("No emotes in the tutorial")); return; }
+            var gre = mm.GreInterface;
+            if (gre == null) { cmd.SetResponse(Fail("No GreInterface")); return; }
+            var greDisposed = gre.GetType().GetField("_disposed", Members);
+            if (greDisposed == null || (bool)greDisposed.GetValue(gre))
+            {
+                cmd.SetResponse(Fail("No live GreInterface"));
+                return;
+            }
+
+            // The UIMessageHandler must send to this game's GreInterface.
+            object ui = gm.UIMessageHandler;
+            if (ui == null) { cmd.SetResponse(Fail("No UIMessageHandler")); return; }
+            var uiType = ui.GetType();
+            var channel = uiType.GetField("_sendUIMessage", Members)?.GetValue(ui) as Delegate;
+            if (channel == null || !ReferenceEquals(channel.Target, gre))
+            {
+                cmd.SetResponse(Fail("The emote channel is not this game's GreInterface"));
+                return;
+            }
+
+            // The local player's emote controller listens to this UIMessageHandler.
+            var received = uiType.GetField("EmoteRecievedCallback", Members)?.GetValue(ui) as Delegate;
+            object dialog = null;
+            int found = 0;
+            if (received != null)
+            {
+                foreach (var handler in received.GetInvocationList())
+                {
+                    var target = handler.Target;
+                    if (target == null || target.GetType().Name != "LocalPlayerDialogController" || ReferenceEquals(target, dialog))
+                        continue;
+                    dialog = target;
+                    found++;
+                }
+            }
+            if (found != 1) { cmd.SetResponse(Fail($"Emote wheel unavailable ({found} local emote controllers)")); return; }
+            var dialogType = dialog.GetType();
+            if (!ReferenceEquals(dialogType.GetField("_uiMessageHandler", Members)?.GetValue(dialog), ui))
+            {
+                cmd.SetResponse(Fail("Emote wheel unavailable (another game's emote controller)"));
+                return;
+            }
+            var wheel = dialogType.GetField("_emoteOptionsController", Members)?.GetValue(dialog);
+            var wheelDisposed = wheel?.GetType().GetProperty("Disposed", Members);
+            if (wheel == null || wheelDisposed == null || (bool)wheelDisposed.GetValue(wheel, null))
+            {
+                cmd.SetResponse(Fail("Emote wheel unavailable (disposed)"));
+                return;
+            }
+            var wheelType = wheel.GetType();
+            var byId = wheelType.GetField("_emotesByIdMap", Members)?.GetValue(wheel) as IDictionary;
+            if (byId == null || !byId.Contains(OopsEmoteId))
+            {
+                cmd.SetResponse(Fail($"{OopsEmoteId} is not on this deck's emote wheel"));
+                return;
+            }
+            var click = wheelType.GetMethod("EmoteClicked", Members, null, new[] { typeof(string) }, null);
+            if (click == null) { cmd.SetResponse(Fail("Emote wheel unavailable (no EmoteClicked)")); return; }
+
+            _log.LogInfo($"Sending emote {OopsEmoteId} via the emote wheel (game {info.GameNumber} of {info.MatchID}, turn {gs.GameWideTurn}; requested by mtgacoach)");
+            try
+            {
+                click.Invoke(wheel, new object[] { OopsEmoteId });
+            }
+            catch (Exception ex)
+            {
+                // TrySendEmote may already have queued the message: never report "not sent".
+                _log.LogWarning($"Emote click failed after it may have been sent: {ex.InnerException?.Message ?? ex.Message}");
+                cmd.SetResponse(new JObject
+                {
+                    ["ok"] = false,
+                    ["outcome_unknown"] = true,
+                    ["error"] = $"Emote click failed: {ex.InnerException?.Message ?? ex.Message}"
+                });
+                return;
+            }
+            cmd.SetResponse(new JObject
+            {
+                ["ok"] = true,
+                ["submitted_type"] = "Emote",
+                ["emote"] = kind,
+                ["emote_id"] = OopsEmoteId,
                 ["match_id"] = info.MatchID,
                 ["game_number"] = info.GameNumber,
                 ["turn"] = gs.GameWideTurn

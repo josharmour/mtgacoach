@@ -69,6 +69,7 @@ from arenamcp.standalone_diagnostics import _DiagnosticsMixin
 from arenamcp.standalone_draft_event import _DraftEventMixin
 from arenamcp.standalone_hotkeys import _StandaloneHotkeysMixin
 from arenamcp.standalone_mcp import MCPClient
+from arenamcp.standalone_oops import _OopsMixin
 from arenamcp.standalone_postmatch import _PostMatchMixin
 from arenamcp.standalone_startup import _StartupMixin
 from arenamcp.standalone_tempo import _TempoTracker
@@ -95,6 +96,7 @@ class StandaloneCoach(
     _DraftEventMixin,
     _AutopilotCaptureMixin,
     _ConcedeMixin,
+    _OopsMixin,
     _StartupMixin,
     _DeckAnalysisMixin,
     _PostMatchMixin,
@@ -295,6 +297,8 @@ class StandaloneCoach(
         # Deterministic "dead no matter what" check: recommend conceding, and
         # with autoplay on, concede after a cancellable countdown.
         self._init_concede()
+        # Arena's "Oops" emote when the autopilot gets stuck or clearly blunders.
+        self._init_oops()
 
     @staticmethod
     def _build_pending_decision_signature(game_state: dict[str, Any]) -> str | None:
@@ -755,6 +759,7 @@ class StandaloneCoach(
                 )
             self._autopilot._advice_recorder = self._record_advice
             self._autopilot._stuck_report_fn = self._auto_capture_autopilot_stuck
+            self._autopilot._oops_fn = self._oops_report
             if self._coach:
                 self._autopilot._game_plan_mgr = self._coach._ensure_game_plan_mgr()
                 if self._autopilot._game_plan_mgr:
@@ -851,8 +856,10 @@ class StandaloneCoach(
 
     def toggle_autopilot(self) -> bool:
         """Toggle autopilot on/off at runtime. Returns new enabled state."""
-        # Any autoplay switch is the user taking over: stop a concede countdown.
+        # Any autoplay switch is the user taking over: stop a concede countdown
+        # and drop any Oops waiting to be sent.
         self.cancel_concede("autopilot toggled")
+        self._oops_clear("autoplay was toggled")
         if self._autopilot_enabled and self._autopilot:
             # Turn OFF: abort any in-flight plan, disable
             self._autopilot.on_abort()
@@ -2000,6 +2007,8 @@ class StandaloneCoach(
                 # Dead no matter what? Recommend conceding (once per game) and,
                 # with autoplay on, run the cancellable auto-concede countdown.
                 self._observe_concede(curr_state, (curr_match_id, self._match_number))
+                # Stuck or clear blunder with autoplay on? Send Arena's "Oops" emote.
+                self._observe_oops(curr_state, (curr_match_id, self._match_number))
 
                 # FORCE CHECK: Always check triggers if trigger detector exists.
                 # prev_state starts as {} (falsy) but check_triggers handles empty
@@ -3129,6 +3138,7 @@ class StandaloneCoach(
         # First, even when a shutdown path already cleared _running (stdin
         # EOF, restart): a countdown must never outlive the coach.
         self.abort_concede("the coach stopped")
+        self._oops_clear("the coach stopped")
         if not self._running:
             return
 
