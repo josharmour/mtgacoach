@@ -3461,12 +3461,19 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         # MCTS Multi-Ply Evaluation & Decision Packet Injection
         try:
-            from arenamcp.mcts_evaluator import MCTSEvaluator
+            from arenamcp.mcts_evaluator import MCTSEvaluator, searched_lines
 
             mcts_eval = MCTSEvaluator.evaluate(game_state)
             if mcts_eval and (mcts_eval.branches or mcts_eval.blunder_traps):
+                # When the line search has lines (the strategic block's LINES /
+                # CANDIDATE LINES), the heuristic 'Suggested line' can only
+                # contradict them: leave it out. It stays when the search has
+                # nothing (ARENAMCP_LINE_SEARCH=0, truncated, no assessment).
+                # The autopilot's typed-decision prompt renders through here too.
                 lines.append("")
-                lines.append(mcts_eval.format_for_llm_prompt())
+                lines.append(
+                    mcts_eval.format_for_llm_prompt(include_suggested_line=not searched_lines(game_state))
+                )
         except Exception as e:
             logger.debug(f"MCTS prompt injection skipped: {e}")
 

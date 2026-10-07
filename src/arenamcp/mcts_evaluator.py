@@ -105,26 +105,45 @@ class MCTSTreePayload:
     format_summary: str = ""
     branches: list[MCTSBranch] = field(default_factory=list)
     blunder_traps: list[MCTSBranch] = field(default_factory=list)
+    # The line search's top lines as branches (best first), set by
+    # ``MCTSEvaluator.evaluate`` on every call; empty when the search has
+    # nothing. ``to_dict`` (the sidebar) shows them instead of ``branches``,
+    # which stay the heuristic ones.
+    line_branches: list[MCTSBranch] = field(default_factory=list)
+    # The line search result ``line_branches`` came from (None: none).
+    _lines_source: Any = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON for the sidebar's tactical line: the searched lines, when there are any.
+
+        With ``line_branches`` they replace the heuristic branches (provenance
+        'line_search', eval source 'Line search (N lines)'), so the sidebar
+        never shows a heuristic line that contradicts the search; blunder
+        traps and the position stay.
+        """
+        searched = list(self.line_branches)
+        branches = searched or self.branches
+        count = len(searched)
         return {
             "root_win_probability": round(self.root_win_probability, 3),
-            "total_simulations": self.total_simulations,
+            "total_simulations": count if searched else self.total_simulations,
             "turn_number": self.turn_number,
             "phase": self.phase,
-            "best_action": self.best_action,
+            "best_action": searched[0].action if searched else self.best_action,
             "hero_life": self.hero_life,
             "opp_life": self.opp_life,
             "available_mana": self.available_mana,
-            "eval_source": self.eval_source,
+            "eval_source": (
+                f"Line search ({count} line{'' if count == 1 else 's'})" if searched else self.eval_source
+            ),
             "opponent_threat_summary": self.opponent_threat_summary,
             "opponent_profile": self.opponent_profile.to_dict(),
             "format_summary": self.format_summary,
-            "branches": [b.to_dict() for b in self.branches],
+            "branches": [b.to_dict() for b in branches],
             "blunder_traps": [b.to_dict() for b in self.blunder_traps],
         }
 
-    def format_for_llm_prompt(self) -> str:
+    def format_for_llm_prompt(self, *, include_suggested_line: bool = True) -> str:
         """Render the hints for the LLM as what they are: rules of thumb.
 
         2026-09-24: this block was headed "MCTS MULTI-PLY TACTICAL SEARCH" with
@@ -132,6 +151,13 @@ class MCTSTreePayload:
         the system prompts told the model to base its action on it. Nothing
         here is simulated: the position score is a weighted life/power/hand
         difference and the lines are ranked by fixed bonuses.
+
+        ``include_suggested_line=False`` (the line search has lines, which the
+        prompt already carries as LINES / CANDIDATE LINES) leaves out the
+        heuristic 'Suggested line' and 'Other candidates', which can
+        contradict them (G1_T12: "Island, Countersculpt, hold" against the
+        searched "Island + Undulating Witness"). The position, life/mana,
+        format and opponent lines and every BLUNDER TRAP stay.
         """
         root = self.root_win_probability
         position = "favorable" if root >= 0.6 else ("unfavorable" if root <= 0.4 else "even")
@@ -148,7 +174,7 @@ class MCTSTreePayload:
             lines.append(f"• Opponent Threat Candidates (Hypothesized Pool): {self.opponent_threat_summary}")
         lines.append("")
 
-        if self.branches:
+        if self.branches and include_suggested_line:
             best = self.branches[0]
             lines.append("Suggested line:")
             if best.sequence_steps:
@@ -196,6 +222,83 @@ def _hints_apply(game_state: dict[str, Any], local_seat: Any, phase: str) -> boo
     pending = game_state.get("pending_decision")
     # Live states carry a label string (or None); other shapes aren't gated.
     return not isinstance(pending, str) or pending in _OPEN_PRIORITY_DECISIONS
+
+
+# --- the line search replaces the heuristic suggestion ---------------------
+# board_assessment.assess() runs line_search: whole lines over our next turns
+# and two of their attacks. When it has lines, the prompts carry them (LINES /
+# CANDIDATE LINES) and the heuristic "Suggested line" above, which can
+# contradict them, is left out of the prompt and replaced in the sidebar.
+
+_LINE_COUNTERPLAY = (
+    "they attack each turn with their worst-for-us attack; their new cards and tricks are not modelled"
+)
+
+
+def _searched(game_state: Any) -> tuple[Any, list]:
+    """(the line search, its top lines best first) for this snapshot, or (None, [])."""
+    if not isinstance(game_state, dict):
+        return None, []
+    try:
+        from arenamcp.board_assessment import assess
+
+        assessment = assess(game_state)
+    except Exception as error:  # never break the hints on the strategic layer
+        logger.debug(f"line search unavailable for the hints: {error}")
+        return None, []
+    search = getattr(assessment, "line_search", None)
+    lines = list(getattr(assessment, "lines", None) or [])
+    if search is None or getattr(search, "truncated", True) or not lines:
+        return None, []
+    return search, lines
+
+
+def searched_lines(game_state: Any) -> list:
+    """The line search's top lines (best first) for this snapshot, or [].
+
+    Empty when there is no assessment (``assess`` returned None), the search
+    is switched off (ARENAMCP_LINE_SEARCH=0), failed or was truncated: the
+    heuristic hints then keep their 'Suggested line'. ``assess`` is cached per
+    board signature, so once the board was assessed this is a lookup.
+    """
+    return _searched(game_state)[1]
+
+
+def _line_end(line: Any, hero_life: int, opp_life: int) -> tuple[int, int]:
+    """Our life after their last modelled attack and theirs after our last attack in ``line``."""
+    lives = line.lives()
+    ours = lives[-1] if lives else hero_life
+    theirs = next((s.opp_life_after for s in reversed(line.steps) if s.opp_life_after is not None), opp_life)
+    return ours, theirs
+
+
+def _line_branch(line: Any, *, best: bool, hero_life: int, opp_life: int) -> MCTSBranch:
+    """One searched line as a sidebar branch: a step per turn and its outcome."""
+    ours, theirs = _line_end(line, hero_life, opp_life)
+    if line.outcome == "win":
+        outcome = f"lethal on T{line.win_turn}"
+    elif line.outcome == "dead":
+        outcome = f"dead on T{line.dead_turn}"
+    else:
+        outcome = f"life {ours} vs {theirs} by {line.steps[-1].label if line.steps else 'T'}"
+    return MCTSBranch(
+        action=line.summary(),
+        action_type="sequence",
+        sequence_steps=[f"T{step.turn}: {step.text()}" for step in line.steps] or [line.summary()],
+        score_provenance="line_search",
+        tag="⭐ BEST LINE" if best else "NORMAL",
+        outcome_summary=outcome,
+        simulated_counterplay=_LINE_COUNTERPLAY,
+        projected_state={"hero_life": ours, "opp_life": theirs},
+        details={
+            "outcome": line.outcome,
+            "value": round(float(line.v), 2),
+            "dead_at": line.dead_at,
+            "win_at": line.win_at,
+            "greedy": bool(line.baseline),
+            "lives": list(line.lives()),
+        },
+    )
 
 
 class MCTSEvaluator:
@@ -481,7 +584,7 @@ class MCTSEvaluator:
         stack = game_state.get("stack") or []
         sig = cls._decision_signature(game_state, local_seat)
         if not force and cls._last_sig == sig and cls._last_payload is not None and cls._cache_fresh():
-            return cls._last_payload
+            return cls._with_searched_lines(cls._last_payload, game_state)
 
         hero_life, opp_life = 20, 20
         hero_mana_dict: dict[str, int] = {}
@@ -1156,4 +1259,28 @@ class MCTSEvaluator:
         cls._last_sig = sig
         cls._last_payload = payload
         cls._last_payload_at = time.monotonic()
+        return cls._with_searched_lines(payload, game_state)
+
+    @staticmethod
+    def _with_searched_lines(payload: MCTSTreePayload, game_state: dict[str, Any]) -> MCTSTreePayload:
+        """Set ``payload.line_branches`` from this snapshot's line search (the sidebar adapter).
+
+        Checked on every call rather than cached with the heuristics: the
+        assessment has its own per-board cache, and the kill switch or a
+        truncated search must take effect without waiting for this cache.
+        Any failure leaves the heuristic branches (empty ``line_branches``).
+        """
+        search, lines = _searched(game_state)
+        if search is payload._lines_source:
+            return payload
+        try:
+            branches = [
+                _line_branch(line, best=index == 0, hero_life=payload.hero_life, opp_life=payload.opp_life)
+                for index, line in enumerate(lines)
+            ]
+        except Exception as error:
+            logger.debug(f"line search branches unavailable: {error}")
+            branches, search = [], None
+        payload.line_branches = branches
+        payload._lines_source = search
         return payload
