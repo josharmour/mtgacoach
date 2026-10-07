@@ -1554,6 +1554,29 @@ def _build_public_zones(
     return zones
 
 
+def _serialize_revealed_cards(entries: Any) -> list[dict[str, Any]]:
+    """Publish the log's revealed opponent-hand cards as {instance_id, grp_id, name, zone}."""
+    revealed = []
+    for entry in _copy_list(entries):
+        if not isinstance(entry, dict):
+            continue
+        grp_id = _coerce_int(entry.get("grp_id"), 0) or 0
+        if not grp_id:
+            continue
+        name = str(entry.get("name") or "")
+        if not name or name.startswith("Card#") or is_unknown_card_name(name):
+            name = enrich_with_oracle_text(grp_id).get("name") or name or f"Unknown ({grp_id})"
+        revealed.append(
+            {
+                "instance_id": _coerce_int(entry.get("instance_id")),
+                "grp_id": grp_id,
+                "name": name,
+                "zone": str(entry.get("zone") or "hand"),
+            }
+        )
+    return revealed
+
+
 def _get_bridge_overlay(
     fallback_turn: dict[str, Any],
     fallback_players: list[dict[str, Any]],
@@ -1820,6 +1843,13 @@ def get_game_state() -> dict[str, Any]:
     if bridge_overlay:
         response.update(bridge_overlay)
         response["_bridge_connected"] = response["bridge_connected"]
+
+    # Log-derived opponent facts, attached after the overlay because it
+    # rebuilds "zones" without them. An unobserved library stays None, not 0.
+    public_zones = response.get("zones")
+    if isinstance(public_zones, dict):
+        public_zones["opponent_library_count"] = zones.get("opponent_library_count")
+    response["revealed_cards"] = _serialize_revealed_cards(snap.get("revealed_in_opponent_hand"))
 
     effective_local_seat_id = response.get("local_seat_id")
     if decision_seat_id is None and snap.get("pending_decision"):

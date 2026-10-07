@@ -183,14 +183,38 @@ class _GameStateAnnotationsMixin:
                             if owner not in self.revealed_cards:
                                 self.revealed_cards[owner] = set()
                             self.revealed_cards[owner].add(obj.grp_id)
+                            card_name = self._resolve_card_name(obj.grp_id)
+                            # Keep the instance and its zone at reveal time: a
+                            # stand-in revealed into a hand has the hand as its
+                            # zoneId; a library-search reveal has the library.
+                            # Persistent reveals repeat, so the first record wins.
+                            if obj_id not in self.revealed_instances:
+                                zone = self.zones.get(obj.zone_id)
+                                self.revealed_instances[obj_id] = {
+                                    "instance_id": obj_id,
+                                    "grp_id": obj.grp_id,
+                                    "name": card_name,
+                                    "owner_seat_id": owner,
+                                    "zone_id": obj.zone_id,
+                                    "zone_type": zone.zone_type.value if zone else "",
+                                    "retired": False,
+                                }
                             self._add_event(
                                 {
                                     "type": "card_revealed",
-                                    "card": self._resolve_card_name(obj.grp_id),
+                                    "card": card_name,
                                     "instance_id": obj_id,
                                     "owner_seat": owner,
                                 }
                             )
+
+                elif ann_type == "AnnotationType_RevealedCardDeleted":
+                    # The GRE deletes the stand-in once the real card leaves
+                    # the hidden zone (cast, discarded, shuffled away).
+                    for obj_id in affected_ids:
+                        record = self.revealed_instances.get(obj_id)
+                        if record is not None:
+                            record["retired"] = True
 
                 elif ann_type == "AnnotationType_ResolutionStart":
                     for obj_id in affected_ids:

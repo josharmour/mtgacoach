@@ -207,6 +207,11 @@ class GameState(_GameStateAnnotationsMixin):
         "raw_gre_events": list,
         "damage_taken": dict,
         "revealed_cards": dict,
+        # Per-instance reveal records: instance id -> {grp_id, name, owner,
+        # zone at reveal time, retired}. A card revealed into a hidden hand is
+        # a GameObjectType_RevealedCard stand-in whose zoneId is that hand; the
+        # GRE retires it with AnnotationType_RevealedCardDeleted.
+        "revealed_instances": dict,
         # ── Phase 1 turbo-charge state ──
         # Designations: seat_id -> set of active designations (monarch, initiative, city's blessing, day/night)
         "designations": dict,
@@ -438,6 +443,11 @@ class GameState(_GameStateAnnotationsMixin):
                 "schema_version": 1,
                 "match_id": self.match_id,
                 "game_number": self.game_number,
+                # The match-room event arrives once per match; a mid-game
+                # restart never sees it again (2026-10-06 18:50:40 restart left
+                # event_id empty for the rest of the game).
+                "event_id": self.event_id,
+                "format_name": self.format_name,
                 "local_seat_id": self.local_seat_id,
                 "seat_source": self._seat_source,
                 "turn_info": self.turn_info.to_dict(),
@@ -469,6 +479,9 @@ class GameState(_GameStateAnnotationsMixin):
                 "revealed_cards": {
                     str(seat_id): sorted(int(grp_id) for grp_id in grp_ids)
                     for seat_id, grp_ids in self.revealed_cards.items()
+                },
+                "revealed_instances": {
+                    str(instance_id): dict(record) for instance_id, record in self.revealed_instances.items()
                 },
                 "deck_cards": list(self.deck_cards),
                 "designations": {
@@ -518,6 +531,8 @@ class GameState(_GameStateAnnotationsMixin):
 
                 self.match_id = checkpoint.get("match_id")
                 self.game_number = _coerce_optional_int(checkpoint.get("game_number"))
+                self.event_id = str(checkpoint.get("event_id") or "")
+                self.format_name = str(checkpoint.get("format_name") or "")
                 self.local_seat_id = _coerce_optional_int(checkpoint.get("local_seat_id"))
                 self._seat_source = _coerce_int(checkpoint.get("seat_source", 0), 0)
 
@@ -727,6 +742,22 @@ class GameState(_GameStateAnnotationsMixin):
                         for seat_id, grp_ids in revealed_cards.items()
                         if _coerce_int(seat_id, 0)
                     }
+
+                revealed_instances = checkpoint.get("revealed_instances") or {}
+                if isinstance(revealed_instances, dict):
+                    for instance_key, record in revealed_instances.items():
+                        instance_id = _coerce_int(instance_key, 0)
+                        if not instance_id or not isinstance(record, dict):
+                            continue
+                        self.revealed_instances[instance_id] = {
+                            "instance_id": instance_id,
+                            "grp_id": _coerce_int(record.get("grp_id", 0), 0),
+                            "name": str(record.get("name") or ""),
+                            "owner_seat_id": _coerce_optional_int(record.get("owner_seat_id")),
+                            "zone_id": _coerce_optional_int(record.get("zone_id")),
+                            "zone_type": str(record.get("zone_type") or ""),
+                            "retired": bool(record.get("retired", False)),
+                        }
 
                 self.deck_cards = [
                     _coerce_int(card, 0) for card in checkpoint.get("deck_cards", []) if _coerce_int(card, 0)
@@ -1214,6 +1245,48 @@ class GameState(_GameStateAnnotationsMixin):
             return counted
         return len(self.get_objects_in_zone(ZoneType.HAND, opponent_seat))
 
+    def _revealed_in_opponent_hand_locked(self, opponent_seat: int | None) -> list[dict]:
+        """Opponent hand cards whose identity the log has revealed to us.
+
+        Their hand cards never arrive as GameObjects. A card revealed into that
+        hand (bounced from the battlefield, fetched with "reveal it") gets a
+        GameObjectType_RevealedCard stand-in whose zoneId is the hand; the GRE
+        retires it with AnnotationType_RevealedCardDeleted once the real card
+        leaves (Player.log 2026-10-06). A real card revealed in place counts
+        while its instance id is still listed in the hand.
+        """
+        if not opponent_seat:
+            return []
+        revealed: list[dict] = []
+        for instance_id, record in self.revealed_instances.items():
+            if record.get("retired") or not record.get("grp_id"):
+                continue
+            zone = self.zones.get(record.get("zone_id"))
+            if zone is None or zone.zone_type != ZoneType.HAND or zone.owner_seat_id != opponent_seat:
+                continue
+            obj = self.game_objects.get(instance_id)
+            standing_proxy = (
+                obj is not None
+                and obj.object_kind == GameObjectKind.REVEALED_CARD
+                and obj.zone_id == zone.zone_id
+            )
+            if instance_id not in zone.object_instance_ids and not standing_proxy:
+                continue
+            revealed.append(
+                {
+                    "instance_id": instance_id,
+                    "grp_id": record["grp_id"],
+                    "name": record.get("name") or "",
+                    "zone": "hand",
+                }
+            )
+        # A missed retirement must never claim more cards than the hand holds;
+        # keep the most recent reveals.
+        hand_count = self.get_zone_card_count(ZoneType.HAND, opponent_seat)
+        if hand_count is not None and len(revealed) > hand_count:
+            revealed = revealed[len(revealed) - hand_count :]
+        return revealed
+
     def _build_raw_snapshot_locked(self) -> dict:
         """Build a complete serializable snapshot from mutable state.
 
@@ -1252,6 +1325,11 @@ class GameState(_GameStateAnnotationsMixin):
                 # private hand cards never arrive as GameObjects, so counting
                 # objects always reported 0 (2026-10-06 FRA games).
                 "opponent_hand_count": self._opponent_hand_count_locked(opponent_seat),
+                # Hidden library ids are listed in the zone; None (not 0) when
+                # the zone or its member list has not been observed.
+                "opponent_library_count": (
+                    self.get_zone_card_count(ZoneType.LIBRARY, opponent_seat) if opponent_seat else None
+                ),
                 "stack": [obj.to_dict() for obj in self.stack],
                 "graveyard": [obj.to_dict() for obj in self.graveyard],
                 "exile": [obj.to_dict() for obj in self.get_objects_in_zone(ZoneType.EXILE)],
@@ -1275,6 +1353,9 @@ class GameState(_GameStateAnnotationsMixin):
             "raw_gre_event_count": len(self.raw_gre_events),
             "damage_taken": dict(self.damage_taken),
             "revealed_cards": revealed,
+            # [{instance_id, grp_id, name, zone}] still in the opponent's hand;
+            # server.get_game_state publishes it as "revealed_cards".
+            "revealed_in_opponent_hand": self._revealed_in_opponent_hand_locked(opponent_seat),
             "last_game_result": self.last_game_result,
             "deck_cards": list(self.deck_cards),
             # ── Phase 1 turbo-charge fields ──
@@ -1381,6 +1462,7 @@ class GameState(_GameStateAnnotationsMixin):
             "battlefield": [enrich_obj(o) for o in zones.get("battlefield", [])],
             "my_hand": [enrich_obj(o) for o in zones.get("my_hand", [])],
             "opponent_hand_count": zones.get("opponent_hand_count", 0),
+            "opponent_library_count": zones.get("opponent_library_count"),
             "stack": [enrich_obj(o) for o in zones.get("stack", [])],
             "graveyard": [enrich_obj(o) for o in zones.get("graveyard", [])],
             "exile": [enrich_obj(o) for o in zones.get("exile", [])],
