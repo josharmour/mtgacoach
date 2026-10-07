@@ -384,7 +384,11 @@ def test_autopilot_announces_plan_with_current_facts():
     payload = engine._ui_game_plan_fn.call_args.args[0]
     assert payload["source"] == "autopilot"
     assert payload["role"] == ROLE_CONTROL
-    assert "DEAD IN 2 TURNS UNLESS WE STABILIZE" in payload["facts"]["flags"]
+    # The greedy line is dead in 2; the line search names the best line that lives.
+    assert any(
+        flag.startswith("GREEDY LINE DIES; BEST SURVIVING LINE") and "gain 4 life" in flag
+        for flag in payload["facts"]["flags"]
+    )
 
 
 def test_coach_advice_uses_the_same_grounded_block():

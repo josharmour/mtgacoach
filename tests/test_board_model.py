@@ -163,7 +163,8 @@ def test_model_spells_are_the_hand_nonlands_in_order():
         ("Undulating Witness", "creature", 5, False),
         ("Murmuring Volume", "ramp", 3, False),
         ("Archive Arbiter", "creature", 6, False),
-        ("Countersculpt", "counter", 2, False),
+        # {U}{U} plus "behold a Jace or pay {1}": the additional mana is part of its cost.
+        ("Countersculpt", "counter", 3, False),
     ]
     t15 = _model(G1_T15_FROM_OPPONENT)
     # One Cadet is tapped: four of our five creatures can attack now.
@@ -535,3 +536,32 @@ def test_board_model_imports_no_llm_backend():
         [sys.executable, "-B", "-c", code], capture_output=True, text=True, timeout=60, check=True
     )
     assert result.stdout.strip() == ""
+
+
+# --- 2026-10-07 review regressions ------------------------------------------------------------
+
+
+def test_casting_costs_and_conditions_come_from_the_card():
+    from tests.strategic_states import BUG_174855, bridge_card
+
+    state = deepcopy(G1_T12)
+    state["hand"].append(card(990, "Silence the Echo", 1))
+    silence = next(s for s in _model(state).spells if s.name == "Silence the Echo")
+    assert silence.mana_value == 5 and not silence.uncastable  # {1}{B} + "or pay {3}"
+    proft_state = deepcopy(BUG_174855)
+    proft_state["hand"].append(bridge_card(991, 106480, "Proft, Sinister Mastermind", 2, "hand"))
+    model = _model(proft_state)
+    assert model.our_graveyard == 6
+    assert next(s for s in model.spells if s.name.startswith("Proft")).uncastable  # Threshold: seven
+    assert _model(G1_T12).our_graveyard == 5  # our five, not their five
+
+
+def test_our_creature_spells_on_the_stack_are_bodies_entering_now():
+    from tests.strategic_states import G1_T14_MODE_STATE, G1_T14_ON_STACK
+
+    bodies = _model(G1_T14_ON_STACK).our_stack_bodies
+    assert [(b["name"], b["power"], b["toughness"], b["_sick"]) for b in bodies] == [
+        ("Archive Arbiter", 4, 4, True)
+    ]
+    assert _model(G1_T14_MODE_STATE).our_stack_bodies == ()  # a triggered ability is not a body
+    assert _model(G1_T12).our_stack_bodies == ()

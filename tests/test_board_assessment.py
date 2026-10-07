@@ -54,8 +54,15 @@ from arenamcp.board_assessment import (
 
 
 def _fresh(state):
-    ba._CACHE.clear()
-    return assess(deepcopy(state))
+    """A cold assessment. The line search is reproducible unless a wall-clock
+    deadline cut it short (machine load, a GC pause): then it is run again."""
+    for _attempt in range(3):
+        ba._CACHE.clear()
+        result = assess(deepcopy(state))
+        stats = getattr(result, "search_stats", None) or {}
+        if not (stats.get("bounded") or stats.get("truncated")):
+            break
+    return result
 
 
 # --- role, clocks and flags on the real turns ---------------------------------
@@ -97,13 +104,23 @@ def test_t12_two_turn_clock_and_lookahead_casts_witness_after_the_land_drop():
     assert "Murmuring Volume" not in t.casts
 
 
-def test_t12_after_the_mana_rock_is_dead_in_two_unless_we_stabilize():
+def test_t12_after_the_mana_rock_only_the_lifegain_line_survives():
+    # The greedy projection (Witness at T14) is dead in 2; the line search
+    # finds the line that lives: Archive Arbiter gaining 4 at T14. Landcycling
+    # the Witness first also lives, so it is the best survivor, not the only one.
     a = _fresh(G1_T12_AFTER_VOLUME)
     assert a.role == ROLE_CONTROL
-    assert a.dead_in == 2
-    assert "DEAD IN 2 TURNS UNLESS WE STABILIZE" in a.flags
+    assert a.dead_in_greedy == 2
+    assert a.dead_in is None or a.dead_in >= 3
+    assert not any(flag.startswith("ONLY SURVIVING LINE") for flag in a.flags)
+    (only,) = [flag for flag in a.flags if flag.startswith("GREEDY LINE DIES; BEST SURVIVING LINE")]
+    assert "Archive Arbiter" in only and "gain 4 life" in only
+    assert "DEAD IN 2 TURNS UNLESS WE STABILIZE" not in a.flags
     assert a.lookahead[0].casts == []  # Witness no longer castable this turn
-    assert "dead in 2" in a.role_reason
+    assert a.lookahead[1].casts == ["Archive Arbiter"]
+    assert a.lookahead[1].modes == {"Archive Arbiter": "gain 4 life"}
+    assert "best surviving line" in a.role_reason and "only line" not in a.role_reason
+    assert "cast Archive Arbiter (choose: gain 4 life)" in a.suggestion(1)
 
 
 def test_t14_opponent_has_lethal_on_board():
@@ -111,7 +128,14 @@ def test_t14_opponent_has_lethal_on_board():
     assert a.role == ROLE_CONTROL
     assert a.opp_lethal_on_board and a.their_clock == 1
     assert any(flag.startswith("OPPONENT HAS LETHAL ON BOARD") for flag in a.flags)
-    assert a.dead_in == 1
+    # Arbiter's "gain 4 life" mode survives their next attack (the greedy line
+    # dies to it): dead in 2, not 1, and no all-in.
+    assert (a.dead_in, a.dead_in_greedy) == (2, 1)
+    assert not a.all_in
+    (only,) = [flag for flag in a.flags if flag.startswith("ONLY LINE THAT SURVIVES THEIR NEXT ATTACK")]
+    assert "gain 4 life" in only
+    assert "only line:" in a.role_reason
+    assert a.lookahead[0].modes == {"Archive Arbiter": "gain 4 life"} and a.lookahead[0].life_after == 2
     # Splinter Twin's hasty copies are named as an engine threat, not counted.
     assert any(threat.name == "Splinter Twin" for threat in a.threats)
     assert any("token/copy engines" in item for item in a.unknowns)
@@ -124,6 +148,8 @@ def test_lethal_on_board_is_aggressor_and_never_survival_mode():
     assert not a.survival_mode
     assert "LETHAL AVAILABLE NOW" in a.flags[0]
     assert "ATTACK FOR LETHAL" in a.prompt_block()
+    assert a.posture == "lethal" and a.lookahead[0].posture == "lethal"
+    assert a.lines[0].outcome == "win" and a.lines[0].win_turn == 15
 
 
 def test_prompt_block_leads_with_role_then_this_turn_then_facts():
@@ -132,8 +158,45 @@ def test_prompt_block_leads_with_role_then_this_turn_then_facts():
     assert lines[1].startswith("  THIS TURN (T12, now): play Island; cast Undulating Witness")
     assert lines[2].startswith("  FACTS: they kill us in 2 attack(s)")
     assert lines[3].startswith("  NEXT: T14:")
+    assert lines[4].startswith("  LINES") and len(lines[4]) <= 320
     assert any(line.startswith("  Priority: survive first") for line in lines)
     assert "GAME PLAN:" not in "\n".join(lines)
+
+
+def test_planning_block_lists_the_candidate_lines():
+    a = _fresh(G1_T12)
+    block = a.planning_block()
+    assert "CANDIDATE LINES (2-turn search + greedy third turn;" in block
+    assert "Prefer one of these lines; a deviation needs a concrete card or combat reason." in block
+    lines = block.splitlines()
+    start = next(n for n, line in enumerate(lines) if line.startswith("CANDIDATE LINES"))
+    assert lines[start + 1].startswith("  1. T12: Island + Undulating Witness -> life 7")
+    assert 1 <= len(a.lines) <= 5
+
+
+def test_the_line_search_names_landcycling_and_the_attack_posture():
+    # BUG_135027: landcycle Witness now, play the fetched Island and cast later.
+    t = _fresh(BUG_135027).lookahead
+    assert t[0].cycles == ["Undulating Witness"] and t[1].land == "Island"
+    assert "landcycle Undulating Witness" in _fresh(BUG_135027).suggestion(0)
+    # BUG_174855: attacking with Seasoned Cryomancer beats holding it back.
+    a = _fresh(BUG_174855)
+    assert a.posture == "attack" and "Seasoned Cryomancer" in a.lookahead[0].attack
+    assert "attack with Seasoned Cryomancer" in a.suggestion(0)
+    assert a.role == ROLE_AGGRESSOR and "best line attacks for" in a.role_reason
+    assert a.role_reason.endswith(a.posture_reason)
+
+
+def test_a_lethal_line_next_turn_is_flagged_and_drives_the_role():
+    # Our T15 after combat: their attack first, then ours kills on T17.
+    state = deepcopy(G1_T15_FROM_OPPONENT)
+    state["turn"].update(phase="Phase_Main2", step="")
+    a = _fresh(state)
+    assert not a.lethal_now and a.lethal_next_turn
+    (flag,) = [flag for flag in a.flags if flag.startswith("LETHAL LINE: ")]
+    assert flag.endswith("lethal on T17")
+    assert a.role == ROLE_AGGRESSOR and a.role_reason.startswith("best line kills on T17")
+    assert a.lookahead[1].attack and "attack with" in a.suggestion(1)
 
 
 def test_assessment_is_fast_on_real_and_crowded_boards():
@@ -311,6 +374,13 @@ def test_payload_is_json_safe_for_the_ui():
         "casts": ["Undulating Witness"],
         "life_after": 7,
     }
+    assert 1 <= len(payload["lines"]) <= 3 and payload["lines"][0]["outcome"] == "alive"
+    assert isinstance(payload["posture"], str)
+    assert set(payload["search"]) >= {"nodes", "ms", "bounded", "truncated"}
+    for name, source in ALL_NAMED.items():
+        payload = _fresh(source).as_payload()
+        json.dumps(payload)
+        assert len(payload["lines"]) <= 3 and isinstance(payload["posture"], str), name
 
 
 def test_play_and_cast_helpers_build_real_option_meta():
@@ -318,13 +388,26 @@ def test_play_and_cast_helpers_build_real_option_meta():
     assert cast(229)["instanceId"] == 229
 
 
-def test_log_snapshot_counts_hidden_opponent_hand_cards():
+def test_log_snapshot_counts_hidden_opponent_hand_cards(monkeypatch):
     """Card advantage needs the opponent's hand size.
 
     The opponent's hand ids arrive as zone membership only (no GameObjects),
     so counting objects reported 0 all game (2026-10-06 replay: 6, 5, ... 1).
     """
+    from types import SimpleNamespace
+
+    from arenamcp import card_db
     from arenamcp.gamestate import GameState, create_game_state_handler
+
+    # No card names needed. The real database loads Scryfall's bulk data on a
+    # background thread for seconds, which pushed later tests' line searches
+    # past their wall-clock deadlines (gen-2 GC pauses up to 335 ms).
+    nothing = SimpleNamespace(
+        prewarm_cards=lambda ids: None,
+        get_card_by_arena_id=lambda grp_id: None,
+        get_ability_text=lambda grp_id: None,
+    )
+    monkeypatch.setattr(card_db, "_card_db", nothing)  # the singleton every caller gets
 
     game = GameState()
     game.local_seat_id = 1
@@ -469,15 +552,65 @@ BASELINE = {
 
 
 def _facts(assessment) -> dict:
-    """Every assessment field except the wall-clock timing."""
-    facts = dataclasses.asdict(assessment)
-    facts.pop("elapsed_ms")
+    """Every assessment field except the wall-clock timings (lines as their payloads)."""
+    facts = {}
+    for item in dataclasses.fields(assessment):
+        value = getattr(assessment, item.name)
+        if item.name in ("elapsed_ms", "line_search"):
+            continue  # the search result holds the board model; its facts are below
+        if item.name == "lines":
+            value = [line.as_payload() for line in value]
+        elif item.name == "search_stats":
+            value = {key: v for key, v in value.items() if key != "ms"}
+        elif item.name in ("threats", "lookahead"):
+            value = [dataclasses.asdict(entry) for entry in value]
+        facts[item.name] = value
     return facts
 
 
+def _truncated_search(monkeypatch):
+    """search_lines past its hard deadline from the first expansion."""
+    from arenamcp import line_search
+
+    original = line_search.search_lines
+
+    def truncated(model, **kwargs):
+        return original(model, **{**kwargs, "soft_ms": 0.0, "hard_ms": 0.0})
+
+    monkeypatch.setattr(line_search, "search_lines", truncated)
+
+
+def _raising_search(monkeypatch):
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("line search exploded")
+
+    monkeypatch.setattr("arenamcp.line_search.search_lines", broken)
+
+
+def _broken_result(monkeypatch):
+    """The search runs, but turning its best line into lookahead rows fails."""
+
+    def broken(self):
+        raise RuntimeError("projection exploded")
+
+    monkeypatch.setattr("arenamcp.line_search.LineSearchResult.to_projections", broken)
+
+
+SEARCH_FALLBACKS = {
+    "switched-off": lambda monkeypatch: monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0"),
+    "raising": _raising_search,
+    "truncated": _truncated_search,
+    "broken-result": _broken_result,
+}
+RESULT_KEPT = ("truncated", "broken-result")  # the search ran: kept for its stats only
+
+
+@pytest.mark.parametrize("mode", list(SEARCH_FALLBACKS))
 @pytest.mark.parametrize("name", list(BASELINE))
-def test_fixture_facts_match_the_log_named_baseline(name, monkeypatch):
-    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")  # the greedy pipeline these rows record
+def test_fixture_facts_match_the_log_named_baseline(name, mode, monkeypatch):
+    # The greedy pipeline these rows record: the kill switch, a failing search
+    # and a truncated one all keep it (a dead-now search has no T step to cut).
+    SEARCH_FALLBACKS[mode](monkeypatch)
     role, lethal_now, all_in, dead_in, now_life, flags, lookahead = BASELINE[name]
     a = _fresh(ALL_NAMED[name])
     assert (a.role, a.lethal_now, a.all_in, a.dead_in, a.our_life_now_attack) == (
@@ -489,6 +622,77 @@ def test_fixture_facts_match_the_log_named_baseline(name, monkeypatch):
     )
     assert a.flags == flags
     assert [(p.land, p.casts, p.mana, p.life_after) for p in a.lookahead] == lookahead
+    assert a.dead_in_greedy == dead_in
+    if mode != "truncated" or not a.search_stats.get("truncated"):
+        return
+    assert a.line_search is not None and a.lines == [] and a.posture == ""
+    assert "LINES" not in a.prompt_block() and "CANDIDATE LINES" not in a.planning_block()
+
+
+@pytest.mark.parametrize("mode", list(SEARCH_FALLBACKS))
+def test_fallbacks_leave_no_search_facts(mode, monkeypatch):
+    SEARCH_FALLBACKS[mode](monkeypatch)
+    a = _fresh(G1_T12)
+    assert a.lines == [] and a.posture == "" and a.posture_reason == ""
+    assert all(not (p.attack or p.modes or p.cycles or p.posture) for p in a.lookahead)
+    payload = a.as_payload()
+    assert payload["lines"] == [] and payload["posture"] == ""
+    assert (a.line_search is None) == (mode not in RESULT_KEPT)
+    assert payload["search"] == (a.line_search.stats() if mode in RESULT_KEPT else {})
+    assert "LINES" not in a.prompt_block() and "CANDIDATE LINES" not in a.planning_block()
+
+
+@pytest.mark.parametrize("mode", [None, *SEARCH_FALLBACKS])
+def test_all_in_boards_keep_their_verdict_in_every_mode(mode, monkeypatch):
+    from tests.test_all_in import _state
+
+    if mode is not None:
+        SEARCH_FALLBACKS[mode](monkeypatch)
+    dead = _fresh(_state(3))
+    assert dead.all_in and dead.role == ROLE_AGGRESSOR
+    assert any(flag.startswith("ALL-IN") for flag in dead.flags)
+    assert not _fresh(_state(20)).all_in
+    if mode is None:
+        # Every T step dies to their next attack, but seven attackers into six
+        # blockers is past the solver's exhaustive block search: the first
+        # attack is not exact, so the verdict comes from the greedy rule.
+        assert dead.line_search.all_dead_at_first and not dead.line_search.exact_first_attack
+        assert dead.dead_in_greedy == 1
+
+
+def test_an_exact_search_that_finds_a_survivor_is_not_all_in(monkeypatch):
+    # G1_T14 plus a 1/1 of ours: greedy casts Arbiter without its mode and is
+    # dead next attack (all-in: attack with the 1/1). The exact search finds
+    # Arbiter's "gain 4 life" line that survives: no all-in.
+    state = deepcopy(G1_T14)
+    state["battlefield"].append(card(990, "Cadet", 1, is_tapped=False, turn_entered_battlefield=10))
+    a = _fresh(state)
+    assert a.line_search.exact_first_attack and not a.line_search.all_dead_at_first
+    assert a.dead_in_greedy == 1 and a.opp_lethal_on_board and a.our_power > 0
+    assert not a.all_in and a.role == ROLE_CONTROL
+    assert any(flag.startswith("ONLY SURVIVING LINE") and "gain 4 life" in flag for flag in a.flags)
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")
+    legacy = _fresh(state)
+    assert legacy.all_in and legacy.role == ROLE_AGGRESSOR
+
+
+def test_the_kill_switch_never_serves_the_other_pipeline_from_the_cache(monkeypatch):
+    ba._CACHE.clear()
+    state = deepcopy(G1_T12_AFTER_VOLUME)
+    assert assess(state).dead_in is None
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")
+    assert assess(state).dead_in == 2
+    monkeypatch.delenv("ARENAMCP_LINE_SEARCH")
+    assert assess(state).dead_in is None
+
+
+@pytest.mark.parametrize("name", list(ALL_NAMED))
+def test_dead_in_with_the_search_never_comes_sooner_than_greedy(name):
+    a = _fresh(ALL_NAMED[name])
+    assert a.dead_in_greedy == BASELINE[name][3]
+    if a.dead_in_greedy is not None:
+        assert a.dead_in is None or a.dead_in >= a.dead_in_greedy
+    assert not a.search_stats["truncated"] and not a.search_stats["bounded"]
 
 
 @pytest.mark.parametrize("name", list(ALL_NAMED))
@@ -635,3 +839,146 @@ def test_unseated_mac_board_gives_no_assessment():
     seated = _fresh(_bug_223955(seated=True))
     assert seated.our_creatures == 1 and seated.their_creatures == 4
     assert seated.our_life_now_attack == -3 and seated.all_in
+
+
+# --- 2026-10-07 review regressions ------------------------------------------------------------
+
+
+def _their_body(name: str, **extra):
+    return ba._body(card(700, name, 2, is_tapped=False, turn_entered_battlefield=1, **extra), 12, {})
+
+
+def _our_body(name: str, **extra):
+    return ba._body(card(701, name, 1, is_tapped=False, turn_entered_battlefield=1, **extra), 12, {})
+
+
+def test_removal_respects_target_restrictions():
+    surgical, fate = card(1, "Surgical Precision", 1), card(2, "Your Fate Ends Here", 1)
+    assert not ba._kills(surgical, _their_body("Heartstring Puller"))  # "toughness 4 or greater"; a 3/1
+    assert ba._kills(surgical, _their_body("Archive Arbiter"))
+    assert not ba._kills(fate, _their_body("Cadet"))  # "mana value 3 or greater"; a token is 0
+    assert ba._kills(fate, _their_body("Heartstring Puller"))
+    absence = card(3, "Extended Absence", 1)
+    assert not ba._kills(absence, _their_body("Ruric Thar, Magecrusher", keywords=["hexproof"]))
+    assert ba._kills(absence, _their_body("Ruric Thar, Magecrusher", keywords=["reach"]))
+    # Ward {1}: only when the ward's mana is left over.
+    unsummon, warded = card(4, "Unsummon", 1), _their_body("Unflinching Hortimancer")
+    assert not ba._kills(unsummon, warded) and ba._kills(unsummon, warded, ward_mana=1)
+    # A fight needs a creature of ours whose power reaches the target's toughness.
+    prey = {**card(5, "Unsummon", 1), "name": "Prey Upon", "type_line": "Sorcery",
+            "oracle_text": "Target creature you control fights target creature you don't control."}  # fmt: skip
+    cadet = _their_body("Cadet")
+    assert not ba._kills(prey, cadet) and not ba._kills(
+        prey, cadet, ours=[_our_body("Fatehold Chronologist")]
+    )
+    assert ba._kills(prey, cadet, ours=[_our_body("Heartstring Puller")])
+    # Colour words: Essence Burn hits black or green only.
+    burn = card(6, "Essence Burn", 1)
+    assert ba._kills(burn, _their_body("Cadet", colors=["Green"]))
+    assert not ba._kills(burn, _their_body("Cadet", colors=["Blue"]))
+    assert not ba._kills(burn, _their_body("Cadet"))  # colourless token
+    # Attacking or blocking only: never proactively, fine during their attack.
+    gate = {
+        **card(7, "Unsummon", 1),
+        "name": "Test Gate",
+        "oracle_text": "Destroy target attacking creature.",
+    }
+    assert not ba._kills(gate, cadet) and ba._kills(gate, cadet, attacking=True)
+    # "you control": our own creature is no removal target.
+    assert (
+        removal_reach({"name": "Blink", "oracle_text": "Exile target creature you control, then return it."})
+        is None
+    )
+
+
+@pytest.mark.parametrize("name", ["Gideon's Memorial", "Identity Echo", "Way of the Warlord"])
+def test_a_permanents_activated_or_granted_removal_is_not_removal(name):
+    assert removal_reach(card(1, name, 1)) is None
+    assert card_role(card(1, name, 1)) not in ("removal", "bounce", "ramp")
+    # An enters trigger still is removal.
+    rip = {**card(2, "Unsummon", 1), "name": "Test Rip", "type_line": "Enchantment", "card_types": ["CardType_Enchantment"],
+           "oracle_text": "When this enchantment enters, exile target nonland permanent an opponent controls with mana "
+           "value 2 or less until this enchantment leaves the battlefield."}  # fmt: skip
+    assert card_role(rip) == "removal"
+    assert not ba._kills(rip, _their_body("Heartstring Puller")) and ba._kills(
+        rip, _their_body("Fatehold Chronologist")
+    )
+
+
+def test_mana_that_cant_cast_spells_from_hand_is_not_a_source():
+    for name in ("Heartwood Crafter", "Gideon's Memorial"):
+        assert ba._mana_source(card(1, name, 1, turn_entered_battlefield=1), 12) is None
+    assert ba._mana_source(card(2, "Murmuring Volume", 1, turn_entered_battlefield=1), 12) is not None
+
+
+def test_end_step_greedy_line_casts_only_instants_and_concede_agrees(monkeypatch):
+    from arenamcp import concede
+
+    state = deepcopy(G1_T8)
+    state["turn"].update(phase="Phase_Ending", step="Step_End")
+    state["hand"] = [c for c in state["hand"] if c["name"] != "Countersculpt"]
+    state["players"][0]["life_total"] = 3
+    state["action_history"] = []
+    search = _fresh(state)
+    # Nothing is castable at our End step: no land drop, no sorcery-speed creature.
+    assert search.lookahead[0].casts == [] and search.lookahead[0].land == ""
+    assert search.dead_in == search.dead_in_greedy == 1
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")
+    legacy = _fresh(state)
+    assert legacy.lookahead[0].casts == [] and legacy.dead_in == 1
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "1")
+    with_search = concede.estimate_loss(deepcopy(state)).confidence
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")
+    assert concede.estimate_loss(deepcopy(state)).confidence == with_search  # the search adds no offer
+
+
+def test_the_exact_all_dead_verdict_holds_when_the_soft_budget_cut_t1_short(monkeypatch):
+    # G1_T14 plus a 1/1 of ours: the exact root finds Arbiter's lifegain line. A
+    # bounded T+1 (as under CPU load before the work budget) must not flip all_in.
+    from arenamcp import line_search
+
+    original = line_search._Search._expand
+
+    def bounded(self, chosen, extra):
+        original(self, chosen, extra)
+        self.bounded = True
+
+    monkeypatch.setattr(line_search._Search, "_expand", bounded)
+    state = deepcopy(G1_T14)
+    state["battlefield"].append(card(990, "Cadet", 1, is_tapped=False, turn_entered_battlefield=10))
+    ba._CACHE.clear()
+    a = assess(deepcopy(state))
+    assert a.search_stats["bounded"] and a.line_search.exact_first_attack
+    assert a.dead_in_greedy == 1 and a.opp_lethal_on_board
+    assert not a.all_in and not any(flag.startswith("ALL-IN") for flag in a.flags)
+
+
+def test_concurrent_assessments_share_one_search(monkeypatch):
+    import threading
+
+    from arenamcp import line_search
+
+    calls, original = [], line_search.search_lines
+
+    def slow(*args, **kwargs):
+        calls.append(1)
+        time.sleep(0.05)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(line_search, "search_lines", slow)
+    ba._CACHE.clear()
+    results: list = []
+    threads = [threading.Thread(target=lambda: results.append(assess(deepcopy(G1_T12)))) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    assert len(calls) == 1 and len({id(r) for r in results}) == 1 and results[0] is not None
+    assert not ba._INFLIGHT
+
+
+def test_bridge_and_log_phase_names_share_one_cache_entry():
+    ba._CACHE.clear()
+    first = assess(deepcopy(log_phase(G1_T12)))
+    assert ba._signature(mac_phase(G1_T12)) == ba._signature(log_phase(G1_T12))
+    assert assess(deepcopy(mac_phase(G1_T12))) is first

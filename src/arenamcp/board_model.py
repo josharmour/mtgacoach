@@ -34,7 +34,9 @@ from arenamcp.board_assessment import (
     _seats,
     _side_rules,
     _Spell,
+    _text,
     card_role,
+    extra_mana_cost,
 )
 from arenamcp.combat_keywords import has_combat_keyword, printed_combat_keywords
 from arenamcp.mulligan_policy import _land_colors, hand_card
@@ -75,6 +77,20 @@ def able_now(bodies: tuple[dict, ...] | list[dict]) -> list[dict]:
     if any(b["_attacking"] for b in bodies):
         return [b for b in bodies if b["_attacking"]]
     return [b for b in bodies if not b["_tapped"] and not b["_sick"]]
+
+
+_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}  # fmt: skip
+_GRAVEYARD_GATE = re.compile(r"can't cast this spell unless there are (\w+) or more cards in your graveyard")
+
+
+def _cast_gate_unmet(card: dict, graveyard: int) -> bool:
+    """A Threshold-style "You can't cast this spell unless ..." condition the snapshot shows unmet."""
+    match = _GRAVEYARD_GATE.search(_text(card))
+    if not match:
+        return False
+    word = match.group(1)
+    needed = _NUMBERS.get(word, _int(word) or 0)
+    return graveyard < needed
 
 
 _STRIKES = frozenset({"first strike", "double strike"})
@@ -149,6 +165,9 @@ class BoardModel:
     has_x_spells: bool
     their_hand: int | None
     stack_nonempty: bool
+    our_graveyard: int  # cards in our graveyard (Threshold-style cast conditions)
+    # Our creature spells on the stack, as bodies: they enter before T's attack.
+    our_stack_bodies: tuple[dict, ...]
     t_casts_pre_combat: bool  # this turn's casts can come before our attack
     t_casts_post_combat: bool  # our attack is over: casts come after it
     t_instant_only: bool  # our ending phase: instant-speed plays only
@@ -233,6 +252,11 @@ def build_board_model(state: dict) -> BoardModel | None:
     for land in hand_lands:
         colors_all |= set(_land_colors(land))
 
+    our_graveyard = sum(
+        1
+        for c in state.get("graveyard") or []
+        if isinstance(c, dict) and c.get("owner_seat_id", c.get("controller_seat_id")) == local
+    )
     spells: list[_Spell] = []
     for card in hand:
         if _is_land(card) and not _is_creature(card):
@@ -246,11 +270,22 @@ def build_board_model(state: dict) -> BoardModel | None:
                 card=card,
                 name=_name(card),
                 role=card_role(card),
-                mana_value=info.mana_value,
+                # "As an additional cost ..., pay {3}": the mana is part of what it costs.
+                mana_value=info.mana_value + extra_mana_cost(card),
                 pips=info.pips,
                 has_x="x" in cost.lower(),
+                uncastable=_cast_gate_unmet(card, our_graveyard),
             )
         )
+    our_stack_bodies = []
+    for card in state.get("stack") or []:
+        if not isinstance(card, dict) or _controller(card) != local or not _is_creature(card):
+            continue
+        if "ability" in str(card.get("object_kind") or card.get("type_line") or "").lower():
+            continue
+        body = _body(card, turn, our_rules)
+        if body is not None:
+            our_stack_bodies.append({**body, "_sick": True, "_tapped": False, "_attacking": False})
     missing = sorted({c for s in spells for pip in s.pips for c in pip if not (pip & colors_all)})
 
     their_lands = sum(
@@ -277,6 +312,7 @@ def build_board_model(state: dict) -> BoardModel | None:
         colors_all=frozenset(colors_all), spells=tuple(spells), missing_colors=tuple(missing),
         has_x_spells=any(s.has_x for s in spells),
         their_hand=_opponent_hand(state), stack_nonempty=bool(state.get("stack")),
+        our_graveyard=our_graveyard, our_stack_bodies=tuple(our_stack_bodies),
         t_casts_pre_combat=(not our_turn) or phase in ("Phase_Beginning", "Phase_Main1"),
         t_casts_post_combat=our_turn and phase in ("Phase_Combat", "Phase_Main2"),
         t_instant_only=our_turn and phase == "Phase_Ending",

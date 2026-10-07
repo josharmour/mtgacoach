@@ -14,7 +14,14 @@ asks before planning a turn:
 * **mana** - lands, land drops in hand, colours, castability on T/T+1/T+2;
 * **lookahead** - deploy the best castable plays each of our next three turns
   (a small knapsack that prefers board presence when defending) and project
-  our life if the opponent attacks every turn and we block with what we have.
+  our life if the opponent attacks every turn and we block with what we have;
+* **lines** - ``line_search`` compares candidate lines (land, casts and modes,
+  attacks, two opponent attacks and a greedy third turn) against that greedy
+  projection, which stays the baseline. The best line becomes the lookahead
+  and sets dead_in (``dead_in_greedy`` keeps the greedy value), adds the only
+  surviving / lethal line flags, the attack posture and the LINES prompt
+  facts. ARENAMCP_LINE_SEARCH=0, a failed or a truncated search keep the
+  greedy facts.
 
 Everything is board-only and deliberately conservative. The opponent's hand,
 top-decks, combat tricks, lifelink, cost reductions, engines that add
@@ -32,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import threading
 import time
@@ -45,7 +53,7 @@ from arenamcp.combat_keywords import has_combat_keyword
 from arenamcp.combat_solver import _resolve_attacker, _search_blocks, combat_resource_roles
 from arenamcp.combat_strategy import _CANT_BLOCK, _rules_text, loyalty
 from arenamcp.limited_rules import rules_profile
-from arenamcp.mulligan_policy import _land_colors, _pip_matching, hand_card
+from arenamcp.mulligan_policy import _land_colors, _mana_value, _pip_matching, hand_card
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +177,127 @@ _PUMP = re.compile(
 )
 
 
+_PERMANENT_TYPES = ("artifact", "enchantment", "creature", "planeswalker", "battle", "land")
+_QUOTED = re.compile(r"\"[^\"]*\"|“[^”]*”")
+_ENTERS_TRIGGER = re.compile(r"(?:when|whenever)\b[^.:]*?\benters\b")
+_CHAPTER_ONE = re.compile(r"i(?:\s*,\s*ii)?(?:\s*,\s*iii)?\s*[—–]")
+_TRIGGER_WORDS = re.compile(r"(?:when|whenever|at|if|as long as)\b")
+# Player damage and life loss (the line search's face variants; line_guard's "unmodelled finisher").
+_FACE_ALT = re.compile(
+    r"\bdeals? (?P<n>\d+) damage to (?:any (?:other )?target|target (?:player|opponent)"
+    r"(?: or (?:planeswalker|battle))?|target creature or player)\b"
+    r"|\btarget (?:player|opponent) loses (?P<m>\d+) life\b"
+)
+_FACE_EACH = re.compile(
+    r"\bdeals? (?P<n>\d+) damage to each (?:opponent|player)\b|\beach opponent loses (?P<m>\d+) life\b"
+)
+_PLAYER_HARM = re.compile(
+    r"\bdamage to (?:any (?:other )?target|target (?:player|opponent)|each (?:opponent|player)"
+    r"|target creature or player|that player|its controller)\b|\b(?:player|opponent)s? loses? (?:\d+|x) life\b"
+)
+_LIFE_LOSS = re.compile(r"\byou lose (\d+) life\b")
+_EXTRA_COST = re.compile(r"\bas an additional cost to cast this spell,(?P<what>[^.\n]*)")
+
+
+def _activated(line: str) -> bool:
+    """An activated ability's line ("{2}, {T}: ...", "Discard this card: ...", "[-3]: ...")."""
+    head, colon, _rest = line.partition(":")
+    return bool(colon) and "." not in head and len(head) < 90 and not _TRIGGER_WORDS.match(head.strip())
+
+
+def _cast_text(card: dict) -> str:
+    """The rules text that acts when the card is cast (lower case, name as '~').
+
+    A real card (one with a type line) never acts through its activated
+    abilities ("{3}{R}: Exile ...", "{1}{W}, Discard this card: ...") or the
+    abilities it grants in quotes; a permanent acts only through its enters
+    triggers (with their modes) and a Saga's chapter I, and keeps its
+    additional-cost line. Text without types (a mode, an ability's effect) is
+    read whole. Arena's repeated formatting variants are collapsed.
+    """
+    text = _text(card)
+    types = _types(card)
+    if not types.strip():
+        return text
+    permanent = not re.search(r"\b(?:instant|sorcery)\b", types) and any(t in types for t in _PERMANENT_TYPES)
+    kept: list[str] = []
+    seen: set[str] = set()
+    in_trigger = False
+    for raw in _QUOTED.sub("", text).splitlines():
+        line = " ".join(raw.split())
+        if line in seen:
+            continue  # Arena repeats each rules line in up to three formats
+        seen.add(line)
+        if line.startswith("•"):
+            if in_trigger or not permanent:
+                kept.append(line)
+            continue
+        in_trigger = False
+        if not line or _activated(line):
+            continue
+        if permanent:
+            if line.startswith("as an additional cost to cast this spell"):
+                kept.append(line)  # a casting cost, not an ability
+                continue
+            if not (_ENTERS_TRIGGER.match(line) or _CHAPTER_ONE.match(line)):
+                continue
+            in_trigger = True
+        kept.append(line)
+    return "\n".join(kept)
+
+
+@dataclass(frozen=True)
+class _Clause:
+    """One way a card's cast text removes a creature: kind, amount and the target words."""
+
+    kind: str  # destroy / damage / shrink / fight / bounce
+    limit: int | None  # damage or -N toughness
+    words: str  # the clause from the verb to the end of its sentence
+    targeted: bool
+
+
+def _clause_words(text: str, start: int) -> str:
+    end = re.search(r"[.;\n]", text[start:])
+    return text[start : start + end.start()] if end else text[start:]
+
+
+def _ours_only(words: str) -> bool:
+    """'target creature you control': our own creature, not removal."""
+    return bool(
+        re.search(
+            r"\b(?:creature|permanent|planeswalker)s?(?: or (?:creature|planeswalker))? you control\b", words
+        )
+    )
+
+
+def _removal_clauses(card: dict) -> list[_Clause]:
+    """Every clause of the card's cast text that removes an opposing creature."""
+    text = _cast_text(card)
+    found: list[_Clause] = []
+
+    def add(kind: str, limit: int | None, start: int) -> None:
+        words = _clause_words(text, start)
+        if not _ours_only(words):
+            found.append(_Clause(kind, limit, words, "target" in words))
+
+    for match in _DESTROY.finditer(text):
+        what = match.group("what")
+        if "noncreature" not in what and ("creature" in what or "permanent" in what):
+            add("destroy", None, match.start())
+    for match in _DAMAGE.finditer(text):
+        amount = _int(match.group("n"))
+        add("damage", 3 if amount is None else amount, match.start())
+    for match in _SHRINK.finditer(text):
+        amount = _int(match.group("n"))
+        if amount:
+            add("shrink", amount, match.start())
+    for match in _FIGHT.finditer(text):
+        add("fight", None, match.start())
+    for match in _BOUNCE.finditer(text):
+        add("bounce", None, match.start())
+    return found
+
+
 def removal_reach(card: dict) -> tuple[str, int | None] | None:
     """How a spell's text kills an opposing creature: (kind, toughness limit).
 
@@ -176,27 +305,74 @@ def removal_reach(card: dict) -> tuple[str, int | None] | None:
     toughness <= 3; ``("bounce", None)`` removes it for a turn. Returns None
     when the text has no recognisable creature removal (noncreature-only
     removal such as "destroy target noncreature permanent" is not creature
-    removal).
+    removal, nor is "exile target creature you control"). Only the text that
+    acts on casting counts (``_cast_text``): a permanent's activated or granted
+    abilities are not removal. Target restrictions ("with toughness 4 or
+    greater", hexproof, fight needing our creature) are ``_kills``' job.
     """
-    text = _text(card)
-    for match in _DESTROY.finditer(text):
-        what = match.group("what")
-        if "noncreature" not in what and ("creature" in what or "permanent" in what):
-            return "destroy", None
-    amounts = [_int(match.group("n")) for match in _DAMAGE.finditer(text)]
-    if amounts:
-        # Modal burn: the strongest mode (Fulminous Forte: 1 to each, or 5 to one).
-        return "damage", max(3 if amount is None else amount for amount in amounts)
-    match = _SHRINK.search(text)
-    if match:
-        amount = _int(match.group("n"))
-        if amount:
-            return "shrink", amount
-    if _FIGHT.search(text):
-        return "fight", None
-    if _BOUNCE.search(text):
-        return "bounce", None
+    clauses = _removal_clauses(card)
+    for kind in ("destroy", "damage", "shrink", "fight", "bounce"):
+        limits = [c.limit for c in clauses if c.kind == kind]
+        if limits:
+            # Modal burn: the strongest mode (Fulminous Forte: 1 to each, or 5 to one).
+            return kind, (max(limit or 0 for limit in limits) if kind in ("damage", "shrink") else None)
     return None
+
+
+def face_damage(card: dict) -> tuple[int, int]:
+    """(damage to an opponent instead of a creature, damage to each opponent as well) from cast text.
+
+    "deals 2 damage to any target" can go face (the first); "Exile target
+    creature. ~ deals 1 damage to each opponent" always does (the second).
+    "target player loses N life" counts as the first, "each opponent loses N
+    life" as the second.
+    """
+    text = _cast_text(card)
+    alt = max((_int(m.group("n") or m.group("m")) or 0 for m in _FACE_ALT.finditer(text)), default=0)
+    each = _per_mode(
+        text, lambda line: sum(_int(m.group("n") or m.group("m")) or 0 for m in _FACE_EACH.finditer(line))
+    )
+    return alt, each
+
+
+def _per_mode(text: str, amount: Any) -> int:
+    """``amount`` summed over the lines outside 'choose one' bullets, plus the largest bullet's."""
+    lines = text.splitlines()
+    base = sum(amount(line) for line in lines if not line.startswith("•"))
+    return base + max((amount(line) for line in lines if line.startswith("•")), default=0)
+
+
+def harms_players(card: dict) -> bool:
+    """The card's text can damage a player or make one lose life (activated and triggered text included)."""
+    return bool(_PLAYER_HARM.search(_text(card)))
+
+
+def life_loss(card: dict) -> int:
+    """Life we lose by casting it: "You lose N life." in its cast text (the costliest mode of a
+    modal card), plus N life paid as an additional cost."""
+    text = _cast_text(card)
+    return _per_mode(text, lambda line: sum(int(m.group(1)) for m in _LIFE_LOSS.finditer(line))) + (
+        extra_life_cost(card)
+    )
+
+
+def extra_life_cost(card: dict) -> int:
+    """Life an additional cost asks for ("As an additional cost to cast this spell, pay 3 life")."""
+    extra = _EXTRA_COST.search(_cast_text(card))
+    paid = re.search(r"\bpay (\d+) life\b", extra.group("what")) if extra else None
+    return int(paid.group(1)) if paid else 0
+
+
+def extra_mana_cost(card: dict) -> int:
+    """Generic mana an additional cost asks for ("As an additional cost ..., ... or pay {3}").
+
+    A sacrifice / behold alternative is not modelled: the mana is counted.
+    """
+    extra = _EXTRA_COST.search(_cast_text(card))
+    if not extra:
+        return 0
+    paid = re.search(r"\bpay \{o?(\d+)\}", extra.group("what"))
+    return int(paid.group(1)) if paid else 0
 
 
 def card_role(card: dict) -> str:
@@ -222,7 +398,7 @@ def card_role(card: dict) -> str:
     text = _text(card)
     if _COUNTER.search(text):
         return "counter"
-    if ("artifact" in types or "enchantment" in types) and _MANA_ABILITY.search(text):
+    if ("artifact" in types or "enchantment" in types) and _spendable_mana(text):
         return "ramp"
     if _LAND_SEARCH.search(text):
         return "ramp"
@@ -459,11 +635,23 @@ def _simulate_attacks(
 # --- mana and deployment -----------------------------------------------------
 
 
+_RESTRICTED_MANA = re.compile(r"\bspend this mana only\b|\bcan't be spent to cast\b")
+
+
+def _spendable_mana(text: str) -> bool:
+    """A mana ability whose mana casts spells from hand (not "Spend this mana only to ...")."""
+    return any(_MANA_ABILITY.search(line) and not _RESTRICTED_MANA.search(line) for line in text.splitlines())
+
+
 def _mana_source(card: dict, turn: int) -> SimpleNamespace | None:
-    """A permanent that taps for mana, with its colours (C for colourless)."""
+    """A permanent that taps for mana, with its colours (C for colourless).
+
+    A nonland source whose mana can't cast spells from hand (Heartwood
+    Crafter, Gideon's Memorial) is not one.
+    """
     text = _text(card)
     is_land = _is_land(card) and not _is_creature(card)
-    if not is_land and not _MANA_ABILITY.search(text):
+    if not is_land and not _spendable_mana(text):
         return None
     if _is_creature(card):
         entered = _int(card.get("turn_entered_battlefield"))
@@ -482,10 +670,11 @@ class _Spell:
     card: dict
     name: str
     role: str
-    mana_value: int
+    mana_value: int  # mana to cast it: printed mana value plus any generic additional cost
     pips: tuple
     has_x: bool
     value: float = 0.0
+    uncastable: bool = False  # e.g. Threshold "can't cast this spell unless ..." not met
 
 
 @dataclass
@@ -504,6 +693,13 @@ class TurnProjection:
     # Producible colours per mana source that turn, before any rock the
     # board-math schedule casts (plan validation adds the plan's own rocks).
     source_colors: list[str] = field(default_factory=list)
+    # From the line search's best line (empty/None on the greedy projection):
+    attack: list[str] = field(default_factory=list)  # our attackers that turn
+    opp_life_after: int | None = None  # their life after our attack
+    modes: dict[str, str] = field(default_factory=dict)  # card -> chosen mode
+    held: str = ""  # instants used on their following turn
+    posture: str = ""  # T only: lethal / attack / hold / either
+    cycles: list[str] = field(default_factory=list)  # landcycled cards
 
 
 @dataclass
@@ -558,6 +754,16 @@ class BoardAssessment:
     unknowns: list[str] = field(default_factory=list)
     library_count: int | None = None
     elapsed_ms: float = 0.0
+    # The line search (``arenamcp.line_search``): its result, kept even when
+    # truncated (consumers check ``.truncated``); the top lines, the attack
+    # posture and the greedy projection's dead_in it is compared with. Empty
+    # when the search is off (ARENAMCP_LINE_SEARCH=0), failed or truncated.
+    line_search: Any = field(default=None, repr=False, compare=False)
+    lines: list = field(default_factory=list)  # top 5 line_search.Line, best first
+    posture: str = ""  # lethal / attack / hold / either
+    posture_reason: str = ""
+    dead_in_greedy: int | None = None
+    search_stats: dict[str, Any] = field(default_factory=dict)  # nodes, combats, ms, bounded, truncated
 
     @property
     def survival_mode(self) -> bool:
@@ -586,11 +792,21 @@ class BoardAssessment:
             return ""
         step = self.lookahead[index]
         bits = []
-        if index == 0 and self.lethal_now:
+        lethal = index == 0 and self.lethal_now
+        if lethal:
             bits.append("ATTACK FOR LETHAL (their best blocks can't stop it)")
         if step.land:
             bits.append(f"play {step.land}")
-        bits.append("cast " + " + ".join(step.casts) if step.casts else "no castable board play")
+        modes = step.modes or {}
+        casts = [f"{name} (choose: {modes[name]})" if modes.get(name) else name for name in step.casts]
+        if casts or not step.cycles:
+            bits.append("cast " + " + ".join(casts) if casts else "no castable board play")
+        bits += [f"landcycle {name}" for name in step.cycles]
+        # Attack or hold only when the line had attackers to choose from.
+        if step.attack and not lethal:
+            bits.append("attack with " + ", ".join(step.attack))
+        elif index == 0 and self.posture == "hold":
+            bits.append("hold back (no attack)")
         text = "; ".join(bits)
         if step.life_after is not None and not (index == 0 and self.lethal_now):
             text += f" (life after their attack: {step.life_after})"
@@ -624,6 +840,8 @@ class BoardAssessment:
             )
         if next_turns:
             lines.append(f"  NEXT: {next_turns}")
+        if self.line_search is not None and self.lines:
+            lines.append("  " + self.line_search.prompt_line(318))
         hand = "?" if self.their_hand is None else str(self.their_hand)
         lines.append(
             f"  Board: us {self.our_creatures} creatures/{self.our_power} power vs them "
@@ -654,6 +872,13 @@ class BoardAssessment:
                 "BOARD-MATH PROJECTION (we deploy the best castable plays and block; they attack every turn): "
                 + self._lookahead_text()
             )
+        if self.line_search is not None and self.lines:
+            lines.append(
+                "CANDIDATE LINES (2-turn search + greedy third turn; they attack each turn with their "
+                "worst-for-us attack; their new cards and tricks are not modelled):"
+            )
+            lines += [f"  {n}. {_candidate_text(line)}" for n, line in enumerate(self.lines[:5], start=1)]
+            lines.append("Prefer one of these lines; a deviation needs a concrete card or combat reason.")
         lines.append("MANA BUDGET BY TURN (lands + mana permanents; one land drop per turn from hand):")
         for step in self.lookahead:
             castable = ", ".join(step.castable) or "nothing in hand"
@@ -679,8 +904,9 @@ class BoardAssessment:
         for step in self.lookahead:
             casts = " + ".join(step.casts) or "nothing"
             land = f"{step.land}, " if step.land else ""
+            attack = f", attack with {', '.join(step.attack)}" if step.attack else ""
             life = "" if step.life_after is None else f" -> life {step.life_after}"
-            parts.append(f"T{step.turn}: {land}{casts}{life}")
+            parts.append(f"T{step.turn}: {land}{casts}{attack}{life}")
         return " | ".join(parts)
 
     def as_payload(self) -> dict[str, Any]:
@@ -701,7 +927,31 @@ class BoardAssessment:
                 for s in self.lookahead
             ],
             "threats": [{"name": t.name, "why": t.why} for t in self.threats[:3]],
+            "lines": [line.as_payload() for line in self.lines[:3]],
+            "posture": self.posture,
+            "search": dict(self.search_stats),
         }
+
+
+def _candidate_text(line: Any) -> str:
+    """One searched line for the plan prompt: each turn's play, attack and lives, then the outcome."""
+    parts = []
+    blocks = {"none": "no blocks now", "crackback": "block now without our counterattackers"}
+    if line.block in blocks:
+        parts.append(blocks[line.block])
+    if line.now_life is not None:
+        parts.append(f"their attack now -> life {line.now_life}")
+    for step in line.steps:
+        life = "" if step.life_after is None else f" -> life {step.life_after}"
+        opp = "" if step.opp_life_after is None else f", opponent {step.opp_life_after}"
+        parts.append(f"T{step.turn}: {step.text()}{life}{opp}")
+    if line.outcome == "win":
+        outcome = f"lethal on T{line.win_turn}"
+    elif line.outcome == "dead":
+        outcome = f"dead on T{line.dead_turn}"
+    else:
+        outcome = "alive"
+    return " | ".join(parts) + f" => {outcome}" + (" (greedy)" if line.baseline else "")
 
 
 # --- assessment ---------------------------------------------------------------
@@ -712,7 +962,11 @@ _CACHE_SIZE = 32
 
 
 def _signature(state: dict) -> tuple:
+    from arenamcp.board_model import canonical_phase_step
+
     turn = state.get("turn") or {}
+    # _assess reads phase/step only in log form: 'Main1'/'None' and 'Phase_Main1'/'' share one entry.
+    phase, step = canonical_phase_step(turn)
     cards = tuple(
         (
             c.get("instance_id"),
@@ -741,8 +995,8 @@ def _signature(state: dict) -> tuple:
         state.get("match_id"),
         turn.get("turn_number"),
         turn.get("active_player"),
-        turn.get("phase"),
-        turn.get("step"),
+        phase,
+        step,
         players,
         cards,
         hand,
@@ -753,78 +1007,120 @@ def _signature(state: dict) -> tuple:
     )
 
 
+# Signatures being assessed right now: concurrent callers (coaching loop, plan
+# reform thread, autopilot) wait for the first one instead of searching again.
+_INFLIGHT: dict[tuple, threading.Event] = {}
+_INFLIGHT_WAIT_S = 0.5  # past the search's hard cap: a stuck owner never blocks for long
+
+
 def assess(state: dict | None) -> BoardAssessment | None:
-    """Assess a planner-shape snapshot; None when seats/turn are unknown."""
+    """Assess a planner-shape snapshot; None when seats/turn are unknown.
+
+    One assessment per board signature: the result is cached, and a caller
+    that arrives while the same signature is being assessed waits for that
+    result (at most ``_INFLIGHT_WAIT_S``) rather than running its own search.
+    """
     if not isinstance(state, dict):
         return None
     try:
-        key = _signature(state)
+        # The kill switch is part of the key: flipping it never serves the other pipeline's facts.
+        key = (_signature(state), _line_search_enabled())
     except Exception:
         key = None
+    owner, event = False, None
     if key is not None:
         with _CACHE_LOCK:
             cached = _CACHE.get(key)
             if cached is not None:
                 _CACHE.move_to_end(key)
                 return cached
+            event = _INFLIGHT.get(key)
+            if event is None:
+                owner, event = True, threading.Event()
+                _INFLIGHT[key] = event
+        if not owner:
+            event.wait(_INFLIGHT_WAIT_S)
+            with _CACHE_LOCK:
+                cached = _CACHE.get(key)
+                if cached is not None:
+                    _CACHE.move_to_end(key)
+                    return cached
     try:
         result = _assess(state)
     except Exception as error:  # never break a decision on the strategic layer
         logger.debug("board assessment failed: %s", error, exc_info=True)
-        return None
-    if key is not None and result is not None:
+        result = None
+    if key is not None:
         with _CACHE_LOCK:
-            _CACHE[key] = result
-            while len(_CACHE) > _CACHE_SIZE:
-                _CACHE.popitem(last=False)
+            if result is not None:
+                _CACHE[key] = result
+                while len(_CACHE) > _CACHE_SIZE:
+                    _CACHE.popitem(last=False)
+            if owner:
+                _INFLIGHT.pop(key, None)
+        if owner and event is not None:
+            event.set()
     return result
 
 
-def _assess(state: dict) -> BoardAssessment | None:
-    started = time.perf_counter()
-    # Imported here: board_model builds on this module's helpers.
-    from arenamcp.board_model import build_board_model
+def _line_search_enabled() -> bool:
+    """False when ARENAMCP_LINE_SEARCH=0: the greedy projection alone, as before the line search."""
+    return os.environ.get("ARENAMCP_LINE_SEARCH", "").strip() != "0"
 
-    # The board facts (seats, timing, bodies, mana, the hand's spells). Phase
-    # and step come back in the log's names, so a bridge snapshot ("Main1",
-    # step "None") gets the same attack timing as Player.log ("Phase_Main1").
-    model = build_board_model(state)
-    if model is None:
+
+def _run_line_search(model: Any, *, survival: bool, lethal_now: bool) -> Any:
+    """``line_search.search_lines`` on this board, or None (switched off or failed)."""
+    if not _line_search_enabled():
         return None
-    opponent, turn, our_turn, phase = model.opponent, model.turn, model.our_turn, model.phase
-    our_life, opp_life = model.our_life, model.opp_life
-    battlefield, hand = list(model.battlefield), list(model.hand)
-    our_rules = dict(model.our_rules)
+    try:
+        # Imported here: line_search builds on this module's helpers.
+        from arenamcp import line_search
+
+        return line_search.search_lines(model, survival=survival, lethal_now=lethal_now)
+    except Exception as error:  # never break the assessment on the search
+        logger.debug("line search failed: %s", error, exc_info=True)
+        return None
+
+
+def _leaf_race(search: Any, line: Any) -> float | None:
+    """The race term of the line's last board (+15/our clock when ours is no slower, else -15/theirs)."""
+    leaf = getattr(line, "_leaf", None)
+    engine = getattr(search, "_search", None)
+    if leaf is None or engine is None or getattr(leaf, "terminal", True):
+        return None
+    try:
+        return float(engine.race(leaf))
+    except Exception:
+        logger.debug("line race term failed", exc_info=True)
+        return None
+
+
+def _clock_facts(model: Any) -> SimpleNamespace:
+    """Board-only clocks, race and the survival hint the deployment values (and the search) use."""
     ours, theirs = list(model.ours), list(model.theirs)
-    unknowns = model.unknowns  # a fresh list: unknown bodies, then X spells
+    our_turn = model.our_turn
     our_attack_pending, their_attack_pending = model.our_attack_pending, model.their_attack_pending
     first_our_attackers = None if model.first_our_attackers is None else list(model.first_our_attackers)
     first_their_attackers = None if model.first_their_attackers is None else list(model.first_their_attackers)
-    untapped_theirs = list(model.untapped_theirs)
-    # Our blockers for their next attack: what is untapped now when that
-    # attack comes before our untap step, otherwise everything.
-    our_first_blockers = list(model.our_first_blockers)
-
-    # --- clocks (board only) -------------------------------------------------
     our_clock, our_lives = _simulate_attacks(
         ours,
         theirs,
-        opp_life,
+        model.opp_life,
         first_attackers=first_our_attackers,
-        first_blockers=untapped_theirs if our_attack_pending else None,
+        first_blockers=list(model.untapped_theirs) if our_attack_pending else None,
     )
     their_clock, their_lives = _simulate_attacks(
         theirs,
         ours,
-        our_life,
+        model.our_life,
         first_attackers=first_their_attackers,
         # On our turn, creatures that attacked stay tapped through theirs.
-        first_blockers=our_first_blockers,
+        first_blockers=list(model.our_first_blockers),
     )
     lethal_now = our_attack_pending and our_clock == 1
     if our_attack_pending and not lethal_now:
         next_clock, _ = _simulate_attacks(
-            ours, theirs, opp_life, first_attackers=None, first_blockers=None, horizon=1
+            ours, theirs, model.opp_life, first_attackers=None, first_blockers=None, horizon=1
         )
         lethal_next_turn = next_clock == 1
     else:
@@ -858,6 +1154,65 @@ def _assess(state: dict) -> BoardAssessment | None:
             race = "even"
         first = "we strike first" if attack_time(1, True) < attack_time(1, False) else "they strike first"
         race_detail = f"our clock {our_clock} vs their {their_clock}, {first}"
+    survival_hint = (
+        opp_lethal_on_board
+        or race == "behind"
+        or (their_clock is not None and their_clock <= 2)
+        or (
+            len(theirs) > len(ours) + 1
+            and sum(b["power"] for b in theirs) > sum(b["power"] for b in ours) + 2
+        )
+    )
+    return SimpleNamespace(
+        our_clock=our_clock,
+        our_lives=our_lives,
+        their_clock=their_clock,
+        their_lives=their_lives,
+        lethal_now=lethal_now,
+        lethal_next_turn=lethal_next_turn,
+        opp_lethal_on_board=opp_lethal_on_board,
+        race=race,
+        race_detail=race_detail,
+        survival_hint=survival_hint,
+    )
+
+
+def search_hints(model: Any) -> tuple[bool, bool]:
+    """(survival, lethal_now) exactly as ``_assess`` passes them to the line search; no search runs."""
+    clocks = _clock_facts(model)
+    return bool(clocks.survival_hint and not clocks.lethal_now), bool(clocks.lethal_now)
+
+
+def _assess(state: dict) -> BoardAssessment | None:
+    started = time.perf_counter()
+    # Imported here: board_model builds on this module's helpers.
+    from arenamcp.board_model import build_board_model
+
+    # The board facts (seats, timing, bodies, mana, the hand's spells). Phase
+    # and step come back in the log's names, so a bridge snapshot ("Main1",
+    # step "None") gets the same attack timing as Player.log ("Phase_Main1").
+    model = build_board_model(state)
+    if model is None:
+        return None
+    opponent, turn, our_turn, phase = model.opponent, model.turn, model.our_turn, model.phase
+    our_life, opp_life = model.our_life, model.opp_life
+    battlefield, hand = list(model.battlefield), list(model.hand)
+    our_rules = dict(model.our_rules)
+    ours, theirs = list(model.ours), list(model.theirs)
+    unknowns = model.unknowns  # a fresh list: unknown bodies, then X spells
+    their_attack_pending = model.their_attack_pending
+    first_their_attackers = None if model.first_their_attackers is None else list(model.first_their_attackers)
+    # Our blockers for their next attack: what is untapped now when that
+    # attack comes before our untap step, otherwise everything.
+    our_first_blockers = list(model.our_first_blockers)
+
+    # --- clocks (board only) -------------------------------------------------
+    clocks = _clock_facts(model)
+    our_clock, our_lives = clocks.our_clock, clocks.our_lives
+    their_clock, their_lives = clocks.their_clock, clocks.their_lives
+    lethal_now, lethal_next_turn = clocks.lethal_now, clocks.lethal_next_turn
+    opp_lethal_on_board = clocks.opp_lethal_on_board
+    race, race_detail = clocks.race, clocks.race_detail
 
     # --- mana ----------------------------------------------------------------
     our_permanents = list(model.our_permanents)
@@ -877,24 +1232,24 @@ def _assess(state: dict) -> BoardAssessment | None:
     unknowns.append("opponent's hand, draws and combat tricks")
 
     # --- preliminary role (board only) feeds the deployment values -----------
-    survival_hint = (
-        opp_lethal_on_board
-        or race == "behind"
-        or (their_clock is not None and their_clock <= 2)
-        or (
-            len(theirs) > len(ours) + 1
-            and sum(b["power"] for b in theirs) > sum(b["power"] for b in ours) + 2
-        )
-    )
+    survival_hint = clocks.survival_hint
+    # At our ending phase T is instant-speed only: no land drop, no sorcery-speed casts.
     budgets_turns = _budget_turns(
         our_turn,
         turn,
         sources_now,
         sources_all,
         hand_lands,
-        land_drop_now,
+        land_drop_now and not model.t_instant_only,
     )
-    schedule = _schedule(spells, budgets_turns, survival=survival_hint and not lethal_now, theirs=theirs)
+    schedule = _schedule(
+        spells,
+        budgets_turns,
+        survival=survival_hint and not lethal_now,
+        theirs=theirs,
+        ours=ours,
+        instant_only_first=model.t_instant_only,
+    )
     lookahead, dead_in, now_life = _project(
         schedule=schedule,
         budgets=budgets_turns,
@@ -908,6 +1263,26 @@ def _assess(state: dict) -> BoardAssessment | None:
         first_their_attackers=first_their_attackers,
         untapped_ours=our_first_blockers,
     )
+    dead_in_greedy = dead_in
+
+    # --- line search: candidate lines replace the greedy projection ------------
+    # The greedy line above stays the baseline (and the fallback): a failed or
+    # truncated search keeps its facts.
+    search = _run_line_search(model, survival=survival_hint and not lethal_now, lethal_now=lethal_now)
+    found = None  # the search, when its facts are used
+    best_text, race_term = "", None
+    if search is not None and not search.truncated:
+        try:
+            rows = search.to_projections()
+            for row, step in zip(rows, search.best.steps, strict=False):
+                row.cycles = list(step.cycles)
+            best_text, race_term = search.best.summary(), _leaf_race(search, search.best)
+            lookahead, dead_in, now_life = rows, search.dead_in, search.now_life
+            found = search
+        except Exception as error:
+            logger.debug("line search facts failed: %s", error, exc_info=True)
+            best_text, race_term = "", None
+    best = found.best if found is not None else None
 
     # --- advantages ----------------------------------------------------------
     their_hand = _opponent_hand(state)
@@ -948,9 +1323,17 @@ def _assess(state: dict) -> BoardAssessment | None:
     # unambiguous, since an all-in attack throws away blockers.
     through = our_life - their_lives[0] if their_lives else 0
     evasive = 0 if our_air else sum(b["power"] for b in theirs if _flying(b))
+    # Dead to their next attack whatever we do: every T step of an exact search
+    # dies there (exact_first_attack needs a complete root, and all_dead_at_first
+    # reads only root nodes, so a T+1 cut short by the soft budget doesn't
+    # matter); otherwise the greedy line's verdict.
+    if found is not None and found.exact_first_attack:
+        dead_first = found.all_dead_at_first
+    else:
+        dead_first = dead_in_greedy == 1
     all_in = bool(
         opp_lethal_on_board
-        and dead_in == 1
+        and dead_first
         and not lethal_now
         and our_power > 0
         and (through >= our_life + 2 or evasive >= our_life)
@@ -960,6 +1343,15 @@ def _assess(state: dict) -> BoardAssessment | None:
             "ALL-IN: no defensive line survives their next attack — attack with everything; "
             "holding back blockers changes nothing"
         )
+    if found is not None and best is not None and not found.dead_now:
+        if found.only_survivor:
+            flags.append(f"ONLY SURVIVING LINE: {best_text}")
+        elif getattr(found, "greedy_dies", False):
+            flags.append(f"GREEDY LINE DIES; BEST SURVIVING LINE: {best_text}")
+        elif opp_lethal_on_board and found.only_first_attack_survivor:
+            flags.append(f"ONLY LINE THAT SURVIVES THEIR NEXT ATTACK: {best_text}")
+        if _wins_by_next_turn(best) and not lethal_now:
+            flags.append(f"LETHAL LINE: {best_text}")
 
     # --- role ----------------------------------------------------------------
     role, reason = _role(
@@ -981,7 +1373,17 @@ def _assess(state: dict) -> BoardAssessment | None:
         card_advantage=card_advantage,
         deck_curve=deck_curve,
         lookahead=lookahead,
+        best_line=best,
+        line_text=best_text,
+        only_survivor=bool(found and found.only_survivor),
+        greedy_dies=bool(found and getattr(found, "greedy_dies", False)),
+        only_first_attack_survivor=bool(found and found.only_first_attack_survivor),
+        race_term=race_term,
     )
+    posture = found.posture if found is not None else ""
+    posture_reason = found.posture_reason if found is not None else ""
+    if posture in ("attack", "hold") and posture_reason:
+        reason = f"{reason}; {posture_reason}"
 
     zones = state.get("zones") if isinstance(state.get("zones"), dict) else {}
     library = _int(zones.get("library_count", state.get("library_count")))
@@ -1026,9 +1428,20 @@ def _assess(state: dict) -> BoardAssessment | None:
         lookahead=lookahead,
         unknowns=unknowns,
         library_count=library,
+        line_search=search,
+        lines=list(found.lines) if found is not None else [],
+        posture=posture,
+        posture_reason=posture_reason,
+        dead_in_greedy=dead_in_greedy,
+        search_stats=search.stats() if search is not None else {},
     )
     result.elapsed_ms = (time.perf_counter() - started) * 1000
     return result
+
+
+def _wins_by_next_turn(line: Any) -> bool:
+    """The line kills them with our attack at T or T+1."""
+    return line is not None and line.outcome == "win" and line.win_at is not None and line.win_at <= 2
 
 
 def _opponent_hand(state: dict) -> int | None:
@@ -1060,8 +1473,15 @@ def _deck_curve(state: dict) -> float | None:
 
 
 def _threats(
-    battlefield: list[dict], opponent: int | None, theirs: list[dict], our_air: bool, our_count: int
+    battlefield: list[dict],
+    opponent: int | None,
+    theirs: list[dict],
+    our_air: bool,
+    our_count: int,
+    *,
+    limit: int | None = 5,
 ) -> list[Threat]:
+    """The opponent's most dangerous permanents, best first (the top ``limit``; None: all)."""
     threats: list[Threat] = []
     for body in theirs:
         score = float(body["power"]) + 0.3 * body["toughness"]
@@ -1117,7 +1537,7 @@ def _threats(
         if score:
             threats.append(Threat(_name(card), _int(card.get("instance_id")), score, ", ".join(why)))
     threats.sort(key=lambda t: (-t.score, t.name))
-    return threats[:5]
+    return threats if limit is None else threats[:limit]
 
 
 def _budget_turns(
@@ -1165,7 +1585,9 @@ def _budget_turns(
     return plan
 
 
-def _spell_value(spell: _Spell, *, survival: bool, theirs: list[dict]) -> float:
+def _spell_value(
+    spell: _Spell, *, survival: bool, theirs: list[dict], ours: list[dict] | tuple = ()
+) -> float:
     card = spell.card
     their_air = any(_flying(b) for b in theirs)
     if spell.role == "creature":
@@ -1184,7 +1606,7 @@ def _spell_value(spell: _Spell, *, survival: bool, theirs: list[dict]) -> float:
             value += 1
         return value
     if spell.role in ("removal", "bounce"):
-        killable = [b for b in theirs if _kills(spell.card, b)]
+        killable = [b for b in theirs if _kills(spell.card, b, ours=ours)]
         if not killable:
             return 0.0  # no target yet: hold it rather than schedule it
         best = max(killable, key=lambda b: b["power"])
@@ -1201,37 +1623,160 @@ def _spell_value(spell: _Spell, *, survival: bool, theirs: list[dict]) -> float:
     return 1.0
 
 
-def _kills(card: dict, body: dict) -> bool:
-    reach = removal_reach(card)
-    if reach is None:
+_COLOR_WORDS = {"white": "W", "blue": "U", "black": "B", "red": "R", "green": "G"}
+_STAT_LIMIT = re.compile(
+    r"\bwith (?P<stat>power|toughness|mana value|converted mana cost) (?P<n>\d+) or (?P<dir>greater|more|less|fewer)\b"
+)
+
+
+def _keyword_set(body: dict) -> set[str]:
+    return {str(k).lower() for k in body.get("keywords") or []}
+
+
+def _untargetable(body: dict) -> bool:
+    """Hexproof or shroud on the body (the snapshot's keywords, or a printed keyword line)."""
+    if _keyword_set(body) & {"hexproof", "shroud"}:
+        return True
+    return bool(re.search(r"(?m)^\s*(?:hexproof|shroud)\s*$", _text(body.get("_card") or body)))
+
+
+_NO_WARD_PAYMENT = 99  # ward paid with life, a discard or a sacrifice: not modelled, never paid
+
+
+def ward_cost(body: dict) -> int:
+    """Generic mana a spell targeting this body must also pay (0: no ward)."""
+    match = re.search(r"(?m)^\s*ward\s*(?:\{o?(\d+)\}|[—–-]\s*(.*))?", _text(body.get("_card") or body))
+    if match:
+        return int(match.group(1)) if match.group(1) else _NO_WARD_PAYMENT
+    if any(k.startswith("ward") for k in _keyword_set(body)):
+        return _NO_WARD_PAYMENT  # a ward keyword without its cost in the text
+    return 0
+
+
+def _body_colors(body: dict) -> set[str] | None:
+    """The body's colours, None when the snapshot doesn't say."""
+    card = body.get("_card") or body
+    named = {_COLOR_WORDS.get(str(c).lower().removeprefix("cardcolor_")) for c in card.get("colors") or []}
+    named.discard(None)
+    if named:
+        return named  # type: ignore[return-value]
+    cost = str(card.get("mana_cost") or "")
+    if cost:
+        return {c for c in "WUBRG" if c in cost.upper()}
+    return None
+
+
+def _body_mana_value(body: dict) -> int:
+    card = body.get("_card") or body
+    return _mana_value(str(card.get("mana_cost") or ""))
+
+
+def _legal_target(clause: _Clause, body: dict, *, attacking: bool, ward_mana: int) -> bool:
+    """The clause's target words allow this creature (hexproof, ward, stats, flying, colour, combat)."""
+    words = clause.words
+    if clause.targeted and (_untargetable(body) or ward_cost(body) > ward_mana):
         return False
-    kind, limit = reach
-    if kind in ("damage", "shrink"):
-        return (
-            not has_combat_keyword(body, "indestructible")
-            and limit is not None
-            and body["toughness"] <= limit
+    if re.search(r"\b(?:attacking|blocking)\b|\btapped (?:creature|permanent)", words) and not attacking:
+        return False  # never cast proactively; their attack under way only
+    for match in _STAT_LIMIT.finditer(words):
+        stat, n = match.group("stat"), int(match.group("n"))
+        value = (
+            body["power"]
+            if stat == "power"
+            else body["toughness"]
+            if stat == "toughness"
+            else _body_mana_value(body)
         )
-    if kind == "destroy":
-        return not has_combat_keyword(body, "indestructible")
-    return True  # bounce / fight (fight is approximate)
+        if (value < n) if match.group("dir") in ("greater", "more") else (value > n):
+            return False
+    if re.search(r"\bwith flying\b", words) and not _flying(body):
+        return False
+    target = words.split("target", 1)[1] if "target" in words else words
+    noun = re.split(r"\b(?:creature|permanent|planeswalker)s?\b", target, maxsplit=1)
+    before = noun[0] if noun else ""
+    after = noun[1] if len(noun) > 1 else ""
+    wanted = {_COLOR_WORDS[w] for w in re.findall(r"\b(white|blue|black|red|green)\b", before)}
+    that = re.match(r"(?: or planeswalker)? that's ([a-z ,]+)", after)
+    if that:
+        wanted |= {_COLOR_WORDS[w] for w in re.findall(r"\b(white|blue|black|red|green)\b", that.group(1))}
+    banned = {_COLOR_WORDS[w] for w in re.findall(r"\bnon(white|blue|black|red|green)\b", before)}
+    if wanted or banned:
+        colors = _body_colors(body)
+        if colors is None or (wanted and not colors & wanted) or colors & banned:
+            return False
+    return True
+
+
+def _kills(
+    card: dict,
+    body: dict,
+    *,
+    ours: list[dict] | tuple = (),
+    attacking: bool = False,
+    ward_mana: int = 0,
+) -> bool:
+    """The card's cast text can legally target this opposing creature and remove it.
+
+    Respects hexproof/shroud, ward (its mana cost must fit in ``ward_mana``,
+    the mana left after the spell; other ward costs are never paid), "with
+    toughness/power/mana value N or greater/less", "with flying", colour words
+    and attacking/blocking/tapped targets (legal only for ``attacking``
+    bodies, i.e. during their attack). A fight needs a creature of ``ours``
+    whose power reaches the target's toughness. Bounce removes anything it may
+    target.
+    """
+    for clause in _removal_clauses(card):
+        if not _legal_target(clause, body, attacking=attacking, ward_mana=ward_mana):
+            continue
+        if clause.kind in ("damage", "shrink"):
+            if (
+                not has_combat_keyword(body, "indestructible")
+                and clause.limit is not None
+                and body["toughness"] <= clause.limit
+            ):
+                return True
+        elif clause.kind == "destroy":
+            if not has_combat_keyword(body, "indestructible"):
+                return True
+        elif clause.kind == "fight":
+            if not has_combat_keyword(body, "indestructible") and any(
+                b["power"] >= body["toughness"] for b in ours
+            ):
+                return True
+        else:
+            return True  # bounce
+    return False
 
 
 def _schedule(
-    spells: list[_Spell], budgets: list[dict], *, survival: bool, theirs: list[dict]
+    spells: list[_Spell],
+    budgets: list[dict],
+    *,
+    survival: bool,
+    theirs: list[dict],
+    ours: list[dict] | tuple = (),
+    instant_only_first: bool = False,
 ) -> list[list[_Spell]]:
-    """Per-turn knapsack: the highest-value affordable set (<=3 spells) each turn."""
+    """Per-turn knapsack: the highest-value affordable set (<=3 spells) each turn.
+
+    ``instant_only_first``: T is our ending phase, so only instant-speed spells
+    can be cast on it. Spells that can't be cast at all (``_Spell.uncastable``)
+    are never scheduled.
+    """
     for spell in spells:
-        spell.value = _spell_value(spell, survival=survival, theirs=theirs)
-    remaining = [s for s in spells if not s.has_x and s.value > 0]
+        spell.value = _spell_value(spell, survival=survival, theirs=theirs, ours=ours)
+    remaining = [s for s in spells if not s.has_x and not s.uncastable and s.value > 0]
     schedule: list[list[_Spell]] = []
     extra: list[SimpleNamespace] = []
-    for budget in budgets:
+    for index, budget in enumerate(budgets):
         sources = list(budget["sources"]) + extra
         best: tuple = ()
         best_key = (0.0, 0)
-        for size in range(1, min(_MAX_SPELLS_PER_TURN, len(remaining)) + 1):
-            for combo in combinations(remaining, size):
+        pool = remaining
+        if index == 0 and instant_only_first:
+            pool = [s for s in remaining if hand_card({**s.card, "rarity": "-"}).instant_speed]
+        for size in range(1, min(_MAX_SPELLS_PER_TURN, len(pool)) + 1):
+            for combo in combinations(pool, size):
                 total = sum(s.mana_value for s in combo)
                 if total > len(sources):
                     continue
@@ -1248,7 +1793,10 @@ def _schedule(
         budget["castable"] = [
             s.name
             for s in spells
-            if not s.has_x and s.mana_value <= len(sources) and _pip_matching(s.pips, sources)
+            if not s.has_x
+            and not s.uncastable
+            and s.mana_value <= len(sources)
+            and _pip_matching(s.pips, sources)
         ]
         budget["mana"] = len(sources)
         budget["colors"] = "".join(sorted({c for s in sources for c in s.produces if c != "C"}))
@@ -1298,7 +1846,7 @@ def _project(
                     board.append(body)
                     blockers_first.append(body)
             elif spell.role in ("removal", "bounce"):
-                killable = [b for b in enemy if _kills(spell.card, b)]
+                killable = [b for b in enemy if _kills(spell.card, b, ours=board)]
                 if killable:
                     target = max(killable, key=lambda b: (b["power"], b["toughness"]))
                     enemy = [b for b in enemy if b is not target]
@@ -1353,12 +1901,23 @@ def _role(
     card_advantage: int | None,
     deck_curve: float | None,
     lookahead: list[TurnProjection],
+    best_line: Any = None,
+    line_text: str = "",
+    only_survivor: bool = False,
+    only_first_attack_survivor: bool = False,
+    race_term: float | None = None,
+    greedy_dies: bool = False,
 ) -> tuple[str, str]:
     """Who's the beatdown: lethal and survival first, then fast clocks, then board/cards/curve.
 
     A clock within the simulation horizon (<= 6 attacks) is "fast" and drives
     the role; slower clocks only break ties, so a lone 1/2 flyer does not turn
-    the game into a race.
+    the game into a race. ``best_line`` (the line search's best line, None
+    without the search; ``line_text`` its summary) adds: a line that kills by
+    T+1 is the beatdown, the only surviving line is control, and with slow
+    clocks a line that attacks for a third of their life by T+2 at a
+    non-negative race term, without dropping us below min(life, 10), is the
+    beatdown.
     """
     board = f"{ours} vs {theirs} creatures, {our_power} vs {their_power} power"
 
@@ -1377,15 +1936,23 @@ def _role(
             f"all-in: {through} gets through our best blocks vs {our_life} life next attack whatever we do — "
             f"attack with everything; blockers held back change nothing"
         )
+    if _wins_by_next_turn(best_line):
+        return ROLE_AGGRESSOR, f"best line kills on T{best_line.win_turn}: {line_text}"
     if race == "ahead" and fast(our_clock) and (their_clock is None or our_clock <= 3):
         return ROLE_AGGRESSOR, (
             f"our clock {our_clock} beats their {text(their_clock)} ({board}) — we're the beatdown"
         )
     if opp_lethal:
         through = our_life - (their_lives[0] if their_lives else our_life)
+        only = f"; only line: {line_text}" if only_first_attack_survivor and line_text else ""
         return ROLE_CONTROL, (
             f"opponent has lethal on board ({through} through our best blocks vs {our_life} life) — survive first"
+            f"{only}"
         )
+    if only_survivor and line_text:
+        return ROLE_CONTROL, f"only line that survives: {line_text}"
+    if greedy_dies and line_text:
+        return ROLE_CONTROL, f"the greedy line dies; best surviving line: {line_text}"
     if dead_in is not None and dead_in <= 2:
         deployed = next((s for s in lookahead if s.casts), None)
         after = (
@@ -1425,6 +1992,12 @@ def _role(
         curve = f" (avg MV {deck_curve:.1f})" if deck_curve is not None else ""
         return ROLE_DEFENDER, f"empty boards{curve} — develop on curve, trade early"
     slow = f"slow clocks (ours {text(our_clock)}, theirs {text(their_clock)}; {board})"
+    pressure = _line_pressure(best_line, our_life=our_life, opp_life=opp_life, race_term=race_term)
+    if pressure is not None:
+        return (
+            ROLE_AGGRESSOR,
+            f"{slow}; best line attacks for {pressure[0]} by T+2 while taking {pressure[1]}",
+        )
     if card_advantage is not None and card_advantage >= 2:
         return ROLE_CONTROL, f"{slow}; +{card_advantage} cards — we win the long game"
     if card_advantage is not None and card_advantage <= -2:
@@ -1434,6 +2007,29 @@ def _role(
     if race == "behind" or their_power > our_power:
         return ROLE_DEFENDER, f"{slow} — hold blockers, develop bigger threats"
     return ROLE_RACE, f"{slow} — find evasion or removal to break the stall"
+
+
+def _line_pressure(
+    line: Any, *, our_life: int, opp_life: int, race_term: float | None
+) -> tuple[int, int] | None:
+    """(damage by T+2, life we lose by their second attack) when the line is a safe beatdown.
+
+    Safe: at least ceil(their life / 3) through by T+2, a race term >= 0 at
+    the line's last board (a lethal line wins the race), and our life after
+    their second attack still >= min(our life, 10). None otherwise.
+    """
+    if line is None or not line.steps or line.outcome == "dead":
+        return None
+    if line.outcome != "win" and (race_term is None or race_term < 0):
+        return None
+    opp_after = [s.opp_life_after for s in line.steps[:3] if s.opp_life_after is not None]
+    damage = opp_life - min(opp_after) if opp_after else 0
+    if damage <= 0 or damage < math.ceil(opp_life / 3):
+        return None
+    lives = [s.life_after for s in line.steps if s.life_after is not None]
+    if len(lives) < 2 or lives[1] < min(our_life, 10):
+        return None
+    return damage, max(0, our_life - lives[1])
 
 
 # --- role guard --------------------------------------------------------------
@@ -1530,6 +2126,11 @@ def role_guard(
         for c in battlefield
         if _is_creature(c) and _controller(c) == opponent and (b := _body(c, turn, their_rules))
     ]
+    friends = [
+        b
+        for c in battlefield
+        if _is_creature(c) and _controller(c) == local and (b := _body(c, turn, our_rules))
+    ]
     candidates: list[tuple[int, int, str, str]] = []  # (loss, preference, option_id, description)
     for option in decision.options:
         if option.option_id == chosen_id or option.payable is False:
@@ -1545,14 +2146,14 @@ def role_guard(
                 (loss, 0, option.option_id, f"cast {_name(source)} ({body['power']}/{body['toughness']})")
             )
         elif role == "removal" and source:
-            killable = [b for b in enemy if _kills(source, b)]
+            killable = [b for b in enemy if _kills(source, b, ours=friends)]
             if not killable:
                 continue
             target = max(killable, key=lambda b: (b["power"], b["toughness"]))
             loss = _life_loss(state, remove_id=target["instance_id"])
             candidates.append((loss, 1, option.option_id, f"cast {_name(source)} on {target['name']}"))
         elif role == "land" and assessment.our_turn and assessment.land_drop_available:
-            enabled = _enabled_by_land(state, option, source, our_rules, enemy, turn)
+            enabled = _enabled_by_land(state, option, source, our_rules, enemy, turn, friends)
             if enabled is not None:
                 loss, what = enabled
                 candidates.append(
@@ -1584,6 +2185,7 @@ def _enabled_by_land(
     our_rules: dict,
     enemy: list[dict],
     turn: int,
+    friends: list[dict] | tuple = (),
 ) -> tuple[int, str] | None:
     """Best survival play this land drop makes castable this turn: (loss, description)."""
     if not land or _enters_tapped(land):
@@ -1617,7 +2219,7 @@ def _enabled_by_land(
             loss = _life_loss(state, add_body=body)
             what = f"cast {_name(card)} ({body['power']}/{body['toughness']})"
         else:
-            killable = [b for b in enemy if _kills(card, b)]
+            killable = [b for b in enemy if _kills(card, b, ours=friends)]
             if not killable:
                 continue
             target = max(killable, key=lambda b: (b["power"], b["toughness"]))
