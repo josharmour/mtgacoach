@@ -1031,9 +1031,14 @@ class GamePlanManager:
             logger.warning("game-plan LLM call failed (keeping prior plan): %s", e)
             return None
 
+        if is_backend_error_text(response):
+            # The proxy returns an error sentinel instead of raising; on
+            # 2026-10-06 five of seven plan calls timed out this way unlogged.
+            logger.warning("game-plan LLM call failed (keeping prior plan): %s", str(response)[:160])
+            return None
         plan = self._parse(response, turn_num)
         if plan is None or plan.is_empty():
-            logger.debug("game-plan parse produced nothing usable")
+            logger.info("game-plan answer had no usable plan (keeping prior plan)")
             return None
         try:
             validate_plan(plan, assessment, game_state)

@@ -358,3 +358,12 @@ def test_background_snapshot_does_not_reset_a_newer_turn():
     assert mgr._generation == generation
     assert mgr._observed_turn == 4
     assert mgr.current is not None
+
+
+def test_backend_error_text_is_logged_not_silently_dropped(caplog):
+    """A timed-out plan call returns an error sentinel; it must show in the log."""
+    be = FakeBackend(["[BACKEND ERROR] LLM streaming time budget exhausted"])
+    mgr = GamePlanManager(be)
+    with caplog.at_level("WARNING", logger="arenamcp.game_plan"):
+        assert mgr.maybe_reform(_state(turn=1)) is None or mgr.current is None or mgr.current.is_empty()
+    assert "game-plan LLM call failed" in caplog.text
