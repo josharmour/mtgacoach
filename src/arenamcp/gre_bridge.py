@@ -1085,7 +1085,11 @@ class GREBridge:
             ids = [int(x) for x in target_instance_id if x]
         else:
             ids = [int(target_instance_id)] if target_instance_id else []
-        if not ids:
+        if not ids and not (target_instance_id == [] and self._mac_adapter is not None):
+            # An explicit empty list commits an "up to N" request with no
+            # (more) targets. Only the native Mac/Android adapter does that;
+            # the BepInEx plugin fills each slot with its first legal target
+            # when given no ids, which could aim a stun at our own creature.
             logger.warning("GRE bridge submit_targets: no target ids given")
             return False
         try:
@@ -1095,7 +1099,7 @@ class GREBridge:
             resp = self._send_safe(
                 {
                     "action": "submit_targets",
-                    "target_instance_id": ids[0],
+                    "target_instance_id": ids[0] if ids else None,
                     "target_instance_ids": ids,
                 },
                 timeout=8.0,

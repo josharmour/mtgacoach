@@ -53,6 +53,11 @@ class _AutopilotModesMixin:
             return None
         if not game_state.get("_bridge_can_cancel"):
             return None
+        if self._ward_payment_source(game_state) is not None:
+            # Paying an opposing ward keeps the spell we aimed at it; its
+            # card text (even a harmful ETB) says nothing about this cost.
+            logger.info("Optional cost is a ward payment; paying it")
+            return None
         if not self._source_spell_is_harmful_to_target(game_state, None, None):
             return None
         name, oracle = self._resolve_decision_source(game_state)
@@ -66,6 +71,21 @@ class _AutopilotModesMixin:
         if verdict is False:
             return f"harmful optional cost ({name or 'unknown'}): LLM chose decline"
         return f"harmful optional cost ({name or 'unknown'}): LLM unavailable, declining conservatively"
+
+    @staticmethod
+    def _ward_payment_source(game_state: dict[str, Any]) -> dict[str, Any] | None:
+        """The opposing warded permanent whose ward trigger is asking us to pay, if any."""
+        from arenamcp.ward import ward_trigger_source
+
+        context = game_state.get("decision_context") or {}
+        payload = game_state.get("_bridge_request_payload") or {}
+        try:
+            source_id = int(
+                context.get("source_id") or context.get("sourceId") or payload.get("sourceId") or 0
+            )
+        except (TypeError, ValueError):
+            source_id = 0
+        return ward_trigger_source(game_state, source_id)
 
     def _deterministic_fallback(
         self,

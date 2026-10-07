@@ -112,8 +112,9 @@ def test_equip_on_own_creature_is_submitted_without_controller_intent():
 
 
 def test_unclassified_non_equip_source_still_needs_intent():
-    planner = _planner('{"option_ids": ["tgt:583"], "reasoning": "tap it"}')
-    state = _target_state(source_oracle="Tap target creature.", parent_oracle="")
+    # "Tap target creature." is classified harmful since 2026-10-06; phasing is not.
+    planner = _planner('{"option_ids": ["tgt:583"], "reasoning": "phase it out"}')
+    state = _target_state(source_oracle="Target creature phases out.", parent_oracle="")
     assert planner.plan_decision_options(_target_decision(583, 591), state) == [DECLINE_DECISION]
 
 

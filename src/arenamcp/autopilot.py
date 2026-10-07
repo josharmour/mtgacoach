@@ -3979,8 +3979,15 @@ class AutopilotEngine(
                 game_state,
             )
             return True
-        empty_search = decision.request_type == "Search" and decision.selection_is_valid(option_ids)
-        if (not option_ids and not empty_search) or any(
+        # Search may find nothing; an "up to N" SelectTargets may take no
+        # (more) targets — the planner answers that way when the only
+        # candidates would hurt us or have a ward we cannot pay.
+        empty_selection = (
+            not option_ids
+            and decision.request_type in {"Search", "SelectTargets"}
+            and decision.selection_is_valid([])
+        )
+        if (not option_ids and not empty_selection) or any(
             decision.find(option_id) is None for option_id in option_ids
         ):
             if poll.get("payment_selection"):
@@ -4031,6 +4038,8 @@ class AutopilotEngine(
             explanation = " ".join(ActionPlanner._humanize_legal_action(label) for label in labels)
             if decision.request_type == "Search":
                 explanation = f"Choose {', '.join(labels)}." if labels else "Find no cards."
+            elif decision.request_type == "SelectTargets" and not labels:
+                explanation = "Choose no targets."
             from arenamcp.narration import submission_narration
 
             explanation = submission_narration(explanation, reasoning)
@@ -4071,6 +4080,12 @@ class AutopilotEngine(
             self._pause_for_manual("Non-mana payment submission failed — select payment manually", game_state)
             return True
         if decision.request_type == "SelectTargets":
+            if not option_ids:
+                self._pause_for_manual(
+                    "SelectTargets: choose no targets manually — the bridge could not submit an empty selection",
+                    game_state,
+                )
+                return True
             self._pause_for_manual("Target selection was not verified — check targets manually", game_state)
             return True
         if decision.request_type in {"OptionalAction", "CastingTimeOptions"}:

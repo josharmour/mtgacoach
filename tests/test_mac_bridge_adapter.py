@@ -659,6 +659,28 @@ def test_targets_select_then_commit_on_the_updated_request():
     assert [op["value"]["enum"] for op in commit_batch if op.get("member") == "Type"] == ["SubmitTargetsReq"]
 
 
+def test_optional_targets_commit_with_no_targets():
+    # "Up to N" with nothing worth targeting (2026-10-06: the only enemy had
+    # an unpayable ward): commit the request without selecting anything.
+    request = targets_request(5, 0)
+    request["TargetSelections"]["$items"][0]["minTargets_"] = 0
+    game = FakeGame(request)
+    response = adapter_for(game).handle(
+        {"action": "submit_targets", "target_instance_id": None, "target_instance_ids": []}
+    )
+    assert response["ok"] is True and response["finalized"] is True
+    (commit_batch,) = game.submits()
+    assert [op["value"]["enum"] for op in commit_batch if op.get("member") == "Type"] == ["SubmitTargetsReq"]
+    assert not any(op.get("member") == "TargetInstanceId" for op in commit_batch)
+
+
+def test_required_targets_are_never_committed_empty():
+    game = FakeGame(targets_request(5, 0))
+    response = adapter_for(game).handle({"action": "submit_targets", "target_instance_ids": []})
+    assert response["ok"] is False
+    assert game.submits() == []
+
+
 def counted_targets_request(handle, selected=()):
     request = targets_request(handle, len(selected))
     selection = request["TargetSelections"]["$items"][0]

@@ -18,6 +18,14 @@ from arenamcp.decisions import expand_target_selection
 from arenamcp.match_context import STRATEGIC_POLICY, prepare_match_context, with_deck_reference
 from arenamcp.play_safety import filter_play_options, find_source, unsafe_play_reason
 from arenamcp.target_effects import source_effect_text, target_effect_is_harmful
+from arenamcp.ward import (
+    targeting_mana,
+    untapped_land_drop,
+    ward_cast_note,
+    ward_of,
+    ward_payable,
+    ward_trigger_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +42,10 @@ def _as_int(value: Any) -> int:
 # any option. Live 2026-07-05: a harmful SelectTargets whose only legal
 # candidates were the user's own permanents must not be auto-submitted.
 DECLINE_DECISION = "__decline__"
+
+# Internal sentinel for an "up to N" SelectTargets answered with no (more)
+# targets. plan_decision_options returns it to callers as an empty list.
+NO_TARGETS_DECISION = "__no_targets__"
 
 # Blocks leaving this much life or less are replaced when the solver's blocks
 # keep at least BLOCK_DANGER_MARGIN more (see _check_block_survival).
@@ -2736,6 +2748,21 @@ class ActionPlanner(_ActionLegalityMixin):
             self._last_decision_trace = {"policy": "commander_return", "validated_ids": ["optional:accept"]}
             logger.info("typed-decision: returning %s to the command zone without an LLM choice", names)
             return ["optional:accept"]
+        if decision.request_type == "OptionalAction" and accept is not None:
+            # An opposing ward trigger asking us to pay: we aimed at that
+            # permanent on purpose, and declining counters our whole effect.
+            warded = ward_trigger_source(game_state, _as_int(accept.meta.get("sourceId")))
+            ward = ward_of(warded)
+            if (
+                ward is not None
+                and ward_payable(ward, game_state, targeting_mana(game_state, None)) is not False
+            ):
+                name = (warded or {}).get("name") or "their permanent"
+                self._last_decision_option_ids = ["optional:accept"]
+                self._last_decision_reasoning = f"Pay {name}'s {ward.label} so our effect is not countered."
+                self._last_decision_trace = {"policy": "ward_payment", "validated_ids": ["optional:accept"]}
+                logger.info("typed-decision: paying %s for %s without an LLM choice", ward.label, name)
+                return ["optional:accept"]
         if decision.request_type == "Mulligan" and {"mull:keep", "mull:mull"} <= decision.option_ids():
             return self._plan_mulligan(decision, game_state)
         if decision.request_type == "Group" and "LondonMulligan" in str(decision.source_label or ""):
@@ -2789,15 +2816,24 @@ class ActionPlanner(_ActionLegalityMixin):
                     return chosen
                 chosen = []
             if chosen and decision.request_type == "SelectTargets":
+                sentinels = ([DECLINE_DECISION], [NO_TARGETS_DECISION])
                 chosen = self._gate_harmful_llm_target_picks(decision, game_state, chosen)
-                if chosen != [DECLINE_DECISION]:
+                if chosen not in sentinels:
                     chosen = self._prefer_lethal_damage_target(decision, game_state, chosen)
-                self._last_decision_trace["validated_ids"] = [] if chosen == [DECLINE_DECISION] else chosen
+                if chosen not in sentinels:
+                    chosen = self._avoid_unpayable_ward_targets(decision, game_state, chosen)
+                self._last_decision_trace["validated_ids"] = [] if chosen in sentinels else chosen
                 self._last_decision_trace["target_validation"] = (
-                    "declined" if chosen == [DECLINE_DECISION] else "validated"
+                    "declined"
+                    if chosen == [DECLINE_DECISION]
+                    else "no_targets"
+                    if chosen == [NO_TARGETS_DECISION]
+                    else "validated"
                 )
                 if chosen == [DECLINE_DECISION]:
                     return chosen
+                if chosen == [NO_TARGETS_DECISION]:
+                    return []
                 if not expand_target_selection(decision, chosen):
                     return [DECLINE_DECISION]
             if chosen:
@@ -2812,10 +2848,14 @@ class ActionPlanner(_ActionLegalityMixin):
             logger.info(f"plan_decision_options LLM path failed: {e}")
         if decision.request_type == "SelectTargets":
             picked = self._targeting_fallback_pick(decision, game_state)
+            if picked and picked != [DECLINE_DECISION] and picked != [NO_TARGETS_DECISION]:
+                picked = self._avoid_unpayable_ward_targets(decision, game_state, picked)
             if picked == [DECLINE_DECISION]:
                 # Harmful targeting forced onto own permanents OR beneficial
                 # targeting forced onto opponent — never let the blind pick submit it.
                 return picked
+            if picked == [NO_TARGETS_DECISION]:
+                return []
             if picked:
                 logger.info(f"plan_decision_options: controller-aware target fallback picked {picked}")
                 return picked
@@ -3243,13 +3283,19 @@ class ActionPlanner(_ActionLegalityMixin):
 
         if harmful:
             if not theirs and own:
+                choice = self._no_targets_or_decline(decision)
                 logger.warning(
-                    "Targeting fallback: harmful source with only own "
-                    "permanents as candidates — declining instead of "
-                    "sacrificing one"
+                    "Targeting fallback: harmful source with only own permanents as candidates — %s",
+                    "choosing no (more) targets"
+                    if choice == [NO_TARGETS_DECISION]
+                    else "declining instead of sacrificing one",
                 )
-                return [DECLINE_DECISION]
-            pool = sorted(theirs, key=_power, reverse=True)
+                if choice == [NO_TARGETS_DECISION]:
+                    self._note_target_choice([], "Only our own permanents are left to target; choosing none.")
+                return choice
+            # Prefer targets whose ward we can pay (or that have none).
+            doomed = self._unpayable_ward_targets(decision, game_state)
+            pool = sorted(theirs, key=lambda iid: (f"tgt:{iid}" in doomed, -_power(iid)))
         else:
             if not own and theirs:
                 logger.warning(
@@ -3263,6 +3309,118 @@ class ActionPlanner(_ActionLegalityMixin):
         n = max(1, int(decision.min_select or 1))
         picked = [f"tgt:{iid}" for iid in pool[:n]]
         return picked if expand_target_selection(decision, picked) else [DECLINE_DECISION]
+
+    @staticmethod
+    def _no_targets_or_decline(decision: Any) -> list[str]:
+        """Answer an optional SelectTargets with no (more) targets, else decline.
+
+        A cancellable request with nothing selected yet is a cast or activation
+        in progress: cancelling keeps the card and the mana. Triggers cannot be
+        cancelled (Seasoned Cryomancer's stun, AllowCancel_No), and a request
+        that already holds a target only needs its selection committed — what
+        the user did by hand at 17:48:41 on 2026-10-06.
+        """
+        if not decision.selection_is_valid([]):
+            return [DECLINE_DECISION]
+        if decision.can_cancel and not any(slot.selected for slot in decision.slots):
+            return [DECLINE_DECISION]
+        return [NO_TARGETS_DECISION]
+
+    def _note_target_choice(self, option_ids: list[str], reason: str) -> None:
+        """Narrate a deterministic target override instead of the model's stale reason."""
+        self._last_decision_option_ids = option_ids
+        self._last_decision_reasoning = reason
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace["target_override"] = reason
+
+    def _unpayable_ward_targets(self, decision: Any, game_state: dict[str, Any]) -> dict[str, str]:
+        """Opposing target options whose ward we cannot pay, mapped to why.
+
+        Mana is what stays untapped once the source is paid for: a spell is
+        targeted before its cost is paid, a trigger's cost is already paid.
+        """
+        try:
+            return self._find_unpayable_ward_targets(decision, game_state)
+        except Exception as error:  # ward awareness must never break targeting
+            logger.debug("ward check skipped: %s", error)
+            return {}
+
+    def _find_unpayable_ward_targets(self, decision: Any, game_state: dict[str, Any]) -> dict[str, str]:
+        local_seat, controllers = self._battlefield_controllers(game_state)
+        if local_seat is None:
+            return {}
+        battlefield = {
+            _as_int(card.get("instance_id")): card
+            for card in game_state.get("battlefield", []) or []
+            if isinstance(card, dict)
+        }
+        source = self._target_objects(game_state).get(self._decision_source_instance(game_state))
+        mana = targeting_mana(game_state, source)
+        doomed: dict[str, str] = {}
+        for option in decision.options:
+            iid = _as_int(str(option.option_id)[4:]) if str(option.option_id).startswith("tgt:") else 0
+            card = battlefield.get(iid)
+            if card is None or controllers.get(iid) in (None, local_seat):
+                continue
+            ward = ward_of(card)
+            if ward is not None and ward_payable(ward, game_state, mana, local_seat) is False:
+                mana_text = f" with {mana} mana available" if ward.mana is not None else ""
+                doomed[option.option_id] = f"{card.get('name') or iid} has {ward.label}{mana_text}"
+        return doomed
+
+    def _avoid_unpayable_ward_targets(
+        self, decision: Any, game_state: dict[str, Any], chosen: list[str]
+    ) -> list[str]:
+        """Never aim at a permanent whose ward we cannot pay; ward counters the whole effect.
+
+        2026-10-06 17:48 (bug_20261006_174855): Seasoned Cryomancer's stun went
+        at Unflinching Hortimancer (Ward {1}) with every land tapped, so the
+        ward trigger countered it. Prefer another legal enemy target; with none
+        left, answer an optional request with no targets (or cancel a cast in
+        progress). A required target keeps the existing choice.
+        """
+        doomed = self._unpayable_ward_targets(decision, game_state)
+        dropped = [oid for oid in chosen if oid in doomed]
+        if not dropped:
+            return chosen
+        kept = [oid for oid in chosen if oid not in doomed]
+        if self._decision_source_is_harmful(decision, game_state) is True:
+            local_seat, controllers = self._battlefield_controllers(game_state)
+            power = {
+                _as_int(card.get("instance_id")): _as_int(card.get("power"))
+                for card in game_state.get("battlefield", []) or []
+                if isinstance(card, dict)
+            }
+            spare = [
+                option.option_id
+                for option in decision.options
+                if str(option.option_id).startswith("tgt:")
+                and option.option_id not in chosen
+                and option.option_id not in doomed
+                and controllers.get(_as_int(option.option_id[4:])) not in (None, local_seat)
+            ]
+            spare.sort(key=lambda oid: power.get(_as_int(oid[4:]), 0), reverse=True)
+            kept += spare[: len(dropped)]
+        why = "; ".join(doomed[oid] for oid in dropped)
+        reason = f"{why}, which would counter the whole effect."
+        if kept and expand_target_selection(decision, kept):
+            logger.warning("Ward: %s — targeting %s instead of %s", why, kept, chosen)
+            self._note_target_choice(kept, reason)
+            return kept
+        if not kept and decision.selection_is_valid([]):
+            answer = self._no_targets_or_decline(decision)
+            logger.warning(
+                "Ward: %s — %s instead of %s",
+                why,
+                "choosing no targets" if answer == [NO_TARGETS_DECISION] else "cancelling",
+                chosen,
+            )
+            if answer == [NO_TARGETS_DECISION]:
+                self._note_target_choice([], reason)
+            return answer
+        logger.info("Ward: %s, but the target is required; keeping %s", why, chosen)
+        return chosen
 
     _DECISION_MAX_TOKENS = 2048
 
@@ -3316,6 +3474,18 @@ class ActionPlanner(_ActionLegalityMixin):
             for card in game_state.get("command", []) or []
             if local_seat is not None and card.get("owner_seat_id") == local_seat
         }
+        land_drop = decision.request_type == "ActionsAvailable" and untapped_land_drop(
+            game_state, decision.options
+        )
+        battlefield_ids = {
+            _as_int(card.get("instance_id")) for card in game_state.get("battlefield", []) or []
+        }
+        ward_mana = None
+        if decision.request_type == "SelectTargets":
+            ward_mana = targeting_mana(
+                game_state, target_objects.get(self._decision_source_instance(game_state))
+            )
+        warded_targets = False
         for o in decision.options:
             note = ""
             label = o.label
@@ -3329,6 +3499,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 note += f"  [contribution: {o.meta['weight']}]"
             if o.meta.get("actionType") == "ActionType_Cast":
                 note += linked_cast_note(game_state, o.meta)
+                note += ward_cast_note(game_state, o.meta, land_drop=land_drop)
                 note += power_only_note((find_source(game_state, o.meta) or {}).get("oracle_text"))
             if decision.request_type == "CastingTimeOptions":
                 note += power_only_note(label)
@@ -3366,11 +3537,23 @@ class ActionPlanner(_ActionLegalityMixin):
                     "controller_seat_id": ctrl,
                     "owner_seat_id": card.get("owner_seat_id"),
                 }
+                ward = ward_of(card) if _as_int(o.option_id[4:]) in battlefield_ids else None
+                if ward is not None and ctrl not in (None, local_seat) and ward_mana is not None:
+                    warded_targets = True
+                    facts["ward"] = ward.label
+                    facts["ward_payable_now"] = ward_payable(ward, game_state, ward_mana, local_seat)
                 target_trace.append(facts)
                 note += " " + json.dumps(
                     {key: value for key, value in facts.items() if key not in {"option_id", "name"}}
                 )
             lines.append(f"- {o.option_id}: {label}{side}{note}")
+        if warded_targets:
+            lines.insert(
+                lines.index("OPTIONS:"),
+                "WARD: targeting an opponent's permanent that has ward counters this WHOLE spell or "
+                f"ability (every target) unless you pay the ward cost. Mana available to pay it: {ward_mana}. "
+                "Do not pick a target marked ward_payable_now=false.",
+            )
         if decision.request_type == "CastingTimeOptions":
             lines.append(
                 "Choose all required modes together from the SAME childIndex. "

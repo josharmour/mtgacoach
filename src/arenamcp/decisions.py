@@ -1372,6 +1372,11 @@ def submit_option(
                     ],
                 )
             )
+    if decision.request_type == "SelectTargets" and not option_ids:
+        # "Up to N" targets answered with none (more): commit the selection as is.
+        if not decision.selection_is_valid([]):
+            return False
+        return bool(bridge.submit_targets([]))
     valid = decision.option_ids()
     chosen = [oid for oid in option_ids if oid in valid]
     if decision.request_type == "ActionsAvailable" and any(
