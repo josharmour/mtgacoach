@@ -132,6 +132,10 @@ class AutopilotEngine(
         self._activation_counts: dict[tuple[int, str, Any], int] = {}
         self._equipment_activation_states: set[tuple] = set()
         self._last_activation_note: tuple | None = None
+        # Casts/activations the autopilot itself cancelled at a follow-up step
+        # this turn, keyed (turn, actionType, instanceId, abilityGrpId, name).
+        self._self_cancelled_plays: set[tuple] = set()
+        self._last_typed_play: tuple | None = None
         self._max_fallback_bugs_per_match: int = 5
 
         # State
@@ -588,6 +592,82 @@ class AutopilotEngine(
                 self._activation_counts[key] -= 1
         logger.info("Repeat-activation guard: %r was rolled back (%s); not counting it", name or instance_id, why)
 
+    # A cast or activation the autopilot backed out of itself (declined its
+    # targets/costs and cancelled) is withheld for the rest of the turn: the
+    # same board gets the same refusal. 2026-10-06 18:57 (bug_20261006_185803):
+    # Theoretical Necromancer was activated and cancelled at its target step
+    # four times in 13 s, each rollback un-counted, until the user force-stopped.
+    _SELF_CANCEL_KINDS = ("ActionType_Cast", "ActionType_Activate")
+
+    @classmethod
+    def _play_name(cls, label: str) -> tuple[str, str]:
+        """(actionType, lowercased card name) of a "Cast X" / "Activate: X" label."""
+        text = str(label or "").strip()
+        if text.lower().startswith("cast "):
+            name = re.sub(r"\s*\(cannot auto-pay\)$", "", cls._plain_card_name(text[5:]))
+            return "ActionType_Cast", name.lower()
+        source = cls._activation_source_name(text)
+        return ("ActionType_Activate", cls._plain_card_name(source).lower()) if source else ("", "")
+
+    def _note_typed_play(self, game_state: dict[str, Any], option: Any) -> None:
+        """Remember the cast/activation just submitted so its own cancel can be attributed."""
+        kind = option.meta.get("actionType")
+        if kind not in self._SELF_CANCEL_KINDS:
+            return
+        self._last_typed_play = (
+            time.monotonic(),
+            self._turn_number(game_state),
+            kind,
+            int(option.meta.get("instanceId") or 0),
+            int(option.meta.get("abilityGrpId") or 0),
+            self._play_name(option.label)[1],
+        )
+
+    def _withhold_after_self_cancel(self, game_state: dict[str, Any], why: str) -> None:
+        note = getattr(self, "_last_typed_play", None)
+        self._last_typed_play = None
+        if not note:
+            return
+        noted_at, turn, kind, instance_id, ability_id, name = note
+        if time.monotonic() - noted_at > self._ACTIVATION_ROLLBACK_MAX_AGE_S:
+            return
+        if turn != self._turn_number(game_state):
+            return
+        try:
+            parent = int((game_state.get("decision_context") or {}).get("source_parent_instance_id") or 0)
+        except (TypeError, ValueError):
+            parent = 0
+        if kind == "ActionType_Activate" and parent and instance_id and parent != instance_id:
+            return
+        self._self_cancelled_plays = {
+            entry for entry in getattr(self, "_self_cancelled_plays", set()) if entry[0] == turn
+        }
+        self._self_cancelled_plays.add((turn, kind, instance_id, ability_id, name))
+        logger.warning(
+            "Self-cancel guard: %s %r was cancelled by the autopilot (%s); withholding it for the rest of turn %d",
+            "cast" if kind == "ActionType_Cast" else "activation",
+            name or instance_id,
+            why,
+            turn,
+        )
+
+    def _self_cancel_withheld(
+        self, game_state: dict[str, Any], kind: str, instance_id: int = 0, ability_id: int = 0, name: str = ""
+    ) -> bool:
+        """True when this cast/activation was self-cancelled earlier this turn."""
+        turn = self._turn_number(game_state)
+        name = (name or "").strip().lower()
+        for entry_turn, entry_kind, entry_iid, entry_ability, entry_name in getattr(
+            self, "_self_cancelled_plays", set()
+        ):
+            if entry_turn != turn or entry_kind != kind:
+                continue
+            if ability_id and entry_ability and ability_id != entry_ability:
+                continue
+            if (instance_id and entry_iid == instance_id) or (name and entry_name == name):
+                return True
+        return False
+
     @staticmethod
     def _activation_source_name(label: str) -> str:
         """Source name from "Activate Ability: X [OK]" / "Activate: X" labels, else ""."""
@@ -752,6 +832,10 @@ class AutopilotEngine(
             source = self._activation_source_name(label)
             if source and self._activation_exhausted(game_state, 0, source):
                 logger.info(f"Repeat-activation guard: hiding {label!r} until useful progress")
+                continue
+            kind, name = self._play_name(label)
+            if kind and self._self_cancel_withheld(game_state, kind, name=name):
+                logger.info(f"Self-cancel guard: hiding {label!r} for the rest of the turn")
                 continue
             kept.append(label)
         return kept
@@ -2137,6 +2221,8 @@ class AutopilotEngine(
                 self._cast_rollback_counts.clear()
                 self._cast_rollback_totals.clear()
                 self._last_cast_submitted = None
+                self._self_cancelled_plays = set()
+                self._last_typed_play = None
                 self._runaway_tripped_turn = None
                 self._request_tracker.reset()
                 self._progress_guard.reset()
@@ -3241,6 +3327,16 @@ class AutopilotEngine(
                     )
                     self._actions_skipped += 1
                     continue
+                play_kind = {
+                    ActionType.ACTIVATE_ABILITY: "ActionType_Activate",
+                    ActionType.CAST_SPELL: "ActionType_Cast",
+                }.get(action.action_type)
+                if play_kind and self._self_cancel_withheld(
+                    game_state, play_kind, name=action.card_name or ""
+                ):
+                    logger.info(f"Self-cancel guard: skipping {action.card_name!r} for the rest of the turn")
+                    self._actions_skipped += 1
+                    continue
 
                 # Per-action staleness check: verify game hasn't advanced
                 # between multi-step actions (e.g., declare attackers then done)
@@ -3878,6 +3974,25 @@ class AutopilotEngine(
                     [o.label for o in decision.options if o not in kept],
                 )
                 decision = dataclasses.replace(decision, options=kept)
+            withheld = [
+                o
+                for o in decision.options
+                if o.meta.get("actionType") in self._SELF_CANCEL_KINDS
+                and self._self_cancel_withheld(
+                    game_state,
+                    o.meta["actionType"],
+                    int(o.meta.get("instanceId") or 0),
+                    int(o.meta.get("abilityGrpId") or 0),
+                    self._play_name(o.label)[1],
+                )
+            ]
+            if withheld:
+                logger.info(
+                    "Self-cancel guard: hiding %s for the rest of the turn", [o.label for o in withheld]
+                )
+                decision = dataclasses.replace(
+                    decision, options=tuple(o for o in decision.options if o not in withheld)
+                )
             decision = self._label_sibling_activations(decision)
 
         if not self._request_tracker.may_submit(fp):
@@ -3966,6 +4081,7 @@ class AutopilotEngine(
                     self._undo_activation_after_cancel(
                         game_state, f"{decision.request_type} cancelled"
                     )
+                    self._withhold_after_self_cancel(game_state, f"{decision.request_type} cancelled")
                 self._record_autopilot_decision(
                     game_state,
                     trigger,
@@ -4007,8 +4123,13 @@ class AutopilotEngine(
             self._given_up_semantics = None
             self._given_up_window_sig = None
             self._request_tracker.note_submitted(fp)
+            if decision.request_type == "ActionsAvailable":
+                # A new priority action supersedes the last play's attribution.
+                self._last_typed_play = None
             for oid in option_ids:
                 opt = decision.find(oid)
+                if opt is not None and decision.request_type == "ActionsAvailable":
+                    self._note_typed_play(game_state, opt)
                 if opt is not None and opt.meta.get("actionType") == "ActionType_Activate":
                     self._note_activation(
                         game_state,

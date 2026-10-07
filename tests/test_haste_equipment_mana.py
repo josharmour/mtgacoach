@@ -174,9 +174,14 @@ def test_cancelled_equip_does_not_trip_repeat_activation_guard(monkeypatch):
     assert engine._try_typed_decision_path(state, "decision_required")
     bridge.cancel_action.assert_called_once()
 
-    # The equip was rolled back, so the next window still offers it.
+    # The equip was rolled back, so it is not counted as a use...
+    assert not engine._activation_exhausted(state, 454, "Lightning Greaves")
+    # ...but re-offering what the autopilot itself just cancelled is the
+    # activate/cancel loop (bug_20261006_185803): withheld for this turn only.
     bridge.get_pending_actions.return_value = _actions_poll()
     assert engine._try_typed_decision_path(state, "decision_required")
+    assert bridge.submit_action_by_index.call_count == 1
+    assert engine._try_typed_decision_path({**state, "turn": {"turn_number": 11}}, "decision_required")
     assert bridge.submit_action_by_index.call_count == 2
 
 

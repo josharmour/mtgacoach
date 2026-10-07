@@ -17,7 +17,12 @@ from arenamcp.backend_health import is_backend_error_text
 from arenamcp.decisions import expand_target_selection
 from arenamcp.match_context import STRATEGIC_POLICY, prepare_match_context, with_deck_reference
 from arenamcp.play_safety import filter_play_options, find_source, unsafe_play_reason
-from arenamcp.target_effects import source_effect_text, target_effect_is_harmful
+from arenamcp.target_effects import (
+    effect_mentions_harm,
+    source_effect_text,
+    target_effect_has_polarity,
+    target_effect_is_harmful,
+)
 from arenamcp.ward import (
     targeting_mana,
     untapped_land_drop,
@@ -35,6 +40,16 @@ def _as_int(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _ability_rules_text(ability_grp_id: int) -> str:
+    """Arena rules text of one ability id (e.g. a modal spell's chosen mode), or ""."""
+    try:
+        from arenamcp.card_db import get_card_database
+
+        return str(get_card_database().get_ability_text(int(ability_grp_id)) or "")
+    except Exception:
+        return ""
 
 
 # Sentinel returned by plan_decision_options when the safe move is to
@@ -3064,7 +3079,40 @@ class ActionPlanner(_ActionLegalityMixin):
             or ((picked_entry or {}).get("source_card") or {}).get("oracle_text")
             or ""
         )
+        # The request names the ability doing the targeting: for a modal
+        # spell that is the chosen mode. 2026-10-06 18:56 (bug_20261006_185803):
+        # Stingerquill Charm's mode 1 "deals 3 damage to any target" was read
+        # with its deathtouch mode as one text, and the 3 damage went to our own
+        # Yuriko. The whole card text stays the answer when the targeting
+        # ability is unknown or says nothing either way ("Enchant creature").
+        modes = "\n".join(
+            text
+            for text in (
+                _ability_rules_text(aid) for aid in self._targeting_ability_ids(game_state, context_matches)
+            )
+            if text
+        )
+        if modes and target_effect_has_polarity(source_effect_text(modes, parent_oracle)):
+            return source_effect_text(modes, parent_oracle).lower()
         return source_effect_text(oracle, parent_oracle).lower()
+
+    @staticmethod
+    def _targeting_ability_ids(game_state: dict[str, Any], context_matches: bool) -> list[int]:
+        """targetingAbilityGrpId of each target slot, from the bridge payload and this request's log context."""
+        payload = game_state.get("_bridge_request_payload") or {}
+        sources = [payload.get("targetSelections"), payload.get("target_selections")]
+        if context_matches:
+            context = game_state.get("decision_context") or {}
+            sources += [(context.get("raw") or {}).get("targets"), context.get("targets")]
+        ids: list[int] = []
+        for selections in sources:
+            for selection in selections if isinstance(selections, list) else []:
+                ability_id = (
+                    _as_int(selection.get("targetingAbilityGrpId")) if isinstance(selection, dict) else 0
+                )
+                if ability_id and ability_id not in ids:
+                    ids.append(ability_id)
+        return ids
 
     @staticmethod
     def _decision_source_instance(game_state: dict[str, Any]) -> int:
@@ -3228,6 +3276,15 @@ class ActionPlanner(_ActionLegalityMixin):
                 return override
 
         if is_harmful is False and picked_opp and not intentional_opp:
+            if effect_mentions_harm(self._decision_source_oracle(decision, game_state)):
+                # Moving a pick onto our own board needs an unambiguous
+                # benefit; damage/removal wording anywhere means it isn't.
+                logger.warning(
+                    "Keeping LLM target pick %s (opponent permanent): the effect is not cleanly "
+                    "beneficial, so it is not moved onto our own permanent",
+                    chosen,
+                )
+                return chosen
             override = self._targeting_fallback_pick(decision, game_state)
             if override:
                 logger.warning(
@@ -3303,6 +3360,11 @@ class ActionPlanner(_ActionLegalityMixin):
                     "permanents as candidates — declining to avoid buffing enemy"
                 )
                 return [DECLINE_DECISION]
+            if own and effect_mentions_harm(self._decision_source_oracle(decision, game_state)):
+                logger.warning(
+                    "Targeting fallback: the effect is not cleanly beneficial — not aiming it at our own permanent blind"
+                )
+                return []
             pool = sorted(own, key=_power, reverse=True)
         if not pool:
             return []
