@@ -4,6 +4,7 @@ import html
 import re
 from collections import Counter
 from itertools import combinations
+from types import SimpleNamespace
 from typing import Any
 
 from arenamcp.draft_guidance import normalize_card
@@ -174,7 +175,7 @@ def _card_value(card: dict) -> float:
     else:
         value = RARITY_PRIOR.get(str(card.get("rarity") or "").lower(), 0.0)
     value += 4 if rules_profile(card)["unconditional_body"] else 0
-    value += 4 if "removal" in normalized.tags else 0
+    value += 4 if _builder_removal(card) else 0
     value += 2 if "card_advantage" in normalized.tags else 0
     value += 2 if normalized.cmc <= 3 else -max(0, normalized.cmc - 4)
     return value
@@ -283,7 +284,7 @@ def deck_quality(
     values = [_card_value(card) for card in chosen]
     gihs = [g for g in (_gih(card) for card in chosen) if g is not None]
     creatures = sum(rules_profile(card)["unconditional_body"] for card in chosen)
-    removal = sum("removal" in normalize_card(card).tags for card in chosen)
+    removal = sum(_builder_removal(card) for card in chosen)
     cheap = sum(normalize_card(card).cmc <= 2 for card in chosen)
     expensive = sum(normalize_card(card).cmc >= 6 for card in chosen)
     bombs = [card["name"] for card in chosen if (_gih(card) or 0) >= BOMB_GIH]
@@ -525,9 +526,28 @@ def score_deck(
     return deck_quality(chosen, main + splash, pair_win_rates, fmt=fmt, splash=splash, fixing=fixing)
 
 
+# Whether the builder's valuation counts rules-text removal (shrink, edict,
+# fight) or only the older keyword tags; narration and the deck-strength
+# model always use the rules-text detector. A benchmark knob.
+BUILDER_REMOVAL_RULES = True
+
+
+def _builder_removal(card: dict) -> bool:
+    if BUILDER_REMOVAL_RULES:
+        return _interaction_kind(card) == "removal"
+    return "removal" in normalize_card(card).tags
+
+
 def _interaction_kind(card: dict) -> str | None:
     """Removal deals with a permanent for good; tempo (bounce, tap, counters) buys time."""
     text = html.unescape(re.sub(r"<[^>]*>", "", card.get("oracle_text", ""))).lower()
+    from arenamcp.draft_autopick import is_removal
+
+    # 2026-10-06 UB draft: Last Gasp (-3/-3) and Break Under Pressure (edict)
+    # read as non-removal here, so both Last Gasps sat in the sideboard. The
+    # draft ranker's rules-text detector covers shrink, edict and fight effects.
+    if is_removal(SimpleNamespace(oracle=card.get("oracle_text", ""))):
+        return "removal"
     if "removal" in normalize_card(card).tags or (
         "target" in text and "library" in text and ("bottom" in text or "shuffles it into" in text)
     ):

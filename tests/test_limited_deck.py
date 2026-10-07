@@ -106,7 +106,10 @@ def test_deck_explanation_preserves_accepted_model_strategy():
 
 def test_model_plan_about_assembling_the_deck_is_not_spoken_as_a_game_plan():
     """2026-10-06: "Play the top-scoring pure UG build ... keep the mana base fully legal"."""
-    payload = {**model_build(), "plan": "Play the top-scoring pure UG build to keep the mana base fully legal."}
+    payload = {
+        **model_build(),
+        "plan": "Play the top-scoring pure UG build to keep the mana base fully legal.",
+    }
     explanation = deck_choice_summary(validate_deck(payload, pool(), source="card_rules"), pool())
     assert "top-scoring" not in explanation and "Its plan is to curve out" in explanation
     assert "Green creature 1" in explanation
@@ -208,3 +211,19 @@ def test_new_match_clears_deck_building_without_erasing_pool(monkeypatch):
     server._deactivate_draft_state("new match")
     assert state.is_building is False
     assert state.picked_cards == [1, 1, 2]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Target creature gets -3/-3 until end of turn.",  # Last Gasp
+        "Target opponent sacrifices a creature or planeswalker with the greatest mana value.",  # edict
+        "Choose one —\n• Counter target noncreature spell unless its controller pays {2}.\n"
+        "• Target creature gets -2/-2 until end of turn.",  # Theorix Charm
+    ],
+)
+def test_shrink_edict_and_modal_kill_spells_count_as_removal(text):
+    """2026-10-06 UB draft: both Last Gasps sat in the sideboard and the review said "1 removal"."""
+    from arenamcp.limited_deck import _interaction_kind
+
+    assert _interaction_kind({"name": "X", "oracle_text": text, "type_line": "Instant"}) == "removal"
