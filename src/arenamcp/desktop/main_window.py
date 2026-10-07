@@ -153,6 +153,14 @@ class MainWindow(QMainWindow):
         commentary_act.setCheckable(True)
         commentary_act.setChecked(bool(self._settings.get("draft_commentary", True)))
         commentary_act.toggled.connect(self._set_draft_commentary)
+        concede_act = tools_menu.addAction("Auto-Concede When Lost")
+        concede_act.setCheckable(True)
+        concede_act.setChecked(bool(self._settings.get("auto_concede", True)))
+        concede_act.setToolTip(
+            "When the board math says the next attack kills you whatever you do, autoplay "
+            "concedes after a countdown you can cancel. The coach still recommends it when off."
+        )
+        concede_act.toggled.connect(self._set_auto_concede)
         tts_server_act = tools_menu.addAction("Remote TTS Server…")
         tts_server_act.triggered.connect(self._configure_remote_tts)
         tools_menu.addSeparator()
@@ -234,6 +242,11 @@ class MainWindow(QMainWindow):
         """Explain each draft pick aloud, or just name it; applies to the running engine."""
         self._settings.set("draft_commentary", bool(enabled))
         self._session.set_draft_commentary(bool(enabled))
+
+    def _set_auto_concede(self, enabled: bool) -> None:
+        """Let autoplay concede a lost game after a countdown; applies to the running engine."""
+        self._settings.set("auto_concede", bool(enabled))
+        self._session.set_auto_concede(bool(enabled))
 
     def _configure_remote_tts(self) -> None:
         current_url = str(self._settings.get("tts_server_url") or "")

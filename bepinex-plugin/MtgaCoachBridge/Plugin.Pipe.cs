@@ -271,6 +271,10 @@ namespace MtgaCoachBridge
         public JObject Json { get; }
         private JObject _response;
         private readonly ManualResetEventSlim _signal = new ManualResetEventSlim(false);
+        // Started on the pipe thread when the command arrives: how long it
+        // waited for Unity's main thread when its handler finally runs.
+        private readonly System.Diagnostics.Stopwatch _age = System.Diagnostics.Stopwatch.StartNew();
+        public long AgeMs => _age.ElapsedMilliseconds;
 
         public PipeCommand(JObject json)
         {

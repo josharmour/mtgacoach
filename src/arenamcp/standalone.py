@@ -63,6 +63,7 @@ from arenamcp.mana import get_local_seat_id
 from arenamcp.settings import get_settings
 from arenamcp.standalone_auto_queue import _AutoQueueMixin
 from arenamcp.standalone_autopilot_capture import _AutopilotCaptureMixin
+from arenamcp.standalone_concede import _ConcedeMixin
 from arenamcp.standalone_deck import _DeckAnalysisMixin
 from arenamcp.standalone_diagnostics import _DiagnosticsMixin
 from arenamcp.standalone_draft_event import _DraftEventMixin
@@ -93,6 +94,7 @@ class StandaloneCoach(
     _AutoQueueMixin,
     _DraftEventMixin,
     _AutopilotCaptureMixin,
+    _ConcedeMixin,
     _StartupMixin,
     _DeckAnalysisMixin,
     _PostMatchMixin,
@@ -289,6 +291,10 @@ class StandaloneCoach(
         from arenamcp.gre_bridge import get_poller
 
         self._bridge_poller = get_poller()
+
+        # Deterministic "dead no matter what" check: recommend conceding, and
+        # with autoplay on, concede after a cancellable countdown.
+        self._init_concede()
 
     @staticmethod
     def _build_pending_decision_signature(game_state: dict[str, Any]) -> str | None:
@@ -845,6 +851,8 @@ class StandaloneCoach(
 
     def toggle_autopilot(self) -> bool:
         """Toggle autopilot on/off at runtime. Returns new enabled state."""
+        # Any autoplay switch is the user taking over: stop a concede countdown.
+        self.cancel_concede("autopilot toggled")
         if self._autopilot_enabled and self._autopilot:
             # Turn OFF: abort any in-flight plan, disable
             self._autopilot.on_abort()
@@ -1989,6 +1997,10 @@ class StandaloneCoach(
                 # Reanalyze when the deck or designated commander changes.
                 self._maybe_analyze_deck(curr_state)
 
+                # Dead no matter what? Recommend conceding (once per game) and,
+                # with autoplay on, run the cancellable auto-concede countdown.
+                self._observe_concede(curr_state, (curr_match_id, self._match_number))
+
                 # FORCE CHECK: Always check triggers if trigger detector exists.
                 # prev_state starts as {} (falsy) but check_triggers handles empty
                 # prev_state gracefully via .get() defaults — this allows mulligan
@@ -2611,6 +2623,12 @@ class StandaloneCoach(
 
                         # THREAT DETECTION: fast targeted coaching for dangerous permanents.
                         if trigger == "losing_badly" and self._coach:
+                            if self._concede_recommended_this_game((curr_match_id, self._match_number)):
+                                logger.info(
+                                    "Skipping win probability check: the board-math concede "
+                                    "recommendation already fired this game"
+                                )
+                                continue
                             logger.info("Proactive win probability check (losing badly)")
                             self._inject_library_summary_if_needed(curr_state)
                             opp_cards = self._get_match_context().get("opponent_played_cards", [])
@@ -3108,6 +3126,9 @@ class StandaloneCoach(
         3. Stops MCP server watcher
         4. Waits for threads to terminate
         """
+        # First, even when a shutdown path already cleared _running (stdin
+        # EOF, restart): a countdown must never outlive the coach.
+        self.abort_concede("the coach stopped")
         if not self._running:
             return
 

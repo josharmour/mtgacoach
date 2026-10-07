@@ -42,6 +42,10 @@ _HEALTH_TAG_GUARD = "".join(f"(?!{re.escape(tag)})" for tag in _HEALTH_TAGS)
 # Regex to strip Textual/Rich markup tags like [bold], [red], [/], [link=...]
 _MARKUP_RE = re.compile(_HEALTH_TAG_GUARD + r"\[/?[a-zA-Z_][a-zA-Z0-9_ =.:#/\"'-]*\]|\[/\]")
 _ISSUE_URL_RE = re.compile(r"/issues/(\d+)(?:$|[?#])")
+# Typed (or transcribed) replies that cancel a running auto-concede countdown.
+_CONCEDE_CANCEL_RE = re.compile(
+    r"^\s*(?:cancel|stop|abort|no|wait|don'?t concede|do not concede|keep playing)\b", re.IGNORECASE
+)
 
 
 def strip_markup(text: str) -> str:
@@ -157,6 +161,14 @@ class PipeAdapter:
         advice.
         """
         self._emit({"type": "game_plan", "data": payload or {}})
+
+    def concede_countdown(self, payload: dict[str, Any] | None = None) -> None:
+        """Forward the auto-concede countdown to the GUI banner.
+
+        ``state`` is armed (with ``seconds``), cancelled, aborted, conceding,
+        conceded or failed; every event carries the countdown ``id``.
+        """
+        self._emit({"type": "concede_countdown", "data": dict(payload or {})})
 
     def status(self, key: str, value: str) -> None:
         self._emit({"type": "status", "key": key, "value": strip_markup(value)})
@@ -429,6 +441,7 @@ class PipeAdapter:
                 # Parent exited or pipe broken
                 self._running = False
                 if self._coach:
+                    self._abort_concede(self._coach, "the desktop went away")
                     self._coach._running = False
                 break
 
@@ -441,6 +454,7 @@ class PipeAdapter:
                     # stdin closed (GUI exited)
                     logger.info("stdin closed, stopping coach")
                     if self._coach:
+                        self._abort_concede(self._coach, "the desktop closed")
                         self._coach._running = False
                     break
                 line = line.strip()
@@ -477,6 +491,7 @@ class PipeAdapter:
                     enabled = coach.toggle_autopilot()
                 self.status("AUTOPILOT", "AP:ON" if enabled else "AP:OFF")
             elif action == "force_stop":
+                self._cancel_concede(coach, "force_stop")
                 # Panic button: kill the spiral, not just the switch. Turns
                 # autopilot off AND drops in-flight plan/turn-memo state so
                 # re-enabling doesn't resume the same doomed loop.
@@ -552,11 +567,30 @@ class PipeAdapter:
                     self.status("LAND_ONLY", state)
                     self.log(f"Land-only mode: {state}")
             elif action == "autopilot_cancel":
+                self._cancel_concede(coach, "autopilot_cancel")
                 if coach._autopilot:
-                    coach._autopilot.on_cancel()
+                    # AutopilotEngine has no on_cancel (only the native Mac
+                    # engine does); its "skip this action" is on_escape.
+                    cancel = getattr(coach._autopilot, "on_cancel", None) or getattr(
+                        coach._autopilot, "on_escape", None
+                    )
+                    if callable(cancel):
+                        cancel()
             elif action == "autopilot_abort":
+                self._cancel_concede(coach, "autopilot_abort")
                 if coach._autopilot:
                     coach._autopilot.on_abort()
+            elif action == "cancel_concede":
+                if not self._cancel_concede(coach, "ui"):
+                    logger.info("cancel_concede: no auto-concede countdown is running")
+            elif action == "set_auto_concede":
+                enabled = cmd.get("enabled") is True
+                setter = getattr(coach, "set_auto_concede", None)
+                if callable(setter):
+                    setter(enabled)
+                else:
+                    coach.settings.set("auto_concede", enabled)
+                self.log(f"Auto-concede when lost {'on' if enabled else 'off'}")
             elif action == "analyze_screen":
                 threading.Thread(target=coach.take_screenshot_analysis, daemon=True).start()
             elif action == "debug_report":
@@ -606,7 +640,9 @@ class PipeAdapter:
                 text = cmd.get("text", "")
                 if text:
                     # Intercept slash commands from the chat input
-                    if self._try_slash_command(text):
+                    if self._try_concede_cancel_reply(text):
+                        pass  # "cancel" while an auto-concede countdown runs
+                    elif self._try_slash_command(text):
                         pass  # Handled
                     else:
                         threading.Thread(target=self._handle_chat, args=(text,), daemon=True).start()
@@ -621,6 +657,7 @@ class PipeAdapter:
             elif action == "prepare_engine_reload":
                 coach.prepare_engine_reload()
             elif action == "restart":
+                self._abort_concede(coach, "the engine is restarting")
                 coach._restart_requested = True
                 coach._running = False
             elif action == "toggle_fallback_mode":
@@ -656,6 +693,8 @@ class PipeAdapter:
             elif action == "speech_status":
                 self.speech_completion.update(str(cmd.get("speech_id") or ""), str(cmd.get("state") or ""))
             elif action == "stop_speech":
+                # The stop button is also "keep playing" during a concede countdown.
+                self._cancel_concede(coach, "stop_speech")
                 voice_session = getattr(coach, "voice_session", None)
                 if voice_session is not None:
                     with contextlib.suppress(Exception):
@@ -677,6 +716,41 @@ class PipeAdapter:
         except Exception as e:
             logger.error("Command dispatch error (%s): %s", action, e)
             self.error(f"Command failed: {action}: {e}")
+
+    @staticmethod
+    def _cancel_concede(coach: Any, source: str) -> bool:
+        """Cancel a running auto-concede countdown; False when none was running."""
+        cancel = getattr(coach, "cancel_concede", None)
+        if not callable(cancel):
+            return False
+        try:
+            return bool(cancel(source))
+        except Exception as e:
+            logger.warning("cancel_concede failed: %s", e)
+            return False
+
+    @staticmethod
+    def _abort_concede(coach: Any, reason: str) -> bool:
+        """Stop a running countdown without declining the game (shutdown paths)."""
+        abort = getattr(coach, "abort_concede", None)
+        if not callable(abort):
+            return PipeAdapter._cancel_concede(coach, reason)
+        try:
+            return bool(abort(reason))
+        except Exception as e:
+            logger.warning("abort_concede failed: %s", e)
+            return False
+
+    def _try_concede_cancel_reply(self, text: str) -> bool:
+        """'cancel' / 'stop' / 'keep playing' while a countdown runs cancels it."""
+        coach = self._coach
+        armed = getattr(coach, "concede_armed", None)
+        if not callable(armed) or not armed() or not _CONCEDE_CANCEL_RE.match(text or ""):
+            return False
+        if self._cancel_concede(coach, "chat"):
+            self.log("Auto-concede cancelled — keep playing.")
+            return True
+        return False
 
     def _handle_toggle_fallback_mode(self) -> None:
         """Bridge-only mode is fixed on; legacy fallback toggles do nothing."""

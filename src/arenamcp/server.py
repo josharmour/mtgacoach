@@ -1226,6 +1226,10 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
         "copied_from_grp_id",
         "targeting",
         "color_production",
+        # Log-derived combat and attachment facts (bridge cards carry the same keys).
+        "attack_target_id",
+        "summoning_sickness",
+        "attached_to_id",
     ):
         val = obj.get(key)
         if val:  # Only include truthy values

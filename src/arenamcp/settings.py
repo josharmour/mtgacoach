@@ -50,6 +50,12 @@ DEFAULTS = {
     # Draft autoplay explains each pick and where the draft is heading;
     # off = just "Taking <card>." (Tools > Draft Pick Commentary).
     "draft_commentary": True,
+    # When the board says we are dead no matter what (arenamcp.concede), the
+    # coach recommends conceding; with autoplay on it also concedes after a
+    # cancellable countdown (Tools > Auto-Concede When Lost).
+    "auto_concede": True,
+    "concede_countdown_s": 10,  # clamped to 3-60
+    "concede_threshold": 0.95,  # loss confidence needed; clamped to 0.90-0.99
     "tts_server_url": "",
     "tts_mode": "auto",
     "tts_lag_threshold_ms": 1000,

@@ -21,6 +21,8 @@ class CoachSession(QObject):
     gameStateChanged = Signal(dict)
     turnPlanChanged = Signal(object)
     gamePlanChanged = Signal(object)
+    # Auto-concede countdown: {"state": offering|armed|conceding|sent|conceded|cancelled|aborted|failed|unconfirmed, "id", ...}
+    concedeCountdownChanged = Signal(dict)
     statusChanged = Signal(str, str)
     startupStatusChanged = Signal(dict)
     autopilotBugStatusChanged = Signal(dict)
@@ -66,6 +68,7 @@ class CoachSession(QObject):
         self._muted = False
         self._last_startup_status: dict[str, Any] = {}
         self._last_autopilot_bug_status: dict[str, Any] = {}
+        self._last_concede: dict[str, Any] = {}
         self._start_options = {"autopilot": False, "dry_run": False, "afk": False}
         self._pending_restart: dict[str, bool] | None = None
         self._shutting_down = False
@@ -199,6 +202,14 @@ class CoachSession(QObject):
     def set_draft_commentary(self, enabled: bool) -> None:
         """Turn spoken draft-pick explanations on or off in the running engine."""
         self._process.send_payload({"cmd": "set_draft_commentary", "enabled": bool(enabled)})
+
+    def set_auto_concede(self, enabled: bool) -> None:
+        """Choose whether autoplay concedes a game the board math says is lost."""
+        self._process.send_payload({"cmd": "set_auto_concede", "enabled": bool(enabled)})
+
+    def cancel_concede(self) -> None:
+        """Stop a running auto-concede countdown and keep playing this game."""
+        self._process.send_payload({"cmd": "cancel_concede"})
 
     def set_auto_queue(self, enabled: bool) -> None:
         """Choose whether autoplay may repeat the recent queue after a match."""
@@ -474,6 +485,12 @@ class CoachSession(QObject):
             plan = event.get("data") if "data" in event else event.get("game_plan")
             self.gamePlanChanged.emit(plan)
 
+        elif ev_type == "concede_countdown":
+            payload = event.get("data", event)
+            if isinstance(payload, dict):
+                self._last_concede = dict(payload)
+                self.concedeCountdownChanged.emit(dict(payload))
+
         elif ev_type in ("status", "emit_status"):
             key = str(event.get("key") or "")
             val = str(event.get("value") or "")
@@ -567,6 +584,10 @@ class CoachSession(QObject):
 
     def _handle_exited(self, code: int) -> None:
         logger.info(f"Coach process exited with code {code}")
+        if self._last_concede.get("state") in ("offering", "armed", "conceding", "sent"):
+            # The engine's countdown died with it; take the banner down.
+            self._last_concede = {"state": "aborted", "reason": "the coach stopped"}
+            self.concedeCountdownChanged.emit(dict(self._last_concede))
         self.processExited.emit(code)
         self.stopped.emit()
         if self._last_autopilot_bug_status.get("phase") in {"capturing", "recording"}:

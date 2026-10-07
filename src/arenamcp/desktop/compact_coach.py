@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import html
 import logging
+import math
 import re
 import sys
 import time
@@ -188,6 +189,18 @@ class CompactCoachPanel(QWidget):
         self._startup_timer = QTimer(self)
         self._startup_timer.setInterval(1000)
         self._startup_timer.timeout.connect(self._render_startup_status)
+        # Auto-concede countdown (engine "concede_countdown" events).
+        self._concede: dict[str, Any] = {}
+        self._concede_deadline = 0.0
+        self._concede_since = 0.0
+        self._concede_timer = QTimer(self)
+        self._concede_timer.setInterval(250)
+        self._concede_timer.timeout.connect(self._render_concede)
+        # Takes a finished countdown's banner down after a few seconds.
+        self._concede_clear_timer = QTimer(self)
+        self._concede_clear_timer.setSingleShot(True)
+        self._concede_clear_timer.timeout.connect(self._clear_concede)
+        self._concede_style = ""
         self._game_plan: dict[str, Any] = {}
         self._latest_advice: tuple[str, str] | None = None
         self._debug_logging = bool(self._settings.get("desktop_debug_logging", False))
@@ -244,6 +257,23 @@ class CompactCoachPanel(QWidget):
         startup_layout.addWidget(self.startup_label)
         self.startup_banner.hide()
         root.addWidget(self.startup_banner)
+
+        # Auto-concede countdown: the reason, seconds left and a Cancel button.
+        self.concede_banner, concede_layout = _card()
+        self.concede_banner.setObjectName("concedeBanner")
+        self.concede_label = QLabel()
+        self.concede_label.setObjectName("concedeLabel")
+        self.concede_label.setTextFormat(Qt.RichText)
+        self.concede_label.setWordWrap(True)
+        concede_layout.addWidget(self.concede_label)
+        self.concede_cancel_btn = QPushButton("Cancel — keep playing")
+        self.concede_cancel_btn.setObjectName("concedeCancelButton")
+        self.concede_cancel_btn.setProperty("variant", "primary")
+        self.concede_cancel_btn.setToolTip("Stop the auto-concede and keep playing this game")
+        self.concede_cancel_btn.clicked.connect(self._on_concede_cancel_clicked)
+        concede_layout.addWidget(self.concede_cancel_btn)
+        self.concede_banner.hide()
+        root.addWidget(self.concede_banner)
 
         self.arena_status_label = QLabel()
         self.arena_status_label.setObjectName("arenaConnectionStatus")
@@ -556,6 +586,9 @@ class CompactCoachPanel(QWidget):
         startup_status = getattr(self._session, "last_startup_status", None)
         if isinstance(startup_status, dict) and startup_status:
             self._on_startup_status(startup_status)
+        concede_signal = getattr(self._session, "concedeCountdownChanged", None)
+        if concede_signal is not None:
+            concede_signal.connect(self._on_concede_countdown)
         bug_signal = getattr(self._session, "autopilotBugStatusChanged", None)
         if bug_signal is not None:
             bug_signal.connect(self._on_autopilot_bug_status)
@@ -624,6 +657,135 @@ class CompactCoachPanel(QWidget):
             f"border: 1px solid {theme.color(tone)}; border-radius: {tokens.radius_card}px; }}"
         )
         self.startup_banner.show()
+
+    # -- auto-concede countdown -------------------------------------------------
+
+    # A countdown's events: offering -> armed -> conceding -> sent -> conceded,
+    # or it ends cancelled / aborted / failed / unconfirmed.
+    _CONCEDE_ACTIVE = ("offering", "armed", "conceding", "sent")
+    _CONCEDE_ENDED = ("cancelled", "aborted", "conceded", "failed", "unconfirmed")
+    # No follow-up this long after an armed countdown's deadline (or after an
+    # offer was shown): the engine went quiet, take the banner down.
+    _CONCEDE_STALE_S = 15.0
+    _CONCEDE_OFFER_STALE_S = 120.0
+
+    def _on_concede_countdown(self, payload: dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            return
+        state = str(payload.get("state") or "")
+        current = self._concede
+        if (
+            state != "offering"
+            and current.get("state") in self._CONCEDE_ACTIVE
+            and payload.get("id") is not None
+            and payload.get("id") != current.get("id")
+        ):
+            return  # an event of an older countdown
+        self._concede = dict(payload)
+        self._concede_since = time.monotonic()
+        if state in ("offering", "armed"):
+            try:
+                seconds = float(payload.get("seconds") or 10)
+            except (TypeError, ValueError):
+                seconds = 10.0
+            self._concede_deadline = time.monotonic() + seconds
+            if state == "offering" or current.get("id") != payload.get("id"):
+                self.concede_cancel_btn.setEnabled(True)
+                self.concede_cancel_btn.setText("Cancel — keep playing")
+            self._concede_clear_timer.stop()
+            self._concede_timer.start()
+        else:
+            self._concede_timer.stop()
+            if state in self._CONCEDE_ENDED:
+                self._concede_clear_timer.start(10000 if state in ("failed", "unconfirmed") else 5000)
+        self._render_concede()
+
+    def _clear_concede(self) -> None:
+        if self._concede.get("state") not in self._CONCEDE_ACTIVE:
+            self._concede = {}
+            self._render_concede()
+
+    def _concede_stale(self) -> bool:
+        """An offer or countdown the engine never followed up (lost or out-of-order events)."""
+        state = self._concede.get("state")
+        now = time.monotonic()
+        if state == "armed":
+            return now > self._concede_deadline + self._CONCEDE_STALE_S
+        if state == "offering":
+            return now > getattr(self, "_concede_since", now) + self._CONCEDE_OFFER_STALE_S
+        return False
+
+    def _on_concede_cancel_clicked(self) -> None:
+        cancel = getattr(self._session, "cancel_concede", None)
+        if callable(cancel):
+            cancel()
+        self.concede_cancel_btn.setEnabled(False)
+        self.concede_cancel_btn.setText("Cancelling…")
+
+    def _render_concede(self) -> None:
+        if self._concede_stale():
+            logger.info("Auto-concede banner dropped: no word from the engine")
+            self._concede = {}
+        payload = self._concede
+        state = str(payload.get("state") or "")
+        if not state:
+            self._concede_timer.stop()
+            self.concede_banner.hide()
+            return
+        reason = str(payload.get("reason") or "")
+        if state == "offering":
+            tone = "bad"
+            heading = "Auto-concede offered"
+            detail = (
+                f"The {payload.get('seconds') or 10}-second countdown starts when the coach finishes "
+                "speaking. Cancel to keep playing."
+            )
+        elif state == "armed":
+            left = max(0, math.ceil(self._concede_deadline - time.monotonic()))
+            tone = "bad"
+            heading = (
+                f"Auto-concede in {left}s" if left else "Auto-concede: checking the board one last time…"
+            )
+            detail = "Autoplay concedes this game when the countdown ends."
+        elif state == "conceding":
+            tone, heading, detail = "bad", "Conceding this game…", ""
+        elif state == "sent":
+            tone, heading, detail = "bad", "Concede sent — waiting for Arena to end the game…", ""
+        elif state == "conceded":
+            tone, heading, detail = "muted", "Conceded this game", ""
+        elif state == "unconfirmed":
+            tone, heading = "bad", "Auto-concede not confirmed"
+            detail = str(payload.get("message") or "Check Arena, and concede from its menu if you want to.")
+            reason = ""
+        elif state == "cancelled":
+            tone, heading, detail = (
+                "warn",
+                "Auto-concede cancelled",
+                "Keep playing — it won't ask again this game.",
+            )
+            reason = ""
+        elif state == "aborted":
+            tone, heading, detail = "warn", "Auto-concede stopped", ""
+        else:
+            tone, heading = "bad", "Auto-concede failed"
+            detail = str(payload.get("message") or "Concede from Arena's menu if you want to.")
+            reason = str(payload.get("error") or "")
+        html = block(span(heading, tone, weight=700), gap=3)
+        if reason:
+            html += block(span(reason), size="caption", gap=3)
+        if detail:
+            html += block(span(detail, "muted"), size="caption")
+        self.concede_label.setText(html)
+        self.concede_cancel_btn.setVisible(state in ("offering", "armed"))
+        tokens = theme.tokens()
+        style = (
+            f"QFrame#concedeBanner {{ background: {tokens.tint(tone, 0.10)}; "
+            f"border: 1px solid {theme.color(tone)}; border-radius: {tokens.radius_card}px; }}"
+        )
+        if style != self._concede_style:  # the 250 ms tick only changes the text
+            self._concede_style = style
+            self.concede_banner.setStyleSheet(style)
+        self.concede_banner.show()
 
     def _on_game_state_changed(self, state: dict[str, Any]) -> None:
         self._last_state = state if isinstance(state, dict) else {}
@@ -1123,6 +1285,7 @@ class CompactCoachPanel(QWidget):
         """Re-render every rich-text view with the new theme's colours."""
         self._refresh_status_dots()
         self._render_startup_status()
+        self._render_concede()
         self._render_arena_status()
         self._render_auto_queue_status()
         self._render_board(self._last_state)

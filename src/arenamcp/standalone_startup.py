@@ -90,6 +90,13 @@ class _StartupMixin:
         if getattr(self, "_engine_reload_preparing", False):
             return
         self._engine_reload_preparing = True
+        # Stop a running countdown without declining the game; the record of
+        # what was recommended, declined or conceded rides along below.
+        abort_concede = getattr(self, "abort_concede", None)
+        if callable(abort_concede):
+            abort_concede("the engine is reloading")
+        concede_export = getattr(self, "_concede_export", None)
+        concede_record = concede_export() if callable(concede_export) else None
         suspend_queue = getattr(self, "_suspend_auto_queue", None)
         if callable(suspend_queue):
             suspend_queue()
@@ -126,6 +133,7 @@ class _StartupMixin:
                 else None,
                 "game_plan": manager.export_for_reload() if manager else None,
                 "autopilot_paused": was_paused,
+                "concede": concede_record,
             }
             ENGINE_RESUME_PATH.parent.mkdir(parents=True, exist_ok=True)
             temporary = ENGINE_RESUME_PATH.with_suffix(f".{os.getpid()}.tmp")
@@ -149,6 +157,9 @@ class _StartupMixin:
             age = time.time() - data.get("saved_at", 0)
             if 0 <= age <= 120 and data.get("match_id"):
                 self._engine_resume = data
+                resume_concede = getattr(self, "_concede_resume_from", None)
+                if callable(resume_concede):
+                    resume_concede(data.get("concede"))
                 if data.get("autopilot_paused"):
                     # Do not resume inputs while restoring a previously paused engine.
                     self._autopilot_enabled = False

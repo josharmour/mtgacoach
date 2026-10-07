@@ -152,6 +152,10 @@ namespace MtgaCoachBridge
                     HandleCancelAction(cmd);
                     break;
 
+                case "concede":
+                    HandleConcede(cmd);
+                    break;
+
                 case "queue_bot_match":
                 case "queue_match":
                     HandleQueueBotMatch(cmd);
@@ -2373,6 +2377,85 @@ namespace MtgaCoachBridge
             {
                 cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "No pending interaction" });
             }
+        }
+
+        // Concede the current game the way Arena's own Concede button does:
+        // SettingsMenuHost.OnConcedeGameRequested -> MatchManager.GreInterface.ConcedeGame()
+        // (ConcedeReq, MatchScope.Game). Needs no pending request, so it works on the
+        // opponent's turn. Not BaseUserRequest.Concede(): that consumes the pending request
+        // and defaults to conceding the whole match. Mirrors MacBridgeAdapter._cmd_concede.
+        private void HandleConcede(PipeCommand cmd)
+        {
+            JObject Fail(string error) => new JObject { ["ok"] = false, ["error"] = error };
+
+            if (!string.Equals(cmd.Json.Value<string>("scope") ?? "game", "game", StringComparison.OrdinalIgnoreCase))
+            {
+                cmd.SetResponse(Fail("Only conceding the current game is supported"));
+                return;
+            }
+            // Python stops waiting after 5 s and reports "outcome unknown"; a
+            // concede that sat in Unity's queue longer than expires_in_ms must
+            // not land later, after the user was told to check Arena.
+            long expiresMs = cmd.Json.Value<long?>("expires_in_ms") ?? 4000;
+            if (cmd.AgeMs > expiresMs)
+            {
+                _log.LogWarning($"Concede expired: waited {cmd.AgeMs} ms for the main thread (limit {expiresMs} ms)");
+                cmd.SetResponse(Fail($"Concede expired before the main thread ran it ({cmd.AgeMs} ms)"));
+                return;
+            }
+            var gm = GetGameManager();
+            if (gm == null) { cmd.SetResponse(Fail("Not in a match (no GameManager)")); return; }
+            var mm = gm.MatchManager;
+            if (mm == null) { cmd.SetResponse(Fail("No MatchManager")); return; }
+            if (mm.MatchState != MatchState.GameInProgress)
+            {
+                cmd.SetResponse(Fail($"Match state is {mm.MatchState}, not GameInProgress"));
+                return;
+            }
+            var scene = MatchSceneManager.Instance;
+            if (scene == null || scene.Current != MatchSceneManager.SubScene.DuelScene)
+            {
+                cmd.SetResponse(Fail("Not in the duel scene"));
+                return;
+            }
+            var gs = gm.CurrentGameState;
+            if (gs == null || gs.Stage != GameStage.Play) { cmd.SetResponse(Fail("Game is not in Play")); return; }
+            var info = gs.GameInfo;
+            if (info == null || string.IsNullOrEmpty(info.MatchID)) { cmd.SetResponse(Fail("Match unknown")); return; }
+
+            var wantMatch = cmd.Json.Value<string>("expected_match_id");
+            if (!string.IsNullOrEmpty(wantMatch) && info.MatchID != wantMatch)
+            {
+                cmd.SetResponse(Fail("Stale concede: the match changed"));
+                return;
+            }
+            long wantGame = cmd.Json.Value<long?>("expected_game_number") ?? 0;
+            if (wantGame > 0 && info.GameNumber != (uint)wantGame)
+            {
+                cmd.SetResponse(Fail($"Stale concede: the game changed ({wantGame} -> {info.GameNumber})"));
+                return;
+            }
+            long wantTurn = cmd.Json.Value<long?>("expected_turn") ?? 0;
+            if (wantTurn > 0 && gs.GameWideTurn != (uint)wantTurn)
+            {
+                cmd.SetResponse(Fail($"Stale concede: the turn changed ({wantTurn} -> {gs.GameWideTurn})"));
+                return;
+            }
+            var gre = mm.GreInterface;
+            if (gre == null) { cmd.SetResponse(Fail("No GreInterface")); return; }
+
+            _log.LogWarning($"Conceding game {info.GameNumber} of {info.MatchID} on turn {gs.GameWideTurn} via GreInterface.ConcedeGame (requested by mtgacoach)");
+            gre.ConcedeGame();
+            lock (_interactionLock) { _lastKnownRequest = null; }
+            cmd.SetResponse(new JObject
+            {
+                ["ok"] = true,
+                ["submitted_type"] = "Concede",
+                ["scope"] = "Game",
+                ["match_id"] = info.MatchID,
+                ["game_number"] = info.GameNumber,
+                ["turn"] = gs.GameWideTurn
+            });
         }
 
         internal static JObject BuildPendingRequestPayload(BaseUserRequest request)

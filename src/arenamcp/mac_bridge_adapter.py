@@ -678,6 +678,110 @@ class MacBridgeAdapter:
         self._run(ops, timeout)
         return {"ok": True}
 
+    def _cmd_concede(self, command: dict, timeout: float | None) -> dict:
+        """Concede the current game the way Arena's own Concede button does.
+
+        SettingsMenuHost.OnConcedeGameRequested calls
+        ``MatchManager.GreInterface.ConcedeGame()``, which queues ConcedeReq
+        {Scope = Game}; MatchManager.Update sends it. It needs no pending
+        request, so it works on the opponent's turn. ``BaseUserRequest.Concede``
+        is not used: it consumes the pending request and defaults to conceding
+        the whole match. ``GameManager._gre`` is not used either: MatchManager
+        replaces its GreInterface on every new game.
+
+        One read-only batch, then one guarded batch that re-checks everything
+        in the same frame as the call: a game in progress in the duel scene,
+        stage Play, the same match/game/turn, and a live GreInterface. Never
+        retried; a main-thread timeout is reported as ``outcome_unknown``.
+        """
+        if str(command.get("scope") or "game").lower() != "game":
+            raise AdapterError("Only conceding the current game is supported")
+        ops = _Ops()
+        manager = ops.add("find", **{"class": "GameManager"}, depth=0, optional=True)
+        match = ops.get(manager, "MatchManager", optional=True)
+        match_state = ops.get(match, "MatchState", optional=True)
+        scene = ops.get(ops.get(manager, "MatchSceneManager", optional=True), "Current", optional=True)
+        game = ops.get(manager, "CurrentGameState", optional=True)
+        stage = ops.get(game, "Stage", optional=True)
+        turn = ops.get(game, "GameWideTurn", optional=True)
+        info = ops.get(game, "GameInfo", optional=True)
+        match_id = ops.get(info, "MatchID", optional=True)
+        game_number = ops.get(info, "GameNumber", optional=True)
+        gre = ops.get(match, "GreInterface", optional=True)
+        disposed = ops.get(gre, "_disposed", optional=True)
+        values = self._run(ops, timeout)
+
+        def value(reference: dict) -> Any:
+            index = reference["ref"]
+            return values[index] if index < len(values) else None
+
+        if not handle(value(manager)):
+            raise AdapterError("Not in a match (no GameManager)")
+        if not handle(value(match)):
+            raise AdapterError("No MatchManager")
+        if enum_name(value(match_state)) != "GameInProgress":
+            raise AdapterError(
+                f"Match state is {enum_name(value(match_state)) or 'unknown'}, not GameInProgress"
+            )
+        if enum_name(value(scene)) != "DuelScene":
+            raise AdapterError(f"Not in the duel scene ({enum_name(value(scene)) or 'unknown'})")
+        if enum_name(value(stage)) != "Play":
+            raise AdapterError(f"Game stage is {enum_name(value(stage)) or 'unknown'}, not Play")
+        if not handle(value(gre)) or value(disposed) is not False:
+            raise AdapterError("No live GreInterface")
+        live_match = value(match_id)
+        live_turn = num(value(turn), -1)
+        live_game = num(value(game_number), -1)
+        if not isinstance(live_match, str) or not live_match or live_turn <= 0 or live_game <= 0:
+            raise AdapterError("Match, game or turn unknown")
+        wanted_match = command.get("expected_match_id")
+        if wanted_match and str(wanted_match) != live_match:
+            raise AdapterError("Stale concede: the match changed")
+        for key, live, what in (
+            ("expected_game_number", live_game, "game"),
+            ("expected_turn", live_turn, "turn"),
+        ):
+            wanted = command.get(key)
+            if wanted not in (None, "", 0, -1) and num(wanted, -1) != live:
+                raise AdapterError(f"Stale concede: the {what} changed ({wanted} -> {live})")
+
+        ops = _Ops()
+        manager = ops.add("find", **{"class": "GameManager"}, depth=0)
+        match = ops.get(manager, "MatchManager")
+        ops.expect_member(match, "MatchState", "GameInProgress")
+        ops.expect_member(ops.get(manager, "MatchSceneManager"), "Current", "DuelScene")
+        game = ops.get(manager, "CurrentGameState")
+        ops.expect_member(game, "Stage", "Play")
+        ops.expect_member(game, "GameWideTurn", live_turn)
+        info = ops.get(game, "GameInfo")
+        ops.expect_member(info, "MatchID", live_match)
+        ops.expect_member(info, "GameNumber", live_game)
+        gre = ops.get(match, "GreInterface")
+        ops.expect_member(gre, "_disposed", False)
+        ops.call(gre, "ConcedeGame")
+        logger.warning(
+            "mac bridge: conceding game %s of %s on turn %s via GreInterface.ConcedeGame",
+            live_game,
+            live_match,
+            live_turn,
+        )
+        try:
+            self._run(ops, timeout)
+        except AdapterError as exc:
+            if "outcome unknown" in str(exc):
+                logger.warning("mac bridge: concede outcome unknown: %s", exc)
+                return {"ok": False, "outcome_unknown": True, "error": str(exc)}
+            raise
+        logger.warning("mac bridge: ConcedeGame called (game %s of %s)", live_game, live_match)
+        return {
+            "ok": True,
+            "submitted_type": "Concede",
+            "scope": "Game",
+            "match_id": live_match,
+            "game_number": live_game,
+            "turn": live_turn,
+        }
+
     def _cmd_go_to_event(self, command: dict, timeout: float | None) -> dict:
         event_name = str(command.get("event_name") or "")
         if not event_name:

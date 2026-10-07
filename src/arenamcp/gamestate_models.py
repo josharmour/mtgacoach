@@ -77,6 +77,12 @@ class GameObject:
     # Combat status
     is_attacking: bool = False
     is_blocking: bool = False
+    # What an attacker attacks (GameObjectInfo.attackInfo.targetId): a seat id
+    # for a player, an instance id for a planeswalker or battle.
+    attack_target_id: int | None = None
+    # GameObjectInfo.hasSummoningSickness: under its controller's control
+    # since before their most recent turn began? (haste still lets it attack)
+    summoning_sickness: bool = False
     # GRE object kind (Card, Token, Ability, Emblem, MDFC, etc.)
     object_kind: GameObjectKind = GameObjectKind.UNKNOWN
     # Counters on this object: {"counter_type": count}
@@ -130,6 +136,10 @@ class GameObject:
         }
         if self.counters:
             result["counters"] = self.counters
+        if self.is_attacking and self.attack_target_id is not None:
+            result["attack_target_id"] = self.attack_target_id
+        if self.summoning_sickness:
+            result["summoning_sickness"] = True
         if self.parent_instance_id is not None:
             result["parent_instance_id"] = self.parent_instance_id
         # Phase 1 turbo-charge fields — only include when set to keep payloads lean

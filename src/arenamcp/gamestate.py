@@ -175,6 +175,11 @@ class GameState(_GameStateAnnotationsMixin):
         # Untap prevention
         "_untap_prevention": set,
         "_in_untap_step": False,
+        # Persistent AnnotationType_Attachment records: annotation id ->
+        # (aura/equipment instance id, the object it is attached to). The log
+        # has no attachedToId on objects; this is how log mode learns that our
+        # Pacifism sits on their Serra Angel (bridge mode reads AttachedToId).
+        "_attachments": dict,
         # Decision tracking
         "pending_decision": None,
         "decision_seat_id": None,
@@ -434,6 +439,10 @@ class GameState(_GameStateAnnotationsMixin):
                 "last_combat_step_time": float(self._last_combat_step_time or 0.0),
                 "last_stack_update_time": float(self._last_stack_update_time or 0.0),
                 "untap_prevention": sorted(int(instance_id) for instance_id in self._untap_prevention),
+                "attachments": {
+                    str(annotation_id): [int(source), int(target)]
+                    for annotation_id, (source, target) in self._attachments.items()
+                },
                 "in_untap_step": bool(self._in_untap_step),
                 "pending_decision": self.pending_decision,
                 "decision_seat_id": self.decision_seat_id,
@@ -564,6 +573,8 @@ class GameState(_GameStateAnnotationsMixin):
                         entered_via_play_land=bool(obj_data.get("entered_via_play_land", False)),
                         is_attacking=bool(obj_data.get("is_attacking", False)),
                         is_blocking=bool(obj_data.get("is_blocking", False)),
+                        attack_target_id=_coerce_optional_int(obj_data.get("attack_target_id")),
+                        summoning_sickness=bool(obj_data.get("summoning_sickness", False)),
                         object_kind=_parse_object_kind(obj_data.get("object_kind")),
                         counters=(
                             {
@@ -661,6 +672,14 @@ class GameState(_GameStateAnnotationsMixin):
                     for instance_id in checkpoint.get("untap_prevention", [])
                     if _coerce_int(instance_id, 0)
                 }
+                self._attachments = {}
+                attachments = checkpoint.get("attachments") or {}
+                if isinstance(attachments, dict):
+                    for annotation_id, pair in attachments.items():
+                        if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                            source, target = _coerce_int(pair[0], 0), _coerce_int(pair[1], 0)
+                            if _coerce_int(annotation_id, 0) and source and target:
+                                self._attachments[_coerce_int(annotation_id, 0)] = (source, target)
                 self._in_untap_step = bool(checkpoint.get("in_untap_step", False))
 
                 self.pending_decision = checkpoint.get("pending_decision")
@@ -1211,7 +1230,7 @@ class GameState(_GameStateAnnotationsMixin):
             "turn_info": self.turn_info.to_dict(),
             "players": players_list,
             "zones": {
-                "battlefield": [obj.to_dict() for obj in self.battlefield],
+                "battlefield": self._battlefield_dicts_locked(),
                 "my_hand": [obj.to_dict() for obj in self.hand] if self.local_seat_id else [],
                 # Zone membership, not materialized objects: the opponent's
                 # private hand cards never arrive as GameObjects, so counting
@@ -1250,7 +1269,9 @@ class GameState(_GameStateAnnotationsMixin):
             "timer_state": dict(self.timer_state) if self.timer_state else {},
             "game_engine_busy": self.engine_busy_until > time.time(),
             "engine_busy": copy.deepcopy(self.engine_busy_flags) if self.engine_busy_flags else {},
-            "action_history": list(self.action_history[-20:]) if self.action_history else [],
+            # Everything kept (50): mana activations crowd the window, and the
+            # concede check must see every spell we cast this turn.
+            "action_history": list(self.action_history) if self.action_history else [],
             "sideboard_cards": list(self.sideboard_cards) if self.sideboard_cards else [],
             "commander_grp_ids": list(self.commander_grp_ids),
             "commander_casts": dict(self.commander_casts),
@@ -1559,6 +1580,7 @@ class GameState(_GameStateAnnotationsMixin):
             if annotations:
                 self._process_annotations(annotations)
             persistent_annotations = _ensure_list(message.get("persistentAnnotations", []))
+            self._track_attachments(message, persistent_annotations)
             if persistent_annotations:
                 self._process_annotations(persistent_annotations)
 
@@ -1571,6 +1593,45 @@ class GameState(_GameStateAnnotationsMixin):
                 self._cleanup_stale_objects()
 
             self._published_snapshot = self._build_raw_snapshot_locked()
+
+    def _track_attachments(self, message: dict, persistent_annotations: list) -> None:
+        """Follow AnnotationType_Attachment (aura/equipment -> what it is attached to).
+
+        Persistent annotations arrive once and stay until a later diff lists
+        their id in ``diffDeletedPersistentAnnotationIds``; a full game state
+        message carries the complete set.
+        """
+        if str(message.get("type") or "") == "GameStateType_Full":
+            self._attachments.clear()
+        for annotation_id in _ensure_list(message.get("diffDeletedPersistentAnnotationIds", [])):
+            self._attachments.pop(_coerce_int(annotation_id, 0), None)
+        for annotation in _ensure_dict_list(persistent_annotations):
+            types = [str(t) for t in _ensure_list(annotation.get("type", [])) if t is not None]
+            if "AnnotationType_Attachment" not in types:
+                continue
+            annotation_id = _coerce_int(annotation.get("id"), 0)
+            source = _coerce_int(annotation.get("affectorId"), 0)
+            targets = _ensure_int_list(annotation.get("affectedIds", []))
+            if annotation_id and source and targets:
+                self._attachments[annotation_id] = (source, targets[0])
+
+    def _battlefield_dicts_locked(self) -> list[dict]:
+        """Battlefield objects; an attached aura/equipment also carries ``attached_to_id``."""
+        objects = self.battlefield
+        on_battlefield = {obj.instance_id for obj in objects}
+        attached_to = {
+            source: target
+            for source, target in self._attachments.values()
+            if source in on_battlefield and target in on_battlefield
+        }
+        result = []
+        for obj in objects:
+            data = obj.to_dict()
+            target = attached_to.get(obj.instance_id)
+            if target is not None:
+                data["attached_to_id"] = target
+            result.append(data)
+        return result
 
     def _untaps_this_step(self, controller_seat_id: int | None, zone_id: int) -> bool:
         """True iff a permanent with this controller and zone untaps in this untap step.
@@ -1621,6 +1682,8 @@ class GameState(_GameStateAnnotationsMixin):
             entered_via_play_land = existing_obj.entered_via_play_land
             is_attacking = existing_obj.is_attacking
             is_blocking = existing_obj.is_blocking
+            attack_target_id = existing_obj.attack_target_id
+            summoning_sickness = existing_obj.summoning_sickness
             object_kind = existing_obj.object_kind
             counters = existing_obj.counters.copy()
             keywords = list(existing_obj.keywords)
@@ -1640,6 +1703,8 @@ class GameState(_GameStateAnnotationsMixin):
             entered_via_play_land = False
             is_attacking = False
             is_blocking = False
+            attack_target_id = None
+            summoning_sickness = False
             object_kind = GameObjectKind.UNKNOWN
             counters = {}
             keywords = []
@@ -1711,6 +1776,18 @@ class GameState(_GameStateAnnotationsMixin):
             is_attacking = _parse_attack_state(obj_data["attackState"])
         if "blockState" in obj_data:
             is_blocking = _parse_block_state(obj_data["blockState"])
+        # A full GameObjectInfo ("type" is always present) omits default
+        # values, so a missing attackInfo / hasSummoningSickness means none.
+        full_info = "type" in obj_data
+        if "attackInfo" in obj_data:
+            attack_info = obj_data["attackInfo"] if isinstance(obj_data["attackInfo"], dict) else {}
+            attack_target_id = _coerce_optional_int(attack_info.get("targetId"))
+        elif full_info:
+            attack_target_id = None
+        if "hasSummoningSickness" in obj_data:
+            summoning_sickness = bool(obj_data["hasSummoningSickness"])
+        elif full_info:
+            summoning_sickness = False
 
         if "cardTypes" in obj_data:
             card_types = _coerce_str_list(obj_data["cardTypes"])
@@ -1770,6 +1847,8 @@ class GameState(_GameStateAnnotationsMixin):
             entered_via_play_land=entered_via_play_land,
             is_attacking=is_attacking,
             is_blocking=is_blocking,
+            attack_target_id=attack_target_id,
+            summoning_sickness=summoning_sickness,
             object_kind=object_kind,
             counters=counters,
             keywords=keywords,
@@ -2363,6 +2442,9 @@ class GameState(_GameStateAnnotationsMixin):
             kept_tapped: list[str] = []
             for obj in self.game_objects.values():
                 controller = obj.controller_seat_id if obj.controller_seat_id else obj.owner_seat_id
+                if controller == new_active:
+                    # Summoning sickness ends as its controller's turn begins.
+                    obj.summoning_sickness = False
                 if controller == new_active and obj.is_tapped:
                     zone = self.zones.get(obj.zone_id)
                     if zone and zone.zone_type == ZoneType.BATTLEFIELD:

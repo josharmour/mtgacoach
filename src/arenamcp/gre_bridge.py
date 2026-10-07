@@ -34,6 +34,23 @@ PIPE_NAME = r"\\.\pipe\mtgacoach_bridge_v2"
 PIPE_TIMEOUT_MS = 3000
 COMMAND_TIMEOUT = 5.0
 UNMAPPED_INTERACTION_TYPE = "unmapped_interaction"
+# First BepInEx plugin version with the "concede" command (PluginInfo.Version).
+CONCEDE_PLUGIN_VERSION = "0.6.4"
+# A queued concede older than this is refused on MTGA's main thread.
+CONCEDE_EXPIRES_MS = 4000
+
+
+def _version_tuple(version: str | None) -> tuple[int, ...]:
+    """'0.6.4' -> (0, 6, 4); unknown or malformed -> ()."""
+    parts = []
+    for part in str(version or "").strip().lstrip("v").split("."):
+        digits = "".join(ch for ch in part if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
 _GENERIC_SELECTION_TYPES = {"group_selection", "selection_generic", "select_n"}
 _GENERIC_SELECTION_LABELS = {"Group Selection", "Order Cards", "Select Cards"}
 
@@ -155,6 +172,10 @@ class GREBridge:
         # Runtime the connected client reported ("il2cpp-android", "il2cpp-macos",
         # "bepinex"), for the UI; None when disconnected.
         self.client_runtime: str | None = None
+        # Version the connected plugin reported on ping ("0.6.4"); None when disconnected.
+        self.plugin_version: str | None = None
+        # The connected client answered "Unknown action: concede"; reset on connect.
+        self._concede_unsupported = False
         # No-plugin diagnostics: when the server listens but nothing ever
         # connects, the plugin isn't running (most often BepInEx isn't
         # injected). Warn once with an actionable hint instead of staying
@@ -216,6 +237,8 @@ class GREBridge:
                 if resp.get("ok"):
                     logger.info(f"GRE bridge connected (plugin v{resp.get('version', '?')})")
                     self._mac_adapter = None
+                    self.plugin_version = str(resp.get("version") or "") or None
+                    self._concede_unsupported = False
                     runtime = resp.get("runtime")
                     from arenamcp.android_link import ANDROID_RUNTIME, game_device
 
@@ -271,6 +294,7 @@ class GREBridge:
         """
         self._connected = False
         self.client_runtime = None
+        self.plugin_version = None
         try:
             if self._pipe_file:
                 self._pipe_file.close()
@@ -1374,6 +1398,67 @@ class GREBridge:
         except GREBridgeError as e:
             logger.warning(f"GRE bridge cancel_action error: {e}")
         return False
+
+    @property
+    def concede_supported(self) -> bool:
+        """The connected client can concede: the native library's adapter, or a
+        BepInEx plugin at CONCEDE_PLUGIN_VERSION or later (the bundled 0.6.3
+        DLL has no concede command)."""
+        if not self._connected or self._concede_unsupported:
+            return False
+        if self._mac_adapter is not None:
+            return True
+        return _version_tuple(self.plugin_version) >= _version_tuple(CONCEDE_PLUGIN_VERSION)
+
+    def concede(
+        self,
+        *,
+        expected_match_id: str | None = None,
+        expected_turn: int | None = None,
+        expected_game_number: int | None = None,
+    ) -> dict[str, Any]:
+        """Concede the current game the way Arena's own Concede button does.
+
+        The client runs ``MatchManager.GreInterface.ConcedeGame()`` (a
+        ConcedeReq with game scope), which needs no pending request. The
+        plugin refuses unless a game is in play, and unless it is still the
+        expected match/game/turn when given.
+
+        Sent exactly once: unlike ``_send_safe`` there is no reconnect-and-
+        resend, which could queue a second ConcedeReq. Returns the plugin's
+        response; ``outcome_unknown`` is set when the pipe failed after the
+        command may have been sent, and ``unsupported`` when the plugin is too
+        old to know the command.
+        """
+        if not self._connected and not self.connect():
+            return {"ok": False, "error": "GRE bridge not connected"}
+        # The plugin refuses a concede that waited longer than this for MTGA's
+        # main thread: below this method's 5 s read timeout, so a late one can
+        # never land after we reported "outcome unknown".
+        cmd: dict[str, Any] = {"action": "concede", "scope": "game", "expires_in_ms": CONCEDE_EXPIRES_MS}
+        if expected_match_id:
+            cmd["expected_match_id"] = str(expected_match_id)
+        if expected_turn:
+            cmd["expected_turn"] = int(expected_turn)
+        if expected_game_number:
+            cmd["expected_game_number"] = int(expected_game_number)
+        logger.warning(f"GRE bridge: sending concede {cmd}")
+        try:
+            resp = self._send_command(cmd, timeout=5.0)
+        except GREBridgeError as e:
+            logger.warning(f"GRE bridge concede error (outcome unknown, not retrying): {e}")
+            return {"ok": False, "outcome_unknown": True, "error": str(e)}
+        finally:
+            self.invalidate_game_state_cache()
+        if resp.get("ok"):
+            logger.warning(f"GRE bridge conceded the game: {resp}")
+            return resp
+        error = str(resp.get("error") or "")
+        if "Unknown action" in error:
+            self._concede_unsupported = True
+            resp = {**resp, "unsupported": True}
+        logger.warning(f"GRE bridge concede refused: {error or resp}")
+        return resp
 
     # -------------------------------------------------------------------
     # Phase 2: new game state commands

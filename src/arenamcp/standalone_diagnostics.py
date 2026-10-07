@@ -515,6 +515,12 @@ class _DiagnosticsMixin:
                 info["engine"] = ap.get_debug_info()
             except Exception as e:
                 info["engine_error"] = str(e)
+        concede_snapshot = getattr(self, "_concede_snapshot", None)
+        if callable(concede_snapshot):
+            try:
+                info["concede"] = concede_snapshot()
+            except Exception as e:
+                info["concede_error"] = str(e)
         return info
 
     def _collect_bridge_state(self) -> dict:
