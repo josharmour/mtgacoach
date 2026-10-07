@@ -54,6 +54,18 @@ from arenamcp.target_effects import source_effect_text, target_effect_is_harmful
 logger = logging.getLogger(__name__)
 
 
+def _canonical_turn(turn: Any) -> tuple[str, str]:
+    """``(phase, step)`` of a snapshot's turn dict in log form ("Step_DeclareBlock").
+
+    Log-derived snapshots say "Phase_Combat"/"Step_DeclareBlock"; the bridge's
+    turn overlay (Windows plugin and native Mac alike) says "Combat"/
+    "DeclareBlock" and step "None". Compare phases and steps only in this form.
+    """
+    from arenamcp.board_model import canonical_phase_step
+
+    return canonical_phase_step(turn if isinstance(turn, dict) else None)
+
+
 class AutopilotEngine(
     _BridgeSubmitMixin,
     _ActionExecMixin,
@@ -3044,10 +3056,17 @@ class AutopilotEngine(
             # a combat step that needs creature selection, handle it directly:
             # click Done (submit with current selection — "no blocks" or
             # "no attacks" if nothing was selected by the planner).
-            step = turn.get("step", "")
+            # Steps compare in log form: the bridge's turn overlay says
+            # "DeclareBlock", so an exact "Step_DeclareBlock" match never
+            # fired while the bridge supplied the turn (Mac and Windows).
+            _, step = _canonical_turn(turn)
             if step in ("Step_DeclareBlock", "Step_DeclareAttack"):
                 decision_ctx = game_state.get("decision_context") or {}
                 dec_type = decision_ctx.get("type", "")
+                bridge_request = str(
+                    game_state.get("_bridge_request_class") or game_state.get("_bridge_request_type") or ""
+                )
+                wanted_request = "DeclareAttacker" if trigger == "combat_attackers" else "DeclareBlocker"
                 if dec_type in ("declare_blockers", "declare_attackers"):
                     # Stash this combat context so we can recover it if the
                     # planning call times out and a follow-up trigger fires
@@ -3059,6 +3078,20 @@ class AutopilotEngine(
                     # Instead fall through to the planning section which will call
                     # the LLM.  We'll fix the fallback below.
                     pass
+                elif (
+                    trigger in ("combat_blockers", "combat_attackers")
+                    and bridge_request
+                    and wanted_request not in bridge_request
+                ):
+                    # The bridge has another request pending (a cost, a
+                    # replacement, ...). Neither a stashed declaration nor an
+                    # empty one answers it; plan the request that is there.
+                    logger.info(
+                        "Autopilot: %s at %s but the bridge has %s pending — planning that instead",
+                        trigger,
+                        step,
+                        bridge_request,
+                    )
                 elif trigger in ("combat_blockers", "combat_attackers"):
                     # We got a combat trigger but no decision_context — check
                     # if we have a stashed context from a recent trigger.
@@ -3109,6 +3142,9 @@ class AutopilotEngine(
             pre_plan_turn = game_state.get("turn", {})
             pre_turn_num = pre_plan_turn.get("turn_number", 0)
             pre_phase = pre_plan_turn.get("phase", "")
+            # Compared in log form: the fresh state can come from the other
+            # source ("Main1" from the bridge vs "Phase_Main1" from the log).
+            pre_phase_canonical = _canonical_turn(pre_plan_turn)[0]
             pre_active = pre_plan_turn.get("active_player", 0)
             # R1: bridge window identity beats the log-lagged turn counter
             # for staleness decisions (None when the bridge is offline).
@@ -3204,8 +3240,8 @@ class AutopilotEngine(
                         )
 
                 # After 4 failures: use the deterministic board-math fallback
-                # (autopilot_modes._deterministic_fallback raised TypeError on
-                # its ActionPlan(raw_response=...) and never produced a plan).
+                # (the removed autopilot_modes._deterministic_fallback raised
+                # TypeError on every call and never produced a plan).
                 if self._consecutive_plan_failures >= 4 and not self._is_critical_decision_state(game_state):
                     logger.warning("Autopilot: 4+ consecutive failures, using deterministic fallback")
                     plan = board_math_legacy_plan(
@@ -3306,7 +3342,7 @@ class AutopilotEngine(
                             f"STALE: active player changed {pre_active} → {fresh_turn.get('active_player')}"
                         )
                         stale = True
-                    elif fresh_turn.get("phase", "") != pre_phase:
+                    elif _canonical_turn(fresh_turn)[0] != pre_phase_canonical:
                         is_sorcery_play = any(
                             a.action_type in (ActionType.PLAY_LAND, ActionType.CAST_SPELL)
                             for a in plan.actions
@@ -4582,9 +4618,10 @@ class AutopilotEngine(
                 pre_turn = pre_state.get("turn", {})
                 post_turn = post_state.get("turn", {})
 
+                # Phase/step in log form: one snapshot may carry the bridge's
+                # names and the other the log's.
                 if (
-                    post_turn.get("phase") != pre_turn.get("phase")
-                    or post_turn.get("step") != pre_turn.get("step")
+                    _canonical_turn(post_turn) != _canonical_turn(pre_turn)
                     or post_turn.get("priority_player") != pre_turn.get("priority_player")
                     or post_turn.get("turn_number") != pre_turn.get("turn_number")
                 ):

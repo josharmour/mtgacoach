@@ -1,4 +1,4 @@
-"""Autopilot modes (AFK, Land-Drop-Only, Deterministic Fallback) mixin.
+"""Autopilot modes (AFK, Land-Drop-Only) mixin.
 
 Extracted from autopilot.py: methods are unchanged and mixed back into AutopilotEngine.
 """
@@ -9,13 +9,13 @@ import logging
 import time
 from typing import Any
 
-from arenamcp.action_planner import ActionPlan, ActionType, GameAction
+from arenamcp.action_planner import ActionType, GameAction
 
 logger = logging.getLogger(__name__)
 
 
 class _AutopilotModesMixin:
-    """AFK mode, land-drop mode, deterministic fallback, and optional cost handling."""
+    """AFK mode, land-drop mode, and optional cost handling."""
 
     _OPTIONAL_COST_OWN_ACTION_WINDOW_S = 10.0
 
@@ -86,76 +86,6 @@ class _AutopilotModesMixin:
         except (TypeError, ValueError):
             source_id = 0
         return ward_trigger_source(game_state, source_id)
-
-    def _deterministic_fallback(
-        self,
-        game_state: dict[str, Any],
-        trigger: str,
-    ) -> ActionPlan:
-        """Generate a deterministic fallback plan when LLM is unavailable."""
-        legal_actions = self._get_legal_actions(game_state)
-        legal_actions = self._filter_rolled_back_casts(legal_actions, game_state)
-        plan = ActionPlan(
-            trigger=trigger,
-            turn_number=game_state.get("turn", {}).get("turn_number", 0),
-            raw_response="deterministic fallback",
-        )
-
-        turn = game_state.get("turn", {})
-        is_my_turn = turn.get("active_player") == "local" or turn.get("decision_player") == "local"
-        phase = turn.get("phase", "").lower()
-        step = turn.get("step", "").lower()
-
-        can_play_land = "main" in phase or "precombat" in step or "postcombat" in step
-        if is_my_turn and can_play_land:
-            land_actions = [a for a in legal_actions if a.startswith("Play ") or a.startswith("Cast ")]
-            lands_in_hand = [
-                c
-                for c in game_state.get("hand", [])
-                if "Land" in c.get("card_types", []) or "Land" in c.get("type_line", "")
-            ]
-            if lands_in_hand and land_actions:
-                for la in land_actions:
-                    action = self._planner._legal_action_to_action(la)
-                    if action:
-                        action.reasoning = "deterministic fallback: play land"
-                        plan.actions = [action]
-                        plan.overall_strategy = f"Fallback: {la}"
-                        logger.info(f"Deterministic fallback: {la}")
-                        return plan
-
-        if legal_actions:
-            priority_order = [
-                lambda a: a.startswith("Play "),
-                lambda a: a.startswith("Cast ") and "Creature" in a,
-                lambda a: a.startswith("Cast "),
-                lambda a: a.startswith("Activate "),
-            ]
-            selected = None
-            for pred in priority_order:
-                matching = [a for a in legal_actions if pred(a)]
-                if matching:
-                    selected = matching[0]
-                    break
-
-            if selected:
-                action = self._planner._legal_action_to_action(selected)
-                if action:
-                    action.reasoning = "deterministic fallback"
-                    plan.actions = [action]
-                    plan.overall_strategy = f"Fallback: {selected}"
-                    logger.info(f"Deterministic fallback: {selected}")
-                    return plan
-
-        plan.actions = [
-            GameAction(
-                action_type=ActionType.PASS_PRIORITY,
-                reasoning="deterministic fallback: last resort pass",
-            )
-        ]
-        plan.overall_strategy = "Fallback: pass priority (last resort)"
-        logger.info("Deterministic fallback: pass priority")
-        return plan
 
     def _handle_afk(self, game_state: dict[str, Any], trigger: str) -> bool:
         """Handle a trigger in AFK mode — auto-pass without LLM."""
