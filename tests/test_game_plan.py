@@ -129,15 +129,27 @@ def test_plans_our_next_turn_during_the_opponents_turn_once():
     assert be.calls == 2
 
 
-def test_material_change_triggers_reform():
+def test_board_churn_on_our_turn_needs_a_role_or_lethal_flip_to_reform(monkeypatch):
+    """2026-10-06: 139 plan calls in 1.8 h, because card identities, creature
+    counts and life changed after nearly every action. Mid-turn, only a flip
+    in the board-math role or lethal flags re-forms the plan."""
     be = FakeBackend([_plan_json(), _plan_json("plan B")])
     mgr = GamePlanManager(be)
+    facts = {"now": ("aggressor", False, False, False)}
+    monkeypatch.setattr(mgr, "_strategic_key", lambda state, sig=None: (facts["now"], (), ()))
     mgr.maybe_reform(_state(turn=1, my_creatures=0))
     assert be.calls == 1
-    # New turn AND a creature entered -> material change -> reform.
-    mgr.maybe_reform(_state(turn=2, my_creatures=2, my_power=4))
+    # Creatures entered and life moved, but the role and lethal flags held.
+    mgr.maybe_reform(_state(turn=1, my_creatures=2, my_power=4, opp_life=15))
+    assert be.calls == 1
+    # The board math now says the opponent has lethal on board: re-form.
+    facts["now"] = ("defender", False, True, True)
+    mgr.maybe_reform(_state(turn=1, my_creatures=2, my_power=4))
     assert be.calls == 2
     assert mgr.current.path == "plan B"
+    # ...once: the new facts are the baseline for the next comparison.
+    mgr.maybe_reform(_state(turn=1, my_creatures=3, my_power=5))
+    assert be.calls == 2
 
 
 def test_new_game_resets_plan():
@@ -195,20 +207,24 @@ def test_llm_failure_keeps_prior_plan():
     assert mgr.current is None
 
 
-def test_replacement_threat_and_tutored_card_reform_same_turn():
-    be = FakeBackend([_plan_json(), _plan_json("answer the new engine"), _plan_json("cast tutored answer")])
+def test_card_identity_churn_alone_does_not_reform_but_the_next_opponent_turn_does():
+    be = FakeBackend([_plan_json(), _plan_json("answer the new engine")])
     mgr = GamePlanManager(be)
     state = _state(turn=4)
     state["battlefield"] = [{"instance_id": 1, "name": "Old Engine", "type_line": "Enchantment"}]
     state["hand"] = [{"instance_id": 2, "name": "Tutor"}]
     mgr.maybe_reform(state)
     state["battlefield"] = [{"instance_id": 3, "name": "New Engine", "type_line": "Enchantment"}]
-    mgr.maybe_reform(state)
-    assert mgr.current.path == "answer the new engine"
     state["hand"] = [{"instance_id": 4, "name": "Tutored Answer"}]
+    state["graveyard"] = [{"instance_id": 2, "name": "Tutor"}]
     mgr.maybe_reform(state)
-    assert be.calls == 3
-    assert mgr.current.path == "cast tutored answer"
+    assert be.calls == 1
+    # The opponent's turn plans our next one with the new engine in view.
+    opponent_turn = dict(state, turn={"turn_number": 5, "active_player": 2, "phase": "Main1"})
+    mgr.maybe_reform(opponent_turn)
+    assert be.calls == 2
+    assert mgr.current.path == "answer the new engine"
+    assert "New Engine" in be.requests[1][1]
 
 
 def test_paying_mana_and_priority_churn_do_not_reform():
@@ -232,7 +248,9 @@ def test_seed_and_prior_plan_are_available_for_adaptation():
     mgr.maybe_reform(state)
     assert be.requests[0][1].startswith(state["deck_reference"])
     assert "Commander copies produce mana" in be.requests[0][1]
-    mgr.maybe_reform(_state(turn=3, opp_creatures=1))
+    opponent_turn = _state(turn=3, opp_creatures=1)
+    opponent_turn["turn"]["active_player"] = 2
+    mgr.maybe_reform(opponent_turn)
     assert "develop commander engine" in be.requests[1][1]
     assert "Removal and tutoring are conditional" in be.requests[1][0]
     assert "Holding mana or passing is correct" in mgr.plan_text()
@@ -251,6 +269,11 @@ def test_new_match_id_clears_plan_even_when_turn_number_is_unchanged():
 
 @pytest.fixture
 def refresh_threads(monkeypatch):
+    from arenamcp.game_plan import STRATEGIC_LANE
+
+    # One background strategy job at a time, process-wide: wait out a plan
+    # refresh another test's get_advice() may have left running.
+    assert STRATEGIC_LANE.wait_idle(5)
     real_thread = threading.Thread
     started = []
 
@@ -325,7 +348,8 @@ def test_background_refresh_cooldown_applies_to_success_and_failure(monkeypatch,
     state = _state(turn=3)
     assert mgr.request_reform(state)
     refresh_threads[-1].join(timeout=2)
-    state["hand"] = [{"name": "New Card"}]
+    state = _state(turn=4)
+    state["turn"]["active_player"] = 2
     assert not mgr.request_reform(state)
     assert be.calls == 1
     now[0] += mgr._REFRESH_INTERVAL_S
@@ -350,7 +374,9 @@ def test_background_refresh_waits_for_deck_analysis(refresh_threads):
 
 def test_background_snapshot_does_not_reset_a_newer_turn():
     mgr = GamePlanManager(FakeBackend([_plan_json()]))
+    # Formed during the opponent's turn 3 for our turn 4, arriving on turn 4.
     old_snapshot = dict(_state(turn=3), match_id="same-game")
+    old_snapshot["turn"] = dict(old_snapshot["turn"], active_player=2)
     mgr.observe(old_snapshot)
     generation = mgr._generation
     mgr.observe(dict(_state(turn=4), match_id="same-game"))
@@ -367,3 +393,97 @@ def test_backend_error_text_is_logged_not_silently_dropped(caplog):
     with caplog.at_level("WARNING", logger="arenamcp.game_plan"):
         assert mgr.maybe_reform(_state(turn=1)) is None or mgr.current is None or mgr.current.is_empty()
     assert "game-plan LLM call failed" in caplog.text
+
+
+# ----- cadence across turn sides (2026-10-07 review) ------------------------
+
+
+def _fixture_board(name):
+    import copy
+    from pathlib import Path
+
+    raw = json.loads((Path(__file__).parent / "fixtures" / name).read_text())
+    state = raw.get("game_state", raw) if "turn" not in raw else raw
+    return copy.deepcopy(state)
+
+
+@pytest.mark.parametrize(
+    "fixture", ["bug_20261006_174855_game_state.json", "bug_20261006_185403_game_state.json"]
+)
+def test_an_unchanged_board_reforms_once_per_opponent_turn_whatever_the_phase(monkeypatch, fixture):
+    """The strategic key used to read the board math on the raw snapshot, so
+    turn side and phase flipped the role/lethal flags: a reform at the start
+    of each own turn or at the End step (6-8 calls over 6 unchanged turns)."""
+    import copy
+
+    board = _fixture_board(fixture)
+    local, opp = board["local_seat_id"], board["opponent_seat_id"]
+    first = int(board["turn"]["turn_number"])
+    calls = []
+
+    def fake_reform(self, game_state, turn_num, cancel=None):
+        side = "me" if game_state["turn"]["active_player"] == local else "op"
+        calls.append(f"T{turn_num}{side}")
+        return GamePlan(win_conditions=["x"], path="p", turn_formed=turn_num)
+
+    monkeypatch.setattr(GamePlanManager, "_reform", fake_reform)
+    mgr = GamePlanManager(FakeBackend([]))
+    for k in range(6):
+        turn, active = first - 2 + k, (local if k % 2 == 0 else opp)
+        for phase in ("Phase_Main1", "Phase_Combat", "Phase_Main2", "Phase_Ending"):
+            state = copy.deepcopy(board)
+            state["turn"] = dict(
+                board["turn"], turn_number=turn, active_player=active, priority_player=active
+            )
+            state["turn"].update(phase=phase, step="")
+            state.update(stack=[], pending_decision=None, match_id="m1")
+            state.pop("decision_context", None)
+            mgr.maybe_reform(state)
+    t0 = first - 2
+    assert calls == [f"T{t0}me", f"T{t0 + 1}op", f"T{t0 + 3}op", f"T{t0 + 5}op"]
+
+
+def test_a_race_defender_toggle_alone_does_not_reform(monkeypatch):
+    be = FakeBackend([_plan_json(), _plan_json("plan B")])
+    mgr = GamePlanManager(be)
+    facts = {"now": ("race", False, False, False)}
+    monkeypatch.setattr(mgr, "_strategic_key", lambda state, sig=None: (facts["now"], (), (), frozenset()))
+    mgr.maybe_reform(_state(turn=1))
+    for role in ("defender", "race", "defender"):
+        facts["now"] = (role, False, False, False)
+        mgr.maybe_reform(_state(turn=1))
+    assert be.calls == 1
+    facts["now"] = ("aggressor", False, False, False)
+    mgr.maybe_reform(_state(turn=1))
+    assert be.calls == 2
+
+
+def test_a_new_opposing_engine_reforms_the_same_turn():
+    be = FakeBackend([_plan_json(), _plan_json("answer the new engine")])
+    mgr = GamePlanManager(be)
+    state = _state(turn=4)
+    state["battlefield"] = [
+        {"instance_id": 1, "name": "Old Engine", "type_line": "Enchantment", "controller_seat_id": 2}
+    ]
+    mgr.maybe_reform(state)
+    # Tokens, creatures, lands and our own permanents are churn, not engines.
+    state["battlefield"] = state["battlefield"] + [
+        {"instance_id": 5, "name": "Treasure", "type_line": "Token Artifact", "controller_seat_id": 2,
+         "object_kind": "GameObjectType_Token"},
+        {"instance_id": 6, "name": "Bear", "type_line": "Creature - Bear", "controller_seat_id": 2},
+        {"instance_id": 7, "name": "Island", "type_line": "Basic Land - Island", "controller_seat_id": 2},
+        {"instance_id": 8, "name": "Our Relic", "type_line": "Artifact", "controller_seat_id": 1},
+    ]  # fmt: skip
+    mgr.maybe_reform(state)
+    assert be.calls == 1
+    state["battlefield"] = state["battlefield"] + [
+        {"instance_id": 3, "name": "New Engine", "type_line": "Enchantment", "controller_seat_id": 2}
+    ]
+    mgr.maybe_reform(state)
+    assert be.calls == 2
+    assert mgr.current.path == "answer the new engine"
+    assert "New Engine" in be.requests[1][1]
+    # Removing an engine is not a reason by itself.
+    state["battlefield"] = [card for card in state["battlefield"] if card["instance_id"] != 1]
+    mgr.maybe_reform(state)
+    assert be.calls == 2

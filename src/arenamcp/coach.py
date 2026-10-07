@@ -5,6 +5,7 @@ with support for online (mtgacoach.com) and local (Ollama/LM Studio) modes.
 """
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ from arenamcp.backend_health import (
     BACKEND_ERROR_PREFIX,
     LOCAL_FALLBACK_PREFIX,
     is_backend_error_text,
+    is_local_fallback_text,
 )
 from arenamcp.backends import LLMBackend, ProxyBackend
 from arenamcp.card_db import is_unknown_card_name
@@ -60,6 +62,15 @@ from arenamcp.coach_structured import (
 from arenamcp.coach_tracker import WordUsageTracker
 from arenamcp.coach_triggers import GameStateTrigger
 from arenamcp.combat_keywords import annotate_cant_be_blocked, can_be_blocked_by, printed_combat_keywords
+from arenamcp.game_plan import (
+    BACKGROUND_PRIORITY,
+    STRATEGIC_LANE,
+    accepted_call_kwargs,
+    background_llm_allowed,
+    is_skipped_call_text,
+    is_unavailable_text,
+    llm_available,
+)
 from arenamcp.mana import (
     get_local_seat_id,
     has_autotap_solution,
@@ -68,6 +79,53 @@ from arenamcp.mana import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Second pass of the deck playbook: audit the discovery notes, then compile.
+# Part of the playbook cache fingerprint, like the two prompts.
+_PLAYBOOK_AUDIT_INSTRUCTIONS = (
+    "\n\nAUDIT THE PROPOSED PLAYBOOK NOTES BELOW AGAINST THESE RULES, then "
+    "compile a complete playbook using the required JSON shape. Correct unsupported "
+    "claims instead of copying them for consistency. A spent ETB is not a continuing "
+    "benefit of preserving its source. Recompute both resource comparisons from "
+    "the same starting state, retaining every unaffected survivor. Verify costs, "
+    "cast versus entry triggers, token restrictions and mana restrictions. Express "
+    "affordability from surviving sources and actual tax; reject arbitrary cast-count "
+    "cutoffs. Every conditional exception needs a supported mechanism and exceptions."
+    "\nANALYSIS NOTES:\n"
+)
+
+# Spoken summaries that are placeholders, not a summary (18:48:59 on
+# 2026-10-06 spoke "(Summary omitted in final field placement)").
+_PLACEHOLDER_SUMMARY_RE = re.compile(
+    r"^\W*$|^\(.*\)$|\b(omitted|placeholder|see above|to be (?:written|added)|n/?a|tbd|lorem ipsum)\b",
+    re.IGNORECASE,
+)
+
+
+# Model settings for the two deck-playbook passes. Discovery is where the
+# strategic reasoning happens, so it keeps full thinking at the template
+# default (no effort cap); compiling the audited JSON runs at low effort.
+# Part of the cache fingerprint: changing either rebuilds cached playbooks.
+_PLAYBOOK_PASS_SETTINGS = {
+    "discovery": {"enable_thinking": True},
+    "compile": {"enable_thinking": False, "reasoning_effort": "low"},
+}
+
+
+def _playbook_prompt_fingerprint() -> str:
+    """Changes whenever the prompts, schema or per-pass model settings that built a cached playbook change."""
+    from arenamcp.deck_strategy import DECK_DISCOVERY_PROMPT, PLAYBOOK_VERSION
+
+    text = "\0".join(
+        (
+            str(PLAYBOOK_VERSION),
+            DECK_DISCOVERY_PROMPT,
+            DECK_ANALYSIS_PROMPT,
+            _PLAYBOOK_AUDIT_INSTRUCTIONS,
+            json.dumps(_PLAYBOOK_PASS_SETTINGS, sort_keys=True),
+        )
+    )
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 __all__ = [
@@ -98,6 +156,14 @@ __all__ = [
 class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
     """Engine for getting MTG coaching advice from an LLM backend."""
 
+    # Advice blocks the coaching loop: fail a call with no first token after
+    # this long. 12 s, not the autopilot's 8 s: advice has no deterministic
+    # move to fall back on, and 51 of 3638 successful calls (10-03..10-06,
+    # p99 8.96 s) had their first token after 8 s at busy times on the server
+    # shared with Hermes, many finishing within a second of it. Always at
+    # least 2 s inside the call's budget.
+    _ADVICE_FIRST_TOKEN_TIMEOUT_S = 12.0
+
     def __init__(self, backend: LLMBackend | None = None, system_prompt: str | None = None):
         """Initialize the coach engine.
 
@@ -115,6 +181,13 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         self._deck_analysis_generation = 0
         self._deck_analysis_identity = ""
         self._deck_analysis_error = ""
+        # Playbooks by deck identity, reused across matches (plus a disk copy
+        # for restarts), and the identity-keyed analyses currently running.
+        self._playbook_cache: dict[str, Any] = {}
+        self._playbook_runs: dict[str, threading.Event] = {}
+        self._playbook_cancels: dict[str, threading.Event] = {}
+        # "Model offline" has been said for the current outage.
+        self._offline_announced = False
         self._rules_db: RulesDB | None = None
         self.narration_mode = "advisor"
         # Last structured pick from get_advice ({"index", "action", "verified",
@@ -354,9 +427,17 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         """Local threat advice used when the LLM errors or returns empty.
 
         Output is tagged [LOCAL FALLBACK] — generated locally without the
-        LLM, must never be mistaken for model advice.
+        LLM, must never be mistaken for model advice. With a combat
+        declaration pending, the combat solver's answer leads: at 18:51:49 on
+        2026-10-06 a generic threat line was rewritten into "Block with:
+        Diviner of Victory" while the computed optimal blocks were no blocks.
         """
         name = str(threat.get("name", "That card") or "That card")
+        combat = self._pending_combat_kind(game_state)
+        if combat:
+            line = self._combat_fallback_line(game_state, combat)
+            if line:
+                return f"{LOCAL_FALLBACK_PREFIX} {name} is the key threat. {line}"
         warning = str(threat.get("warning", "") or "").strip()
         answers = self._identify_threat_answers(game_state, threat)
         pressure = self._threat_pressure_summary(game_state, threat)
@@ -373,8 +454,152 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             msg = f"{name} is the card to answer. {warning if warning else 'It will generate value if left alone.'} If you cannot remove it now, play to contain it and protect your life total."
         return f"{LOCAL_FALLBACK_PREFIX} {msg}"
 
+    # ----- advice without the model -----------------------------------------
+
+    @staticmethod
+    def _pending_combat_kind(game_state: dict[str, Any]) -> str | None:
+        """Which combat declaration is pending: "blockers", "attackers" or None."""
+        context = game_state.get("decision_context")
+        kind = str(context.get("type") or "").lower() if isinstance(context, dict) else ""
+        request = " ".join(
+            str(game_state.get(key) or "")
+            for key in ("_bridge_request_type", "_bridge_request_class", "pending_decision")
+        ).lower()
+        if "block" in kind or "blocker" in request:
+            return "blockers"
+        if "attack" in kind or "attacker" in request:
+            return "attackers"
+        return None
+
+    @staticmethod
+    def _combat_fallback_line(game_state: dict[str, Any], kind: str) -> str:
+        """The deterministic combat solver's answer as one line ("" when it cannot tell)."""
+        try:
+            if kind == "blockers":
+                from arenamcp.combat_strategy import safe_default_blocks
+
+                result = safe_default_blocks(game_state)
+                if result is not None:
+                    reason = result[1].strip()
+                    return reason[:1].upper() + reason[1:] + "."
+            elif kind == "attackers":
+                from arenamcp.combat_strategy import combat_choice
+
+                choice = combat_choice(game_state)
+                if choice is not None and choice.explanation:
+                    if not choice.assignments:
+                        return f"Hold your attackers (their counterattack: {choice.crackback})."
+                    attacks = choice.explanation.split(f"; {choice.player_damage} damage to player", 1)[0]
+                    return (
+                        f"Attack: {attacks} ({choice.player_damage} damage, "
+                        f"their counterattack {choice.crackback})."
+                    )
+        except Exception as error:  # never break advice on the solver
+            logger.debug(f"combat fallback unavailable: {error}")
+        return ""
+
+    @staticmethod
+    def _board_math_line(game_state: dict[str, Any]) -> str:
+        """In our main phase with an empty stack: this turn's board-math deployment."""
+        phase = str((game_state.get("turn") or {}).get("phase") or "").lower()
+        if "main" not in phase or game_state.get("stack"):
+            return ""
+        try:
+            from arenamcp.board_assessment import assess
+
+            assessment = assess(game_state)
+        except Exception as error:
+            logger.debug(f"board math unavailable for fallback advice: {error}")
+            return ""
+        if assessment is None or not assessment.our_turn:
+            return ""
+        line = assessment.suggestion(0)
+        if not line or line.startswith("no castable board play"):
+            return ""
+        return line[:1].upper() + line[1:] + "."
+
+    def deterministic_advice(
+        self,
+        game_state: dict[str, Any],
+        *,
+        trigger: str | None = None,
+        threat: dict[str, Any] | None = None,
+    ) -> str:
+        """Advice with no model call: the threat line, the combat solver or board math.
+
+        Untagged ("" when there is nothing useful to say); callers add
+        LOCAL_FALLBACK_PREFIX. Used while the model server is offline and when
+        the autopilot hands a window back to the player.
+        """
+        if threat:
+            text = self._build_threat_fallback(game_state, threat)
+            return text[len(LOCAL_FALLBACK_PREFIX) :].strip() if is_local_fallback_text(text) else text
+        kind = self._pending_combat_kind(game_state) or {
+            "combat_blockers": "blockers",
+            "combat_attackers": "attackers",
+        }.get(trigger or "")
+        if kind:
+            line = self._combat_fallback_line(game_state, kind)
+            if line:
+                return line
+        return self._board_math_line(game_state)
+
+    def _offline_advice(
+        self,
+        game_state: dict[str, Any],
+        *,
+        trigger: str | None = None,
+        threat: dict[str, Any] | None = None,
+        question: str | None = None,
+        conversational: bool = False,
+    ) -> str:
+        """Advice while the model server's breaker is open: no prompt, no call.
+
+        Says "the model is offline" once per outage, not on every trigger.
+        Conversation-mode commentary stays silent; questions get an answer.
+        """
+        if conversational and not question:
+            return ""
+        first = not self._offline_announced
+        self._offline_announced = True
+        if first:
+            logger.warning("Coaching model offline (circuit open): advice falls back to board math")
+        if question:
+            return (
+                f"{LOCAL_FALLBACK_PREFIX} The coaching model is offline right now, "
+                "so I can't answer questions until it's back."
+            )
+        line = self.deterministic_advice(game_state, trigger=trigger, threat=threat)
+        if first:
+            line = f"Coaching model offline; board-math advice until it's back. {line}".strip()
+        return f"{LOCAL_FALLBACK_PREFIX} {line}" if line else ""
+
+    def _note_model_available(self) -> None:
+        if self._offline_announced:
+            self._offline_announced = False
+            logger.info("Coaching model reachable again: advice uses the model")
+
+    # ----- deck playbook -----------------------------------------------------
+    #
+    # 2026-10-06: 19 playbook runs (two background calls each, 30-46 s) for 4-5
+    # distinct decks. Every match boundary and restart re-ran it, and 3 runs were
+    # aborted when a new match with the same deck started. Playbooks are keyed by
+    # deck identity, kept in memory and on disk, and one analysis per identity
+    # runs at a time.
+    _PLAYBOOK_CACHE_SCHEMA = 1
+    _PLAYBOOK_CACHE_MAX_AGE_S = 30 * 24 * 3600.0
+    _PLAYBOOK_CALL_CLASS = "background.deck_playbook"
+    # Bounds on waiting for the model server (breaker open) and for the
+    # strategic lane (a game-plan call in flight, at most 75 s).
+    _PLAYBOOK_MODEL_WAIT_S = 300.0
+    _PLAYBOOK_LANE_WAIT_S = 90.0
+
     def clear_deck_strategy(self) -> None:
-        """Invalidate strategy and any late analysis from the previous deck/match."""
+        """Invalidate strategy and any late analysis from the previous deck/match.
+
+        Playbooks already built stay cached by deck identity, so analysing the
+        same deck again publishes them without a model call.
+        """
         with self._deck_analysis_lock:
             self._deck_analysis_generation += 1
             self._deck_strategy = None
@@ -387,28 +612,36 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 self._game_plan_mgr.reset()
 
     def begin_deck_analysis(self, identity: str) -> int:
-        """Reserve this analysis before starting its worker, not after enrichment."""
+        """Reserve this analysis before starting its worker, not after enrichment.
+
+        A running analysis of a different deck is cancelled, so its model call
+        stops occupying a server slot.
+        """
         with self._deck_analysis_lock:
+            for other, cancel in self._playbook_cancels.items():
+                if other != identity:
+                    cancel.set()
             self.clear_deck_strategy()
             self._deck_analysis_identity = identity
             self._deck_strategy_pending = True
             return self._deck_analysis_generation
 
-    def analyze_deck(self, game_state: dict, backend=None, *, analysis_generation=None) -> str | None:
+    def analyze_deck(
+        self, game_state: dict, backend=None, *, analysis_generation=None, refresh: bool = False
+    ) -> str | None:
         """Build and publish an Oracle-grounded playbook for this exact deck.
 
         A separate background backend keeps analysis off the tactical request
         path. No spoken summary can replace this internal strategic knowledge.
+
+        A playbook already built for this deck identity (this session, or on
+        disk from an earlier one with the same prompts and schema) is
+        published with no model call; ``refresh=True`` rebuilds it. One
+        analysis per identity runs at a time: a second request waits for the
+        first instead of paying for its own, and a new match with the same
+        deck does not abort it (only a different deck does).
         """
-        from arenamcp.deck_strategy import (
-            DECK_DISCOVERY_PROMPT,
-            DeckPlaybook,
-            analysis_reference,
-            commander_ids,
-            deck_identity,
-            playbook_response_format,
-        )
-        from arenamcp.match_context import prepare_match_context
+        from arenamcp.deck_strategy import deck_identity
 
         identity = deck_identity(game_state)
         generation = analysis_generation
@@ -416,59 +649,125 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             generation = self.begin_deck_analysis(identity)
         be = backend or self._backend
         start = time.perf_counter()
+        run: threading.Event | None = None
         try:
-            prepared = prepare_match_context(game_state)
-            catalog = prepared.get("deck_catalog") or {}
-            commanders = commander_ids(game_state)
-            if not catalog:
-                raise ValueError("Starting deck and card rules are unavailable")
-            user_message = (
-                analysis_reference(game_state, catalog)
-                + "\n\nDESIGNATED COMMANDER CARD IDS: "
-                + json.dumps(commanders)
-                + "\nAnalyze exactly these card IDs: "
-                + json.dumps(sorted(catalog))
+            playbook = None if refresh else self._cached_playbook(identity, game_state)
+            source = "cache"
+            if playbook is None:
+                run, running = self._claim_playbook_run(identity)
+                if running is not None:
+                    logger.info(
+                        "Deck playbook for this deck is already being built; waiting for that analysis"
+                    )
+                    running.wait(self._PLAYBOOK_MODEL_WAIT_S + 2 * 120.0)
+                    playbook = self._cached_playbook(identity, game_state)
+                    source = "the concurrent analysis"
+                    if playbook is None:
+                        raise ValueError("The concurrent analysis of this deck produced no playbook")
+            if playbook is None:
+                playbook = self._build_playbook(game_state, be, identity, generation)
+                source = "model"
+                self._store_playbook(playbook)
+            return self._publish_playbook(playbook, generation, start, source)
+        except Exception as error:
+            with self._deck_analysis_lock:
+                if generation == self._deck_analysis_generation:
+                    self._deck_analysis_error = str(error)
+            logger.warning("Deck playbook analysis failed: %s", error)
+            return None
+        finally:
+            if run is not None:
+                self._finish_playbook_run(identity, run)
+            with self._deck_analysis_lock:
+                if generation == self._deck_analysis_generation:
+                    self._deck_strategy_pending = False
+
+    def _build_playbook(self, game_state: dict, be: Any, identity: str, generation: int):
+        """The two model calls: discovery notes, then the audited JSON playbook."""
+        from arenamcp.deck_strategy import (
+            DECK_DISCOVERY_PROMPT,
+            DeckPlaybook,
+            analysis_reference,
+            commander_ids,
+            playbook_response_format,
+        )
+        from arenamcp.match_context import prepare_match_context
+
+        def wanted() -> bool:
+            # A cleared identity ("") is a match boundary, not a different deck.
+            with self._deck_analysis_lock:
+                return self._deck_analysis_identity in ("", identity)
+
+        prepared = prepare_match_context(game_state)
+        catalog = prepared.get("deck_catalog") or {}
+        commanders = commander_ids(game_state)
+        if not catalog:
+            raise ValueError("Starting deck and card rules are unavailable")
+        user_message = (
+            analysis_reference(game_state, catalog)
+            + "\n\nDESIGNATED COMMANDER CARD IDS: "
+            + json.dumps(commanders)
+            + "\nAnalyze exactly these card IDs: "
+            + json.dumps(sorted(catalog))
+        )
+        deadline = time.monotonic() + self._PLAYBOOK_MODEL_WAIT_S
+        lane = STRATEGIC_LANE.acquire("deck_playbook", self._PLAYBOOK_LANE_WAIT_S, abort=lambda: not wanted())
+        if lane is None:
+            if not wanted():
+                raise ValueError("Deck changed during analysis")
+            logger.info(
+                "Deck playbook: strategic lane still held by %s; analysing anyway", STRATEGIC_LANE.holder
+            )
+        cancel = threading.Event()
+        with self._deck_analysis_lock:
+            self._playbook_cancels[identity] = cancel
+        try:
+            labels = accepted_call_kwargs(
+                be, call_class=self._PLAYBOOK_CALL_CLASS, priority=BACKGROUND_PRIORITY, cancel_event=cancel
             )
 
             # Separate strategic reasoning from encoding the result. Asking
             # the hosted model to do both inside a large decoding grammar led
             # to omitted branches and repeated invalid/truncated JSON.
             def complete(system, message, *, discovery=False):
-                with self._deck_analysis_lock:
-                    if generation != self._deck_analysis_generation:
-                        raise ValueError("Deck changed during analysis")
                 options = dict(
                     max_tokens=6000 if discovery else 12288,
                     temperature=0.0,
                     request_timeout_s=120.0,
                     background=True,
-                    enable_thinking=discovery,
+                    **_PLAYBOOK_PASS_SETTINGS["discovery" if discovery else "compile"],
+                    **labels,
                 )
                 if not discovery:
                     options["response_format"] = playbook_response_format(catalog, commanders)
-                try:
-                    response = be.complete(system, message, **options)
-                except TypeError:
+                while True:
+                    if not wanted():
+                        raise ValueError("Deck changed during analysis")
+                    self._await_model(be, wanted, deadline)
                     try:
-                        response = be.complete(system, message, 12288)
+                        response = be.complete(system, message, **options)
                     except TypeError:
-                        response = be.complete(system, message)
+                        try:
+                            response = be.complete(system, message, 12288)
+                        except TypeError:
+                            response = be.complete(system, message)
+                    if not is_skipped_call_text(response):
+                        break
+                    if not wanted():
+                        raise ValueError("Deck changed during analysis")
+                    # Skipped while the server is down, or dropped by the
+                    # proxy's background lane: nothing failed, try again.
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ValueError("Model server unavailable for the deck analysis")
+                    logger.info("Deck playbook call not made (%s); retrying shortly", str(response)[:120])
+                    time.sleep(min(10.0, remaining))
                 if not response or is_backend_error_text(response):
                     raise ValueError("Deck analysis backend returned no usable response")
                 return response
 
             notes = complete(DECK_DISCOVERY_PROMPT, user_message, discovery=True)
-            user_message += (
-                "\n\nAUDIT THE PROPOSED PLAYBOOK NOTES BELOW AGAINST THESE RULES, then "
-                "compile a complete playbook using the required JSON shape. Correct unsupported "
-                "claims instead of copying them for consistency. A spent ETB is not a continuing "
-                "benefit of preserving its source. Recompute both resource comparisons from "
-                "the same starting state, retaining every unaffected survivor. Verify costs, "
-                "cast versus entry triggers, token restrictions and mana restrictions. Express "
-                "affordability from surviving sources and actual tax; reject arbitrary cast-count "
-                "cutoffs. Every conditional exception needs a supported mechanism and exceptions."
-                "\nANALYSIS NOTES:\n" + notes
-            )
+            user_message += _PLAYBOOK_AUDIT_INSTRUCTIONS + notes
             playbook = None
             for attempt in range(2):
                 response = complete(DECK_ANALYSIS_PROMPT, user_message)
@@ -489,35 +788,152 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                         + response
                     )
             assert playbook is not None
-            strategy = playbook.render()
+            self._repair_spoken_summary(playbook)
+            return playbook
+        finally:
             with self._deck_analysis_lock:
-                if generation != self._deck_analysis_generation:
-                    logger.info("Discarded deck analysis after deck/match changed")
-                    return None
-                self._deck_playbook = playbook
-                self._deck_strategy = strategy
-                self._deck_analysis_error = ""
-                mgr = self._ensure_game_plan_mgr()
-                if mgr is not None:
-                    mgr.seed(strategy)
-            elapsed = (time.perf_counter() - start) * 1000
+                if self._playbook_cancels.get(identity) is cancel:
+                    del self._playbook_cancels[identity]
+            STRATEGIC_LANE.release(lane)
+
+    @staticmethod
+    def _await_model(backend: Any, wanted, deadline: float) -> None:
+        """Wait (on the analysis worker thread) while the model server is down."""
+        announced = False
+        while not background_llm_allowed(backend):
+            if not wanted():
+                raise ValueError("Deck changed during analysis")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError("Model server unavailable for the deck analysis")
+            if not announced:
+                announced = True
+                logger.info("Deck playbook waits for the model server to come back")
+            time.sleep(min(2.0, remaining))
+
+    def _publish_playbook(self, playbook, generation: int, start: float, source: str) -> str | None:
+        strategy = playbook.render()
+        with self._deck_analysis_lock:
+            if generation != self._deck_analysis_generation:
+                logger.info("Discarded deck analysis after deck/match changed")
+                return None
+            self._deck_playbook = playbook
+            self._deck_strategy = strategy
+            self._deck_analysis_error = ""
+            mgr = self._ensure_game_plan_mgr()
+            if mgr is not None:
+                mgr.seed(strategy)
+        elapsed = (time.perf_counter() - start) * 1000
+        if source == "model":
             logger.info(
                 "Deck playbook complete: %.0fms, %d cards, %d mechanisms",
                 elapsed,
-                len(catalog),
+                len(playbook.catalog),
                 len(playbook.data["mechanisms"]),
             )
-            return strategy
-        except Exception as error:
-            with self._deck_analysis_lock:
-                if generation == self._deck_analysis_generation:
-                    self._deck_analysis_error = str(error)
-            logger.warning("Deck playbook analysis failed: %s", error)
+        else:
+            logger.info(
+                "Deck playbook reused from %s (no model call): %.0fms, %d cards, %d mechanisms",
+                source,
+                elapsed,
+                len(playbook.catalog),
+                len(playbook.data["mechanisms"]),
+            )
+        return strategy
+
+    def _claim_playbook_run(self, identity: str) -> tuple[threading.Event | None, threading.Event | None]:
+        """(our run, None) when this call analyses the deck, (None, running) when another does."""
+        with self._deck_analysis_lock:
+            running = self._playbook_runs.get(identity)
+            if running is not None:
+                return None, running
+            run = threading.Event()
+            self._playbook_runs[identity] = run
+            return run, None
+
+    def _finish_playbook_run(self, identity: str, run: threading.Event) -> None:
+        with self._deck_analysis_lock:
+            if self._playbook_runs.get(identity) is run:
+                del self._playbook_runs[identity]
+        run.set()
+
+    @staticmethod
+    def _playbook_cache_path(identity: str):
+        """~/.arenamcp/cache/playbooks/<identity>.json (None for an unusable identity)."""
+        if not re.fullmatch(r"[0-9a-f]{16,128}", identity or ""):
             return None
-        finally:
-            with self._deck_analysis_lock:
-                if generation == self._deck_analysis_generation:
-                    self._deck_strategy_pending = False
+        from arenamcp import logging_config  # read at call time; tests sandbox it
+
+        return logging_config.LOG_DIR / "cache" / "playbooks" / f"{identity}.json"
+
+    def _cached_playbook(self, identity: str, game_state: dict):
+        """A playbook built earlier for this exact deck (memory, then disk), else None."""
+        if not identity:
+            return None
+        with self._deck_analysis_lock:
+            cached = self._playbook_cache.get(identity)
+        if cached is not None:
+            return cached
+        path = self._playbook_cache_path(identity)
+        if path is None or not path.exists():
+            return None
+        try:
+            from arenamcp.deck_strategy import DeckPlaybook
+
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            if saved.get("schema") != self._PLAYBOOK_CACHE_SCHEMA:
+                raise ValueError("cache schema changed")
+            if saved.get("prompt") != _playbook_prompt_fingerprint():
+                raise ValueError("built with older prompts")
+            if time.time() - float(saved.get("saved_at") or 0) > self._PLAYBOOK_CACHE_MAX_AGE_S:
+                raise ValueError("older than 30 days")
+            # Revalidates version, deck/commander identity, catalog and evidence.
+            playbook = DeckPlaybook.restore(saved["playbook"], game_state)
+        except Exception as error:
+            logger.info("Ignoring cached deck playbook %s: %s", path.name, error)
+            return None
+        with self._deck_analysis_lock:
+            self._playbook_cache[identity] = playbook
+        return playbook
+
+    def _store_playbook(self, playbook) -> None:
+        identity = getattr(playbook, "identity", "")
+        if not identity:
+            return
+        with self._deck_analysis_lock:
+            self._playbook_cache[identity] = playbook
+        path = self._playbook_cache_path(identity)
+        if path is None:
+            return
+        try:
+            payload = {
+                "schema": self._PLAYBOOK_CACHE_SCHEMA,
+                "prompt": _playbook_prompt_fingerprint(),
+                "saved_at": time.time(),
+                "playbook": playbook.export(),
+            }
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+            temporary.write_text(json.dumps(payload), encoding="utf-8")
+            temporary.replace(path)
+        except Exception as error:
+            logger.warning("Could not save the deck playbook cache: %s", error)
+
+    @staticmethod
+    def _repair_spoken_summary(playbook) -> None:
+        """Never speak a placeholder; fall back to the archetype and primary plan."""
+        data = playbook.data
+        summary = str(data.get("spoken_summary") or "").strip()
+        if len(summary) >= 20 and not _PLACEHOLDER_SUMMARY_RE.search(summary):
+            return
+        parts = [str(data.get(key) or "").strip().rstrip(".") for key in ("archetype", "primary_plan")]
+        replacement = ". ".join(part for part in parts if part)
+        if not replacement:
+            return
+        logger.info(
+            "Deck playbook spoken summary %r is a placeholder; using the archetype and plan", summary[:80]
+        )
+        data["spoken_summary"] = replacement[:400].rstrip(".") + "."
 
     def get_deck_strategy_brief(self, deck_cards: list[tuple[str, str, str]], backend=None) -> str | None:
         """Generate a brief 3-5 sentence spoken strategy for a deck.
@@ -561,7 +977,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             deck_text = "\n".join(deck_lines)
             user_message = f"DECK LIST ({len(deck_cards)} cards):\n{deck_text}"
 
-            strategy = be.complete(DECK_STRATEGY_BRIEF_PROMPT, user_message)
+            strategy = be.complete(
+                DECK_STRATEGY_BRIEF_PROMPT,
+                user_message,
+                **accepted_call_kwargs(be, call_class="coach.deck_brief"),
+            )
 
             if not strategy or is_backend_error_text(strategy):
                 logger.warning(f"Deck strategy brief failed: {strategy and strategy[:80]}")
@@ -2447,8 +2867,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             if event_strs:
                 lines.append(f"Recent: {'; '.join(event_strs)}")
 
-        revealed = game_state.get("revealed_cards", {})
-        if revealed and opp_seat is not None:
+        # server.get_game_state publishes the opponent's revealed hand cards
+        # as [{instance_id, grp_id, name, zone}] (log-derived, public); a raw
+        # GameState snapshot still carries the older per-seat dict.
+        revealed = game_state.get("revealed_cards") or []
+        if isinstance(revealed, list):
+            names = [str(card.get("name") or "") for card in revealed if isinstance(card, dict)]
+            if any(names):
+                lines.append(f"Opp hand (revealed): {', '.join(name for name in names if name)}")
+        elif isinstance(revealed, dict) and opp_seat is not None:
             opp_revealed = revealed.get(str(opp_seat), revealed.get(opp_seat, []))
             if opp_revealed:
                 lines.append(f"Opp revealed {len(opp_revealed)} card(s) this game")
@@ -3421,6 +3848,13 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         from arenamcp.narration import action_narration, narration_policy
 
         voice_mode = narration_mode or getattr(self, "narration_mode", "advisor")
+        # Model server down (circuit breaker open): no prompt, no call, no
+        # 17 s wait — deterministic advice, and "offline" said once.
+        if not llm_available(self._backend):
+            return self._offline_advice(
+                game_state, trigger=trigger, threat=threat, question=question, conversational=conversational
+            )
+        self._note_model_available()
         game_state = prepare_match_context(game_state)
         total_start = time.perf_counter()
 
@@ -3730,6 +4164,16 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         complete_kwargs = (
             {"request_timeout_s": api_timeout} if isinstance(self._backend, ProxyBackend) else {}
         )
+        # A saturated server sends no first token at all (18:52:59 on
+        # 2026-10-06): give up then instead of after the whole budget.
+        # Questions and conversation-mode renders are coach.question.
+        complete_kwargs.update(
+            accepted_call_kwargs(
+                self._backend,
+                call_class="coach.question" if (question or conversational) else "coach.advice",
+                first_token_timeout_s=min(self._ADVICE_FIRST_TOKEN_TIMEOUT_S, max(1.0, api_timeout - 2.0)),
+            )
+        )
         future = executor.submit(
             self._backend.complete,
             effective_system_prompt,
@@ -3753,6 +4197,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         # that, every hung backend call leaks a thread forever.
         executor.shutdown(wait=False)
         api_time = (time.perf_counter() - api_start) * 1000
+
+        if is_unavailable_text(response):
+            # The breaker opened while this call was being prepared.
+            return self._offline_advice(
+                game_state, trigger=trigger, threat=threat, question=question, conversational=conversational
+            )
 
         if trigger == "threat_detected" and threat and (not response or is_backend_error_text(response)):
             response = self._build_threat_fallback(game_state, threat)
@@ -3789,13 +4239,18 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     # Never speak raw JSON punctuation.
                     response = re.sub(r'[{}"]|\b(?:action|say)\b\s*:', " ", response)
 
-        response = self._postprocess_advice(
-            response,
-            game_state,
-            style=style_key,
-            skip_legal_filter=conversational,
-            verified_action=verified_action,
-        )
+        # Local fallback text is already the solver's answer, tagged and
+        # speakable. Post-processing rewrote it: the legal-action replacement
+        # turned the threat line into "Block with: Diviner of Victory" while
+        # the computed optimal blocks were no blocks (18:51:49, 2026-10-06).
+        if not is_local_fallback_text(response):
+            response = self._postprocess_advice(
+                response,
+                game_state,
+                style=style_key,
+                skip_legal_filter=conversational,
+                verified_action=verified_action,
+            )
 
         if trigger == "threat_detected" and threat:
             threat_name = str(threat.get("name", "") or "").strip()

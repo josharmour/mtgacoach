@@ -28,6 +28,7 @@ turn's step and the facts (:meth:`GamePlanManager.strategy_block`).
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
@@ -42,6 +43,183 @@ from typing import Any
 from arenamcp.backend_health import is_backend_error_text
 
 logger = logging.getLogger(__name__)
+
+
+# ----- LLM call discipline ----------------------------------------------------
+#
+# Shared by the game plan, the deck playbook (coach.py) and the win-in-N worker
+# (standalone.py). Evidence, 2026-10-06 standalone.log: about half of the one
+# shared vLLM server's slot time went to background calls (139 game-plan calls
+# in 1.8 h, 19 deck-playbook runs for 4-5 decks, 31 win-in-N calls of which
+# none was ever read), and decision calls overlapping one of them ran p50
+# 3.1 s instead of 1.8 s. Background strategy therefore runs one call at a
+# time, labelled and deprioritised, and never while the model server's
+# circuit breaker is open.
+
+# vLLM priority scheduling: lower runs sooner, default 0. Background strategy
+# yields to decisions and to the user's other clients (Hermes) on the server.
+BACKGROUND_PRIORITY = 10
+
+
+def accepted_call_kwargs(backend: Any, **optional: Any) -> dict[str, Any]:
+    """The ``optional`` keyword arguments that ``backend.complete`` accepts.
+
+    ``call_class``, ``priority`` and ``cancel_event`` are newer ProxyBackend
+    keywords; an older or test backend would raise TypeError, and every
+    caller's TypeError fallback then drops ALL keywords (budget, effort,
+    schema). ``None`` values are never passed.
+    """
+    wanted = {key: value for key, value in optional.items() if value is not None}
+    complete = getattr(backend, "complete", None)
+    if not wanted or complete is None:
+        return {}
+    try:
+        params = inspect.signature(complete).parameters
+    except (TypeError, ValueError):
+        return {}
+    if any(param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()):
+        return wanted
+    return {key: value for key, value in wanted.items() if key in params}
+
+
+def _backend_flag(backend: Any, name: str) -> bool | None:
+    """Call a boolean backend method if its class defines one; None otherwise.
+
+    Looked up on the class so a ``Mock`` backend (whose attributes all exist
+    and return truthy mocks) never reads as "breaker open".
+    """
+    if backend is None or getattr(type(backend), name, None) is None:
+        return None
+    try:
+        value = getattr(backend, name)()
+    except Exception as error:
+        logger.debug("backend %s() failed: %s", name, error)
+        return None
+    return value if isinstance(value, bool) else None
+
+
+def llm_available(backend: Any) -> bool:
+    """False only while the model server's circuit breaker is open."""
+    flag = _backend_flag(backend, "available")
+    return True if flag is None else flag
+
+
+def background_llm_allowed(backend: Any) -> bool:
+    """Whether background strategy may call the model now.
+
+    Stricter than :func:`llm_available`: the breaker reports background work
+    blocked after a few fresh failures, before it opens for everyone.
+    """
+    blocked = _backend_flag(backend, "background_blocked")
+    if blocked is not None:
+        return not blocked
+    return llm_available(backend)
+
+
+def circuit_snapshot(backend: Any) -> dict[str, Any]:
+    """The backend's breaker snapshot (``{}`` when it has none)."""
+    if backend is None or getattr(type(backend), "circuit_snapshot", None) is None:
+        return {}
+    try:
+        snapshot = backend.circuit_snapshot()
+    except Exception as error:
+        logger.debug("circuit snapshot failed: %s", error)
+        return {}
+    return dict(snapshot) if isinstance(snapshot, dict) else {}
+
+
+def is_unavailable_text(text: Any) -> bool:
+    """True for the proxy's skip sentinel: nothing was asked, the server is down.
+
+    "[BACKEND ERROR] model server unavailable (circuit open; retry in Ns)",
+    or "(backend down; background call skipped)" for background work.
+    """
+    lowered = str(text).lower()
+    return is_backend_error_text(text) and (
+        "model server unavailable" in lowered or "circuit open" in lowered
+    )
+
+
+def is_skipped_call_text(text: Any) -> bool:
+    """A skip or a client-side cancellation (superseded/dropped), never a server failure."""
+    return is_unavailable_text(text) or (
+        is_backend_error_text(text) and "request cancelled" in str(text).lower()
+    )
+
+
+class StrategicLane:
+    """At most one background strategic model job in flight, process-wide.
+
+    Jobs: the game plan, the deck playbook and the win-in-N worker. The coach,
+    the autopilot and re-initialised coaches each build their own backend and
+    manager, so this cannot live on an instance. Acquiring returns a token
+    that only its owner can release; a holder older than ``MAX_HOLD_S`` is
+    presumed leaked and may be replaced.
+    """
+
+    MAX_HOLD_S = 300.0
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._token: object | None = None
+        self._job = ""
+        self._since = 0.0
+
+    @property
+    def holder(self) -> str | None:
+        with self._cond:
+            return self._job if self._token is not None else None
+
+    def _free_locked(self) -> bool:
+        if self._token is None:
+            return True
+        if time.monotonic() - self._since > self.MAX_HOLD_S:
+            logger.warning(
+                "Strategic lane: %s held for over %.0fs; presuming it leaked", self._job, self.MAX_HOLD_S
+            )
+            return True
+        return False
+
+    def _take_locked(self, job: str) -> object:
+        token = object()
+        self._token, self._job, self._since = token, job, time.monotonic()
+        return token
+
+    def try_acquire(self, job: str) -> object | None:
+        """Take the lane now, or return None when another job holds it."""
+        with self._cond:
+            return self._take_locked(job) if self._free_locked() else None
+
+    def acquire(self, job: str, timeout: float, *, abort: Callable[[], bool] | None = None) -> object | None:
+        """Wait up to ``timeout`` seconds for the lane (None on timeout or abort)."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._cond:
+            while not self._free_locked():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or (abort is not None and abort()):
+                    return None
+                self._cond.wait(min(remaining, 1.0))
+            return self._take_locked(job)
+
+    def release(self, token: object | None) -> None:
+        with self._cond:
+            if token is not None and token is self._token:
+                self._token, self._job = None, ""
+                self._cond.notify_all()
+
+    def wait_idle(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` seconds until no job holds the lane."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._cond:
+            while self._token is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._cond.wait(min(remaining, 0.25))
+            return True
+
+
+STRATEGIC_LANE = StrategicLane()
 
 
 # Strong, compact instruction. The model returns STRICT JSON so we can render a
@@ -563,19 +741,29 @@ def _round(x: Any, default: int = 0) -> int:
         return default
 
 
+def _decision_pending(game_state: dict[str, Any]) -> bool:
+    """A decision (log or bridge) is waiting on us in this snapshot."""
+    return bool(
+        game_state.get("pending_decision")
+        or game_state.get("_bridge_request_type")
+        or game_state.get("_bridge_request_class")
+    )
+
+
 class GamePlanManager:
     """Owns the current :class:`GamePlan` and decides when to (re)form it.
 
-    Reform cadence is gated by a *material-change signature* of the board so the
-    LLM is only consulted when the strategic picture actually shifted, and at
-    on meaningful changes, with background requests rate-limited independently
-    of tactical decisions.
+    Cadence (2026-10-06: 139 plan calls in 1.8 h, 16 turns with 2-4 calls,
+    because hand/graveyard/exile identities changed after nearly every action):
+    plan our coming turn once during the opponent's turn, and re-form during a
+    turn only when the board math flips the role or a lethal flag, the
+    commander zone changes, the plan stalls, or no plan exists for this turn.
+    Routine reforms wait for a moment with no decision pending. Background
+    requests are rate-limited, one at a time process-wide
+    (:data:`STRATEGIC_LANE`), and a request for a turn that has already passed
+    is cancelled and its plan discarded.
     """
 
-    # Material-change thresholds (deltas vs the signature at last reform).
-    _LIFE_DELTA = 3
-    _POWER_DELTA = 2
-    _HAND_DELTA = 2
     # Force a refresh at least this often even if the board looks static, so a
     # long grind doesn't run forever on a turn-2 plan.
     _STALE_TURNS = 4
@@ -587,9 +775,20 @@ class GamePlanManager:
     # Dread" for five turns while the executor never landed it).
     _STALL_REFORM_THRESHOLD = 3
 
-    # The strategic call runs in the background once per turn, so it gets a
-    # larger reasoning/time budget than per-decision calls (12 s, 2048 tokens,
-    # low reasoning effort): full thinking, 6000 tokens, 45 s.
+    # Reform reasons that can wait until no decision is pending, so the plan
+    # call does not share the server with the decision call it would delay.
+    _ROUTINE_REASONS = frozenset(
+        {"plan our next turn", "stale plan", "deck playbook changed", "new opposing permanent"}
+    )
+    # A board-math role change between these two alone, with the lethal and
+    # dead-soon flags unchanged, is noise (2026-10-07 replay: turn 6 went
+    # aggressor -> race -> defender and turn 7 defender -> race on ordinary
+    # snapshots; 38% of plan calls were such flips).
+    _ROLE_NOISE = frozenset({"race", "defender"})
+
+    # The strategic call runs in the background, at most once per turn side,
+    # with a larger token/time budget than per-decision calls (12 s, 2048
+    # tokens) but the same low reasoning effort: 3000 tokens, 75 s.
     # 2026-10-06 17:45: unrestricted thinking on a ~34k-char prompt ran past 45 s
     # ("LLM streaming time budget exhausted") so no plan ever formed; low effort
     # took ~33 s on a busy gateway. The board facts and lookahead come from
@@ -598,6 +797,7 @@ class GamePlanManager:
     _PLAN_MAX_TOKENS = 3000
     _PLAN_TIMEOUT_S = 75.0
     _PLAN_REASONING_EFFORT = "low"
+    _CALL_CLASS = "background.game_plan"
 
     def __init__(self, backend: Any, timeout: float | None = None):
         self._backend = backend
@@ -617,12 +817,23 @@ class GamePlanManager:
         self._last_seed: str | None = None
         self._inflight = False
         self._last_attempt_at: float | None = None
+        # Board-math role/lethal flags and commander zone at the last reform
+        # (see _strategic_key); a change re-forms the plan mid-turn.
+        self._last_key: tuple | None = None
+        # The in-flight background reform: its cancel event, its strategic-lane
+        # token and the turn its plan is for ("T"). Cancelled once that turn
+        # has passed.
+        self._inflight_cancel: threading.Event | None = None
+        self._inflight_lane: object | None = None
+        self._inflight_plan_turn = 0
 
     # ----- lifecycle -------------------------------------------------------
     def reset(self) -> None:
         """Clear all per-game state (call at the start of a new match)."""
         with self._lock:
+            self._abandon_inflight_locked()
             self._generation += 1
+            self._last_key = None
             self._plan = None
             self._seed = None
             self._last_seed = None
@@ -754,13 +965,22 @@ class GamePlanManager:
 
         Repeated windows do not queue work. A live stack takes priority over
         speculative strategy, and failures share the cooldown with successes.
+        Nothing is requested while the model server's breaker is open (the
+        prior plan stays; the next call after it closes re-requests), while
+        another background job holds :data:`STRATEGIC_LANE`, or, for routine
+        reforms, while a decision is pending. A reform still in flight for a
+        turn that has passed is cancelled.
         """
         with self._lock:
             self.observe(game_state)
+            if self._inflight:
+                self._supersede_stale_inflight_locked(game_state)
+                if self._inflight:
+                    return False
             suspended = getattr(self, "background_suspended_fn", None)
             if callable(suspended) and suspended():
                 return False
-            if self._inflight or game_state.get("stack") or game_state.get("game_over"):
+            if game_state.get("stack") or game_state.get("game_over"):
                 return False
             if not _round((game_state.get("turn") or {}).get("turn_number")):
                 return False
@@ -769,35 +989,95 @@ class GamePlanManager:
                 return False
             sig = self._signature(game_state)
             our_turn = self._our_turn(game_state)
-            if self._stall_count < self._STALL_REFORM_THRESHOLD and not self._should_reform(
-                sig, our_turn=our_turn
-            ):
+            if self._stall_count >= self._STALL_REFORM_THRESHOLD:
+                reason = "plan stalled"
+            else:
+                reason = self._should_reform(sig, our_turn=our_turn, key=self._strategic_key(game_state, sig))
+            if not reason:
+                return False
+            if reason in self._ROUTINE_REASONS and _decision_pending(game_state):
+                return False
+            if not background_llm_allowed(self._backend):
+                logger.debug("Game plan reform (%s) skipped: model server unavailable", reason)
+                return False
+            token = STRATEGIC_LANE.try_acquire("game_plan")
+            if token is None:
+                logger.debug("Game plan reform (%s) waits: %s holds the lane", reason, STRATEGIC_LANE.holder)
                 return False
             snapshot = deepcopy(game_state)
             generation = self._generation
+            cancel = threading.Event()
             self._inflight = True
+            self._inflight_cancel = cancel
+            self._inflight_lane = token
+            self._inflight_plan_turn = self._plan_turn(snapshot)
             self._last_attempt_at = now
+            logger.info(
+                "Game plan reform (%s): turn %d, plan for turn %d", reason, sig[0], self._inflight_plan_turn
+            )
 
         def refresh() -> None:
             try:
-                self.maybe_reform(snapshot, _expected_generation=generation)
+                self.maybe_reform(snapshot, _expected_generation=generation, _cancel=cancel)
                 with self._lock:
-                    publish = generation == self._generation
+                    publish = generation == self._generation and not cancel.is_set()
                 if publish and on_updated is not None:
                     on_updated()
             except Exception as error:
                 logger.debug("background game-plan refresh failed: %s", error)
             finally:
                 with self._lock:
-                    self._inflight = False
+                    # An abandoned reform (superseded or reset) already
+                    # cleared these; a newer reform may own them by now.
+                    if self._inflight_cancel is cancel:
+                        self._inflight = False
+                        self._inflight_cancel = None
+                        self._inflight_lane = None
+                STRATEGIC_LANE.release(token)
 
         try:
             threading.Thread(target=refresh, daemon=True, name="game-plan-reform").start()
         except Exception:
             with self._lock:
                 self._inflight = False
+                self._inflight_cancel = None
+                self._inflight_lane = None
+            STRATEGIC_LANE.release(token)
             raise
         return True
+
+    def _supersede_stale_inflight_locked(self, game_state: dict[str, Any]) -> None:
+        """Cancel the in-flight reform once the turn it plans for has passed."""
+        cancel = self._inflight_cancel
+        turn = _round((game_state.get("turn") or {}).get("turn_number"))
+        if cancel is None or cancel.is_set() or turn <= self._inflight_plan_turn:
+            return
+        logger.info(
+            "Superseding the in-flight game plan for turn %d (now turn %d); its answer will be discarded",
+            self._inflight_plan_turn,
+            turn,
+        )
+        self._abandon_inflight_locked()
+
+    def _abandon_inflight_locked(self) -> None:
+        """Cancel the in-flight reform and free its slot and the strategic lane now.
+
+        The cancel event makes the proxy drop the request (socket shut down);
+        the worker thread may still take a moment to unwind, so the manager
+        and the lane are released here instead of in its ``finally`` (2026-10-07
+        review: a superseded request queued on a busy server held both for up
+        to its 75 s budget, so the plan for the new turn could not start).
+        Its answer, if any, is discarded.
+        """
+        cancel = self._inflight_cancel
+        if cancel is None:
+            return
+        cancel.set()
+        lane = self._inflight_lane
+        self._inflight = False
+        self._inflight_cancel = None
+        self._inflight_lane = None
+        STRATEGIC_LANE.release(lane)
 
     def maybe_reform(
         self,
@@ -805,14 +1085,18 @@ class GamePlanManager:
         *,
         force: bool = False,
         _expected_generation: int | None = None,
+        _cancel: threading.Event | None = None,
     ) -> GamePlan | None:
-        """(Re)form the plan iff the board changed materially; else return current.
+        """(Re)form the plan iff the cadence calls for it; else return current.
 
         Cheap to call on every trigger — the LLM is only invoked when
-        :meth:`_should_reform` says the strategic picture moved.
+        :meth:`_should_reform` names a reason. A plan whose request was
+        cancelled, or whose turn has passed by the time it arrives, is
+        discarded and the prior plan kept.
         """
         try:
             sig = self._signature(game_state)
+            key = self._strategic_key(game_state, sig)
         except Exception as e:  # never let plan formation break the decision loop
             logger.debug("game-plan signature failed: %s", e)
             return self._plan
@@ -828,18 +1112,29 @@ class GamePlanManager:
                 self.observe(game_state)
             generation = self._generation
             stalled = self._stall_count >= self._STALL_REFORM_THRESHOLD
-            if not (force or stalled or self._should_reform(sig, our_turn=self._our_turn(game_state))):
+            if not (
+                force or stalled or self._should_reform(sig, our_turn=self._our_turn(game_state), key=key)
+            ):
                 return self._plan
             seed = self._seed
             stall_count = self._stall_count
+            plan_turn = self._plan_turn(game_state)
 
-        plan = self._reform(game_state, turn_num)
+        plan = self._reform(game_state, turn_num, cancel=_cancel)
         with self._lock:
             if generation != self._generation:
+                return self._plan
+            if plan is not None and self._observed_turn > plan_turn:
+                logger.info(
+                    "Discarded the game plan for turn %d: it arrived on turn %d",
+                    plan_turn,
+                    self._observed_turn,
+                )
                 return self._plan
             if plan is not None:
                 self._plan = plan
                 self._last_sig = sig
+                self._last_key = key
                 self._last_seed = seed
                 self._last_reform_turn = turn_num
             self._stall_count = max(0, self._stall_count - stall_count)
@@ -847,35 +1142,140 @@ class GamePlanManager:
                 self._stall_hint = ""
             return self._plan
 
-    def _should_reform(self, sig: tuple, *, our_turn: bool = False) -> bool:
+    def _should_reform(self, sig: tuple, *, our_turn: bool = False, key: tuple | None = None) -> str:
+        """Why the plan should be re-formed now ("" = keep it).
+
+        Card identities, creature counts and life deltas are deliberately not
+        reasons any more: they changed after nearly every action. The fresh
+        board facts reach every decision prompt anyway (strategy_block); the
+        plan itself only changes when the strategic picture flips.
+        """
         if self._plan is None or self._last_sig is None:
-            return True
+            return "first plan"
         if self._seed != self._last_seed:
-            return True
+            return "deck playbook changed"
         turn_num = sig[0]
         if turn_num - self._last_reform_turn >= self._STALE_TURNS:
-            return True
+            return "stale plan"
         # Plan our coming turn during the opponent's turn, so it is ready when
         # our turn starts (a plan call takes ~30 s on a busy gateway).
         if not our_turn and turn_num > self._last_reform_turn:
-            return True
-        # Identity matters: a tutor changes one hand card without changing hand
-        # size, and a noncreature engine can change the entire winning line.
-        if sig[8:] != self._last_sig[8:]:
-            return True
-        (_, my_life, opp_life, my_cr, opp_cr, my_pow, opp_pow, hand) = sig[:8]
-        (_, l_my_life, l_opp_life, l_my_cr, l_opp_cr, l_my_pow, l_opp_pow, l_hand) = self._last_sig[:8]
-        if my_cr != l_my_cr or opp_cr != l_opp_cr:
-            return True
-        if abs(my_life - l_my_life) >= self._LIFE_DELTA:
-            return True
-        if abs(opp_life - l_opp_life) >= self._LIFE_DELTA:
-            return True
-        if abs(my_pow - l_my_pow) >= self._POWER_DELTA:
-            return True
-        if abs(opp_pow - l_opp_pow) >= self._POWER_DELTA:
-            return True
-        return abs(hand - l_hand) >= self._HAND_DELTA
+            return "plan our next turn"
+        # The opponent-turn plan never formed (failed, deferred or skipped).
+        if our_turn and turn_num > self._last_reform_turn + 1:
+            return "no plan for this turn"
+        if key is not None and self._last_key is not None:
+            return self._key_change_reason(self._last_key, key)
+        return ""
+
+    def _key_change_reason(self, old: tuple, new: tuple) -> str:
+        """Why the strategic key moved enough to re-form the plan ("" = it didn't)."""
+        old_facts, new_facts = old[0], new[0]
+        if old_facts is not None and new_facts is not None and old_facts != new_facts:
+            if tuple(old_facts[1:]) != tuple(new_facts[1:]):
+                return "role/lethal flip"
+            if not {old_facts[0], new_facts[0]} <= self._ROLE_NOISE:
+                return "role/lethal flip"
+        if tuple(old[1:3]) != tuple(new[1:3]):
+            return "commander change"
+        old_engines = old[3] if len(old) > 3 else frozenset()
+        new_engines = new[3] if len(new) > 3 else frozenset()
+        if set(new_engines) - set(old_engines):
+            return "new opposing permanent"
+        return ""
+
+    def _strategic_key(self, game_state: dict[str, Any], sig: tuple | None = None) -> tuple:
+        """What must change for a mid-turn reform, whoever's turn and phase it is.
+
+        * The board-math role and lethal/dead-soon flags, assessed on a copy
+          set to the start of our own (next) turn (:meth:`_normalized_for_key`).
+          On the raw snapshot, ``lethal_now`` needs our attack still pending
+          and the role moves with the phase, so a key taken on their turn
+          never matched one taken on ours: a "role/lethal flip" reform at
+          nearly every turn change (2026-10-07 review: 6-8 plan calls over 6
+          unchanged turns where 4 were due).
+        * The commander zone and tax (rare, plan-changing).
+        * The opponent's noncreature, nonland, nontoken permanents: a new
+          engine or answer on their side can change the whole line (this used
+          to be caught by the card-identity trigger).
+        """
+        sig = sig if sig is not None else self._signature(game_state)
+        try:
+            from arenamcp.board_assessment import assess
+
+            assessment = assess(self._normalized_for_key(game_state))
+        except Exception as error:  # a strategic-layer failure must not block planning
+            logger.debug("board assessment unavailable for the plan cadence: %s", error)
+            assessment = None
+        facts = None
+        if assessment is not None:
+            dead_in = getattr(assessment, "dead_in", None)
+            facts = (
+                getattr(assessment, "role", ""),
+                bool(
+                    getattr(assessment, "lethal_now", False) or getattr(assessment, "lethal_next_turn", False)
+                ),
+                bool(getattr(assessment, "opp_lethal_on_board", False)),
+                dead_in is not None and dead_in <= 2,
+            )
+        return (facts, sig[12], sig[13], self._opposing_engines(game_state))
+
+    def _normalized_for_key(self, game_state: dict[str, Any]) -> dict[str, Any]:
+        """A shallow copy at the start of our own turn: this one if ours, else our next.
+
+        Our side is active in Main1 with nothing attacking or blocking and our
+        permanents untapped, as after our untap step.
+        """
+        local = game_state.get("local_seat_id") or self._local_seat(game_state)
+        if local is None:
+            return game_state
+        turn = dict(game_state.get("turn") or {})
+        turn_number = _round(turn.get("turn_number"))
+        if turn.get("active_player") != local and turn_number:
+            turn_number += 1
+        turn.update(
+            turn_number=turn_number, active_player=local, priority_player=local, phase="Phase_Main1", step=""
+        )
+        battlefield = []
+        for card in game_state.get("battlefield") or []:
+            if isinstance(card, dict):
+                ours = (card.get("controller_seat_id") or card.get("owner_seat_id")) == local
+                card = dict(
+                    card,
+                    is_attacking=False,
+                    is_blocking=False,
+                    is_tapped=False if ours else card.get("is_tapped"),
+                )
+            battlefield.append(card)
+        return dict(game_state, turn=turn, battlefield=battlefield, stack=[])
+
+    def _opposing_engines(self, game_state: dict[str, Any]) -> frozenset:
+        """Instance ids of the opponent's noncreature, nonland, nontoken permanents."""
+        local = game_state.get("local_seat_id") or self._local_seat(game_state)
+        if local is None:
+            return frozenset()
+        engines = set()
+        for card in game_state.get("battlefield") or []:
+            if not isinstance(card, dict):
+                continue
+            controller = card.get("controller_seat_id") or card.get("owner_seat_id")
+            if controller is None or controller == local:
+                continue
+            if card.get("is_token") or "token" in str(card.get("object_kind") or "").lower():
+                continue
+            types = " ".join(
+                [str(t) for t in card.get("card_types") or []] + [str(card.get("type_line") or "")]
+            ).lower()
+            if "creature" in types or "land" in types:
+                continue
+            if any(kind in types for kind in ("artifact", "enchantment", "planeswalker", "battle")):
+                engines.add(str(card.get("instance_id") or card.get("name") or ""))
+        return frozenset(engines)
+
+    def _plan_turn(self, game_state: dict[str, Any]) -> int:
+        """The turn a plan formed from ``game_state`` is for: this turn if ours, else our next."""
+        turn = _round((game_state.get("turn") or {}).get("turn_number"))
+        return turn if self._our_turn(game_state) else turn + 1
 
     # ----- board reading ---------------------------------------------------
     def _local_seat(self, game_state: dict[str, Any]) -> int | None:
@@ -996,7 +1396,9 @@ class GamePlanManager:
             f"Cards in hand: {sig[7]}."
         )
 
-    def _reform(self, game_state: dict[str, Any], turn_num: int) -> GamePlan | None:
+    def _reform(
+        self, game_state: dict[str, Any], turn_num: int, *, cancel: threading.Event | None = None
+    ) -> GamePlan | None:
         from arenamcp.board_assessment import assess
         from arenamcp.match_context import prepare_match_context, with_deck_reference
 
@@ -1034,11 +1436,20 @@ class GamePlanManager:
         user_message = with_deck_reference("\n".join(user_parts), game_state)
 
         try:
-            response = self._complete(GAME_PLAN_PROMPT, user_message)
+            response = self._complete(GAME_PLAN_PROMPT, user_message, cancel=cancel)
         except Exception as e:
             logger.warning("game-plan LLM call failed (keeping prior plan): %s", e)
             return None
 
+        if cancel is not None and cancel.is_set():
+            logger.info("Discarded a superseded game plan (turn %d); keeping the prior plan", turn_num)
+            return None
+
+        if is_skipped_call_text(response):
+            # Skipped while the model server is down, or cancelled/dropped by
+            # the background lane: nothing failed, the prior plan stays.
+            logger.info("game-plan call not made (keeping prior plan): %s", str(response)[:160])
+            return None
         if is_backend_error_text(response):
             # The proxy returns an error sentinel instead of raising; on
             # 2026-10-06 five of seven plan calls timed out this way unlogged.
@@ -1066,12 +1477,19 @@ class GamePlanManager:
         )
         return plan
 
-    def _complete(self, system_prompt: str, user_message: str) -> str:
+    def _complete(
+        self, system_prompt: str, user_message: str, *, cancel: threading.Event | None = None
+    ) -> str:
         """Call the backend, tolerating the small signature differences across clients.
 
-        Background strategy: full reasoning and a larger token/time budget than
-        the per-decision calls, which stay on low reasoning effort.
+        Background strategy: low reasoning effort like the per-decision calls,
+        but a larger token/time budget (3000 tokens, 75 s). Labelled as
+        background work at low scheduling priority, and cancellable once its
+        turn has passed, where the backend supports those keywords.
         """
+        labels = accepted_call_kwargs(
+            self._backend, call_class=self._CALL_CLASS, priority=BACKGROUND_PRIORITY, cancel_event=cancel
+        )
         try:
             return self._backend.complete(
                 system_prompt,
@@ -1081,6 +1499,7 @@ class GamePlanManager:
                 request_timeout_s=self._timeout,
                 background=True,
                 reasoning_effort=self._PLAN_REASONING_EFFORT,
+                **labels,
             )
         except TypeError:
             pass

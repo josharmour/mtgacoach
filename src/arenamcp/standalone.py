@@ -50,6 +50,7 @@ from datetime import datetime
 from typing import Any
 
 from arenamcp.backend_health import (
+    LOCAL_FALLBACK_PREFIX,
     BackendHealth,
     HealthState,
     check_gateway_health,
@@ -58,6 +59,7 @@ from arenamcp.backend_health import (
 )
 from arenamcp.conversation import TURN_ADVICE, ConversationController
 from arenamcp.decision_arbiter import arbitrate
+from arenamcp.game_plan import STRATEGIC_LANE, background_llm_allowed, circuit_snapshot, llm_available
 from arenamcp.logging_config import LOG_DIR, LOG_FILE, configure_logging
 from arenamcp.mana import get_local_seat_id
 from arenamcp.settings import get_settings
@@ -487,6 +489,17 @@ class StandaloneCoach(
 
             def _on_health_transition(snapshot: dict[str, Any]) -> None:
                 try:
+                    snapshot = dict(snapshot)
+                    # The tracker keeps the last success detail; the boot
+                    # probe's "OK (208ms)" must not narrate later recoveries.
+                    boot_detail = getattr(self, "_startup_probe_detail", "")
+                    if (
+                        snapshot.get("state") == "ok"
+                        and getattr(self, "_startup_probe_reported", False)
+                        and boot_detail
+                        and snapshot.get("detail") == boot_detail
+                    ):
+                        snapshot["detail"] = "model responding again"
                     emit = getattr(self.ui, "emit_backend_health", None)
                     if callable(emit):
                         emit(snapshot)
@@ -517,7 +530,19 @@ class StandaloneCoach(
                 return
 
             self._startup_status("checking_connection", "Checking the model server connection…")
-            state, detail = check_gateway_health(backend)
+            probe_inference = (
+                getattr(backend, "probe_inference", None)
+                if getattr(type(backend), "probe_inference", None) is not None
+                else None
+            )
+            if callable(probe_inference):
+                # A 1-token completion: LiteLLM answers GET /models with vLLM
+                # dead ("OK (208ms)" at 18:50:46 on 2026-10-06, mid-outage).
+                state, detail = self._probe_inference_health(probe_inference)
+            else:
+                state, detail = check_gateway_health(backend)
+                if state is HealthState.OK:
+                    detail = f"{detail}; model list only, inference not tested yet"
             if state is HealthState.DOWN:
                 self._startup_connection_error = detail
             elif state is not HealthState.OK:
@@ -535,10 +560,43 @@ class StandaloneCoach(
                     )
             # Emit the boot snapshot so pipe-mode UIs get an initial state even
             # when no transition fired (probe OK from a fresh OK tracker).
-            _on_health_transition(BackendHealth.instance().snapshot())
+            boot = BackendHealth.instance().snapshot()
+            _on_health_transition(boot)
+            self._startup_probe_detail = boot.get("detail") or ""
+            self._startup_probe_reported = True
         except Exception as e:
             self._startup_connection_error = str(e)
             logger.debug(f"Startup backend health probe failed (non-fatal): {e}")
+
+    @staticmethod
+    def _probe_inference_health(probe: Any) -> tuple[HealthState, str]:
+        """Run the backend's 1-token inference probe; record it unless the probe did.
+
+        ProxyBackend.probe_inference records its own outcome in BackendHealth
+        and the shared circuit breaker; recording it again would count one
+        failure twice.
+        """
+        tracker = BackendHealth.instance()
+        before = tracker.snapshot()
+        try:
+            result = probe(timeout=8.0)
+        except Exception as error:
+            result = (False, f"inference probe failed: {error}")
+        if isinstance(result, tuple) and len(result) == 2:
+            ok, detail = bool(result[0]), str(result[1])
+        else:
+            ok, detail = bool(result), "inference probe"
+        after = tracker.snapshot()
+        recorded = (after.get("total_successes"), after.get("total_failures")) != (
+            before.get("total_successes"),
+            before.get("total_failures"),
+        )
+        if not recorded:
+            if ok:
+                tracker.record_success(detail=detail)
+            else:
+                tracker.record_failure(error=detail)
+        return (HealthState.OK if ok else HealthState.DOWN), detail
 
     def _emit_coach_game_plan(self, game_state: dict | None = None) -> None:
         """Push the coach's structured game plan to the UI strategy card.
@@ -563,6 +621,252 @@ class StandaloneCoach(
                 ui_fn(payload)
         except Exception as e:
             logger.debug(f"coach game-plan emit failed: {e}")
+
+    # ----- LLM call discipline -----------------------------------------------
+    #
+    # 2026-10-06 standalone.log: with the autopilot driving, the coach still
+    # made 14 threat_detected advice calls, a win-probability call and 31
+    # win-in-N calls (none ever read), and re-ran plan_actions on 15
+    # fall-throughs, all on the one vLLM server the autopilot's decision calls
+    # use. During the 18:49-18:54 outage every trigger kept paying for failing
+    # calls, and the empty-advice counter restarted the backend twice.
+
+    def _autopilot_drives(self, state: dict[str, Any] | None = None) -> bool:
+        """The autopilot is actually playing (this window), so the coach makes no model calls.
+
+        False whenever the player has to act, and the coach then advises as
+        before (2026-10-07 review: 537 of 798 fall-throughs got model advice
+        under the old code, e.g. "Choose X = 2 ..." in advise-only standby or
+        "Block Hushbringer with Icetill Explorer." with the bridge offline):
+        the setting is off; its engine has not started; it is PAUSED; it stands
+        by after the player's own play; its bridge is offline (a missing bridge
+        must never break the coach); or it handed ``state``'s window to the
+        player (MANUAL REQUIRED).
+        """
+        if not getattr(self, "_autopilot_enabled", False):
+            return False
+        engine = getattr(self, "_autopilot", None)
+        if engine is None:
+            return False
+        try:
+            if self._autopilot_control_status() != "AP:ON":
+                return False
+            cooling = getattr(engine, "in_manual_play_cooldown", None)
+            if callable(cooling) and cooling() is True:
+                return False
+            if not getattr(engine, "requires_desktop_poll", False):
+                bridge = getattr(engine, "_gre_bridge", None)
+                if bridge is not None and getattr(bridge, "connected", True) is False:
+                    return False
+            if state is not None:
+                given_up = getattr(engine, "is_window_given_up", None)
+                if callable(given_up) and given_up(state) is True:
+                    return False
+        except Exception as error:  # a status probe must never silence the coach
+            logger.debug(f"autopilot status check failed: {error}")
+            return False
+        return True
+
+    def _coach_backend(self) -> Any | None:
+        return getattr(getattr(self, "_coach", None), "_backend", None)
+
+    def _coach_llm_available(self) -> bool:
+        """False only while the model server's circuit breaker is open."""
+        backend = self._coach_backend()
+        return True if backend is None else llm_available(backend)
+
+    @staticmethod
+    def _backend_failure_total() -> int:
+        try:
+            return int(BackendHealth.instance().snapshot().get("total_failures") or 0)
+        except Exception:
+            return 0
+
+    def _empty_advice_is_backend_failure(self, failures_before: int) -> bool:
+        """Count an empty answer toward a backend restart only when a model call failed.
+
+        Deterministic empties (the planner withheld harmful targets: two were
+        counted at 18:57:32 on 2026-10-06) and calls skipped while the breaker
+        is open are not evidence of a hung backend, and restarting then only
+        started more failing deck-analysis calls (18:51:16, 18:57:44).
+        """
+        if not self._coach_llm_available():
+            return False
+        if int(circuit_snapshot(self._coach_backend()).get("consecutive_failures") or 0) > 0:
+            # The breaker has counted this failure: an outage is its job (it
+            # opens after 3-5), and a restart cannot fix the server. A fast
+            # failure (connection refused, instant 502) re-forced every 0.5 s
+            # reached 3 empties in ~2.7 s, before the breaker's 5th failure,
+            # and _reinit_coach threw the CoachEngine away (2026-10-07 review).
+            return False
+        return self._backend_failure_total() > failures_before
+
+    def _poll_model_circuit(self) -> None:
+        """One banner when the model server's circuit breaker opens, one when it closes."""
+        backend = self._coach_backend()
+        if backend is None:
+            return
+        open_now = not llm_available(backend)
+        if open_now == getattr(self, "_model_circuit_open", False):
+            return
+        self._model_circuit_open = open_now
+        circuit = circuit_snapshot(backend)
+        if open_now:
+            retry = circuit.get("retry_in_s")
+            retry_text = f"; retry in {retry:.0f}s" if isinstance(retry, (int, float)) else ""
+            detail = (
+                f"Model server unavailable (circuit open{retry_text}): advice uses board math "
+                "and the autopilot its deterministic fallbacks until it is back"
+            )
+            logger.warning(detail)
+        else:
+            detail = "Model server reachable again (circuit closed)"
+            logger.info(detail)
+        with contextlib.suppress(Exception):
+            self.ui.log(f"[BACKEND] {detail}")
+        emit = getattr(self.ui, "emit_backend_health", None)
+        if callable(emit):
+            snapshot = dict(BackendHealth.instance().snapshot())
+            snapshot.update(
+                state="down" if open_now else "ok", detail=detail, circuit=circuit, timestamp=time.time()
+            )
+            with contextlib.suppress(Exception):
+                emit(snapshot)
+
+    def _local_threat_line(self, game_state: dict[str, Any], threat: dict[str, Any]) -> str:
+        """The deterministic threat line (tagged), for display without a model call."""
+        line = ""
+        advise = getattr(getattr(self, "_coach", None), "deterministic_advice", None)
+        if callable(advise):
+            with contextlib.suppress(Exception):
+                line = advise(game_state, threat=threat) or ""
+        if not line:
+            line = f"Warning! {threat.get('name', 'Threat')}. {threat.get('warning', '')}".strip()
+        return f"{LOCAL_FALLBACK_PREFIX} {line}"
+
+    def _advise_without_llm(self, game_state: dict[str, Any], trigger: str, window_sig: str | None) -> None:
+        """The autopilot is still playing but fell through this trigger: advise with no model call.
+
+        (A window it handed to the player never gets here: see
+        :meth:`_autopilot_drives`.) Reuses the autopilot's own advice for the
+        window when it has some,
+        else the deterministic line (combat solver or board math), at most
+        once per window and advice text.
+        """
+        advice = None
+        source = "autopilot plan"
+        reuse = getattr(self._autopilot, "get_reusable_advice", None)
+        if callable(reuse):
+            with contextlib.suppress(Exception):
+                advice = reuse(game_state)
+        if not advice:
+            source = "board math"
+            advise = getattr(getattr(self, "_coach", None), "deterministic_advice", None)
+            line = ""
+            if callable(advise):
+                with contextlib.suppress(Exception):
+                    line = advise(game_state, trigger=trigger) or ""
+            advice = f"{LOCAL_FALLBACK_PREFIX} {line}" if line else None
+        if not advice:
+            logger.info(f"Autopilot on: no coach model call for {trigger}, and no local advice to give")
+            return
+        turn = game_state.get("turn") or {}
+        window = (
+            game_state.get("match_id"),
+            turn.get("turn_number"),
+            turn.get("phase"),
+            turn.get("step"),
+            window_sig or game_state.get("pending_decision"),
+            advice,
+        )
+        if window == getattr(self, "_last_local_advice_window", None):
+            logger.debug(f"Local advice already given for this window: {advice[:60]!r}")
+            return
+        self._last_local_advice_window = window
+        logger.info(f"ADVICE ({source}, autopilot on, no model call): {advice}")
+        self._record_advice(advice, trigger, game_state=game_state)
+        with contextlib.suppress(Exception):
+            self.ui.advice(advice, "AUTOPILOT" if source == "autopilot plan" else "LOCAL")
+        self.speak_advice(advice, blocking=False)
+
+    def _maybe_refresh_game_plan(self, state: dict[str, Any]) -> None:
+        """Start a due game-plan reform while no decision is pending (no-op when none is due).
+
+        The plan for our next turn then forms during the opponent's turn
+        without sharing the server with a decision call. The manager's
+        cadence, the strategic lane and the breaker decide whether anything
+        is sent.
+        """
+        coach = getattr(self, "_coach", None)
+        ensure = getattr(coach, "_ensure_game_plan_mgr", None)
+        if not callable(ensure) or getattr(self, "draft_mode", False):
+            return
+        turn = state.get("turn") or {}
+        if not turn.get("turn_number") or not state.get("match_id") or state.get("game_over"):
+            return
+        if state.get("pending_decision") or state.get("stack"):
+            return
+        if getattr(self, "_autopilot_enabled", False):
+            # The autopilot makes no strategy calls in AFK / land-drop modes.
+            config = getattr(getattr(self, "_autopilot", None), "_config", None)
+            if getattr(config, "afk_mode", False) or getattr(config, "land_drop_mode", False):
+                return
+        try:
+            mgr = ensure()
+            if mgr is None:
+                return
+            mgr.seed(getattr(coach, "_deck_strategy", None))
+            on_updated = None
+            if not self._autopilot_drives():
+
+                def on_updated() -> None:
+                    self._emit_coach_game_plan(state)
+
+            mgr.request_reform(state, on_updated=on_updated)
+        except Exception as error:
+            logger.debug(f"game-plan refresh skipped: {error}")
+
+    def _auto_win_plan_allowed(self, state: dict[str, Any]) -> bool:
+        """Whether the automatic win-in-2/3 check may run at the start of our turn.
+
+        On by default for coaching (setting ``auto_win_plan``; False turns it
+        off). On 2026-10-06 it made 31 calls, 0 useful, and both "VIABLE"
+        answers came while the opponent had lethal on board, so it never runs
+        while the autopilot setting is on, while the model server is down, or
+        when the board math says they kill us next attack or we have no clock.
+        """
+        if getattr(self, "_autopilot_enabled", False):
+            return False
+        settings = getattr(self, "settings", None)
+        if settings is not None and not bool(settings.get("auto_win_plan", True)):
+            return False
+        backend = self._coach_backend()
+        if backend is not None and not background_llm_allowed(backend):
+            return False
+        try:
+            from arenamcp.board_assessment import assess
+
+            assessment = assess(state)
+        except Exception as error:
+            logger.debug(f"board assessment unavailable for the win-in-N gate: {error}")
+            assessment = None
+        if assessment is not None and (
+            assessment.opp_lethal_on_board or assessment.their_clock == 1 or assessment.our_clock is None
+        ):
+            logger.info(f"Win-in-N check skipped (board math): {assessment.facts_line()}")
+            return False
+        return True
+
+    def _run_win_plan_worker(self, state: dict[str, Any]) -> None:
+        """The win-in-N worker, holding the strategic lane (one background job at a time)."""
+        token = STRATEGIC_LANE.try_acquire("win_in_n")
+        if token is None:
+            logger.info(f"Win-in-N check skipped: {STRATEGIC_LANE.holder} holds the strategic lane")
+            return
+        try:
+            self._win_plan_worker(state)
+        finally:
+            STRATEGIC_LANE.release(token)
 
     @property
     def backend_name(self) -> str:
@@ -1472,6 +1776,7 @@ class StandaloneCoach(
             try:
                 self._sync_narration_mode()
                 self._publish_arena_connection_status()
+                self._poll_model_circuit()
                 # Poll for new log content (watchdog backup - Windows often misses events)
                 self._mcp.poll_log()
 
@@ -2003,6 +2308,8 @@ class StandaloneCoach(
 
                 # Reanalyze when the deck or designated commander changes.
                 self._maybe_analyze_deck(curr_state)
+                # Plan our next turn while no decision is pending.
+                self._maybe_refresh_game_plan(curr_state)
 
                 # Dead no matter what? Recommend conceding (once per game) and,
                 # with autoplay on, run the cancellable auto-concede countdown.
@@ -2348,17 +2655,23 @@ class StandaloneCoach(
                                 self._pending_win_plan = None
                                 self.ui.status("WIN-PLAN", "")
 
-                            # Spawn background win plan worker (non-blocking)
-                            # Skip when autopilot is active — it handles its own strategy
+                            # Background win-in-N worker (non-blocking): opt-in,
+                            # never while the autopilot drives, board-math gated,
+                            # and one strategic background job at a time.
                             _active = curr_state.get("turn", {}).get("active_player", 0)
                             _local = self._get_local_seat_from_state(curr_state)
                             _is_my_turn = (_active == _local) if _local else False
-                            if _is_my_turn and turn_num > self._win_plan_turn:
+                            if (
+                                _is_my_turn
+                                and turn_num > self._win_plan_turn
+                                and self._auto_win_plan_allowed(curr_state)
+                            ):
                                 self._win_plan_turn = turn_num
                                 threading.Thread(
-                                    target=self._win_plan_worker,
+                                    target=self._run_win_plan_worker,
                                     args=(curr_state,),
                                     daemon=True,
+                                    name="win-plan",
                                 ).start()
 
                         # VISION TRIGGER: Scry/Surveil (Group Selection) decisions
@@ -2632,6 +2945,17 @@ class StandaloneCoach(
 
                         # THREAT DETECTION: fast targeted coaching for dangerous permanents.
                         if trigger == "losing_badly" and self._coach:
+                            _driving = self._autopilot_drives(curr_state)
+                            if _driving or not self._coach_llm_available():
+                                logger.info(
+                                    "Skipping win probability check: "
+                                    + (
+                                        "the autopilot is driving (no coach model call)"
+                                        if _driving
+                                        else "model server unavailable"
+                                    )
+                                )
+                                continue
                             if self._concede_recommended_this_game((curr_match_id, self._match_number)):
                                 logger.info(
                                     "Skipping win probability check: the board-math concede "
@@ -2652,6 +2976,14 @@ class StandaloneCoach(
 
                         if trigger == "threat_detected" and hasattr(self._trigger, "_last_threat"):
                             threat = self._trigger._last_threat
+                            if self._autopilot_drives(curr_state):
+                                # The autopilot narrates its own plays; a coach
+                                # call here only competes with its decision calls.
+                                local = self._local_threat_line(curr_state, threat)
+                                logger.info(f"THREAT (autopilot on, no model call): {local}")
+                                with contextlib.suppress(Exception):
+                                    self.ui.log(f"[THREAT] {local}")
+                                continue
                             advice = (
                                 self._coach.get_advice(
                                     curr_state,
@@ -2735,9 +3067,20 @@ class StandaloneCoach(
                             last_advice_phase = phase
                             continue
 
+                        # The autopilot is playing this window (not paused,
+                        # standing by, bridge-less or MANUAL REQUIRED): the
+                        # coach makes no model calls of its own. It reuses the
+                        # autopilot's advice for this window or gives
+                        # board-math advice. Otherwise the player acts and the
+                        # coach advises as before.
+                        if self._autopilot_drives(curr_state):
+                            self._advise_without_llm(curr_state, trigger, pending_decision_sig)
+                            continue
+
                         if self._coach:
                             # Snapshot turn state BEFORE the (slow) LLM call
                             pre_advice_turn = turn_num
+                            failures_before = self._backend_failure_total()
                             pre_advice_phase = phase
                             pre_advice_active_player = turn.get("active_player")
 
@@ -2759,12 +3102,15 @@ class StandaloneCoach(
                             # the coach narrates the turn (what to do with the
                             # mana, not just the land drop). Autopilot and the
                             # quick style keep the fast planner path.
+                            # Model server down: get_advice answers with board
+                            # math at once; the planner would only come back empty.
                             use_planner_advice = (
                                 self._autopilot
                                 and hasattr(self._autopilot, "_planner")
                                 and (
                                     self._autopilot_enabled or self.advice_style not in ("chatty", "verbose")
                                 )
+                                and self._coach_llm_available()
                             )
                             if use_planner_advice:
                                 # P2-3: when autopilot just planned this exact
@@ -2895,6 +3241,12 @@ class StandaloneCoach(
                             # NOTE: Do NOT update last_advice_turn before this check.
                             # Empty responses should not suppress future triggers.
                             if not advice or not advice.strip():
+                                if not self._empty_advice_is_backend_failure(failures_before):
+                                    logger.info(
+                                        "Empty advice without a model failure (deterministic, "
+                                        "or model offline) — not counted toward a backend restart"
+                                    )
+                                    continue
                                 self._consecutive_errors = getattr(self, "_consecutive_errors", 0) + 1
                                 max_errors = getattr(self, "_max_errors_before_fallback", 3)
                                 logger.warning(

@@ -203,7 +203,7 @@ def test_one_schema_repair_then_publish_or_report_failure(deck):
     assert "failed validation" in backend.complete.call_args_list[2].args[1]
     assert backend.complete.call_count == 3
     backend.complete.side_effect = ["Discovery notes"] + ['{"archetype":"too brief"}'] * 2
-    assert coach.analyze_deck(state) is None
+    assert coach.analyze_deck(state, refresh=True) is None
     assert coach._deck_playbook is None and coach._deck_strategy is None
     assert coach._deck_analysis_error and not coach._deck_strategy_pending
 
@@ -221,7 +221,7 @@ def test_only_audited_policy_is_published_and_failed_audit_leaves_no_stale_plan(
     assert "An unreviewed policy." in audit_prompt
     assert "A spent ETB is not a continuing benefit" in audit_prompt
     backend.complete.side_effect = [json.dumps(draft), "[BACKEND ERROR] timed out"]
-    assert coach.analyze_deck(state) is None
+    assert coach.analyze_deck(state, refresh=True) is None
     assert coach._deck_playbook is None and coach._deck_strategy is None
 
 
@@ -470,8 +470,14 @@ def test_background_learning_starts_during_opening_hand_without_changing_tactica
     assert runtime._maybe_analyze_deck(state)
     workers[0]()
     assert background.enable_thinking is False
+    # Discovery reasons with full thinking; the JSON compile pass runs at low effort.
     assert background.complete.call_args_list[0].kwargs["enable_thinking"] is True
+    assert "reasoning_effort" not in background.complete.call_args_list[0].kwargs
     assert background.complete.call_args_list[-1].kwargs["enable_thinking"] is False
+    assert background.complete.call_args_list[-1].kwargs["reasoning_effort"] == "low"
+    assert all(
+        call.kwargs["call_class"] == "background.deck_playbook" for call in background.complete.call_args_list
+    )
     assert tactical.enable_thinking is False
     tactical.complete.assert_not_called()
     assert runtime._coach._deck_playbook
