@@ -205,16 +205,15 @@ def assemble_state(results: list[Any], index: dict[str, int]) -> dict[str, Any]:
         return {"ok": False, "error": "No active game state"}
 
     # -- players -----------------------------------------------------------
-    players_node = result("players")
+    players = [player for player in items(result("players")) if isinstance(player, dict)]
+    seat_member = "InstanceId" if _instance_ids_are_seats(players) else "ControllerId"
     player_rows: list[dict[str, Any]] = []
     players_by_handle: dict[int, dict[str, Any]] = {}
 
-    for player in items(players_node):
-        if not isinstance(player, dict):
-            continue
+    for player in players:
         player_num = enum_name(field(player, "ClientPlayerEnum"))
         row: dict[str, Any] = {
-            "seat_id": num(field(player, "ControllerId")),
+            "seat_id": num(field(player, seat_member)),
             "life_total": num(field(player, "LifeTotal")),
             "is_local": player_num == "LocalPlayer",
             "status": enum_name(field(player, "Status")),
@@ -248,8 +247,9 @@ def assemble_state(results: list[Any], index: dict[str, int]) -> dict[str, Any]:
             row["designations"] = designations
         player_rows.append(row)
         node_handle = handle(player)
-        if node_handle is not None:
+        if node_handle:  # 0 = the probe had no handle; it never identifies a player
             players_by_handle[node_handle] = row
+    seats = _PlayerSeats(players_by_handle, player_rows)
 
     # -- turn --------------------------------------------------------------
     turn = {
@@ -271,7 +271,7 @@ def assemble_state(results: list[Any], index: dict[str, int]) -> dict[str, Any]:
         cards: list[dict[str, Any]] = []
         for card_node in items(field(zone_node, "VisibleCards")):
             if isinstance(card_node, dict) and "$c" in card_node:
-                cards.append(_card_entry(card_node))
+                cards.append(_card_entry(card_node, seats))
         zones[key] = {
             "zone_id": num(field(zone_node, "Id")),
             "total_count": _zone_count(result(f"{key}_count")),
@@ -316,12 +316,66 @@ def _zone_count(value: Any) -> int | None:
 def _seat_of(node: Any, players_by_handle: dict[int, dict[str, Any]]) -> int:
     """Resolve an MtgPlayer reference dump to its seat id."""
     node_handle = handle(node)
-    if node_handle is not None and node_handle in players_by_handle:
+    if node_handle and node_handle in players_by_handle:
         return int(players_by_handle[node_handle]["seat_id"])
     return 0
 
 
-def _card_entry(node: dict[str, Any]) -> dict[str, Any]:
+def _instance_ids_are_seats(players: list[dict[str, Any]]) -> bool:
+    """Whether MtgPlayer.InstanceId is the player's seat in this dump.
+
+    The client builds each MtgPlayer with InstanceId = PlayerInfo.SystemSeatNumber
+    and ControllerId = PlayerInfo.ControllerSeatId (GreInterface.cs), and links
+    every card's Owner/Controller to GetPlayerById(ownerSeatId/controllerSeatId),
+    which matches on InstanceId. ControllerId differs only while another seat
+    controls that player's turn: bug_20261004_092517 (Emrakul, the Promised End)
+    published both players as seat 2 because the plugin-parity read used it.
+    InstanceIds are seats only if they are distinct, set, and name every
+    ControllerId; otherwise keep the plugin's ControllerId reading.
+    """
+    instance_ids = [num(field(player, "InstanceId")) for player in players]
+    controller_ids = {num(field(player, "ControllerId")) for player in players} - {0}
+    return (
+        bool(instance_ids)
+        and 0 not in instance_ids
+        and len(set(instance_ids)) == len(instance_ids)
+        and controller_ids <= set(instance_ids)
+    )
+
+
+class _PlayerSeats:
+    """Card Owner/Controller references -> seats in the player rows' seat space.
+
+    A zone op dumps the first reference to each player in full; later ones
+    collapse to ``{"$h", "$ref": true}`` (fresh encoder per op). Handles are
+    stable across the ops of one batch, so a reference resolves by ``$h``
+    against the Players op, or by its InstanceId when it was dumped in full.
+    Unresolved references give no seat (the server keeps the Player.log seat).
+    """
+
+    def __init__(self, players_by_handle: dict[int, dict[str, Any]], rows: list[dict[str, Any]]):
+        self._by_handle = {h: row["seat_id"] for h, row in players_by_handle.items() if row.get("seat_id")}
+        by_entity: dict[int, int] = {}
+        for row in rows:
+            entity, seat = row.get("entity_id"), row.get("seat_id")
+            if entity and seat:
+                by_entity[entity] = 0 if entity in by_entity else seat  # duplicate entity: ambiguous
+        self._by_entity = {entity: seat for entity, seat in by_entity.items() if seat}
+
+    def seat(self, ref: Any) -> int | None:
+        if not isinstance(ref, dict):
+            return None
+        ref_handle = handle(ref)
+        if ref_handle and ref_handle in self._by_handle:
+            return self._by_handle[ref_handle]
+        seat = self._by_entity.get(num(field(ref, "InstanceId")))
+        if seat and ref_handle:
+            # A full dump precedes its $ref repeats within an op: remember it.
+            self._by_handle[ref_handle] = seat
+        return seat or None
+
+
+def _card_entry(node: dict[str, Any], seats: _PlayerSeats | None = None) -> dict[str, Any]:
     """Shape one card from a pruned MtgCardInstance dump."""
     entry: dict[str, Any] = {
         "instance_id": num(field(node, "InstanceId")),
@@ -340,6 +394,15 @@ def _card_entry(node: dict[str, Any]) -> dict[str, Any]:
     controller_ref = field(node, "Controller")
     entry["owner_entity_id"] = num(field(owner_ref, "InstanceId"))
     entry["controller_entity_id"] = num(field(controller_ref, "InstanceId"))
+    # The plugin's seat keys (server._serialize_bridge_card reads these);
+    # absent, not 0, when unresolved so the Player.log seat stays the fallback.
+    if seats is not None:
+        owner_seat = seats.seat(owner_ref)
+        controller_seat = seats.seat(controller_ref)
+        if owner_seat:
+            entry["owner_id"] = owner_seat
+        if controller_seat:
+            entry["controller_id"] = controller_seat
 
     power = _sbi(field(node, "Power"))
     toughness = _sbi(field(node, "Toughness"))
