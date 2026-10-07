@@ -1,0 +1,850 @@
+{
+ "match_id": "91e054ef-6006-49bc-8c36-f1ee36cc738d",
+ "event_id": "",
+ "format_name": "",
+ "local_seat_id": 2,
+ "opponent_seat_id": 1,
+ "turn": {
+  "turn_number": 10,
+  "active_player": 2,
+  "priority_player": 2,
+  "phase": "Combat",
+  "step": "DeclareBlock",
+  "pending_combat_steps": [],
+  "stage": "Play"
+ },
+ "players": [
+  {
+   "seat_id": 1,
+   "life_total": 23,
+   "lands_played": 0,
+   "mana_pool": {},
+   "team_id": 1,
+   "status": "InGame",
+   "controller_seat_id": 1,
+   "is_local": false,
+   "mulligan_count": 1,
+   "timeout_count": 1
+  },
+  {
+   "seat_id": 2,
+   "life_total": 20,
+   "lands_played": 1,
+   "mana_pool": {},
+   "team_id": 2,
+   "status": "InGame",
+   "controller_seat_id": 2,
+   "is_local": true,
+   "mulligan_count": 0,
+   "timeout_count": 1
+  }
+ ],
+ "battlefield": [
+  {
+   "instance_id": 240,
+   "grp_id": 106433,
+   "name": "Room of Refuge",
+   "oracle_text": "This land enters tapped. As it enters, choose a color.\n{oT}: Add one mana of the chosen color.\n{o5}, {oT}, Sacrifice this land: Put two +1/+1 counters on target creature. Activate only as a sorcery.\n{o5}, {oT}, Sacrifice this land: Put two <nobr>+1/+1</nobr> counters on target creature. Activate only as a sorcery.\n{o5}, {oT}, Sacrifice this land: Put two +1/+1 counters on target creature. Activate only as a sorcery.",
+   "type_line": "Land",
+   "mana_cost": "",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": 1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Green"
+   ],
+   "base_grp_id": 106433
+  },
+  {
+   "instance_id": 242,
+   "grp_id": 75554,
+   "name": "Island",
+   "oracle_text": "({T}: Add {U}.)",
+   "type_line": "Basic Land — Island",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": 2,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Island"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Blue"
+   ],
+   "base_grp_id": 75554
+  },
+  {
+   "instance_id": 247,
+   "grp_id": 96180,
+   "name": "Plains",
+   "oracle_text": "({T}: Add {W}.)",
+   "type_line": "Basic Land — Plains",
+   "mana_cost": "",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 3,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Plains"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "White"
+   ],
+   "base_grp_id": 96180
+  },
+  {
+   "instance_id": 249,
+   "grp_id": 106428,
+   "name": "Konstrari Annex",
+   "oracle_text": "This land enters tapped unless you control a planeswalker.\n{oT}: Add {oR} or {oG}.",
+   "type_line": "Land",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": 4,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Red",
+    "Green"
+   ],
+   "base_grp_id": 106428
+  },
+  {
+   "instance_id": 255,
+   "grp_id": 96192,
+   "name": "Forest",
+   "oracle_text": "({T}: Add {G}.)",
+   "type_line": "Basic Land — Forest",
+   "mana_cost": "",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 5,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Forest"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Green"
+   ],
+   "base_grp_id": 96192
+  },
+  {
+   "instance_id": 256,
+   "grp_id": 106512,
+   "name": "Way of the Paradox",
+   "oracle_text": "When Way of the Paradox enters, empower Jace 5.\nWhenever you activate a loyalty ability, you gain 1 life. You may play an additional land this turn.",
+   "type_line": "Legendary Enchantment",
+   "mana_cost": "{2}{G}",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": 5,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Enchantment"
+   ],
+   "subtypes": [],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Green"
+   ],
+   "base_grp_id": 106512
+  },
+  {
+   "instance_id": 265,
+   "grp_id": 96180,
+   "name": "Plains",
+   "oracle_text": "({T}: Add {W}.)",
+   "type_line": "Basic Land — Plains",
+   "mana_cost": "",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 5,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Plains"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "White"
+   ],
+   "base_grp_id": 96180
+  },
+  {
+   "instance_id": 266,
+   "grp_id": 106471,
+   "name": "Yuriko, Hope from the Shadows",
+   "oracle_text": "Flash\nWhen Yuriko enters, choose one — \n•Target creature gets -X/-0 until end of turn, where X is the number of cards in your graveyard. \n•Surveil 2.\nWhen Yuriko enters, choose one<nobr> —</nobr> \n•<indent=4%>Target creature gets <nobr>-X/-0</nobr> until end of turn, where X is the number of cards in your graveyard. </indent>\n•<indent=4%>Surveil 2.</indent>\nWhen Yuriko enters, choose one — \n•Target creature gets -X/-0 until end of turn, where X is the number of cards in your graveyard. \n•Surveil 2.",
+   "type_line": "Legendary Creature — Human Ninja",
+   "mana_cost": "{U}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 1,
+   "toughness": 1,
+   "is_tapped": true,
+   "turn_entered_battlefield": 5,
+   "is_attacking": true,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Human",
+    "Ninja"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "attack_target_id": 341,
+   "colors": [
+    "Blue"
+   ],
+   "base_grp_id": 106471
+  },
+  {
+   "instance_id": 274,
+   "grp_id": 75557,
+   "name": "Swamp",
+   "oracle_text": "({T}: Add {B}.)",
+   "type_line": "Basic Land — Swamp",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": 6,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Swamp"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Black"
+   ],
+   "base_grp_id": 75557
+  },
+  {
+   "instance_id": 275,
+   "grp_id": 106419,
+   "name": "Murmuring Volume",
+   "oracle_text": "{oT}: Add one mana of any color.\n{o2}, {oT}, Discard a card: Draw a card.",
+   "type_line": "Artifact — Book",
+   "mana_cost": "{3}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": 6,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Artifact"
+   ],
+   "subtypes": [
+    "Book"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "base_grp_id": 106419
+  },
+  {
+   "instance_id": 280,
+   "grp_id": 106509,
+   "name": "Pia, Aether Ascetic",
+   "oracle_text": "When Pia enters, you may discard a card. If you do, search your library for an enchantment card, reveal it, put it into your hand, then shuffle.",
+   "type_line": "Legendary Creature — Human Druid",
+   "mana_cost": "{2}{G}",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": 2,
+   "toughness": 2,
+   "is_tapped": true,
+   "turn_entered_battlefield": 7,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Human",
+    "Druid"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Green"
+   ],
+   "base_grp_id": 106509
+  },
+  {
+   "instance_id": 322,
+   "grp_id": 75554,
+   "name": "Island",
+   "oracle_text": "({T}: Add {U}.)",
+   "type_line": "Basic Land — Island",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": 8,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Island"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Blue"
+   ],
+   "base_grp_id": 75554
+  },
+  {
+   "instance_id": 328,
+   "grp_id": 106555,
+   "name": "Jace",
+   "oracle_text": "Surveil 1.\nDraw a card.",
+   "type_line": "Token Planeswalker — Jace",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": 8,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Planeswalker"
+   ],
+   "subtypes": [
+    "Jace"
+   ],
+   "object_kind": "TOKEN",
+   "counters": {
+    "Loyalty": 1
+   },
+   "parent_instance_id": 323,
+   "loyalty": 1,
+   "colors": [
+    "Blue"
+   ],
+   "base_grp_id": 106555
+  },
+  {
+   "instance_id": 334,
+   "grp_id": 96192,
+   "name": "Forest",
+   "oracle_text": "({T}: Add {G}.)",
+   "type_line": "Basic Land — Forest",
+   "mana_cost": "",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 9,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Forest"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Green"
+   ],
+   "base_grp_id": 96192
+  },
+  {
+   "instance_id": 335,
+   "grp_id": 106452,
+   "name": "Way of the Healer",
+   "oracle_text": "When Way of the Healer enters, empower Jace 5.\nPlaneswalkers you control have \"[-2]: Create a 2/2 colorless Wizard Soldier creature token named Cadet. Surveil 1.\"",
+   "type_line": "Legendary Enchantment",
+   "mana_cost": "{3}{W}",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": 9,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Enchantment"
+   ],
+   "subtypes": [],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "White"
+   ],
+   "base_grp_id": 106452
+  },
+  {
+   "instance_id": 341,
+   "grp_id": 106555,
+   "name": "Jace",
+   "oracle_text": "Surveil 1.\nDraw a card.",
+   "type_line": "Token Planeswalker — Jace",
+   "mana_cost": "",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": 9,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Planeswalker"
+   ],
+   "subtypes": [
+    "Jace"
+   ],
+   "object_kind": "TOKEN",
+   "counters": {
+    "Loyalty": 2
+   },
+   "parent_instance_id": 340,
+   "loyalty": 2,
+   "colors": [
+    "Blue"
+   ],
+   "base_grp_id": 106555
+  },
+  {
+   "instance_id": 346,
+   "grp_id": 75557,
+   "name": "Swamp",
+   "oracle_text": "({T}: Add {B}.)",
+   "type_line": "Basic Land — Swamp",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": 10,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Swamp"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Black"
+   ],
+   "base_grp_id": 75557
+  }
+ ],
+ "hand": [
+  {
+   "instance_id": 161,
+   "grp_id": 106417,
+   "name": "Living Library",
+   "oracle_text": "{o6}, Sacrifice this creature: Choose target creature or planeswalker an opponent controls. Its owner shuffles it into their library.",
+   "type_line": "Artifact Creature — Book Illusion",
+   "mana_cost": "{2}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 0,
+   "toughness": 4,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Artifact",
+    "Creature"
+   ],
+   "subtypes": [
+    "Book",
+    "Illusion"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "base_grp_id": 106417
+  },
+  {
+   "instance_id": 241,
+   "grp_id": 106413,
+   "name": "Codie, Ravenous Codex",
+   "oracle_text": "Whenever you cast a prepare spell, copy it. You may choose new targets for the copy.\n{oWoUoBoRoG}, {oT}: Each creature you control becomes prepared. (Only creatures with prepare spells can become prepared.)\n{oWoUoBoRoG}, {oT}: Each creature you control becomes prepared. <i>(Only creatures with prepare spells can become prepared.)</i>\n{oWoUoBoRoG}, {oT}: Each creature you control becomes prepared. (Only creatures with prepare spells can become prepared.)",
+   "type_line": "Legendary Artifact Creature — Book Construct",
+   "mana_cost": "{3}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 1,
+   "toughness": 4,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Artifact",
+    "Creature"
+   ],
+   "subtypes": [
+    "Book",
+    "Construct"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "base_grp_id": 106413
+  },
+  {
+   "instance_id": 329,
+   "grp_id": 106459,
+   "name": "Geist of Saint Thalia",
+   "oracle_text": "Flying\nNoncreature spells you cast cost {o1} less to cast.",
+   "type_line": "Legendary Creature — Spirit Cleric",
+   "mana_cost": "{1}{U}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 1,
+   "toughness": 2,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Spirit",
+    "Cleric"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "keywords": [
+    "flying"
+   ],
+   "colors": [
+    "Blue"
+   ],
+   "base_grp_id": 106459
+  },
+  {
+   "instance_id": 332,
+   "grp_id": 75554,
+   "name": "Island",
+   "oracle_text": "({T}: Add {U}.)",
+   "type_line": "Basic Land — Island",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Island"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "base_grp_id": 75554
+  },
+  {
+   "instance_id": 345,
+   "grp_id": 106298,
+   "name": "Theoretical Necromancer",
+   "oracle_text": "{o3oB}, Exile this card from your graveyard: Return another target creature card from your graveyard to your hand.",
+   "type_line": "Creature — Vampire Warlock",
+   "mana_cost": "{2}{B}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 4,
+   "toughness": 1,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Vampire",
+    "Warlock"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Black"
+   ],
+   "base_grp_id": 106298
+  }
+ ],
+ "graveyard": [
+  {
+   "instance_id": 271,
+   "grp_id": 106253,
+   "name": "Diviner of Victory",
+   "oracle_text": "This creature enters prepared.\nWhenever you scry or surveil, this creature gets +1/+1 until end of turn.\nWhenever you scry or surveil, this creature gets <nobr>+1/+1</nobr> until end of turn.\nWhenever you scry or surveil, this creature gets +1/+1 until end of turn.",
+   "type_line": "Creature — Dwarf Wizard",
+   "mana_cost": "{U}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 1,
+   "toughness": 1,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Dwarf",
+    "Wizard"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Blue"
+   ],
+   "base_grp_id": 106253
+  },
+  {
+   "instance_id": 330,
+   "grp_id": 106263,
+   "name": "Protege's Awakening",
+   "oracle_text": "Empower Jace 6.\nDraw a card.",
+   "type_line": "Sorcery",
+   "mana_cost": "{3}{U}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Sorcery"
+   ],
+   "subtypes": [],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Blue"
+   ],
+   "base_grp_id": 106263
+  },
+  {
+   "instance_id": 272,
+   "grp_id": 106449,
+   "name": "Teyo, Lightshield Expert",
+   "oracle_text": "Flash\nWhen Teyo enters, target permanent you control gains hexproof until end of turn. Put a +1/+1 counter on it if it's a creature. Put a loyalty counter on it if it's a planeswalker.\nWhen Teyo enters, target permanent you control gains hexproof until end of turn. Put a <nobr>+1/+1</nobr> counter on it if it's a creature. Put a loyalty counter on it if it's a planeswalker.\nWhen Teyo enters, target permanent you control gains hexproof until end of turn. Put a +1/+1 counter on it if it's a creature. Put a loyalty counter on it if it's a planeswalker.",
+   "type_line": "Legendary Creature — Human Cleric",
+   "mana_cost": "{1}{W}",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": 1,
+   "toughness": 1,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Human",
+    "Cleric"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "White"
+   ],
+   "base_grp_id": 106449
+  },
+  {
+   "instance_id": 285,
+   "grp_id": 106226,
+   "name": "Academic Ascent",
+   "oracle_text": "Target creature gets +2/+2 and gains flying until end of turn.\nTarget creature gets <nobr>+2/+2</nobr> and gains flying until end of turn.\nTarget creature gets +2/+2 and gains flying until end of turn.\nEmpower Jace 2.",
+   "type_line": "Instant",
+   "mana_cost": "{1}{W}",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Instant"
+   ],
+   "subtypes": [],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "White"
+   ],
+   "base_grp_id": 106226
+  }
+ ],
+ "exile": [],
+ "stack": [],
+ "command": [],
+ "deck_cards": [
+  106390,
+  106259,
+  106264,
+  106253,
+  106269,
+  106459,
+  106416,
+  106369,
+  106466,
+  106298,
+  106471,
+  106290,
+  106279,
+  106413,
+  106417,
+  106287,
+  106285,
+  106399,
+  106263,
+  106256,
+  106419,
+  106419,
+  106469,
+  106437,
+  106428,
+  75554,
+  75554,
+  75554,
+  75554,
+  75554,
+  75554,
+  75554,
+  75554,
+  75554,
+  75554,
+  75557,
+  75557,
+  75557,
+  75557,
+  75557
+ ],
+ "decision_context": {
+  "type": "declare_attackers",
+  "legal_attackers": [
+   "Yuriko, Hope from the Shadows"
+  ],
+  "legal_attacker_ids": [
+   266
+  ],
+  "raw_attackers": [
+   {
+    "attackerInstanceId": 266,
+    "legalDamageRecipients": [
+     {
+      "type": "DamageRecType_Player",
+      "playerSystemSeatId": 1
+     },
+     {
+      "type": "DamageRecType_PlanesWalker",
+      "planeswalkerInstanceId": 341
+     }
+    ]
+   }
+  ]
+ },
+ "pending_decision": "Declare Attackers",
+ "zones": {
+  "opponent_hand_count": 3,
+  "library_count": 26,
+  "library_count_source": "bridge_total_card_count"
+ }
+}
