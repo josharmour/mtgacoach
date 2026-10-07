@@ -221,6 +221,23 @@ def llm_circuit_open(backend: Any) -> bool:
     return state is False
 
 
+def model_unreachable(plan: Any, backend: Any = None) -> bool:
+    """``plan`` is empty because the model server can't be reached now, not merely slow.
+
+    True for a FALLBACK_LLM_UNAVAILABLE plan while ``backend``'s circuit
+    breaker is open, or when the call failed with the circuit open, the
+    proxy's 'model server unavailable' skip, or a connection error. A timeout
+    or any other error is not: a slow planner says nothing about the separate
+    vision model (2026-10-06 18:53: 30 s planning timeouts with vision fine).
+    """
+    if getattr(plan, "fallback_reason", "") != FALLBACK_LLM_UNAVAILABLE:
+        return False
+    if llm_circuit_open(backend):
+        return True
+    detail = str(getattr(plan, "fallback_detail", "") or "").lower()
+    return any(mark in detail for mark in ("circuit open", "model server unavailable", "connect"))
+
+
 def is_llm_unavailable_error(error: BaseException) -> bool:
     """A model-server failure (circuit open, timeout, transport, HTTP), not a bad answer."""
     if isinstance(
@@ -271,6 +288,10 @@ class ActionPlan:
     # and fallbacks stop being identified. Bug reports and logs rely on this
     # structured tag to tell model decisions from deterministic ones.
     fallback_reason: str = ""
+    # With FALLBACK_LLM_UNAVAILABLE: how the model call failed ("timeout",
+    # "llm_unavailable: circuit open", "llm_error: <error>", ...), so callers can
+    # tell a server that can't be reached from one that was only slow.
+    fallback_detail: str = ""
 
     def spoken_actions(self) -> str:
         """Describe validated actions, never a separate model-generated recommendation."""
@@ -866,7 +887,12 @@ class ActionPlanner(_ActionLegalityMixin):
         diag["failure"] = failure
         diag["elapsed_ms"] = (time.perf_counter() - start) * 1000
         self._record_diagnostic(diag)
-        return ActionPlan(trigger=trigger, turn_number=turn, fallback_reason=FALLBACK_LLM_UNAVAILABLE)
+        return ActionPlan(
+            trigger=trigger,
+            turn_number=turn,
+            fallback_reason=FALLBACK_LLM_UNAVAILABLE,
+            fallback_detail=failure,
+        )
 
     def plan_actions(
         self,
@@ -1085,7 +1111,9 @@ class ActionPlanner(_ActionLegalityMixin):
             return self._llm_unavailable_plan(trigger, current_turn, diag, start, "timeout")
         except LLMUnavailableError as e:
             logger.error(f"Backend returned error sentinel; no plan: {str(e)[:160]}")
-            return self._llm_unavailable_plan(trigger, current_turn, diag, start, "llm_error_sentinel")
+            return self._llm_unavailable_plan(
+                trigger, current_turn, diag, start, f"llm_error_sentinel: {str(e)[:160]}"
+            )
         except Exception as e:
             logger.error(f"Action planning LLM call failed: {e}")
             return self._llm_unavailable_plan(trigger, current_turn, diag, start, f"llm_error: {e}")
@@ -2920,7 +2948,12 @@ class ActionPlanner(_ActionLegalityMixin):
             if decision.request_type in {"Search", "CastingTimeOptions"}:
                 # Never silently truncate, substitute the first card, or
                 # narrate reasoning for a different set than we submit.
-                return chosen if decision.selection_is_valid(chosen) else [DECLINE_DECISION]
+                if not decision.selection_is_valid(chosen):
+                    return [DECLINE_DECISION]
+                if decision.request_type == "CastingTimeOptions":
+                    # 2026-10-06 G1 T14: "destroy" over "gain 4 life" at 4 life.
+                    chosen = self._apply_mode_guard(decision, game_state, chosen)
+                return chosen
             chosen = [c for c in chosen if c in valid]
             if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
                 from arenamcp.decisions import reasoning_choice_conflict
@@ -3001,8 +3034,12 @@ class ActionPlanner(_ActionLegalityMixin):
         return self.deterministic_option_pick(decision)
 
     def _board_math_fallback(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
-        """The model gave no usable priority choice: land, then the board-math line."""
+        """The model gave no usable priority choice: the searched line's play, else land then board math."""
         picked, why = board_math_option_pick(decision, game_state)
+        source, board_pick = "board_math", picked
+        line = line_fallback_option_pick(decision, game_state, picked)
+        if line is not None:
+            (picked, why), source = line, "line"
         lead = (
             "Model unavailable"
             if getattr(self, "last_llm_failure", "") == "unavailable"
@@ -3012,8 +3049,16 @@ class ActionPlanner(_ActionLegalityMixin):
         self._last_decision_reasoning = f"{lead}; {why}."
         trace = getattr(self, "_last_decision_trace", None)
         if isinstance(trace, dict):
-            trace.update(fallback="board_math", validated_ids=picked, fallback_reason=why)
-        logger.warning("typed-decision fallback (%s): %s -> %s", lead.lower(), why, picked)
+            trace.update(fallback=source, validated_ids=picked, fallback_reason=why)
+            if source == "line":
+                trace["board_math_pick"] = board_pick
+        logger.warning(
+            "typed-decision fallback (%s): %s -> %s%s",
+            lead.lower(),
+            why,
+            picked,
+            f" [line pick; board math: {board_pick}]" if source == "line" else "",
+        )
         return picked
 
     def _apply_role_guard(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> list[str]:
@@ -3022,17 +3067,19 @@ class ActionPlanner(_ActionLegalityMixin):
         Deterministic and narrow (see :func:`arenamcp.board_assessment.role_guard`):
         only in survival mode, never with lethal on board, never over a land,
         creature, removal, counter or pass, and only when the alternative lowers
-        the projected life loss over the next two opponent attacks.
+        the projected life loss over the next two opponent attacks. When it
+        keeps the pick, the line guard (:meth:`_apply_line_guard`) looks next.
         """
         try:
             from arenamcp.board_assessment import assess, role_guard
 
-            verdict = role_guard(assess(game_state), decision, chosen[0], game_state)
+            assessment = assess(game_state)
+            verdict = role_guard(assessment, decision, chosen[0], game_state)
         except Exception as error:
             logger.debug("role guard skipped: %s", error)
             return chosen
         if verdict is None or verdict.option_id == chosen[0]:
-            return chosen
+            return self._apply_line_guard(decision, game_state, chosen, assessment)
         replaced = decision.find(chosen[0])
         logger.warning(
             "%s [model chose %s: %s]",
@@ -3046,6 +3093,189 @@ class ActionPlanner(_ActionLegalityMixin):
         if isinstance(trace, dict):
             trace["role_guard"] = {"replaced": chosen[0], "with": verdict.option_id, "reason": verdict.reason}
         return [verdict.option_id]
+
+    def _apply_line_guard(
+        self, decision: Any, game_state: dict[str, Any], chosen: list[str], assessment: Any
+    ) -> list[str]:
+        """The searched lines show the pick strictly worse than the best line: log it, or replace it.
+
+        See :func:`arenamcp.line_guard.line_guard`: never with lethal on board,
+        inside a winning line, on a pass, on their turn, with a stack, with an
+        unknown-P/T creature or without a usable search. Shadow by default
+        (ARENAMCP_LINE_GUARD): the replacement is only logged and traced;
+        'on' replaces the pick the way the role guard does.
+        """
+        result = getattr(assessment, "line_search", None)
+        if assessment is None or result is None:
+            return chosen  # no search, or ARENAMCP_LINE_SEARCH=0
+        try:
+            from arenamcp import line_guard
+
+            verdict = line_guard.line_guard(
+                result,
+                decision,
+                chosen[0],
+                game_state,
+                survival_mode=assessment.survival_mode,
+                lethal_now=assessment.lethal_now,
+                our_turn=assessment.our_turn,
+                unknown_bodies=[u for u in assessment.unknowns if "unknown power/toughness" in u],
+            )
+            unmodelled = _unmodelled_options(result, decision, game_state).get(chosen[0], "")
+        except Exception as error:
+            logger.debug("line guard skipped: %s", error)
+            return chosen
+        payable = {option.option_id for option in decision.options if option.payable is not False}
+        if verdict is None or verdict.option_id == chosen[0] or verdict.option_id not in payable:
+            return chosen
+        if unmodelled:
+            # Review 2026-10-07: the search scores a cast whose effect it drops (two hasty
+            # tokens that were exactly lethal) as doing nothing; its line is no evidence.
+            logger.info(
+                "Line guard (not checked: %s is not modelled): would have replaced %s with %s",
+                unmodelled,
+                _option_text(decision, chosen[0]),
+                _option_text(decision, verdict.option_id),
+            )
+            trace = getattr(self, "_last_decision_trace", None)
+            if isinstance(trace, dict):
+                trace["line_guard"] = {**verdict.as_trace(), "applied": False, "unmodelled": unmodelled}
+            return chosen
+        return self._guard_outcome(decision, chosen, verdict, applies=verdict.applies)
+
+    def _apply_mode_guard(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> list[str]:
+        """A 'choose one' mode that dies sooner than another mode: log it, or replace it.
+
+        See :func:`arenamcp.line_guard.mode_guard` (2026-10-06 G1 T14: Archive
+        Arbiter's destroy mode at 4 life instead of gaining 4). Shadow by
+        default (ARENAMCP_MODE_GUARD); 'on' applies only a non-contingent
+        verdict that ``selection_is_valid`` accepts. Never with lethal on board
+        (or when the board can't be assessed); ARENAMCP_LINE_SEARCH=0 turns it
+        off. CastingTimeOptions only: Search choices are never changed.
+        """
+        if decision.request_type != "CastingTimeOptions":
+            return chosen
+        try:
+            from arenamcp import line_guard
+            from arenamcp.board_assessment import _line_search_enabled, assess
+
+            if line_guard.guard_mode("mode") == "off" or not _line_search_enabled():
+                return chosen
+            if not any((option.meta or {}).get("choiceKind") == "modal" for option in decision.options):
+                return chosen
+            assessment = assess(game_state)
+            if assessment is None:
+                return chosen  # lethal unknown: never steer
+            verdict = line_guard.mode_guard(
+                None, decision, chosen, game_state, lethal_now=assessment.lethal_now
+            )
+            if verdict is None or verdict.option_id in chosen:
+                return chosen
+            # Review 2026-10-07: an unmodelled ('other') mode is worth 0 to the search,
+            # so a verdict for or against it is contingent too: the chosen 'create a
+            # 4/4 token' mode was replaced by 'gain 3 life', which died two turns sooner.
+            comparison = line_guard.mode_comparison(game_state, decision)
+            notes = [
+                f"'{_option_text(decision, option_id)}' ({role}) not modelled"
+                for option_id, role in ((chosen[0], "chosen"), (verdict.option_id, "replacement"))
+                if comparison is not None and comparison.modes.get(option_id) == "other"
+            ]
+            if notes:
+                verdict.contingent = [*verdict.contingent, *notes]
+                verdict.reason += f" [contingent: {'; '.join(notes)}]"
+        except Exception as error:
+            logger.debug("mode guard skipped: %s", error)
+            return chosen
+        applies = bool(
+            verdict.applies and not verdict.contingent and decision.selection_is_valid([verdict.option_id])
+        )
+        return self._guard_outcome(decision, chosen, verdict, applies=applies)
+
+    def _guard_outcome(self, decision: Any, chosen: list[str], verdict: Any, *, applies: bool) -> list[str]:
+        """Trace and log a line/mode guard verdict; replace the pick only when it applies."""
+        kind = "Mode guard" if verdict.kind == "mode" else "Line guard"
+        old, new = _option_text(decision, chosen[0]), _option_text(decision, verdict.option_id)
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace[f"{verdict.kind}_guard"] = {**verdict.as_trace(), "applied": applies}
+        if not applies:
+            setting = "shadow"
+            if verdict.setting == "on":
+                setting = "on, contingent: not applied" if verdict.contingent else "on, not applied"
+            logger.info(
+                "%s (%s): would replace %s with %s — %s",
+                kind,
+                setting,
+                old,
+                new,
+                verdict.reason.removeprefix(f"{kind}: "),
+            )
+            return chosen
+        logger.warning(
+            "%s [model chose %s: %s]", verdict.reason, old, (self._last_decision_reasoning or "")[:160]
+        )
+        self._last_decision_reasoning = verdict.summary or verdict.reason.removeprefix(f"{kind}: ")
+        self._last_decision_option_ids = [verdict.option_id]
+        return [verdict.option_id]
+
+    @staticmethod
+    def _line_prompt_context(decision: Any, state: dict[str, Any]) -> tuple[Any, str, dict[str, str]]:
+        """What the per-decision prompt shows from the line search: (tag source, line, unmodelled).
+
+        ActionsAvailable on our turn: the board's line search, its 'LINES'
+        summary, and the casts whose effect the search drops (option id ->
+        "card: why", see :func:`arenamcp.game_plan.unmodelled_effect`), which
+        the LINES line names. A modal CastingTimeOptions menu: the per-mode
+        comparison (shared with the mode guard) and its 'MODES' line.
+        Otherwise, with ARENAMCP_LINE_SEARCH=0, or on any error: (None, '', {}).
+        """
+        try:
+            from arenamcp import line_guard
+
+            if decision.request_type == "ActionsAvailable":
+                from arenamcp.board_assessment import assess
+
+                assessment = assess(state)
+                result = getattr(assessment, "line_search", None)
+                if assessment is None or result is None or not assessment.our_turn:
+                    return None, "", {}
+                text = line_guard.lines_summary(result)
+                unmodelled = _unmodelled_options(result, decision, state)
+                if text and unmodelled:
+                    # The 'best' line is the best of what the search can value.
+                    note = " | not modelled, judge these yourself: " + "; ".join(unmodelled.values())
+                    note = note if len(note) <= 110 else note[:109] + "…"
+                    text = result.prompt_line(320 - len(note)) + note
+                return result, text, unmodelled
+            if decision.request_type == "CastingTimeOptions":
+                comparison = line_guard.mode_comparison(state, decision)
+                return comparison, _modes_line(comparison, decision), {}
+        except Exception as error:  # the strategic layer never blocks a decision
+            logger.debug("line prompt context skipped: %s", error)
+        return None, "", {}
+
+    @staticmethod
+    def _line_tag(source: Any, option: Any, state: dict[str, Any], unmodelled: dict[str, str]) -> str:
+        """One option's '[LINE ...]' tag (at most 60 characters), or '' on any error.
+
+        A cast the search can't value is tagged as such instead of with its
+        undervalued line, and no option is called 'best' while one is (or,
+        on a modal menu, while any mode is unmodelled).
+        """
+        try:
+            from arenamcp.line_guard import option_note
+            from arenamcp.line_search import ModeComparison
+
+            if option.option_id in unmodelled:
+                return "[LINE: effect not modelled]"
+            tag = option_note(source, option, state)
+            uncertain = bool(unmodelled) or (
+                isinstance(source, ModeComparison) and "other" in source.modes.values()
+            )
+            return tag.replace("[LINE best: ", "[LINE: ", 1) if uncertain else tag
+        except Exception as error:  # the strategic layer never blocks a decision
+            logger.debug("line tag skipped: %s", error)
+            return ""
 
     def _mulligans_taken(self, game_state: dict[str, Any]) -> int | None:
         """Mulligans already taken this game: the GRE count, else the ones we submitted.
@@ -3719,6 +3949,10 @@ class ActionPlanner(_ActionLegalityMixin):
         # caller's deterministic pick lands at once instead of after 12 s.
         if llm_circuit_open(getattr(self, "_backend", None)):
             raise LLMUnavailableError("model server unavailable (circuit open)")
+        # Tags and LINES read the snapshot the guards assess (one search, cached).
+        line_source, lines_text, unmodelled = self._line_prompt_context(decision, game_state)
+        tag_state = game_state
+        line_tags: dict[str, str] = {}
         game_state = prepare_match_context(game_state)
         lines = [
             f"PENDING DECISION: {decision.request_type}"
@@ -3787,6 +4021,11 @@ class ActionPlanner(_ActionLegalityMixin):
                 note = "  [cannot auto-pay — do not pick]"
             elif o.payable is True:
                 note = "  [Arena confirms payable now]"
+            if line_source is not None and o.payable is not False:
+                tag = self._line_tag(line_source, o, tag_state, unmodelled)
+                if tag:
+                    note += f"  {tag}"
+                    line_tags[o.option_id] = tag
             if o.meta.get("actionType") == "ActionType_Cast" and o.meta.get("instanceId") in commander_ids:
                 note += "  [YOUR COMMANDER — command zone]"
             if "weight" in o.meta:
@@ -3848,6 +4087,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 f"ability (every target) unless you pay the ward cost. Mana available to pay it: {ward_mana}. "
                 "Do not pick a target marked ward_payable_now=false.",
             )
+        if lines_text:
+            # Next to the menu: the strategy block comes after ~20k characters of game state.
+            lines.insert(lines.index("OPTIONS:"), lines_text)
         if decision.request_type == "CastingTimeOptions":
             lines.append(
                 "Choose all required modes together from the SAME childIndex. "
@@ -3907,6 +4149,10 @@ class ActionPlanner(_ActionLegalityMixin):
             "local_seat_id": local_seat,
             "targets": target_trace[:80],
         }
+        if lines_text or line_tags:
+            self._last_decision_trace["lines"] = {"summary": lines_text, "tags": line_tags}
+            if unmodelled:
+                self._last_decision_trace["lines"]["unmodelled"] = dict(unmodelled)
 
         # Tighter than the general planning timeout: typed decisions
         # (mulligan, targeting, selection) sit inside short MTGA action
@@ -4142,6 +4388,126 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
     if any(option.option_id == "pass" for option in options):
         return ["pass"], plan_text or "nothing safe to cast"
     return fallback, "no pass option, so the first legal option"
+
+
+def _option_text(decision: Any, option_id: str) -> str:
+    """An option's label for logs, without the ability text in brackets or a final period."""
+    option = decision.find(option_id)
+    label = str(getattr(option, "label", "") or option_id)
+    return label.split(" [", 1)[0].strip().rstrip(".") or option_id
+
+
+def _unmodelled_options(result: Any, decision: Any, state: dict[str, Any]) -> dict[str, str]:
+    """Payable casts whose effect the line search drops: option id -> "card: why".
+
+    The search values a token maker, a creature's enters trigger, an aura and
+    the like as nothing (see :func:`arenamcp.game_plan.unmodelled_effect`), so
+    the line starting with that cast is no evidence against it: the line guard
+    must not override it, and its tag must not call it worse (review
+    2026-10-07: two hasty 3/1s that were exactly lethal were tagged 'dead T11'
+    and replaced by Grizzly Bears with ARENAMCP_LINE_GUARD=on).
+    """
+    from arenamcp.board_assessment import _source_card
+    from arenamcp.game_plan import unmodelled_effect
+
+    found: dict[str, str] = {}
+    for option in getattr(decision, "options", ()) or ():
+        meta = option.meta or {}
+        if option.payable is False or "cast" not in str(meta.get("actionType") or "").lower():
+            continue
+        source, _zone = _source_card(state, meta)
+        why = unmodelled_effect(source, result)
+        if why:
+            found[option.option_id] = f"{source.get('name')} ({why})"
+    return found
+
+
+def _modes_line(comparison: Any, decision: Any, max_chars: int = 320) -> str:
+    """The 'MODES ...' line for a modal menu: each mode's searched outcome, or ''.
+
+    The strategy block's role and board facts come from ``assess``, which
+    does not resolve this pending choice (2026-10-06 G1 T14: 'ALL-IN: no
+    defensive line survives' next to a gain-4 mode that survives T15), so
+    the line says which of the two already counts the choice.
+    """
+    try:
+        from arenamcp.line_guard import _life_parts
+
+        if comparison is None or not getattr(comparison, "complete", False):
+            return ""
+        head = (
+            "MODES (each searched with this choice resolved; the role and board facts below were "
+            "computed before it resolves): "
+        )
+        parts = []
+        for option in decision.options:
+            line = comparison.lines.get(option.option_id)
+            if line is None:
+                continue
+            kind = comparison.modes.get(option.option_id) or _option_text(decision, option.option_id)
+            if kind == "other":
+                kind = _option_text(decision, option.option_id).split(": ", 1)[-1][:48] + " (not modelled)"
+            outcome = ", ".join(_life_parts(line, modal=True)) or line.outcome_text()
+            parts.append(f"{kind} — {outcome}")
+        if len(parts) < 2:
+            return ""
+        text = head + " | ".join(parts)
+        return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
+    except Exception as error:  # the strategic layer never blocks a decision
+        logger.debug("modes line skipped: %s", error)
+        return ""
+
+
+def line_fallback_option_pick(
+    decision: Any, game_state: dict[str, Any], board_pick: list[str]
+) -> tuple[list[str], str] | None:
+    """The best searched line's first play when the model gave no usable answer, or None.
+
+    ``line_guard.line_fallback_pick`` ranks the best line's own plays: a burn
+    spell that wins now, removal on a creature that can attack, a creature,
+    then the land that pays for the turn. Since the board-math pick
+    (``board_math_option_pick``) already follows the best line's T step, it
+    stays when it is that line's own land (land first) or another of its casts
+    while the line's pick is not aimed (most expensive first, so Arena's
+    autotap keeps cheaper colours open). The line's pick is used when it is
+    aimed (burn / removal on an attacker) or the board-math pick is not part of
+    the best line (e.g. a pass). Our main phase with an empty stack only, and
+    casts only when Arena confirms them payable; None (the board-math pick)
+    without a usable search, with ARENAMCP_LINE_SEARCH=0, or on any error.
+    """
+    if decision.request_type != "ActionsAvailable" or not _own_main_phase_with_empty_stack(game_state):
+        return None
+    try:
+        from arenamcp.board_assessment import assess
+        from arenamcp.line_guard import line_fallback_pick
+        from arenamcp.line_search import action_key
+
+        assessment = assess(game_state)
+        result = getattr(assessment, "line_search", None)
+        if assessment is None or result is None:
+            return None
+        picked = line_fallback_pick(result, decision, game_state)
+        if not picked or len(picked) != 1 or picked == board_pick:
+            return None
+        option = decision.find(picked[0])
+        if option is None:
+            return None
+        meta = option.meta or {}
+        if meta.get("actionType") != "ActionType_Play" and option.payable is not True:
+            return None  # the board-math rule: never cast on an unconfirmed autotap
+        best = result.best
+        aimed = dict(best.steps[0].targets) if best.steps else {}
+        line_aimed = str(find_source(game_state, meta).get("name") or "") in aimed
+        current = decision.find(board_pick[0]) if len(board_pick) == 1 else None
+        if current is not None and current.option_id != "pass":
+            key = action_key(current, game_state)
+            if key is not None and key in best.first_actions:
+                if (current.meta or {}).get("actionType") == "ActionType_Play" or not line_aimed:
+                    return None  # the same line, in the board-math order
+        return picked, f"the best searched line is {best.summary()}"
+    except Exception as error:  # the strategic layer never blocks a decision
+        logger.debug("line fallback pick skipped: %s", error)
+        return None
 
 
 def board_math_legacy_plan(
