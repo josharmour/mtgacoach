@@ -2148,7 +2148,8 @@ class _BridgeSubmitMixin:
             if decision is None:
                 return False
             target_planner = ActionPlanner.__new__(ActionPlanner)
-            selected = target_planner._targeting_fallback_pick(decision, game_state)
+            # Aimed so removal kills (or kept), and away from unpayable ward.
+            selected = target_planner.targeting_fallback_choice(decision, game_state)
             if selected == [DECLINE_DECISION]:
                 if decision.can_cancel and bridge.cancel_action():
                     return _ok("cancelled unsafe targeting")
@@ -2209,12 +2210,17 @@ class _BridgeSubmitMixin:
         return False
 
     def _safe_default_attacks(self, game_state: dict[str, Any], pending: dict[str, Any], ok: Any) -> bool:
-        """Declare no attackers (or only the ones that must attack) instead of AutoRespond.
+        """Declare the combat solver's attack (or none) instead of AutoRespond.
 
         AutoResp on a DeclareAttackersRequest (2026-10-05 22:19:14) was followed
-        by the same request again. An empty declaration is the legal "Done"
-        unless a creature must attack; then only those attack, at the opponent
-        when that is a legal recipient.
+        by the same request again. Without forced attackers this declares what
+        ``combat_strategy.combat_choice`` picks, through the same bridge path
+        as planner attacks, so the all-in rule and the losing-attack guard
+        apply (bug_20261006_185403: with the model down, a free attack on an
+        empty board was skipped at 18:49:54). An empty declaration is the
+        legal "Done" when the solver declines or cannot be submitted. When a
+        creature must attack, only those attack, at the opponent when that is
+        a legal recipient.
         """
         from arenamcp.combat_targets import attack_candidates, recipient_key, recipient_label
 
@@ -2226,7 +2232,39 @@ class _BridgeSubmitMixin:
             return False
         forced = [entry for entry in candidates if isinstance(entry, dict) and entry.get("mustAttack")]
         if not forced:
+            solver = self._try_bridge_declare_attackers(
+                GameAction(
+                    action_type=ActionType.DECLARE_ATTACKERS,
+                    reasoning="Safe default: the combat solver's attack",
+                )
+            )
+            if solver is not None and solver.success:
+                declared = list(getattr(solver.submitted_action, "attacker_names", None) or [])
+                logger.info("Safe-default attacks: %s", ", ".join(declared) or "no attackers")
+                return bool(
+                    ok(
+                        "declare_attackers: "
+                        + ("solver attack with " + ", ".join(declared) if declared else "no attackers")
+                    )
+                )
             bridge = _progress_bridge_for(self, game_state)
+            # The solver path may have reached Arena before failing: confirm
+            # "no attackers" only on an untouched attack request.
+            fresh = bridge.get_pending_actions() or {}
+            if not (
+                fresh.get("has_pending")
+                and "DeclareAttack" in str(fresh.get("request_class") or fresh.get("request_type") or "")
+            ):
+                logger.info("Safe-default attacks: the attack request is no longer pending")
+                return False
+            if any(
+                isinstance(entry, dict) and entry.get("selectedDamageRecipient")
+                for entry in attack_candidates(game_state, fresh) or []
+            ):
+                logger.info(
+                    "Safe-default attacks: a partial attack selection is pending; leaving it to the user"
+                )
+                return False
             response = bridge.submit_attackers_raw([])
             if response and response.get("ok"):
                 return bool(ok("declare_attackers: no attackers"))

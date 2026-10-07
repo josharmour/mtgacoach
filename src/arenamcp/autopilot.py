@@ -20,7 +20,16 @@ from collections import deque
 from collections.abc import Callable
 from typing import Any
 
-from arenamcp.action_planner import ActionPlan, ActionPlanner, ActionType, GameAction
+from arenamcp.action_planner import (
+    FALLBACK_AUTO_PICK,
+    FALLBACK_LLM_UNAVAILABLE,
+    ActionPlan,
+    ActionPlanner,
+    ActionType,
+    GameAction,
+    board_math_legacy_plan,
+    is_llm_unavailable_error,
+)
 from arenamcp.autopilot_bridge import _BridgeSubmitMixin
 from arenamcp.autopilot_exec import _ActionExecMixin
 from arenamcp.autopilot_models import AutopilotConfig, AutopilotState, ClickResult, ExecutionPath
@@ -233,7 +242,20 @@ class AutopilotEngine(
 
         # Consecutive planning failure tracking (timeout/empty plan escalation)
         self._consecutive_plan_failures: int = 0
-        self._effective_planning_timeout: float = self._config.planning_timeout
+        self._effective_planning_timeout: float = self._base_planning_timeout()
+        planner_timeout = getattr(self._planner, "_timeout", None)
+        if (
+            isinstance(planner_timeout, (int, float))
+            and not isinstance(planner_timeout, bool)
+            and planner_timeout > self._effective_planning_timeout
+        ):
+            # Also bounds plan_actions calls made outside process_trigger
+            # (stuck recovery, the coach's fall-through) on this shared planner.
+            self._planner._timeout = self._effective_planning_timeout
+        # Why the last plan or typed decision did not come from the model
+        # (action_planner.FALLBACK_* / ""). FALLBACK_LLM_UNAVAILABLE tells the
+        # coach the model server failed, so re-asking it is pointless.
+        self.last_plan_fallback_reason: str = ""
 
         # Stashed combat decision context (survives across triggers)
         self._last_combat_context: dict[str, Any] | None = None
@@ -281,6 +303,36 @@ class AutopilotEngine(
     def current_plan(self) -> ActionPlan | None:
         """Currently active action plan."""
         return self._current_plan
+
+    # plan_actions budget. A 30-45 s planner call blocked the whole coaching
+    # loop ("Coaching loop stalled") when the server saturated on 2026-10-06;
+    # healthy calls took p90 6.5 s (p90 9.3 s with two other calls running).
+    _PLANNER_BUDGET_CAP_S = 15.0
+
+    def _base_planning_timeout(self) -> float:
+        """The configured planning timeout, capped at :attr:`_PLANNER_BUDGET_CAP_S`."""
+        try:
+            configured = float(self._config.planning_timeout)
+        except (TypeError, ValueError):
+            return self._PLANNER_BUDGET_CAP_S
+        return min(configured, self._PLANNER_BUDGET_CAP_S)
+
+    @staticmethod
+    def _backend_struggling() -> bool:
+        """The shared health tracker shows recent backend failures (degraded or down)."""
+        try:
+            from arenamcp.backend_health import BackendHealth, HealthState
+
+            return BackendHealth.instance().state in (HealthState.DEGRADED, HealthState.DOWN)
+        except Exception:
+            return False
+
+    def _note_typed_fallback(self) -> None:
+        """Record whether the last typed decision fell back because the model failed."""
+        failure = getattr(self._planner, "last_llm_failure", "")
+        self.last_plan_fallback_reason = (
+            FALLBACK_LLM_UNAVAILABLE if isinstance(failure, str) and failure == "unavailable" else ""
+        )
 
     def _announce_game_plan(self, game_state: dict[str, Any] | None = None) -> None:
         """Show background strategy separately from submitted-action speech."""
@@ -3085,6 +3137,9 @@ class AutopilotEngine(
             _plan_started_at = time.perf_counter()
             legal_actions = self._drop_exhausted_activations(legal_actions, game_state)
             plan = self._planner.plan_actions(game_state, trigger, legal_actions, decision_context)
+            reason = getattr(plan, "fallback_reason", "")
+            self.last_plan_fallback_reason = reason if isinstance(reason, str) else ""
+            llm_unavailable = self.last_plan_fallback_reason == FALLBACK_LLM_UNAVAILABLE
 
             # Surface any newly-built turn plan to the UI immediately so the
             # static panel populates before the first action lands. Safe to
@@ -3114,15 +3169,29 @@ class AutopilotEngine(
                     )
                     return False
 
-            if not plan.actions:
+            if not plan.actions and llm_unavailable:
+                # The model server failed (circuit open, timeout, transport or
+                # HTTP error). Decide now without it: retrying or a longer
+                # budget only stalls the coaching loop (2026-10-06 18:53: the
+                # escalation reached 45 s while the server was saturated).
+                # Critical choices (targets, modes, combat) stay manual here.
+                logger.warning(
+                    "Autopilot: model unavailable for %s — deterministic fallback, no timeout escalation",
+                    trigger,
+                )
+                if not self._is_critical_decision_state(game_state):
+                    plan = board_math_legacy_plan(game_state, legal_actions, trigger)
+            elif not plan.actions:
                 self._consecutive_plan_failures += 1
                 logger.warning(
                     f"Autopilot: planner returned no actions "
                     f"(consecutive failures: {self._consecutive_plan_failures})"
                 )
 
-                # After 2 failures: escalate timeout (×1.5, cap 45s)
-                if self._consecutive_plan_failures >= 2:
+                # After 2 failures: escalate timeout (×1.5, cap 45s) — only
+                # while the backend is healthy. A failing backend gets no
+                # more answers from a longer wait.
+                if self._consecutive_plan_failures >= 2 and not self._backend_struggling():
                     new_timeout = min(
                         self._effective_planning_timeout * 1.5,
                         45.0,
@@ -3134,49 +3203,57 @@ class AutopilotEngine(
                             f"{self._effective_planning_timeout:.1f}s"
                         )
 
-                # After 4 failures: use deterministic fallback
-                if self._consecutive_plan_failures >= 4:
+                # After 4 failures: use the deterministic board-math fallback
+                # (autopilot_modes._deterministic_fallback raised TypeError on
+                # its ActionPlan(raw_response=...) and never produced a plan).
+                if self._consecutive_plan_failures >= 4 and not self._is_critical_decision_state(game_state):
                     logger.warning("Autopilot: 4+ consecutive failures, using deterministic fallback")
-                    plan = self._deterministic_fallback(game_state, trigger)
+                    plan = board_math_legacy_plan(
+                        game_state,
+                        legal_actions,
+                        trigger,
+                        lead="Planner failed repeatedly",
+                        fallback_reason=FALLBACK_AUTO_PICK,
+                    )
 
-                if not plan.actions:
-                    if self._is_critical_decision_state(game_state):
-                        self._pause_for_manual("Planner produced no safe action", game_state)
-                        return False
-
-                    # Planner couldn't produce actions. Try auto_respond only
-                    # for explicitly safe low-risk fallback cases.
-                    if (
-                        not self._config.dry_run
-                        and self._should_allow_auto_respond(game_state)
-                        and (self._gre_bridge.connected or self._gre_bridge.connect())
-                    ) and self._progress_bridge(game_state).auto_respond():
-                        self._log_execution_path(ExecutionPath.GRE_AWARE, "auto_respond (planner empty)")
-                        logger.warning(
-                            f"AUTO_RESPOND_FALLBACK (planner empty): trigger={trigger}, "
-                            f"legal_actions={legal_actions}, "
-                            f"decision={(decision_context or {}).get('type')}, "
-                            f"bridge={game_state.get('_bridge_request_type')} — "
-                            "needs proper planner/bridge handling"
-                        )
-                        self._state = AutopilotState.IDLE
-                        return True
-                    # Last resort: try pass
-                    meaningful = [
-                        a
-                        for a in (legal_actions or [])
-                        if a.lower() not in {"pass", "action: activate_mana", "action: floatmana"}
-                        and "Wait" not in a
-                    ]
-                    if not meaningful:
-                        logger.info("Autopilot: auto-passing (planner empty, no meaningful actions)")
-                        passed = self._run_bridge_action(
-                            GameAction(action_type=ActionType.PASS_PRIORITY), game_state
-                        )
-                        self._state = AutopilotState.IDLE
-                        return passed
-                    self._state = AutopilotState.IDLE
+            if not plan.actions:
+                if self._is_critical_decision_state(game_state):
+                    self._pause_for_manual("Planner produced no safe action", game_state)
                     return False
+
+                # Planner couldn't produce actions. Try auto_respond only
+                # for explicitly safe low-risk fallback cases.
+                if (
+                    not self._config.dry_run
+                    and self._should_allow_auto_respond(game_state)
+                    and (self._gre_bridge.connected or self._gre_bridge.connect())
+                ) and self._progress_bridge(game_state).auto_respond():
+                    self._log_execution_path(ExecutionPath.GRE_AWARE, "auto_respond (planner empty)")
+                    logger.warning(
+                        f"AUTO_RESPOND_FALLBACK (planner empty): trigger={trigger}, "
+                        f"legal_actions={legal_actions}, "
+                        f"decision={(decision_context or {}).get('type')}, "
+                        f"bridge={game_state.get('_bridge_request_type')} — "
+                        "needs proper planner/bridge handling"
+                    )
+                    self._state = AutopilotState.IDLE
+                    return True
+                # Last resort: try pass
+                meaningful = [
+                    a
+                    for a in (legal_actions or [])
+                    if a.lower() not in {"pass", "action: activate_mana", "action: floatmana"}
+                    and "Wait" not in a
+                ]
+                if not meaningful:
+                    logger.info("Autopilot: auto-passing (planner empty, no meaningful actions)")
+                    passed = self._run_bridge_action(
+                        GameAction(action_type=ActionType.PASS_PRIORITY), game_state
+                    )
+                    self._state = AutopilotState.IDLE
+                    return passed
+                self._state = AutopilotState.IDLE
+                return False
 
             # --- STALENESS CHECK ---
             # Re-poll game state after planning (LLM call may take 5-15s).
@@ -3757,7 +3834,7 @@ class AutopilotEngine(
                     f"Autopilot: resetting plan failure counter (was {self._consecutive_plan_failures})"
                 )
                 self._consecutive_plan_failures = 0
-                self._effective_planning_timeout = self._config.planning_timeout
+                self._effective_planning_timeout = self._base_planning_timeout()
 
             # --- POST-PLAN: continue turn if we still have priority ---
             # After executing a plan, we may still have priority with legal
@@ -4193,9 +4270,12 @@ class AutopilotEngine(
             # Only take Group windows when the LLM gives a valid pick — the
             # legacy safe-default has a smarter worst-card bottoming ranking
             # than a blind deterministic fallback, so it keeps that job.
+            self.last_plan_fallback_reason = ""
             try:
                 llm_ids = self._planner._llm_decision_options(decision, game_state)
-            except Exception:
+            except Exception as error:
+                if is_llm_unavailable_error(error):
+                    self.last_plan_fallback_reason = FALLBACK_LLM_UNAVAILABLE
                 llm_ids = []
             valid = decision.option_ids()
             option_ids = [o for o in llm_ids if o in valid][: decision.max_select]
@@ -4211,6 +4291,7 @@ class AutopilotEngine(
                     return None
         else:
             option_ids = self._planner.plan_decision_options(decision, game_state)
+            self._note_typed_fallback()
         from arenamcp.action_planner import DECLINE_DECISION
 
         if self._abort_event.is_set():

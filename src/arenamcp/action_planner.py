@@ -4,6 +4,8 @@ Converts game state + trigger into structured JSON action commands
 via a separate LLM call with a constrained schema prompt.
 """
 
+import concurrent.futures
+import inspect
 import json
 import logging
 import re
@@ -164,6 +166,69 @@ class GameAction:
 FALLBACK_AUTO_PICK = "planner_auto_pick"
 FALLBACK_PREFLIGHT_LAND_DROP = "planner_preflight_land_drop"
 FALLBACK_NO_ACTIONS = "planner_no_actions"
+# The model server could not answer: the circuit breaker is open, the call
+# timed out, or it failed with a transport/HTTP error or an error sentinel.
+# An empty plan carrying this reason means "decide without the model now",
+# not "nothing to do" (bug_20261006_185403: both looked identical).
+FALLBACK_LLM_UNAVAILABLE = "llm_unavailable"
+
+
+class LLMUnavailableError(RuntimeError):
+    """The model was not asked (circuit open) or answered with an error sentinel."""
+
+
+# Exception classes (matched by name to avoid importing the proxy/SDK here)
+# that mean the model server failed rather than the answer being unusable.
+_BACKEND_FAILURE_TYPES = frozenset(
+    {
+        "BackendError",
+        "BackendUnavailable",
+        "APIError",
+        "APIConnectionError",
+        "APITimeoutError",
+        "APIStatusError",
+    }
+)
+
+
+def _accepted_extras(complete: Any, extras: dict[str, Any]) -> dict[str, Any]:
+    """The optional complete() keywords (call_class, first_token_timeout_s) this backend accepts.
+
+    Dropping the ones it lacks keeps a missing keyword from reaching the
+    TypeError fallbacks, which would also drop raise_on_error.
+    """
+    try:
+        parameters = inspect.signature(complete).parameters
+    except (TypeError, ValueError):
+        return {}
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return dict(extras)
+    return {key: value for key, value in extras.items() if key in parameters}
+
+
+def llm_circuit_open(backend: Any) -> bool:
+    """True while the proxy's shared circuit breaker reports the model server down.
+
+    Only an explicit ``False`` from ``backend.available()`` counts, so
+    backends without a breaker (and test doubles) are treated as available.
+    """
+    probe = getattr(backend, "available", None)
+    try:
+        state = probe() if callable(probe) else probe
+    except Exception as error:  # a broken health probe must never block a decision
+        logger.debug("backend availability probe failed: %s", error)
+        return False
+    return state is False
+
+
+def is_llm_unavailable_error(error: BaseException) -> bool:
+    """A model-server failure (circuit open, timeout, transport, HTTP), not a bad answer."""
+    if isinstance(
+        error, (LLMUnavailableError, TimeoutError, ConnectionError, concurrent.futures.TimeoutError)
+    ):
+        return True
+    return any(cls.__name__ in _BACKEND_FAILURE_TYPES for cls in type(error).__mro__)
+
 
 # Strategy prefixes that used to be the ONLY fallback signal. Retained solely to
 # classify plan objects built before ActionPlan.fallback_reason existed.
@@ -628,6 +693,10 @@ class ActionPlanner(_ActionLegalityMixin):
         # plus board facts recomputed from each decision's own snapshot.
         self._game_plan_source: Callable[[dict], str] | None = None
         self._planned_recovery: tuple[str, int, int, int] | None = None
+        # Why the last typed decision fell back to a deterministic pick:
+        # "unavailable" (model server failed or circuit open), "bad_answer"
+        # (it answered, but nothing usable), or "" (the model decided).
+        self.last_llm_failure: str = ""
 
     def set_game_plan_source(self, source: Callable[[dict], str] | None) -> None:
         """Render the strategy block per decision from the live snapshot.
@@ -722,6 +791,82 @@ class ActionPlanner(_ActionLegalityMixin):
             # entire playbook, every source quotation, and then these rules.
             parts.append(playbook.decision_context(state))
         return "\n\n".join(parts)
+
+    # Decision calls give up on a server that has produced no first token by
+    # then (bug_20261006_185403: saturated, no token in 30 s / 12 s). Proxies
+    # without first-token support ignore it and keep the overall budget.
+    _FIRST_TOKEN_TIMEOUT_S = 8.0
+    # plan_actions prompts are the big ones (50-75k chars dominated the slow
+    # first tokens): real plan calls that succeeded had their first token at
+    # 11.3 s (total 13.1 s) and 11.7 s (12.5 s) on a busy shared server
+    # (2026-10-04/06). Kept 2 s inside the planner budget.
+    _PLAN_FIRST_TOKEN_TIMEOUT_S = 12.0
+
+    def _plan_first_token_timeout(self) -> float:
+        budget = float(self._timeout or 0.0)
+        return min(self._PLAN_FIRST_TOKEN_TIMEOUT_S, max(self._FIRST_TOKEN_TIMEOUT_S, budget - 2.0))
+
+    def _call_llm(
+        self,
+        system_prompt: str,
+        user_message: str,
+        max_tokens: int,
+        *,
+        timeout_s: float,
+        call_class: str,
+        first_token_timeout_s: float | None = None,
+    ) -> str:
+        """One planner model call: deterministic, raising on backend errors, labelled.
+
+        Raises :class:`LLMUnavailableError` for an error-sentinel answer
+        (legacy backends without raise_on_error), so no caller ever parses one.
+        """
+        complete = self._backend.complete
+        extras: dict[str, Any] = {"call_class": call_class}
+        if first_token_timeout_s is not None:
+            extras["first_token_timeout_s"] = min(first_token_timeout_s, timeout_s)
+        extras = _accepted_extras(complete, extras)
+        try:
+            response = complete(
+                system_prompt,
+                user_message,
+                max_tokens,
+                temperature=0.0,
+                request_timeout_s=timeout_s,
+                raise_on_error=True,
+                **extras,
+            )
+        except TypeError:
+            # Older backends: no raise_on_error / request budget / temperature.
+            try:
+                response = complete(system_prompt, user_message, max_tokens, temperature=0.0)
+            except TypeError:
+                response = complete(system_prompt, user_message)
+        if response and is_backend_error_text(response):
+            raise LLMUnavailableError(str(response)[:200])
+        return response
+
+    def _bounded_call(self, call: Callable[[], str]) -> str:
+        """Run ``call`` with a hard wall-clock limit of ``self._timeout`` seconds.
+
+        On timeout the worker is abandoned rather than joined: a with-block
+        here used to wait for the worker, so a backend that ignored
+        request_timeout_s held the coaching loop until the SDK gave up.
+        """
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="planner-llm")
+        try:
+            return pool.submit(call).result(timeout=self._timeout)
+        finally:
+            pool.shutdown(wait=False)
+
+    def _llm_unavailable_plan(
+        self, trigger: str, turn: int, diag: dict[str, Any], start: float, failure: str
+    ) -> ActionPlan:
+        """An empty plan that tells the autopilot to decide without the model now."""
+        diag["failure"] = failure
+        diag["elapsed_ms"] = (time.perf_counter() - start) * 1000
+        self._record_diagnostic(diag)
+        return ActionPlan(trigger=trigger, turn_number=turn, fallback_reason=FALLBACK_LLM_UNAVAILABLE)
 
     def plan_actions(
         self,
@@ -870,6 +1015,16 @@ class ActionPlanner(_ActionLegalityMixin):
                 )
                 return plan
 
+        # Circuit open: the model server is known down. Waiting out the full
+        # planning budget here stalled the coaching loop 30 s per window in
+        # the 2026-10-06 18:53 outage; the autopilot's deterministic paths
+        # (safe-default combat, board-math priority play) decide instead.
+        if llm_circuit_open(self._backend):
+            logger.warning("Action planning skipped: model server unavailable (circuit open)")
+            return self._llm_unavailable_plan(
+                trigger, current_turn, diag, start, "llm_unavailable: circuit open"
+            )
+
         # R2: the turn plan rides along on the FIRST own-turn action call
         # instead of being a separate blocking LLM call. The old serial
         # game_plan → plan_turn → plan_actions chain took 17-23s on slow
@@ -906,65 +1061,38 @@ class ActionPlanner(_ActionLegalityMixin):
         # Call LLM with enforced timeout.
         # Use temperature=0 for deterministic planning — avoids different
         # actions being proposed across priority windows in the same turn.
-        # Backends that don't accept the kwarg (older local backends) fall
-        # back to their default temperature.
-        import concurrent.futures
-
-        def _complete() -> str:
-            # request_timeout_s is what gives the underlying SDK a hard
-            # deadline. Without it, a hung backend keeps the worker thread
-            # alive for ~10 minutes (OpenAI SDK default), which then keeps
-            # this with-block from exiting.
-            try:
-                # raise_on_error: never let the "Error getting advice: ..."
-                # sentinel string reach the JSON parser — during a backend
-                # outage the parse yields 0 actions and _fallback_plan would
-                # submit a real game action (blind passes, 2026-07-05).
-                return self._backend.complete(
-                    system_prompt,
-                    user_message,
-                    4096,
-                    temperature=0.0,
-                    request_timeout_s=self._timeout,
-                    raise_on_error=True,
-                )
-            except TypeError:
-                try:
-                    return self._backend.complete(system_prompt, user_message, 4096, temperature=0.0)
-                except TypeError:
-                    return self._backend.complete(system_prompt, user_message)
+        # raise_on_error: never let the "Error getting advice: ..." sentinel
+        # reach the JSON parser — during a backend outage the parse yields 0
+        # actions and _fallback_plan would submit a real game action (blind
+        # passes, 2026-07-05). _call_llm raises on a sentinel as well.
+        def _complete(call_class: str = "decision.plan") -> str:
+            return self._call_llm(
+                system_prompt,
+                user_message,
+                4096,
+                timeout_s=self._timeout,
+                call_class=call_class,
+                first_token_timeout_s=self._plan_first_token_timeout(),
+            )
 
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(_complete)
-                response = future.result(timeout=self._timeout)
+            response = self._bounded_call(_complete)
             elapsed = (time.perf_counter() - start) * 1000
             logger.info(f"Action planning took {elapsed:.0f}ms")
         except concurrent.futures.TimeoutError:
             elapsed = (time.perf_counter() - start) * 1000
             logger.error(f"Action planning timed out after {elapsed:.0f}ms (limit {self._timeout}s)")
-            diag["failure"] = "timeout"
-            diag["elapsed_ms"] = elapsed
-            self._record_diagnostic(diag)
-            return ActionPlan(trigger=trigger)
+            return self._llm_unavailable_plan(trigger, current_turn, diag, start, "timeout")
+        except LLMUnavailableError as e:
+            logger.error(f"Backend returned error sentinel; no plan: {str(e)[:160]}")
+            return self._llm_unavailable_plan(trigger, current_turn, diag, start, "llm_error_sentinel")
         except Exception as e:
             logger.error(f"Action planning LLM call failed: {e}")
-            diag["failure"] = f"llm_error: {e}"
-            self._record_diagnostic(diag)
-            return ActionPlan(trigger=trigger)
+            return self._llm_unavailable_plan(trigger, current_turn, diag, start, f"llm_error: {e}")
 
         diag["elapsed_ms"] = (time.perf_counter() - start) * 1000
         diag["response_len"] = len(response) if response else 0
         diag["response_preview"] = (response or "")[:300]
-
-        # Belt-and-braces for backends that still return the error sentinel
-        # as a string (raise_on_error TypeError fallback, third-party
-        # backends): never feed it to the parser / fallback picker.
-        if response and is_backend_error_text(response):
-            logger.error(f"Backend returned error sentinel; no plan: {response[:160]}")
-            diag["failure"] = "llm_error_sentinel"
-            self._record_diagnostic(diag)
-            return ActionPlan(trigger=trigger)
 
         # R2: extract the piggybacked turn plan from the same response.
         if want_turn_plan and response:
@@ -996,7 +1124,8 @@ class ActionPlanner(_ActionLegalityMixin):
         plan.turn_number = game_state.get("turn", {}).get("turn_number", 0)
 
         blocking_window = any(entry.lower().startswith("block with:") for entry in effective_legal_actions)
-        if not plan.actions and blocking_window:
+        repair_unavailable = False
+        if not plan.actions and blocking_window and not llm_circuit_open(self._backend):
             user_message += (
                 "\n\nYour previous response did not specify a valid complete block: "
                 + str(response or "")[:1000]
@@ -1005,20 +1134,19 @@ class ActionPlanner(_ActionLegalityMixin):
                 'A bare "pick" cannot specify the attacker. Use {} only to deliberately decline all blocks.'
             )
             try:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    repair_response = pool.submit(_complete).result(timeout=self._timeout)
-                if not is_backend_error_text(repair_response):
-                    plan = self._parse_response(
-                        repair_response,
-                        effective_legal_actions,
-                        decision_context=decision_context,
-                        bridge_request=game_state.get("_bridge_request_type"),
-                        game_state=game_state,
-                    )
-                    plan.trigger = trigger
-                    plan.turn_number = current_turn
+                repair_response = self._bounded_call(lambda: _complete("decision.block_repair"))
+                plan = self._parse_response(
+                    repair_response,
+                    effective_legal_actions,
+                    decision_context=decision_context,
+                    bridge_request=game_state.get("_bridge_request_type"),
+                    game_state=game_state,
+                )
+                plan.trigger = trigger
+                plan.turn_number = current_turn
                 diag["block_repair_preview"] = (repair_response or "")[:300]
             except Exception as error:
+                repair_unavailable = is_llm_unavailable_error(error)
                 logger.warning("Block assignment repair failed: %s", error)
 
         if not plan.actions:
@@ -1034,6 +1162,8 @@ class ActionPlanner(_ActionLegalityMixin):
                 plan = fallback
             else:
                 diag["failure"] = "empty_plan"
+                if repair_unavailable:
+                    plan.fallback_reason = FALLBACK_LLM_UNAVAILABLE
                 logger.warning(
                     f"Planner fallback also failed: trigger={trigger}, "
                     f"{len(effective_legal_actions)} legal actions"
@@ -1380,8 +1510,9 @@ class ActionPlanner(_ActionLegalityMixin):
         Stores the result on `self._active_turn_plan`. Returns the plan or
         None if the call failed / produced no useful steps.
         """
-        import concurrent.futures
-
+        if llm_circuit_open(self._backend):
+            logger.info("plan_turn skipped: model server unavailable (circuit open)")
+            return None
         game_state = prepare_match_context(game_state)
         current_turn = (game_state.get("turn") or {}).get("turn_number", 0) or 0
 
@@ -1422,29 +1553,16 @@ class ActionPlanner(_ActionLegalityMixin):
         user_message = with_deck_reference(user_message, game_state)
 
         def _complete() -> str:
-            try:
-                return self._backend.complete(
-                    TURN_PLAN_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY,
-                    user_message,
-                    4096,
-                    temperature=0.0,
-                    request_timeout_s=self._timeout,
-                    raise_on_error=True,
-                )
-            except TypeError:
-                try:
-                    return self._backend.complete(
-                        TURN_PLAN_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY, user_message, 4096, temperature=0.0
-                    )
-                except TypeError:
-                    return self._backend.complete(
-                        TURN_PLAN_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY, user_message
-                    )
+            return self._call_llm(
+                TURN_PLAN_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY,
+                user_message,
+                4096,
+                timeout_s=self._timeout,
+                call_class="decision.turn_plan",
+            )
 
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(_complete)
-                response = future.result(timeout=self._timeout)
+            response = self._bounded_call(_complete)
         except concurrent.futures.TimeoutError:
             logger.warning("plan_turn LLM call timed out — leaving turn plan unset")
             return None
@@ -2622,6 +2740,9 @@ class ActionPlanner(_ActionLegalityMixin):
         unavailable or unparseable — the caller picks the conservative
         default for the effect type.
         """
+        if llm_circuit_open(self._backend):
+            logger.info("plan_pay_or_decline skipped: model server unavailable (circuit open)")
+            return None
         game_state = prepare_match_context(game_state)
         user_message = with_deck_reference(
             "\n".join(
@@ -2637,17 +2758,13 @@ class ActionPlanner(_ActionLegalityMixin):
             game_state,
         )
         try:
-            try:
-                response = self._backend.complete(
-                    self._PAY_DECLINE_SYSTEM_PROMPT,
-                    user_message,
-                    256,
-                    temperature=0.0,
-                    request_timeout_s=min(self._timeout, 8.0),
-                    raise_on_error=True,
-                )
-            except TypeError:
-                response = self._backend.complete(self._PAY_DECLINE_SYSTEM_PROMPT, user_message)
+            response = self._call_llm(
+                self._PAY_DECLINE_SYSTEM_PROMPT,
+                user_message,
+                256,
+                timeout_s=min(self._timeout, 8.0),
+                call_class="decision.pay",
+            )
         except Exception as e:
             logger.info(f"plan_pay_or_decline LLM call failed: {e}")
             return None
@@ -2732,6 +2849,7 @@ class ActionPlanner(_ActionLegalityMixin):
         self._last_decision_target_controllers = {}
         self._last_decision_unusual_targets = {}
         self._last_decision_trace = {}
+        self.last_llm_failure = ""
         context = game_state.get("decision_context") or {}
         raw = context.get("raw") or {}
         accept = decision.find("optional:accept")
@@ -2859,12 +2977,17 @@ class ActionPlanner(_ActionLegalityMixin):
                 "plan_decision_options: LLM answer had no valid ids for %s",
                 decision.request_type,
             )
+            self.last_llm_failure = "bad_answer"
         except Exception as e:
+            self.last_llm_failure = "unavailable" if is_llm_unavailable_error(e) else "bad_answer"
             logger.info(f"plan_decision_options LLM path failed: {e}")
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace["llm_failure"] = self.last_llm_failure
+        if decision.request_type == "ActionsAvailable":
+            return self._board_math_fallback(decision, game_state)
         if decision.request_type == "SelectTargets":
-            picked = self._targeting_fallback_pick(decision, game_state)
-            if picked and picked != [DECLINE_DECISION] and picked != [NO_TARGETS_DECISION]:
-                picked = self._avoid_unpayable_ward_targets(decision, game_state, picked)
+            picked = self.targeting_fallback_choice(decision, game_state)
             if picked == [DECLINE_DECISION]:
                 # Harmful targeting forced onto own permanents OR beneficial
                 # targeting forced onto opponent — never let the blind pick submit it.
@@ -2876,6 +2999,22 @@ class ActionPlanner(_ActionLegalityMixin):
                 return picked
             return [DECLINE_DECISION]
         return self.deterministic_option_pick(decision)
+
+    def _board_math_fallback(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
+        """The model gave no usable priority choice: land, then the board-math line."""
+        picked, why = board_math_option_pick(decision, game_state)
+        lead = (
+            "Model unavailable"
+            if getattr(self, "last_llm_failure", "") == "unavailable"
+            else "No usable model answer"
+        )
+        self._last_decision_option_ids = picked
+        self._last_decision_reasoning = f"{lead}; {why}."
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace.update(fallback="board_math", validated_ids=picked, fallback_reason=why)
+        logger.warning("typed-decision fallback (%s): %s -> %s", lead.lower(), why, picked)
+        return picked
 
     def _apply_role_guard(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> list[str]:
         """Behind on board: replace a card-draw/rock/cycling pick with a survival play.
@@ -2964,6 +3103,7 @@ class ActionPlanner(_ActionLegalityMixin):
             answer = self._llm_decision_options(decision, state)
             chosen = [c for c in answer if c in decision.option_ids()][:1]
         except Exception as error:
+            self.last_llm_failure = "unavailable" if is_llm_unavailable_error(error) else "bad_answer"
             logger.info("mulligan LLM path failed: %s", error)
         if not chosen:
             chosen = self.deterministic_option_pick(decision)
@@ -3212,6 +3352,94 @@ class ActionPlanner(_ActionLegalityMixin):
             return [DECLINE_DECISION]
         best = max(alternatives)
         logger.warning("Retargeting: %d damage does not kill %s; %s dies instead", damage, name, best[3])
+        return [best[2]]
+
+    def targeting_fallback_choice(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
+        """The model gave no usable target: the controller-aware pick, aimed so removal kills.
+
+        :meth:`_targeting_fallback_pick` sorts opposing targets by power, but
+        the board-math fallback casts removal only because it kills something
+        (board_assessment ``_kills``). 2026-10-07 review, model down: 2 damage
+        was cast for the 2/2 it kills, then aimed at a 6/6. Fixed damage and
+        -N/-N go to a creature they kill, else the spell is kept (declined);
+        then unpayable ward is avoided, as for model picks. Returns the same
+        sentinels as the pick ([DECLINE_DECISION], [NO_TARGETS_DECISION]).
+        """
+        sentinels = ([DECLINE_DECISION], [NO_TARGETS_DECISION])
+        picked = self._targeting_fallback_pick(decision, game_state)
+        if not picked or picked in sentinels:
+            return picked
+        picked = self._prefer_lethal_damage_target(decision, game_state, picked)
+        if picked not in sentinels:
+            picked = self._prefer_lethal_shrink_target(decision, game_state, picked)
+        if picked and picked not in sentinels:
+            picked = self._avoid_unpayable_ward_targets(decision, game_state, picked)
+        return picked
+
+    def _prefer_lethal_shrink_target(
+        self, decision: Any, game_state: dict[str, Any], chosen: list[str]
+    ) -> list[str]:
+        """Point -N/-N removal at a creature it kills, or keep the spell (fallback picks).
+
+        Model picks keep their -N/-N target: shrinking a blocker or attacker
+        that survives can still win a combat the model reasoned about.
+        """
+        from arenamcp.board_assessment import removal_reach
+
+        oracle = self._decision_source_oracle(decision, game_state)
+        reach = removal_reach({"oracle_text": oracle}) if oracle else None
+        targets = [oid for oid in chosen if str(oid).startswith("tgt:")]
+        if not reach or reach[0] != "shrink" or not reach[1] or len(targets) != 1:
+            return chosen
+        amount = int(reach[1])
+        cards = {card.get("instance_id"): card for card in game_state.get("battlefield", []) or []}
+        local_seat, controllers = self._battlefield_controllers(game_state)
+
+        def killable(iid: int) -> bool | None:
+            card = cards.get(iid)
+            if card is None or controllers.get(iid) == local_seat:
+                return None
+            if "creature" not in str(card.get("type_line") or "").lower():
+                return None
+            toughness = card.get("toughness")
+            if type(toughness) is not int:
+                return None
+            if toughness <= amount:
+                return True
+            if card.get("damaged_this_turn") or card.get("is_attacking") or card.get("is_blocking"):
+                return None
+            return False
+
+        try:
+            picked = int(str(targets[0])[4:])
+        except ValueError:
+            return chosen
+        if killable(picked) is not False:
+            return chosen
+        alternatives = []
+        for option in decision.options:
+            oid = str(option.option_id)
+            if not oid.startswith("tgt:") or oid == targets[0]:
+                continue
+            try:
+                iid = int(oid[4:])
+            except ValueError:
+                continue
+            if killable(iid) is True:
+                card = cards[iid]
+                alternatives.append(
+                    (card.get("power") or 0, card.get("toughness") or 0, oid, card.get("name"))
+                )
+        name = cards.get(picked, {}).get("name", picked)
+        if not alternatives:
+            logger.warning(
+                "Keeping the spell: -%d/-%d kills no legal opposing target (picked %s)", amount, amount, name
+            )
+            return [DECLINE_DECISION]
+        best = max(alternatives)
+        logger.warning(
+            "Retargeting: -%d/-%d does not kill %s; %s dies instead", amount, amount, name, best[3]
+        )
         return [best[2]]
 
     def _gate_harmful_llm_target_picks(
@@ -3487,6 +3715,10 @@ class ActionPlanner(_ActionLegalityMixin):
     _DECISION_MAX_TOKENS = 2048
 
     def _llm_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
+        # Circuit open: fail before formatting a 25k-character prompt, so the
+        # caller's deterministic pick lands at once instead of after 12 s.
+        if llm_circuit_open(getattr(self, "_backend", None)):
+            raise LLMUnavailableError("model server unavailable (circuit open)")
         game_state = prepare_match_context(game_state)
         lines = [
             f"PENDING DECISION: {decision.request_type}"
@@ -3676,28 +3908,27 @@ class ActionPlanner(_ActionLegalityMixin):
             "targets": target_trace[:80],
         }
 
-        try:
-            # Tighter than the general planning timeout: typed decisions
-            # (mulligan, targeting, selection) sit inside short MTGA action
-            # windows, and the deterministic fallback needs time to submit
-            # before the window closes (2026-07-01: mulligan window expired
-            # while the LLM call was still blocked).
-            # 512 tokens left no room for the answer: glm-5.3-flash spent all
-            # 512 on reasoning (finish_reason=length, 7x on 2026-10-04) and the
-            # autopilot passed its turn 12 with Tooth and Nail castable. The
-            # time budget above, not the token cap, bounds latency.
-            response = self._backend.complete(
-                self._DECISION_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY,
-                user_message,
-                self._DECISION_MAX_TOKENS,
-                temperature=0.0,
-                request_timeout_s=min(self._timeout, 12.0),
-                raise_on_error=True,
-            )
-        except TypeError:
-            response = self._backend.complete(
-                self._DECISION_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY, user_message
-            )
+        # Tighter than the general planning timeout: typed decisions
+        # (mulligan, targeting, selection) sit inside short MTGA action
+        # windows, and the deterministic fallback needs time to submit
+        # before the window closes (2026-07-01: mulligan window expired
+        # while the LLM call was still blocked).
+        # 512 tokens left no room for the answer: glm-5.3-flash spent all
+        # 512 on reasoning (finish_reason=length, 7x on 2026-10-04) and the
+        # autopilot passed its turn 12 with Tooth and Nail castable. The
+        # time budget above, not the token cap, bounds latency.
+        response = self._call_llm(
+            self._DECISION_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY,
+            user_message,
+            self._DECISION_MAX_TOKENS,
+            timeout_s=min(self._timeout, 12.0),
+            call_class=(
+                "decision.mulligan"
+                if decision.request_type == "Mulligan" or "LondonMulligan" in str(decision.source_label or "")
+                else "decision.typed"
+            ),
+            first_token_timeout_s=self._FIRST_TOKEN_TIMEOUT_S,
+        )
 
         # P1-1: models prose-prefix the JSON despite "reply ONLY with JSON"
         # (0/5 typed-decision parses on 2026-07-05, one reply in Chinese) —
@@ -3792,3 +4023,187 @@ class ActionPlanner(_ActionLegalityMixin):
             return []
         n = max(1, int(decision.min_select or 1))
         return [o.option_id for o in opts[:n]]
+
+
+# --- priority play without the model ---------------------------------------------
+
+# Cast roles that need a target or a moment only the model would pick
+# (counterspells, combat tricks): never cast blind on our own main phase.
+_REACTIVE_CAST_ROLES = frozenset({"counter", "pump"})
+
+
+def _local_seat(state: dict[str, Any]) -> Any:
+    seat = state.get("local_seat_id")
+    if seat is None:
+        seat = next(
+            (
+                player.get("seat_id")
+                for player in state.get("players") or []
+                if isinstance(player, dict) and player.get("is_local")
+            ),
+            None,
+        )
+    return seat
+
+
+def _own_main_phase_with_empty_stack(state: dict[str, Any]) -> bool:
+    turn = state.get("turn") or {}
+    local = _local_seat(state)
+    if local is None or turn.get("active_player") != local:
+        return False
+    return "main" in str(turn.get("phase") or "").lower() and not (state.get("stack") or [])
+
+
+def _line_text(step: Any) -> str:
+    """Speakable board-math line for this turn ("plays Island, then casts A and B")."""
+    parts = []
+    if step.land:
+        parts.append(f"plays {step.land}")
+    casts = list(step.casts)
+    if casts:
+        parts.append("casts " + (", ".join(casts[:-1]) + " and " + casts[-1] if len(casts) > 1 else casts[0]))
+    return "the board-math line " + (", then ".join(parts) if parts else "casts nothing payable this turn")
+
+
+def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[list[str], str]:
+    """A priority-window choice without the model: land drop, then the board-math line.
+
+    bug_20261006_185403 (18:53:53): with the model timing out, the old
+    fallback ("play a land, otherwise pass") passed turn 10 with four payable
+    creatures while board_assessment scheduled Geist of Saint Thalia +
+    Theoretical Necromancer. This applies only on our own main phase with an
+    empty stack; elsewhere the land-else-pass pick stands (no blind
+    instant-speed plays). It is recomputed every window, so the next
+    scheduled spell follows from the new board. It never picks an unpayable
+    option, an X spell, an activation, or a counterspell / combat trick.
+
+    Returns ``(option_ids, reason)``.
+    """
+    from arenamcp.mana import mana_cost_to_cmc
+
+    fallback = ActionPlanner.deterministic_option_pick(decision)
+    if decision.request_type != "ActionsAvailable" or not _own_main_phase_with_empty_stack(game_state):
+        return fallback, "outside our main phase only a land drop or a pass is safe"
+    assessment, option_role = None, None
+    step, plan_text, scheduled = None, "", set()
+    try:
+        from arenamcp.board_assessment import assess, option_role
+
+        assessment = assess(game_state)
+        if assessment is not None and assessment.our_turn and assessment.lookahead:
+            first = assessment.lookahead[0]
+            plan_text, scheduled = _line_text(first), set(first.casts)
+            step = first
+    except Exception as error:  # the strategic layer never blocks a decision
+        logger.debug("board-math fallback: no assessment: %s", error)
+        assessment = None
+    options = [option for option in decision.options if option.payable is not False]
+
+    def name_of(option: Any) -> str:
+        return str(find_source(game_state, option.meta or {}).get("name") or "")
+
+    lands = [option for option in options if (option.meta or {}).get("actionType") == "ActionType_Play"]
+    if lands:
+        wanted = str(step.land or "") if step is not None else ""
+        pick = (
+            next((option for option in lands if wanted and name_of(option) == wanted), None)
+            or next((option for option in lands if untapped_land_drop(game_state, [option])), None)
+            or lands[0]
+        )
+        return [pick.option_id], plan_text or "no board assessment, so the land drop comes first"
+
+    picks: list[tuple[int, Any]] = []
+    for option in options:
+        meta = option.meta or {}
+        if option.payable is not True or meta.get("actionType") != "ActionType_Cast":
+            continue
+        card = find_source(game_state, meta)
+        name = str(card.get("name") or "")
+        cost = str(card.get("mana_cost") or "")
+        if not name or "{x}" in cost.lower():
+            continue
+        try:
+            role = option_role(option, game_state) if option_role is not None else "other"
+        except Exception:
+            role = "other"
+        if role in _REACTIVE_CAST_ROLES:
+            continue
+        if step is not None:
+            if name not in scheduled:
+                continue
+        elif assessment is not None or role not in ("creature", "planeswalker"):
+            continue
+        picks.append((mana_cost_to_cmc(cost), option))
+    if picks:
+        # Most expensive first: Arena's autotap then keeps cheaper colours open
+        # for the rest of the line, re-planned from the new board next window.
+        _, option = max(picks, key=lambda item: item[0])
+        return [option.option_id], plan_text or "no board assessment, so the biggest payable creature"
+    if any(option.option_id == "pass" for option in options):
+        return ["pass"], plan_text or "nothing safe to cast"
+    return fallback, "no pass option, so the first legal option"
+
+
+def board_math_legacy_plan(
+    game_state: dict[str, Any],
+    legal_actions: list[str] | None,
+    trigger: str = "",
+    *,
+    lead: str = "Model unavailable",
+    fallback_reason: str = FALLBACK_LLM_UNAVAILABLE,
+) -> ActionPlan:
+    """:func:`board_math_option_pick` for the legacy legal-action-string path.
+
+    Only "Play Land: X", "Cast X" (from hand; payable only with "[OK]") and
+    "Pass" take part. Returns an empty plan when none of them is legal, so the
+    caller's other nets (safe defaults, manual-required) still apply.
+    """
+    from arenamcp.decisions import DecisionOption, PendingDecision
+
+    turn = int(((game_state.get("turn") or {}).get("turn_number")) or 0)
+    plan = ActionPlan(trigger=trigger, turn_number=turn, fallback_reason=fallback_reason)
+    hand: dict[str, dict] = {}
+    for card in game_state.get("hand") or []:
+        if isinstance(card, dict) and card.get("name"):
+            hand.setdefault(str(card["name"]).casefold(), card)
+    options: list[Any] = []
+    texts: dict[str, str] = {}
+    for index, entry in enumerate(legal_actions or []):
+        text = str(entry or "").strip()
+        lower = text.lower()
+        if lower == "pass":
+            if "pass" not in texts:
+                options.append(DecisionOption("pass", "Pass"))
+                texts["pass"] = text
+            continue
+        if lower.startswith("play land:"):
+            kind, rest, payable = "ActionType_Play", text.split(":", 1)[1], None
+        elif lower.startswith("cast "):
+            kind, rest, payable = "ActionType_Cast", text[5:], "[ok]" in lower
+        else:
+            continue
+        card = hand.get(re.sub(r"\s*\[[^\]]*\]", "", rest).strip().casefold())
+        if card is None:
+            continue
+        option_id = f"legal:{index}"
+        meta = {"actionType": kind, "instanceId": card.get("instance_id"), "grpId": card.get("grp_id")}
+        options.append(DecisionOption(option_id, text, payable=payable, meta=meta))
+        texts[option_id] = text
+    if not options:
+        return plan
+    decision = PendingDecision((0, 0), "ActionsAvailable", tuple(options), can_pass="pass" in texts)
+    picked, why = board_math_option_pick(decision, game_state)
+    if len(picked) != 1 or picked[0] not in texts:
+        return plan
+    if picked[0] == "pass":
+        action = GameAction(action_type=ActionType.PASS_PRIORITY)
+    else:
+        action = ActionPlanner.__new__(ActionPlanner)._legal_action_to_action(texts[picked[0]])
+        if action is None:
+            return plan
+    action.reasoning = f"{lead}; {why}."
+    plan.actions = [action]
+    plan.overall_strategy = f"[local-fallback] {why}"
+    plan.voice_advice = plan.spoken_actions()
+    logger.warning("Legacy fallback (%s): %s -> %s", lead.lower(), why, texts[picked[0]])
+    return plan
