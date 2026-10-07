@@ -76,6 +76,7 @@ STRATEGIC EVALUATION & DECISIONS:
   If you can deal lethal, go aggressive — remove a blocker or just attack. Don't play defensively!
 - ONLY claim "lethal" if the combat summary line shows "Atk: ... vs LETHAL".
 - TRADE CHECK: Read the "If X blocks Y:" lines below the Atk: summary. Lines marked "BAD" mean the attacker dies for free or bounces off. Do NOT attack into a BAD trade unless it enables lethal or a critical strategy. If every possible block is BAD, don't attack with that creature.
+- UNBLOCKABLE: Creatures tagged [UNBLOCKABLE] can't be blocked right now (their own text, or a static grant such as "creatures you control with power or toughness 1 or less can't be blocked"). They have no "If X blocks Y:" lines; the "Unblockable (...)" line totals their guaranteed damage. Weigh that damage against keeping them home as blockers for the crackback.
 - WORST-CASE BLOCKING: The opponent WILL choose the block that's best for THEM. If ANY "If X blocks Y:" line shows BAD for your attacker, assume the opponent will make that block. Don't suggest attacking because one blocker gives a GOOD trade when another blocker kills your creature — the opponent won't cooperate with your plan.
 - ATTACK EVALUATION: Evaluate attacks dynamically. Attack with profitable attackers, hold back blockers if needed to survive crackback, and attack with your full team when favorable or for lethal.
 - MAIN PHASE EVALUATION: Evaluate whether to advance your board state with [OK] spells/land drops OR to pass priority to hold up mana for instant-speed interaction, activated abilities, or combat tricks on opponent's turn. Choose whichever path gives the higher strategic advantage.
@@ -137,6 +138,7 @@ STRATEGY:
   If you can deal lethal, go aggressive — remove a blocker or just attack. Don't play defensively!
 - ONLY claim "lethal" if the combat summary line shows "Atk: ... vs LETHAL".
 - TRADE CHECK: Read "If X blocks Y:" lines. "BAD" = attacker dies for free. Don't attack into BAD trades unless it enables lethal.
+- UNBLOCKABLE: [UNBLOCKABLE] creatures can't be blocked right now; their damage (the "Unblockable (...)" line) is guaranteed. Weigh it against keeping them home to block.
 - WORST-CASE BLOCKING: The opponent chooses which creature blocks. If ANY blocker gives a BAD result for your attacker, assume that's what happens — don't attack hoping the opponent picks the favorable block.
 - ATTACK EVALUATION: Evaluate attacks dynamically. Attack with profitable attackers, hold back blockers if needed to survive crackback, and attack with your full team when favorable or for lethal.
 - CRACKBACK CHECK: Before attacking, count opponent's total power vs YOUR life. If they can kill you next turn and you need blockers to survive, do NOT attack with those creatures. The "Crackback:" line already accounts for your blockers — trust its damage-through number.

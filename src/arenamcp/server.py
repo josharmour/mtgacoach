@@ -24,6 +24,7 @@ from arenamcp.card_db import (
     is_unknown_card_name,
 )
 from arenamcp.coach import CoachEngine, GameStateTrigger, create_backend
+from arenamcp.combat_keywords import annotate_cant_be_blocked
 from arenamcp.draft_eval import evaluate_pack, format_pick_recommendation
 from arenamcp.draftstate import DraftState, create_draft_handler, extract_set_code
 from arenamcp.draftstats import DraftStatsCache
@@ -1821,6 +1822,9 @@ def get_game_state() -> dict[str, Any]:
         response["pending_decision"] = snap.get("pending_decision")
         response["decision_context"] = decision_context
 
+    # Static "can't be blocked" grants (Tetsuko Umezawa, Fugitive) live on
+    # another permanent; mark the creatures they cover for every consumer.
+    annotate_cant_be_blocked(response.get("battlefield"))
     return response
 
 

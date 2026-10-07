@@ -31,7 +31,7 @@ from functools import lru_cache
 from itertools import product
 from typing import Any
 
-from arenamcp.combat_keywords import has_combat_keyword
+from arenamcp.combat_keywords import can_be_blocked_by, has_combat_keyword
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,15 @@ _MEMO_SIZE = 64
 
 def _card_key(c: dict) -> tuple:
     """Everything the solver reads from a creature."""
-    return (c.get("instance_id"), c.get("name"), c.get("power"), c.get("toughness"), c.get("oracle_text"))
+    return (
+        c.get("instance_id"),
+        c.get("name"),
+        c.get("power"),
+        c.get("toughness"),
+        c.get("oracle_text"),
+        tuple(c.get("keywords") or ()),
+        c.get("cant_be_blocked"),
+    )
 
 
 def _cards_key(cards: list[dict]) -> tuple:
@@ -130,12 +138,17 @@ def _material(card: dict) -> int:
 def _can_block(attacker: dict, blocker: dict) -> bool:
     """Return True iff the blocker can legally block the attacker.
 
-    Only checks keyword-level legality (flying/reach + menace partial).
-    Defender-imposed restrictions (e.g. skulk, can-only-be-blocked-by)
-    are not modeled — callers should filter those externally via the
-    GRE-provided `attackerInstanceIds` list.
+    Checks keyword-level legality (flying/reach + menace partial) and
+    "can't be blocked": the attacker's ``cant_be_blocked`` mark (static grants
+    such as Tetsuko Umezawa's, see ``combat_keywords.annotate_cant_be_blocked``)
+    and its own text, including checkable per-blocker restrictions ("can't be
+    blocked by creatures with power 2 or greater"). Other defender-imposed
+    restrictions (e.g. skulk) are not modeled — callers should filter those
+    externally via the GRE-provided `attackerInstanceIds` list.
     """
     if _has(attacker, "flying") and not (_has(blocker, "flying") or _has(blocker, "reach")):
+        return False
+    if not can_be_blocked_by(attacker, blocker):
         return False
     # Menace: attacker can't be blocked except by two or more creatures.
     # We model this as a per-attacker constraint enforced later (>=2 blockers).

@@ -327,7 +327,13 @@ def _body(
             can_attack = False
         if "enchanted creature can't block" in aura_text or "can't attack or block" in aura_text:
             can_block = False
-    unblockable = bool(_SELF_UNBLOCKABLE.search(text)) or rules.get("all_unblockable")
+    # cant_be_blocked: combat_keywords.annotate_cant_be_blocked (own text named
+    # by card name, attached Auras/Equipment) when the snapshot was marked.
+    unblockable = (
+        bool(_SELF_UNBLOCKABLE.search(text))
+        or rules.get("all_unblockable")
+        or bool(card.get("cant_be_blocked"))
+    )
     limit = rules.get("unblockable_max")
     if limit is not None and (power <= limit or toughness <= limit):
         unblockable = True

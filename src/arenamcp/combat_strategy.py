@@ -8,6 +8,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from itertools import product
 
+from arenamcp.combat_keywords import annotate_cant_be_blocked
 from arenamcp.combat_solver import _can_block, _has, _material, _memoized, _resolve_attacker, optimal_blocks
 from arenamcp.combat_targets import attack_candidates, recipient_key, recipient_label
 
@@ -89,6 +90,8 @@ def combat_choice(state: dict, *, budget: int = 20000, deadline_s: float = 0.7) 
     raw = attack_candidates(state)
     if not raw:
         return None
+    # Board-granted "can't be blocked" (Tetsuko Umezawa) must reach _can_block.
+    annotate_cant_be_blocked(state.get("battlefield"))
     relevant = {key: state.get(key) for key in ("players", "battlefield", "decision_context")}
     key = ("combat_recipients", json.dumps(relevant, sort_keys=True, default=str), budget, deadline_s)
     return _memoized(key, lambda: _search(state, raw, budget, deadline_s))
@@ -545,6 +548,9 @@ def losing_attackers(state: dict, attacker_ids: list[int], pending: dict | None 
         return {}
     if _all_in(state):
         return {}  # nothing to lose: a chump attack still might matter
+    # bug_20261006_184540: "Cadet 2/2 can block Yuriko" held back a creature
+    # that Tetsuko Umezawa made unblockable. Mark board grants for _can_block.
+    annotate_cant_be_blocked(state.get("battlefield"))
     cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
     attackers = [cards.get(identity) for identity in attacker_ids]
     if any(

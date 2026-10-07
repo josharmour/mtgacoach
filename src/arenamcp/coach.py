@@ -59,7 +59,7 @@ from arenamcp.coach_structured import (
 )
 from arenamcp.coach_tracker import WordUsageTracker
 from arenamcp.coach_triggers import GameStateTrigger
-from arenamcp.combat_keywords import printed_combat_keywords
+from arenamcp.combat_keywords import annotate_cant_be_blocked, can_be_blocked_by, printed_combat_keywords
 from arenamcp.mana import (
     get_local_seat_id,
     has_autotap_solution,
@@ -700,6 +700,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         if atk_has_fly and not blk_has_fly and not blk_has_reach:
             return None
+        if not can_be_blocked_by(atk, blk):
+            return None  # "can't be blocked": own text or a grant such as Tetsuko Umezawa's
 
         atk_dies = (blk_pow >= atk_tgh) or blk_has_dth
         blk_dies = (atk_pow >= blk_tgh) or atk_has_dth
@@ -737,6 +739,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             for i, blk in enumerate(available_blk):
                 blk_keywords = printed_combat_keywords(blk.get("oracle_text") or "")
                 if atk_has_fly and "flying" not in blk_keywords and "reach" not in blk_keywords:
+                    continue
+                if not can_be_blocked_by(atk, blk):
                     continue
                 valid.append((i, blk))
             if valid:
@@ -1469,6 +1473,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             flags.append("FS")
         if "deathtouch" in keywords:
             flags.append("DTH")
+        if is_creature and card.get("cant_be_blocked"):
+            flags.append("UNBLOCKABLE")
         if is_creature and card.get("turn_entered_battlefield") == turn_num and "haste" not in keywords:
             flags.append("SS")
         elif (
@@ -1613,10 +1619,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         opp_life = opponent_player.get("life_total", 20) if opponent_player else 20
         your_attack_power = sum(c.get("power") or 0 for c in valid_attackers)
 
+        # bug_20261006_184540: Tetsuko made four attackers unblockable; the
+        # prompt only showed blocks that couldn't happen.
+        unblockable = [c for c in valid_attackers if c.get("cant_be_blocked")]
+        unblockable_power = sum(c.get("power") or 0 for c in unblockable)
+
         if valid_attackers:
             lethal = (
                 "LETHAL"
-                if (opp_block_count == 0 and your_attack_power >= opp_life)
+                if (opp_block_count == 0 and your_attack_power >= opp_life) or unblockable_power >= opp_life
                 else f"{opp_block_count}blk"
             )
             attacker_names = [c.get("name", "?") for c in valid_attackers]
@@ -1632,6 +1643,13 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             lines.append(
                 f"Atk: {len(valid_attackers)}cr/{your_attack_power}pwr vs {lethal} \u2014 can attack: {', '.join(deduped_names)}"
             )
+            if unblockable:
+                sources = ", ".join(sorted({str(c["cant_be_blocked"]) for c in unblockable}))
+                lines.append(
+                    f"Unblockable ({sources}): "
+                    + ", ".join(f"{c.get('name', '?')} {c.get('power') or 0}" for c in unblockable)
+                    + f" = {unblockable_power} damage no blocker can stop"
+                )
             if valid_attackers and opp_blockers:
                 for atk in valid_attackers:
                     for blk in opp_blockers:
@@ -2760,6 +2778,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         # Battlefield
         battlefield = game_state.get("battlefield", [])
+        # Mark creatures a static grant (Tetsuko Umezawa) makes unblockable so
+        # the board tags and the combat lines below agree with the rules text.
+        annotate_cant_be_blocked(battlefield)
         your_cards = [
             c
             for c in battlefield
