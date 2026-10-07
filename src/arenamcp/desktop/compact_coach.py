@@ -10,6 +10,7 @@ import re
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import QPoint, Qt, QTimer, QUrl, Signal
@@ -73,6 +74,111 @@ def _plan_step_text(step: dict[str, Any]) -> str:
     if attack and attack.lower() not in ("none", "no", "-"):
         text += f", attack: {attack}"
     return text
+
+
+# Line-search postures worth a word on the Line row: 'either' says nothing and
+# 'lethal' repeats the outcome.
+_POSTURE_WORDS = ("attack", "hold")
+_ALT_STEP_CHARS = 64
+
+
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _line_lives(line: dict[str, Any]) -> list[tuple[int, int | None]]:
+    """(our life, turn of their attack) after each opponent attack in a searched line.
+
+    The attack under way (``now_life``) comes first; every later one follows
+    our step on ``turn``, so it lands on ``turn + 1``.
+    """
+    steps = [s for s in line.get("steps") or [] if isinstance(s, dict)]
+    first = _int_value(steps[0].get("turn")) if steps else 0
+    lives = []
+    if _int_or_none(line.get("now_life")) is not None:
+        lives.append((line["now_life"], first - 1 if first > 1 else None))
+    for step in steps:
+        life, turn = _int_or_none(step.get("life_after")), _int_value(step.get("turn"))
+        if life is not None:
+            lives.append((life, turn + 1 if turn > 0 else None))
+    return lives
+
+
+def _line_outcome(line: dict[str, Any], lives: list[tuple[int, int | None]]) -> str:
+    """'survive' / 'dead T17' / 'lethal T15' for one searched line ('' when unknown)."""
+    outcome = str(line.get("outcome") or "")
+    if outcome == "alive":
+        return "survive"
+    if outcome == "dead":
+        turn = next((t for life, t in lives if life <= 0), None)
+        return f"dead T{turn}" if turn else "dead"
+    if outcome == "win":
+        for step in line.get("steps") or []:
+            opp_life = _int_or_none(step.get("opp_life_after")) if isinstance(step, dict) else None
+            turn = _int_value(step.get("turn")) if opp_life is not None and opp_life <= 0 else 0
+            if turn > 0:
+                return f"lethal T{turn}"
+        return "lethal"
+    return ""
+
+
+def _line_chain(lives: list[tuple[int, int | None]], *, turns: bool) -> str:
+    """'7 → 5 (T13, T15)': our life after each of their attacks (0 once dead)."""
+    text = " → ".join(str(max(0, life)) for life, _ in lives)
+    if turns and lives and all(t for _, t in lives):
+        text += f" ({', '.join(f'T{t}' for _, t in lives)})"
+    return text
+
+
+def _line_step_text(step: dict[str, Any]) -> str:
+    """One searched turn from the payload, like ``line_search.Step.text`` (no targets)."""
+    modes = step.get("modes") if isinstance(step.get("modes"), dict) else {}
+    parts = [str(step.get("land") or "")]
+    for name in step.get("casts") or []:
+        mode = str(modes.get(name) or "")
+        parts.append(f"{name} ({mode})" if mode else str(name))
+    parts += [f"landcycle {name}" for name in step.get("cycles") or []]
+    text = " + ".join(p for p in parts if p)
+    attack = [str(a) for a in step.get("attack") or [] if a]
+    if attack:
+        text += f"{', ' if text else ''}attack with {', '.join(attack)}"
+    held = [str(h) for h in step.get("held") or [] if h]
+    return (text or "no play") + (f", hold {', '.join(held)}" if held else "")
+
+
+def _line_rows(facts: dict[str, Any], label: Callable[[str], str]) -> list[str]:
+    """The plan card's Line / Alt rows from the board facts' searched lines ([] without them)."""
+    search = facts.get("search") if isinstance(facts.get("search"), dict) else {}
+    lines = [x for x in facts.get("lines") or [] if isinstance(x, dict)]
+    if not lines or search.get("truncated"):
+        return []
+    rows = []
+    best = lines[0]
+    lives = _line_lives(best)
+    outcome = _line_outcome(best, lives)
+    bits = [_line_chain(lives, turns=True)]
+    posture = str(facts.get("posture") or "")
+    if posture in _POSTURE_WORDS:
+        bits.append(posture)
+    tail = " · ".join(b for b in bits if b)
+    if outcome or tail:
+        text = span(outcome, "bad" if best.get("outcome") == "dead" else None) if outcome else ""
+        text += span((" · " if outcome and tail else "") + tail)
+        rows.append(block(label("Line") + text, size="caption"))
+    if len(lines) > 1:
+        alt = lines[1]
+        steps = [s for s in alt.get("steps") or [] if isinstance(s, dict)]
+        head = _line_step_text(steps[0]) if steps else str(alt.get("summary") or "").split(" — ")[0]
+        if len(head) > _ALT_STEP_CHARS:
+            head = head[: _ALT_STEP_CHARS - 1].rstrip(" ,;+") + "…"
+        alt_lives = _line_lives(alt)
+        alt_outcome = _line_outcome(alt, alt_lives)
+        text = ": ".join(b for b in (head, _line_chain(alt_lives, turns=False)) if b)
+        if alt_outcome and alt_outcome != "survive":
+            text += f" · {alt_outcome}"
+        if text:
+            rows.append(block(label("Alt") + span(text, "muted"), size="caption"))
+    return rows
 
 
 _NOW_EMPTY = "Advice shows up here when you have a decision to make."
@@ -821,6 +927,8 @@ class CompactCoachPanel(QWidget):
             return
 
         best_branch = branches[0] if branches else None
+        # The line search's lines replace the heuristic branches (WP11).
+        searched = isinstance(best_branch, dict) and best_branch.get("score_provenance") == "line_search"
         if best_branch:
             steps = best_branch.get("sequence_steps") or []
             if steps:
@@ -840,7 +948,7 @@ class CompactCoachPanel(QWidget):
         )
         lines = [
             block(
-                span("Heuristic hint", "muted", weight=700)
+                span("Best line" if searched else "Heuristic hint", "muted", weight=700)
                 + "&nbsp;&nbsp;"
                 + span(f"board {position}", score_tone, weight=700),
                 size="caption",
@@ -929,6 +1037,13 @@ class CompactCoachPanel(QWidget):
             flags = [str(f) for f in facts.get("flags") or [] if f]
             if flags:
                 lines.append(block(span(" · ".join(flags[:2]), "bad", weight=600), size="caption"))
+            lines += _line_rows(facts, label)
+        opp = plan.get("opp_interaction") if isinstance(plan.get("opp_interaction"), dict) else {}
+        opp_text = str(opp.get("ui_line") or "").strip() if opp.get("known") else ""
+        if opp_text:
+            # The row label already says "Opp" ('Opp tricks ~12%: ...' → 'tricks ~12%: ...').
+            opp_text = re.sub(r"^opp\s+", "", opp_text, flags=re.IGNORECASE)
+            lines.append(block(label("Opp") + span(opp_text, "muted"), size="caption"))
         if steps:
             turns = [f"T{s.get('turn')} {_plan_step_text(s)}" for s in steps[:3]]
         else:
