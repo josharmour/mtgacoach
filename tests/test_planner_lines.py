@@ -15,9 +15,13 @@ guard. These tests run ``plan_decision_options`` on the recorded states
   for or against a mode the search can't value (review 2026-10-07);
 - the line guard runs after the role guard (which keeps precedence),
   shadow by default, and never touches lethal, a pass, their turn, or a
-  cast whose effect the search drops (tokens, an enters trigger, an aura);
+  cast whose effect the search still drops (tokens it can't read, an
+  aura); token makers and enters removal are valued now (review
+  2026-10-07), so it may steer toward them;
 - ActionsAvailable options on our turn and modal modes carry '[LINE ...]'
-  tags, with the LINES (or MODES) line right above OPTIONS:;
+  tags, with the LINES (or MODES) line right above OPTIONS:, shown once:
+  the strategy block wired as the autopilot wires it leaves its copy out,
+  and the whole prompt's growth stays within budget on the fixtures;
 - with the model down, the best searched line's play is the fallback,
   keeping the board-math land-first order (tests/test_llm_down_fallback.py);
 - ARENAMCP_LINE_SEARCH=0 removes all of it, the modal path included.
@@ -32,28 +36,37 @@ from copy import deepcopy
 from unittest import mock
 
 import pytest
+from tests import strategic_states as S
 from tests.strategic_states import (
     BUG_174855,
     CARDS,
     DECK_CATALOG,
+    ENTERS_REMOVAL,
     G1_T12,
     G1_T12_MENU,
+    G1_T14,
     G1_T14_MODE_MENU,
     G1_T14_MODE_REQUEST_ID,
     G1_T14_MODE_STATE,
     G1_T15_FROM_OPPONENT,
+    HASTE_TOKENS_LETHAL,
+    HASTE_TOKENS_UNREAD,
     actions_decision,
     after_land_drop,
     card,
     cast,
     mac_phase,
     modal_decision,
+    mountain_board,
     play,
     state,
+    synthetic_menu,
 )
 
 from arenamcp import board_assessment as ba
 from arenamcp import line_guard as lg
+from arenamcp import line_search
+from arenamcp import opponent_tricks as ot
 from arenamcp.action_planner import (
     DECLINE_DECISION,
     ActionPlanner,
@@ -61,7 +74,8 @@ from arenamcp.action_planner import (
     line_fallback_option_pick,
 )
 from arenamcp.decisions import DecisionOption, PendingDecision
-from arenamcp.line_search import compare_modes
+from arenamcp.game_plan import GamePlanManager
+from arenamcp.line_search import action_key, compare_modes
 
 LOGGER = "arenamcp.action_planner"
 DESTROY, GAIN = "idx:0", "idx:1"
@@ -318,22 +332,47 @@ def test_a_fully_modelled_mode_verdict_applies_only_when_on(monkeypatch, caplog,
 @pytest.mark.parametrize("setting", [None, "on"])
 def test_a_chosen_token_mode_is_never_replaced(monkeypatch, caplog, setting):
     # Review 2026-10-07 (m1_mode_token): the 4/4 Beast blocks the Giant every turn, but
-    # the search values the token mode at 0; 'on' replaced it with 'gain 3 life'.
+    # the search valued the token mode at 0 and 'on' replaced it with 'gain 3 life'. The
+    # token has a body now: the token mode is the best mode, and the guard keeps it.
     if setting is not None:
         monkeypatch.setenv("ARENAMCP_MODE_GUARD", setting)
     source, decision = _modal_board(monkeypatch, "Beast Charm")
     planner, backend = _planner(["idx:0"], "Make a 4/4 Beast to block their Hill Giant.")
     with caplog.at_level(logging.INFO, logger=LOGGER):
         assert planner.plan_decision_options(decision, source) == ["idx:0"]
-    (record,) = _mode_logs(caplog)
-    assert record.levelno == logging.INFO
-    assert "(chosen) not modelled" in record.getMessage()
-    assert planner.get_last_decision_trace()["mode_guard"]["applied"] is False
+    assert _mode_logs(caplog) == [] and "mode_guard" not in planner.get_last_decision_trace()
     assert planner.get_decision_reasoning(["idx:0"]) == "Make a 4/4 Beast to block their Hill Giant."
-    header = _header(backend.prompts[-1])
-    assert "[LINE best:" not in header
-    assert "[LINE: dead T11; effect unmodelled]" in _option_line(backend.prompts[-1], "idx:0")
-    assert "[LINE: survives T11 at 2, dead T13]" in _option_line(backend.prompts[-1], "idx:1")
+    prompt = backend.prompts[-1]
+    assert "unmodelled" not in _header(prompt) and "(not modelled)" not in _header(prompt)
+    assert "[LINE best: survives T11 at 2, 2 after T13, 2 after T15]" in _option_line(prompt, "idx:0")
+    assert "[LINE: survives T11 at 2, dead T13]" in _option_line(prompt, "idx:1")
+
+
+@pytest.mark.parametrize(("setting", "expected"), [(None, ["idx:1"]), ("on", ["idx:0"])])
+def test_gaining_life_instead_of_the_token_mode_is_a_fully_modelled_verdict(
+    monkeypatch, caplog, setting, expected
+):
+    # The other way round: 'gain 3 life' at 2 life dies to the Giant on T13; the Beast
+    # walls it. Both modes are valued, so 'on' applies the verdict (no contingent note).
+    if setting is not None:
+        monkeypatch.setenv("ARENAMCP_MODE_GUARD", setting)
+    source, decision = _modal_board(monkeypatch, "Beast Charm")
+    planner, _ = _planner(["idx:1"], "Gain 3 life.")
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        assert planner.plan_decision_options(decision, source) == expected
+    (record,) = _mode_logs(caplog)
+    trace = planner.get_last_decision_trace()["mode_guard"]
+    assert trace["replaced"] == "idx:1" and trace["with"] == "idx:0" and trace["contingent"] == []
+    assert trace["applied"] is (setting == "on")
+    if setting == "on":
+        assert record.levelno == logging.WARNING and record.getMessage().startswith(
+            "Mode guard: Beast Charm: create a 4/4 green beast creature"
+        )
+    else:
+        assert record.levelno == logging.INFO and record.getMessage().startswith(
+            "Mode guard (shadow): would replace Mode 2: You gain 3 life with Mode 1: Create a 4/4 green "
+            "Beast creature token"
+        )
 
 
 def test_the_mode_menu_prompt_says_the_board_facts_precede_the_choice():
@@ -556,103 +595,131 @@ def test_lethal_on_board_is_left_alone():
     assert "line_guard" not in planner.get_last_decision_trace()
 
 
-# Boards from the 2026-10-07 safety review: the chosen cast's effect is one the search drops.
-_UNMODELLED_CARDS = {
-    "Hill Giant": {
-        "type_line": "Creature — Giant", "mana_cost": "{3}{R}", "oracle_text": "",
-        "power": 3, "toughness": 3, "card_types": ["CardType_Creature"],
-    },
-    "Gray Ogre": {
-        "type_line": "Creature — Ogre", "mana_cost": "{2}{R}", "oracle_text": "",
-        "power": 2, "toughness": 2, "card_types": ["CardType_Creature"],
-    },
-    "Grizzly Bears": {
-        "type_line": "Creature — Bear", "mana_cost": "{1}{R}", "oracle_text": "",
-        "power": 2, "toughness": 2, "card_types": ["CardType_Creature"],
-    },
-    "Elemental Uprising": {
-        "type_line": "Sorcery", "mana_cost": "{2}{R}",
-        "oracle_text": "Create two 3/1 red Elemental creature tokens with haste.", "card_types": ["CardType_Sorcery"],
-    },
-    "Beast Summons": {
-        "type_line": "Sorcery", "mana_cost": "{2}{R}",
-        "oracle_text": "Create a 4/4 green Beast creature token.", "card_types": ["CardType_Sorcery"],
-    },
-    "Sky Knight": {
-        "type_line": "Creature — Angel", "mana_cost": "{3}{W}", "oracle_text": "Flying",
-        "power": 4, "toughness": 4, "keywords": ["flying"], "card_types": ["CardType_Creature"],
-    },
-    "Chupacabra": {
-        "type_line": "Creature — Horror", "mana_cost": "{2}{R}{R}",
-        "oracle_text": "When this creature enters, destroy target creature an opponent controls.",
-        "power": 2, "toughness": 2, "card_types": ["CardType_Creature"],
-    },
-    "Giant Spider": {
-        "type_line": "Creature — Spider", "mana_cost": "{3}{R}", "oracle_text": "Reach",
-        "power": 2, "toughness": 4, "keywords": ["reach"], "card_types": ["CardType_Creature"],
-    },
-}  # fmt: skip
-
-_UNMODELLED_BOARDS = {
+# Boards from the 2026-10-07 safety review (tests/strategic_states.py): with
+# ARENAMCP_LINE_GUARD=on each first cast was replaced by the other creature,
+# because the search scored it as doing nothing. Token makers and enters removal
+# are modelled now (line_search_moves.token_specs / enters triggers).
+_TOKEN_BLOCKER = mountain_board(
+    life=3, their_life=20, mountains=3,
+    theirs=[(410, "Hill Giant", 2, False, 5), (413, "Gray Ogre", 2, False, 7)],
+    hand=[(501, "Beast Summons"), (502, "Grizzly Bears")],
+)  # fmt: skip
+_REVIEW_BOARDS = {
     # Two hasty 3/1s are exactly lethal: they are at 6 and their only creature is tapped.
-    "haste_tokens_lethal": (3, 6, [(410, "Hill Giant", 2, True, 5)], "Elemental Uprising", "Grizzly Bears"),
+    "haste_tokens_lethal": HASTE_TOKENS_LETHAL,
     # The 4/4 token walls the Giant and the Ogre; the Bears die on T13.
-    "token_blocker": (3, 20, [(410, "Hill Giant", 2, False, 5), (413, "Gray Ogre", 2, False, 7)],
-                      "Beast Summons", "Grizzly Bears"),
+    "token_blocker": _TOKEN_BLOCKER,
     # The enters trigger destroys their 4/4 flier; the reach blocker only trades turns.
-    "enters_removal": (4, 20, [(410, "Sky Knight", 2, False, 5), (413, "Gray Ogre", 2, False, 7)],
-                       "Chupacabra", "Giant Spider"),
-}  # fmt: skip
+    "enters_removal": ENTERS_REMOVAL,
+}
 
 
-def _unmodelled_board(monkeypatch, name: str) -> tuple[dict, object, str]:
-    for card_name, info in _UNMODELLED_CARDS.items():
-        monkeypatch.setitem(CARDS, card_name, info)
-    life, their_life, theirs, unmodelled, other = _UNMODELLED_BOARDS[name]
-    lands = [(401 + i, "Mountain", 1, False, 2 + 2 * i) for i in range(4 if name == "enters_removal" else 3)]
-    source = state(
-        turn=10, active=1, phase="Phase_Main1", step="",
-        life={1: life, 2: their_life}, lands_played={1: 1, 2: 0}, library=20, opponent_hand=0,
-        battlefield=[*lands, *theirs, (411, "Mountain", 2, False, 1)],
-        hand=[(501, unmodelled), (502, other)], graveyard=[],
-    )  # fmt: skip
-    decision = actions_decision(
-        [
-            ("idx:0", f"Cast {unmodelled}", cast(501), True),
-            ("idx:1", f"Cast {other}", cast(502), True),
-            ("pass", "Pass", None, None),
-        ]
-    )
-    return source, decision, unmodelled
-
-
-@pytest.mark.parametrize("board", sorted(_UNMODELLED_BOARDS))
+@pytest.mark.parametrize("board", sorted(_REVIEW_BOARDS))
 @pytest.mark.parametrize("setting", [None, "on"])
-def test_the_line_guard_never_overrides_a_cast_the_search_cannot_value(monkeypatch, caplog, board, setting):
-    # Review 2026-10-07: with ARENAMCP_LINE_GUARD=on each of these picks was replaced by
-    # the other creature, because the search scored the pick's line as doing nothing.
+def test_token_makers_and_enters_removal_now_lead_their_lines(monkeypatch, caplog, board, setting):
     if setting is not None:
         monkeypatch.setenv("ARENAMCP_LINE_GUARD", setting)
-    source, decision, unmodelled = _unmodelled_board(monkeypatch, board)
-    result = ba.assess(source).line_search
-    assert not result.truncated and ("cast", 501, None) not in result.best.first_actions  # the blind spot
+    source = _REVIEW_BOARDS[board]
+    result = ba.assess(deepcopy(source)).line_search
+    assert not result.truncated and ("cast", 501, None) in result.best.first_actions
+    planner, backend = _planner(["idx:0"], "The model's reason.")
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        assert planner.plan_decision_options(synthetic_menu(source), deepcopy(source)) == ["idx:0"]
+    assert planner.get_decision_reasoning(["idx:0"]) == "The model's reason."
+    trace = planner.get_last_decision_trace()
+    assert _line_logs(caplog) == [] and "line_guard" not in trace
+    header = _header(backend.prompts[-1])
+    assert "judge these yourself" not in header and "effect not modelled" not in header
+    assert "unmodelled" not in trace["lines"]
+    if board == "haste_tokens_lethal":  # a winning line on the table: no tags, LINES says so
+        assert "[LINE" not in header and "— lethal on T10" in trace["lines"]["summary"]
+    else:
+        assert "[LINE best: " in _option_line(backend.prompts[-1], "idx:0")
+
+
+@pytest.mark.parametrize(
+    ("board", "pick", "best"),
+    [("token_blocker", "Grizzly Bears", "Beast Summons"), ("enters_removal", "Giant Spider", "Chupacabra")],
+)
+@pytest.mark.parametrize("setting", [None, "on"])
+def test_the_line_guard_steers_to_a_token_maker_or_enters_removal(
+    monkeypatch, caplog, board, pick, best, setting
+):
+    # The other creature's line dies on T13 (token_blocker) or keeps taking 2 from the
+    # flier (enters_removal, survival mode): the cast the guard used to override is now
+    # its replacement (in shadow, only logged).
+    if setting is not None:
+        monkeypatch.setenv("ARENAMCP_LINE_GUARD", setting)
+    source = _REVIEW_BOARDS[board]
+    planner, _ = _planner(["idx:1"], "Block with it.")
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        chosen = planner.plan_decision_options(synthetic_menu(source), deepcopy(source))
+    (record,) = _line_logs(caplog)
+    trace = planner.get_last_decision_trace()["line_guard"]
+    assert trace["replaced"] == "idx:1" and trace["with"] == "idx:0" and trace["applied"] is (setting == "on")
+    if setting == "on":
+        assert chosen == ["idx:0"] and record.levelno == logging.WARNING
+        assert record.getMessage().startswith(f"Line guard: {best}")
+    else:
+        assert chosen == ["idx:1"] and record.levelno == logging.INFO
+        assert record.getMessage().startswith(
+            f"Line guard (shadow): would replace Cast {pick} with Cast {best} — "
+        )
+
+
+def _unread_board(name: str) -> tuple[dict, object, str]:
+    """A cast the search still values as nothing: the board, its menu (that cast is idx:0), the card."""
+    if name == "haste_tokens_unread":  # the hasty tokens are exiled at end of turn
+        return HASTE_TOKENS_UNREAD, synthetic_menu(HASTE_TOKENS_UNREAD), "Elemental Surge"
+    # G1 T14 at 4 life with Pacifism in hand: the aura would stop one attacker.
+    source = deepcopy(G1_T14)
+    source["hand"].append(card(990, "Pacifism", 1))
+    menu = [
+        ("idx:0", "Cast Pacifism", cast(990), True),
+        ("idx:1", "Cast Archive Arbiter", cast(200), True),
+        ("idx:2", "Play land: Island", play(336), None),
+        ("pass", "Pass", None, None),
+    ]
+    return source, actions_decision(menu), "Pacifism"
+
+
+@pytest.mark.parametrize("board", ["haste_tokens_unread", "pacifism"])
+@pytest.mark.parametrize("setting", [None, "on"])
+def test_the_line_guard_never_overrides_a_cast_the_search_cannot_value(monkeypatch, caplog, board, setting):
+    if setting is not None:
+        monkeypatch.setenv("ARENAMCP_LINE_GUARD", setting)
+    source, decision, unmodelled = _unread_board(board)
+    assessment = ba.assess(deepcopy(source))
+    result = assessment.line_search
+    key = action_key(decision.find("idx:0"), source)
+    # The search never casts it (nothing it does is valued: review 2026-10-07, a placeholder
+    # value used to put such casts into the best line), so no line judges it ...
+    assert not result.truncated and key not in result.first_action
+    assert all(unmodelled not in step.casts for line in result.lines for step in line.steps)
+    # ... and the guard has nothing to override it with, with or without its own check.
+    facts = dict(
+        survival_mode=assessment.survival_mode, lethal_now=assessment.lethal_now,
+        our_turn=assessment.our_turn, unknown_bodies=[],
+    )  # fmt: skip
+    with mock.patch.object(lg, "unmodelled_cast", return_value=""):
+        assert lg.line_guard(result, decision, "idx:0", source, **facts) is None
+    assert lg.line_guard(result, decision, "idx:0", source, **facts) is None
     planner, backend = _planner(["idx:0"], "The model's reason.")
     with caplog.at_level(logging.INFO, logger=LOGGER):
         assert planner.plan_decision_options(decision, deepcopy(source)) == ["idx:0"]
     assert planner.get_decision_reasoning(["idx:0"]) == "The model's reason."
-    (record,) = _line_logs(caplog)
-    assert record.levelno == logging.INFO
-    assert record.getMessage().startswith(f"Line guard (not checked: {unmodelled} (")
     trace = planner.get_last_decision_trace()
-    assert trace["line_guard"]["applied"] is False and trace["line_guard"]["unmodelled"].startswith(
-        unmodelled
-    )
+    assert _line_logs(caplog) == [] and "line_guard" not in trace
     # The prompt says the search can't judge that card instead of calling it worse.
     prompt = backend.prompts[-1]
     assert _option_line(prompt, "idx:0").endswith("[LINE: effect not modelled]")
     assert "[LINE best:" not in _header(prompt)
     lines = next(line for line in _header(prompt).splitlines() if line.startswith("LINES ("))
-    assert f"| not modelled, judge these yourself: {unmodelled} (" in lines and len(lines) <= 320
+    # The note comes on top of the full 320-character line (the prompt's only LINES copy), so
+    # no alternative line is dropped to make room for it (review 2026-10-07).
+    assert f"| not modelled, judge these yourself: {unmodelled} (" in lines and len(lines) <= 320 + 110
+    full = lg.lines_summary(result, unmodelled=assessment.unmodelled, pending=assessment.pending)
+    assert lines.split(" | not modelled, judge these yourself: ")[0] == full
     assert trace["lines"]["unmodelled"] == {"idx:0": lines.split("judge these yourself: ", 1)[1]}
 
 
@@ -690,6 +757,128 @@ def test_prompt_growth_stays_within_budget_and_the_kill_switch_removes_it(monkey
     assert "LINES (" not in without and "[LINE" not in without
     assert "lines" not in planner.get_last_decision_trace()
     assert 0 < len(with_lines) - len(without) <= 700
+
+
+def _offline_tricks(monkeypatch, cache_dir) -> None:
+    """The strategy block's trick fact never reads a disk cache, the card database or 17Lands."""
+    service = ot.TrickTableService(
+        primer_fn=lambda code: None,
+        ratings_fn=lambda code: [],
+        color_ratings_fn=lambda code: None,
+        card_lookup=lambda grp: None,
+        cache_dir=cache_dir,
+    )
+    monkeypatch.setattr(ot.TrickTableService, "_shared", service)
+
+
+def _wired_planner(option_ids: list[str]) -> tuple[ActionPlanner, _Backend]:
+    """A planner whose strategy block comes from a GamePlanManager, as the autopilot wires it."""
+    planner, backend = _planner(option_ids, "Go.")
+    planner.set_game_plan_source(GamePlanManager(None).strategy_block)
+    return planner, backend
+
+
+def _hand_menu(source: dict) -> object:
+    """ActionsAvailable for a recorded board: play each land in hand, cast each other card, pass."""
+    rows = []
+    for index, entry in enumerate(source["hand"]):
+        types = str(entry.get("type_line") or "").lower()
+        if "land" in types and "creature" not in types:
+            rows.append((f"idx:{index}", f"Play land: {entry['name']}", play(entry["instance_id"]), None))
+        else:
+            rows.append((f"idx:{index}", f"Cast {entry['name']}", cast(entry["instance_id"]), True))
+    return actions_decision([*rows, ("pass", "Pass", None, None)])
+
+
+def test_the_lines_text_appears_once_in_a_typed_decision_prompt(monkeypatch, tmp_path):
+    # Review 2026-10-07 (I4): the LINES line above OPTIONS and the strategy block's copy
+    # of it (~300 characters each) were both in the prompt.
+    _offline_tricks(monkeypatch, tmp_path)
+    planner, backend = _wired_planner([ISLAND])
+    planner.plan_decision_options(actions_decision(G1_T12_MENU), deepcopy(G1_T12))
+    prompt = backend.prompts[-1]
+    assert prompt.count("LINES (2-turn search") == _header(prompt).count("LINES (2-turn search") == 1
+    block = prompt[prompt.index("STRATEGIC ROLE") :]
+    assert "  THIS TURN (T12, now): " in block and "LINES (" not in block
+    # Without a LINES line above OPTIONS (their turn; a modal menu shows MODES) the block keeps its own.
+    their_turn = deepcopy(BUG_174855)
+    for decision, source in ((_hand_menu(their_turn), their_turn), (_mode_decision(), G1_T14_MODE_STATE)):
+        planner, backend = _wired_planner(["pass"])
+        planner.plan_decision_options(decision, deepcopy(source))
+        prompt = backend.prompts[-1]
+        assert "LINES (2-turn search" not in _header(prompt)
+        assert prompt[prompt.index("STRATEGIC ROLE") :].count("\n  LINES (2-turn search") == 1
+
+
+def test_the_typed_lines_say_our_pending_choice_resolves_first():
+    # G1 T14 with Archive Arbiter on the stack: the strategy block said "before our pending
+    # Archive Arbiter (choose one) resolves", the LINES above OPTIONS did not.
+    from tests.strategic_states import G1_T14_ON_STACK
+
+    planner, backend = _planner(["pass"], "Let it resolve.")
+    planner.plan_decision_options(actions_decision([("pass", "Pass", None, None)]), deepcopy(G1_T14_ON_STACK))
+    lines = next(line for line in _header(backend.prompts[-1]).splitlines() if line.startswith("LINES ("))
+    assert lines.endswith(" — before our pending Archive Arbiter (choose one) resolves") and len(lines) <= 320
+
+
+def test_a_plan_source_without_the_keyword_is_called_as_before():
+    planner, backend = _planner([ISLAND], "Island first.")
+    seen = []
+    planner.set_game_plan_source(lambda state: seen.append(state) or "STRATEGIC ROLE: from a custom source")
+    planner.plan_decision_options(actions_decision(G1_T12_MENU), deepcopy(G1_T12))
+    assert seen and "STRATEGIC ROLE: from a custom source" in backend.prompts[-1]
+
+
+# Recorded boards (tests/strategic_states.py) and the review's synthetic ones, our turn
+# (LINES above OPTIONS) and theirs (the block's LINES only), with the bridge's phase names too.
+_GROWTH_BOARDS = (
+    "G1_T8", "G1_T10", "G1_T12", "G1_T12_AFTER_VOLUME", "G1_T14", "G1_T15_FROM_OPPONENT", "G3_T10_BLOCKS",
+    "BUG_135027", "BUG_174855", "BUG_180436", "SLOW_212608", "SLOW_202111", "HASTE_TOKENS_LETHAL",
+    "HASTE_TOKENS_UNREAD", "ENTERS_REMOVAL", "BUG_212848",
+)  # fmt: skip
+
+
+def _growth_cases() -> dict[str, tuple[object, dict]]:
+    cases = {name: (_hand_menu(getattr(S, name)), getattr(S, name)) for name in _GROWTH_BOARDS}
+    for name in ("G1_T12", "G1_T14"):
+        cases[f"{name} (bridge)"] = (_hand_menu(getattr(S, name)), mac_phase(getattr(S, name)))
+    cases["G1_T12 (recorded menu)"] = (actions_decision(G1_T12_MENU), G1_T12)
+    cases["G1_T14 (mode menu)"] = (_mode_decision(), G1_T14_MODE_STATE)
+    return cases
+
+
+def test_whole_typed_prompt_growth_stays_within_budget(monkeypatch, tmp_path):
+    # Review 2026-10-07 (I4): with the strategy block wired the way the autopilot wires it,
+    # the whole typed prompt grew p50 475 / p90 830 / max 1056 characters over the kill
+    # switch on 122 real bug-report decisions (budget ~700). Unlimited deadlines keep the
+    # searched lines, and so the text, independent of machine load.
+    _offline_tricks(monkeypatch, tmp_path)
+    search, modes = line_search.search_lines, lg.compare_modes
+    monkeypatch.setattr(
+        line_search, "search_lines", lambda model, **kw: search(model, **{**kw, "hard_ms": 1e9})
+    )
+    monkeypatch.setattr(lg, "compare_modes", lambda st, dec, **kw: modes(st, dec, **{**kw, "hard_ms": 1e9}))
+
+    def prompt(decision, source) -> str:
+        ba._CACHE.clear()
+        lg._MODE_CACHE.clear()
+        planner, backend = _wired_planner(["pass"])
+        planner.plan_decision_options(decision, deepcopy(source))
+        return backend.prompts[-1]
+
+    growth = {}
+    for name, (decision, source) in _growth_cases().items():
+        with_search = prompt(decision, source)
+        monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")
+        without = prompt(decision, source)
+        monkeypatch.delenv("ARENAMCP_LINE_SEARCH")
+        assert with_search.count("LINES (2-turn search") <= 1, name
+        assert "LINES (" not in without and "[LINE" not in without, name
+        growth[name] = len(with_search) - len(without)
+    ordered = sorted(growth.values())
+    assert ordered[round(0.9 * (len(ordered) - 1))] <= 700, growth  # p90
+    # The largest are wide boards whose role, THIS TURN and NEXT lines name every attacker.
+    assert ordered[-1] <= 1000, growth
 
 
 def test_no_tags_or_lines_on_the_opponents_turn():

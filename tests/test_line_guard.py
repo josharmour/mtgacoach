@@ -11,7 +11,8 @@ Witness itself; the T14 destroy mode is replaced by the lifegain mode but never
 applied (Splinter Twin's copies are not modelled); lethal, winning lines, passes,
 the opponent's turn, a non-empty stack, unknown bodies and truncated searches
 are never touched; guards stay in shadow unless ARENAMCP_LINE_GUARD /
-ARENAMCP_MODE_GUARD say 'on'.
+ARENAMCP_MODE_GUARD say 'on'. A cast whose effect the search can't value
+(``line_search_moves.unmodelled_effect``) is neither overridden nor tagged.
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ from tests.strategic_states import (
     after_land_drop,
     card,
     cast,
+    cpu_ms,
     modal_decision,
     play,
 )
@@ -89,6 +91,12 @@ def _assessment(source: dict):
 
 
 def _search(source: dict, **kwargs):
+    """The search as the assessment runs it, without a wall-clock cap unless one is given.
+
+    The soft limit is a deterministic work budget; only ``hard_ms`` is a clock,
+    and a loaded machine must not truncate the decisions these tests pin
+    (the latency tests pass their own limit).
+    """
     assessment = _assessment(source)
     model = build_board_model(deepcopy(source))
     assert model is not None
@@ -96,7 +104,7 @@ def _search(source: dict, **kwargs):
         model,
         survival=assessment.survival_mode and not assessment.lethal_now,
         lethal_now=assessment.lethal_now,
-        **kwargs,
+        **{"hard_ms": 1e9, **kwargs},
     )
     return result, assessment
 
@@ -561,13 +569,18 @@ def test_two_cold_runs_give_the_same_verdicts():
 def test_guard_and_tags_stay_fast():
     result, assessment = _search(G1_T12)
     decision = actions_decision(G1_T12_MENU)
-    started = time.perf_counter()
-    lg.line_guard(result, decision, ROCK, G1_T12, survival_mode=True, lethal_now=False, our_turn=True)
-    for option in decision.options:
-        lg.option_note(result, option, G1_T12)
-    lg.line_fallback_pick(result, decision, G1_T12)
-    lg.mode_guard(None, _mode_decision(), ["idx:0"], deepcopy(G1_T14_MODE_STATE), lethal_now=False)
-    assert (time.perf_counter() - started) * 1000 < 150
+
+    def run() -> None:
+        lg._MODE_CACHE.clear()  # the mode comparison runs every time
+        lg.line_guard(result, decision, ROCK, G1_T12, survival_mode=True, lethal_now=False, our_turn=True)
+        for option in decision.options:
+            lg.option_note(result, option, G1_T12)
+        lg.line_fallback_pick(result, decision, G1_T12)
+        lg.mode_guard(None, _mode_decision(), ["idx:0"], deepcopy(G1_T14_MODE_STATE), lethal_now=False)
+
+    # The fastest of three runs in this thread's CPU time: other tests running in parallel
+    # only ever add wall-clock time.
+    assert cpu_ms(run) < 150
 
 
 def test_line_guard_imports_no_llm_backend():
@@ -634,22 +647,70 @@ def _fresh_assessment(source: dict):
 
 
 def test_unmodelled_finishers_are_left_to_the_model():
-    # A creature whose enters trigger pings a player, and a pump: the search can't value either.
+    # An attack trigger that pings a player, and a pump: the search can't value either.
     source, _ = _burn_board()
-    pinger = {"name": "Test Pinger", "type_line": "Creature — Goblin", "mana_cost": "{2}{R}", "power": 1,
+    raider = {"name": "Test Raider", "type_line": "Creature — Goblin", "mana_cost": "{2}{R}", "power": 1,
               "toughness": 1, "card_types": ["CardType_Creature"],
-              "oracle_text": "When this creature enters, it deals 2 damage to each opponent."}  # fmt: skip
+              "oracle_text": "Whenever this creature attacks, it deals 2 damage to each opponent."}  # fmt: skip
     pump = {"name": "Test Pump", "type_line": "Instant", "mana_cost": "{R}", "card_types": ["CardType_Instant"],
             "oracle_text": "Target creature gets +3/+0 until end of turn."}  # fmt: skip
-    source["hand"] = [{**card(40, "Unsummon", 1), **pinger}, {**card(41, "Unsummon", 1), **pump}]
-    menu = [("idx:1", "Cast Test Pinger", cast(40), True), ("idx:2", "Cast Test Pump", cast(41), True),
+    source["hand"] = [{**card(40, "Unsummon", 1), **raider}, {**card(41, "Unsummon", 1), **pump}]
+    menu = [("idx:1", "Cast Test Raider", cast(40), True), ("idx:2", "Cast Test Pump", cast(41), True),
             ("pass", "Pass", None, None)]  # fmt: skip
     decision = actions_decision(menu)
     result, _ = _search(source)
+    assert lg.unmodelled_cast(result, decision.find("idx:1"), source) == "Test Raider (its triggered ability)"
+    assert lg.unmodelled_cast(result, decision.find("idx:2"), source) == "Test Pump (a combat trick)"
+    assert lg.unmodelled_cast(result, decision.find("pass"), source) == ""
     for option_id in ("idx:1", "idx:2"):
         assert lg._unmodelled_finisher(result, decision.find(option_id), source)
         assert _guard(source, decision, option_id) is None
         assert lg.option_note(result, decision.find(option_id), source) == ""
+
+
+def test_an_enters_ping_is_modelled_now():
+    # The enters trigger's damage to each opponent is a face variant: at 2 life it wins.
+    source, _ = _burn_board()
+    pinger = {"name": "Test Pinger", "type_line": "Creature — Goblin", "mana_cost": "{2}{R}", "power": 1,
+              "toughness": 1, "card_types": ["CardType_Creature"],
+              "oracle_text": "When this creature enters, it deals 2 damage to each opponent."}  # fmt: skip
+    source["hand"] = [{**card(40, "Unsummon", 1), **pinger}]
+    decision = actions_decision([("idx:1", "Cast Test Pinger", cast(40), True), ("pass", "Pass", None, None)])
+    result, _ = _search(source)
+    assert not lg._unmodelled_finisher(result, decision.find("idx:1"), source)
+    assert result.best.cls == WIN and result.best.steps[0].casts == ("Test Pinger",)
+
+
+@pytest.mark.parametrize("setting", ["shadow", "on"])
+def test_a_token_maker_the_search_cannot_read_is_never_judged(monkeypatch, setting):
+    # Review 2026-10-07: tokens the search can't value were scored as doing nothing, and
+    # the guard replaced the pick by Grizzly Bears. Exiled-at-end-of-turn tokens are still
+    # unmodelled: no override and no tag either way.
+    from tests.strategic_states import HASTE_TOKENS_UNREAD, synthetic_menu
+
+    monkeypatch.setenv("ARENAMCP_LINE_GUARD", setting)
+    source = HASTE_TOKENS_UNREAD
+    decision = synthetic_menu(source)
+    result, _ = _search(source)
+    surge = decision.find("idx:0")
+    assert lg.unmodelled_cast(result, surge, source) == "Elemental Surge (its tokens)"
+    assert _guard(source, decision, "idx:0") is None
+    assert lg.option_note(result, surge, source) == ""
+    assert lg.unmodelled_cast(result, decision.find("idx:1"), source) == ""
+
+
+@pytest.mark.parametrize("setting", ["shadow", "on"])
+def test_a_token_maker_it_reads_is_the_lethal_line(monkeypatch, setting):
+    from tests.strategic_states import HASTE_TOKENS_LETHAL, synthetic_menu
+
+    monkeypatch.setenv("ARENAMCP_LINE_GUARD", setting)
+    source = HASTE_TOKENS_LETHAL
+    decision = synthetic_menu(source)
+    result, _ = _search(source)
+    assert result.posture == "lethal" and not lg._unmodelled_finisher(result, decision.find("idx:0"), source)
+    assert _guard(source, decision, "idx:0") is None and _guard(source, decision, "idx:1") is None
+    # The model-failure fallback casts the token maker that wins now.
+    assert lg.line_fallback_pick(result, decision, source) == ["idx:0"]
 
 
 def _sweeper_board() -> tuple[dict, object]:

@@ -45,6 +45,7 @@ import dataclasses
 import logging
 import re
 import time
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -52,6 +53,7 @@ from arenamcp.board_assessment import (
     TurnProjection,
     _body,
     _budget_turns,
+    _cast_text,
     _controller,
     _enters_tapped,
     _int,
@@ -89,7 +91,10 @@ from arenamcp.line_search_moves import (
     classify,
     hand_info,
     ids_of,
+    make_tokens,
     mode_label,
+    token_specs,
+    unmodelled_effect,
 )
 from arenamcp.mulligan_policy import _land_colors, _pip_matching
 
@@ -101,6 +106,8 @@ LINE_TOL = 1.5
 POSTURE_MARGIN = 3.0
 _RACE_HORIZON = 4
 _RACE = 15.0
+# compare_modes: instance ids of the tokens a forced mode makes before T.
+_ROOT_TOKEN_IDS = 800_000_000
 
 # ('land', (colors, enters_tapped)), ('cast', iid, mode), ('cycle', iid),
 # ('nocast',), ('attack', frozenset(ids)), ('noattack',), ('block', variant).
@@ -203,6 +210,12 @@ class Line:
         }
 
 
+def _unmodelled_mark(line: Line, unmodelled: Collection[str]) -> str:
+    """' (X not modelled)' for the casts of ``line`` named in ``unmodelled``, else ''."""
+    names = sorted({name for step in line.steps for name in step.casts if name in unmodelled})
+    return f" ({', '.join(names)} not modelled)" if names else ""
+
+
 def _order(line: Line) -> tuple:
     """Sort key, higher is better: the score, then a stable text tiebreak."""
     return (line.cls, line.timing, line.v, tuple(-ord(c) for c in line.summary()))
@@ -245,19 +258,30 @@ class LineSearchResult:
             "truncated": self.truncated,
         }
 
-    def prompt_line(self, max_chars: int = 320) -> str:
-        """One 'LINES ...' line for a per-decision prompt."""
+    def prompt_line(
+        self, max_chars: int = 320, *, unmodelled: Collection[str] = (), pending: Collection[str] = ()
+    ) -> str:
+        """One 'LINES ...' line for a per-decision prompt.
+
+        ``unmodelled`` (card names): a line casting one of them is marked
+        "(X not modelled)", its outcome undervalues that cast. ``pending`` (our
+        stack objects, ``board_assessment._our_pending``): the lines read the
+        board before they resolve, which the line says.
+        """
         head = "LINES (2-turn search, greedy 3rd; their new cards/tricks not modelled): "
-        parts = [f"best {self.best.summary()}"]
-        parts += [f"alt {line.summary(90)}" for line in self.lines if line.first_sig != self.best.first_sig][
-            :2
-        ]
+        parts = [f"best {self.best.summary()}{_unmodelled_mark(self.best, unmodelled)}"]
+        parts += [
+            f"alt {line.summary(90)}{_unmodelled_mark(line, unmodelled)}"
+            for line in self.lines
+            if line.first_sig != self.best.first_sig
+        ][:2]
         if self.baseline.first_sig != self.best.first_sig:
             parts.append(f"greedy {self.baseline.outcome_text()}")
-        text = head + " | ".join(parts)
+        tail = f" — before our pending {', '.join(pending)} resolves" if pending else ""
+        text = head + " | ".join(parts) + tail
         while len(text) > max_chars and len(parts) > 1:
             parts.pop()
-            text = head + " | ".join(parts)
+            text = head + " | ".join(parts) + tail
         return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
 
     def to_projections(self) -> list[TurnProjection]:
@@ -295,6 +319,10 @@ class PlanEvaluation:
     line: Line | None
     budgets: list[dict]  # [{turn, label, mana, colors, source_colors}] for the planned turns
     issues: list[str]
+    # Planned casts whose effect (or noted mode) the search does not model, as
+    # "T: Elemental Uprising (its tokens)" / "T: Archive Arbiter (choose: destroy …): mode
+    # not modelled": the replayed line undervalues them, so it is no verdict on the plan.
+    unmodelled: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -369,10 +397,11 @@ class _Search(Moves):
                         for b in node.theirs
                         if b["instance_id"] not in taken and self.kills(var.reach, b, node.ours)
                     ]
-                    if not killable:
+                    if killable:
+                        target = max(killable, key=lambda b: (b["power"], b["toughness"]))
+                        taken.add(target["instance_id"])
+                    elif var.body is None:
                         continue  # nothing left to remove: kept in hand (the search holds it too)
-                    target = max(killable, key=lambda b: (b["power"], b["toughness"]))
-                    taken.add(target["instance_id"])
                 life -= var.loss
                 choice.append((var, target))
             # Cast order as the search enumerates it (hand order): the same T step has the same sig.
@@ -828,8 +857,8 @@ def proxy_outcome(result: LineSearchResult | None, line: Line | None) -> Line | 
                     target = (
                         same or search.targets(var.reach, node.theirs, node.their_tapped, node.ours) or [None]
                     )[0]
-                    if target is None:
-                        continue
+                    if target is None and var.body is None:
+                        continue  # a creature still enters when its trigger finds no target
                 playable.append((var, target))
             mid = search.begin(node, land, tuple(playable))
             allowed = {i for _n, option in search.attack_choices(mid)[0] for i in option}
@@ -859,10 +888,18 @@ def evaluate_plan(
 ) -> PlanEvaluation:
     """A game plan's turns replayed through the search: its line, each turn's mana and the issues.
 
-    Names map to hand instances, first unused copy first. Issues: a card not
-    in hand, a cast the line's own mana (its land drops and rocks) can't pay,
-    an attacker that is summoning-sick. Turns the plan leaves out play
-    greedily. ``state`` is accepted for symmetry; the result's board is used.
+    Names map to hand instances, first unused copy first. A cast may carry a
+    note, as the plan's own text writes it: "Archive Arbiter (choose: gain 4
+    life)", "Archive Arbiter (gain 4 life)" (CANDIDATE LINES), "Shock (on
+    Cadet)", "Shock (choose: …, on opponent)"; or a step may map card names to
+    modes in ``modes``. A noted mode is replayed (matched against the mode's
+    label or its text); without one, the mode worth most on that board. A
+    noted target is preferred when the cast can hit it. Issues: a card not in
+    hand, a cast the line's own mana (its land drops and rocks) can't pay, an
+    attacker that is summoning-sick. ``unmodelled`` lists the planned casts
+    whose effect or noted mode the search can't value (``unmodelled_effect``).
+    Turns the plan leaves out play greedily. ``state`` is accepted for
+    symmetry; the result's board is used.
     """
     if result is None or result._search is None:
         return PlanEvaluation(None, [], [])
@@ -882,6 +919,7 @@ def _evaluate_plan(result: LineSearchResult, steps: list[dict]) -> PlanEvaluatio
     node = _root(search)
     budgets: list[dict] = []
     issues: list[str] = []
+    unmodelled: list[str] = []
     while not node.terminal and node.k < len(LABELS):
         raw = planned.get(node.k)
         if raw is None:
@@ -898,11 +936,23 @@ def _evaluate_plan(result: LineSearchResult, steps: list[dict]) -> PlanEvaluatio
         casts: list = []
         hand = list(node.hand)
         names = raw.get("cast") or []
-        for name in [names] if isinstance(names, str) else names:
+        noted_modes = raw.get("modes") if isinstance(raw.get("modes"), dict) else {}
+        for entry in [names] if isinstance(names, str) else names:
+            name, mode, aim = _cast_entry(str(entry), {_plain(search.spells[i].name) for i in hand})
             index = next((i for i in hand if _plain(search.spells[i].name) == _plain(name)), None)
-            var = _default_variant(search, search.spells[index], node) if index is not None else None
-            if index is None or var is None:
-                issues.append(f"{label}: {name} is {'not in hand' if index is None else 'not modelled'}")
+            if index is None:
+                issues.append(f"{label}: {name} is not in hand")
+                continue
+            hs = search.spells[index]
+            mode = mode or next((str(m) for k, m in noted_modes.items() if _plain(k) == _plain(hs.name)), "")
+            var, mode_why = _noted_variant(search, hs, node, mode, aim)
+            if var is None:
+                issues.append(f"{label}: {name} is not modelled")
+                # Not cast by the replay (an X spell, a cast that does nothing it values): the plan's
+                # line leaves out what the card does, so it can't be judged on it.
+                why = unmodelled_effect(hs.spell.card, result)
+                if why:
+                    unmodelled.append(f"{label}: {hs.name} ({why})")
                 continue
             trial = casts + [(var, None)]
             if sum(v.loss for v, _ in trial) >= node.our_life:
@@ -916,13 +966,20 @@ def _evaluate_plan(result: LineSearchResult, steps: list[dict]) -> PlanEvaluatio
                 issues.append(f"{label}: {name} is unpayable with this line's {len(sources)} mana ({colors})")
                 continue
             hand.remove(index)
+            why = unmodelled_effect(hs.spell.card, result)
+            if why:
+                unmodelled.append(f"{label}: {hs.name} ({why})")
+            elif mode_why:
+                unmodelled.append(f"{label}: {hs.name} (choose: {mode}): {mode_why}")
             taken = {t["instance_id"] for _v, t in casts if t is not None}
             options = (
                 search.targets(var.reach, node.theirs, node.their_tapped, node.ours)
                 if var.reach is not None
                 else []
             )
-            casts.append((var, next((t for t in options if t["instance_id"] not in taken), None)))
+            options = [t for t in options if t["instance_id"] not in taken]
+            named = [t for t in options if aim and _plain(t["name"]) == _plain(aim)]
+            casts.append((var, (named or options or [None])[0]))
         mid = search.begin(node, land, tuple(casts))
         options, possible = search.attack_choices(mid)
         ids = _plan_attackers(search, mid, str(raw.get("attack") or ""), label, issues) if possible else ()
@@ -937,12 +994,139 @@ def _evaluate_plan(result: LineSearchResult, steps: list[dict]) -> PlanEvaluatio
             }
         )
         node = search.finish(mid, ("plan", tuple(i for i in ids if i in allowed)))
-    return PlanEvaluation(search.line(search.rollout(node)), budgets, issues)
+    return PlanEvaluation(search.line(search.rollout(node)), budgets, issues, unmodelled)
 
 
-def _default_variant(search: _Search, hs: HandSpell, node: Node) -> Variant | None:
-    """A plan names cards, not modes: the variant worth most against the node's board."""
+_NOTE = re.compile(r"\s*\(([^()]*)\)\s*$")
+
+
+def _cast_entry(entry: str, in_hand: set[str]) -> tuple[str, str, str]:
+    """(card name, noted mode, noted target) of a plan cast entry such as "X (choose: gain 4 life)".
+
+    The note is split off only when the entry is not itself a card in hand.
+    "on Y" names the target ("on opponent" the face-damage variant); the rest
+    of the note, without "choose:", is the mode (which may contain commas).
+    """
+    text = entry.strip()
+    match = _NOTE.search(text)
+    if _plain(text) in in_hand or match is None:
+        return text, "", ""
+    note = re.sub(r"^\s*choose:\s*", "", match.group(1), flags=re.I).strip()
+    mode, aim = note, ""
+    on = re.search(r"(?:^|,\s*)on (?P<aim>[^,]+)$", note)
+    if on:
+        mode, aim = note[: on.start()].strip(" ,"), on.group("aim").strip()
+    return text[: match.start()].strip(), mode, aim
+
+
+def _same_text(note: str, text: str) -> bool:
+    """A noted mode and a mode's label or text agree (either is a prefix of the other)."""
+    a, b = _plain(note), _plain(str(text).rstrip("…"))
+    return bool(a and b) and (a.startswith(b) or b.startswith(a))
+
+
+def _noted_variant(
+    search: _Search, hs: HandSpell, node: Node, mode: str, aim: str
+) -> tuple[Variant | None, str]:
+    """(the variant a plan's cast replays, why its noted mode can't be judged, or '').
+
+    A noted mode (``_mode_index``) picks the variant of that mode (its
+    face-damage variant for "on opponent"); a mode the search dropped (a
+    noncreature's 'other' mode) replays as a cast that does nothing: 'mode
+    not modelled'. A note naming no mode of a modal card replays
+    ``_default_variant`` but is reported ('mode not recognised'): the plan
+    may mean a mode the replay did not cast. Without a note, or on a card
+    without modes: ``_default_variant``.
+    """
     casts = [v for v in hs.variants if v.kind == "cast"]
+    texts = bullets(str(hs.spell.card.get("oracle_text") or ""))
+    if not mode or not casts or not texts:
+        return _default_variant(search, hs, node, aim), ""
+    index = _mode_index(hs, texts, mode)
+    if index is None:
+        return _default_variant(search, hs, node, aim), "mode not recognised"
+    kind = classify(hs.name, texts[index])[0]
+    matching = [v for v in casts if v.mode == index]
+    if not matching and kind != "other":  # a duplicate of another mode's effect: that variant
+        matching = [v for v in casts if v.mode is not None and classify(hs.name, texts[v.mode])[0] == kind]
+    if matching:
+        why = "mode not modelled" if kind == "other" else ""
+        return _default_variant(search, hs, node, aim, matching), why
+    # A mode the search dropped: it does nothing it can value (a creature keeps its body).
+    blank = dataclasses.replace(
+        casts[0], mode=index, mode_text=mode_label(kind, 0, texts[index], hs.name), reach=None, gain=0,
+        bounce=False, rock=False, face=0, aim="", tokens=(),
+    )  # fmt: skip
+    return blank, "mode not modelled"
+
+
+# Words a plan's mode note uses for a kind of mode ("gain life", "+3 life", "kill it", "make a token").
+_MODE_WORDS = (
+    ("lifegain", r"\b(?:gain|gains|life|lifegain|heal)\b"),
+    ("removal", r"\b(?:destroy|exile|kill|removal|remove|damage|burn)\b"),
+    ("bounce", r"\b(?:return|bounce)\b"),
+    ("tokens", r"\b(?:create|token|tokens)\b"),
+)
+
+
+def _mode_index(hs: HandSpell, texts: list[str], mode: str) -> int | None:
+    """The mode a plan's note names, or None.
+
+    In order: the note and a mode's text or label agree (``_same_text``);
+    "Mode 2" / "Mode 2: You gain 3 life." (the menu's labels); the one mode
+    starting with the note's first word ("destroy Splinter Twin"); the one
+    mode of the kind the note's words name ("gain life", "lifegain", "+3
+    life").
+    """
+
+    def agrees(note: str) -> int | None:
+        return next(
+            (
+                i
+                for i, text in enumerate(texts)
+                if _same_text(note, text) or _same_text(note, mode_label(*_kind(hs, text), text, hs.name))
+            ),
+            None,
+        )
+
+    found = agrees(mode)
+    if found is not None:
+        return found
+    numbered = re.match(r"^\s*mode\s*(\d+)\b\s*[:.)-]?\s*(.*)$", mode, flags=re.I)
+    if numbered:
+        rest = numbered.group(2).strip()
+        found = agrees(rest) if rest else None
+        if found is not None:
+            return found
+        number = int(numbered.group(1)) - 1
+        return number if 0 <= number < len(texts) else None
+    words = _plain(mode).split()
+    first = [i for i, text in enumerate(texts) if words and _plain(text).split()[:1] == words[:1]]
+    if len(first) == 1:
+        return first[0]
+    kinds = {kind for kind, pattern in _MODE_WORDS if re.search(pattern, _plain(mode))}
+    named = [i for i, text in enumerate(texts) if classify(hs.name, text)[0] in kinds]
+    return named[0] if len(named) == 1 else None
+
+
+def _kind(hs: HandSpell, text: str) -> tuple[str, int]:
+    kind, gain, _reach, _bounce = classify(hs.name, text)
+    return kind, gain
+
+
+def _default_variant(
+    search: _Search, hs: HandSpell, node: Node, aim: str = "", variants: list | None = None
+) -> Variant | None:
+    """A plan names cards, not modes: the variant worth most against the node's board.
+
+    ``variants`` limits the choice (a noted mode's); ``aim`` 'opponent' prefers
+    the face-damage variant, any other aim the variants that hit creatures.
+    """
+    casts = variants if variants is not None else [v for v in hs.variants if v.kind == "cast"]
+    if aim:
+        face = _plain(aim) in ("opponent", "the opponent", "them", "player", "face")
+        preferred = [v for v in casts if (v.aim == "opponent") == face]
+        casts = preferred or casts
 
     def worth(var: Variant) -> float:
         target = (
@@ -1067,7 +1251,17 @@ def _compare_modes(state: dict, decision: Any, soft_ms: float, hard_ms: float) -
         alt, each = face_damage(pseudo)
         kinds[option.option_id] = "other" if kind == "other" else mode_label(kind, gain, text, name)
         other += [text] if kind == "other" and not (alt or each) else []
-        effect = {"body": body, "gain": gain - life_loss(pseudo), "bounce": bounce, "face": each}
+        # A mode's creature tokens enter with it (an id range apart from the search's own tokens).
+        tokens = make_tokens(
+            token_specs(_cast_text(pseudo)) or [], model.turn, model.our_rules, _ROOT_TOKEN_IDS
+        )
+        effect = {
+            "body": body,
+            "gain": gain - life_loss(pseudo),
+            "bounce": bounce,
+            "face": each,
+            "tokens": tokens,
+        }
         targets: list = [None]
         if reach is not None:
             killable = sorted(
@@ -1171,4 +1365,5 @@ __all__ = [
     "evaluate_plan",
     "proxy_outcome",
     "search_lines",
+    "unmodelled_effect",
 ]

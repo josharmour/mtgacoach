@@ -20,8 +20,13 @@ asks before planning a turn:
   projection, which stays the baseline. The best line becomes the lookahead
   and sets dead_in (``dead_in_greedy`` keeps the greedy value), adds the only
   surviving / lethal line flags, the attack posture and the LINES prompt
-  facts. ARENAMCP_LINE_SEARCH=0, a failed or a truncated search keep the
-  greedy facts.
+  facts. While a hand spell castable on T or T+1 does something the search
+  can't value (``line_search_moves.unmodelled_effect``), or our own choice or
+  effect waits on the stack, those claims are qualified ("best modelled
+  line ...; not modelled: X") and force no role; such a cast castable before
+  their next attack, or the pending choice, also rules out ALL-IN.
+  ARENAMCP_LINE_SEARCH=0, a failed or a truncated search keep the greedy
+  facts (with the search switched on, the pending check still applies).
 
 Everything is board-only and deliberately conservative. The opponent's hand,
 top-decks, combat tricks, lifelink, cost reductions, engines that add
@@ -180,6 +185,10 @@ _PUMP = re.compile(
 _PERMANENT_TYPES = ("artifact", "enchantment", "creature", "planeswalker", "battle", "land")
 _QUOTED = re.compile(r"\"[^\"]*\"|“[^”]*”")
 _ENTERS_TRIGGER = re.compile(r"(?:when|whenever)\b[^.:]*?\benters\b")
+# The subject of an enters trigger ("when <subject> enters"), and the "or another ..." that lets
+# the card's own trigger fire again for other permanents.
+_ENTERS_SUBJECT = re.compile(r"(?:when|whenever) (?P<subject>[^.:,]*?) enters\b")
+_OR_ANOTHER = re.compile(r"\s+or (?:another|one or more other)\b.*$")
 _CHAPTER_ONE = re.compile(r"i(?:\s*,\s*ii)?(?:\s*,\s*iii)?\s*[—–]")
 _TRIGGER_WORDS = re.compile(r"(?:when|whenever|at|if|as long as)\b")
 # Player damage and life loss (the line search's face variants; line_guard's "unmodelled finisher").
@@ -205,15 +214,38 @@ def _activated(line: str) -> bool:
     return bool(colon) and "." not in head and len(head) < 90 and not _TRIGGER_WORDS.match(head.strip())
 
 
+def own_subject(subject: str, name: str = "") -> bool:
+    """A trigger's subject is the card itself: '~', 'this creature' (any 'this <type>'),
+    Arena's 'CARDNAME', the first word of a legendary's name, each optionally followed by
+    'or another ...' (that part fires for other permanents too)."""
+    subject = _OR_ANOTHER.sub("", " ".join(str(subject).lower().split()))
+    first = str(name or "").lower().split(",")[0].split()[:1]
+    return (
+        subject in ("~", "cardname")
+        or bool(re.fullmatch(r"this [a-z]+", subject))
+        or bool(first and len(first[0]) > 2 and subject == first[0])
+    )
+
+
+def own_enters_trigger(line: str, name: str = "") -> bool:
+    """``line`` (lower-case rules text) starts with the card's own enters trigger
+    ("When this creature enters, ..."), not one on another permanent entering
+    ("Whenever another creature you control enters, ...")."""
+    match = _ENTERS_SUBJECT.match(line)
+    return match is not None and own_subject(match.group("subject"), name)
+
+
 def _cast_text(card: dict) -> str:
     """The rules text that acts when the card is cast (lower case, name as '~').
 
     A real card (one with a type line) never acts through its activated
     abilities ("{3}{R}: Exile ...", "{1}{W}, Discard this card: ...") or the
-    abilities it grants in quotes; a permanent acts only through its enters
-    triggers (with their modes) and a Saga's chapter I, and keeps its
-    additional-cost line. Text without types (a mode, an ability's effect) is
-    read whole. Arena's repeated formatting variants are collapsed.
+    abilities it grants in quotes; a permanent acts only through its own
+    enters triggers (with their modes; a trigger on another permanent
+    entering, "Whenever another creature you control enters", does not act
+    when it is cast) and a Saga's chapter I, and keeps its additional-cost
+    line. Text without types (a mode, an ability's effect) is read whole.
+    Arena's repeated formatting variants are collapsed.
     """
     text = _text(card)
     types = _types(card)
@@ -239,7 +271,10 @@ def _cast_text(card: dict) -> str:
             if line.startswith("as an additional cost to cast this spell"):
                 kept.append(line)  # a casting cost, not an ability
                 continue
-            if not (_ENTERS_TRIGGER.match(line) or _CHAPTER_ONE.match(line)):
+            if _ENTERS_TRIGGER.match(line):
+                if not own_enters_trigger(line, str(card.get("name") or "")):
+                    continue
+            elif not _CHAPTER_ONE.match(line):
                 continue
             in_trigger = True
         kept.append(line)
@@ -764,6 +799,10 @@ class BoardAssessment:
     posture_reason: str = ""
     dead_in_greedy: int | None = None
     search_stats: dict[str, Any] = field(default_factory=dict)  # nodes, combats, ms, bounded, truncated
+    # What the line facts can't see: hand spells castable on T or T+1 whose effect the search
+    # can't value (``_unmodelled_castable``), and our own pending stack objects (``_our_pending``).
+    unmodelled: list[str] = field(default_factory=list)
+    pending: list[str] = field(default_factory=list)
 
     @property
     def survival_mode(self) -> bool:
@@ -823,16 +862,28 @@ class BoardAssessment:
         return line
 
     def prompt_block(
-        self, *, this_turn: str | None = None, next_turns: str | None = None, role_note: str = ""
+        self,
+        *,
+        this_turn: str | None = None,
+        next_turns: str | None = None,
+        role_note: str = "",
+        with_lines: bool = True,
     ) -> str:
         """Short, decisive facts for per-decision prompts: ROLE, this turn, facts, next.
 
         ``this_turn`` / ``next_turns`` replace the board-math deployment with a
         validated game-plan step; ``role_note`` explains a plan/role mismatch.
+        ``with_lines=False`` leaves out the '  LINES ...' line (a prompt that
+        shows the search's lines elsewhere, e.g. above a typed decision's options).
         """
         when = "now" if self.our_turn else "our next turn"
         lines = [f"STRATEGIC ROLE (deterministic board math, recomputed now): {self.headline()}{role_note}"]
-        lines.append(f"  THIS TURN (T{self.plan_turn}, {when}): {this_turn or self.suggestion(0)}")
+        # The search's own T step is the best it can value while a cast it can't value, or our
+        # pending choice, could change it.
+        modelled = (
+            " (best modelled)" if not this_turn and self.lines and (self.unmodelled or self.pending) else ""
+        )
+        lines.append(f"  THIS TURN (T{self.plan_turn}, {when}): {this_turn or self.suggestion(0)}{modelled}")
         lines.append(f"  FACTS: {self.facts_line()}")
         if next_turns is None:
             next_turns = " | ".join(
@@ -840,8 +891,8 @@ class BoardAssessment:
             )
         if next_turns:
             lines.append(f"  NEXT: {next_turns}")
-        if self.line_search is not None and self.lines:
-            lines.append("  " + self.line_search.prompt_line(318))
+        if with_lines and self.line_search is not None and self.lines:
+            lines.append("  " + self.lines_line(318))
         hand = "?" if self.their_hand is None else str(self.their_hand)
         lines.append(
             f"  Board: us {self.our_creatures} creatures/{self.our_power} power vs them "
@@ -864,6 +915,12 @@ class BoardAssessment:
             lines.append("  Priority: develop the board on curve; card draw and rocks only with spare mana.")
         return "\n".join(lines)
 
+    def lines_line(self, max_chars: int = 320) -> str:
+        """The search's 'LINES ...' prompt line, marking casts it can't value and our pending choice."""
+        if self.line_search is None or not self.lines:
+            return ""
+        return self.line_search.prompt_line(max_chars, unmodelled=self.unmodelled, pending=self.pending)
+
     def planning_block(self) -> str:
         """Fuller facts for the background strategic plan call."""
         lines = [self.prompt_block().replace("recomputed now", "at plan time")]
@@ -877,7 +934,14 @@ class BoardAssessment:
                 "CANDIDATE LINES (2-turn search + greedy third turn; they attack each turn with their "
                 "worst-for-us attack; their new cards and tricks are not modelled):"
             )
-            lines += [f"  {n}. {_candidate_text(line)}" for n, line in enumerate(self.lines[:5], start=1)]
+            lines += [
+                f"  {n}. {_candidate_text(line, self.unmodelled)}"
+                for n, line in enumerate(self.lines[:5], start=1)
+            ]
+            if self.pending:
+                lines.append(
+                    f"  (These lines read the board before our pending {', '.join(self.pending)} resolves.)"
+                )
             lines.append("Prefer one of these lines; a deviation needs a concrete card or combat reason.")
         lines.append("MANA BUDGET BY TURN (lands + mana permanents; one land drop per turn from hand):")
         for step in self.lookahead:
@@ -933,8 +997,12 @@ class BoardAssessment:
         }
 
 
-def _candidate_text(line: Any) -> str:
-    """One searched line for the plan prompt: each turn's play, attack and lives, then the outcome."""
+def _candidate_text(line: Any, unmodelled: Any = ()) -> str:
+    """One searched line for the plan prompt: each turn's play, attack and lives, then the outcome.
+
+    A turn casting a card named in ``unmodelled`` (casts the search can't value) is marked
+    "(not modelled)" (its only cast) or "(X not modelled)".
+    """
     parts = []
     blocks = {"none": "no blocks now", "crackback": "block now without our counterattackers"}
     if line.block in blocks:
@@ -944,7 +1012,13 @@ def _candidate_text(line: Any) -> str:
     for step in line.steps:
         life = "" if step.life_after is None else f" -> life {step.life_after}"
         opp = "" if step.opp_life_after is None else f", opponent {step.opp_life_after}"
-        parts.append(f"T{step.turn}: {step.text()}{life}{opp}")
+        marks = [name for name in dict.fromkeys(step.casts) if name in unmodelled]
+        mark = ""
+        if marks:
+            mark = (
+                " (not modelled)" if list(step.casts) == marks[:1] else f" ({', '.join(marks)} not modelled)"
+            )
+        parts.append(f"T{step.turn}: {step.text()}{mark}{life}{opp}")
     if line.outcome == "win":
         outcome = f"lethal on T{line.win_turn}"
     elif line.outcome == "dead":
@@ -1284,6 +1358,32 @@ def _assess(state: dict) -> BoardAssessment | None:
             best_text, race_term = "", None
     best = found.best if found is not None else None
 
+    # --- what the line facts can't see -----------------------------------------
+    # Casts the search can't value (castable on T or T+1; for claims about their next
+    # attack, castable before it) and our own pending choice or effect on the stack: the
+    # line search's "only" and "lethal" claims, ALL-IN and the roles they force are
+    # qualified while any of them could change the outcome. The casts only with the
+    # search's facts in use (its fallbacks keep today's greedy facts); the pending check
+    # reads only the stack, so it applies whenever the search is switched on, even when
+    # the search failed or was cut short.
+    pending: list[str] = []
+    unmodelled: list[str] = []  # castable on T or T+1
+    unmodelled_first: list[str] = []  # castable before their next attack
+    if _line_search_enabled():
+        try:
+            pending = _our_pending(state, model)
+        except Exception as error:
+            logger.debug("pending check failed: %s", error, exc_info=True)
+    if found is not None:
+        try:
+            unmodelled, unmodelled_first = _unmodelled_castable(model, found, lookahead)
+        except Exception as error:
+            logger.debug("unmodelled checks failed: %s", error, exc_info=True)
+    ours_pending = [f"our pending {name}" for name in pending]
+    caveat = ", ".join([*unmodelled, *ours_pending])
+    first_caveat = ", ".join([*unmodelled_first, *ours_pending])
+    pending_note = f" — before our pending {', '.join(pending)} resolves" if pending else ""
+
     # --- advantages ----------------------------------------------------------
     their_hand = _opponent_hand(state)
     card_advantage = None if their_hand is None else len(hand) - their_hand
@@ -1309,12 +1409,19 @@ def _assess(state: dict) -> BoardAssessment | None:
         )
     if dead_in is not None and dead_in <= 2:
         saved = their_clock is not None and dead_in > their_clock
+        # Casts the search can't value may be the play that saves us (for their next attack,
+        # only those castable before it); a pending choice of ours (a 'gain 4 life' mode)
+        # resolves before their attack.
+        names = unmodelled_first if dead_in == 1 else unmodelled
+        unsure = (f" (not modelled: {', '.join(names)})" if names else "") + pending_note
         if dead_in == 1:
-            flags.append("DEAD NEXT ATTACK even after our best castable plays")
+            plays = "our best modelled plays" if names else "our best castable plays"
+            flags.append(f"DEAD NEXT ATTACK even after {plays}{unsure}")
         else:
             flags.append(
                 "DEAD IN 2 TURNS UNLESS WE STABILIZE"
                 + (" (our castable blockers buy one turn)" if saved else "")
+                + unsure
             )
     elif their_clock is not None and their_clock <= 2 and dead_in is None:
         flags.append(f"their board kills us in {their_clock} but our castable plays stabilize")
@@ -1326,17 +1433,26 @@ def _assess(state: dict) -> BoardAssessment | None:
     # Dead to their next attack whatever we do: every T step of an exact search
     # dies there (exact_first_attack needs a complete root, and all_dead_at_first
     # reads only root nodes, so a T+1 cut short by the soft budget doesn't
-    # matter); otherwise the greedy line's verdict.
-    if found is not None and found.exact_first_attack:
+    # matter); otherwise the greedy line's verdict. A searched line that survives
+    # their first attack disproves it either way (the greedy line can't see what
+    # the search models, such as an enters trigger's life gain).
+    if found is not None and (dead_in is None or dead_in > 1):
+        dead_first = False
+    elif found is not None and found.exact_first_attack:
         dead_first = found.all_dead_at_first
     else:
         dead_first = dead_in_greedy == 1
+    # Our own pending choice (a 'gain 4 life' mode on the stack) resolves before their attack,
+    # and a cast the search can't value (a fog, an aura) may be castable before it: "no
+    # defensive line survives" is not established while either is.
     all_in = bool(
         opp_lethal_on_board
         and dead_first
         and not lethal_now
         and our_power > 0
         and (through >= our_life + 2 or evasive >= our_life)
+        and not pending
+        and not unmodelled_first
     )
     if all_in:
         flags.append(
@@ -1344,14 +1460,29 @@ def _assess(state: dict) -> BoardAssessment | None:
             "holding back blockers changes nothing"
         )
     if found is not None and best is not None and not found.dead_now:
+        unsure = f"not modelled: {caveat}"
         if found.only_survivor:
-            flags.append(f"ONLY SURVIVING LINE: {best_text}")
+            flags.append(
+                f"BEST MODELLED LINE (the other modelled lines die; {unsure}): {best_text}"
+                if caveat
+                else f"ONLY SURVIVING LINE: {best_text}"
+            )
         elif getattr(found, "greedy_dies", False):
-            flags.append(f"GREEDY LINE DIES; BEST SURVIVING LINE: {best_text}")
+            flags.append(
+                f"GREEDY LINE DIES; BEST MODELLED LINE ({unsure}): {best_text}"
+                if caveat
+                else f"GREEDY LINE DIES; BEST SURVIVING LINE: {best_text}"
+            )
         elif opp_lethal_on_board and found.only_first_attack_survivor:
-            flags.append(f"ONLY LINE THAT SURVIVES THEIR NEXT ATTACK: {best_text}")
+            flags.append(
+                f"BEST MODELLED LINE THROUGH THEIR NEXT ATTACK (not modelled: {first_caveat}): {best_text}"
+                if first_caveat
+                else f"ONLY LINE THAT SURVIVES THEIR NEXT ATTACK: {best_text}"
+            )
         if _wins_by_next_turn(best) and not lethal_now:
-            flags.append(f"LETHAL LINE: {best_text}")
+            # A win the search found stands whatever the casts it can't value do (they are
+            # ours to cast or not): named, since one of them may win sooner.
+            flags.append(f"LETHAL LINE: {best_text}" + (f" ({unsure})" if caveat else ""))
 
     # --- role ----------------------------------------------------------------
     role, reason = _role(
@@ -1375,15 +1506,18 @@ def _assess(state: dict) -> BoardAssessment | None:
         lookahead=lookahead,
         best_line=best,
         line_text=best_text,
-        only_survivor=bool(found and found.only_survivor),
-        greedy_dies=bool(found and getattr(found, "greedy_dies", False)),
+        # "Only" claims force no role while a cast or pending effect they can't see could change them.
+        only_survivor=bool(found and found.only_survivor) and not caveat,
+        greedy_dies=bool(found and getattr(found, "greedy_dies", False)) and not caveat,
         only_first_attack_survivor=bool(found and found.only_first_attack_survivor),
         race_term=race_term,
+        caveat=first_caveat,
     )
     posture = found.posture if found is not None else ""
     posture_reason = found.posture_reason if found is not None else ""
     if posture in ("attack", "hold") and posture_reason:
         reason = f"{reason}; {posture_reason}"
+    reason += pending_note
 
     zones = state.get("zones") if isinstance(state.get("zones"), dict) else {}
     library = _int(zones.get("library_count", state.get("library_count")))
@@ -1434,6 +1568,8 @@ def _assess(state: dict) -> BoardAssessment | None:
         posture_reason=posture_reason,
         dead_in_greedy=dead_in_greedy,
         search_stats=search.stats() if search is not None else {},
+        unmodelled=unmodelled,
+        pending=pending,
     )
     result.elapsed_ms = (time.perf_counter() - started) * 1000
     return result
@@ -1442,6 +1578,119 @@ def _assess(state: dict) -> BoardAssessment | None:
 def _wins_by_next_turn(line: Any) -> bool:
     """The line kills them with our attack at T or T+1."""
     return line is not None and line.outcome == "win" and line.win_at is not None and line.win_at <= 2
+
+
+def _unmodelled_castable(
+    model: Any, search: Any, lookahead: list[TurnProjection]
+) -> tuple[list[str], list[str]]:
+    """Hand spells whose effect the line search can't value, by name: (castable on T or T+1,
+    castable before their next attack).
+
+    ``line_search_moves.unmodelled_effect``: an aura, a fog, a planeswalker,
+    tokens it can't read, an attack trigger, an X spell that touches the
+    board or life totals (X card flow and counterspells change nothing it
+    values). A combat trick counts only with a creature of ours to pump (on
+    the battlefield, or castable on T). Before their next attack: on our
+    turn (or theirs, after their attack), what T can cast; while their attack
+    is still to come this turn, only instants payable from our untapped mana.
+    """
+    from arenamcp.line_search_moves import hand_info, unmodelled_effect
+
+    rows = lookahead[:2]
+
+    def payable(spell: _Spell, mana: int, sources: Any = None, colors: str = "") -> bool:
+        need = spell.mana_value + (1 if spell.has_x else 0)  # X = 1 at least to do anything
+        if need > mana:
+            return False
+        if sources is not None:
+            return not spell.pips or _pip_matching(spell.pips, list(sources))
+        return all(pip & (set(colors) | {"C"}) for pip in spell.pips)
+
+    creature_on_t = bool(rows) and any(
+        s.role == "creature" and s.name in rows[0].castable for s in model.spells
+    )
+    found: list[str] = []
+    first: list[str] = []
+    for spell in model.spells:
+        if spell.uncastable or spell.name in found:
+            continue
+        why = unmodelled_effect(spell.card, search)
+        if not why or (why == "a combat trick" and not (model.ours or creature_on_t)):
+            continue
+        turns = [
+            k
+            for k, row in enumerate(rows)
+            if (payable(spell, row.mana, colors=row.colors) if spell.has_x else spell.name in row.castable)
+        ]
+        if not turns:
+            continue
+        found.append(spell.name)
+        instant = bool(hand_info(spell.card).instant_speed)
+        if model.their_attack_pending:
+            before = instant and payable(spell, len(model.sources_now), model.sources_now)
+        else:
+            before = 0 in turns and (instant or not model.t_instant_only)
+        if before:
+            first.append(spell.name)
+    return found, first
+
+
+def _our_pending(state: dict, model: Any) -> list[str]:
+    """Our own spells and abilities on the stack whose choice or effect the board facts don't count.
+
+    A 'choose one' trigger or spell with a mode that changes the board or
+    life totals ("Archive Arbiter trigger (choose one)"; a draw-or-scry
+    charm is not listed); one that removes a creature, gains life, makes
+    creature tokens or damages the opponent; any other effect the line
+    search can't value (a fog, a tap-down, an aura: ``unmodelled_effect``)
+    that is not card flow. A creature spell's body is already counted: only
+    its own enters trigger is. The facts read the board before any of them
+    resolves.
+    """
+    from arenamcp.line_search_moves import bullets, card_flow, classify, token_specs, unmodelled_effect
+
+    cards: dict[int, dict] = {}
+    for zone in ("battlefield", "graveyard", "exile", "hand"):
+        for card in state.get(zone) or []:
+            if isinstance(card, dict) and _int(card.get("instance_id")) is not None:
+                cards[_int(card.get("instance_id"))] = card
+    found: list[str] = []
+    for obj in state.get("stack") or []:
+        if not isinstance(obj, dict) or _controller(obj) != model.local:
+            continue
+        ability = "ability" in str(obj.get("object_kind") or obj.get("type_line") or "").lower()
+        parent = cards.get(_int(obj.get("parent_instance_id"))) if ability else None
+        name = _name(parent) if parent else ("our ability" if ability else _name(obj))
+        label = f"{name} trigger" if parent else name
+        text = str(obj.get("oracle_text") or "")
+        modes = bullets(text)
+        if modes and any(classify(name, mode)[0] != "other" or not card_flow(mode.lower()) for mode in modes):
+            found.append(f"{label} (choose one)")
+            continue
+        pseudo = {
+            "name": name,
+            "oracle_text": text,
+            "type_line": "" if ability else obj.get("type_line") or "",
+            "card_types": [] if ability else obj.get("card_types") or [],
+        }
+        cast = _cast_text(pseudo)
+        if (
+            removal_reach(pseudo) is not None
+            or _LIFEGAIN.search(cast)
+            or token_specs(cast) != []
+            or any(face_damage(pseudo))
+        ):
+            found.append(label)
+        elif _is_creature(pseudo):
+            # Its body is counted; its own enters trigger (``_cast_text``) is not.
+            effect = "\n".join(
+                line for line in cast.splitlines() if not line.startswith("as an additional cost")
+            )
+            if effect.strip() and not card_flow(effect):
+                found.append(label)
+        elif unmodelled_effect(pseudo) and not card_flow(cast):
+            found.append(label)
+    return found
 
 
 def _opponent_hand(state: dict) -> int | None:
@@ -1907,6 +2156,7 @@ def _role(
     only_first_attack_survivor: bool = False,
     race_term: float | None = None,
     greedy_dies: bool = False,
+    caveat: str = "",
 ) -> tuple[str, str]:
     """Who's the beatdown: lethal and survival first, then fast clocks, then board/cards/curve.
 
@@ -1917,7 +2167,9 @@ def _role(
     T+1 is the beatdown, the only surviving line is control, and with slow
     clocks a line that attacks for a third of their life by T+2 at a
     non-negative race term, without dropping us below min(life, 10), is the
-    beatdown.
+    beatdown. ``caveat`` names what the lines can't see (casts the search
+    can't value, our pending choice): the caller then passes no "only" claims,
+    and the opponent-lethal reason calls the line the best modelled one.
     """
     board = f"{ours} vs {theirs} creatures, {our_power} vs {their_power} power"
 
@@ -1944,7 +2196,13 @@ def _role(
         )
     if opp_lethal:
         through = our_life - (their_lives[0] if their_lives else our_life)
-        only = f"; only line: {line_text}" if only_first_attack_survivor and line_text else ""
+        only = ""
+        if only_first_attack_survivor and line_text:
+            only = (
+                f"; best modelled line: {line_text} (not modelled: {caveat})"
+                if caveat
+                else f"; only line: {line_text}"
+            )
         return ROLE_CONTROL, (
             f"opponent has lethal on board ({through} through our best blocks vs {our_life} life) — survive first"
             f"{only}"

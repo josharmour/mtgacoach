@@ -24,13 +24,15 @@ applies, even in 'on' mode.
 
 Conservative rules: no guard fires with lethal on board for us, when the best
 line wins this turn (posture 'lethal'), on a choice inside a winning line, on
-a pass, on a pump or a card that damages players in a way the search didn't
-model (an enters ping, a drain), on the opponent's turn, with a non-empty
-stack (the modal source itself excepted), with an unknown-P/T creature, or on a
-truncated search; an override also has to be no worse under the +2/+0 trick
-proxy (``line_search.proxy_outcome``). ARENAMCP_LINE_SEARCH=0 also turns off
-the per-mode comparisons, their tags and the mode guard. Pure: no I/O, no LLM;
-any error returns None or '' so today's choice stands.
+a pass, on a cast whose effect the search does not model
+(``line_search_moves.unmodelled_effect``: tokens it can't read, an aura, a
+pump, an attack trigger, player damage it has no face variant for; such a
+cast gets no '[LINE ...]' tag either), on the opponent's turn, with a
+non-empty stack (the modal source itself excepted), with an unknown-P/T
+creature, or on a truncated search; an override also has to be no worse under
+the +2/+0 trick proxy (``line_search.proxy_outcome``). ARENAMCP_LINE_SEARCH=0
+also turns off the per-mode comparisons, their tags and the mode guard. Pure:
+no I/O, no LLM; any error returns None or '' so today's choice stands.
 """
 
 from __future__ import annotations
@@ -51,8 +53,6 @@ from arenamcp.board_assessment import (
     _seats,
     _signature,
     _source_card,
-    card_role,
-    harms_players,
 )
 from arenamcp.line_search import (
     ALIVE,
@@ -65,6 +65,7 @@ from arenamcp.line_search import (
     action_key,
     compare_modes,
     proxy_outcome,
+    unmodelled_effect,
 )
 from arenamcp.mulligan_policy import _pip_matching
 
@@ -199,8 +200,9 @@ def _candidates(
     """Payable options that start the best line, ranked: removal on an attacker, creature, land.
 
     Only the best T step's own plays qualify: removal (or a bounce) it aims at
-    a creature of theirs that can attack, a creature it casts, and its land
-    drop when that land pays for the step's casts.
+    a creature of theirs that can attack, a creature (or a spell making
+    creature tokens) it casts, and its land drop when that land pays for the
+    step's casts.
     """
     best = result.best
     if not best.steps:
@@ -209,6 +211,8 @@ def _candidates(
     aimed = dict(step.targets)  # card -> their creature
     attackers = {b["name"] for b in result.model.theirs if b.get("_can_attack", True)}
     land = step.plays[0] if len(step.plays) == 3 else None
+    makers = {var.spell for var, _target in (step.plays[1] if len(step.plays) == 3 else ()) if var.tokens}
+    bodies = {result._search.spells[i].name for i in makers} if result._search is not None else set()
     found = []
     for index, option in enumerate(decision.options):
         if option.option_id == exclude or option.payable is False or _is_pass(option):
@@ -222,7 +226,7 @@ def _candidates(
             found.append((-1, index, option))  # the burn that wins now
         elif key[0] == "cast" and aimed.get(name) in attackers:
             found.append((0, index, option))
-        elif key[0] == "cast" and name in step.casts and _is_creature(source):
+        elif key[0] == "cast" and name in step.casts and (_is_creature(source) or name in bodies):
             found.append((1, index, option))
         elif (
             key[0] == "land"
@@ -239,18 +243,26 @@ def _usable(result: LineSearchResult | None) -> bool:
 
 
 def _unmodelled_finisher(result: LineSearchResult, option: Any, state: dict) -> bool:
-    """The option's card can win in ways the search did not model: a pump, or player damage /
-    life loss it has no face variant for (a creature's enters ping, a drain trigger)."""
-    source, _zone = _source_card(state, getattr(option, "meta", None) or {})
-    if not source:
-        return False
-    if card_role(source) == "pump":
-        return True
-    if not harms_players(source):
-        return False
-    iid = _int(source.get("instance_id"))
-    spells = getattr(result._search, "spells", None) or []
-    return not any(hs.iid == iid and any(v.face for v in hs.variants) for hs in spells)
+    """The option casts a card whose effect the search does not model (``unmodelled_effect``):
+    tokens it can't read, an aura, a pump, an attack trigger, player damage it has no face
+    variant for... Its line undervalues it, so it is no evidence for or against the cast."""
+    return bool(unmodelled_cast(result, option, state))
+
+
+def unmodelled_cast(result: LineSearchResult | None, option: Any, state: dict) -> str:
+    """'<card> (<why>)' when ``option`` casts a card the search can't value, else ''.
+
+    Only casts: a land drop, landcycling and abilities are moves the search
+    models (or does not offer at all). ``result`` (may be None) lets the check
+    see whether the card's player damage has a face variant.
+    """
+    meta = getattr(option, "meta", None) or {}
+    action = str(meta.get("actionType") or "").removeprefix("ActionType_").lower()
+    if _is_pass(option) or action in ("play", "playland", "activate"):
+        return ""
+    source, _zone = _source_card(state, meta)
+    why = unmodelled_effect(source, result) if source else ""
+    return f"{_name(source)} ({why})" if why else ""
 
 
 # --- the line guard -----------------------------------------------------------------------
@@ -616,12 +628,18 @@ def _option_note(result, option, state) -> str:
     return _note_for(line, best, is_best=False) if line is not None else ""
 
 
-def lines_summary(result: LineSearchResult | None) -> str:
-    """The 'LINES ...' prompt line (at most 320 characters), or '' without a usable search."""
+def lines_summary(
+    result: LineSearchResult | None, *, unmodelled: Any = (), pending: Any = (), max_chars: int = 320
+) -> str:
+    """The 'LINES ...' prompt line (at most ``max_chars``), or '' without a usable search.
+
+    ``unmodelled`` / ``pending``: the board assessment's casts the search can't
+    value and our pending stack objects (``LineSearchResult.prompt_line``).
+    """
     try:
         if result is None or result.truncated:
             return ""
-        return result.prompt_line(320)
+        return result.prompt_line(max_chars, unmodelled=unmodelled, pending=pending)
     except Exception:
         logger.debug("lines summary failed", exc_info=True)
         return ""
@@ -659,4 +677,6 @@ __all__ = [
     "mode_comparison",
     "mode_guard",
     "option_note",
+    "unmodelled_cast",
+    "unmodelled_effect",
 ]

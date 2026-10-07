@@ -346,35 +346,63 @@ def test_a_modal_best_step_with_an_unmodelled_mode_never_replaces_the_plan(monke
 
 
 @pytest.mark.parametrize("setting", [None, "on"])
-def test_a_plan_casting_an_unmodelled_card_is_not_judged_by_the_search(synthetic_cards, monkeypatch, setting):
-    # Review 2026-10-07: two hasty 3/1 tokens are exactly lethal (they are at 6, the
-    # Giant is tapped), but the search gives a token maker no body: it scored the plan
-    # 'dies T11' and put the Bears in THIS TURN.
+def test_a_plan_casting_an_unmodelled_card_is_not_judged_by_the_search(monkeypatch, setting):
+    # Review 2026-10-07: the search gave a token maker no body, scored a plan casting two
+    # hasty 3/1s that were exactly lethal 'dies T11' and put the Bears in THIS TURN. It reads
+    # those tokens now; tokens exiled at end of turn it still can't value.
     if setting:
         monkeypatch.setenv("ARENAMCP_LINE_GUARD", setting)
-    state = _bears_board("Elemental Uprising", their_life=6, giant_tapped=True)
+    state = S.HASTE_TOKENS_UNREAD
+    plan = _validated(
+        state, [{"turn": "T", "land": "", "cast": ["Elemental Surge"], "attack": "all"}], 10, role="aggressor"
+    )
+    assert plan.turn_plan[0]["cast"] == ["Elemental Surge"]
+    assert _line_issues(plan) == []
+    assert "line check skipped, the search can't value: T: Elemental Surge (its tokens)" in plan.issues
+    assert _this_turn(state, plan).startswith("THIS TURN (T10, now): cast Elemental Surge")
+
+
+def test_a_token_maker_plan_is_judged_now():
+    # The same board with tokens the search reads: the plan is the lethal line itself, and
+    # an aggressor plan agrees with the role the LETHAL LINE sets (no 'rejected' issue).
+    state = S.HASTE_TOKENS_LETHAL
+    assessment = ba.assess(state)
+    assert assessment.role == "aggressor" and assessment.opp_lethal_on_board
     plan = _validated(
         state,
         [{"turn": "T", "land": "", "cast": ["Elemental Uprising"], "attack": "all"}],
         10,
         role="aggressor",
     )
-    assert plan.turn_plan[0]["cast"] == ["Elemental Uprising"]
-    assert _line_issues(plan) == []
-    assert "line check skipped: T Elemental Uprising (its tokens not modelled)" in plan.issues
-    assert _this_turn(state, plan).startswith("THIS TURN (T10, now): cast Elemental Uprising")
+    assert plan.role == "aggressor" and plan.issues == []
+    # Holding the tokens back wins two turns later: noted against the lethal line.
+    plan = _validated(
+        state, [{"turn": "T", "land": "", "cast": ["Grizzly Bears"], "attack": "none"}], 10, role="aggressor"
+    )
+    (issue,) = _line_issues(plan)
+    assert issue.startswith(
+        "plan line lethal on T12; best line Elemental Uprising, attack with Elemental token, Elemental token "
+        "— lethal on T10"
+    )
 
 
 def test_unmodelled_effects_are_named_and_modelled_cards_are_not(synthetic_cards):
+    # One check for the search, the guards, the board facts and the plan (line_search_moves).
+    from arenamcp.line_search_moves import unmodelled_effect as canonical
+
     unmodelled = gp.unmodelled_effect
-    assert unmodelled(S.card(1, "Elemental Uprising", 1)) == "its tokens"
-    assert unmodelled(S.card(2, "Reckless Study", 1)) == ""  # card draw changes nothing it values
-    assert unmodelled(S.card(3, "Grizzly Bears", 1)) == ""
-    assert unmodelled(S.card(4, "Archive Arbiter", 1)) == ""  # its gain-4 mode is modelled
-    assert unmodelled(S.card(5, "Heartstring Puller", 1)) == "its triggered ability"  # enters: a token
-    assert unmodelled(S.card(6, "Unsummon", 1)) == ""  # bounce
-    assert unmodelled(S.card(7, "Splinter Twin", 1))  # an aura granting a copy ability
+    assert unmodelled(S.card(1, "Elemental Uprising", 1)) == ""  # its tokens have bodies now
+    assert unmodelled(S.card(2, "Elemental Surge", 1)) == "its tokens"  # exiled at end of turn
+    assert unmodelled(S.card(3, "Reckless Study", 1)) == ""  # card draw changes nothing it values
+    assert unmodelled(S.card(4, "Grizzly Bears", 1)) == ""
+    assert unmodelled(S.card(5, "Archive Arbiter", 1)) == ""  # its gain-4 mode is modelled
+    assert unmodelled(S.card(6, "Heartstring Puller", 1)) == ""  # its enters token is modelled
+    assert unmodelled(S.card(7, "Unsummon", 1)) == ""  # bounce
+    assert unmodelled(S.card(8, "Splinter Twin", 1))  # an aura granting a copy ability
+    assert unmodelled(S.card(9, "Chupacabra", 1)) == ""  # enters removal
     assert unmodelled(None) == "" and unmodelled({}) == ""
+    for name in ("Elemental Surge", "Pacifism", "Seismic Jolt", "Beast Summons", "Archive Arbiter"):
+        assert unmodelled(S.card(10, name, 1)) == canonical(S.card(10, name, 1))
 
 
 # --- validate_plan: cast names as the prompt writes them ------------------------------------------
@@ -413,9 +441,9 @@ def test_candidate_line_and_line_check_notes_name_the_card_in_hand():
     assert plan.issues == []  # the best line itself: no false 'plan line dies'
 
 
-def test_a_noted_mode_the_replay_did_not_choose_skips_the_line_check():
-    # The replay scores a named card by its best mode: a plan noting the destroy mode
-    # would be judged as if it gained 4 life.
+def test_a_noted_mode_the_search_does_not_model_skips_the_line_check():
+    # The replay casts the noted mode (it used to cast the best one, so this plan was judged
+    # as if it gained 4 life). Destroying Splinter Twin is a mode the search can't value.
     state = _with_catalog(S.G1_T14)
     plan = _validated(
         state,
@@ -432,9 +460,57 @@ def test_a_noted_mode_the_replay_did_not_choose_skips_the_line_check():
     assert plan.turn_plan[0]["cast"] == [
         "Archive Arbiter (choose: destroy target noncreature, nonland permanent)"
     ]
-    (skipped,) = [issue for issue in plan.issues if issue.startswith("line check skipped")]
-    assert skipped.endswith("the replay chose gain 4 life")
-    assert _line_issues(plan) == []
+    assert plan.issues == [
+        "line check skipped, the search can't value: T: Archive Arbiter (choose: destroy target noncreature, "
+        "nonland permanent): mode not modelled"
+    ]
+
+
+_SUNLIT_VERDICT = {
+    "type_line": "Sorcery",
+    "mana_cost": "{2}{W}{W}",
+    "oracle_text": "Choose one —\n•Destroy target creature an opponent controls.\n•You gain 3 life.",
+    "card_types": ["CardType_Sorcery"],
+}
+
+
+@pytest.mark.parametrize(
+    ("cast", "dies"),
+    [
+        ("Sunlit Verdict", False),  # no note: the mode worth most
+        ("Sunlit Verdict (choose: destroy target creature an opponent controls)", False),
+        ("Sunlit Verdict (on Hill Giant)", False),
+        ("Sunlit Verdict (choose: gain 3 life)", True),
+        ("Sunlit Verdict (gain 3 life)", True),  # the CANDIDATE LINES form
+        # Other words for the same mode (review 2026-10-07: all judged as the destroy mode, issues=[]).
+        ("Sunlit Verdict (gain life)", True),
+        ("Sunlit Verdict (lifegain)", True),
+        ("Sunlit Verdict (+3 life)", True),
+        ("Sunlit Verdict (choose: mode 2)", True),
+        ("Sunlit Verdict (choose: Mode 2: You gain 3 life.)", True),
+    ],
+)
+def test_a_noted_mode_is_judged_as_the_plan_wrote_it(monkeypatch, cast, dies):
+    # Both modes are modelled: at 2 life gaining 3 dies to the Giant on T13, destroying it
+    # survives. Before the replay honoured notes, the gain-3 plan was skipped ('the replay
+    # chose destroy …'); without a note the replay casts the mode worth most.
+    monkeypatch.setitem(S.CARDS, "Sunlit Verdict", _SUNLIT_VERDICT)
+    state = S.state(
+        turn=10, active=1, phase="Phase_Main1", step="", life={1: 2, 2: 20}, lands_played={1: 1, 2: 0},
+        library=20, opponent_hand=0,
+        battlefield=[(401, "Plains", 1, False, 2), (402, "Plains", 1, False, 4), (403, "Plains", 1, False, 6),
+                     (404, "Plains", 1, False, 8), (410, "Hill Giant", 2, False, 5), (411, "Mountain", 2, False, 1),
+                     (412, "Mountain", 2, False, 3)],
+        hand=[(500, "Sunlit Verdict")], graveyard=[],
+    )  # fmt: skip
+    plan = _validated(state, [{"turn": "T", "land": "", "cast": [cast], "attack": "none"}], 10)
+    assert plan.turn_plan[0]["cast"] == [cast]
+    assert not [issue for issue in plan.issues if issue.startswith("line check skipped")]
+    if dies:
+        (issue,) = _line_issues(plan)
+        assert issue.startswith("plan line dies T13; best line Sunlit Verdict (on Hill Giant) — survives")
+    else:
+        assert _line_issues(plan) == []
 
 
 def test_a_landcycle_entry_is_a_landcycling_cast():
@@ -486,17 +562,33 @@ def test_a_large_value_gap_in_the_same_outcome_is_noted_without_a_rewrite():
     assert issue.startswith("plan line survives (life 4, 4, 3)")
 
 
-@pytest.mark.parametrize("fixture", ["G1_T8", "G1_T10", "G1_T12", "G1_T14"])
-def test_the_best_line_as_a_plan_passes_the_line_check(fixture):
+def _noted(step) -> list[str]:
+    """A line step's casts as the line check writes them: "X (choose: mode, on target)"."""
+    modes, targets = dict(step.modes), dict(step.targets)
+    casts = []
+    for name in step.casts:
+        notes = [f"choose: {modes[name]}"] if modes.get(name) else []
+        notes += [f"on {targets[name]}"] if targets.get(name) else []
+        casts.append(f"{name} ({', '.join(notes)})" if notes else name)
+    return casts
+
+
+@pytest.mark.parametrize("noted", [False, True])
+@pytest.mark.parametrize(
+    "fixture", ["G1_T8", "G1_T10", "G1_T12", "G1_T14", "ENTERS_REMOVAL", "HASTE_TOKENS_LETHAL"]
+)
+def test_the_best_line_as_a_plan_passes_the_line_check(fixture, noted):
     state = _with_catalog(getattr(S, fixture))
     best = ba.assess(state).line_search.best
+    casts = [_noted(s) if noted else list(s.casts) for s in best.steps]
     turns = [
-        {"turn": s.label, "land": s.land, "cast": list(s.casts), "attack": ", ".join(s.attack) or "none"}
-        for s in best.steps
+        {"turn": s.label, "land": s.land, "cast": cast, "attack": ", ".join(s.attack) or "none"}
+        for s, cast in zip(best.steps, casts, strict=True)
     ]
     plan = _validated(state, turns, state["turn"]["turn_number"])
     assert _line_issues(plan) == []
-    assert [step["cast"] for step in plan.turn_plan] == [list(s.casts) for s in best.steps]
+    assert not [issue for issue in plan.issues if issue.startswith("line check skipped")]
+    assert [step["cast"] for step in plan.turn_plan] == casts
 
 
 def test_the_line_check_is_off_without_a_usable_search(monkeypatch):
@@ -685,6 +777,19 @@ def test_this_turn_marks_the_land_played_and_the_permanents_cast():
     assert "✓" not in compose_strategy_block(ba.assess(_played_island_and_witness()), _t12_plan())
 
 
+def test_the_strategy_block_leaves_out_its_lines_only_when_asked():
+    # The coach prompt keeps the LINES line; a typed decision shows it above its options and
+    # asks the block (as wired by the autopilot) to leave its copy out (review 2026-10-07, I4).
+    manager = GamePlanManager(None)
+    state = deepcopy(S.G1_T12)
+    full = manager.strategy_block(state).splitlines()
+    (lines,) = [line for line in full if line.startswith("  LINES (2-turn search")]
+    assert manager.strategy_block(state, with_lines=False).splitlines() == [x for x in full if x != lines]
+    facts = gp.grounded_facts_block(state).splitlines()
+    assert lines in facts
+    assert gp.grounded_facts_block(state, with_lines=False).splitlines() == [x for x in facts if x != lines]
+
+
 PUMP = ot.TrickCard(grp_id=1, name="Test Pump", mana_cost="{1}{G}", mv=2, pips=("G",), kinds=("pump",))
 
 
@@ -794,3 +899,37 @@ def test_no_trick_lines_outside_combat(caplog):
         cast["stack"] = [S.card(320, "Tethermage's Advantage", 2)]
         manager.observe(cast)
     assert not [r for r in caplog.records if r.getMessage().startswith("Trick")]
+
+
+def test_a_mode_note_naming_no_mode_skips_the_line_check(monkeypatch):
+    # A note the replay can't map to a mode used to be judged as the mode worth most, silently.
+    monkeypatch.setitem(S.CARDS, "Sunlit Verdict", _SUNLIT_VERDICT)
+    monkeypatch.setenv("ARENAMCP_LINE_GUARD", "on")
+    state = S.state(
+        turn=10, active=1, phase="Phase_Main1", step="", life={1: 2, 2: 20}, lands_played={1: 1, 2: 0},
+        library=20, opponent_hand=0,
+        battlefield=[(401, "Plains", 1, False, 2), (402, "Plains", 1, False, 4), (403, "Plains", 1, False, 6),
+                     (404, "Plains", 1, False, 8), (410, "Hill Giant", 2, False, 5), (411, "Mountain", 2, False, 1),
+                     (412, "Mountain", 2, False, 3)],
+        hand=[(500, "Sunlit Verdict")], graveyard=[],
+    )  # fmt: skip
+    cast = "Sunlit Verdict (choose: the good one)"
+    plan = _validated(state, [{"turn": "T", "land": "", "cast": [cast], "attack": "none"}], 10)
+    (skipped,) = [issue for issue in plan.issues if issue.startswith("line check skipped")]
+    assert skipped.endswith("T: Sunlit Verdict (choose: the good one): mode not recognised")
+    assert plan.turn_plan[0]["cast"] == [cast] and _line_issues(plan) == []
+
+
+def test_a_planned_x_spell_skips_the_line_check(monkeypatch):
+    # Volcanic Spray (X damage to a creature) kills the Giant; the replay can't cast X spells,
+    # so it judged the plan as if nothing were cast, and with the line guard on rewrote T to
+    # "cast Grizzly Bears", a chump block.
+    monkeypatch.setenv("ARENAMCP_LINE_GUARD", "on")
+    state = S.mountain_board(
+        life=3, their_life=20, mountains=4, theirs=[(410, "Hill Giant", 2, False, 5)],
+        hand=[(501, "Volcanic Spray"), (502, "Grizzly Bears")],
+    )  # fmt: skip
+    plan = _validated(state, [{"turn": "T", "land": "", "cast": ["Volcanic Spray"], "attack": "none"}], 10)
+    (skipped,) = [issue for issue in plan.issues if issue.startswith("line check skipped")]
+    assert "T: Volcanic Spray (its X cost)" in skipped
+    assert _line_issues(plan) == [] and plan.turn_plan[0]["cast"] == ["Volcanic Spray"]

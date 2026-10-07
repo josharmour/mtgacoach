@@ -460,7 +460,8 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
     """Repair ``plan`` in place against the board facts; record what changed in ``plan.issues``.
 
     * role: unknown roles take the assessed role; aggressor is rejected while
-      the opponent has lethal / we are dead in two (unless we have lethal);
+      the opponent has lethal / we are dead in two (unless we have lethal, or
+      the assessed role is aggressor too, e.g. for a searched lethal line);
       lethal-now forces aggressor; any other disagreement needs a reason.
     * win conditions: our-library alternate wins are dropped while the library
       has more than a handful of cards; wins naming a card that is still in the
@@ -472,14 +473,15 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
       the line search, each turn's budget follows the plan's own land drops.
       A creature cast that turn (without haste) is dropped from its attack.
     * line check: the turn plan replayed through the line search is compared
-      with the best line. Dying sooner (or winning later) is an issue; while
-      surviving is the priority, the T step is replaced by the best line's
-      only with ARENAMCP_LINE_GUARD=on (shadow, the default, only notes what
-      it would replace), never against the +2/+0 trick proxy or for a modal
-      choice of a card with an unmodelled mode. A value gap of
-      ``PLAN_LINE_GAP`` in the same outcome is noted. A plan casting a card
-      whose effect the search does not model (:func:`unmodelled_effect`), or
-      noting a mode the replay did not choose, is not judged.
+      with the best line; a cast's note picks its mode and target ("Archive
+      Arbiter (choose: gain 4 life)", "Shock (on Cadet)"). Dying sooner (or
+      winning later) is an issue; while surviving is the priority, the T step
+      is replaced by the best line's only with ARENAMCP_LINE_GUARD=on (shadow,
+      the default, only notes what it would replace), never against the
+      +2/+0 trick proxy or for a modal choice of a card with an unmodelled
+      mode. A value gap of ``PLAN_LINE_GAP`` in the same outcome is noted. A
+      plan casting a card whose effect the search does not model, or noting a
+      mode it does not model (:func:`unmodelled_effect`), is not judged.
     """
     from arenamcp.board_assessment import ROLE_AGGRESSOR, ROLE_CONTROL, ROLE_DEFENDER, ROLES
 
@@ -520,6 +522,7 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
     elif (
         in_danger
         and role == ROLE_AGGRESSOR
+        and assessment.role != ROLE_AGGRESSOR  # e.g. a LETHAL LINE: the facts agree
         and not assessment.lethal_next_turn
         and not getattr(assessment, "all_in", False)
     ):
@@ -774,66 +777,23 @@ _NAME_STOPWORDS = frozenset({"the", "of", "and", "with", "from", "into", "attack
 # and "X (on Y)", CANDIDATE LINES "Archive Arbiter (gain 4 life)".
 _ANY_NOTE = re.compile(r"\s*\(([^()]*)\)\s*$")
 
-# A creature's triggered ability ("When this creature enters, ..."): the line
-# search values a creature spell by its body and its 'choose one' bullets only.
-_CREATURE_TRIGGER = re.compile(
-    r"\bwhen(?:ever)?\b[^.,]*?\b(?:enters|attacks|dies)\b[^.,]*,\s*(?P<effect>[^.]*)"
-)
-# Trigger effects that only move cards (no board or life change in the search's horizon).
-_CARD_FLOW = re.compile(
-    r"^(?:you may |then )?(?:draw|scry|surveil|look at|mill|discard|investigate|connive|reveal)\b"
-)
-
 
 def unmodelled_effect(card: dict | None, result: Any = None) -> str:
     """What casting ``card`` does that the line search does not model; '' when it models it all.
 
-    ``line_search_moves.Moves._variants`` values a creature spell by its body
-    and its 'choose one' bullets, and a noncreature spell by removal, bounce,
-    life gain, a mana rock and damage to the opponent ('any target' spells).
-    Everything else counts as nothing, so a line starting with such a cast is
-    undervalued and must never be overridden, or tagged as worse, on the
-    search's word (review 2026-10-07: a sorcery making two hasty 3/1s that was
-    exactly lethal scored 'dead T11'). Unmodelled: a noncreature spell that
-    makes creature tokens; a creature's triggered enters/attacks/dies effect
-    outside its bullets (card flow such as draw or scry aside) or bullets that
-    are all unmodelled; a pump; a planeswalker; a noncreature 'other' card (an
-    aura like Pacifism); and damage to players the search has no face variant
-    for (with ``result``, the board's ``LineSearchResult``). Card draw,
-    selection and counters change nothing the search would value.
+    The one check the search, the guards and the board facts share
+    (``line_search_moves.unmodelled_effect``): tokens it can't read, a
+    creature's other triggered ability, modes that are all unmodelled, a pump,
+    an aura or planeswalker, and (with ``result``, the board's
+    ``LineSearchResult``) player damage it has no face variant for. A line
+    starting with such a cast undervalues it, so the plan's line check does
+    not judge a plan that casts it. '' on any error (treated as modelled).
     """
-    if not isinstance(card, dict) or not card.get("name"):
-        return ""
     try:
-        from arenamcp.board_assessment import _int, _is_creature, _text, card_role, harms_players
-        from arenamcp.limited_rules import rules_profile
-        from arenamcp.line_search_moves import bullets, classify
+        from arenamcp.line_search_moves import unmodelled_effect as canonical
 
-        role = card_role(card)
-        if role == "land":
-            return ""
-        if _is_creature(card):
-            modes = bullets(str(card.get("oracle_text") or ""))
-            if modes:
-                if all(classify(str(card["name"]), mode)[0] == "other" for mode in modes):
-                    return "its modes"
-            else:
-                for match in _CREATURE_TRIGGER.finditer(_text(card)):
-                    if not _CARD_FLOW.match(match.group("effect").strip()):
-                        return "its triggered ability"
-        elif role == "pump":
-            return "a combat trick"
-        elif role in ("other", "planeswalker"):
-            return "its effect"
-        elif rules_profile(card).get("body"):
-            return "its tokens"
-        if result is not None and harms_players(card):
-            iid = _int(card.get("instance_id"))
-            spells = getattr(getattr(result, "_search", None), "spells", None) or []
-            if not any(hs.iid == iid and any(v.face for v in hs.variants) for hs in spells):
-                return "its damage to players"
-        return ""
-    except Exception:  # unknown: the caller treats the card as modelled, as before
+        return canonical(card, result)
+    except Exception:
         logger.debug("unmodelled-effect check failed", exc_info=True)
         return ""
 
@@ -911,13 +871,18 @@ def _without_sick_attackers(
     return ", ".join(name for name in named if name not in sick)
 
 
-def _cast_names(value: Any) -> list[str]:
-    """A step's cast list as card names: split, without notes ("X (gain 4 life)") and landcycling."""
+def _cast_entries(value: Any) -> list[str]:
+    """A step's cast list as entries, notes kept ("X (gain 4 life)"), without landcycling."""
     if isinstance(value, str):
         parts = [part.strip() for part in re.split(r",|\+| and ", value) if part.strip()]
     else:
         parts = [str(part).strip() for part in value or [] if str(part).strip()]
-    return [_ANY_NOTE.sub("", part) for part in parts if not part.lower().startswith("landcycle ")]
+    return [part for part in parts if not part.lower().startswith("landcycle ")]
+
+
+def _cast_names(value: Any) -> list[str]:
+    """A step's cast list as card names: split, without notes ("X (gain 4 life)") and landcycling."""
+    return [_ANY_NOTE.sub("", part) for part in _cast_entries(value)]
 
 
 def _named_card(name: str, names: dict[str, dict]) -> dict | None:
@@ -943,12 +908,6 @@ def _cast_parts(entry: str, known: Callable[[str], Any]) -> tuple[str, str, bool
     if match is None:
         return text, "", cycle
     return text[: match.start()].strip(), match.group(1).strip(), cycle
-
-
-def _note_modes(note: str) -> list[str]:
-    """The mode(s) a cast note names: "choose: gain 4 life, on X" -> ["gain 4 life"]."""
-    text = re.sub(r"^\s*choose:\s*", "", str(note or ""), flags=re.I)
-    return [part.strip() for part in text.split(",") if part.strip() and not part.strip().startswith("on ")]
 
 
 def _ready_attacker_names(state: dict, assessment: Any, index: int) -> set[str]:
@@ -991,7 +950,10 @@ def _plan_eval_steps(
 ) -> list[dict]:
     """The plan's turns as ``line_search.evaluate_plan`` reads them.
 
-    Labels T/T+1/T+2, card names as in hand, attackers by full name. A turn
+    Labels T/T+1/T+2, card names as in hand with their notes kept ("Archive
+    Arbiter (choose: gain 4 life)", "Shock (on Cadet)": the replay casts that
+    mode and target), attackers by full name (tokens in the plan's words, the
+    replay names its tokens the same way: "Elemental token"). A turn
     that names no land plays one from hand when one is left (an omitted land
     drop is not a decision to skip it; at T only when the board math has a
     drop). Turns after T with no cast are left out, so they play greedily:
@@ -1039,9 +1001,11 @@ def _plan_eval_steps(
         if taken is not None:
             lands_left.remove(taken)
         casts = []
-        for name in _cast_names(raw.get("cast")):
-            card = hand_names.get(_plain(name)) or hand_names.get(_plain(name.split(",")[0]))
-            casts.append(str(card["name"]) if card else name)
+        for entry in _cast_entries(raw.get("cast")):
+            name, note, _cycle = _cast_parts(entry, lambda n: _named_card(n, hand_names))
+            card = _named_card(name, hand_names)
+            name = str(card["name"]) if card else name
+            casts.append(f"{name} ({note})" if note else name)
         if index > 0 and not casts and not (keep_land_turns and str(raw.get("land") or "").strip()):
             continue
         plain = _plain(raw.get("attack"))
@@ -1050,7 +1014,12 @@ def _plan_eval_steps(
         elif _ALL_ATTACK.search(plain):
             attack = "all"
         else:
-            attack = ", ".join(_named_creatures(str(raw.get("attack")), creatures)) or "none"
+            named = _named_creatures(str(raw.get("attack")), creatures)
+            if "token" in plain:
+                # Tokens the plan's casts make exist only in the replay ("attack with Elemental
+                # token, Elemental token" from CANDIDATE LINES): it matches them by name there.
+                named.append(str(raw.get("attack")))
+            attack = ", ".join(named) or "none"
         out.append({"label": LABELS[index], "land": land, "cast": casts, "attack": attack})
     return out
 
@@ -1085,10 +1054,10 @@ def _check_plan_line(plan: GamePlan, assessment: Any, state: dict, issues: list[
         from arenamcp.line_search_moves import ALIVE
 
         line = evaluation.line
-        skipped = _unchecked_plan(plan, line, result, state)
+        skipped = _unchecked_plan(plan, evaluation, result, state)
         if skipped:
-            # The replay would undervalue (or misread) the plan: no verdict either way.
-            issues.append(f"line check skipped: {skipped}")
+            # The replay would undervalue the plan: no verdict either way.
+            issues.append(f"line check skipped, the search can't value: {skipped}")
             return
         # The best line's value carries the race term on its leaf; so must the plan's.
         race = _leaf_race(result, line) if line.cls == ALIVE else None
@@ -1110,37 +1079,27 @@ def _check_plan_line(plan: GamePlan, assessment: Any, state: dict, issues: list[
         logger.debug("plan line check failed: %s", error, exc_info=True)
 
 
-def _unchecked_plan(plan: GamePlan, line: Any, result: Any, state: dict) -> str:
-    """Why the plan's replayed line can't be judged against the best line, or ''.
+def _unchecked_plan(plan: GamePlan, evaluation: Any, result: Any, state: dict) -> str:
+    """The planned casts the replay can't value, '; '-joined ('' when the line can be judged).
 
-    A planned cast whose effect the search does not model
-    (:func:`unmodelled_effect`: a token maker, an enters trigger, an aura...)
-    makes the plan's line look worse than it is; a cast note naming a mode
-    other than the one the replay chose ("X (choose: destroy …)" replayed as
-    gain 4 life) makes it look better.
+    The replay (``line_search.evaluate_plan``) casts each noted mode and
+    lists the casts whose effect, or noted mode, it does not model
+    (``PlanEvaluation.unmodelled``: "T: Elemental Surge (its tokens)",
+    "T: Archive Arbiter (choose: destroy …): mode not modelled"): the plan's
+    line looks worse than it is. A hand card it could not cast at all (an X
+    burn spell) is checked with :func:`unmodelled_effect` too.
     """
+    found = [str(entry) for entry in getattr(evaluation, "unmodelled", None) or []]
     hand = _card_names([c for c in state.get("hand") or [] if isinstance(c, dict)])
-    replayed = {step.label: dict(step.modes) for step in getattr(line, "steps", ()) or ()}
     for step in plan.turn_plan:
         for entry in step.get("cast") or []:
-            name, note, cycle = _cast_parts(str(entry), lambda n: _named_card(n, hand))
-            if cycle:
-                continue
-            card = _named_card(name, hand)
+            name, _note, cycle = _cast_parts(str(entry), lambda n: _named_card(n, hand))
+            card = None if cycle else _named_card(name, hand)
             why = unmodelled_effect(card, result) if card is not None else ""
-            if why:
-                return f"{step.get('label')} {card.get('name')} ({why} not modelled)"
-            chose = replayed.get(step.get("label"), {}).get(str((card or {}).get("name") or name))
-            for mode in _note_modes(note):
-                if chose and not _same_mode(mode, chose):
-                    return f"{step.get('label')} {entry}: the replay chose {chose}"
-    return ""
-
-
-def _same_mode(note: str, label: str) -> bool:
-    """A cast note's mode and a line's mode label ('destroy target noncreature, nonland…') agree."""
-    a, b = _plain(note), _plain(str(label).rstrip("…"))
-    return bool(a and b) and (a.startswith(b) or b.startswith(a))
+            text = f"{step.get('label')}: {card.get('name')} ({why})" if why else ""
+            if text and not any(item.startswith(text) for item in found):
+                found.append(text)
+    return "; ".join(found)
 
 
 def _t_step_override(
@@ -1325,7 +1284,12 @@ def _with_progress(step: dict, assessment: Any, state: dict | None) -> dict:
 
 
 def compose_strategy_block(
-    assessment: Any, plan: GamePlan | None, *, extra_facts: str = "", state: dict | None = None
+    assessment: Any,
+    plan: GamePlan | None,
+    *,
+    extra_facts: str = "",
+    state: dict | None = None,
+    with_lines: bool = True,
 ) -> str:
     """ROLE + this turn + facts (fresh) followed by the game plan's spine.
 
@@ -1335,6 +1299,8 @@ def compose_strategy_block(
     deployment suggestion; with ``state``, what this turn already did is marked
     ✓ (the land played, permanents cast). ``extra_facts`` (indented fact
     lines, e.g. OPP INTERACTION) go with the facts, before the priority line.
+    ``with_lines=False`` leaves out the search's '  LINES ...' line, for a
+    prompt that already shows it (a typed decision, above its options).
     """
     extra = extra_facts.rstrip()
     if assessment is None:
@@ -1356,7 +1322,9 @@ def compose_strategy_block(
                 f" [game plan (turn {plan.turn_formed}) said {plan.role.upper()}; "
                 "these board facts are newer — follow them]"
             )
-    block = assessment.prompt_block(this_turn=this_turn, next_turns=next_turns, role_note=role_note)
+    block = assessment.prompt_block(
+        this_turn=this_turn, next_turns=next_turns, role_note=role_note, with_lines=with_lines
+    )
     if extra:
         at = block.find("\n  Priority:")
         block = f"{block[:at]}\n{extra}{block[at:]}" if at >= 0 else f"{block}\n{extra}"
@@ -1365,8 +1333,12 @@ def compose_strategy_block(
     return block
 
 
-def grounded_facts_block(game_state: dict | None) -> str:
-    """Fresh board facts (no game plan) for prompts without a plan manager."""
+def grounded_facts_block(game_state: dict | None, *, with_lines: bool = True) -> str:
+    """Fresh board facts (no game plan) for prompts without a plan manager.
+
+    ``with_lines=False``: without the search's '  LINES ...' line (see
+    :func:`compose_strategy_block`).
+    """
     try:
         from arenamcp.board_assessment import assess
 
@@ -1374,7 +1346,7 @@ def grounded_facts_block(game_state: dict | None) -> str:
     except Exception as error:  # never break a prompt on the strategic layer
         logger.debug("board assessment unavailable: %s", error)
         return ""
-    return assessment.prompt_block() if assessment else ""
+    return assessment.prompt_block(with_lines=with_lines) if assessment else ""
 
 
 # --- opponent interaction (opponent_tricks, advisory) -------------------------------------
@@ -1737,11 +1709,13 @@ class GamePlanManager:
         plan = self._plan
         return plan.as_coach_intro() if plan else ""
 
-    def strategy_block(self, game_state: dict[str, Any] | None) -> str:
+    def strategy_block(self, game_state: dict[str, Any] | None, *, with_lines: bool = True) -> str:
         """Fresh ROLE + this turn + facts for ``game_state``, then the plan spine.
 
         Adds the opponent's instant-speed interaction verdict (no card names)
-        when the match's trick table is loaded.
+        when the match's trick table is loaded. ``with_lines=False`` leaves out
+        the search's LINES line (the typed decision prompt shows it above its
+        options; the coach prompt keeps it).
         """
         from arenamcp.board_assessment import assess
 
@@ -1751,7 +1725,7 @@ class GamePlanManager:
         risk = opponent_interaction(state, self._tricks()) if state is not None else None
         verdict = risk.verdict_line() if risk is not None and risk.known else ""
         extra = f"  OPP INTERACTION: {verdict}" if verdict else ""
-        return compose_strategy_block(assessment, plan, extra_facts=extra, state=state)
+        return compose_strategy_block(assessment, plan, extra_facts=extra, state=state, with_lines=with_lines)
 
     def ui_payload(self, game_state: dict[str, Any] | None = None) -> dict[str, Any]:
         """Plan payload for the desktop plan card, with current board facts.

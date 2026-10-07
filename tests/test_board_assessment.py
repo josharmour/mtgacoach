@@ -199,9 +199,20 @@ def test_a_lethal_line_next_turn_is_flagged_and_drives_the_role():
     assert a.lookahead[1].attack and "attack with" in a.suggestion(1)
 
 
+def _fastest_ms(state, times: int = 3) -> float:
+    """The fastest of ``times`` cold assessments in CPU ms (``strategic_states.cpu_ms``)."""
+    from tests.strategic_states import cpu_ms
+
+    def run() -> None:
+        ba._CACHE.clear()
+        assert assess(deepcopy(state)) is not None
+
+    return cpu_ms(run, times)
+
+
 def test_assessment_is_fast_on_real_and_crowded_boards():
     for state in (G1_T8, G1_T10, G1_T12, G1_T14, G1_T15_FROM_OPPONENT):
-        assert _fresh(state).elapsed_ms < 50
+        assert _fastest_ms(state) < 50
     crowded = deepcopy(G1_T14)
     for index in range(7):
         crowded["battlefield"].append(
@@ -210,9 +221,7 @@ def test_assessment_is_fast_on_real_and_crowded_boards():
         crowded["battlefield"].append(
             card(950 + index, "Theorix Metamage", 1, is_tapped=False, turn_entered_battlefield=13)
         )
-    started = time.perf_counter()
-    assert _fresh(crowded) is not None
-    assert (time.perf_counter() - started) * 1000 < 250
+    assert _fastest_ms(crowded) < 250
 
 
 def test_unknown_power_and_seats_stay_unknown():
@@ -605,14 +614,31 @@ SEARCH_FALLBACKS = {
 RESULT_KEPT = ("truncated", "broken-result")  # the search ran: kept for its stats only
 
 
+# Our own modal choice waits on the stack in these rows (G1 T14 decision 18).
+PENDING = {
+    "G1_T14_ON_STACK": "Archive Arbiter (choose one)",
+    "G1_T14_MODE_STATE": "Archive Arbiter trigger (choose one)",
+}
+
+
 @pytest.mark.parametrize("mode", list(SEARCH_FALLBACKS))
 @pytest.mark.parametrize("name", list(BASELINE))
 def test_fixture_facts_match_the_log_named_baseline(name, mode, monkeypatch):
     # The greedy pipeline these rows record: the kill switch, a failing search
     # and a truncated one all keep it (a dead-now search has no T step to cut).
+    # One exception: the pending-choice check reads only the stack, so with the
+    # search switched on it qualifies the facts even when the search failed or
+    # was cut short (review 2026-10-07: a truncated search brought back ALL-IN
+    # next to our pending gain-4-life mode).
     SEARCH_FALLBACKS[mode](monkeypatch)
     role, lethal_now, all_in, dead_in, now_life, flags, lookahead = BASELINE[name]
+    note = f" — before our pending {PENDING.get(name)} resolves"
+    if name in PENDING and mode != "switched-off":
+        flags = [flag + note if flag == DEAD_NEXT else flag for flag in flags if flag != ALL_IN]
+        role, all_in = ROLE_CONTROL, False
     a = _fresh(ALL_NAMED[name])
+    if name in PENDING:
+        assert a.role_reason.endswith(note) == (mode != "switched-off")
     assert (a.role, a.lethal_now, a.all_in, a.dead_in, a.our_life_now_attack) == (
         role,
         lethal_now,
@@ -982,3 +1008,318 @@ def test_bridge_and_log_phase_names_share_one_cache_entry():
     first = assess(deepcopy(log_phase(G1_T12)))
     assert ba._signature(mac_phase(G1_T12)) == ba._signature(log_phase(G1_T12))
     assert assess(deepcopy(mac_phase(G1_T12))) is first
+
+
+# --- casts the search can't value and our own pending choice (review 2026-10-07) ----------------
+
+
+def _with_hand(source: dict, *cards: tuple[int, str]) -> dict:
+    state = deepcopy(source)
+    local = state["local_seat_id"]
+    state["hand"] += [card(iid, name, local) for iid, name in cards]
+    return state
+
+
+def test_a_haste_token_maker_is_the_lethal_line_not_grizzly_bears():
+    from tests.strategic_states import HASTE_TOKENS_LETHAL
+
+    # The search used to give the token maker no body: role CONTROL, "only line: Grizzly Bears".
+    a = _fresh(HASTE_TOKENS_LETHAL)
+    assert a.role == ROLE_AGGRESSOR and a.role_reason.startswith("best line kills on T10: Elemental Uprising")
+    assert any(flag.startswith("LETHAL LINE: Elemental Uprising") for flag in a.flags)
+    assert not any(flag.startswith("ONLY") for flag in a.flags) and "only line" not in a.role_reason
+    assert a.posture == "lethal" and not a.all_in
+
+
+def test_tokens_the_search_cannot_read_make_no_only_line_claim():
+    from tests.strategic_states import HASTE_TOKENS_UNREAD
+
+    # The same lethal tokens, exiled at end of turn: still unmodelled, so Grizzly Bears is the
+    # best line the search can see, never the only one.
+    a = _fresh(HASTE_TOKENS_UNREAD)
+    assert not any(flag.startswith(("ONLY", "LETHAL LINE")) for flag in a.flags)
+    (flag,) = [flag for flag in a.flags if flag.startswith("BEST MODELLED LINE")]
+    assert flag.startswith("BEST MODELLED LINE THROUGH THEIR NEXT ATTACK (not modelled: Elemental Surge): ")
+    assert "only line" not in a.role_reason
+    assert (
+        "best modelled line: Grizzly Bears" in a.role_reason
+        and "(not modelled: Elemental Surge)" in a.role_reason
+    )
+    dead = [flag for flag in a.flags if flag.startswith("DEAD IN 2")]
+    assert dead and dead[0].endswith("(not modelled: Elemental Surge)")
+
+
+def test_an_enters_trigger_that_removes_their_flier_is_the_line():
+    from tests.strategic_states import ENTERS_REMOVAL
+
+    a = _fresh(ENTERS_REMOVAL)
+    assert a.lookahead[0].casts == ["Chupacabra"] and a.dead_in is None
+    assert a.lines[0].steps[0].targets == (("Chupacabra", "Sky Knight"),)
+
+
+def test_an_unmodelled_castable_card_turns_greedy_dies_into_a_best_modelled_line():
+    # G1 T12 after the rock: the greedy line dies and Arbiter's gain-4 line survives. A
+    # castable Pacifism could also save us: no "only"/"surviving" claim, no forced CONTROL.
+    plain = _fresh(G1_T12_AFTER_VOLUME)
+    assert plain.role == ROLE_CONTROL and plain.role_reason.startswith("the greedy line dies")
+    a = _fresh(_with_hand(G1_T12_AFTER_VOLUME, (990, "Pacifism")))
+    (flag,) = [flag for flag in a.flags if flag.startswith("GREEDY LINE DIES")]
+    assert flag.startswith("GREEDY LINE DIES; BEST MODELLED LINE (not modelled: Pacifism): ")
+    assert "the greedy line dies" not in a.role_reason and a.role != ROLE_CONTROL
+
+
+def test_an_unmodelled_castable_card_qualifies_the_only_surviving_line():
+    state = _with_hand(G1_T14, (990, "Pacifism"))
+    state["battlefield"].append(card(991, "Cadet", 1, is_tapped=False, turn_entered_battlefield=10))
+    a = _fresh(state)
+    assert a.line_search.only_survivor
+    assert not any(flag.startswith("ONLY") for flag in a.flags)
+    (flag,) = [flag for flag in a.flags if flag.startswith("BEST MODELLED LINE")]
+    assert flag.startswith("BEST MODELLED LINE (the other modelled lines die; not modelled: Pacifism): ")
+    assert "gain 4 life" in flag and "only line" not in a.role_reason
+
+
+def test_a_lethal_line_stays_lethal_and_names_what_it_cannot_value():
+    state = _with_hand(G1_T15_FROM_OPPONENT, (990, "Seismic Jolt"))
+    state["turn"].update(phase="Phase_Main2", step="")
+    a = _fresh(state)
+    (flag,) = [flag for flag in a.flags if flag.startswith("LETHAL LINE: ")]
+    assert flag.endswith("lethal on T17 (not modelled: Seismic Jolt)")
+    # A win found without the trick stands: the role is still the line's.
+    assert a.role == ROLE_AGGRESSOR and a.role_reason.startswith("best line kills on T17")
+
+
+def test_the_unmodelled_checks_need_the_search(monkeypatch):
+    from tests.strategic_states import HASTE_TOKENS_UNREAD
+
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")
+    a = _fresh(HASTE_TOKENS_UNREAD)
+    assert not any("not modelled" in flag for flag in a.flags) and "not modelled" not in a.role_reason
+
+
+@pytest.mark.parametrize(
+    ("name", "pending"),
+    [
+        ("G1_T14_MODE_STATE", "Archive Arbiter trigger (choose one)"),
+        ("G1_T14_ON_STACK", "Archive Arbiter (choose one)"),
+    ],
+)
+def test_our_pending_modal_choice_qualifies_the_dead_facts_and_rules_out_all_in(name, pending):
+    # G1 T14 decision 18: the strategy block said ALL-IN (no defensive line survives) while
+    # Archive Arbiter's trigger waited for its mode; gaining 4 survives their T15 attack.
+    a = _fresh(ALL_NAMED[name])
+    note = f" — before our pending {pending} resolves"
+    assert not a.all_in and not any(flag.startswith("ALL-IN") for flag in a.flags)
+    assert f"DEAD NEXT ATTACK even after our best castable plays{note}" in a.flags
+    assert a.role == ROLE_CONTROL and a.role_reason.endswith(note)
+    assert "all-in" not in a.role_reason
+
+
+def test_only_our_own_stack_objects_are_pending():
+    from tests.strategic_states import SLOW_202111
+
+    from arenamcp.board_model import build_board_model
+
+    state = deepcopy(SLOW_202111)  # the opponent's +1/+1 counter trigger is on the stack
+    assert ba._our_pending(state, build_board_model(state)) == []
+    removal = deepcopy(G1_T14)
+    removal["stack"] = [card(500, "Unsummon", 1), card(501, "Unsummon", 2)]
+    assert ba._our_pending(removal, build_board_model(removal)) == ["Unsummon"]
+    draw = deepcopy(G1_T14)
+    draw["stack"] = [card(500, "Twinned Vision", 1)]
+    assert ba._our_pending(draw, build_board_model(draw)) == []
+
+
+def test_the_pending_choice_check_follows_the_kill_switch(monkeypatch):
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")
+    a = _fresh(G1_T14_MODE_STATE)
+    assert a.all_in and ALL_IN in a.flags  # today's greedy facts, as recorded
+
+
+def test_the_prompt_block_can_leave_the_lines_to_the_decision_prompt():
+    # A typed decision shows the LINES line above its options; the strategy block need not repeat it.
+    a = _fresh(G1_T12)
+    full, short = a.prompt_block(), a.prompt_block(with_lines=False)
+    assert "\n  LINES (" in full and "LINES (" not in short
+    assert short == "\n".join(line for line in full.splitlines() if not line.startswith("  LINES ("))
+    assert "CANDIDATE LINES" in a.planning_block()
+
+
+# --- second review 2026-10-07 --------------------------------------------------------------------
+
+
+def _land_board(**kwargs):
+    from tests.strategic_states import land_board
+
+    return land_board(**kwargs)
+
+
+def test_a_conditional_enters_trigger_makes_no_lethal_or_only_line_claim():
+    # Vraska destroys only with six or more lands; at four the search called its line LETHAL on
+    # T10 (a) and the ONLY SURVIVING LINE at 4 life (b).
+    lands = ["Swamp", "Swamp", "Forest", "Forest"]
+    hand = [(501, "Vraska, the Cutting Glare")]
+    a = _fresh(
+        _land_board(life=20, their_life=6, lands=lands, theirs=[(410, "Sky Knight", 2, False, 5)], hand=hand,
+                    ours=[(420, "Hill Giant", 1, False, 3), (421, "Hill Giant", 1, False, 3)])
+    )  # fmt: skip
+    assert not any("Sky Knight" in flag or "lethal on T10" in flag for flag in a.flags)
+    assert a.posture != "lethal" and "on Sky Knight" not in a.role_reason
+    b = _fresh(
+        _land_board(life=4, their_life=20, lands=lands, hand=hand,
+                    theirs=[(410, "Sky Knight", 2, False, 5), (413, "Gray Ogre", 2, False, 7)])
+    )  # fmt: skip
+    assert not any(flag.startswith(("ONLY", "BEST MODELLED", "their board kills us")) for flag in b.flags)
+    assert (
+        "DEAD NEXT ATTACK even after our best modelled plays (not modelled: Vraska, the Cutting Glare)"
+        in b.flags
+    )
+    assert "only line" not in b.role_reason
+
+
+@pytest.mark.parametrize("name", ["Greenhouse Propagator", "Corpse Knight"])
+def test_a_trigger_on_another_creature_entering_makes_no_claim(name):
+    # Greenhouse Propagator: "ONLY LINE THAT SURVIVES THEIR NEXT ATTACK" on a phantom +1 life.
+    # Corpse Knight from one life: "LETHAL LINE ... lethal on T10" and posture lethal.
+    if name == "Corpse Knight":
+        a = _fresh(
+            _land_board(life=20, their_life=1, lands=["Plains", "Swamp"], theirs=[], hand=[(501, name)])
+        )
+        assert not any(flag.startswith("LETHAL LINE") and "T10" in flag for flag in a.flags)
+        # Its 2/2 body attacks an empty board next turn: that is the line, and it is right.
+        assert a.posture != "lethal" and a.role_reason.startswith("best line kills on T12")
+        return
+    a = _fresh(
+        _land_board(life=4, their_life=20, lands=["Forest"] * 3, theirs=[(410, "Sky Knight", 2, False, 5)],
+                    hand=[(501, name)])
+    )  # fmt: skip
+    assert not any(flag.startswith(("ONLY", "BEST MODELLED")) for flag in a.flags)
+    assert (
+        a.dead_in == 1
+        and f"DEAD NEXT ATTACK even after our best modelled plays (not modelled: {name})" in a.flags
+    )
+    assert "only line" not in a.role_reason
+
+
+def test_an_instant_fog_in_hand_or_on_our_stack_rules_out_all_in():
+    # BUG_180436 (their T22, 3 life, four untapped U/B lands): a castable fog could be the
+    # defensive line. ALL-IN said "whatever we do" next to "not modelled: Fog Wall".
+    plain = _fresh(BUG_180436)
+    assert plain.all_in and ALL_IN in plain.flags
+    held = deepcopy(BUG_180436)
+    held["hand"].append(card(990, "Fog Wall", 1))
+    a = _fresh(held)
+    assert not a.all_in and ALL_IN not in a.flags and a.role == ROLE_CONTROL
+    assert "DEAD NEXT ATTACK even after our best modelled plays (not modelled: Fog Wall)" in a.flags
+    cast_ = deepcopy(BUG_180436)
+    cast_["stack"] = [card(990, "Fog Wall", 1)]
+    from arenamcp.board_model import build_board_model
+
+    assert ba._our_pending(cast_, build_board_model(cast_)) == ["Fog Wall"]
+    b = _fresh(cast_)
+    assert not b.all_in and b.role_reason.endswith(" — before our pending Fog Wall resolves")
+
+
+def test_a_sorcery_speed_card_does_not_qualify_their_attack_now():
+    # Their T22 Main1: an aura can't be cast before the attack that kills us.
+    source = deepcopy(BUG_180436)
+    source["hand"].append(card(990, "Arrest U", 1))
+    a = _fresh(source)
+    assert DEAD_NEXT in a.flags and a.all_in and ALL_IN in a.flags
+    assert a.unmodelled == ["Arrest U"]  # castable on our T23: it still qualifies line claims
+
+
+def test_a_card_flow_modal_on_our_stack_is_not_pending():
+    source = deepcopy(BUG_180436)
+    source["stack"] = [card(990, "Flow Charm", 1)]
+    from arenamcp.board_model import build_board_model
+
+    assert ba._our_pending(source, build_board_model(source)) == []
+    a = _fresh(source)
+    assert a.all_in and ALL_IN in a.flags and a.pending == []
+
+
+@pytest.mark.parametrize("name", ["Stroke U", "Mind Twist"])
+def test_an_x_card_flow_spell_qualifies_nothing(name):
+    t14 = _fresh(_with_hand(G1_T14, (990, name)))
+    assert any(flag.startswith("ONLY LINE THAT SURVIVES THEIR NEXT ATTACK: ") for flag in t14.flags)
+    assert "only line:" in t14.role_reason and t14.unmodelled == []
+    t12 = _fresh(_with_hand(G1_T12_AFTER_VOLUME, (990, name)))
+    assert t12.role == ROLE_CONTROL and t12.role_reason.startswith("the greedy line dies")
+    assert any(flag.startswith("GREEDY LINE DIES; BEST SURVIVING LINE") for flag in t12.flags)
+
+
+def test_an_x_burn_spell_still_qualifies_the_claims():
+    from tests.strategic_states import mountain_board
+
+    source = mountain_board(
+        life=3, their_life=20, mountains=4, theirs=[(410, "Hill Giant", 2, False, 5)],
+        hand=[(501, "Volcanic Spray"), (502, "Grizzly Bears")],
+    )  # fmt: skip
+    a = _fresh(source)
+    assert a.unmodelled == ["Volcanic Spray"]
+    assert not any(flag.startswith("ONLY") for flag in a.flags)
+
+
+def test_a_pump_with_nothing_to_pump_qualifies_nothing():
+    # G1 T12 after the rock plus Seismic Jolt (+3/+0) and no creature of ours: the search
+    # used to cast it ("Island + Seismic Jolt; then ...") and the caveat flipped CONTROL to DEFENDER.
+    a = _fresh(_with_hand(G1_T12_AFTER_VOLUME, (990, "Seismic Jolt")))
+    assert a.unmodelled == [] and a.role == ROLE_CONTROL
+    (flag,) = [flag for flag in a.flags if flag.startswith("GREEDY LINE DIES")]
+    assert flag.startswith(
+        "GREEDY LINE DIES; BEST SURVIVING LINE: Island; then Archive Arbiter (gain 4 life)"
+    )
+    assert all("Seismic Jolt" not in row.casts for row in a.lookahead)
+
+
+def test_a_surviving_searched_line_rules_out_all_in(monkeypatch):
+    # bug_20260928_212848 with Hushbringer's static removed: the search is not exact, the
+    # greedy line dies to their next attack, but the search's line wins (Vaultborn Tyrant's
+    # life gain). ALL-IN ("whatever we do") sat next to that lethal line.
+    from tests.strategic_states import BUG_212848
+
+    source = deepcopy(BUG_212848)
+    for entry in source["battlefield"]:
+        if entry["name"] == "Hushbringer":
+            entry["oracle_text"] = "Flying\nLifelink"
+    monkeypatch.setattr(ba, "_unmodelled_castable", lambda *_args: ([], []))  # nothing else in the way
+    a = _fresh(source)
+    assert not a.line_search.exact_first_attack and a.dead_in_greedy == 1 and a.dead_in is None
+    assert not a.all_in and ALL_IN not in a.flags
+    assert a.role == ROLE_AGGRESSOR and a.role_reason.startswith("best line kills on T22")
+
+
+def test_the_recorded_212848_board_is_dead_without_contradictions():
+    from tests.strategic_states import BUG_212848
+
+    a = _fresh(BUG_212848)  # Hushbringer: Vaultborn Tyrant's life gain never happens
+    assert a.dead_in == 1 and not any("stabilize" in flag or "survives" in flag for flag in a.flags)
+    assert "DEAD NEXT ATTACK even after our best modelled plays (not modelled: Vaultborn Tyrant)" in a.flags
+    assert all("survives" not in line.summary() for line in a.lines)
+
+
+def test_the_prompts_mark_unmodelled_casts_and_the_pending_choice():
+    lands = ["Swamp", "Swamp", "Forest", "Forest"]
+    a = _fresh(
+        _land_board(life=20, their_life=6, lands=lands, theirs=[(410, "Sky Knight", 2, False, 5)],
+                    hand=[(501, "Vraska, the Cutting Glare")],
+                    ours=[(420, "Hill Giant", 1, False, 3), (421, "Hill Giant", 1, False, 3)])
+    )  # fmt: skip
+    block, plan = a.prompt_block(), a.planning_block()
+    lines = next(line for line in block.splitlines() if line.startswith("  LINES ("))
+    assert "(Vraska, the Cutting Glare not modelled)" in lines
+    this_turn = next(line for line in block.splitlines() if line.startswith("  THIS TURN"))
+    assert this_turn.endswith(" (best modelled)")
+    assert "T10: Vraska, the Cutting Glare (not modelled)" in plan
+    pending = _fresh(G1_T14_MODE_STATE)
+    lines = next(line for line in pending.prompt_block().splitlines() if line.startswith("  LINES ("))
+    assert lines.endswith(" — before our pending Archive Arbiter trigger (choose one) resolves")
+    assert (
+        "(These lines read the board before our pending Archive Arbiter trigger (choose one) resolves.)"
+        in (pending.planning_block())
+    )
+    # No caveat, no marks.
+    clean = _fresh(G1_T12)
+    assert "not modelled)" not in clean.prompt_block().split("their new cards/tricks not modelled)")[-1]
+    assert "(best modelled)" not in clean.prompt_block()

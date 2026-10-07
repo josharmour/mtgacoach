@@ -8,11 +8,23 @@ opponent, landcycling for its basic type) and an attack (none / all / the ones
 that survive their best blocks / the evasive ones). A cast pays its additional
 mana cost and the life it costs; a set that would kill us is never cast, nor is
 a spell whose "can't cast unless" condition is unmet. Their turn: everything
-untaps, our held instants answer (a flash creature blocks only while blocks
-are still to come), and the opponent attacks with the policy worst for us
-(``ParanoidOpponent``). Mana, colours, summoning sickness and tapped creatures
-follow the rules the board assessment uses; all combat is
+untaps, our held instants answer (a flash creature or token maker blocks only
+while blocks are still to come), and the opponent attacks with the policy worst
+for us (``ParanoidOpponent``). Mana, colours, summoning sickness and tapped
+creatures follow the rules the board assessment uses; all combat is
 ``board_assessment._combat``. Pure: no I/O, no LLM, nothing logged.
+
+What a cast does: a creature's body; creature tokens a spell (or a mode, or a
+permanent's enters trigger) makes when their count, power/toughness and
+keywords are printed ("Create two 3/1 red Elemental creature tokens with
+haste."); removal, bounce, life gain, damage to the opponent, and a mana rock,
+from the spell's text or a permanent's own enters trigger (not a fight; not
+one with a condition or a reflexive "when you do", ``applied_text``; not a
+trigger on another permanent entering; nothing under Hushbringer).
+``unmodelled_effect`` names what a card does beyond that (an aura, a pump, a
+copy token, an attack trigger, an X spell, ...): a line is no evidence about
+such a cast, and a cast that does nothing else the search values is never
+made in a line.
 """
 
 from __future__ import annotations
@@ -29,7 +41,10 @@ from arenamcp.board_assessment import (
     _LIFEGAIN,
     _MAX_BLOCK_OPTIONS,
     _MAX_SPELLS_PER_TURN,
+    _OR_ANOTHER,
+    _QUOTED,
     _body,
+    _cast_text,
     _combat,
     _enters_tapped,
     _flying,
@@ -41,9 +56,13 @@ from arenamcp.board_assessment import (
     _Spell,
     _spell_value,
     _text,
+    _types,
+    card_role,
     extra_life_cost,
     face_damage,
+    harms_players,
     life_loss,
+    own_subject,
     removal_reach,
     ward_cost,
 )
@@ -70,6 +89,70 @@ _CYCLE_FETCH = {
 }  # fmt: skip
 # Blocks are declared before we get priority in these steps: a flash creature cast now can't block.
 _BLOCKS_LOCKED = ("Step_DeclareBlock", "Step_FirstStrikeDamage")
+# Creature tokens with a printed count and power/toughness: "create two 3/1 red elemental
+# creature tokens with haste", "create a 2/2 colorless wizard soldier creature token named cadet".
+_TOKEN = re.compile(
+    r"\bcreate (?P<n>a|an|one|two|three|four|five|six|\d+) (?P<p>\d+)/(?P<t>\d+) (?P<desc>[a-z ,'-]*?)"
+    r"\bcreature tokens?\b(?P<rest>[^.\n]*)"
+)
+_COUNT_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
+# A "create ..." clause that makes creatures (as opposed to Food, Treasure or Clue tokens).
+_CREATES_CREATURES = re.compile(
+    r"\bcreature tokens?\b|\bcop(?:y|ies)\b|\btokens? that's\b|\btokens? that are\b"
+)
+# Token clauses read as unknown: a variable count, copies, tokens that enter attacking.
+_TOKEN_UNREAD = re.compile(r"\b(?:for each|equal to|where x|tapped|attacking|blocking|cop(?:y|ies))\b")
+_TOKEN_CONDITION = re.compile(r"\b(?:if|unless|for each|otherwise|instead)\b")
+_TOKEN_TEMPORARY = re.compile(
+    r"\b(?:exile|sacrifice) (?:it|them|that token|those tokens)\b[^.]*\bnext end step\b"
+)
+_TOKEN_HASTE_NOW = re.compile(r"\b(?:they|it|those tokens|that token) gains? haste\b")
+_TOKEN_KEYWORDS = (
+    "flying", "haste", "vigilance", "lifelink", "deathtouch", "menace", "reach", "trample",
+    "first strike", "double strike", "defender", "indestructible",
+)  # fmt: skip
+_TOKEN_DESC_SKIP = frozenset(
+    {"white", "blue", "black", "red", "green", "colorless", "artifact", "enchantment", "legendary", "snow", "and"}
+)  # fmt: skip
+# Token instance ids: past any real instance id, one per token body a search creates.
+_TOKEN_IDS = 900_000_000
+# A permanent's triggered ability: "when(ever) <subject> <event> <rest of the trigger>, <effect>"
+# (the effect runs to the end of its line, so a reflexive "When you do, ..." stays with it).
+_CREATURE_TRIGGER = re.compile(
+    r"\bwhen(?:ever)?\b(?P<subject>[^.,]*?)\b(?P<event>enters|attacks|dies|cast this spell)\b(?P<rest>[^.,]*),"
+    r"\s*(?P<effect>[^\n]*)"
+)
+# An effect that applies only sometimes: an intervening or later 'if' ("if you control six or
+# more lands", "if it was kicked", "if you do"), a reflexive "when you do" or any later sentence
+# that is itself a trigger, a variable amount.
+_EFFECT_CONDITION = re.compile(
+    r"\b(?:if|unless|otherwise|instead|for each|equal to|where x|as long as)\b"
+    r"|\bwhen(?:ever)? you do\b|(?:^|[.;]\s*)when(?:ever)?\b"
+)
+# A sentence that only moves cards (no board or life change within the search's horizon).
+_CARD_FLOW = re.compile(
+    r"^(?:then |you may |(?:target|each|that) (?:player|opponent)s? (?:may )?)?"
+    r"(?:draws?|scry|scries|surveils?|looks? at|mills?|discards?|investigates?|connives?|reveals?|shuffles?)\b"
+)
+# Effects whose triggers creatures entering don't cause (Hushbringer, Torpor Orb): a creature's
+# enters trigger then does nothing.
+_NO_ENTERS_TRIGGERS = re.compile(
+    r"\bcreatures entering(?: the battlefield)?(?: or dying)? don't cause abilities\b"
+)
+
+
+def card_flow(text: str) -> bool:
+    """Every sentence of ``text`` (lower case; a trigger's head is skipped) only moves cards:
+    draw, scry, surveil, mill, discard, reveal, look at..."""
+    sentences: list[str] = []
+    for line in str(text or "").splitlines():
+        line = re.sub(r"^\s*(?:•\s*)?(?:when(?:ever)?\b[^,]*,\s*)?", "", line.strip())
+        if re.match(r"choose (?:one|two|one or more|any number)\b", line):
+            continue  # a modal header: its bullets follow
+        sentences += [s.strip(" ,") for s in re.split(r"[.;]\s*", line) if s.strip(" ,")]
+    return bool(sentences) and all(_CARD_FLOW.match(s) for s in sentences)
+
+
 # The soft limit is a work budget, not a clock, so the same board always gets the same
 # lines. Work is counted in roughly 10-microsecond units (M-series Mac, 2026-10-07): a
 # node expansion 6, a combat solve 2 + its attackers and able blockers (the solver is
@@ -174,6 +257,7 @@ class Variant:
     face: int = 0  # damage to the opponent (or life they lose) when it resolves
     aim: str = ""  # "opponent": the face-damage variant of an 'any target' spell
     fetch: str = ""  # landcycling: the basic's colour ("" = we choose the most needed one)
+    tokens: tuple = ()  # creature token bodies it makes (each with its own id)
 
 
 @dataclass(eq=False)
@@ -282,14 +366,223 @@ def bullets(text: str) -> list[str]:
 
 
 def classify(name: str, bullet: str) -> tuple[str, int, dict | None, bool]:
-    """(kind, life gained, removal 'card' for _kills, bounce) of one mode; kind 'other' is worth 0."""
+    """(kind, life gained, removal 'card' for _kills, bounce) of one mode; kind 'other' is worth 0.
+
+    Kinds: removal, bounce, lifegain, tokens (creature tokens ``token_specs``
+    reads) and other.
+    """
     pseudo = {"name": name, "oracle_text": bullet, "type_line": ""}
     match = _LIFEGAIN.search(_text(pseudo))
     gain = int(match.group(1)) if match else 0
     reach = removal_reach(pseudo)
     if reach is not None:
         return ("bounce" if reach[0] == "bounce" else "removal"), gain, pseudo, reach[0] == "bounce"
-    return ("lifegain" if gain else "other"), gain, None, False
+    if gain:
+        return "lifegain", gain, None, False
+    return ("tokens" if token_specs(_cast_text(pseudo)) else "other"), 0, None, False
+
+
+def token_specs(text: str) -> list[tuple[int, int, int, tuple[str, ...], str]] | None:
+    """The creature tokens ``text`` (lower-case cast text) makes: [(count, power, toughness, keywords, name)].
+
+    [] when it makes none; None when it makes creature tokens that can't be
+    read: a variable count ("for each", "equal to", X), copies, tokens that
+    enter tapped or attacking, a condition ("if", "unless", "instead") before
+    the "create", or tokens exiled or sacrificed at the next end step.
+    "They gain haste until end of turn" after it gives them haste.
+    """
+    specs: list[tuple[int, int, int, tuple[str, ...], str]] = []
+    for line in (text or "").splitlines():
+        for create in re.finditer(r"\bcreate\b", line):
+            start = line.rfind(".", 0, create.start()) + 1
+            end = line.find(".", create.end())
+            clause = line[create.start() : end if end >= 0 else len(line)]
+            if not re.search(r"\btokens?\b", clause) or not _CREATES_CREATURES.search(clause):
+                continue  # Food, Treasure, Clue...: no creature
+            prefix = re.sub(r"^\s*[•]?\s*(?:when(?:ever)?\b[^,]*,\s*)?", "", line[start : create.start()])
+            match = _TOKEN.match(line, create.start())
+            after = line[end:] if end >= 0 else ""
+            if (
+                match is None
+                or _TOKEN_CONDITION.search(prefix)
+                or _TOKEN_UNREAD.search(match.group("rest"))
+                or _TOKEN_TEMPORARY.search(after)
+            ):
+                return None
+            count = _COUNT_WORDS.get(match.group("n")) or _int(match.group("n")) or 0
+            if not 0 < count <= 10:
+                return None
+            rest = match.group("rest")
+            named = re.search(r"\bnamed ([a-z' -]+?)(?:\s+with\b|,|$)", rest)
+            granted = re.search(r"\bwith (.+)$", rest)
+            keywords = {k for k in _TOKEN_KEYWORDS if granted and re.search(rf"\b{k}\b", granted.group(1))}
+            following = after.split(".")[1] if "." in after else ""
+            if _TOKEN_HASTE_NOW.search(following):
+                keywords.add("haste")
+            if named:
+                name = named.group(1).strip().title()
+            else:
+                words = [
+                    w for w in re.split(r"[\s,]+", match.group("desc")) if w and w not in _TOKEN_DESC_SKIP
+                ]
+                name = (" ".join(words).title() or "Creature") + " token"
+            specs.append((count, int(match.group("p")), int(match.group("t")), tuple(sorted(keywords)), name))
+    return specs
+
+
+def make_tokens(specs, turn: int, rules, first_id: int) -> tuple[dict, ...]:
+    """Solver bodies for ``token_specs`` output, ids ``first_id``, ``first_id + 1``, ..."""
+    bodies = []
+    for count, power, toughness, keywords, name in specs or ():
+        for _ in range(count):
+            card = {
+                "instance_id": first_id + len(bodies), "name": name, "power": power, "toughness": toughness,
+                "keywords": list(keywords), "oracle_text": "\n".join(k.capitalize() for k in keywords),
+                "type_line": "Token Creature", "card_types": ["CardType_Creature"], "object_kind": "TOKEN",
+            }  # fmt: skip
+            body = _body(card, turn, rules)
+            if body is not None:
+                bodies.append(body)
+    return tuple(bodies)
+
+
+def _etb_modelled(name: str, effect: str) -> bool:
+    """A creature's enters effect the search applies: tokens it reads, removal (not a fight),
+    life gain or damage to the opponent."""
+    pseudo = {"name": name, "oracle_text": effect, "type_line": ""}
+    reach = removal_reach(pseudo)
+    return bool(
+        token_specs(_cast_text(pseudo))
+        or (reach is not None and reach[0] != "fight")
+        or _LIFEGAIN.search(_text(pseudo))
+        or any(face_damage(pseudo))
+    )
+
+
+def _is_permanent(card: dict) -> bool:
+    types = _types(card)
+    return bool(types.strip()) and not re.search(r"\b(?:instant|sorcery)\b", types)
+
+
+def applied_text(card: dict, *, enters_triggers: bool = True) -> str:
+    """The part of ``_cast_text(card)`` the search applies when ``card`` is cast.
+
+    A permanent's own enters trigger counts only without a condition
+    (``_EFFECT_CONDITION``: "if you control six or more lands", "if it was
+    kicked", a reflexive "you may discard a card. When you do, ...", a
+    variable amount), and only with ``enters_triggers`` (no creature's enters
+    trigger fires under Hushbringer); a trigger left out takes its modes with
+    it. A spell's text, and text without types, is used whole.
+    """
+    text = _cast_text(card)
+    if not _is_permanent(card):
+        return text
+    kept: list[str] = []
+    skip = False
+    for line in text.splitlines():
+        if line.startswith("•"):
+            if not skip:
+                kept.append(line)
+            continue
+        trigger = _CREATURE_TRIGGER.match(line)
+        skip = trigger is not None and (
+            not enters_triggers or bool(_EFFECT_CONDITION.search(trigger["effect"]))
+        )
+        if not skip:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def _trigger_unmodelled(card: dict, name: str) -> bool:
+    """A permanent's triggered ability does something the search can't see.
+
+    Card flow aside, only the card's own enters trigger ("When this creature
+    enters, ...", ``own_subject``) with an effect the search applies and no
+    condition (``applied_text``) is modelled. An attack, dies or cast
+    trigger, a trigger on another permanent entering ("Whenever another
+    creature you control enters"), one that also fires for others ("this
+    creature or another creature ... enters") or on another event ("enters or
+    attacks") is not.
+    """
+    text = _QUOTED.sub("", _text(card))
+    for match in _CREATURE_TRIGGER.finditer(text):
+        effect = match.group("effect").strip()
+        if card_flow(effect):
+            continue
+        subject, rest = match.group("subject").strip(), match.group("rest")
+        if (
+            match.group("event") == "enters"
+            and own_subject(subject, name)
+            and not _OR_ANOTHER.search(subject)
+            and not re.search(r"\b(?:attacks|dies|blocks|leaves)\b", rest)
+            and not _EFFECT_CONDITION.search(effect)
+            and _etb_modelled(name, effect)
+        ):
+            continue
+        return True
+    return False
+
+
+def _x_unmodelled(card: dict, role: str) -> bool:
+    """An X spell (the search never casts one) whose effect touches the board or life totals.
+
+    X card flow ("Target player draws X cards", "discards X cards at
+    random") and X counterspells change nothing the search values.
+    """
+    if "x" not in str(card.get("mana_cost") or "").lower():
+        return False
+    return role not in ("draw", "selection", "counter") and not card_flow(_cast_text(card))
+
+
+def unmodelled_effect(card: dict | None, result: Any = None) -> str:
+    """What casting ``card`` does that the line search does not model; '' when it models it all.
+
+    The search (``Moves._variants``) values a creature's body, creature
+    tokens it can read, removal, bounce, life gain, damage to the opponent, a
+    mana rock, 'choose one' modes of those kinds and a permanent's own
+    unconditional enters trigger of those kinds (a fight aside). Card flow
+    (draw, scry, discard) and counterspells change nothing it values.
+    Anything else counts as nothing, so a line starting with such a cast is
+    no evidence against it: an X spell that touches the board or life ("its
+    X cost"), creature tokens it can't read ("its tokens"), any other
+    triggered ability (``_trigger_unmodelled``: "its triggered ability"),
+    modes that are all unmodelled ("its modes"), a pump ("a combat trick"),
+    an aura, a planeswalker or another noncreature card ("its effect"), and,
+    with ``result`` (the board's ``LineSearchResult``), damage to players it
+    has no face variant for ("its damage to players"). '' on any error.
+    """
+    if not isinstance(card, dict) or not card.get("name"):
+        return ""
+    try:
+        role = card_role(card)
+        if role == "land":
+            return ""
+        name = str(card["name"])
+        if _x_unmodelled(card, role):
+            return "its X cost"
+        if token_specs(_cast_text(card)) is None:
+            return "its tokens"
+        modes = bullets(str(card.get("oracle_text") or ""))
+        if modes and all(classify(name, mode)[0] == "other" for mode in modes):
+            if _is_creature(card) or any(not card_flow(m.lower()) for m in modes):
+                return "its modes"
+        if _is_permanent(card) and not modes and _trigger_unmodelled(card, name):
+            return "its triggered ability"
+        if not _is_creature(card):
+            if re.search(r"\benchant (?:creature|permanent)\b", _text(card)):
+                return "its effect"  # an aura: Pacifism is removal, not a combat trick
+            if role == "pump":
+                return "a combat trick"
+            if role == "planeswalker" or (role == "other" and not card_flow(_cast_text(card))):
+                return "its effect"  # (a discard spell is card flow)
+        if result is not None and harms_players(card):
+            iid = _int(card.get("instance_id"))
+            spells = getattr(getattr(result, "_search", None), "spells", None) or []
+            if not any(hs.iid == iid and any(v.face for v in hs.variants) for hs in spells):
+                return "its damage to players"
+        return ""
+    except Exception:  # unknown: treated as modelled, as before the check existed
+        return ""
 
 
 def mode_label(kind: str, gain: int, bullet: str, name: str = "") -> str:
@@ -300,6 +593,18 @@ def mode_label(kind: str, gain: int, bullet: str, name: str = "") -> str:
         bullet = re.sub(re.escape(name), "", bullet, flags=re.IGNORECASE)
     words = bullet.rstrip(".").split()
     return " ".join(words[:6]).lower() + ("…" if len(words) > 6 else "")
+
+
+def _modelled(var: Variant) -> bool:
+    """The cast does something the search values: a body, tokens, removal, life, face damage, a rock."""
+    return bool(
+        var.body is not None or var.tokens or var.reach is not None or var.gain or var.face or var.rock
+    )
+
+
+def _bodies(var: Variant) -> list[dict]:
+    """The creatures a cast puts onto the battlefield: its own body and its tokens."""
+    return ([var.body] if var.body is not None else []) + list(var.tokens)
 
 
 def _reach_strength(reach: dict) -> float:
@@ -352,6 +657,9 @@ class Moves:
         self._value_memo: dict = {}
         self._cast_memo: dict = {}
         self._boosted: dict = {}
+        self._token_id = _TOKEN_IDS  # the next token body's instance id (deterministic)
+        # Hushbringer / Torpor Orb on the battlefield: a creature we cast triggers nothing on entering.
+        self.enters_triggers = not any(_NO_ENTERS_TRIGGERS.search(_text(c)) for c in model.battlefield)
         self._prepare()
 
     # -- precomputation ------------------------------------------------------------------
@@ -383,17 +691,39 @@ class Moves:
             )
         self.lands0 = tuple(sorted(lands, key=lambda land: (land.tapped, land.name, land.iid)))
 
+    def _tokens(self, specs) -> tuple[dict, ...]:
+        """Token bodies for ``token_specs`` output, each with a fresh id (unique within the search)."""
+        bodies = make_tokens(specs, self.model.turn, self.model.our_rules, self._token_id)
+        self._token_id += len(bodies)
+        return bodies
+
     def _variants(self, hs: HandSpell) -> tuple[tuple, Variant | None]:
         spell, card = hs.spell, hs.spell.card
         info = hand_info(card)
         creature = spell.role == "creature" and _is_creature(card)
         body = _body(card, self.model.turn, self.model.our_rules) if creature else None
         extra_life = extra_life_cost(card)
+        # What acts on casting: a spell's text; a permanent's own enters trigger without a
+        # condition (``applied_text``). ``etb`` reads it: the card itself when nothing was left out.
+        cast_text = applied_text(card, enters_triggers=self.enters_triggers or not creature)
+        etb = (
+            card
+            if cast_text == _cast_text(card)
+            else {"name": spell.name, "oracle_text": cast_text, "type_line": ""}
+        )
+        # Modes: a spell's, or those of a permanent's applied enters trigger.
+        has_bullets = any(line.startswith("•") for line in cast_text.splitlines())
+        oracle_modes = bullets(str(card.get("oracle_text") or "")) if has_bullets else []
+        # Outside any 'choose one' bullet: creature tokens there come with every variant.
+        outside = "\n".join(line for line in cast_text.splitlines() if not line.startswith("•"))
+        base_specs = token_specs(outside) or []
 
-        def make(mode=None, text="", gain=0, reach=None, bounce=False, rock=False, loss=0, face=0, aim=""):
+        def make(
+            mode=None, text="", gain=0, reach=None, bounce=False, rock=False, loss=0, face=0, aim="", specs=()
+        ):
             return Variant(
                 hs.index, "cast", mode, text, body, gain, reach, bounce, rock, spell.mana_value, spell.pips,
-                bool(info.instant_speed), loss, face, aim,
+                bool(info.instant_speed), loss, face, aim, tokens=self._tokens([*base_specs, *specs]),
             )  # fmt: skip
 
         def aimed(var: Variant, alt: int) -> list[Variant]:
@@ -402,24 +732,49 @@ class Moves:
                 return []
             return [dataclasses.replace(var, reach=None, bounce=False, face=var.face + alt, aim="opponent")]
 
-        match = _LIFEGAIN.search(_text(card)) if spell.role == "lifegain" else None
-        # Creature spells' own text acts only through their modes (bullets).
-        alt, each = (0, 0) if creature else face_damage(card)
+        if creature:
+            # A creature's own text acts through its modes (bullets) or, without modes, its
+            # enters trigger: removal (a fight needs this body and is not modelled), life gain,
+            # damage to the opponent.
+            reach = removal_reach(etb) if not oracle_modes else None
+            etb_reach = etb if reach is not None and reach[0] != "fight" else None
+            match = _LIFEGAIN.search(cast_text) if not oracle_modes else None
+            alt, each = (0, 0) if oracle_modes else face_damage(etb)
+            bounce = etb_reach is not None and reach[0] == "bounce"
+        elif spell.role == "creature":
+            # A noncreature that makes creature tokens (card_role calls it a creature): the rest
+            # of its text acts too ("Create a 2/2 ... token. You gain 2 life.").
+            reach = removal_reach(etb)
+            etb_reach = etb if reach is not None and reach[0] != "fight" else None
+            bounce = etb_reach is not None and reach[0] == "bounce"
+            match = _LIFEGAIN.search(cast_text)
+            alt, each = face_damage(etb)
+        else:
+            reach = removal_reach(etb) if spell.role in ("removal", "bounce") else None
+            etb_reach = etb if reach is not None else None
+            bounce = etb_reach is not None and spell.role == "bounce"
+            match = _LIFEGAIN.search(_text(etb)) if spell.role == "lifegain" else None
+            alt, each = face_damage(etb)
         plain = make(
-            reach=card if spell.role in ("removal", "bounce") else None,
-            bounce=spell.role == "bounce",
+            reach=etb_reach,
+            bounce=bounce,
             gain=int(match.group(1)) if match else 0,
             rock=spell.role == "ramp",
-            loss=life_loss(card),
+            loss=life_loss(etb),
             face=each,
         )
         if spell.has_x or spell.role == "counter" or spell.uncastable:
             plain, variants = None, []  # never cast proactively (or can't be cast now)
+        elif (
+            not _modelled(plain)
+            and not any(classify(spell.name, b)[0] != "other" for b in oracle_modes)
+            and unmodelled_effect(card)
+        ):
+            # Nothing it does is valued (a pump, an aura, a fog, a planeswalker): never cast in a
+            # line, where a placeholder value would put it ahead of holding it.
+            plain, variants = None, []
         else:
-            modes = [
-                (i, b, *classify(spell.name, b))
-                for i, b in enumerate(bullets(str(card.get("oracle_text") or "")))
-            ]
+            modes = [(i, b, *classify(spell.name, b)) for i, b in enumerate(oracle_modes)]
             if all(kind == "other" for _i, _b, kind, *_rest in modes):
                 modes = []  # no mode changes anything we model: a plain cast
             variants, seen = [], set()
@@ -427,7 +782,16 @@ class Moves:
                 pseudo = {"name": spell.name, "oracle_text": bullet, "type_line": ""}
                 loss = life_loss(pseudo) + extra_life
                 mode_alt, mode_each = face_damage(pseudo)
-                effect = (kind, gain, reach is not None and removal_reach(reach), loss, mode_alt, mode_each)
+                specs = tuple(token_specs(_cast_text(pseudo)) or ())
+                effect = (
+                    kind,
+                    gain,
+                    reach is not None and removal_reach(reach),
+                    loss,
+                    mode_alt,
+                    mode_each,
+                    specs,
+                )
                 if (kind == "other" and body is None and not mode_alt and not mode_each) or effect in seen:
                     continue  # a noncreature's 'other' mode does nothing; duplicates add nothing
                 seen.add(effect)
@@ -439,6 +803,7 @@ class Moves:
                     bounce,
                     loss=loss,
                     face=mode_each,
+                    specs=specs,
                 )
                 variants += [var, *aimed(var, mode_alt)]
             if not variants and plain is not None:
@@ -614,8 +979,11 @@ class Moves:
             value = _spell_value(hs.spell, survival=self.survival, theirs=list(theirs))
         elif var.rock:
             value = 1.5
-        elif var.reach is None and not var.gain:
+        elif var.reach is None and not var.gain and not var.tokens:
             value = 1.0
+        for token in var.tokens:  # a token is worth what the same creature spell would be
+            pseudo = _Spell(token["_card"], token["name"], "creature", 0, (), False)
+            value += _spell_value(pseudo, survival=self.survival, theirs=list(theirs))
         value += 0.5 * var.face
         if var.reach is not None and target is not None:
             pseudo = _Spell(
@@ -666,9 +1034,10 @@ class Moves:
                     continue
                 if var.reach is not None:  # no killable target: hold it
                     spare = len(sources) - var.mana_value
-                    items.extend(
-                        (var, t) for t in self.targets(var.reach, theirs, their_tapped, node.ours, spare)
-                    )
+                    aims = self.targets(var.reach, theirs, their_tapped, node.ours, spare)
+                    items.extend((var, t) for t in aims)
+                    if not aims and var.body is not None:
+                        items.append((var, None))  # a creature whose enters trigger finds no target
                 else:
                     items.append((var, None))
             if items:
@@ -765,9 +1134,9 @@ class Moves:
                 mid.targets.append((hs.name, var.aim))
             mid.our_life -= var.loss
             mid.opp_life -= var.face
-            if var.body is not None:
-                mid.ours.append(var.body)
-                mid.entered[var.body["instance_id"]] = mid.node.abs_turn
+            for body in ([var.body] if var.body is not None else []) + list(var.tokens):
+                mid.ours.append(body)
+                mid.entered[body["instance_id"]] = mid.node.abs_turn
             if target is not None and any(b is target for b in mid.theirs):
                 mid.theirs = [b for b in mid.theirs if b is not target]
                 mid.targets.append((hs.name, target["name"]))
@@ -965,11 +1334,15 @@ class Moves:
                 v for v in self.spells[index].variants if v.kind == "cast" and v.instant and v.loss < life
             ]
             killers = [v for v in instant if v.reach is not None]
+            bodied = [v for v in instant if _bodies(v)]
             if killers:  # the mode that kills the most: destroy, then the most damage
                 var = max(killers, key=lambda v: _reach_strength(v.reach))
                 candidates.append((0, -_reach_strength(var.reach), self.spells[index].name, var))
-            elif instant and instant[0].body is not None:
-                candidates.append((1, -self.material(instant[0].body), self.spells[index].name, instant[0]))
+            elif bodied:  # a flash creature, or an instant that makes creature tokens
+                var = max(bodied, key=lambda v: sum(self.material(b) for b in _bodies(v)))
+                candidates.append(
+                    (1, -sum(self.material(b) for b in _bodies(var)), self.spells[index].name, var)
+                )
         removal, flash = [], []
         mv, pips = used_mv, tuple(used_pips)
         for *_rank, var in sorted(candidates, key=lambda c: c[:3]):
@@ -1010,7 +1383,7 @@ class Moves:
         """
         self.opponent.chance(self, life)  # v1: always NOTHING
         removal, flash, left = self._held(hand, spare, life)
-        flash_bodies = [v.body for v in flash]
+        flash_bodies = [b for v in flash for b in _bodies(v)]
         hand_left = tuple(i for i in hand if i not in {v.spell for v in flash})
         entered = dict(entered)
         for body in flash_bodies:
@@ -1124,9 +1497,11 @@ class Moves:
             ours.append(body)
             entered[body["instance_id"]] = model.turn
         effect = self.root_effect or {}
-        if effect.get("body") is not None:
-            ours.append(effect["body"])
-            entered[effect["body"]["instance_id"]] = model.turn
+        for body in ([effect["body"]] if effect.get("body") is not None else []) + list(
+            effect.get("tokens") or ()
+        ):
+            ours.append(body)
+            entered[body["instance_id"]] = model.turn
         returning = []
         if effect.get("target") is not None:
             theirs = [b for b in theirs if b is not effect["target"]]

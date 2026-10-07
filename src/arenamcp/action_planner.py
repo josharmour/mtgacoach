@@ -774,12 +774,20 @@ class ActionPlanner(_ActionLegalityMixin):
             for c in state.get(zone, [])
         )
 
-    def _grounded_plan_block(self, state: dict | None) -> str:
-        """ROLE + this turn + clocks/lethal facts for ``state``, then the game plan."""
+    def _grounded_plan_block(self, state: dict | None, *, with_lines: bool = True) -> str:
+        """ROLE + this turn + clocks/lethal facts for ``state``, then the game plan.
+
+        ``with_lines=False`` asks for the block without the search's LINES line
+        (``GamePlanManager.strategy_block`` / ``grounded_facts_block``); a
+        source that takes no ``with_lines`` keyword renders its block as is.
+        """
         source = getattr(self, "_game_plan_source", None)
         if state is not None and callable(source):
             try:
-                block = source(state)
+                if not with_lines and _accepts_keyword(source, "with_lines"):
+                    block = source(state, with_lines=False)
+                else:
+                    block = source(state)
                 if isinstance(block, str) and block.strip():
                     return block.strip()
             except Exception as error:  # the strategic layer never blocks a decision
@@ -788,14 +796,19 @@ class ActionPlanner(_ActionLegalityMixin):
         if state is not None:
             from arenamcp.game_plan import grounded_facts_block
 
-            facts = grounded_facts_block(state)
+            facts = grounded_facts_block(state, with_lines=with_lines)
             if facts:
                 parts.append(facts)
         if getattr(self, "_game_plan", ""):
             parts.append(self._game_plan)
         return "\n".join(parts)
 
-    def _strategy_context(self, state: dict | None = None) -> str:
+    def _strategy_context(self, state: dict | None = None, *, with_lines: bool = True) -> str:
+        """Deck strategy or playbook, the grounded plan block, and the playbook's decision rules.
+
+        ``with_lines=False``: the plan block leaves out the line search's LINES
+        line (a typed decision shows it above its options).
+        """
         parts = []
         playbook = self._deck_playbook()
         if playbook is None or state is None:
@@ -803,7 +816,7 @@ class ActionPlanner(_ActionLegalityMixin):
             strategy = provider() if provider else None
             if strategy:
                 parts.append(f"DECK STRATEGY:\n{strategy}")
-        grounded = self._grounded_plan_block(state)
+        grounded = self._grounded_plan_block(state, with_lines=with_lines)
         if grounded:
             parts.append(grounded)
         if playbook is not None and state is not None:
@@ -3101,7 +3114,9 @@ class ActionPlanner(_ActionLegalityMixin):
 
         See :func:`arenamcp.line_guard.line_guard`: never with lethal on board,
         inside a winning line, on a pass, on their turn, with a stack, with an
-        unknown-P/T creature or without a usable search. Shadow by default
+        unknown-P/T creature, on a cast whose effect the search does not model
+        (``line_guard.unmodelled_cast``; the decision trace's 'lines' entry
+        names those casts) or without a usable search. Shadow by default
         (ARENAMCP_LINE_GUARD): the replacement is only logged and traced;
         'on' replaces the pick the way the role guard does.
         """
@@ -3121,25 +3136,11 @@ class ActionPlanner(_ActionLegalityMixin):
                 our_turn=assessment.our_turn,
                 unknown_bodies=[u for u in assessment.unknowns if "unknown power/toughness" in u],
             )
-            unmodelled = _unmodelled_options(result, decision, game_state).get(chosen[0], "")
         except Exception as error:
             logger.debug("line guard skipped: %s", error)
             return chosen
         payable = {option.option_id for option in decision.options if option.payable is not False}
         if verdict is None or verdict.option_id == chosen[0] or verdict.option_id not in payable:
-            return chosen
-        if unmodelled:
-            # Review 2026-10-07: the search scores a cast whose effect it drops (two hasty
-            # tokens that were exactly lethal) as doing nothing; its line is no evidence.
-            logger.info(
-                "Line guard (not checked: %s is not modelled): would have replaced %s with %s",
-                unmodelled,
-                _option_text(decision, chosen[0]),
-                _option_text(decision, verdict.option_id),
-            )
-            trace = getattr(self, "_last_decision_trace", None)
-            if isinstance(trace, dict):
-                trace["line_guard"] = {**verdict.as_trace(), "applied": False, "unmodelled": unmodelled}
             return chosen
         return self._guard_outcome(decision, chosen, verdict, applies=verdict.applies)
 
@@ -3224,8 +3225,8 @@ class ActionPlanner(_ActionLegalityMixin):
 
         ActionsAvailable on our turn: the board's line search, its 'LINES'
         summary, and the casts whose effect the search drops (option id ->
-        "card: why", see :func:`arenamcp.game_plan.unmodelled_effect`), which
-        the LINES line names. A modal CastingTimeOptions menu: the per-mode
+        "card (why)", see :func:`_unmodelled_options`), which the LINES line
+        names. A modal CastingTimeOptions menu: the per-mode
         comparison (shared with the mode guard) and its 'MODES' line.
         Otherwise, with ARENAMCP_LINE_SEARCH=0, or on any error: (None, '', {}).
         """
@@ -3239,13 +3240,15 @@ class ActionPlanner(_ActionLegalityMixin):
                 result = getattr(assessment, "line_search", None)
                 if assessment is None or result is None or not assessment.our_turn:
                     return None, "", {}
-                text = line_guard.lines_summary(result)
+                text = line_guard.lines_summary(
+                    result, unmodelled=assessment.unmodelled, pending=assessment.pending
+                )
                 unmodelled = _unmodelled_options(result, decision, state)
                 if text and unmodelled:
-                    # The 'best' line is the best of what the search can value.
+                    # The 'best' line is the best of what the search can value. The note comes on
+                    # top of the full line: this is the prompt's only LINES copy, alternatives kept.
                     note = " | not modelled, judge these yourself: " + "; ".join(unmodelled.values())
-                    note = note if len(note) <= 110 else note[:109] + "…"
-                    text = result.prompt_line(320 - len(note)) + note
+                    text += note if len(note) <= 110 else note[:109] + "…"
                 return result, text, unmodelled
             if decision.request_type == "CastingTimeOptions":
                 comparison = line_guard.mode_comparison(state, decision)
@@ -4134,7 +4137,8 @@ class ActionPlanner(_ActionLegalityMixin):
                 ],
             }
         lines.append(self._decision_game_context(context_state))
-        strategy_context = self._strategy_context(game_state)
+        # The LINES line is shown once, above OPTIONS: not again in the strategy block.
+        strategy_context = self._strategy_context(game_state, with_lines=not lines_text.startswith("LINES"))
         if strategy_context:
             lines.append(strategy_context)
         user_message = with_deck_reference("\n".join(lines), game_state)
@@ -4278,6 +4282,18 @@ class ActionPlanner(_ActionLegalityMixin):
 _REACTIVE_CAST_ROLES = frozenset({"counter", "pump"})
 
 
+def _accepts_keyword(fn: Callable, name: str) -> bool:
+    """``fn`` takes the keyword argument ``name`` (or any keyword); False when it can't be inspected."""
+    try:
+        parameters = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        (p.name == name and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)) or p.kind == p.VAR_KEYWORD
+        for p in parameters
+    )
+
+
 def _local_seat(state: dict[str, Any]) -> Any:
     seat = state.get("local_seat_id")
     if seat is None:
@@ -4398,27 +4414,24 @@ def _option_text(decision: Any, option_id: str) -> str:
 
 
 def _unmodelled_options(result: Any, decision: Any, state: dict[str, Any]) -> dict[str, str]:
-    """Payable casts whose effect the line search drops: option id -> "card: why".
+    """Payable casts whose effect the line search drops: option id -> "card (why)".
 
-    The search values a token maker, a creature's enters trigger, an aura and
-    the like as nothing (see :func:`arenamcp.game_plan.unmodelled_effect`), so
-    the line starting with that cast is no evidence against it: the line guard
-    must not override it, and its tag must not call it worse (review
-    2026-10-07: two hasty 3/1s that were exactly lethal were tagged 'dead T11'
-    and replaced by Grizzly Bears with ARENAMCP_LINE_GUARD=on).
+    The search values tokens it can't read, an aura, a pump and the like as
+    nothing (``line_guard.unmodelled_cast``, the check the line guard itself
+    applies), so the line starting with that cast is no evidence against it:
+    its tag must not call it worse, and the LINES line names it (review
+    2026-10-07: two hasty 3/1s that were exactly lethal were tagged 'dead T11').
     """
-    from arenamcp.board_assessment import _source_card
-    from arenamcp.game_plan import unmodelled_effect
+    from arenamcp.line_guard import unmodelled_cast
 
     found: dict[str, str] = {}
     for option in getattr(decision, "options", ()) or ():
         meta = option.meta or {}
         if option.payable is False or "cast" not in str(meta.get("actionType") or "").lower():
             continue
-        source, _zone = _source_card(state, meta)
-        why = unmodelled_effect(source, result)
+        why = unmodelled_cast(result, option, state)
         if why:
-            found[option.option_id] = f"{source.get('name')} ({why})"
+            found[option.option_id] = why
     return found
 
 
