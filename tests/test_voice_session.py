@@ -315,6 +315,9 @@ def test_channel_released_after_sink_completion() -> None:
 
     # A lower-priority proactive request can now speak.
     assert speak(session, "proactive topic", "proactive", make_identity(seq=2)).played is True
+    # Teardown: the sink still reports speaking, so without a stop its release monitor
+    # polls on (for up to 300 s) into later tests.
+    session.stop_speaking()
 
 
 def test_urgent_advice_after_question_answer_not_cancelled() -> None:
@@ -342,6 +345,7 @@ def test_urgent_advice_after_question_answer_not_cancelled() -> None:
     outcome = speak(session, "urgent advice", "urgent", make_identity(seq=2))
     assert outcome.played is True
     assert sink.spoken == ["answer", "urgent advice"]
+    session.stop_speaking()  # teardown: end the still-speaking utterance's release monitor
 
 
 def test_seq_comparison_only_within_same_identity_class() -> None:
@@ -372,6 +376,9 @@ def test_seq_comparison_only_within_same_identity_class() -> None:
     assert speak(session2, "topic", "urgent", make_identity(seq=10**9)).played is True
     outcome2 = speak(session2, "answer", "urgent", AnswerIdentity(2))
     assert outcome2.played is True
+    # Teardown: both sinks still report speaking; end their release monitors.
+    session.stop_speaking()
+    session2.stop_speaking()
 
 
 def test_completion_release_does_not_clobber_newer_request() -> None:
@@ -393,13 +400,155 @@ def test_completion_release_does_not_clobber_newer_request() -> None:
     assert session.state == SpeechState.SPEAKING
 
     # Teardown hygiene: without a stop, the release-monitor daemon keeps
-    # polling is_speaking()==True until its 300s deadline. That spinning
-    # thread (a) burns ~200s of wall clock in later full-suite runs and
-    # (b) made test_turn_drop_resets_conversation order-dependent — its
-    # time.sleep() ticks inside a monkeypatched loop stopped that test's
-    # coaching loop early. stop_speaking() bumps the channel token, so the
-    # monitor exits immediately.
+    # polling is_speaking()==True until its 300s deadline (before the
+    # deadline fix it polled forever). That thread (a) burned wall clock in
+    # later full-suite runs and (b) made test_turn_drop_resets_conversation
+    # order-dependent — its time.sleep() ticks inside a monkeypatched loop
+    # stopped that test's coaching loop early (the monitor now sleeps via the
+    # module-local voice_session._sleep). stop_speaking() bumps the channel
+    # token, so the monitor exits immediately.
     session.stop_speaking()
+
+
+class _FakeClock:
+    """Monotonic stand-in advanced only by the patched module-local sleep."""
+
+    def __init__(self) -> None:
+        self.t = 1000.0
+        self.sleeps: list[float] = []
+
+    def now(self) -> float:
+        return self.t
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.t += seconds
+
+
+class _StuckSink:
+    """A sink whose is_speaking() never turns False (wedged audio device)."""
+
+    def __init__(self) -> None:
+        self.spoken: list[str] = []
+        self.polls = 0
+
+    def speak(self, text: str, blocking: bool = True) -> None:
+        self.spoken.append(text)
+
+    def is_speaking(self) -> bool:
+        self.polls += 1
+        return True
+
+
+def _wait_real(predicate, timeout: float = 5.0) -> bool:
+    """Poll ``predicate`` on the real clock (the session's clock may be fake)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return predicate()
+
+
+def test_release_monitor_honours_deadline_while_sink_keeps_speaking() -> None:
+    """I6: the is_speaking() branch `continue`d past the deadline check, so a
+    sink stuck reporting speaking held the channel (and a polling daemon
+    thread) forever. The monitor must release at release_max_wait."""
+    clock = _FakeClock()
+    sink = _StuckSink()
+    # The fake sleep belongs to this session only: monitors other tests left running keep
+    # the real one (patching the module global would let them spin on this clock).
+    session = VoiceSession(
+        sink, now=clock.now, release_poll_interval=0.05, release_max_wait=1.0, sleep=clock.sleep
+    )
+    try:
+        assert speak(session, "stuck", "urgent", make_identity(seq=1)).played is True
+
+        assert _wait_real(lambda: session.state == SpeechState.IDLE), (
+            f"channel never released: polls={sink.polls}, fake clock advanced {clock.t - 1000.0:.2f}s"
+        )
+        # It polled while speaking (did not release on the first probe) and
+        # released at the deadline, not long after it.
+        assert sink.polls > 1
+        assert 1.0 <= clock.t - 1000.0 <= 1.0 + 0.05 + 1e-9
+        # A lower-priority request can speak again once the channel is free.
+        assert speak(session, "next", "proactive", make_identity(seq=2)).played is True
+    finally:
+        session.stop_speaking()
+
+
+def test_release_monitor_still_polls_until_deadline_when_sink_finishes() -> None:
+    """The deadline must not shorten a normal utterance: a sink that stops
+    speaking before release_max_wait releases on that probe, not earlier."""
+    clock = _FakeClock()
+    sink = _StuckSink()
+    finish_after = 5
+
+    def sleep_then_maybe_finish(seconds: float) -> None:
+        clock.sleep(seconds)
+        if len(clock.sleeps) >= finish_after:
+            sink.is_speaking = lambda: False  # type: ignore[method-assign]
+
+    session = VoiceSession(
+        sink, now=clock.now, release_poll_interval=0.05, release_max_wait=300.0, sleep=sleep_then_maybe_finish
+    )
+    try:
+        assert speak(session, "utterance", "urgent", make_identity(seq=1)).played is True
+        assert _wait_real(lambda: session.state == SpeechState.IDLE)
+        assert len(clock.sleeps) == finish_after
+        assert clock.t - 1000.0 < 300.0
+    finally:
+        session.stop_speaking()
+
+
+def test_an_injected_sleep_reaches_only_its_own_session() -> None:
+    """Review 2026-10-07: the I6 tests patched the module-global ``_sleep``, which
+    release monitors left running by earlier tests also read; under load those
+    spun on the fake clock ('assert 166509 == 5'). The sleep is now injected per
+    session: another session's monitor keeps the real one."""
+    leaked_sink = CompletingSink()
+    leaked = VoiceSession(leaked_sink, release_poll_interval=0.001)  # left speaking, as a leak would be
+    clock = _FakeClock()
+    sink = _StuckSink()
+    session = VoiceSession(
+        sink, now=clock.now, release_poll_interval=0.05, release_max_wait=1.0, sleep=clock.sleep
+    )
+    try:
+        assert speak(leaked, "left speaking", "urgent", make_identity(seq=1)).played is True
+        assert speak(session, "stuck", "urgent", make_identity(seq=1)).played is True
+        assert _wait_real(lambda: session.state == SpeechState.IDLE)
+        threading.Event().wait(0.03)  # the other monitor keeps polling meanwhile
+        assert leaked.state == SpeechState.SPEAKING
+        assert set(clock.sleeps) == {0.05}  # only this session's polls
+        assert 1.0 <= clock.t - 1000.0 <= 1.0 + 0.05 + 1e-9
+    finally:
+        session.stop_speaking()
+        leaked.stop_speaking()
+
+
+def test_release_monitor_does_not_use_global_time_sleep(monkeypatch) -> None:
+    """Other tests patch the GLOBAL time.sleep (via ``<module>.time.sleep``);
+    a release monitor outliving its own test must not tick their fakes. The
+    arbiter sleeps through the module-local ``voice_session._sleep``."""
+    real_sleep = time.sleep
+    callers: list[str] = []
+
+    def recording_sleep(seconds: float) -> None:
+        callers.append(threading.current_thread().name)
+        real_sleep(seconds)
+
+    monkeypatch.setattr(time, "sleep", recording_sleep)
+    sink = CompletingSink()
+    session = VoiceSession(sink, release_poll_interval=0.005)
+    try:
+        assert speak(session, "utterance", "urgent", make_identity(seq=1)).played is True
+        threading.Event().wait(0.03)  # let the monitor poll a few times
+        sink._speaking = False
+        assert session.wait_for_idle(5.0) is True
+    finally:
+        session.stop_speaking()
+    assert "voice-session-release" not in callers
+    assert threading.current_thread().name not in callers  # wait_for_idle too
 
 
 # ── Sink-shape robustness ────────────────────────────────────────────────

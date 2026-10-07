@@ -36,6 +36,15 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Module-local sleep for the arbiter's polling loops. Tests (and coaching-loop
+# tests elsewhere) monkeypatch ``<module>.time.sleep`` — which is the GLOBAL
+# ``time.sleep`` — so a release-monitor daemon thread outliving its own test
+# would otherwise tick another test's fake clock or spin on a no-op sleep.
+# To control one session's loops, pass ``VoiceSession(sleep=...)`` (with
+# ``now=...``): patching this module global reaches every session's threads,
+# including monitors other tests left running.
+_sleep = time.sleep
+
 
 class SpeechState(str, Enum):
     """Coarse session state of the voice arbiter."""
@@ -158,9 +167,13 @@ class VoiceSession:
         now: Callable[[], float] = time.monotonic,
         release_poll_interval: float = 0.05,
         release_max_wait: float = 300.0,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self._output = output
         self._now = now
+        # This session's polling sleep (tests inject a fake with ``now``); None: the
+        # module-local ``_sleep``, looked up at each call.
+        self._sleep_fn = sleep
         self._lock = threading.RLock()
         self._listeners: list[Callable[[str], None]] = []
         self._state = SpeechState.IDLE
@@ -292,9 +305,13 @@ class VoiceSession:
                     return True
             if self._now() >= deadline:
                 return False
-            time.sleep(0.02)
+            self._sleep(0.02)
 
     # ── Internals ─────────────────────────────────────────────────────
+
+    def _sleep(self, seconds: float) -> None:
+        """Sleep for this session's polling loops (the injected ``sleep``, else ``_sleep``)."""
+        (self._sleep_fn or _sleep)(seconds)
 
     def _release_channel(self, token: int) -> None:
         """Clear the channel owned by ``token`` — the arbiter lifecycle core.
@@ -368,25 +385,33 @@ class VoiceSession:
                             logger.debug("sink is_speaking() failed", exc_info=True)
                             self._release_channel(token)
                             return
-                        if speaking:
-                            time.sleep(interval)
+                        # The deadline bounds a sink stuck reporting
+                        # speaking (a wedged audio device, a probe that never
+                        # turns False): without it this loop spun forever.
+                        if speaking and self._now() < deadline:
+                            self._sleep(interval)
                             continue
-                        # Finished (spoke then stopped) or never started
-                        # (muted/dropped) — either way the channel is free.
+                        if speaking:
+                            logger.debug(
+                                "VoiceSession release monitor timed out with the sink still "
+                                "speaking; releasing channel"
+                            )
+                        # Finished (spoke then stopped), never started
+                        # (muted/dropped) or timed out — the channel is free.
                         self._release_channel(token)
                         return
                 else:
                     # No completion signal: hand-off semantics — release after
                     # one poll interval so a superseding request (already
                     # arbitrating) still wins the token race.
-                    time.sleep(interval)
+                    self._sleep(interval)
                     self._release_channel(token)
                     return
                 if self._now() >= deadline:
                     logger.debug("VoiceSession release monitor timed out; releasing channel")
                     self._release_channel(token)
                     return
-                time.sleep(interval)
+                self._sleep(interval)
 
         thread = threading.Thread(target=monitor, daemon=True, name="voice-session-release")
         thread.start()

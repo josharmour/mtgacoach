@@ -1,4 +1,24 @@
+import pytest
+
 from arenamcp.coach import CoachEngine
+from arenamcp.game_plan import GamePlanManager
+
+
+@pytest.fixture(autouse=True)
+def _no_background_game_plan(monkeypatch):
+    """get_advice() schedules a background game-plan reform that calls the
+    same backend on another thread, so its call could land in
+    ``backend.calls`` before (or after) the threat prompt, and the thread
+    could hold the shared STRATEGIC_LANE into later tests. These tests are
+    about the threat prompt only."""
+    monkeypatch.setattr(GamePlanManager, "request_reform", lambda self, game_state, **_kwargs: False)
+
+
+def _threat_call(backend: "_DummyBackend") -> str:
+    """The one user message carrying the threat prompt."""
+    matches = [user for _system, user in backend.calls if "THREAT ALERT" in user]
+    assert len(matches) == 1, f"expected one THREAT ALERT call, got {len(matches)} of {len(backend.calls)}"
+    return matches[0]
 
 
 class _DummyBackend:
@@ -91,7 +111,7 @@ def test_threat_prompt_uses_specific_card_and_available_answers(monkeypatch):
 
     assert advice.startswith("Sheoldred, the Apocalypse is the key threat.")
     assert backend.calls, "expected backend.complete to be called"
-    _system_prompt, user_message = backend.calls[0]
+    user_message = _threat_call(backend)
     assert "THREAT ALERT: Sheoldred, the Apocalypse" in user_message
     assert "Available answers now: Go for the Throat" in user_message
     assert "Name Sheoldred, the Apocalypse explicitly in the first sentence." in user_message
