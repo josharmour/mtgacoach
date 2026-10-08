@@ -522,6 +522,329 @@ def power_only_mode_label(label: str) -> bool:
     return bool(_POWER_ONLY_MODE.match(text))
 
 
+# --- temporary -X/-Y shrinks and discard-for-effect ---------------------------
+#
+# 2026-10-07 18:33 (bug_20261007_183358, Pick-Two FRA, our T16 at 3 life vs 34):
+# with "Cast Proft, Sinister Mastermind [OK]" (threshold live, a 5/5 menace)
+# on the menu, the model cast Void Extrapolator first, then — Proft's cast gone
+# while our own spell sat on the stack — activated "{B}, Discard this card:
+# Target creature gets -3/-1 until end of turn" "to kill" Hallway Heckler
+# (a 2/3: -1/2, alive), and aimed it at the 6/4 Apex Witchstalker "to remove
+# the crackback threat". The shrink wore off at our end step, before their
+# attack; the castable 5/5 was thrown away for nothing.
+
+_TEMP_SHRINK = re.compile(
+    r"^(?:up to one |another )?target creature(?: an opponent controls| you don['’]t control)? gets? "
+    r"[-−](?P<p>\d+)/[-−](?P<t>\d+) until end of turn\.?$",
+    re.IGNORECASE,
+)
+_DISCARD_COST = re.compile(r"\bdiscard (?:this card|~|cardname)\b", re.IGNORECASE)
+_SORCERY_SPEED = re.compile(r"\bactivate only as a sorcery\b", re.IGNORECASE)
+_KILL_CLAIM = re.compile(r"\b(?:kill\w*|finish\w* off|destroy\w*|dies|die)\b", re.IGNORECASE)
+
+
+def _rules_lines(text: Any) -> list[str]:
+    """Rules lines with Arena's tags removed and its repeated formatting variants collapsed."""
+    lines: list[str] = []
+    for raw in re.sub(r"<[^>]*>", "", str(text or "")).splitlines():
+        line = " ".join(raw.split())
+        if line and line not in lines:
+            lines.append(line)
+    return lines
+
+
+def _activated_abilities(card: dict) -> list[tuple[str, str]]:
+    """(cost, effect) of each non-mana activated ability line of the card's rules text."""
+    found = []
+    for line in _rules_lines(card.get("oracle_text")):
+        if ":" not in line or re.search(r":\s*add\b", line, re.IGNORECASE):
+            continue
+        cost, effect = line.split(":", 1)
+        found.append((cost.strip(), effect.strip()))
+    return found
+
+
+def _offered_ability(card: dict, metadata: dict | None) -> tuple[str, str]:
+    """(cost, effect) of the activation on offer: the menu's ability text, else the card's only one."""
+    ability = str((metadata or {}).get("ability_text") or "").strip()
+    if ability:
+        cost, _, effect = ability.partition(":") if ":" in ability else ("", "", ability)
+        return cost.strip(), effect.strip()
+    abilities = _activated_abilities(card)
+    return abilities[0] if len(abilities) == 1 else ("", "")
+
+
+def _cast_effects(card: dict) -> list[str]:
+    """An instant's or sorcery's effects, one per line or mode (costs and 'choose one' headers aside)."""
+    type_line = str(card.get("type_line") or "").lower()
+    if not any(kind in type_line for kind in ("instant", "sorcery")):
+        return []
+    effects: list[str] = []
+    for line in _rules_lines(card.get("oracle_text")):
+        if ":" in line:
+            continue
+        for part in line.split("•"):
+            part = part.strip(" \t-—")
+            if part and not re.match(r"^choose (?:one|two|up to)", part, re.IGNORECASE):
+                effects.append(part)
+    return effects
+
+
+def temporary_shrink(effects: list[str]) -> tuple[int, int] | None:
+    """(power loss, toughness loss) when the whole effect is one 'target creature gets -X/-Y until end of turn'."""
+    if len(effects) != 1:
+        return None
+    match = _TEMP_SHRINK.match(effects[0].strip())
+    return (int(match.group("p")), int(match.group("t"))) if match else None
+
+
+def shrink_would_kill(creature: dict, toughness_loss: int) -> bool | None:
+    """True/False when the board proves it (marked damage counted); None when combat could still change it."""
+    toughness = creature.get("toughness")
+    if type(toughness) is not int:
+        return None
+    damage = creature.get("damage") if type(creature.get("damage")) is int else 0
+    if toughness - damage <= toughness_loss:
+        return True
+    if (
+        (creature.get("damaged_this_turn") and not damage)
+        or creature.get("is_attacking")
+        or creature.get("is_blocking")
+    ):
+        return None
+    return False
+
+
+def _opposing_creatures(state: dict) -> list[dict]:
+    local_seat = _local_seat(state)
+    return [
+        permanent
+        for permanent in state.get("battlefield", []) or []
+        if local_seat is not None
+        and (permanent.get("controller_seat_id") or permanent.get("owner_seat_id")) != local_seat
+        and "creature" in str(permanent.get("type_line") or "").lower()
+    ]
+
+
+def kill_verdict(reach: tuple[str, int], creature: dict) -> bool | None:
+    """Whether a ("shrink", Y) / ("damage", N) effect kills this creature; None when unproven."""
+    kind, amount = reach
+    if kind == "shrink":
+        return shrink_would_kill(creature, amount)
+    if kind == "damage":
+        return damage_would_kill(creature, amount)
+    return None
+
+
+def play_kill_reach(card: dict, *, activation: bool, metadata: dict | None = None) -> tuple[str, int] | None:
+    """("shrink", toughness loss) or ("damage", N) for a play whose whole effect is that one clause."""
+    effects = [_offered_ability(card, metadata)[1]] if activation else _cast_effects(card)
+    effects = [effect for effect in effects if effect]
+    shrink = temporary_shrink(effects)
+    if shrink is not None:
+        return "shrink", shrink[1]
+    if len(effects) == 1:
+        parsed = fixed_damage_removal({"oracle_text": effects[0]})
+        if parsed:
+            return "damage", parsed[0]
+    return None
+
+
+def _combat_in_progress(state: dict) -> bool:
+    """Attackers or blockers are declared in the current combat, on either side."""
+    if menu_proves_empty_stack(state):
+        return False
+    phase = str((state.get("turn") or {}).get("phase") or "")
+    if phase and "combat" not in phase.lower():
+        return False
+    return any(
+        creature.get("is_attacking") or creature.get("is_blocking")
+        for creature in state.get("battlefield", []) or []
+    )
+
+
+def shrink_has_use_without_kill(state: dict) -> bool:
+    """A survivor's -X/-Y still matters: their turn (their attackers and blockers), or our combat under way.
+
+    On our own turn outside combat it expires at our end step, before their attack.
+    """
+    local_seat = _local_seat(state)
+    turn = state.get("turn") or {}
+    if local_seat is None or turn.get("active_player") != local_seat:
+        return True
+    return _combat_in_progress(state)
+
+
+def _sorcery_speed_shrink_before_our_attack(state: dict, sorcery_speed: bool) -> bool:
+    """A sorcery-speed shrink in our first main phase may be for this turn's attack: leave it to the model."""
+    if not sorcery_speed:
+        return False
+    local_seat = _local_seat(state)
+    turn = state.get("turn") or {}
+    phase = str(turn.get("phase") or "").lower()
+    if local_seat is None or turn.get("active_player") != local_seat or "main1" not in phase:
+        return False
+    turn_number = turn.get("turn_number")
+    attackers = [
+        creature
+        for creature in state.get("battlefield", []) or []
+        if (creature.get("controller_seat_id") or creature.get("owner_seat_id")) == local_seat
+        and "creature" in str(creature.get("type_line") or "").lower()
+        and not creature.get("is_tapped")
+        and (creature.get("turn_entered_battlefield") != turn_number or has_combat_keyword(creature, "haste"))
+    ]
+    blockers = [creature for creature in _opposing_creatures(state) if not creature.get("is_tapped")]
+    return bool(attackers and blockers)
+
+
+def temporary_shrink_wasted(
+    card: dict, state: dict, *, activation: bool = False, metadata: dict | None = None
+) -> str:
+    """Withhold a lone 'target creature gets -X/-Y until end of turn' that kills nothing when no combat can use it.
+
+    On our own turn outside combat the effect wears off at our end step,
+    before the opponent's attack (bug_20261007_183358, above). On their turn
+    it shrinks an attacker or blocker, and inside our combat a blocker, so
+    those stay with the model. A -N/-0 never kills: the cast path has
+    :func:`power_only_debuff_wasted`; an activation needs the same combat.
+    """
+    cost, effect = _offered_ability(card, metadata) if activation else ("", "")
+    effects = [effect] if activation else _cast_effects(card)
+    shrink = temporary_shrink([e for e in effects if e])
+    if shrink is None:
+        return ""
+    power_loss, toughness_loss = shrink
+    if toughness_loss == 0:
+        if not activation or power_debuff_has_combat_use(state):
+            return ""
+        return "-N/-0 only shrinks power for this turn's combat (it never kills); hold it until creatures attack or block"
+    opposing = _opposing_creatures(state)
+    if any(shrink_would_kill(creature, toughness_loss) is not False for creature in opposing):
+        return ""
+    if shrink_has_use_without_kill(state):
+        return ""
+    sorcery_speed = (
+        bool(_SORCERY_SPEED.search(effect))
+        if activation
+        else ("sorcery" in str(card.get("type_line") or "").lower())
+    )
+    if _sorcery_speed_shrink_before_our_attack(state, sorcery_speed):
+        return ""
+    survivors = sorted(
+        creature["toughness"] for creature in opposing if type(creature.get("toughness")) is int
+    )
+    return (
+        f"-{power_loss}/-{toughness_loss} until end of turn kills no opposing creature (toughness {survivors}) "
+        "and wears off at our end step, before their turn; no combat this turn can use it"
+    )
+
+
+def _castable_now(state: dict, card: dict) -> bool:
+    """Arena offers the card's cast now, or would once our own spell on the stack resolves."""
+    instance_id = card.get("instance_id")
+    for action in _live_menu(state):
+        if (
+            instance_id
+            and action.get("instanceId") == instance_id
+            and str(action.get("actionType") or "").removeprefix("ActionType_") == "Cast"
+            and has_autotap_solution(action)
+        ):
+            return True
+    local_seat = _local_seat(state)
+    turn = state.get("turn") or {}
+    if local_seat is None or turn.get("active_player") != local_seat:
+        return False
+    if "main" not in str(turn.get("phase") or "").lower():
+        return False
+    stack = state.get("stack") or []
+    if not stack or any(
+        (entry.get("controller_seat_id") or entry.get("owner_seat_id")) != local_seat for entry in stack
+    ):
+        return False
+    cost = _normalize_mana_symbols(str(card.get("mana_cost") or ""))
+    if not cost:
+        return False
+    return RulesEngine._can_afford(cost, RulesEngine._get_mana_pool(state, local_seat))
+
+
+def _all_in(state: dict) -> bool:
+    """board_assessment's verdict that no defensive line survives their next attack."""
+    try:
+        from arenamcp.board_assessment import assess
+
+        assessment = assess(state)
+    except Exception as exc:
+        logger.debug("No board assessment for the discard guard: %s", exc)
+        return False
+    return bool(assessment is not None and assessment.all_in)
+
+
+def castable_discard_for_minor_effect(card: dict, state: dict, metadata: dict | None = None) -> str:
+    """Withhold discarding a card we can cast for a lone shrink or burn effect that kills nothing.
+
+    Dead to their next attack whatever we do (board_assessment ``all_in``),
+    the discard is left to the model.
+    """
+    cost, effect = _offered_ability(card, metadata)
+    if not cost or not _DISCARD_COST.search(cost):
+        return ""
+    reach = play_kill_reach(card, activation=True, metadata=metadata)
+    if reach is None:
+        return ""
+    if any(kill_verdict(reach, creature) is not False for creature in _opposing_creatures(state)):
+        return ""
+    if not _castable_now(state, card) or _all_in(state):
+        return ""
+    name = str(card.get("name") or "this card")
+    return (
+        f"{name} is castable now (or once our spell on the stack resolves); discarding it for "
+        f"'{effect}' that kills nothing throws the card away"
+    )
+
+
+def claimed_kills(reasoning: str, creatures: list[dict]) -> list[dict]:
+    """The creatures a model's reasoning says die: "kills Hallway Heckler", "the Heckler dies"."""
+    text = " ".join(str(reasoning or "").lower().split())
+    if not text or not _KILL_CLAIM.search(text):
+        return []
+    found = []
+    for creature in creatures:
+        full = str(creature.get("name") or "").lower().strip()
+        short = full.split(",")[0].strip()
+        last = short.split()[-1] if short else ""  # "the Heckler dies", "finish off the Witchstalker"
+        names = [n for n in dict.fromkeys((full, short, last if len(last) >= 5 else "")) if len(n) >= 4]
+        for name in names:
+            pattern = (
+                rf"\b(?:kill\w*|finish\w* off|destroy\w*)\s+(?:(?:the|their|that|a|an|its|his|her)\s+)?"
+                rf"(?:[\w'’/+-]+\s+){{0,3}}{re.escape(name)}"
+                rf"|{re.escape(name)}\b[^.;]{{0,40}}\b(?:dies|die)\b"
+            )
+            if re.search(pattern, text):
+                found.append(creature)
+                break
+    return found
+
+
+def shrink_note(state: dict, card: dict, *, activation: bool, metadata: dict | None = None) -> str:
+    """A prompt fact for a lone -X/-Y play: whom it kills now, or that it wears off before their turn."""
+    reach = play_kill_reach(card, activation=activation, metadata=metadata)
+    if reach is None or reach[0] != "shrink":
+        return ""
+    opposing = _opposing_creatures(state)
+    dying = [
+        str(c.get("name") or c.get("instance_id")) for c in opposing if shrink_would_kill(c, reach[1]) is True
+    ]
+    if dying:
+        return f"  [-X/-{reach[1]} until end of turn kills now: {', '.join(dying)}]"
+    survivors = sorted(c["toughness"] for c in opposing if type(c.get("toughness")) is int)
+    when = (
+        "this turn's combat only"
+        if shrink_has_use_without_kill(state)
+        else "wears off at end of turn, before their attack"
+    )
+    return f"  [-X/-{reach[1]} until end of turn kills nothing now (toughness {survivors}); {when}]"
+
+
 def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict | None = None) -> str:
     """Return a reason to withhold a play, not a claim of full MTG legality."""
     action_type = action_type.removeprefix("ActionType_").lower()
@@ -540,11 +863,19 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
     if removal_lacks_opponent_target(card, state, activation=action_type == "activate"):
         return "mandatory removal has no opposing target"
     if action_type == "cast":
-        reason = damage_removal_kills_nothing(card, state) or power_only_debuff_wasted(card, state)
+        reason = (
+            damage_removal_kills_nothing(card, state)
+            or power_only_debuff_wasted(card, state)
+            or temporary_shrink_wasted(card, state)
+        )
         if reason:
             return reason
     if action_type == "activate":
-        return pointless_self_animation(state, card, metadata)
+        return (
+            temporary_shrink_wasted(card, state, activation=True, metadata=metadata)
+            or castable_discard_for_minor_effect(card, state, metadata)
+            or pointless_self_animation(state, card, metadata)
+        )
     if action_type != "cast" or _tutor_requirement(card) is None:
         return ""
     type_line = str(card.get("type_line") or "").lower()

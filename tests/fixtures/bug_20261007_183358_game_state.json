@@ -1,0 +1,1267 @@
+{
+ "match_id": "da52fd39-7ff0-4069-8871-9e47f4dbc439",
+ "event_id": "PickTwoDraft_FRA_20260929",
+ "format_name": "PickTwoDraft FRA 20260929",
+ "local_seat_id": 2,
+ "opponent_seat_id": 1,
+ "turn": {
+  "turn_number": 16,
+  "active_player": 2,
+  "priority_player": 2,
+  "phase": "Combat",
+  "step": "DeclareAttack",
+  "pending_combat_steps": [],
+  "stage": "Play"
+ },
+ "players": [
+  {
+   "seat_id": 1,
+   "life_total": 34,
+   "lands_played": 0,
+   "mana_pool": {},
+   "team_id": 1,
+   "status": "InGame",
+   "controller_seat_id": 1,
+   "is_local": false,
+   "mulligan_count": 0,
+   "timeout_count": 2
+  },
+  {
+   "seat_id": 2,
+   "life_total": 3,
+   "lands_played": 0,
+   "mana_pool": {},
+   "team_id": 2,
+   "status": "InGame",
+   "controller_seat_id": 2,
+   "is_local": true,
+   "mulligan_count": 0,
+   "timeout_count": 2
+  }
+ ],
+ "battlefield": [
+  {
+   "instance_id": 242,
+   "grp_id": 83679,
+   "name": "Swamp",
+   "oracle_text": "({T}: Add {B}.)",
+   "type_line": "Basic Land — Swamp",
+   "mana_cost": "",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Swamp"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Black"
+   ],
+   "base_grp_id": 83679
+  },
+  {
+   "instance_id": 244,
+   "grp_id": 106529,
+   "name": "Island",
+   "oracle_text": "({T}: Add {U}.)",
+   "type_line": "Basic Land — Island",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 2,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Island"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Blue"
+   ],
+   "base_grp_id": 106529
+  },
+  {
+   "instance_id": 246,
+   "grp_id": 79739,
+   "name": "Mountain",
+   "oracle_text": "({T}: Add {R}.)",
+   "type_line": "Basic Land — Mountain",
+   "mana_cost": "",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 3,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Mountain"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Red"
+   ],
+   "base_grp_id": 79739
+  },
+  {
+   "instance_id": 248,
+   "grp_id": 106531,
+   "name": "Swamp",
+   "oracle_text": "({T}: Add {B}.)",
+   "type_line": "Basic Land — Swamp",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 4,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Swamp"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Black"
+   ],
+   "base_grp_id": 106531
+  },
+  {
+   "instance_id": 249,
+   "grp_id": 106290,
+   "name": "Rank Rat",
+   "oracle_text": "When this creature enters, each opponent discards a card.",
+   "type_line": "Creature — Zombie Rat",
+   "mana_cost": "{1}{B}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 1,
+   "toughness": 1,
+   "is_tapped": false,
+   "turn_entered_battlefield": 4,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Zombie",
+    "Rat"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Black"
+   ],
+   "base_grp_id": 106290
+  },
+  {
+   "instance_id": 255,
+   "grp_id": 83679,
+   "name": "Swamp",
+   "oracle_text": "({T}: Add {B}.)",
+   "type_line": "Basic Land — Swamp",
+   "mana_cost": "",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 5,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Swamp"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Black"
+   ],
+   "base_grp_id": 83679
+  },
+  {
+   "instance_id": 256,
+   "grp_id": 106294,
+   "name": "Screeching Soulbreaker",
+   "oracle_text": "Flying\nWhenever this creature attacks, it deals 1 damage to each opponent and you gain 1 life.",
+   "type_line": "Creature — Siren Bard",
+   "mana_cost": "{2}{B}",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": 1,
+   "toughness": 4,
+   "is_tapped": true,
+   "turn_entered_battlefield": 5,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Siren",
+    "Bard"
+   ],
+   "object_kind": "CARD",
+   "counters": {
+    "Stun": 1
+   },
+   "keywords": [
+    "flying"
+   ],
+   "colors": [
+    "Black"
+   ],
+   "base_grp_id": 106294
+  },
+  {
+   "instance_id": 261,
+   "grp_id": 106434,
+   "name": "Shipwreck Marsh",
+   "oracle_text": "This land enters tapped unless you control two or more other lands.\n{oT}: Add {oU} or {oB}.",
+   "type_line": "Land",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 6,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Blue",
+    "Black"
+   ],
+   "base_grp_id": 106434
+  },
+  {
+   "instance_id": 270,
+   "grp_id": 83679,
+   "name": "Swamp",
+   "oracle_text": "({T}: Add {B}.)",
+   "type_line": "Basic Land — Swamp",
+   "mana_cost": "",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 7,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Swamp"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Black"
+   ],
+   "base_grp_id": 83679
+  },
+  {
+   "instance_id": 271,
+   "grp_id": 106315,
+   "name": "Hallway Heckler",
+   "oracle_text": "This creature enters prepared.\n{oT}, Discard a card: Draw a card.",
+   "type_line": "Creature — Elemental Sorcerer",
+   "mana_cost": "{2}{R}",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": 2,
+   "toughness": 3,
+   "is_tapped": false,
+   "turn_entered_battlefield": 7,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Elemental",
+    "Sorcerer"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Red"
+   ],
+   "base_grp_id": 106315
+  },
+  {
+   "instance_id": 288,
+   "grp_id": 106529,
+   "name": "Island",
+   "oracle_text": "({T}: Add {U}.)",
+   "type_line": "Basic Land — Island",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 8,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Island"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Blue"
+   ],
+   "base_grp_id": 106529
+  },
+  {
+   "instance_id": 292,
+   "grp_id": 106294,
+   "name": "Screeching Soulbreaker",
+   "oracle_text": "Flying\nWhenever this creature attacks, it deals 1 damage to each opponent and you gain 1 life.",
+   "type_line": "Creature — Siren Bard",
+   "mana_cost": "{2}{B}",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": 1,
+   "toughness": 4,
+   "is_tapped": true,
+   "turn_entered_battlefield": 9,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Siren",
+    "Bard"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "keywords": [
+    "flying"
+   ],
+   "colors": [
+    "Black"
+   ],
+   "base_grp_id": 106294
+  },
+  {
+   "instance_id": 298,
+   "grp_id": 106531,
+   "name": "Swamp",
+   "oracle_text": "({T}: Add {B}.)",
+   "type_line": "Basic Land — Swamp",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 10,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Swamp"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Black"
+   ],
+   "base_grp_id": 106531
+  },
+  {
+   "instance_id": 311,
+   "grp_id": 83679,
+   "name": "Swamp",
+   "oracle_text": "({T}: Add {B}.)",
+   "type_line": "Basic Land — Swamp",
+   "mana_cost": "",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 11,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Swamp"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Black"
+   ],
+   "base_grp_id": 83679
+  },
+  {
+   "instance_id": 312,
+   "grp_id": 106474,
+   "name": "Garruk, Veiled Butcher",
+   "oracle_text": "If a creature an opponent controls would die, exile it instead.\nUp to one target creature gets -4/-1 until your next turn.\nUp to one target creature gets <nobr>-4/-1</nobr> until your next turn.\nUp to one target creature gets -4/-1 until your next turn.\nEach player sacrifices a creature of their choice. If you sacrificed a creature this way, create a 4/4 green Beast creature token with trample.\nEach opponent discards two cards. For each opponent who didn't discard two nonland cards this way, you draw a card.",
+   "type_line": "Legendary Planeswalker — Garruk",
+   "mana_cost": "{3}{B}{B}",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": 11,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Planeswalker"
+   ],
+   "subtypes": [
+    "Garruk"
+   ],
+   "object_kind": "CARD",
+   "counters": {
+    "Loyalty": 11
+   },
+   "loyalty": 11,
+   "colors": [
+    "Black"
+   ],
+   "base_grp_id": 106474
+  },
+  {
+   "instance_id": 323,
+   "grp_id": 106531,
+   "name": "Swamp",
+   "oracle_text": "({T}: Add {B}.)",
+   "type_line": "Basic Land — Swamp",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 12,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Swamp"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Black"
+   ],
+   "base_grp_id": 106531
+  },
+  {
+   "instance_id": 331,
+   "grp_id": 106551,
+   "name": "Cadet",
+   "oracle_text": "",
+   "type_line": "Token Creature — Wizard Soldier",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 2,
+   "toughness": 2,
+   "is_tapped": false,
+   "turn_entered_battlefield": 12,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Wizard",
+    "Soldier"
+   ],
+   "object_kind": "TOKEN",
+   "counters": {},
+   "parent_instance_id": 327,
+   "base_grp_id": 106551
+  },
+  {
+   "instance_id": 335,
+   "grp_id": 79739,
+   "name": "Mountain",
+   "oracle_text": "({T}: Add {R}.)",
+   "type_line": "Basic Land — Mountain",
+   "mana_cost": "",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 13,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Mountain"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Red"
+   ],
+   "base_grp_id": 79739
+  },
+  {
+   "instance_id": 351,
+   "grp_id": 106467,
+   "name": "Traxos, Academy Guardian",
+   "oracle_text": "This spell costs {o2} less to cast if you've cast a noncreature spell this turn.\nFlying\nVigilance\nProwess",
+   "type_line": "Legendary Artifact Creature — Dragon Construct",
+   "mana_cost": "{3}{U}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 1,
+   "toughness": 5,
+   "is_tapped": false,
+   "turn_entered_battlefield": 14,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Artifact",
+    "Creature"
+   ],
+   "subtypes": [
+    "Dragon",
+    "Construct"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "keywords": [
+    "flying",
+    "vigilance"
+   ],
+   "colors": [
+    "Blue"
+   ],
+   "base_grp_id": 106467
+  },
+  {
+   "instance_id": 356,
+   "grp_id": 106437,
+   "name": "Theorix Annex",
+   "oracle_text": "This land enters tapped unless you control a planeswalker.\n{oT}: Add {oU} or {oB}.",
+   "type_line": "Land",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": true,
+   "turn_entered_battlefield": 14,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [],
+   "object_kind": "CARD",
+   "counters": {},
+   "color_production": [
+    "Blue",
+    "Black"
+   ],
+   "base_grp_id": 106437
+  },
+  {
+   "instance_id": 357,
+   "grp_id": 106281,
+   "name": "Dark Matter Manipulator",
+   "oracle_text": "When this creature enters, mill three cards.\nThis creature gets +2/+0 for every seven cards in your graveyard.\nThis creature gets <nobr>+2/+0</nobr> for every seven cards in your graveyard.\nThis creature gets +2/+0 for every seven cards in your graveyard.",
+   "type_line": "Creature — Human Warlock",
+   "mana_cost": "{B}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 3,
+   "toughness": 2,
+   "is_tapped": false,
+   "turn_entered_battlefield": 14,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Human",
+    "Warlock"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Black"
+   ],
+   "base_grp_id": 106281
+  },
+  {
+   "instance_id": 389,
+   "grp_id": 106276,
+   "name": "Apex Witchstalker",
+   "oracle_text": "Menace\nWhen this creature enters or dies, you gain 2 life.\nBasic landcycling {o2}",
+   "type_line": "Creature — Wolf",
+   "mana_cost": "{4}{B}{B}",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": 3,
+   "toughness": 3,
+   "is_tapped": false,
+   "turn_entered_battlefield": 15,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Wolf"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "keywords": [
+    "menace"
+   ],
+   "colors": [
+    "Black"
+   ],
+   "summoning_sickness": true,
+   "base_grp_id": 106276
+  },
+  {
+   "instance_id": 391,
+   "grp_id": 106555,
+   "name": "Jace",
+   "oracle_text": "Surveil 1.\nDraw a card.",
+   "type_line": "Token Planeswalker — Jace",
+   "mana_cost": "",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": 15,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Planeswalker"
+   ],
+   "subtypes": [
+    "Jace"
+   ],
+   "object_kind": "TOKEN",
+   "counters": {
+    "Loyalty": 1
+   },
+   "parent_instance_id": 384,
+   "loyalty": 1,
+   "colors": [
+    "Blue"
+   ],
+   "base_grp_id": 106555
+  },
+  {
+   "instance_id": 397,
+   "grp_id": 106299,
+   "name": "Void Extrapolator",
+   "oracle_text": "This creature enters prepared.\nThreshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard.\n<i>Threshold</i><nobr> —</nobr> This creature gets <nobr>+1/+1</nobr> as long as there are seven or more cards in your graveyard.\nThreshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard.",
+   "type_line": "Creature — Aetherborn Warlock",
+   "mana_cost": "{1}{B}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 3,
+   "toughness": 3,
+   "is_tapped": false,
+   "turn_entered_battlefield": 16,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Aetherborn",
+    "Warlock"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Black"
+   ],
+   "summoning_sickness": true,
+   "base_grp_id": 106299
+  }
+ ],
+ "hand": [],
+ "graveyard": [
+  {
+   "instance_id": 287,
+   "grp_id": 106268,
+   "name": "Sphinx's Approach",
+   "oracle_text": "Draw two cards. Then you may exile this spell and four cards named Sphinx's Approach from your graveyard. If you do, search your library for a Sphinx creature card, put it onto the battlefield, then shuffle.\nA deck can have any number of cards named Sphinx's Approach.",
+   "type_line": "Instant",
+   "mana_cost": "{1}{U}{U}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Instant"
+   ],
+   "subtypes": [],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Blue"
+   ],
+   "base_grp_id": 106268
+  },
+  {
+   "instance_id": 290,
+   "grp_id": 106529,
+   "name": "Island",
+   "oracle_text": "({T}: Add {U}.)",
+   "type_line": "Basic Land — Island",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Island"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "base_grp_id": 106529
+  },
+  {
+   "instance_id": 360,
+   "grp_id": 106294,
+   "name": "Screeching Soulbreaker",
+   "oracle_text": "Flying\nWhenever this creature attacks, it deals 1 damage to each opponent and you gain 1 life.",
+   "type_line": "Creature — Siren Bard",
+   "mana_cost": "{2}{B}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 1,
+   "toughness": 4,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Siren",
+    "Bard"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "keywords": [
+    "flying"
+   ],
+   "colors": [
+    "Black"
+   ],
+   "base_grp_id": 106294
+  },
+  {
+   "instance_id": 361,
+   "grp_id": 106529,
+   "name": "Island",
+   "oracle_text": "({T}: Add {U}.)",
+   "type_line": "Basic Land — Island",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Island"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "base_grp_id": 106529
+  },
+  {
+   "instance_id": 362,
+   "grp_id": 106529,
+   "name": "Island",
+   "oracle_text": "({T}: Add {U}.)",
+   "type_line": "Basic Land — Island",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Island"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "base_grp_id": 106529
+  },
+  {
+   "instance_id": 366,
+   "grp_id": 106433,
+   "name": "Room of Refuge",
+   "oracle_text": "This land enters tapped. As it enters, choose a color.\n{oT}: Add one mana of the chosen color.\n{o5}, {oT}, Sacrifice this land: Put two +1/+1 counters on target creature. Activate only as a sorcery.\n{o5}, {oT}, Sacrifice this land: Put two <nobr>+1/+1</nobr> counters on target creature. Activate only as a sorcery.\n{o5}, {oT}, Sacrifice this land: Put two +1/+1 counters on target creature. Activate only as a sorcery.",
+   "type_line": "Land",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [],
+   "object_kind": "CARD",
+   "counters": {},
+   "base_grp_id": 106433
+  },
+  {
+   "instance_id": 368,
+   "grp_id": 106531,
+   "name": "Swamp",
+   "oracle_text": "({T}: Add {B}.)",
+   "type_line": "Basic Land — Swamp",
+   "mana_cost": "",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Land"
+   ],
+   "subtypes": [
+    "Swamp"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "base_grp_id": 106531
+  },
+  {
+   "instance_id": 402,
+   "grp_id": 106480,
+   "name": "Proft, Sinister Mastermind",
+   "oracle_text": "Threshold — You can't cast this spell unless there are seven or more cards in your graveyard.\n<i>Threshold</i><nobr> —</nobr> You can't cast this spell unless there are seven or more cards in your graveyard.\nThreshold — You can't cast this spell unless there are seven or more cards in your graveyard.\nMenace\n{oB}, Discard this card: Target creature gets -3/-1 until end of turn.\n{oB}, Discard this card: Target creature gets <nobr>-3/-1</nobr> until end of turn.\n{oB}, Discard this card: Target creature gets -3/-1 until end of turn.",
+   "type_line": "Legendary Creature — Human Rogue",
+   "mana_cost": "{2}{B}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 5,
+   "toughness": 5,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Human",
+    "Rogue"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "keywords": [
+    "menace"
+   ],
+   "colors": [
+    "Black"
+   ],
+   "base_grp_id": 106480
+  },
+  {
+   "instance_id": 253,
+   "grp_id": 106298,
+   "name": "Theoretical Necromancer",
+   "oracle_text": "{o3oB}, Exile this card from your graveyard: Return another target creature card from your graveyard to your hand.",
+   "type_line": "Creature — Vampire Warlock",
+   "mana_cost": "{2}{B}",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": 4,
+   "toughness": 1,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Vampire",
+    "Warlock"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Black"
+   ],
+   "base_grp_id": 106298
+  },
+  {
+   "instance_id": 378,
+   "grp_id": 106284,
+   "name": "Extrapolate the Impossible",
+   "oracle_text": "You may reveal exactly two cards you own with different names from outside the game. An opponent chooses one of them. You put that card into your hand.",
+   "type_line": "Sorcery",
+   "mana_cost": "{1}{B}",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Sorcery"
+   ],
+   "subtypes": [],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Black"
+   ],
+   "base_grp_id": 106284
+  },
+  {
+   "instance_id": 392,
+   "grp_id": 106291,
+   "name": "Rewrite Regrets",
+   "oracle_text": "Return target creature or planeswalker card with mana value 6 or less from your graveyard to the battlefield.\nEmpower Jace 2.",
+   "type_line": "Sorcery",
+   "mana_cost": "{3}{B}",
+   "owner_seat_id": 1,
+   "controller_seat_id": 1,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Sorcery"
+   ],
+   "subtypes": [],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Black"
+   ],
+   "base_grp_id": 106291
+  }
+ ],
+ "exile": [
+  {
+   "instance_id": 319,
+   "grp_id": 106259,
+   "name": "Mindseeker Oculus",
+   "oracle_text": "When this creature enters, empower Jace 4.",
+   "type_line": "Creature — Homunculus",
+   "mana_cost": "{2}{U}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 2,
+   "toughness": 1,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Homunculus"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Blue"
+   ],
+   "base_grp_id": 106259
+  },
+  {
+   "instance_id": 345,
+   "grp_id": 106458,
+   "name": "Fblthp, Impossibly Lost",
+   "oracle_text": "When one or more of your opponents are dealt combat damage during your turn, draw two cards. If your library has no cards in it, you win the game. Fblthp's owner shuffles him into their library. (If you draw from an empty library this way, you still win the game.)\nWhen one or more of your opponents are dealt combat damage during your turn, draw two cards. If your library has no cards in it, you win the game. Fblthp's owner shuffles him into their library. <i>(If you draw from an empty library this way, you still win the game.)</i>\nWhen one or more of your opponents are dealt combat damage during your turn, draw two cards. If your library has no cards in it, you win the game. Fblthp's owner shuffles him into their library. (If you draw from an empty library this way, you still win the game.)",
+   "type_line": "Legendary Creature — Homunculus",
+   "mana_cost": "{1}{U}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 1,
+   "toughness": 1,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Homunculus"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Blue"
+   ],
+   "base_grp_id": 106458
+  },
+  {
+   "instance_id": 381,
+   "grp_id": 106385,
+   "name": "Prudent Fateseer",
+   "oracle_text": "This creature enters prepared.\nWhenever you scry or surveil, creatures you control get +1/+0 until end of turn. This ability triggers only once each turn.\nWhenever you scry or surveil, creatures you control get <nobr>+1/+0</nobr> until end of turn. This ability triggers only once each turn.\nWhenever you scry or surveil, creatures you control get +1/+0 until end of turn. This ability triggers only once each turn.",
+   "type_line": "Creature — Dwarf Wizard",
+   "mana_cost": "{1}{W/U}{W/U}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 1,
+   "toughness": 4,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Dwarf",
+    "Wizard"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "White",
+    "Blue"
+   ],
+   "base_grp_id": 106385
+  },
+  {
+   "instance_id": 394,
+   "grp_id": 106381,
+   "name": "Paradox Shaper",
+   "oracle_text": "At the beginning of your upkeep, if this creature isn't prepared, it becomes prepared.\n{o2}: Put target card from your graveyard on the bottom of your library.",
+   "type_line": "Creature — Octopus Wizard",
+   "mana_cost": "{1}{U/B}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 1,
+   "toughness": 3,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Octopus",
+    "Wizard"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Blue",
+    "Black"
+   ],
+   "base_grp_id": 106381
+  },
+  {
+   "instance_id": 403,
+   "grp_id": 106300,
+   "name": "Omit Variables",
+   "oracle_text": "Mill three cards.",
+   "type_line": "Sorcery",
+   "mana_cost": "{U/B}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": null,
+   "toughness": null,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Sorcery"
+   ],
+   "subtypes": [],
+   "object_kind": "CARD",
+   "counters": {},
+   "parent_instance_id": 397,
+   "colors": [
+    "Blue",
+    "Black"
+   ],
+   "is_copy": true,
+   "base_grp_id": 106300
+  },
+  {
+   "instance_id": 409,
+   "grp_id": 106252,
+   "name": "Cryotheory Adept",
+   "oracle_text": "Prowess\n{o3oU}, Exile this card from your graveyard: Tap target creature and put a stun counter on it. Activate only as a sorcery.",
+   "type_line": "Creature — Human Wizard",
+   "mana_cost": "{1}{U}",
+   "owner_seat_id": 2,
+   "controller_seat_id": 2,
+   "power": 2,
+   "toughness": 1,
+   "is_tapped": false,
+   "turn_entered_battlefield": -1,
+   "is_attacking": false,
+   "is_blocking": false,
+   "card_types": [
+    "Creature"
+   ],
+   "subtypes": [
+    "Human",
+    "Wizard"
+   ],
+   "object_kind": "CARD",
+   "counters": {},
+   "colors": [
+    "Blue"
+   ],
+   "base_grp_id": 106252
+  }
+ ],
+ "stack": [],
+ "command": [],
+ "zones": {
+  "opponent_hand_count": 1,
+  "library_count": 16,
+  "library_count_source": "bridge_total_card_count"
+ },
+ "deck_cards": [
+  106531,
+  106531,
+  106531,
+  106531,
+  106531,
+  106531,
+  106529,
+  106529,
+  106529,
+  106529,
+  106529,
+  106529,
+  106529,
+  106529,
+  106437,
+  106433,
+  106434,
+  106252,
+  106417,
+  106290,
+  106263,
+  106268,
+  106399,
+  106399,
+  106283,
+  106285,
+  106294,
+  106294,
+  106294,
+  106385,
+  106299,
+  106467,
+  106255,
+  106387,
+  106480,
+  106281,
+  106259,
+  106381,
+  106381,
+  106458
+ ]
+}
