@@ -24,6 +24,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from arenamcp.color_choice import color_options, color_selection_ids
 from arenamcp.decisions import TargetSlot, assign_target_slots
 
 logger = logging.getLogger(__name__)
@@ -1487,6 +1488,7 @@ class MacBridgeAdapter:
         response["select_n_list_type"] = enum_name(field(request, "ListType"))
         response["select_n_context"] = enum_name(field(request, "Context"))
         response["select_n_option_context"] = enum_name(field(request, "OptionContext"))
+        response["select_n_static_list"] = enum_name(field(request, "StaticList"))
         response["select_n_min"] = num(field(request, "MinSel"))
         response["select_n_max"] = num(field(request, "MaxSel"))
         response["select_n_weights"] = [num(weight) for weight in items(field(request, "Weights"))]
@@ -1507,6 +1509,28 @@ class MacBridgeAdapter:
             response["select_n_is_" + key] = bool(getters.get(getter))
         response["select_n_should_cancel"] = should_cancel
         response["can_pass"] = False
+        # "Choose a color" (Room of Refuge, live 2026-10-07): a Static
+        # StaticList_Colors request carries no Ids; the client answers
+        # SubmitSelection((uint)CardColor) White=1..Green=5 (color_choice.py).
+        is_color = getters.get("IsCardColorSelection") or getters.get("IsManaColorSelection")
+        color_ids = color_selection_ids(
+            list_type=response["select_n_list_type"],
+            static_list=response["select_n_static_list"],
+            context=response["select_n_context"],
+            ids=response["select_n_ids"],
+            is_color=True if is_color else None,
+        )
+        if color_ids is not None:
+            response["select_n_color_options"] = color_options(color_ids)
+            response["decision_context"] = {
+                "type": "choose_color",
+                "source_id": num(field(request, "SourceId")),
+                "ids": color_ids,
+                "options": [option["name"] for option in response["select_n_color_options"]],
+                "count": response["select_n_max"],
+                "min": response["select_n_min"],
+                "max": response["select_n_max"],
+            }
 
     def _shape_PayCostsRequest(self, request: dict, getters: dict, response: dict) -> None:
         selection = cost_selection_request(request)
@@ -1763,6 +1787,26 @@ class MacBridgeAdapter:
                 timeout,
             )
             return {"ok": True, "submitted_type": "CostSelection"}
+        if snapshot.request_class == "SelectNRequest":
+            shape: dict[str, Any] = {}
+            self._shape_SelectNRequest(snapshot.request, snapshot.getters, shape)
+            offered_colors = shape.get("select_n_color_options")
+            if offered_colors is not None:
+                allowed = {option["id"] for option in offered_colors}
+                minimum, maximum = shape["select_n_min"], max(1, shape["select_n_max"])
+                if (
+                    len(set(ids)) != len(ids)
+                    or not set(ids).issubset(allowed)
+                    or not minimum <= len(ids) <= maximum
+                ):
+                    raise AdapterError("Selection does not satisfy the colour choice")
+                # Colours are answered with SubmitSelection even when none is
+                # chosen (SelectColorWorkflow.SubmitSelections), never arbitrarily.
+                selection = UINTS(ids)
+                self._submit(
+                    snapshot, lambda ops, request: ops.call(request, "SubmitSelection", selection), timeout
+                )
+                return {"ok": True, "submitted_type": "SelectN"}
         if snapshot.request_class == "SelectNRequest" and not ids:
             self._submit(snapshot, lambda ops, request: ops.call(request, "SubmitArbitrary"), timeout)
             return {"ok": True, "submitted_type": "SelectN"}

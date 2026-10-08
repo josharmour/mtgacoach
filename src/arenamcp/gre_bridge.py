@@ -74,6 +74,8 @@ def _infer_specific_decision_type(
     request_class: str | None,
 ) -> str | None:
     """Infer a concrete decision type from generic bridge selection payloads."""
+    if _is_color_choice_context(existing_ctx, request_payload):
+        return "choose_color"
     values: list[str] = []
     for key in (
         "prompt",
@@ -127,7 +129,25 @@ def _infer_specific_decision_type(
     return None
 
 
+def _is_color_choice_context(existing_ctx: dict[str, Any], request_payload: Any) -> bool:
+    """The log tagged this SelectN as a colour choice, or the payload's static list is one."""
+    from arenamcp.color_choice import color_selection_ids
+
+    if str(existing_ctx.get("id_type") or "") == "Color" or existing_ctx.get("type") == "choose_color":
+        return True
+    payload = request_payload if isinstance(request_payload, dict) else {}
+    return (
+        color_selection_ids(
+            list_type=payload.get("listType") or existing_ctx.get("list_type"),
+            static_list=payload.get("staticList") or existing_ctx.get("static_list"),
+        )
+        is not None
+    )
+
+
 def _label_for_decision_type(decision_type: str, count: Any = None) -> str | None:
+    if decision_type == "choose_color":
+        return "Choose a Color"
     if decision_type == "scry":
         suffix = f" {count}" if count not in (None, "", 1) else ""
         return f"Scry{suffix}"
@@ -2126,6 +2146,11 @@ def enrich_snapshot_from_pending_response(
     bridge_decision_context = normalized["bridge_decision_context"]
 
     _apply_pending_decision_label(snapshot, request_type, request_class)
+    if (
+        request_type not in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+        and request_class not in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
+    ):
+        _drop_priority_window_actions(snapshot, request_type or request_class or "")
 
     decision_type = _get_bridge_decision_type(request_type, request_class)
     plugin_provided_type = bool(bridge_decision_context and bridge_decision_context.get("type"))
@@ -2336,6 +2361,53 @@ def _stamp_bridge_fields(
         snapshot[f"_bridge_{field}"] = value if value not in (None, [], {}) else None
 
 
+_PRIORITY_ACTION_PREFIXES = ("play land:", "cast ", "activate", "action: ", "pass")
+_PRIORITY_RAW_ACTION_TYPES = {
+    "ActionType_Play",
+    "ActionType_PlayMDFC",
+    "ActionType_Cast",
+    "ActionType_CastLeft",
+    "ActionType_CastRight",
+    "ActionType_Activate",
+    "ActionType_Activate_Mana",
+    "ActionType_Pass",
+}
+
+
+def _drop_priority_window_actions(snapshot: dict[str, Any], request: str) -> None:
+    """A non-ActionsAvailable request replaces the priority window's menu.
+
+    An empty bridge action list is authoritative there (CLAUDE.md): the old
+    Play/Cast/Pass entries cannot be submitted until Arena sends the next
+    ActionsAvailableReq. The log-side list survived a same-family SelectN →
+    SelectN overlay, so "Play Land: Swamp" was re-planned three times against
+    Room of Refuge's colour choice (live 2026-10-07 18:39). Log-derived
+    selection menus (e.g. "Choose Forest") are not priority actions and stay.
+    """
+    legal = snapshot.get("legal_actions") or []
+    raw = snapshot.get("legal_actions_raw") or []
+    stale = any(
+        str(entry).strip().lower().startswith(_PRIORITY_ACTION_PREFIXES)
+        and str(entry).strip().lower() != "cast normally"  # the casting-time default, not a priority cast
+        for entry in legal
+    ) or any(
+        isinstance(entry, dict) and str(entry.get("actionType") or "") in _PRIORITY_RAW_ACTION_TYPES
+        for entry in raw
+    )
+    if not stale:
+        return
+    logger.info(
+        "Bridge %s replaces the priority window: dropping %d stale legal action(s) (%d raw)",
+        request,
+        len(legal),
+        len(raw),
+    )
+    if "legal_actions" in snapshot:
+        snapshot["legal_actions"] = []
+    if "legal_actions_raw" in snapshot:
+        snapshot["legal_actions_raw"] = []
+
+
 def _clear_snapshot_for_no_pending(snapshot: dict[str, Any], bridge_connected: bool | None) -> None:
     """No bridge decision pending — clear stale decision/legal-action hints.
 
@@ -2467,6 +2539,7 @@ def _decision_context_family(context: dict[str, Any]) -> str | None:
         "return",
         "select_n",
         "choose",
+        "choose_color",
         "choose_creature",
         "choose_land",
         "choose_enchantment",

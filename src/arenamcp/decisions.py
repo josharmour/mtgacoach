@@ -717,6 +717,10 @@ def _build_select_n(
 ) -> PendingDecision | None:
     ids = poll.get("select_n_ids") or poll.get("search_candidates") or []
     is_search = "Search" in rtype or "Search" in str(poll.get("request_class") or "")
+    if not is_search:
+        color_decision = _build_color_choice(poll, request_id, can_cancel, source_label, resolve_instance)
+        if color_decision is not None:
+            return color_decision
     weights = poll.get("select_n_weights") or []
     if weights and len(weights) != len(ids):
         return None
@@ -777,6 +781,72 @@ def _build_select_n(
         source_label=source_label,
         min_weight=min_weight,
         max_weight=max_weight,
+    )
+
+
+def _prompt_card_instance(poll: dict[str, Any]) -> int:
+    """The ``CardId`` prompt parameter of the request (the card asking), or 0."""
+    payload = poll.get("request_payload") or {}
+    prompt = payload.get("prompt") if isinstance(payload, dict) else None
+    parameters = prompt.get("parameters") if isinstance(prompt, dict) else None
+    for parameter in parameters or []:
+        if isinstance(parameter, dict) and str(parameter.get("parameterName") or "") == "CardId":
+            try:
+                return int(parameter.get("numberValue") or parameter.get("value") or 0)
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def _build_color_choice(
+    poll: dict[str, Any],
+    request_id: tuple[int, int],
+    can_cancel: bool,
+    source_label: str,
+    resolve_instance: Callable[[int], str] | None,
+) -> PendingDecision | None:
+    """A "choose a color" SelectN: options are the colour ids, not card ids.
+
+    Arena sends no ids for the static colour list (Room of Refuge, live
+    2026-10-07 18:39), so the generic builder saw nothing to offer and the
+    autopilot fell back to stale priority actions. See color_choice.py.
+    """
+    from arenamcp.color_choice import CARD_COLORS, COLOR_LETTERS, color_selection_ids
+
+    is_color = bool(poll.get("select_n_is_card_color") or poll.get("select_n_is_mana_color")) or None
+    color_ids = color_selection_ids(
+        list_type=poll.get("select_n_list_type"),
+        static_list=poll.get("select_n_static_list"),
+        context=poll.get("select_n_context"),
+        ids=poll.get("select_n_ids") or [],
+        is_color=is_color,
+    )
+    if color_ids is None:
+        return None
+    options = tuple(
+        DecisionOption(
+            option_id=f"sel:{color_id}",
+            label=CARD_COLORS[color_id],
+            meta={
+                "choice": "color",
+                "color": COLOR_LETTERS.get(CARD_COLORS[color_id], "C"),
+                "color_id": color_id,
+            },
+        )
+        for color_id in color_ids
+    )
+    if not source_label and resolve_instance is not None:
+        asking = _prompt_card_instance(poll)
+        if asking:
+            source_label = resolve_instance(asking)
+    return PendingDecision(
+        request_id=request_id,
+        request_type="SelectN",
+        options=options,
+        min_select=int(poll.get("select_n_min", 1)),
+        max_select=max(1, int(poll.get("select_n_max", 1))),
+        can_cancel=can_cancel,
+        source_label=source_label,
     )
 
 

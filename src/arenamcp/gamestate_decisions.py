@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from arenamcp.card_db import is_unknown_card_name
+from arenamcp.color_choice import color_options, color_selection_ids
 from arenamcp.gamestate_persistence import mark_match_ended
 from arenamcp.gamestate_transforms import (
     _coerce_int,
@@ -650,9 +651,37 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
         if prior_prompt:
             decision_text = game_state.decision_context.get("text", "Select Items")
 
+    # A SelectNReq replaces the priority window: its Play/Cast/Pass menu is
+    # gone until Arena sends the next ActionsAvailableReq. Keeping it let the
+    # autopilot re-plan "Play Land: Swamp" three times against Room of
+    # Refuge's colour choice (live 2026-10-07 18:39).
+    if game_state.legal_actions or game_state.legal_actions_raw:
+        logger.info(
+            "Clearing stale legal actions for Select N (%d summarized, %d raw)",
+            len(game_state.legal_actions),
+            len(game_state.legal_actions_raw),
+        )
+        game_state.legal_actions = []
+        game_state.legal_actions_raw = []
+
+    # "As it enters, choose a color": a static colour list with no ids
+    # (color_choice.py). The options are colour ids, never card ids.
+    id_type = req.get("idType") or ""
+    color_ids = color_selection_ids(
+        list_type=req.get("listType"),
+        static_list=req.get("staticList"),
+        context=req.get("context"),
+        ids=option_ids,
+    )
+    if color_ids is not None:
+        selection_type = "choose_color"
+        decision_text = "Choose a Color"
+        option_ids = color_ids
+        id_type = "Color"
+
     # Resolve option IDs to card names (handles both game objects and direct grp_ids from library searches)
-    option_cards: list[str] = []
-    for oid in option_ids[:20]:
+    option_cards: list[str] = [option["name"] for option in color_options(color_ids or [])]
+    for oid in option_ids[:20] if color_ids is None else []:  # colours are named above
         grp_id = 0
         obj = game_state.game_objects.get(oid)
         if obj and obj.grp_id:
@@ -692,7 +721,9 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
         # IDs (e.g. milled-card pick from a library reveal) or grp IDs
         # (e.g. printing-based choice).
         "option_ids": option_ids,
-        "id_type": req.get("idType") or "",
+        "id_type": id_type,
+        "list_type": req.get("listType") or "",
+        "static_list": req.get("staticList") or "",
     }
     return False
 

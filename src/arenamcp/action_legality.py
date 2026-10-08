@@ -176,6 +176,15 @@ class _ActionLegalityMixin:
                 select_card_names=[card] if card else [],
                 card_name=card,
             )
+        if lower.startswith("choose color:"):
+            # rules_engine's colour menu ("Choose color: Blue") answers a
+            # SelectN over colour ids (color_choice.py) — never a target.
+            color = self._strip_decoration(act.split(":", 1)[1])
+            return GameAction(
+                action_type=ActionType.SELECT_N,
+                select_card_names=[color] if color else [],
+                card_name=color,
+            )
         if lower.startswith("x = "):
             # Casting-time X chooser entry ("X = 3") — P3-1.
             try:

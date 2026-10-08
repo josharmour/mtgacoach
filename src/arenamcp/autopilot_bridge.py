@@ -1756,6 +1756,29 @@ class _BridgeSubmitMixin:
         if not desired_names and action.card_name:
             desired_names = [action.card_name.lower().strip()]
 
+        decision_context = game_state.get("decision_context") or {}
+        offered_colors = [option.get("id") for option in pending.get("select_n_color_options") or []]
+        if not offered_colors and decision_context.get("type") == "choose_color":
+            offered_colors = list(decision_context.get("option_ids") or decision_context.get("ids") or [])
+        if offered_colors:
+            # "Choose a color" (color_choice.py): names map to CardColor ids,
+            # never to cards — a card-name scan would submit an empty pick.
+            from arenamcp.color_choice import color_ids_for_names
+
+            color_ids = color_ids_for_names(desired_names, offered_colors)
+            if not color_ids:
+                logger.info(f"GRE bridge select_n: {desired_names} is not an offered colour {offered_colors}")
+                return None
+            if bridge.submit_selection(color_ids):
+                self._log_execution_path(
+                    ExecutionPath.GRE_AWARE,
+                    f"select_n: colour {color_ids} (req={req_class or req_type}) via GRE bridge",
+                )
+                return ClickResult(True, 0, 0, "select_n", "GRE bridge")
+            logger.info("GRE bridge select_n (colour) failed, surfacing manual-required to caller")
+            self._gre_bridge_failed_methods.add("select_n")
+            return None
+
         # Decide whether the request takes instance IDs or grp IDs. For
         # most library-reveal style selections (Lluwen, Scry, Surveil,
         # mill-then-pick) the IdType is InstanceId — two copies of the

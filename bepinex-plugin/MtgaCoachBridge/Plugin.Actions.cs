@@ -715,6 +715,7 @@ namespace MtgaCoachBridge
                 resp["select_n_list_type"] = selectNReqExpose.ListType.ToString();
                 resp["select_n_context"] = selectNReqExpose.Context.ToString();
                 resp["select_n_option_context"] = selectNReqExpose.OptionContext.ToString();
+                resp["select_n_static_list"] = selectNReqExpose.StaticList.ToString();
                 resp["select_n_min"] = selectNReqExpose.MinSel;
                 resp["select_n_max"] = (int)selectNReqExpose.MaxSel;
                 resp["select_n_can_cancel"] = selectNReqExpose.ShouldCancel;
@@ -728,6 +729,24 @@ namespace MtgaCoachBridge
                 resp["select_n_is_triggered_ability"] = selectNReqExpose.IsTriggeredAbilitySelection;
                 resp["select_n_is_stacking_decision"] = selectNReqExpose.IsStackingDecision;
                 resp["select_n_should_cancel"] = selectNReqExpose.ShouldCancel;
+                if (selectNReqExpose.IsCardColorSelection || selectNReqExpose.IsManaColorSelection)
+                {
+                    // "As it enters, choose a color" (Room of Refuge): a Static
+                    // StaticList_Colors request carries no Ids; the client answers
+                    // SubmitSelection((uint)CardColor) White=1 .. Green=5
+                    // (SelectColorWorkflow). A StaticSubset lists the allowed ids.
+                    var colorArr = new JArray();
+                    var offered = new List<uint>(selectNReqExpose.Ids);
+                    if (offered.Count == 0) offered.AddRange(new uint[] { 1, 2, 3, 4, 5 });
+                    foreach (var colorId in offered)
+                    {
+                        var entry = new JObject();
+                        entry["id"] = (int)colorId;
+                        entry["name"] = ((CardColor)colorId).ToString();
+                        colorArr.Add(entry);
+                    }
+                    resp["select_n_color_options"] = colorArr;
+                }
                 resp["can_pass"] = false;
             }
             else if (request is GroupRequest groupReqExpose)
