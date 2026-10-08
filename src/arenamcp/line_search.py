@@ -111,8 +111,9 @@ _ROOT_TOKEN_IDS = 800_000_000
 
 # ('land', (colors, enters_tapped)), ('cast', iid, mode), ('cycle', iid),
 # ('nocast',), ('attack', frozenset(ids)), ('noattack',), ('block', variant).
-# Cast and cycle ids are the lowest instance id of that card name in hand; a
-# cast carries both its mode key and ('cast', iid, None).
+# Cast and cycle ids are the lowest instance id of that card name in hand (a
+# commander's: its own command-zone id); a cast carries both its mode key and
+# ('cast', iid, None).
 ActionKey = tuple
 
 
@@ -804,6 +805,9 @@ def action_key(option: Any, state: dict) -> ActionKey | None:
         return None
     if action in ("play", "playland"):
         return ("land", (frozenset(_land_colors(source)), _enters_tapped(source)))
+    if zone == "command":
+        # Our commander, cast from the command zone: the search keys it by its own instance id.
+        return ("cast", _int(source.get("instance_id")) or 0, None) if action == "cast" else None
     if zone != "hand":
         return None
     if action == "cast":
@@ -888,7 +892,8 @@ def evaluate_plan(
 ) -> PlanEvaluation:
     """A game plan's turns replayed through the search: its line, each turn's mana and the issues.
 
-    Names map to hand instances, first unused copy first. A cast may carry a
+    Names map to hand instances, first unused copy first (our commander: the
+    command-zone card, until a planned turn casts it). A cast may carry a
     note, as the plan's own text writes it: "Archive Arbiter (choose: gain 4
     life)", "Archive Arbiter (gain 4 life)" (CANDIDATE LINES), "Shock (on
     Cadet)", "Shock (choose: …, on opponent)"; or a step may map card names to
@@ -941,7 +946,11 @@ def _evaluate_plan(result: LineSearchResult, steps: list[dict]) -> PlanEvaluatio
             name, mode, aim = _cast_entry(str(entry), {_plain(search.spells[i].name) for i in hand})
             index = next((i for i in hand if _plain(search.spells[i].name) == _plain(name)), None)
             if index is None:
-                issues.append(f"{label}: {name} is not in hand")
+                commander = any(
+                    hs.spell.zone == "command" and _plain(hs.name) == _plain(name) for hs in search.spells
+                )
+                where = "in the command zone (cast earlier)" if commander else "in hand"
+                issues.append(f"{label}: {name} is not {where}")
                 continue
             hs = search.spells[index]
             mode = mode or next((str(m) for k, m in noted_modes.items() if _plain(k) == _plain(hs.name)), "")

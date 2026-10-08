@@ -18,7 +18,7 @@ from typing import Any
 from arenamcp.backend_health import is_backend_error_text
 from arenamcp.decisions import expand_target_selection
 from arenamcp.match_context import STRATEGIC_POLICY, prepare_match_context, with_deck_reference
-from arenamcp.play_safety import filter_play_options, find_source, unsafe_play_reason
+from arenamcp.play_safety import filter_play_options, find_source, shrink_note, unsafe_play_reason
 from arenamcp.target_effects import (
     effect_mentions_harm,
     source_effect_text,
@@ -2875,7 +2875,14 @@ class ActionPlanner(_ActionLegalityMixin):
         "the battlefield does not trigger 'when you cast' abilities. Consider cost and time to cast "
         "cards going to hand, and do not assume an unchosen spell mode such as entwine is active. "
         "When passing your main phase, explain the concrete constraint (unpayable creatures, "
-        "no useful targets, or holding interaction), and consider all playable lands and useful payable plays."
+        "no useful targets, or holding interaction), and consider all playable lands and useful payable plays. "
+        "TEMPORARY EFFECTS: 'until end of turn' -X/-Y or +X/+Y expires at the end of THIS turn; on your own "
+        "turn outside combat it does nothing against their attack, so use it only when it kills now "
+        "(toughness <= Y) or in this turn's combat. SEQUENCING: each option is payable alone — casting one "
+        "spell can leave another unpayable (a cheaper spell after a bigger one, or a card castable only now, "
+        "such as under threshold), so order the plays you want. A sorcery-speed cast missing only while "
+        "your own spell is on the stack returns once it resolves: pass to resolve it rather than discarding "
+        "that card. Never discard a castable card for an effect that kills nothing."
     )
 
     def plan_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
@@ -2948,6 +2955,18 @@ class ActionPlanner(_ActionLegalityMixin):
             if decision.request_type == "Search" and decision.selection_is_valid([]):
                 return []
             return [DECLINE_DECISION]
+        if decision.request_type == "SelectN":
+            # "As it enters, choose a color" (Room of Refuge, live 2026-10-07):
+            # the colour our hand needs and our lands lack is a counting job.
+            from arenamcp.color_choice import pick_color
+
+            color = pick_color(decision, game_state)
+            if color is not None and color.obvious:
+                self._last_decision_option_ids = [color.option_id]
+                self._last_decision_reasoning = color.reason
+                self._last_decision_trace = {"policy": "color_choice", "validated_ids": [color.option_id]}
+                logger.info("typed-decision: choosing %s without an LLM choice", color.reason)
+                return [color.option_id]
         if decision.request_type == "Search" and any(
             option.meta.get("identity_known") is False for option in decision.options
         ):
@@ -2988,6 +3007,8 @@ class ActionPlanner(_ActionLegalityMixin):
                     chosen = meant[:1]
                     self._last_decision_option_ids = chosen
             if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
+                chosen = self._reject_false_kill_claim(decision, game_state, chosen)
+            if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
                 chosen = self._apply_role_guard(decision, game_state, chosen)
             if chosen and decision.min_weight is not None:
                 chosen = list(dict.fromkeys(chosen))
@@ -2999,6 +3020,8 @@ class ActionPlanner(_ActionLegalityMixin):
                 chosen = self._gate_harmful_llm_target_picks(decision, game_state, chosen)
                 if chosen not in sentinels:
                     chosen = self._prefer_lethal_damage_target(decision, game_state, chosen)
+                if chosen not in sentinels:
+                    chosen = self._verify_shrink_pick(decision, game_state, chosen)
                 if chosen not in sentinels:
                     chosen = self._avoid_unpayable_ward_targets(decision, game_state, chosen)
                 self._last_decision_trace["validated_ids"] = [] if chosen in sentinels else chosen
@@ -3044,6 +3067,16 @@ class ActionPlanner(_ActionLegalityMixin):
                 logger.info(f"plan_decision_options: controller-aware target fallback picked {picked}")
                 return picked
             return [DECLINE_DECISION]
+        if decision.request_type == "SelectN":
+            from arenamcp.color_choice import pick_color
+
+            color = pick_color(decision, game_state)
+            if color is not None:
+                # Never White-by-position: the best-scoring colour, even when close.
+                self._last_decision_option_ids = [color.option_id]
+                self._last_decision_reasoning = color.reason
+                logger.info("plan_decision_options: colour fallback picked %s", color.reason)
+                return [color.option_id]
         return self.deterministic_option_pick(decision)
 
     def _board_math_fallback(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
@@ -3587,6 +3620,81 @@ class ActionPlanner(_ActionLegalityMixin):
         logger.warning("Retargeting: %d damage does not kill %s; %s dies instead", damage, name, best[3])
         return [best[2]]
 
+    def _opposing_creatures(self, game_state: dict[str, Any]) -> list[dict[str, Any]]:
+        local_seat, controllers = self._battlefield_controllers(game_state)
+        return [
+            card
+            for card in game_state.get("battlefield", []) or []
+            if local_seat is not None
+            and controllers.get(_as_int(card.get("instance_id"))) not in (None, local_seat)
+            and "creature" in str(card.get("type_line") or "").lower()
+        ]
+
+    def _reject_false_kill_claim(
+        self, decision: Any, game_state: dict[str, Any], chosen: list[str]
+    ) -> list[str]:
+        """Drop a lone shrink/burn play whose reasoning claims a kill the effect cannot make.
+
+        2026-10-07 18:33:29 (bug_20261007_183358): "Discarding uncastable
+        Proft for {B} kills Hallway Heckler" — -3/-1 leaves a 2/3 at -1/2.
+        The deterministic verdict wins: the empty answer falls through to
+        the board-math fallback, which never picks an activation.
+        """
+        from arenamcp.play_safety import claimed_kills, kill_verdict, play_kill_reach
+
+        option = decision.find(chosen[0])
+        meta = (option.meta if option is not None else None) or {}
+        action_type = str(meta.get("actionType") or "").removeprefix("ActionType_").lower()
+        if action_type not in ("cast", "activate"):
+            return chosen
+        card = find_source(game_state, meta)
+        reach = play_kill_reach(card, activation=action_type == "activate", metadata=meta)
+        if reach is None:
+            return chosen
+        victims = claimed_kills(self._last_decision_reasoning, self._opposing_creatures(game_state))
+        survivors = [victim for victim in victims if kill_verdict(reach, victim) is False]
+        if not survivors:
+            return chosen
+        names = ", ".join(f"{v.get('name')} ({v.get('power')}/{v.get('toughness')})" for v in survivors)
+        logger.warning(
+            "typed-decision: the reasoning claims %s %s but %s of %s cannot kill it; not playing %s (%s)",
+            "kills" if len(survivors) == 1 else "kill",
+            names,
+            f"-X/-{reach[1]}" if reach[0] == "shrink" else f"{reach[1]} damage",
+            card.get("name") or chosen[0],
+            chosen[0],
+            self._last_decision_reasoning[:160],
+        )
+        if isinstance(self._last_decision_trace, dict):
+            self._last_decision_trace["false_kill_claim"] = [v.get("name") for v in survivors]
+        return []
+
+    def _verify_shrink_pick(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> list[str]:
+        """Hold a model's -N/-N target to the kill check when it claims a kill or no combat can use a survivor.
+
+        2026-10-07 18:33:31: Proft's -3/-1 was aimed at the 6/4 Apex Witchstalker
+        "to remove the biggest crackback threat" in our main phase; it wore off
+        at our end step. Their turn, or our combat under way, keeps the pick.
+        """
+        from arenamcp.play_safety import claimed_kills, shrink_has_use_without_kill
+
+        if not any(str(oid).startswith("tgt:") for oid in chosen):
+            return chosen
+        claims = claimed_kills(self._last_decision_reasoning, self._opposing_creatures(game_state))
+        if not claims and shrink_has_use_without_kill(game_state):
+            return chosen
+        verdict = self._prefer_lethal_shrink_target(decision, game_state, chosen)
+        if verdict != chosen:
+            logger.warning(
+                "typed-decision: %s; overriding the model's %s (%s)",
+                "its claimed kill is not borne out by the board"
+                if claims
+                else "a -N/-N survivor on our turn outside combat recovers before their attack",
+                chosen,
+                self._last_decision_reasoning[:160],
+            )
+        return verdict
+
     def targeting_fallback_choice(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         """The model gave no usable target: the controller-aware pick, aimed so removal kills.
 
@@ -4037,10 +4145,12 @@ class ActionPlanner(_ActionLegalityMixin):
                 note += linked_cast_note(game_state, o.meta)
                 note += ward_cast_note(game_state, o.meta, land_drop=land_drop)
                 note += power_only_note((find_source(game_state, o.meta) or {}).get("oracle_text"))
+                note += shrink_note(game_state, find_source(game_state, o.meta) or {}, activation=False)
             if decision.request_type == "CastingTimeOptions":
                 note += power_only_note(label)
             if o.meta.get("actionType") == "ActionType_Activate":
                 source = find_source(game_state, o.meta)
+                note += shrink_note(game_state, source, activation=True, metadata=o.meta)
                 note += " " + json.dumps(
                     {
                         "manaCost": o.meta.get("manaCost"),
@@ -4336,8 +4446,10 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
     Theoretical Necromancer. This applies only on our own main phase with an
     empty stack; elsewhere the land-else-pass pick stands (no blind
     instant-speed plays). It is recomputed every window, so the next
-    scheduled spell follows from the new board. It never picks an unpayable
-    option, an X spell, an activation, or a counterspell / combat trick.
+    scheduled spell follows from the new board. When the searched best line
+    casts nothing this turn (holding is never the fallback's choice), the
+    greedy schedule's casts stand in. It never picks an unpayable option, an
+    X spell, an activation, or a counterspell / combat trick.
 
     Returns ``(option_ids, reason)``.
     """
@@ -4348,6 +4460,7 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
         return fallback, "outside our main phase only a land drop or a pass is safe"
     assessment, option_role = None, None
     step, plan_text, scheduled = None, "", set()
+    greedy: set[str] = set()
     try:
         from arenamcp.board_assessment import assess, option_role
 
@@ -4356,6 +4469,15 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
             first = assessment.lookahead[0]
             plan_text, scheduled = _line_text(first), set(first.casts)
             step = first
+            # The searched best line may hold every spell this turn (the opponent policy
+            # values our crackback, so a line that attacks and casts nothing can edge out
+            # the cast: 2026-10-07, this very board after Necromancer resolved). Without
+            # the model, holding is never the fallback: the greedy schedule's T casts
+            # (the search's pinned baseline) stand in when the best line casts nothing.
+            if not scheduled:
+                baseline = getattr(getattr(assessment, "line_search", None), "baseline", None)
+                steps = getattr(baseline, "steps", None) or ()
+                greedy = set(getattr(steps[0], "casts", ()) or ()) if steps else set()
     except Exception as error:  # the strategic layer never blocks a decision
         logger.debug("board-math fallback: no assessment: %s", error)
         assessment = None
@@ -4391,7 +4513,7 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
         if role in _REACTIVE_CAST_ROLES:
             continue
         if step is not None:
-            if name not in scheduled:
+            if name not in scheduled and name not in greedy:
                 continue
         elif assessment is not None or role not in ("creature", "planeswalker"):
             continue
@@ -4400,6 +4522,12 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
         # Most expensive first: Arena's autotap then keeps cheaper colours open
         # for the rest of the line, re-planned from the new board next window.
         _, option = max(picks, key=lambda item: item[0])
+        if step is not None and not scheduled:
+            casts = sorted(greedy)
+            plan_text = (
+                "the best searched line holds this turn, so the greedy schedule's cast stands in: "
+                + (", ".join(casts[:-1]) + " and " + casts[-1] if len(casts) > 1 else casts[0])
+            )
         return [option.option_id], plan_text or "no board assessment, so the biggest payable creature"
     if any(option.option_id == "pass" for option in options):
         return ["pass"], plan_text or "nothing safe to cast"
@@ -4533,16 +4661,23 @@ def board_math_legacy_plan(
 ) -> ActionPlan:
     """:func:`board_math_option_pick` for the legacy legal-action-string path.
 
-    Only "Play Land: X", "Cast X" (from hand; payable only with "[OK]") and
-    "Pass" take part. Returns an empty plan when none of them is legal, so the
-    caller's other nets (safe defaults, manual-required) still apply.
+    Only "Play Land: X", "Cast X" (from hand, or our commander from the command
+    zone; payable only with "[OK]") and "Pass" take part. Returns an empty plan
+    when none of them is legal, so the caller's other nets (safe defaults,
+    manual-required) still apply.
     """
     from arenamcp.decisions import DecisionOption, PendingDecision
 
     turn = int(((game_state.get("turn") or {}).get("turn_number")) or 0)
     plan = ActionPlan(trigger=trigger, turn_number=turn, fallback_reason=fallback_reason)
     hand: dict[str, dict] = {}
-    for card in game_state.get("hand") or []:
+    cards = list(game_state.get("hand") or [])
+    if game_state.get("command"):
+        # Our commanders in the command zone: the board math casts them like hand cards.
+        from arenamcp.board_model import our_commanders
+
+        cards += [c.card for c in our_commanders(game_state)]
+    for card in cards:
         if isinstance(card, dict) and card.get("name"):
             hand.setdefault(str(card["name"]).casefold(), card)
     options: list[Any] = []

@@ -420,6 +420,23 @@ def _card_names(cards: list) -> dict[str, dict]:
     return names
 
 
+def _our_commanders(state: dict) -> list:
+    """Our commanders in the command zone, priced now (``board_model.our_commanders``); [] outside
+    commander games."""
+    if not state.get("command"):
+        return []
+    from arenamcp.board_model import our_commanders
+
+    return our_commanders(state)
+
+
+def _castable_cards(state: dict) -> list[dict]:
+    """The cards a plan may cast besides flashback: our hand, then our commanders in the command
+    zone (cast like hand cards)."""
+    hand = [c for c in state.get("hand") or [] if isinstance(c, dict)]
+    return hand + [c.card for c in _our_commanders(state)]
+
+
 def _mentions(text: str, name: str) -> bool:
     return bool(name) and re.search(rf"(?:^| ){re.escape(name)}(?: |$)", _plain(text)) is not None
 
@@ -467,8 +484,9 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
       has more than a handful of cards; wins naming a card that is still in the
       library are dropped unless labelled as a draw. If none survive, a
       grounded win condition from the assessment replaces them.
-    * turn plan: casts must be in hand (or flashback-able from our graveyard),
-      used once, and fit that turn's mana budget and colours; a library card is
+    * turn plan: casts must be in hand (or flashback-able from our graveyard, or
+      our commander in the command zone at its cost now, tax included), used
+      once, and fit that turn's mana budget and colours; a library card is
       moved to "hold: if drawn: X"; the most expensive excess is trimmed. With
       the line search, each turn's budget follows the plan's own land drops.
       A creature cast that turn (without haste) is dropped from its attack.
@@ -605,6 +623,10 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
 
     hand = [c for c in state.get("hand") or [] if isinstance(c, dict)]
     hand_names = _card_names(hand)
+    # Our commanders in the command zone are cast like hand cards, at their cost now (tax included).
+    commanders = _our_commanders(state)
+    command_names = _card_names([c.card for c in commanders])
+    command_costs = {id(c.card): c.cost for c in commanders}
     local = state.get("local_seat_id") or next(
         (p.get("seat_id") for p in state.get("players") or [] if isinstance(p, dict) and p.get("is_local")),
         None,
@@ -651,13 +673,23 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
             # "Archive Arbiter (gain 4 life)" from CANDIDATE LINES, the line check's own
             # "X (choose: …)" / "X (on Y)" and "landcycle X" name the card in hand.
             base, note, cycle = _cast_parts(
-                str(name), lambda n: _named_card(n, hand_names) or _named_card(n, grave_names)
+                str(name),
+                lambda n: (
+                    _named_card(n, hand_names) or _named_card(n, grave_names) or _named_card(n, command_names)
+                ),
             )
             card = _named_card(base, hand_names)
             cost_text = None
             if card is None and not cycle:
                 card = _named_card(base, grave_names)
                 cost_text = _flashback_cost(card) if card else None
+            if card is None and not cycle:
+                card = _named_card(base, command_names)
+                cost_text = command_costs.get(id(card)) if card else None
+                if card is not None and not cost_text:
+                    issues.append(
+                        f"{label}: cost of {card.get('name')} unknown — not checked against the mana"
+                    )
             if card is None:
                 if _plain(base) in library_only or _plain(base.split(",")[0]) in library_only:
                     holds.append(f"if drawn: {base}")
@@ -703,9 +735,10 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
             # when it is still unused and affordable after this plan's earlier turns.
             fill = []
             for name in budget.casts:
-                card = hand_names.get(_plain(name))
+                card = hand_names.get(_plain(name)) or command_names.get(_plain(name))
                 if card is not None and id(card) not in used:
-                    info = hand_card(card)
+                    cost = command_costs.get(id(card))
+                    info = hand_card(card if cost is None else dict(card, mana_cost=cost))
                     fill.append((str(card.get("name")), info.mana_value, info.pips, card))
             total = sum(c[1] for c in fill)
             if (
@@ -810,11 +843,14 @@ def _is_creature_card(card: dict) -> bool:
 
 
 def _our_creature_names(state: dict) -> list[str]:
-    """Our creatures on the battlefield and the creature cards in our hand, by name."""
+    """Our creatures on the battlefield and the creature cards in our hand and command zone, by name."""
     local = _local_seat(state)
     names: list[str] = []
-    for zone in ("battlefield", "hand"):
-        for card in state.get(zone) or []:
+    zones = {"battlefield": state.get("battlefield"), "hand": state.get("hand")}
+    if state.get("command"):
+        zones["command"] = [c.card for c in _our_commanders(state)]
+    for zone, cards in zones.items():
+        for card in cards or []:
             if not isinstance(card, dict) or not card.get("name") or not _is_creature_card(card):
                 continue
             if (
@@ -965,7 +1001,7 @@ def _plan_eval_steps(
     from arenamcp.line_search_moves import LABELS
 
     hand = [c for c in state.get("hand") or [] if isinstance(c, dict) and c.get("name")]
-    hand_names = _card_names(hand)
+    hand_names = _card_names(_castable_cards(state))
     lands_left = [c for c in hand if _is_hand_land(c)]
     creatures = _our_creature_names(state)
     lookahead = list(getattr(assessment, "lookahead", None) or [])
@@ -1090,7 +1126,7 @@ def _unchecked_plan(plan: GamePlan, evaluation: Any, result: Any, state: dict) -
     burn spell) is checked with :func:`unmodelled_effect` too.
     """
     found = [str(entry) for entry in getattr(evaluation, "unmodelled", None) or []]
-    hand = _card_names([c for c in state.get("hand") or [] if isinstance(c, dict)])
+    hand = _card_names(_castable_cards(state))
     for step in plan.turn_plan:
         for entry in step.get("cast") or []:
             name, _note, cycle = _cast_parts(str(entry), lambda n: _named_card(n, hand))
@@ -1137,7 +1173,7 @@ def _override_blocker(result: Any, line: Any, best: Any, state: dict) -> str:
     from arenamcp.line_search_moves import bullets, classify
 
     step = best.steps[0] if best.steps else None
-    hand = _card_names([c for c in state.get("hand") or [] if isinstance(c, dict)])
+    hand = _card_names(_castable_cards(state))
     for name, _mode in getattr(step, "modes", ()) or ():
         card = _named_card(name, hand) or {}
         modes = bullets(str(card.get("oracle_text") or ""))
@@ -1181,8 +1217,8 @@ def _replace_t_step(
     # that taps 6 of 7): the best line's own held instants, if any.
     step["hold"] = ", ".join(new.held)[:120]
     step["mana"] = new.mana
-    # Each hand card once across the plan: later turns lose what T now uses.
-    in_hand = Counter(_plain(c.get("name")) for c in state.get("hand") or [] if isinstance(c, dict))
+    # Each hand card (and commander) once across the plan: later turns lose what T now uses.
+    in_hand = Counter(_plain(c.get("name")) for c in _castable_cards(state))
     left = in_hand - Counter(_plain(name) for name in [*new.casts, *new.cycles, new.land] if name)
     for later in [s for s in plan.turn_plan if s.get("turn", 0) > step["turn"]]:
         kept = []
@@ -1221,11 +1257,17 @@ def _move_displaced(plan: GamePlan, best: Any, displaced: list[str], state: dict
     step = next((s for s in plan.turn_plan if s.get("turn") == nxt.turn), None)
     if step is None:
         return
-    hand = _card_names([c for c in state.get("hand") or [] if isinstance(c, dict)])
+    commanders = _our_commanders(state)
+    hand = _card_names(
+        [c for c in state.get("hand") or [] if isinstance(c, dict)] + [c.card for c in commanders]
+    )
+    taxed = {id(c.card): c.cost for c in commanders if c.cost}
     planned = Counter(_plain(name) for s in plan.turn_plan for name in _cast_names(s.get("cast")))
 
     def cost(name: str) -> int:
         card = _named_card(name, hand)
+        if card is not None and id(card) in taxed:
+            return hand_card(dict(card, mana_cost=taxed[id(card)])).mana_value
         return hand_card(card).mana_value if card else 0
 
     for name in displaced:

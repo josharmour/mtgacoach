@@ -199,7 +199,7 @@ def test_a_lethal_line_next_turn_is_flagged_and_drives_the_role():
     assert a.lookahead[1].attack and "attack with" in a.suggestion(1)
 
 
-def _fastest_ms(state, times: int = 3) -> float:
+def _fastest_ms(state, times: int = 5) -> float:
     """The fastest of ``times`` cold assessments in CPU ms (``strategic_states.cpu_ms``)."""
     from tests.strategic_states import cpu_ms
 
@@ -1323,3 +1323,168 @@ def test_the_prompts_mark_unmodelled_casts_and_the_pending_choice():
     clean = _fresh(G1_T12)
     assert "not modelled)" not in clean.prompt_block().split("their new cards/tricks not modelled)")[-1]
     assert "(best modelled)" not in clean.prompt_block()
+
+
+# --- commanders in the command zone (Brawl, 2026-10-07) ----------------------------------------
+
+_COMMANDER_LINE = (
+    "COMMANDER (command zone: cast it like a hand card; each cast from there adds {2} to the next): "
+)
+
+
+def _commander_line(a) -> str:
+    return next(line.strip() for line in a.prompt_block().splitlines() if "COMMANDER (" in line)
+
+
+def test_our_commander_castable_now_is_the_only_surviving_line():
+    from tests.strategic_states import BRAWL_COMMANDER_SAVES
+
+    a = _fresh(BRAWL_COMMANDER_SAVES)
+    assert "ONLY SURVIVING LINE: Prosper, Tome-Bound; then Mind Stone — survives (life 2, 2, 2)" in a.flags
+    assert a.role == ROLE_CONTROL and "only line: Prosper, Tome-Bound" in a.role_reason
+    assert a.lookahead[0].casts == ["Prosper, Tome-Bound"] and a.unmodelled == []
+    assert _commander_line(a) == _COMMANDER_LINE + (
+        "Prosper, Tome-Bound {2}{B}{R} now (no tax yet); castable this turn; the best line casts it on T10"
+    )
+    planning = a.planning_block()
+    assert "  1. T10: Prosper, Tome-Bound -> life 2" in planning and _COMMANDER_LINE in planning
+    assert "castable alone: Mind Stone, Prosper, Tome-Bound" in planning
+
+
+def test_the_commander_tax_puts_our_only_out_beyond_our_mana():
+    from tests.strategic_states import BRAWL_TAXED_OUT
+
+    a = _fresh(BRAWL_TAXED_OUT)
+    assert "DEAD NEXT ATTACK even after our best castable plays" in a.flags
+    assert not any(flag.startswith(("ONLY", "BEST MODELLED")) for flag in a.flags)
+    assert _commander_line(a) == _COMMANDER_LINE + (
+        "Prosper, Tome-Bound {4}{B}{R} now ({2} tax for 1 previous cast); not castable by T14 (6 mana needed)"
+    )
+
+
+def test_a_second_cast_from_the_command_zone_pays_the_tax():
+    from tests.strategic_states import BRAWL_SECOND_CAST
+
+    a = _fresh(BRAWL_SECOND_CAST)
+    assert any(flag.startswith("ONLY SURVIVING LINE: Prosper, Tome-Bound") for flag in a.flags)
+    assert a.lookahead[0].casts == ["Prosper, Tome-Bound"] and a.lookahead[0].mana == 6
+    assert _commander_line(a) == _COMMANDER_LINE + (
+        "Prosper, Tome-Bound {4}{B}{R} now ({2} tax for 1 previous cast); castable this turn; "
+        "the best line casts it on T10"
+    )
+
+
+def test_the_real_t7_commander_reaches_the_candidate_lines_and_is_marked_unmodelled():
+    from tests.strategic_states import BRAWL_T7
+
+    # Historic Brawl, 2026-10-07: the plan deferred The Notary Hobbits to "~T11-13" because no
+    # candidate line ever cast it. Now the lines do, its copies are named as unmodelled, and
+    # the prompt says it is castable this turn.
+    a = _fresh(BRAWL_T7)
+    assert "The Notary Hobbits" in a.unmodelled and "The Notary Hobbits" in a.lookahead[0].castable
+    planning = a.planning_block()
+    assert "T7: Forest + The Notary Hobbits (not modelled) -> life" in planning
+    assert _commander_line(a).startswith(
+        _COMMANDER_LINE + "The Notary Hobbits {3}{G}{G} now (no tax yet); castable this turn; the best line "
+    )
+    assert _commander_line(a).endswith("; not modelled: its tokens — weigh that yourself")
+    assert not any(flag.startswith(("ONLY", "LETHAL LINE")) for flag in a.flags)
+
+
+def _spider_board(commander: dict | None) -> dict:
+    """At 4 life vs their Sky Knight (4/4 flier) and Gray Ogre: only a reach blocker survives their
+    next attack (and dies blocking it).
+
+    Five lands (Forest x2, Mountain x3) pay Giant Spider ({3}{R}, reach) or The Notary Hobbits
+    ({3}{G}{G}), not both; the Hobbits' own body chump-blocks only the Ogre.
+    """
+    from tests.strategic_states import brawl_board
+
+    board = brawl_board(
+        lands=["Forest", "Forest", "Mountain", "Mountain", "Mountain"],
+        theirs=[(410, "Sky Knight", 2, False, 5), (413, "Gray Ogre", 2, False, 7)],
+        hand=[(501, "Giant Spider")],
+    )
+    board["command"] = [] if commander is None else [commander]
+    board["commander_grp_ids"] = [103511]
+    board["commander_casts"] = {103511: 0}
+    return board
+
+
+def test_an_unmodelled_commander_qualifies_the_only_line_through_their_attack():
+    hobbits = card(301, "The Notary Hobbits", 1, turn_entered_battlefield=-1, object_kind="CARD")
+    plain = _fresh(_spider_board(None))
+    assert "ONLY LINE THAT SURVIVES THEIR NEXT ATTACK: Giant Spider — dead on T13" in plain.flags
+    assert "only line: Giant Spider" in plain.role_reason
+    a = _fresh(_spider_board(hobbits))
+    assert a.unmodelled == ["The Notary Hobbits"] and a.line_search.only_first_attack_survivor
+    assert not any(flag.startswith("ONLY") for flag in a.flags)
+    assert (
+        "BEST MODELLED LINE THROUGH THEIR NEXT ATTACK (not modelled: The Notary Hobbits): "
+        "Giant Spider; then The Notary Hobbits — dead on T13" in a.flags
+    )
+    assert any(
+        flag.startswith("DEAD IN 2") and flag.endswith("(not modelled: The Notary Hobbits)")
+        for flag in a.flags
+    )
+    assert "only line" not in a.role_reason
+
+
+def test_a_commander_without_card_data_or_cost_still_qualifies_the_claims():
+    unknown = {
+        "instance_id": 301, "grp_id": 103511, "name": "Unknown (103511)", "type_line": "", "mana_cost": "",
+        "oracle_text": "", "owner_seat_id": 1, "controller_seat_id": 1, "power": 1, "toughness": 1,
+        "card_types": ["CardType_Creature"], "object_kind": "CARD",
+    }  # fmt: skip
+    a = _fresh(_spider_board(unknown))
+    # No cost anywhere (no card data, no cast action): never cast, but it may be castable now.
+    assert a.unmodelled == ["Unknown (103511)"]
+    assert any(
+        flag.startswith("BEST MODELLED LINE THROUGH THEIR NEXT ATTACK (not modelled: Unknown (103511)): ")
+        for flag in a.flags
+    )
+    assert "our commander Unknown (103511): cost unknown (not cast in the lines)" in a.unknowns
+    assert _commander_line(a) == _COMMANDER_LINE + (
+        "Unknown (103511): cost unknown (no card data, no cast action from Arena) — judge it yourself"
+    )
+    # Arena's cast action supplies the cost: a 1/1 the lines can cast, its text still unknown.
+    board = _spider_board(unknown)
+    board["legal_actions_raw"] = [
+        {"actionType": "ActionType_Cast", "grpId": 103511, "instanceId": 301,
+         "manaCost": [{"color": ["ManaColor_Generic"], "count": 3}, {"color": ["ManaColor_Green"], "count": 2}]},
+    ]  # fmt: skip
+    a = _fresh(board)
+    assert a.unmodelled == ["Unknown (103511)"]
+    assert _commander_line(a).endswith("; not modelled: its rules text is unknown — weigh that yourself")
+    assert "our commander Unknown (103511): rules text unknown" in a.unknowns
+
+
+def test_the_role_guard_plays_the_land_that_makes_our_commander_castable():
+    from tests.strategic_states import BRAWL_COMMANDER_SAVES
+
+    # Three lands and a Mountain in hand: the rock now, or the land that pays for Prosper.
+    state = deepcopy(BRAWL_COMMANDER_SAVES)
+    mountain = next(c for c in state["battlefield"] if c["instance_id"] == 404)
+    state["battlefield"].remove(mountain)
+    state["hand"].append({**mountain, "is_tapped": False, "turn_entered_battlefield": -1})
+    state["players"][0]["lands_played"] = 0
+    decision = actions_decision(
+        [
+            ("idx:0", "Cast Prosper, Tome-Bound", cast(301, 81845), False),
+            ("idx:1", "Cast Mind Stone", cast(501), True),
+            ("idx:2", "Play Land: Mountain", play(404), None),
+        ]
+    )
+    verdict = role_guard(_fresh(state), decision, "idx:1", state)
+    assert verdict is not None and verdict.option_id == "idx:2"
+    assert "play Mountain first to cast Prosper, Tome-Bound (1/4)" in verdict.reason
+
+
+@pytest.mark.parametrize(
+    "source",
+    [G1_T8, G1_T12, G1_T14, G1_T15_FROM_OPPONENT, BUG_174855],
+    ids=["T8", "T12", "T14", "T15", "174855"],
+)
+def test_boards_without_a_command_zone_get_no_commander_facts(source):
+    a = _fresh(source)
+    assert a.commander == [] and "COMMANDER (" not in a.planning_block()

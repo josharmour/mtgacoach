@@ -565,3 +565,144 @@ def test_our_creature_spells_on_the_stack_are_bodies_entering_now():
     ]
     assert _model(G1_T14_MODE_STATE).our_stack_bodies == ()  # a triggered ability is not a body
     assert _model(G1_T12).our_stack_bodies == ()
+
+
+# --- commanders in the command zone (Brawl, 2026-10-07) ----------------------------------------
+
+
+def _commander(model, name):
+    return next(s for s in model.spells if s.name == name)
+
+
+def test_our_commander_is_a_spell_from_the_command_zone_priced_by_arenas_cast_action():
+    from tests.strategic_states import BRAWL_T7
+
+    model = _model(BRAWL_T7)
+    (commander,) = model.commanders
+    assert (commander.name, commander.cost, commander.casts, commander.from_action) == (
+        "The Notary Hobbits", "{3}{G}{G}", 0, True,
+    )  # fmt: skip
+    spell = _commander(model, "The Notary Hobbits")
+    assert (spell.zone, spell.mana_value, spell.pips) == ("command", 5, (frozenset("G"), frozenset("G")))
+    # The hand is still the hand; its spells keep their order and come first.
+    assert len(model.hand) == 7 and [s.zone for s in model.spells][-1] == "command"
+    assert [s.name for s in model.spells if s.zone == "hand"] == [
+        "Icetill Explorer", "Disciple of Freyalise", "Ugin, Eye of the Storms", "Kami of Bamboo Groves",
+        "Elvish Mystic", "Woodfall Primus",
+    ]  # fmt: skip
+    assert model.unknowns == []
+
+
+@pytest.mark.parametrize(
+    ("casts", "action", "cost", "mana_value", "note"),
+    [
+        (0, None, "{2}{B}{R}", 4, ""),
+        (1, None, "{4}{B}{R}", 6, ""),
+        (2, None, "{6}{B}{R}", 8, ""),
+        # Unknown tax: the printed cost, said so.
+        (
+            None,
+            None,
+            "{2}{B}{R}",
+            4,
+            "our commander Prosper, Tome-Bound: commander tax unknown (no previous casts assumed)",
+        ),
+        # Arena's cast action includes the tax: it wins, and needs no tax count.
+        (
+            None,
+            [(["ManaColor_Generic"], 4), (["ManaColor_Black"], 1), (["ManaColor_Red"], 1)],
+            "{4}{B}{R}",
+            6,
+            "",
+        ),
+        # The Mac bridge writes each colour as an enum name string.
+        (
+            1,
+            [("ManaColor_Generic", 4), ('[ "ManaColor_Black" ]', 1), ("ManaColor_Red", 1)],
+            "{4}{B}{R}",
+            6,
+            "",
+        ),
+    ],
+)
+def test_the_commander_tax_adds_two_per_previous_cast(casts, action, cost, mana_value, note):
+    from tests.strategic_states import BRAWL_COMMANDER_SAVES
+
+    state = deepcopy(BRAWL_COMMANDER_SAVES)
+    state["commander_casts"] = {} if casts is None else {"81845": casts}  # JSON keys are strings
+    if action:
+        state["legal_actions_raw"] = [
+            {"actionType": "ActionType_Cast", "grpId": 81845, "instanceId": 301,
+             "manaCost": [{"color": color, "count": count} for color, count in action]},
+        ]  # fmt: skip
+    model = _model(state)
+    (commander,) = model.commanders
+    assert commander.cost == cost and _commander(model, "Prosper, Tome-Bound").mana_value == mana_value
+    assert commander.printed == "{2}{B}{R}"
+    assert model.unknowns == ([note] if note else [])
+
+
+def test_only_our_commander_counts_whatever_the_snapshot_shape():
+    from tests.strategic_states import BRAWL_COMMANDER_SAVES
+
+    # The shared command zone also holds the opponent's commander (theirs: never cast by us).
+    assert [c.name for c in _model(BRAWL_COMMANDER_SAVES).commanders] == ["Prosper, Tome-Bound"]
+    # Mac bridge snapshots: no seats on command-zone cards; the players' commander_ids decide.
+    bridge = deepcopy(BRAWL_COMMANDER_SAVES)
+    for entry in bridge["command"]:
+        entry.pop("owner_seat_id"), entry.pop("controller_seat_id")
+    bridge["commander_grp_ids"] = []
+    bridge["players"][0]["commander_ids"] = [301]
+    bridge["players"][1]["commander_ids"] = [302]
+    assert [c.name for c in _model(bridge).commanders] == ["Prosper, Tome-Bound"]
+    # Without any designation, an unseated card is nobody's commander.
+    for player in bridge["players"]:
+        player.pop("commander_ids")
+    assert _model(bridge).commanders == ()
+    # Emblems and dungeons in our command zone are never cast.
+    emblem = deepcopy(BRAWL_COMMANDER_SAVES)
+    emblem["commander_grp_ids"] = []
+    emblem["command"] += [
+        {"instance_id": 310, "name": "Emblem", "type_line": "Emblem — Ring", "owner_seat_id": 1, "object_kind": "EMBLEM"},
+        {"instance_id": 311, "name": "Undercity", "type_line": "Dungeon", "owner_seat_id": 1, "object_kind": "CARD"},
+    ]  # fmt: skip
+    assert [c.name for c in _model(emblem).commanders] == ["Prosper, Tome-Bound"]
+
+
+def test_a_commander_without_card_data_uses_arenas_cost_and_says_its_text_is_unknown():
+    from tests.strategic_states import BRAWL_COMMANDER_SAVES
+
+    state = deepcopy(BRAWL_COMMANDER_SAVES)
+    # What the snapshot holds when the card database misses a (digital-only) commander.
+    state["command"][0] = {
+        "instance_id": 301, "grp_id": 81845, "name": "Unknown (81845)", "type_line": "", "mana_cost": "",
+        "oracle_text": "", "owner_seat_id": 1, "controller_seat_id": 1, "power": 1, "toughness": 4,
+        "card_types": ["CardType_Creature"], "object_kind": "CARD",
+    }  # fmt: skip
+    state["commander_casts"] = {81845: 1}
+    state["legal_actions_raw"] = [
+        {"actionType": "ActionType_Cast", "grpId": 81845, "instanceId": 301,
+         "manaCost": [{"color": ["ManaColor_Generic"], "count": 4}, {"color": ["ManaColor_Black"], "count": 1},
+                      {"color": ["ManaColor_Red"], "count": 1}]},
+    ]  # fmt: skip
+    model = _model(state)
+    (commander,) = model.commanders
+    assert (commander.cost, commander.printed, commander.text_unknown) == ("{4}{B}{R}", "{2}{B}{R}", True)
+    assert commander.card["_card_unknown"] and commander.card["mana_cost"] == "{2}{B}{R}"
+    assert state["command"][0]["mana_cost"] == ""  # a copy: the snapshot is left alone
+    assert _commander(model, "Unknown (81845)").mana_value == 6
+    assert model.unknowns == ["our commander Unknown (81845): rules text unknown"]
+    # No cast action either (their turn): its cost is unknown, so the lines never cast it.
+    del state["legal_actions_raw"]
+    model = _model(state)
+    assert model.commanders[0].cost == "" and all(s.zone == "hand" for s in model.spells)
+    assert model.unknowns == [
+        "our commander Unknown (81845): cost unknown (not cast in the lines)",
+        "our commander Unknown (81845): rules text unknown",
+    ]
+
+
+@pytest.mark.parametrize("name", sorted(FIXTURES))
+def test_boards_without_a_command_zone_have_no_commander(name):
+    model = _model(FIXTURES[name])
+    assert model.commanders == () and {s.zone for s in model.spells} <= {"hand"}

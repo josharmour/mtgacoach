@@ -118,9 +118,10 @@ _TOKEN_DESC_SKIP = frozenset(
 _TOKEN_IDS = 900_000_000
 # A permanent's triggered ability: "when(ever) <subject> <event> <rest of the trigger>, <effect>"
 # (the effect runs to the end of its line, so a reflexive "When you do, ..." stays with it).
+# "When ~ enter" is the card's own enters trigger under a plural name (The Notary Hobbits).
 _CREATURE_TRIGGER = re.compile(
-    r"\bwhen(?:ever)?\b(?P<subject>[^.,]*?)\b(?P<event>enters|attacks|dies|cast this spell)\b(?P<rest>[^.,]*),"
-    r"\s*(?P<effect>[^\n]*)"
+    r"\bwhen(?:ever)?\b(?P<subject>[^.,]*?)\b(?P<event>enters|(?<=~ )enter|attacks|dies|cast this spell)\b"
+    r"(?P<rest>[^.,]*),\s*(?P<effect>[^\n]*)"
 )
 # An effect that applies only sometimes: an intervening or later 'if' ("if you control six or
 # more lands", "if it was kicked", "if you do"), a reflexive "when you do" or any later sentence
@@ -265,7 +266,7 @@ class HandSpell:
     index: int
     spell: _Spell  # a copy: _schedule overwrites .value
     iid: int
-    key_iid: int  # lowest instance id of this name in hand (ActionKeys use it)
+    key_iid: int  # lowest instance id of this name in hand, a commander's own (ActionKeys use it)
     name: str
     hand_value: float
     variants: tuple = ()
@@ -511,7 +512,7 @@ def _trigger_unmodelled(card: dict, name: str) -> bool:
             continue
         subject, rest = match.group("subject").strip(), match.group("rest")
         if (
-            match.group("event") == "enters"
+            match.group("event") in ("enters", "enter")
             and own_subject(subject, name)
             and not _OR_ANOTHER.search(subject)
             and not re.search(r"\b(?:attacks|dies|blocks|leaves)\b", rest)
@@ -553,6 +554,8 @@ def unmodelled_effect(card: dict | None, result: Any = None) -> str:
     """
     if not isinstance(card, dict) or not card.get("name"):
         return ""
+    if card.get("_card_unknown"):  # a commander without card data (``board_model.our_commanders``)
+        return "its rules text is unknown"
     try:
         role = card_role(card)
         if role == "land":
@@ -667,16 +670,17 @@ class Moves:
     def _prepare(self) -> None:
         model = self.model
         theirs = list(model.theirs)
-        lowest: dict[str, int] = {}
+        # Copies of one name in hand share a key; a commander (zone "command") keeps its own.
+        lowest: dict[tuple[str, str], int] = {}
         for spell in model.spells:
             iid = _int(spell.card.get("instance_id")) or 0
-            lowest[spell.name] = min(lowest.get(spell.name, iid), iid)
+            lowest[(spell.name, spell.zone)] = min(lowest.get((spell.name, spell.zone), iid), iid)
         self.spells: list[HandSpell] = []
         for index, original in enumerate(model.spells):
             spell = dataclasses.replace(original)
             value = _spell_value(spell, survival=self.survival, theirs=theirs, ours=list(model.ours))
             iid = _int(spell.card.get("instance_id")) or 0
-            hs = HandSpell(index, spell, iid, lowest[spell.name], spell.name, max(1.0, value))
+            hs = HandSpell(index, spell, iid, lowest[(spell.name, spell.zone)], spell.name, max(1.0, value))
             hs.variants, hs.plain = self._variants(hs)
             self.spells.append(hs)
         self.hand0 = tuple(
@@ -1470,14 +1474,31 @@ class Moves:
         )
         crack = [b for b in ours_after if b["_can_attack"] and not self.sick(b, next_k, next_abs, entered)]
         crack_blockers = [b for b in theirs_after if b["instance_id"] not in their_tapped]
-        suicidal = bool(crack) and self.combat(crack, crack_blockers, opp_life)[0] >= opp_life
+        crack_damage, crack_dead_ours, crack_dead_theirs = (
+            self.combat(crack, crack_blockers, opp_life) if crack else (0, set(), set())
+        )
+        suicidal = bool(crack) and crack_damage >= opp_life
+        # Worst for us means after our reply too: their attackers can't block on our
+        # turn, so a policy is valued at the better of our holding and our crackback
+        # (bug_20261007_182945: all-out 1/4 fliers every turn "took" 24 life to 5).
+        v = self.value(after, opp_life, ours_after, theirs_after, hand)
+        if crack:
+            v = max(
+                v,
+                self.value(
+                    after, opp_life - crack_damage,
+                    [b for b in ours_after if b["instance_id"] not in crack_dead_ours],
+                    [b for b in theirs_after if b["instance_id"] not in crack_dead_theirs],
+                    hand,
+                ),
+            )  # fmt: skip
         return {
             "dead": False,
             "life": after,
             "policy": name,
             "used": tuple(used),
             "suicidal": suicidal,
-            "v": self.value(after, opp_life, ours_after, theirs_after, hand),
+            "v": v,
             "ours": ours_after,
             "theirs": theirs_after,
             "their_tapped": their_tapped,

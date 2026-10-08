@@ -22,17 +22,28 @@ from typing import Any
 MATCH_ID = "d3d701e3-7fee-480e-be9a-d3cf0ad23bbe"
 
 
-def cpu_ms(run: Callable[[], Any], times: int = 3) -> float:
-    """The fastest of ``times`` runs of ``run()``, in this thread's CPU milliseconds.
+def cpu_ms(run: Callable[[], Any], times: int = 5) -> float:
+    """The fastest of ``times`` runs of ``run()``, in process CPU milliseconds, GC off.
 
     CPU time leaves out the time other processes take the core (a wall-clock
-    50 ms bound failed at 50.2 ms, then at 67-99 ms, while other suites ran).
+    50 ms bound failed at 50.2 ms, then at 67-99 ms, while other suites ran);
+    the collector is paused so a cycle collection the suite's earlier
+    allocations earned does not land in one run (2026-10-07: 50-56 ms runs
+    of a 41 ms search); the best of five, as one outlier is not the cost.
     """
+    import gc
+
     best = float("inf")
     for _ in range(times):
-        started = time.thread_time()
-        run()
-        best = min(best, (time.thread_time() - started) * 1000)
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            started = time.process_time()
+            run()
+            best = min(best, (time.process_time() - started) * 1000)
+        finally:
+            if was_enabled:
+                gc.enable()
     return best
 
 
@@ -867,6 +878,92 @@ CARDS.update({
         "oracle_text": "Destroy target creature or planeswalker that's blue or red. You gain 1 life.",
         "card_types": ["CardType_Instant"],
     },
+    # bug_20261007_183358 (Pick-Two FRA, match da52fd39): the opponent's BR deck and our extra cards.
+    "Apex Witchstalker": {
+        "type_line": "Creature — Wolf",
+        "mana_cost": "{4}{B}{B}",
+        "oracle_text": "Menace\nWhen this creature enters or dies, you gain 2 life.\nBasic landcycling {o2}",
+        "power": 6,
+        "toughness": 4,
+        "keywords": ["menace"],
+        "card_types": ["CardType_Creature"],
+    },
+    "Extrapolate the Impossible": {
+        "type_line": "Sorcery",
+        "mana_cost": "{1}{B}",
+        "oracle_text": "You may reveal exactly two cards you own with different names from outside the game. An opponent chooses one of them. You put that card into your hand.",
+        "card_types": ["CardType_Sorcery"],
+    },
+    "Garruk, Veiled Butcher": {
+        "type_line": "Legendary Planeswalker — Garruk",
+        "mana_cost": "{3}{B}{B}",
+        "oracle_text": "If a creature an opponent controls would die, exile it instead.\nUp to one target creature gets -4/-1 until your next turn.\nEach player sacrifices a creature of their choice. If you sacrificed a creature this way, create a 4/4 green Beast creature token with trample.\nEach opponent discards two cards. For each opponent who didn't discard two nonland cards this way, you draw a card.",
+        "card_types": ["CardType_Planeswalker"],
+    },
+    "Hallway Heckler": {
+        "type_line": "Creature — Elemental Sorcerer",
+        "mana_cost": "{2}{R}",
+        "oracle_text": "This creature enters prepared.\n{oT}, Discard a card: Draw a card.",
+        "power": 2,
+        "toughness": 3,
+        "card_types": ["CardType_Creature"],
+    },
+    "Omit Variables": {
+        "type_line": "Sorcery",
+        "mana_cost": "{U/B}",
+        "oracle_text": "Mill three cards.",
+        "card_types": ["CardType_Sorcery"],
+    },
+    "Prudent Fateseer": {
+        "type_line": "Creature — Dwarf Wizard",
+        "mana_cost": "{1}{W/U}{W/U}",
+        "oracle_text": "This creature enters prepared.\nWhenever you scry or surveil, creatures you control get +1/+0 until end of turn. This ability triggers only once each turn.",
+        "power": 1,
+        "toughness": 4,
+        "card_types": ["CardType_Creature"],
+    },
+    "Rank Rat": {
+        "type_line": "Creature — Zombie Rat",
+        "mana_cost": "{1}{B}",
+        "oracle_text": "When this creature enters, each opponent discards a card.",
+        "power": 1,
+        "toughness": 1,
+        "card_types": ["CardType_Creature"],
+    },
+    "Rewrite Regrets": {
+        "type_line": "Sorcery",
+        "mana_cost": "{3}{B}",
+        "oracle_text": "Return target creature or planeswalker card with mana value 6 or less from your graveyard to the battlefield.\nEmpower Jace 2.",
+        "card_types": ["CardType_Sorcery"],
+    },
+    "Screeching Soulbreaker": {
+        "type_line": "Creature — Siren Bard",
+        "mana_cost": "{2}{B}",
+        "oracle_text": "Flying\nWhenever this creature attacks, it deals 1 damage to each opponent and you gain 1 life.",
+        "power": 1,
+        "toughness": 4,
+        "keywords": ["flying"],
+        "card_types": ["CardType_Creature"],
+    },
+    "Shipwreck Marsh": {
+        "type_line": "Land",
+        "oracle_text": "This land enters tapped unless you control two or more other lands.\n{oT}: Add {oU} or {oB}.",
+        "card_types": ["CardType_Land"],
+    },
+    "Theorix Annex": {
+        "type_line": "Land",
+        "oracle_text": "This land enters tapped unless you control a planeswalker.\n{oT}: Add {oU} or {oB}.",
+        "card_types": ["CardType_Land"],
+    },
+    "Traxos, Academy Guardian": {
+        "type_line": "Legendary Artifact Creature — Dragon Construct",
+        "mana_cost": "{3}{U}",
+        "oracle_text": "This spell costs {o2} less to cast if you've cast a noncreature spell this turn.\nFlying\nVigilance\nProwess",
+        "power": 1,
+        "toughness": 5,
+        "keywords": ["flying", "vigilance"],
+        "card_types": ["CardType_Artifact", "CardType_Creature"],
+    },
 })
 # fmt: on
 
@@ -919,6 +1016,20 @@ BRIDGE_TRAITS: dict[str, dict[str, Any]] = {
     "Unflinching Hortimancer": {"subtypes": ["Human", "Cleric"], "colors": ["White"]},
     "Void Extrapolator": {"subtypes": ["Aetherborn", "Warlock"], "colors": ["Black"]},
     "Yuriko, Hope from the Shadows": {"subtypes": ["Human", "Ninja"], "colors": ["Blue"]},
+    # bug_20261007_183358
+    "Apex Witchstalker": {"subtypes": ["Wolf"], "colors": ["Black"]},
+    "Extrapolate the Impossible": {"colors": ["Black"]},
+    "Garruk, Veiled Butcher": {"subtypes": ["Garruk"], "colors": ["Black"]},
+    "Hallway Heckler": {"subtypes": ["Elemental", "Sorcerer"], "colors": ["Red"]},
+    "Omit Variables": {"colors": ["Blue", "Black"]},
+    "Paradox Shaper": {"subtypes": ["Octopus", "Wizard"], "colors": ["Blue", "Black"]},
+    "Prudent Fateseer": {"subtypes": ["Dwarf", "Wizard"], "colors": ["White", "Blue"]},
+    "Rank Rat": {"subtypes": ["Zombie", "Rat"], "colors": ["Black"]},
+    "Rewrite Regrets": {"colors": ["Black"]},
+    "Screeching Soulbreaker": {"subtypes": ["Siren", "Bard"], "colors": ["Black"]},
+    "Shipwreck Marsh": {"color_production": ["Blue", "Black"]},
+    "Theorix Annex": {"color_production": ["Blue", "Black"]},
+    "Traxos, Academy Guardian": {"subtypes": ["Dragon", "Construct"], "colors": ["Blue"]},
 }  # fmt: skip
 
 
@@ -948,7 +1059,7 @@ def amend(
     result = deepcopy(source)
     result.update(deepcopy(fields))
     pending = deepcopy(cards or {})
-    for zone in ("battlefield", "hand", "graveyard", "exile", "stack"):
+    for zone in ("battlefield", "hand", "graveyard", "exile", "stack", "command"):
         for entry in result.get(zone) or []:
             entry.update(pending.pop(entry["instance_id"], {}))
     if pending:
@@ -1275,6 +1386,90 @@ BUG_180436 = bridge_state(
     exile=[(337, 106241, "Predictive Preparations", 2), (351, 106399, "Twinned Vision", 1), (409, 106252, "Cryotheory Adept", 1), (434, 106387, "Recursive Recruitment", 1), (454, 106264, "Seasoned Cryomancer", 1)],
     deck=UB_DECK_CARDS,
 )  # fmt: skip
+
+# Our Pick-Two UB deck in match da52fd39 (ConnectResp deck list).
+PICK_TWO_DECK_CARDS = [106531] * 6 + [106529] * 8 + [106437, 106433, 106434, 106252, 106417, 106290, 106263, 106268, 106399, 106399, 106283, 106285, 106294, 106294, 106294, 106385, 106299, 106467, 106255, 106387, 106480, 106281, 106259, 106381, 106381, 106458]  # fmt: skip
+
+# bug_20261007_183358 (PickTwoDraft FRA, match da52fd39, seat 2): our T16
+# declare-attackers step at 3 life to their 34, as the report recorded it —
+# after the autopilot cast Void Extrapolator, discarded Proft for -3/-1 on the
+# 6/4 Apex Witchstalker (now 3/3 until end of turn) and stunned Soulbreaker 256
+# with Cryotheory Adept (standalone.log 18:33:23-18:33:45). The T16 main-phase
+# board those plays started from is BUG_183358_T16_MAIN1 below.
+BUG_183358 = bridge_state(
+    match_id="da52fd39-7ff0-4069-8871-9e47f4dbc439", event_id="PickTwoDraft_FRA_20260929", format_name="PickTwoDraft FRA 20260929",
+    turn=16, active=2, phase="Combat", step="DeclareAttack", local=2,
+    life={1: 34, 2: 3}, lands_played={1: 0, 2: 0}, mulligans={1: 0, 2: 0},
+    library=16, opponent_hand=1,
+    battlefield=[(242, 83679, "Swamp", 1, True, 1), (244, 106529, "Island", 2, True, 2), (246, 79739, "Mountain", 1, True, 3), (248, 106531, "Swamp", 2, True, 4), (249, 106290, "Rank Rat", 2, False, 4), (255, 83679, "Swamp", 1, True, 5), (256, 106294, "Screeching Soulbreaker", 1, True, 5, {"counters": {"Stun": 1}}), (261, 106434, "Shipwreck Marsh", 2, True, 6), (270, 83679, "Swamp", 1, True, 7), (271, 106315, "Hallway Heckler", 1, False, 7), (288, 106529, "Island", 2, True, 8), (292, 106294, "Screeching Soulbreaker", 1, True, 9), (298, 106531, "Swamp", 2, True, 10), (311, 83679, "Swamp", 1, True, 11), (312, 106474, "Garruk, Veiled Butcher", 1, False, 11, {"counters": {"Loyalty": 11}, "loyalty": 11}), (323, 106531, "Swamp", 2, True, 12), (331, 106551, "Cadet", 2, False, 12, {"parent_instance_id": 327}), (335, 79739, "Mountain", 1, True, 13), (351, 106467, "Traxos, Academy Guardian", 2, False, 14), (356, 106437, "Theorix Annex", 2, True, 14), (357, 106281, "Dark Matter Manipulator", 2, False, 14, {"power": 3, "toughness": 2}), (389, 106276, "Apex Witchstalker", 1, False, 15, {"power": 3, "toughness": 3, "summoning_sickness": True}), (391, 106555, "Jace", 1, False, 15, {"counters": {"Loyalty": 1}, "loyalty": 1, "parent_instance_id": 384}), (397, 106299, "Void Extrapolator", 2, False, 16, {"power": 3, "toughness": 3, "summoning_sickness": True})],
+    hand=[],
+    graveyard=[(287, 106268, "Sphinx's Approach", 2), (290, 106529, "Island", 2), (360, 106294, "Screeching Soulbreaker", 2), (361, 106529, "Island", 2), (362, 106529, "Island", 2), (366, 106433, "Room of Refuge", 2), (368, 106531, "Swamp", 2), (402, 106480, "Proft, Sinister Mastermind", 2), (253, 106298, "Theoretical Necromancer", 1), (378, 106284, "Extrapolate the Impossible", 1), (392, 106291, "Rewrite Regrets", 1)],
+    exile=[(319, 106259, "Mindseeker Oculus", 2), (345, 106458, "Fblthp, Impossibly Lost", 2), (381, 106385, "Prudent Fateseer", 2), (394, 106381, "Paradox Shaper", 2), (403, 106300, "Omit Variables", 2, {"parent_instance_id": 397, "is_copy": True}), (409, 106252, "Cryotheory Adept", 2)],
+    deck=PICK_TWO_DECK_CARDS,
+)  # fmt: skip
+
+
+def _bug_183358_main1() -> dict[str, Any]:
+    """BUG_183358 wound back to our T16 main phase 1 (Player.log 18:33:23, gameStateId 436).
+
+    Player.log 432-447: our seven lands untapped at T16's untap step; Proft
+    (396) was the draw, Void Extrapolator (286) the other card in hand;
+    Cryotheory Adept (367) sat in our graveyard (eight cards, threshold live);
+    Apex Witchstalker was its printed 6/4; Soulbreaker 256 was tapped from its
+    T15 attack but not yet stunned; Omit Variables (403) did not exist yet.
+    """
+    result = amend(
+        BUG_183358,
+        cards={
+            389: {"power": 6, "toughness": 4},
+            256: {"counters": {}},
+            **{iid: {"is_tapped": False} for iid in (244, 248, 261, 288, 298, 323, 356)},
+        },
+        turn={**BUG_183358["turn"], "phase": "Main1", "step": "None"},
+        stack=[],
+    )
+    result["battlefield"] = [c for c in result["battlefield"] if c["instance_id"] != 397]
+    result["hand"] = [
+        bridge_card(396, 106480, "Proft, Sinister Mastermind", 2, "hand"),
+        bridge_card(286, 106299, "Void Extrapolator", 2, "hand"),
+    ]
+    graveyard = [c for c in result["graveyard"] if c["instance_id"] != 402]
+    graveyard.insert(6, bridge_card(367, 106252, "Cryotheory Adept", 2, "graveyard"))
+    result["graveyard"] = graveyard
+    result["exile"] = [c for c in result["exile"] if c["instance_id"] not in (403, 409)]
+    return result
+
+
+BUG_183358_T16_MAIN1 = _bug_183358_main1()
+
+
+def _mana(*pips: tuple[str, int]) -> list[dict[str, Any]]:
+    return [{"color": [f"ManaColor_{color}"], "count": count} for color, count in pips]
+
+
+# The 18:33:23 ActionsAvailable menu (Player.log gameStateId 436), mana abilities aside: Proft's
+# cast ({2}{B}, threshold live) and its "{B}, Discard this card: -3/-1" were both on offer.
+BUG_183358_PROFT_SHRINK = (
+    "idx:3",
+    "Activate: Proft, Sinister Mastermind [from hand: {B}, Discard this card: Target creature gets -3/-1 until end of turn.]",
+    {"actionType": "ActionType_Activate", "instanceId": 396, "grpId": 106480, "abilityGrpId": 208364, "manaCost": _mana(("Black", 1)), "hasAutoTap": True, "autoTapActions": [{"instanceId": 298, "manaId": 0}]},
+    True,
+)
+BUG_183358_MENU = [
+    ("idx:0", "Cast Void Extrapolator", {"actionType": "ActionType_Cast", "instanceId": 286, "grpId": 106299, "manaCost": _mana(("Generic", 1), ("Black", 1)), "hasAutoTap": True, "autoTapActions": [{"instanceId": 244, "manaId": 0}, {"instanceId": 248, "manaId": 0}]}, True),
+    ("idx:1", "Cast Proft, Sinister Mastermind", {"actionType": "ActionType_Cast", "instanceId": 396, "grpId": 106480, "manaCost": _mana(("Generic", 2), ("Black", 1)), "hasAutoTap": True, "autoTapActions": [{"instanceId": 244, "manaId": 0}, {"instanceId": 248, "manaId": 0}, {"instanceId": 298, "manaId": 0}]}, True),
+    ("idx:2", "Activate: Cryotheory Adept [from graveyard: {3}{U}, Exile this card from your graveyard: Tap target creature and put a stun counter on it. Activate only as a sorcery.]", {"actionType": "ActionType_Activate", "instanceId": 367, "grpId": 106252, "abilityGrpId": 208109, "manaCost": _mana(("Generic", 3), ("Blue", 1)), "hasAutoTap": True, "autoTapActions": [{"instanceId": 288, "manaId": 0}, {"instanceId": 323, "manaId": 0}, {"instanceId": 261, "manaId": 0}, {"instanceId": 356, "manaId": 0}]}, True),
+    BUG_183358_PROFT_SHRINK,
+    ("pass", "Pass", None, None),
+]  # fmt: skip
+
+# 18:33:26 (gameStateId 437): Void Extrapolator on the stack, Island 244 and Swamp 248 tapped for
+# it; with our own spell pending only the instant-speed discard (and Pass) remained on the menu.
+BUG_183358_ON_STACK = after_cast(BUG_183358_T16_MAIN1, 286, stack_id=397)
+BUG_183358_ON_STACK_MENU = [
+    ("idx:0", BUG_183358_PROFT_SHRINK[1], BUG_183358_PROFT_SHRINK[2], True),
+    ("pass", "Pass", None, None),
+]
 
 
 # Two of the slowest real boards in ~/.arenamcp/bug_reports (2026-10-07 latency review),
@@ -1660,3 +1855,264 @@ def synthetic_menu(source: dict[str, Any]) -> Any:
         [(oid, f"Cast {names[meta['instanceId']]}" if meta else label, meta, payable)
          for oid, label, meta, payable in SYNTHETIC_MENU]
     )  # fmt: skip
+
+
+# ---------------------------------------------------------------------------
+# Brawl (commander) boards, 2026-10-07. Player.log of the Historic Brawl match
+# c0c20b9e (Brawl_Ladder, deck 'The Notary Hobbits Digital', we are seat 2):
+# GameVariant_Brawl, 25 life; ONE shared command zone (zoneId 26,
+# "ZoneType_Command", objectInstanceIds [248, 249]) holding both commanders,
+# each with its ownerSeatId; ConnectResp's deckMessage names ours
+# ("commanderCards": [103511]); each player's AnnotationType_Designation
+# carries the tax ("CostIncrease": 0, then 2 after one cast: commander_casts);
+# the cast action's manaCost already includes it ({3}{G}{G} here; {5}{G}{G}
+# after one cast in bug_20260916_214939, {7}{G}{G} after two in
+# bug_20260924_140507). Before 2026-10-07 the line search never cast the
+# commander: the game plan deferred it to "~T11-13" (standalone.log 18:03:34)
+# although it was castable on T7.
+
+# Our T7 Main1, replayed from that Player.log through LogParser + GameState and
+# server.get_game_state (oracle text collapsed as above): Forest in hand gives
+# five mana, enough for The Notary Hobbits ({3}{G}{G}, no tax yet), whose
+# copies-of-itself tokens the search can't read.
+# fmt: off
+BRAWL_T7: dict[str, Any] = {
+    "match_id": "c0c20b9e-76e6-429b-8a01-8d0951b2bba0", "local_seat_id": 2, "opponent_seat_id": 1,
+    "turn": {"turn_number": 7, "active_player": 2, "priority_player": 2, "phase": "Phase_Main1", "step": ""},
+    "players": [{"seat_id": 1, "life_total": 25, "is_local": False, "lands_played": 0}, {"seat_id": 2, "life_total": 25, "is_local": True, "lands_played": 0}],
+    "battlefield": [
+        {"instance_id": 486, "grp_id": 104984, "name": "Black Widow, Super Spy", "type_line": "Legendary Creature — Human Spy Hero", "mana_cost": "{1}{B}", "oracle_text": "Menace\nWhenever Black Widow deals combat damage to a player, that player exiles cards from the top of their library until they exile a nonland card. You may put a +1/+1 counter on Black Widow. If you don't, you may cast the exiled nonland card until end of turn and mana of any type can be spent to cast that spell.", "power": 2, "toughness": 1, "owner_seat_id": 1, "controller_seat_id": 1, "turn_entered_battlefield": 6, "object_kind": "CARD", "card_types": ["CardType_Creature"], "subtypes": ["Human", "Spy", "Hero"], "keywords": ["menace"]},
+        {"instance_id": 482, "grp_id": 89036, "name": "Crime Novelist", "type_line": "Creature — Goblin Bard", "mana_cost": "{2}{R}", "oracle_text": "Whenever you sacrifice an artifact, put a +1/+1 counter on this creature and add {oR}.", "power": 2, "toughness": 4, "owner_seat_id": 1, "controller_seat_id": 1, "turn_entered_battlefield": 6, "object_kind": "CARD", "card_types": ["CardType_Creature"], "subtypes": ["Goblin", "Bard"]},
+        {"instance_id": 479, "grp_id": 90691, "name": "Tarnation Vista", "type_line": "Land", "oracle_text": "This land enters tapped. As it enters, choose a color.\n{oT}: Add one mana of the chosen color.\n{o1}, {oT}: For each color among monocolored permanents you control, add one mana of that color.", "owner_seat_id": 1, "controller_seat_id": 1, "is_tapped": True, "turn_entered_battlefield": 6, "object_kind": "CARD", "color_production": ["3", "4"], "card_types": ["CardType_Land"]},
+        {"instance_id": 475, "grp_id": 75553, "name": "Forest", "type_line": "Basic Land — Forest", "oracle_text": "({T}: Add {G}.)", "owner_seat_id": 2, "controller_seat_id": 2, "turn_entered_battlefield": 5, "object_kind": "CARD", "card_types": ["CardType_Land"], "subtypes": ["Forest"]},
+        {"instance_id": 469, "grp_id": 79706, "name": "Boseiju, Who Endures", "type_line": "Legendary Land", "oracle_text": "{oT}: Add {oG}.\nChannel — {o1oG}, Discard this card: Destroy target artifact, enchantment, or nonbasic land an opponent controls. That player may search their library for a land card with a basic land type, put it onto the battlefield, then shuffle. This ability costs {o1} less to activate for each legendary creature you control.\n<i>Channel</i> — {o1oG}, Discard this card: Destroy target artifact, enchantment, or nonbasic land an opponent controls. That player may search their library for a land card with a basic land type, put it onto the battlefield, then shuffle. This ability costs {o1} less to activate for each legendary creature you control.", "owner_seat_id": 2, "controller_seat_id": 2, "turn_entered_battlefield": 5, "object_kind": "CARD", "card_types": ["CardType_Land"]},
+        {"instance_id": 462, "grp_id": 81845, "name": "Prosper, Tome-Bound", "type_line": "Legendary Creature — Tiefling Warlock", "mana_cost": "{2}{B}{R}", "oracle_text": "Deathtouch\nMystic Arcanum — At the beginning of your end step, exile the top card of your library. Until the end of your next turn, you may play that card.\n<i>Mystic Arcanum</i> — At the beginning of your end step, exile the top card of your library. Until the end of your next turn, you may play that card.\nPact Boon — Whenever you play a card from exile, create a Treasure token.\n<i>Pact Boon</i> — Whenever you play a card from exile, create a Treasure token.", "power": 1, "toughness": 4, "owner_seat_id": 1, "controller_seat_id": 1, "turn_entered_battlefield": 4, "object_kind": "CARD", "card_types": ["CardType_Creature"], "subtypes": ["Tiefling", "Warlock"], "keywords": ["deathtouch"]},
+        {"instance_id": 461, "grp_id": 79738, "name": "Swamp", "type_line": "Basic Land — Swamp", "oracle_text": "({T}: Add {B}.)", "owner_seat_id": 1, "controller_seat_id": 1, "is_tapped": True, "turn_entered_battlefield": 4, "object_kind": "CARD", "card_types": ["CardType_Land"], "subtypes": ["Swamp"]},
+        {"instance_id": 459, "grp_id": 70387, "name": "Castle Garenbrig", "type_line": "Land", "oracle_text": "This land enters tapped unless you control a Forest.\n{oT}: Add {oG}.\n{o2oGoG}, {oT}: Add six {oG}. Spend this mana only to cast creature spells or activate abilities of creatures.", "owner_seat_id": 2, "controller_seat_id": 2, "turn_entered_battlefield": 3, "object_kind": "CARD", "card_types": ["CardType_Land"]},
+        {"instance_id": 454, "grp_id": 91118, "name": "Jet Medallion", "type_line": "Artifact", "mana_cost": "{2}", "oracle_text": "Black spells you cast cost {o1} less to cast.", "owner_seat_id": 1, "controller_seat_id": 1, "turn_entered_battlefield": 2, "object_kind": "CARD", "card_types": ["CardType_Artifact"]},
+        {"instance_id": 451, "grp_id": 95114, "name": "Chrome Mox", "type_line": "Artifact", "mana_cost": "{0}", "oracle_text": "Imprint — When this artifact enters, you may exile a nonartifact, nonland card from your hand.\n<i>Imprint</i> — When this artifact enters, you may exile a nonartifact, nonland card from your hand.\n{oT}: Add one mana of any of the exiled card's colors.", "owner_seat_id": 1, "controller_seat_id": 1, "is_tapped": True, "turn_entered_battlefield": 2, "object_kind": "CARD", "card_types": ["CardType_Artifact"]},
+        {"instance_id": 450, "grp_id": 79740, "name": "Mountain", "type_line": "Basic Land — Mountain", "oracle_text": "({T}: Add {R}.)", "owner_seat_id": 1, "controller_seat_id": 1, "is_tapped": True, "turn_entered_battlefield": 2, "object_kind": "CARD", "card_types": ["CardType_Land"], "subtypes": ["Mountain"]},
+        {"instance_id": 448, "grp_id": 60275, "name": "Library of Alexandria", "type_line": "Land", "oracle_text": "{oT}: Add {oC}.\n{oT}: Draw a card. Activate only if you have exactly seven cards in hand.", "owner_seat_id": 2, "controller_seat_id": 2, "turn_entered_battlefield": 1, "object_kind": "CARD", "card_types": ["CardType_Land"]},
+    ],
+    "hand": [
+        {"instance_id": 492, "grp_id": 75553, "name": "Forest", "type_line": "Basic Land — Forest", "oracle_text": "({T}: Add {G}.)", "owner_seat_id": 2, "controller_seat_id": 2, "turn_entered_battlefield": -1, "object_kind": "CARD", "card_types": ["CardType_Land"], "subtypes": ["Forest"]},
+        {"instance_id": 476, "grp_id": 96766, "name": "Icetill Explorer", "type_line": "Creature — Insect Scout", "mana_cost": "{2}{G}{G}", "oracle_text": "You may play an additional land on each of your turns.\nYou may play lands from your graveyard.\nLandfall — Whenever a land you control enters, mill a card.\n<i>Landfall</i> — Whenever a land you control enters, mill a card.", "power": 2, "toughness": 4, "owner_seat_id": 2, "controller_seat_id": 2, "turn_entered_battlefield": -1, "object_kind": "CARD", "card_types": ["CardType_Creature"], "subtypes": ["Insect", "Scout"]},
+        {"instance_id": 457, "grp_id": 90826, "name": "Disciple of Freyalise", "type_line": "Creature — Elf Druid", "mana_cost": "{3}{G}{G}{G}", "oracle_text": "When this creature enters, you may sacrifice another creature. If you do, you gain X life and draw X cards, where X is that creature's power.", "power": 3, "toughness": 3, "owner_seat_id": 2, "controller_seat_id": 2, "turn_entered_battlefield": -1, "object_kind": "CARD", "card_types": ["CardType_Creature"], "subtypes": ["Elf", "Druid"]},
+        {"instance_id": 355, "grp_id": 95516, "name": "Ugin, Eye of the Storms", "type_line": "Legendary Planeswalker — Ugin", "mana_cost": "{7}", "oracle_text": "When you cast this spell, exile up to one target permanent that's one or more colors.\nWhenever you cast a colorless spell, exile up to one target permanent that's one or more colors.\nYou gain 3 life and draw a card.\nAdd {oCoCoC}.\nSearch your library for any number of colorless nonland cards, exile them, then shuffle. Until end of turn, you may cast those cards without paying their mana costs.", "owner_seat_id": 2, "controller_seat_id": 2, "turn_entered_battlefield": -1, "object_kind": "CARD", "card_types": ["CardType_Planeswalker"], "subtypes": ["Ugin"]},
+        {"instance_id": 353, "grp_id": 81103, "name": "Kami of Bamboo Groves", "type_line": "Enchantment Creature — Spirit", "mana_cost": "{G}", "oracle_text": "When this creature enters, you may put a land card from your hand onto the battlefield tapped.\nChannel — {o2oG}, Discard this card: Conjure two cards named Forest into your hand.\n<i>Channel</i> — {o2oG}, Discard this card: Conjure two cards named Forest into your hand.", "power": 1, "toughness": 1, "owner_seat_id": 2, "controller_seat_id": 2, "turn_entered_battlefield": -1, "object_kind": "CARD", "card_types": ["CardType_Creature", "CardType_Enchantment"], "subtypes": ["Spirit"]},
+        {"instance_id": 352, "grp_id": 54163, "name": "Elvish Mystic", "type_line": "Creature — Elf Druid", "mana_cost": "{G}", "oracle_text": "{oT}: Add {oG}.", "power": 1, "toughness": 1, "owner_seat_id": 2, "controller_seat_id": 2, "turn_entered_battlefield": -1, "object_kind": "CARD", "card_types": ["CardType_Creature"], "subtypes": ["Elf", "Druid"]},
+        {"instance_id": 349, "grp_id": 29589, "name": "Woodfall Primus", "type_line": "Creature — Treefolk Shaman", "mana_cost": "{5}{G}{G}{G}", "oracle_text": "Trample\nWhen this creature enters, destroy target noncreature permanent.\nPersist", "power": 6, "toughness": 6, "owner_seat_id": 2, "controller_seat_id": 2, "turn_entered_battlefield": -1, "object_kind": "CARD", "card_types": ["CardType_Creature"], "subtypes": ["Treefolk", "Shaman"], "keywords": ["trample"]},
+    ],
+    "graveyard": [
+        {"instance_id": 477, "grp_id": 79961, "name": "Settle the Wilds", "type_line": "Sorcery", "mana_cost": "{2}{G}", "oracle_text": "Seek a basic land card and put it onto the battlefield tapped. Then seek a permanent card with mana value equal to the number of lands you control.", "owner_seat_id": 2, "controller_seat_id": 2, "turn_entered_battlefield": -1, "object_kind": "CARD", "card_types": ["CardType_Sorcery"]},
+    ],
+    "command": [
+        {"instance_id": 249, "grp_id": 103511, "name": "The Notary Hobbits", "type_line": "Legendary Creature — Halfling Advisor", "mana_cost": "{3}{G}{G}", "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.", "power": 1, "toughness": 1, "owner_seat_id": 2, "controller_seat_id": 2, "turn_entered_battlefield": -1, "object_kind": "CARD", "card_types": ["CardType_Creature"], "subtypes": ["Halfling", "Advisor"]},
+    ],
+    "stack": [],
+    "zones": {"library_count": 87, "library_count_source": "log_zone_membership", "opponent_hand_count": 3},
+    "commander_grp_ids": [103511], "commander_casts": {103511: 0},
+    "legal_actions": ["Cast The Notary Hobbits", "Cast Woodfall Primus", "Cast Elvish Mystic [OK]", "Cast Kami of Bamboo Groves [OK]", "Cast Ugin, Eye of the Storms", "Cast Disciple of Freyalise", "Cast Icetill Explorer [OK]", "Activate Ability: Kami of Bamboo Groves [OK]", "Activate Ability: Library of Alexandria", "Play Land: Forest", "Action: Activate_Mana", "Action: Activate_Mana", "Action: Activate_Mana", "Action: Activate_Mana", "Action: Activate_Mana", "Pass", "Action: FloatMana", "Action: PlayMDFC"],
+    "legal_actions_raw": [
+        {"actionType": "ActionType_Cast", "grpId": 103511, "instanceId": 249, "manaCost": [{"color": ["ManaColor_Generic"], "count": 3}, {"color": ["ManaColor_Green"], "count": 2}]},
+        {"actionType": "ActionType_Cast", "grpId": 29589, "instanceId": 349, "manaCost": [{"color": ["ManaColor_Generic"], "count": 5}, {"color": ["ManaColor_Green"], "count": 3}]},
+        {"actionType": "ActionType_Cast", "grpId": 54163, "instanceId": 352, "manaCost": [{"color": ["ManaColor_Green"], "count": 1}]},
+        {"actionType": "ActionType_Cast", "grpId": 81103, "instanceId": 353, "manaCost": [{"color": ["ManaColor_Green"], "count": 1}]},
+        {"actionType": "ActionType_Cast", "grpId": 95516, "instanceId": 355, "manaCost": [{"color": ["ManaColor_Generic"], "count": 7}]},
+        {"actionType": "ActionType_Cast", "grpId": 90826, "instanceId": 457, "manaCost": [{"color": ["ManaColor_Generic"], "count": 3}, {"color": ["ManaColor_Green"], "count": 3}]},
+        {"actionType": "ActionType_Cast", "grpId": 96766, "instanceId": 476, "manaCost": [{"color": ["ManaColor_Generic"], "count": 2}, {"color": ["ManaColor_Green"], "count": 2}]},
+        {"actionType": "ActionType_Activate", "grpId": 81103, "instanceId": 353, "manaCost": [{"color": ["ManaColor_Generic"], "count": 2}, {"color": ["ManaColor_Green"], "count": 1}]},
+        {"actionType": "ActionType_Activate", "grpId": 60275, "instanceId": 448},
+        {"actionType": "ActionType_Play", "grpId": 75553, "instanceId": 492},
+        {"actionType": "ActionType_Activate_Mana", "grpId": 60275, "instanceId": 448},
+        {"actionType": "ActionType_Activate_Mana", "grpId": 70387, "instanceId": 459},
+        {"actionType": "ActionType_Activate_Mana", "grpId": 70387, "instanceId": 459, "manaCost": [{"color": ["ManaColor_Generic"], "count": 2}, {"color": ["ManaColor_Green"], "count": 2}]},
+        {"actionType": "ActionType_Activate_Mana", "grpId": 79706, "instanceId": 469},
+        {"actionType": "ActionType_Activate_Mana", "grpId": 75553, "instanceId": 475},
+        {"actionType": "ActionType_Pass"},
+        {"actionType": "ActionType_FloatMana"},
+        {"actionType": "ActionType_PlayMDFC", "grpId": 90827, "instanceId": 457},
+    ],
+}
+# fmt: on
+BRAWL_T7_MENU = [
+    ("idx:0", "Cast The Notary Hobbits", cast(249, 103511), None),
+    ("idx:2", "Cast Elvish Mystic", cast(352, 54163), True),
+    ("idx:3", "Cast Kami of Bamboo Groves", cast(353, 81103), True),
+    ("idx:6", "Cast Icetill Explorer", cast(476, 96766), None),
+    ("idx:9", "Play Land: Forest", play(492), None),
+    ("pass", "Pass", None, None),
+]
+
+SYNTHETIC_CARDS.update(
+    {
+        # Real card data (MTGA database, 2026-10-07): both commanders of that match.
+        "Prosper, Tome-Bound": {
+            "type_line": "Legendary Creature — Tiefling Warlock", "mana_cost": "{2}{B}{R}",
+            "oracle_text": "Deathtouch\nMystic Arcanum — At the beginning of your end step, exile the top card of your "
+            "library. Until the end of your next turn, you may play that card.\nPact Boon — Whenever you play a card "
+            "from exile, create a Treasure token.",
+            "power": 1, "toughness": 4, "keywords": ["deathtouch"], "card_types": ["CardType_Creature"],
+            "grp_id": 81845,
+        },
+        "The Notary Hobbits": {
+            "type_line": "Legendary Creature — Halfling Advisor", "mana_cost": "{3}{G}{G}",
+            "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies "
+            "of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+            "power": 1, "toughness": 1, "card_types": ["CardType_Creature"], "grp_id": 103511,
+        },
+        "Mind Stone": {
+            "type_line": "Artifact", "mana_cost": "{2}",
+            "oracle_text": "{oT}: Add {oC}.\n{o1}, {oT}, Sacrifice this artifact: Draw a card.",
+            "card_types": ["CardType_Artifact"],
+        },
+    }
+)  # fmt: skip
+
+
+def brawl_board(
+    *,
+    life: int = 4,
+    lands: list[str],
+    theirs: list[tuple] = (),
+    hand: list[tuple] = (),
+    casts: int | None = 0,
+) -> dict[str, Any]:
+    """``land_board`` as a Brawl game: Prosper, Tome-Bound (ours, id 301) and The Notary Hobbits
+    (theirs, id 302) in the shared command zone; ``casts`` previous casts of ours (None: unknown)."""
+    result = land_board(life=life, their_life=25, lands=lands, theirs=list(theirs), hand=list(hand))
+    result["command"] = [
+        card(301, "Prosper, Tome-Bound", 1, turn_entered_battlefield=-1, object_kind="CARD"),
+        card(302, "The Notary Hobbits", 2, turn_entered_battlefield=-1, object_kind="CARD"),
+    ]
+    result["commander_grp_ids"] = [81845]
+    result["commander_casts"] = {} if casts is None else {81845: casts}
+    result["deck_cards"] = []
+    return result
+
+
+# At 4 life vs an untapped Hill Giant and Gray Ogre (5 damage): only our commander saves us.
+# Prosper (1/4 deathtouch, {2}{B}{R}) blocks and kills the Giant; Mind Stone, the only card in
+# hand, blocks nothing.
+BRAWL_COMMANDER_SAVES = brawl_board(
+    lands=["Swamp", "Mountain", "Swamp", "Mountain"],
+    theirs=[(410, "Hill Giant", 2, False, 5), (413, "Gray Ogre", 2, False, 7)],
+    hand=[(501, "Mind Stone")],
+)
+# The same board after one earlier cast from the command zone: {4}{B}{R} is out of reach.
+BRAWL_TAXED_OUT = amend(BRAWL_COMMANDER_SAVES, commander_casts={81845: 1})
+# Six lands pay the taxed {4}{B}{R} (its second cast).
+BRAWL_SECOND_CAST = brawl_board(
+    lands=["Swamp", "Mountain", "Swamp", "Mountain", "Swamp", "Mountain"],
+    theirs=[(410, "Hill Giant", 2, False, 5), (413, "Gray Ogre", 2, False, 7)],
+    hand=[(501, "Mind Stone")],
+    casts=1,
+)
+BRAWL_MENU = [
+    ("idx:0", "Cast Prosper, Tome-Bound", cast(301, 81845), True),
+    ("idx:1", "Cast Mind Stone", cast(501), True),
+    ("pass", "Pass", None, None),
+]
+
+
+# ---------------------------------------------------------------------------
+# bug_20261007_182945 (PickTwoDraft FRA, our seat 2): their T13 Main1 at 18:29:45, Apex
+# Witchstalker just resolved (opponent 26). Whitelisted as the SLOW_ boards above; the
+# reference copy is tests/fixtures/bug_20261007_182945_game_state.json.
+# ---------------------------------------------------------------------------
+# fmt: off
+BUG_182945: dict[str, Any] = {
+    "match_id": "da52fd39-7ff0-4069-8871-9e47f4dbc439", "event_id": "PickTwoDraft_FRA_20260929", "format_name": "PickTwoDraft FRA 20260929", "local_seat_id": 2, "opponent_seat_id": 1,
+    "turn": {"turn_number": 13, "active_player": 1, "priority_player": 1, "phase": "Main1", "step": "None"},
+    "players": [{"seat_id": 1, "life_total": 26, "lands_played": 1, "is_local": False, "mulligan_count": 0}, {"seat_id": 2, "life_total": 10, "lands_played": 0, "is_local": True, "mulligan_count": 0}],
+    "battlefield": [
+        {"instance_id": 242, "grp_id": 83679, "name": "Swamp", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Basic Land — Swamp", "card_types": ["Land"], "subtypes": ["Swamp"], "color_production": ["Black"], "oracle_text": "({T}: Add {B}.)", "is_tapped": True, "turn_entered_battlefield": 1, "object_kind": "CARD"},
+        {"instance_id": 244, "grp_id": 106529, "name": "Island", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Basic Land — Island", "card_types": ["Land"], "subtypes": ["Island"], "color_production": ["Blue"], "oracle_text": "({T}: Add {U}.)", "is_tapped": True, "turn_entered_battlefield": 2, "object_kind": "CARD"},
+        {"instance_id": 246, "grp_id": 79739, "name": "Mountain", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Basic Land — Mountain", "card_types": ["Land"], "subtypes": ["Mountain"], "color_production": ["Red"], "oracle_text": "({T}: Add {R}.)", "is_tapped": True, "turn_entered_battlefield": 3, "object_kind": "CARD"},
+        {"instance_id": 248, "grp_id": 106531, "name": "Swamp", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Basic Land — Swamp", "card_types": ["Land"], "subtypes": ["Swamp"], "color_production": ["Black"], "oracle_text": "({T}: Add {B}.)", "is_tapped": True, "turn_entered_battlefield": 4, "object_kind": "CARD"},
+        {"instance_id": 249, "grp_id": 106290, "name": "Rank Rat", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Creature — Zombie Rat", "card_types": ["Creature"], "subtypes": ["Zombie", "Rat"], "colors": ["Black"], "mana_cost": "{1}{B}", "oracle_text": "When this creature enters, each opponent discards a card.", "power": 1, "toughness": 1, "turn_entered_battlefield": 4, "object_kind": "CARD"},
+        {"instance_id": 255, "grp_id": 83679, "name": "Swamp", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Basic Land — Swamp", "card_types": ["Land"], "subtypes": ["Swamp"], "color_production": ["Black"], "oracle_text": "({T}: Add {B}.)", "is_tapped": True, "turn_entered_battlefield": 5, "object_kind": "CARD"},
+        {"instance_id": 256, "grp_id": 106294, "name": "Screeching Soulbreaker", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Creature — Siren Bard", "card_types": ["Creature"], "subtypes": ["Siren", "Bard"], "colors": ["Black"], "mana_cost": "{2}{B}", "oracle_text": "Flying\nWhenever this creature attacks, it deals 1 damage to each opponent and you gain 1 life.", "power": 1, "toughness": 4, "keywords": ["flying"], "turn_entered_battlefield": 5, "object_kind": "CARD"},
+        {"instance_id": 261, "grp_id": 106434, "name": "Shipwreck Marsh", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Land", "card_types": ["Land"], "color_production": ["Blue", "Black"], "oracle_text": "This land enters tapped unless you control two or more other lands.\n{oT}: Add {oU} or {oB}.", "turn_entered_battlefield": 6, "object_kind": "CARD"},
+        {"instance_id": 270, "grp_id": 83679, "name": "Swamp", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Basic Land — Swamp", "card_types": ["Land"], "subtypes": ["Swamp"], "color_production": ["Black"], "oracle_text": "({T}: Add {B}.)", "is_tapped": True, "turn_entered_battlefield": 7, "object_kind": "CARD"},
+        {"instance_id": 271, "grp_id": 106315, "name": "Hallway Heckler", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Creature — Elemental Sorcerer", "card_types": ["Creature"], "subtypes": ["Elemental", "Sorcerer"], "colors": ["Red"], "mana_cost": "{2}{R}", "oracle_text": "This creature enters prepared.\n{oT}, Discard a card: Draw a card.", "power": 2, "toughness": 3, "turn_entered_battlefield": 7, "object_kind": "CARD"},
+        {"instance_id": 288, "grp_id": 106529, "name": "Island", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Basic Land — Island", "card_types": ["Land"], "subtypes": ["Island"], "color_production": ["Blue"], "oracle_text": "({T}: Add {U}.)", "is_tapped": True, "turn_entered_battlefield": 8, "object_kind": "CARD"},
+        {"instance_id": 292, "grp_id": 106294, "name": "Screeching Soulbreaker", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Creature — Siren Bard", "card_types": ["Creature"], "subtypes": ["Siren", "Bard"], "colors": ["Black"], "mana_cost": "{2}{B}", "oracle_text": "Flying\nWhenever this creature attacks, it deals 1 damage to each opponent and you gain 1 life.", "power": 1, "toughness": 4, "keywords": ["flying"], "turn_entered_battlefield": 9, "object_kind": "CARD"},
+        {"instance_id": 298, "grp_id": 106531, "name": "Swamp", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Basic Land — Swamp", "card_types": ["Land"], "subtypes": ["Swamp"], "color_production": ["Black"], "oracle_text": "({T}: Add {B}.)", "is_tapped": True, "turn_entered_battlefield": 10, "object_kind": "CARD"},
+        {"instance_id": 299, "grp_id": 106458, "name": "Fblthp, Impossibly Lost", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Legendary Creature — Homunculus", "card_types": ["Creature"], "subtypes": ["Homunculus"], "colors": ["Blue"], "mana_cost": "{1}{U}", "oracle_text": "When one or more of your opponents are dealt combat damage during your turn, draw two cards. If your library has no cards in it, you win the game. Fblthp's owner shuffles him into their library. (If you draw from an empty library this way, you still win the game.)\nWhen one or more of your opponents are dealt combat damage during your turn, draw two cards. If your library has no cards in it, you win the game. Fblthp's owner shuffles him into their library. <i>(If you draw from an empty library this way, you still win the game.)</i>\nWhen one or more of your opponents are dealt combat damage during your turn, draw two cards. If your library has no cards in it, you win the game. Fblthp's owner shuffles him into their library. (If you draw from an empty library this way, you still win the game.)", "power": 1, "toughness": 1, "turn_entered_battlefield": 10, "object_kind": "CARD"},
+        {"instance_id": 302, "grp_id": 106385, "name": "Prudent Fateseer", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Creature — Dwarf Wizard", "card_types": ["Creature"], "subtypes": ["Dwarf", "Wizard"], "colors": ["White", "Blue"], "mana_cost": "{1}{W/U}{W/U}", "oracle_text": "This creature enters prepared.\nWhenever you scry or surveil, creatures you control get +1/+0 until end of turn. This ability triggers only once each turn.\nWhenever you scry or surveil, creatures you control get <nobr>+1/+0</nobr> until end of turn. This ability triggers only once each turn.\nWhenever you scry or surveil, creatures you control get +1/+0 until end of turn. This ability triggers only once each turn.", "power": 1, "toughness": 4, "turn_entered_battlefield": 10, "object_kind": "CARD"},
+        {"instance_id": 311, "grp_id": 83679, "name": "Swamp", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Basic Land — Swamp", "card_types": ["Land"], "subtypes": ["Swamp"], "color_production": ["Black"], "oracle_text": "({T}: Add {B}.)", "is_tapped": True, "turn_entered_battlefield": 11, "object_kind": "CARD"},
+        {"instance_id": 312, "grp_id": 106474, "name": "Garruk, Veiled Butcher", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Legendary Planeswalker — Garruk", "card_types": ["Planeswalker"], "subtypes": ["Garruk"], "colors": ["Black"], "mana_cost": "{3}{B}{B}", "oracle_text": "If a creature an opponent controls would die, exile it instead.\nUp to one target creature gets -4/-1 until your next turn.\nUp to one target creature gets <nobr>-4/-1</nobr> until your next turn.\nUp to one target creature gets -4/-1 until your next turn.\nEach player sacrifices a creature of their choice. If you sacrificed a creature this way, create a 4/4 green Beast creature token with trample.\nEach opponent discards two cards. For each opponent who didn't discard two nonland cards this way, you draw a card.", "turn_entered_battlefield": 11, "object_kind": "CARD", "counters": {"Loyalty": 7}, "loyalty": 7},
+        {"instance_id": 323, "grp_id": 106531, "name": "Swamp", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Basic Land — Swamp", "card_types": ["Land"], "subtypes": ["Swamp"], "color_production": ["Black"], "oracle_text": "({T}: Add {B}.)", "is_tapped": True, "turn_entered_battlefield": 12, "object_kind": "CARD"},
+        {"instance_id": 324, "grp_id": 106381, "name": "Paradox Shaper", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Creature — Octopus Wizard", "card_types": ["Creature"], "subtypes": ["Octopus", "Wizard"], "colors": ["Blue", "Black"], "mana_cost": "{1}{U/B}", "oracle_text": "At the beginning of your upkeep, if this creature isn't prepared, it becomes prepared.\n{o2}: Put target card from your graveyard on the bottom of your library.", "power": 1, "toughness": 3, "turn_entered_battlefield": 12, "object_kind": "CARD", "summoning_sickness": True},
+        {"instance_id": 331, "grp_id": 106551, "name": "Cadet", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Token Creature — Wizard Soldier", "card_types": ["Creature"], "subtypes": ["Wizard", "Soldier"], "power": 2, "toughness": 2, "turn_entered_battlefield": 12, "object_kind": "TOKEN", "parent_instance_id": 327, "summoning_sickness": True},
+        {"instance_id": 335, "grp_id": 79739, "name": "Mountain", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Basic Land — Mountain", "card_types": ["Land"], "subtypes": ["Mountain"], "color_production": ["Red"], "oracle_text": "({T}: Add {R}.)", "is_tapped": True, "turn_entered_battlefield": 13, "object_kind": "CARD"},
+        {"instance_id": 336, "grp_id": 106276, "name": "Apex Witchstalker", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Creature — Wolf", "card_types": ["Creature"], "subtypes": ["Wolf"], "colors": ["Black"], "mana_cost": "{4}{B}{B}", "oracle_text": "Menace\nWhen this creature enters or dies, you gain 2 life.\nBasic landcycling {o2}", "power": 6, "toughness": 4, "keywords": ["menace"], "turn_entered_battlefield": 13, "object_kind": "CARD", "summoning_sickness": True},
+    ],
+    "hand": [
+        {"instance_id": 205, "grp_id": 106437, "name": "Theorix Annex", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Land", "card_types": ["Land"], "oracle_text": "This land enters tapped unless you control a planeswalker.\n{oT}: Add {oU} or {oB}.", "turn_entered_battlefield": -1, "object_kind": "CARD"},
+        {"instance_id": 286, "grp_id": 106299, "name": "Void Extrapolator", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Creature — Aetherborn Warlock", "card_types": ["Creature"], "subtypes": ["Aetherborn", "Warlock"], "colors": ["Black"], "mana_cost": "{1}{B}", "oracle_text": "This creature enters prepared.\nThreshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard.\n<i>Threshold</i><nobr> —</nobr> This creature gets <nobr>+1/+1</nobr> as long as there are seven or more cards in your graveyard.\nThreshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard.", "power": 2, "toughness": 2, "turn_entered_battlefield": -1, "object_kind": "CARD"},
+        {"instance_id": 322, "grp_id": 106467, "name": "Traxos, Academy Guardian", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Legendary Artifact Creature — Dragon Construct", "card_types": ["Artifact", "Creature"], "subtypes": ["Dragon", "Construct"], "colors": ["Blue"], "mana_cost": "{3}{U}", "oracle_text": "This spell costs {o2} less to cast if you've cast a noncreature spell this turn.\nFlying\nVigilance\nProwess", "power": 1, "toughness": 5, "keywords": ["flying", "vigilance"], "turn_entered_battlefield": -1, "object_kind": "CARD"},
+    ],
+    "graveyard": [
+        {"instance_id": 287, "grp_id": 106268, "name": "Sphinx's Approach", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Instant", "card_types": ["Instant"], "colors": ["Blue"], "mana_cost": "{1}{U}{U}", "oracle_text": "Draw two cards. Then you may exile this spell and four cards named Sphinx's Approach from your graveyard. If you do, search your library for a Sphinx creature card, put it onto the battlefield, then shuffle.\nA deck can have any number of cards named Sphinx's Approach.", "turn_entered_battlefield": -1, "object_kind": "CARD"},
+        {"instance_id": 290, "grp_id": 106529, "name": "Island", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Basic Land — Island", "card_types": ["Land"], "subtypes": ["Island"], "oracle_text": "({T}: Add {U}.)", "turn_entered_battlefield": -1, "object_kind": "CARD"},
+        {"instance_id": 253, "grp_id": 106298, "name": "Theoretical Necromancer", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Creature — Vampire Warlock", "card_types": ["Creature"], "subtypes": ["Vampire", "Warlock"], "colors": ["Black"], "mana_cost": "{2}{B}", "oracle_text": "{o3oB}, Exile this card from your graveyard: Return another target creature card from your graveyard to your hand.", "power": 4, "toughness": 1, "turn_entered_battlefield": -1, "object_kind": "CARD"},
+    ],
+    "exile": [
+        {"instance_id": 319, "grp_id": 106259, "name": "Mindseeker Oculus", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Creature — Homunculus", "card_types": ["Creature"], "subtypes": ["Homunculus"], "colors": ["Blue"], "mana_cost": "{2}{U}", "oracle_text": "When this creature enters, empower Jace 4.", "power": 2, "toughness": 1, "turn_entered_battlefield": -1, "object_kind": "CARD"},
+    ],
+    "stack": [],
+    "command": [],
+    "zones": {"opponent_hand_count": 1, "library_count": 24, "opponent_library_count": 27},
+    "deck_cards": [106531, 106531, 106531, 106531, 106531, 106531, 106529, 106529, 106529, 106529, 106529, 106529, 106529, 106529, 106437, 106433, 106434, 106252, 106417, 106290, 106263, 106268, 106399, 106399, 106283, 106285, 106294, 106294, 106294, 106385, 106299, 106467, 106255, 106387, 106480, 106281, 106259, 106381, 106381, 106458],
+}
+# The board the 18:29:21 "Board facts" line was computed on (standalone.log): their T13
+# upkeep, before the Mountain and Apex Witchstalker (+2 life) resolved at 18:29:38 — opponent
+# at 24 with two Screeching Soulbreakers (1/4 fliers) and Hallway Heckler against our five
+# ground creatures. The search then read "attack ...: opponent at 5; hold: opponent at 8".
+BUG_182945_T13_UPKEEP: dict[str, Any] = amend(
+    {**BUG_182945, "battlefield": [c for c in BUG_182945["battlefield"] if c["instance_id"] not in (335, 336)]},
+    {iid: {"is_tapped": False} for iid in (242, 246, 255, 270, 311)},
+    turn={"turn_number": 13, "active_player": 1, "priority_player": 1, "phase": "Phase_Beginning", "step": "Step_Upkeep"},
+    players=[{"seat_id": 1, "life_total": 24, "lands_played": 0, "is_local": False, "mulligan_count": 0}, {"seat_id": 2, "life_total": 10, "lands_played": 0, "is_local": True, "mulligan_count": 0}],
+    zones={"opponent_hand_count": 2, "library_count": 24, "opponent_library_count": 27},
+)
+# bug_20261007_183539 (the next match, our seat 1): their T7 beginning of combat, our Paradox
+# Shaper 1/3 against their Graft Surgeon 3/3 — a board whose sides were questioned (18:35
+# "1 vs 3 power") and are right: the Shaper is in our deck list, the Surgeon is not.
+BUG_183539: dict[str, Any] = {
+    "match_id": "d7d9eb9a-e307-4b2f-ace1-29f656387c93", "event_id": "PickTwoDraft_FRA_20260929", "format_name": "PickTwoDraft FRA 20260929", "local_seat_id": 1, "opponent_seat_id": 2,
+    "turn": {"turn_number": 7, "active_player": 2, "priority_player": 1, "phase": "Combat", "step": "BeginCombat"},
+    "players": [{"seat_id": 1, "life_total": 20, "lands_played": 0, "is_local": True, "mulligan_count": 0}, {"seat_id": 2, "life_total": 20, "lands_played": 0, "is_local": False, "mulligan_count": 0}],
+    "battlefield": [
+        {"instance_id": 199, "grp_id": 73141, "name": "Plains", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Basic Land — Plains", "card_types": ["Land"], "subtypes": ["Plains"], "color_production": ["White"], "oracle_text": "({T}: Add {W}.)", "turn_entered_battlefield": 1, "object_kind": "CARD"},
+        {"instance_id": 201, "grp_id": 106529, "name": "Island", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Basic Land — Island", "card_types": ["Land"], "subtypes": ["Island"], "color_production": ["Blue"], "oracle_text": "({T}: Add {U}.)", "is_tapped": True, "turn_entered_battlefield": 2, "object_kind": "CARD"},
+        {"instance_id": 203, "grp_id": 73144, "name": "Mountain", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Basic Land — Mountain", "card_types": ["Land"], "subtypes": ["Mountain"], "color_production": ["Red"], "oracle_text": "({T}: Add {R}.)", "turn_entered_battlefield": 3, "object_kind": "CARD"},
+        {"instance_id": 205, "grp_id": 106529, "name": "Island", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Basic Land — Island", "card_types": ["Land"], "subtypes": ["Island"], "color_production": ["Blue"], "oracle_text": "({T}: Add {U}.)", "turn_entered_battlefield": 4, "object_kind": "CARD"},
+        {"instance_id": 206, "grp_id": 106381, "name": "Paradox Shaper", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Creature — Octopus Wizard", "card_types": ["Creature"], "subtypes": ["Octopus", "Wizard"], "colors": ["Blue", "Black"], "mana_cost": "{1}{U/B}", "oracle_text": "At the beginning of your upkeep, if this creature isn't prepared, it becomes prepared.\n{o2}: Put target card from your graveyard on the bottom of your library.", "power": 1, "toughness": 3, "turn_entered_battlefield": 4, "object_kind": "CARD"},
+        {"instance_id": 210, "grp_id": 73144, "name": "Mountain", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Basic Land — Mountain", "card_types": ["Land"], "subtypes": ["Mountain"], "color_production": ["Red"], "oracle_text": "({T}: Add {R}.)", "turn_entered_battlefield": 5, "object_kind": "CARD"},
+        {"instance_id": 211, "grp_id": 106235, "name": "Graft Surgeon", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Creature — Human Cleric", "card_types": ["Creature"], "subtypes": ["Human", "Cleric"], "colors": ["White"], "mana_cost": "{2}{W}", "oracle_text": "This creature enters with a +1/+1 counter on it.\nThis creature enters with a <nobr>+1/+1</nobr> counter on it.\nThis creature enters with a +1/+1 counter on it.\nWhen this creature dies, put its counters on up to one target creature you control.", "power": 3, "toughness": 3, "turn_entered_battlefield": 5, "object_kind": "CARD", "counters": {"P1P1": 1}},
+        {"instance_id": 224, "grp_id": 106529, "name": "Island", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Basic Land — Island", "card_types": ["Land"], "subtypes": ["Island"], "color_production": ["Blue"], "oracle_text": "({T}: Add {U}.)", "turn_entered_battlefield": 6, "object_kind": "CARD"},
+        {"instance_id": 226, "grp_id": 73141, "name": "Plains", "owner_seat_id": 2, "controller_seat_id": 2, "type_line": "Basic Land — Plains", "card_types": ["Land"], "subtypes": ["Plains"], "color_production": ["White"], "oracle_text": "({T}: Add {W}.)", "turn_entered_battlefield": 7, "object_kind": "CARD"},
+    ],
+    "hand": [
+        {"instance_id": 121, "grp_id": 106387, "name": "Recursive Recruitment", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Sorcery", "card_types": ["Sorcery"], "colors": ["Blue", "Black"], "mana_cost": "{2}{U}{B}", "oracle_text": "Create two 2/2 colorless Wizard Soldier creature tokens named Cadet. If this spell was cast from a graveyard, put a +1/+1 counter on each of them for every three cards in your graveyard.\nCreate two 2/2 colorless Wizard Soldier creature tokens named Cadet. If this spell was cast from a graveyard, put a <nobr>+1/+1</nobr> counter on each of them for every three cards in your graveyard.\nCreate two 2/2 colorless Wizard Soldier creature tokens named Cadet. If this spell was cast from a graveyard, put a +1/+1 counter on each of them for every three cards in your graveyard.\nFlashback {o6oUoB}", "turn_entered_battlefield": -1, "object_kind": "CARD"},
+        {"instance_id": 122, "grp_id": 106294, "name": "Screeching Soulbreaker", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Creature — Siren Bard", "card_types": ["Creature"], "subtypes": ["Siren", "Bard"], "colors": ["Black"], "mana_cost": "{2}{B}", "oracle_text": "Flying\nWhenever this creature attacks, it deals 1 damage to each opponent and you gain 1 life.", "power": 1, "toughness": 4, "keywords": ["flying"], "turn_entered_battlefield": -1, "object_kind": "CARD"},
+        {"instance_id": 124, "grp_id": 106294, "name": "Screeching Soulbreaker", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Creature — Siren Bard", "card_types": ["Creature"], "subtypes": ["Siren", "Bard"], "colors": ["Black"], "mana_cost": "{2}{B}", "oracle_text": "Flying\nWhenever this creature attacks, it deals 1 damage to each opponent and you gain 1 life.", "power": 1, "toughness": 4, "keywords": ["flying"], "turn_entered_battlefield": -1, "object_kind": "CARD"},
+        {"instance_id": 200, "grp_id": 106290, "name": "Rank Rat", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Creature — Zombie Rat", "card_types": ["Creature"], "subtypes": ["Zombie", "Rat"], "colors": ["Black"], "mana_cost": "{1}{B}", "oracle_text": "When this creature enters, each opponent discards a card.", "power": 1, "toughness": 1, "turn_entered_battlefield": -1, "object_kind": "CARD"},
+        {"instance_id": 204, "grp_id": 106299, "name": "Void Extrapolator", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Creature — Aetherborn Warlock", "card_types": ["Creature"], "subtypes": ["Aetherborn", "Warlock"], "colors": ["Black"], "mana_cost": "{1}{B}", "oracle_text": "This creature enters prepared.\nThreshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard.\n<i>Threshold</i><nobr> —</nobr> This creature gets <nobr>+1/+1</nobr> as long as there are seven or more cards in your graveyard.\nThreshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard.", "power": 2, "toughness": 2, "turn_entered_battlefield": -1, "object_kind": "CARD"},
+        {"instance_id": 217, "grp_id": 106263, "name": "Protege's Awakening", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Sorcery", "card_types": ["Sorcery"], "colors": ["Blue"], "mana_cost": "{3}{U}", "oracle_text": "Empower Jace 6.\nDraw a card.", "turn_entered_battlefield": -1, "object_kind": "CARD"},
+    ],
+    "graveyard": [
+        {"instance_id": 220, "grp_id": 106437, "name": "Theorix Annex", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Land", "card_types": ["Land"], "oracle_text": "This land enters tapped unless you control a planeswalker.\n{oT}: Add {oU} or {oB}.", "turn_entered_battlefield": -1, "object_kind": "CARD"},
+        {"instance_id": 221, "grp_id": 106531, "name": "Swamp", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Basic Land — Swamp", "card_types": ["Land"], "subtypes": ["Swamp"], "oracle_text": "({T}: Add {B}.)", "turn_entered_battlefield": -1, "object_kind": "CARD"},
+        {"instance_id": 222, "grp_id": 106294, "name": "Screeching Soulbreaker", "owner_seat_id": 1, "controller_seat_id": 1, "type_line": "Creature — Siren Bard", "card_types": ["Creature"], "subtypes": ["Siren", "Bard"], "colors": ["Black"], "mana_cost": "{2}{B}", "oracle_text": "Flying\nWhenever this creature attacks, it deals 1 damage to each opponent and you gain 1 life.", "power": 1, "toughness": 4, "keywords": ["flying"], "turn_entered_battlefield": -1, "object_kind": "CARD"},
+    ],
+    "exile": [],
+    "stack": [],
+    "command": [],
+    "zones": {"opponent_hand_count": 5, "library_count": 27, "opponent_library_count": 30},
+    "deck_cards": [106531, 106531, 106531, 106531, 106531, 106531, 106529, 106529, 106529, 106529, 106529, 106529, 106529, 106529, 106437, 106433, 106434, 106252, 106417, 106290, 106263, 106268, 106399, 106399, 106283, 106285, 106294, 106294, 106294, 106385, 106299, 106467, 106255, 106387, 106480, 106281, 106259, 106381, 106381, 106458],
+}
+# fmt: on

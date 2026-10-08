@@ -986,3 +986,56 @@ def test_fallback_line_pick_errors_fall_back_to_board_math(monkeypatch):
     planner = _down()
     assert planner.plan_decision_options(decision, source) == ["idx:2"]
     assert planner.get_last_decision_trace()["fallback"] == "board_math"
+
+
+# --- commanders in the command zone (Brawl, 2026-10-07) ----------------------------------------
+
+
+def test_the_t7_brawl_prompt_names_the_commander_castable_now_and_its_unmodelled_copies():
+    # Historic Brawl 2026-10-07: "Cast The Notary Hobbits" was legal every window while the plan
+    # deferred it to ~T11-13; no line ever cast it and nothing said what it costs now.
+    planner, backend = _planner(["idx:9"], "Forest first.")
+    assert planner.plan_decision_options(actions_decision(S.BRAWL_T7_MENU), deepcopy(S.BRAWL_T7)) == ["idx:9"]
+    prompt = backend.prompts[-1]
+    commander = _option_line(prompt, "idx:0")
+    assert "[LINE: effect not modelled]" in commander and "[YOUR COMMANDER — command zone]" in commander
+    assert "| not modelled, judge these yourself: The Notary Hobbits (its tokens)" in _header(prompt)
+    assert prompt.count("COMMANDER (command zone") == 1
+    assert (
+        "The Notary Hobbits {3}{G}{G} now (no tax yet); castable this turn; the best line casts it on T"
+        in prompt
+    )
+    trace = planner.get_last_decision_trace()["lines"]
+    assert trace["unmodelled"]["idx:0"] == "The Notary Hobbits (its tokens)"
+
+
+def test_the_commander_cast_option_carries_its_line_and_the_guards_reach_it(caplog):
+    planner, backend = _planner(["idx:1"], "Mind Stone ramps.")
+    picked = planner.plan_decision_options(actions_decision(S.BRAWL_MENU), deepcopy(S.BRAWL_COMMANDER_SAVES))
+    prompt = backend.prompts[-1]
+    assert "[LINE best: 2 after T11, 2 after T13" in _option_line(prompt, "idx:0")
+    assert "[LINE: dead T11]" in _option_line(prompt, "idx:1")
+    # The role guard (which keeps precedence) casts the commander instead of the rock.
+    assert picked == ["idx:0"]
+    assert planner.get_last_decision_trace()["role_guard"]["with"] == "idx:0"
+    # The line guard reaches the same option from the search's own key.
+    result = ba.assess(deepcopy(S.BRAWL_COMMANDER_SAVES)).line_search
+    verdict = lg.line_guard(
+        result, actions_decision(S.BRAWL_MENU), "idx:1", S.BRAWL_COMMANDER_SAVES,
+        survival_mode=True, lethal_now=False, our_turn=True,
+    )  # fmt: skip
+    assert verdict is not None and verdict.option_id == "idx:0" and not verdict.applies
+    assert verdict.reason.startswith("Line guard: Prosper, Tome-Bound; then Mind Stone")
+
+
+def test_with_the_model_down_the_fallback_casts_our_only_out_from_the_command_zone():
+    source, decision = deepcopy(S.BRAWL_COMMANDER_SAVES), actions_decision(S.BRAWL_MENU)
+    assert board_math_option_pick(decision, source)[0] == ["idx:0"]  # the board math schedules it too
+    planner = _down()
+    assert planner.plan_decision_options(decision, source) == ["idx:0"]
+    # The legacy legal-action-string path finds the commander in the command zone too.
+    from arenamcp.action_planner import board_math_legacy_plan
+
+    legal = ["Cast Prosper, Tome-Bound [OK]", "Cast Mind Stone [OK]", "Pass"]
+    plan = board_math_legacy_plan(source, legal, "decision_required")
+    assert [a.card_name for a in plan.actions] == ["Prosper, Tome-Bound"]

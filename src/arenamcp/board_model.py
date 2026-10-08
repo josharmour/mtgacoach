@@ -7,6 +7,14 @@ only planner-snapshot fields. Phase/step come back in log form
 ("Phase_Main1"): bridge snapshots carry ``CurrentPhase.ToString()`` ("Main1",
 step "None"), which the timing rules never matched.
 
+Commander games (Brawl): our commanders in the command zone (``our_commanders``)
+are spells like the hand's (``_Spell.zone`` "command"), priced at what casting
+them costs now: Arena's own cast action when the snapshot has one (its
+``manaCost`` includes the tax), else the printed cost plus {2} per previous cast
+from the command zone (``commander_casts``; unknown counts as none, noted in
+``unknowns``). One whose cost is unknown is not a spell (``commanders`` keeps
+it). Without command-zone cards the model is what it was.
+
 The model is frozen, but the cards, bodies and ``_Spell`` objects it holds are
 shared and mutable: copy before changing them. ``board_assessment._schedule``
 overwrites ``_Spell.value`` on every run, so never rely on it.
@@ -35,11 +43,12 @@ from arenamcp.board_assessment import (
     _side_rules,
     _Spell,
     _text,
+    _types,
     card_role,
     extra_mana_cost,
 )
 from arenamcp.combat_keywords import has_combat_keyword, printed_combat_keywords
-from arenamcp.mulligan_policy import _land_colors, hand_card
+from arenamcp.mulligan_policy import _land_colors, _mana_value, _symbols, hand_card
 
 _PHASES = {name.lower(): name for name in ("Beginning", "Main1", "Combat", "Main2", "Ending")}
 _STEPS = {
@@ -117,6 +126,187 @@ def _regular_damage_part(attackers: list[dict]) -> list[dict]:
     return rest
 
 
+# --- commanders in the command zone -------------------------------------------------------
+
+_MANA_COLORS = {
+    "ManaColor_White": "W", "ManaColor_Blue": "U", "ManaColor_Black": "B", "ManaColor_Red": "R",
+    "ManaColor_Green": "G", "ManaColor_Colorless": "C",
+}  # fmt: skip
+# Command-zone objects that are never cast: emblems, dungeons and other non-card objects.
+_NOT_CAST_KINDS = ("ability", "emblem", "token", "boon", "trigger")
+_NOT_CAST_TYPES = re.compile(r"\b(?:emblem|dungeon|plane|phenomenon|scheme|conspiracy|vanguard)\b")
+_CASTABLE_TYPES = re.compile(r"\b(?:creature|planeswalker|artifact|enchantment|instant|sorcery|battle)\b")
+
+
+@dataclass(frozen=True)
+class CommandCast:
+    """One of our commanders in the command zone, priced for a cast now."""
+
+    card: dict  # the command-zone card (a copy when Arena's cast action supplied its mana cost)
+    name: str
+    cost: str  # what casting it costs now, tax included ("{5}{G}{G}"); "" when unknown
+    printed: str  # the printed mana cost; "" when unknown
+    casts: int | None  # previous casts from the command zone; None when unknown
+    from_action: bool  # ``cost`` is Arena's own (the cast action's manaCost, tax included)
+    text_unknown: bool  # no card data: its rules text (and printed cost) are unknown
+
+    @property
+    def tax(self) -> int | None:
+        return None if self.casts is None else 2 * self.casts
+
+    @property
+    def mana_value(self) -> int | None:
+        """Mana to cast it now, the additional mana cost included; None when the cost is unknown."""
+        return _mana_value(self.cost) + extra_mana_cost(self.card) if self.cost else None
+
+
+def _action_cost(entries: Any) -> str:
+    """A GRE ``manaCost`` array as a braced cost: [{color: [Generic], count: 3}, {color: [Green],
+    count: 2}] -> "{3}{G}{G}" (as ``gamestate_decisions._braced_mana_cost``). The Mac bridge
+    writes ``color`` as one enum name or a '[ "ManaColor_White", ... ]' string."""
+    generic, colored = 0, []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        count = _int(entry.get("count"))
+        count = 1 if count is None else count
+        if count <= 0:
+            continue
+        colors = entry.get("color") or []
+        names = colors if isinstance(colors, list) else re.findall(r"ManaColor_\w+", str(colors))
+        symbols = [_MANA_COLORS[c] for c in names if c in _MANA_COLORS]
+        if not symbols:
+            generic += count
+        else:
+            colored += [f"{{{'/'.join(symbols)}}}"] * count
+    return (f"{{{generic}}}" if generic else "") + "".join(colored)
+
+
+def _with_generic(cost: str, amount: int) -> str:
+    """``cost`` with ``amount`` more generic mana (the tax; negative: Arena's taxed cost back to
+    the printed one); "" when that would leave less than none."""
+    symbols = _symbols(cost)
+    generic = sum(int(s) for s in symbols if s.isdigit()) + amount
+    if generic < 0:
+        return ""
+    rest = "".join(f"{{{s}}}" for s in symbols if not s.isdigit())
+    return (f"{{{generic}}}" if generic else "") + rest
+
+
+def _cast_action_cost(state: dict, instance_id: int | None) -> str:
+    """The braced manaCost of Arena's cast action for this card ("" without one)."""
+    if instance_id is None:
+        return ""
+    for key in ("_bridge_actions", "legal_actions_raw"):
+        for action in state.get(key) or []:
+            if (
+                isinstance(action, dict)
+                and str(action.get("actionType") or "").removeprefix("ActionType_").lower() == "cast"
+                and _int(action.get("instanceId")) == instance_id
+            ):
+                cost = _action_cost(action.get("manaCost"))
+                if cost:
+                    return cost
+    return ""
+
+
+def _casts_so_far(state: dict, card: dict) -> int | None:
+    """Previous casts from the command zone: the snapshot's ``commander_casts`` (by grp id, int or
+    str keys), else the card's own; None when neither says."""
+    casts = state.get("commander_casts")
+    if isinstance(casts, Mapping):
+        for grp in (card.get("grp_id"), card.get("base_grp_id")):
+            for key in (grp, str(grp)) if grp is not None else ():
+                value = _int(casts.get(key))
+                if value is not None and value >= 0:
+                    return value
+    value = _int(card.get("commander_casts"))
+    return value if value is not None and value >= 0 else None
+
+
+def _command_cards(state: dict) -> list[dict]:
+    cards = state.get("command")
+    if cards is None:
+        zones = state.get("zones") if isinstance(state.get("zones"), dict) else {}
+        cards = zones.get("command")
+    return [c for c in cards or [] if isinstance(c, dict)]
+
+
+def our_commanders(state: dict, local: int | None = None) -> list[CommandCast]:
+    """Our commanders in the command zone (``state['command']``), priced for a cast now.
+
+    Ours: owned (or controlled) by our seat; a card without a seat (Mac bridge
+    snapshots) when our player's ``commander_ids`` (instance ids) or the
+    match's ``commander_grp_ids`` name it and the opponent's ``commander_ids``
+    do not. A commander: one ``commander_grp_ids`` / ``commander_ids`` name, or,
+    when neither is known, any card of ours there of a type that is cast
+    (emblems, dungeons, abilities and tokens never are). The cost: Arena's
+    cast action when the snapshot has one (its manaCost includes the tax),
+    else the printed cost plus {2} per previous cast (``commander_casts``;
+    unknown is assumed none). Without card data (no printed cost and no rules
+    text) the printed cost is the action's less the tax, and ``text_unknown``
+    is set: the card copy carries ``_card_unknown`` so ``unmodelled_effect``
+    can say so.
+    """
+    cards = _command_cards(state)
+    if not cards:
+        return []
+    if local is None:
+        local, _opponent = _seats(state)
+    if local is None:
+        return []
+    players = [p for p in state.get("players") or [] if isinstance(p, dict)]
+    ours_ids = {
+        _int(i) for p in players if p.get("seat_id") == local for i in p.get("commander_ids") or []
+    } - {None}
+    theirs_ids = {
+        _int(i) for p in players if p.get("seat_id") != local for i in p.get("commander_ids") or []
+    } - {None}
+    grp_ids = {_int(g) for g in state.get("commander_grp_ids") or []} - {None}
+    designated_known = bool(ours_ids or grp_ids)
+    found: list[CommandCast] = []
+    for card in cards:
+        kind = str(card.get("object_kind") or "").lower()
+        if any(word in kind for word in _NOT_CAST_KINDS) or _NOT_CAST_TYPES.search(_types(card)):
+            continue
+        iid = _int(card.get("instance_id"))
+        grps = {_int(card.get("grp_id")), _int(card.get("base_grp_id"))} - {None}
+        designated = (iid is not None and iid in ours_ids) or bool(grps & grp_ids)
+        owner = _int(card.get("owner_seat_id")) or _int(card.get("controller_seat_id"))
+        if owner is not None:
+            if owner != local:
+                continue
+        elif not designated or (iid is not None and iid in theirs_ids):
+            continue
+        if designated_known and not designated:
+            continue
+        printed = str(card.get("mana_cost") or "")
+        action = _cast_action_cost(state, iid)
+        text_unknown = not printed and not str(card.get("oracle_text") or "").strip()
+        if not designated and not (printed or action) and not _CASTABLE_TYPES.search(_types(card)):
+            continue  # not a designated commander, nor a card we could cast
+        casts = _casts_so_far(state, card)
+        if action:
+            cost = action
+            if not printed and casts is not None:
+                printed = _with_generic(action, -2 * casts)
+        elif printed:
+            cost = _with_generic(printed, 2 * casts) if casts else printed
+        else:
+            cost = ""
+        if text_unknown or (printed and not card.get("mana_cost")):
+            card = {**card, "mana_cost": printed}
+            if text_unknown:
+                card["_card_unknown"] = True
+        found.append(
+            CommandCast(
+                card=card, name=_name(card), cost=cost, printed=printed, casts=casts,
+                from_action=bool(action), text_unknown=text_unknown,
+            )
+        )  # fmt: skip
+    return found
+
+
 @dataclass(frozen=True)
 class BoardModel:
     """One snapshot's board facts; see the module docstring for the mutation rule."""
@@ -171,6 +361,9 @@ class BoardModel:
     t_casts_pre_combat: bool  # this turn's casts can come before our attack
     t_casts_post_combat: bool  # our attack is over: casts come after it
     t_instant_only: bool  # our ending phase: instant-speed plays only
+    # Our commanders in the command zone (``our_commanders``); those with a known cost are
+    # also in ``spells`` (zone "command"). Empty outside commander games.
+    commanders: tuple[CommandCast, ...] = ()
 
     @property
     def unknowns(self) -> list[str]:
@@ -178,6 +371,15 @@ class BoardModel:
         notes = [f"{name} has unknown power/toughness" for name in self.unknown_bodies]
         if self.has_x_spells:
             notes.append("X spells are not scheduled")
+        for commander in self.commanders:
+            if not commander.cost:
+                notes.append(f"our commander {commander.name}: cost unknown (not cast in the lines)")
+            elif commander.casts is None and not commander.from_action:
+                notes.append(
+                    f"our commander {commander.name}: commander tax unknown (no previous casts assumed)"
+                )
+            if commander.text_unknown:
+                notes.append(f"our commander {commander.name}: rules text unknown")
         return notes
 
 
@@ -277,6 +479,25 @@ def build_board_model(state: dict) -> BoardModel | None:
                 uncastable=_cast_gate_unmet(card, our_graveyard),
             )
         )
+    # Our commanders in the command zone: cast like hand cards, at their current cost.
+    commanders = our_commanders(state, local)
+    for commander in commanders:
+        if not commander.cost:
+            continue  # unknown cost: not cast in the lines (``unknowns`` says so)
+        card = commander.card
+        info = hand_card({**card, "mana_cost": commander.cost, "rarity": card.get("rarity") or "-"})
+        spells.append(
+            _Spell(
+                card=card,
+                name=commander.name,
+                role=card_role(card),
+                mana_value=info.mana_value + extra_mana_cost(card),
+                pips=info.pips,
+                has_x="x" in (commander.printed or commander.cost).lower(),
+                uncastable=_cast_gate_unmet(card, our_graveyard),
+                zone="command",
+            )
+        )
     our_stack_bodies = []
     for card in state.get("stack") or []:
         if not isinstance(card, dict) or _controller(card) != local or not _is_creature(card):
@@ -316,4 +537,5 @@ def build_board_model(state: dict) -> BoardModel | None:
         t_casts_pre_combat=(not our_turn) or phase in ("Phase_Beginning", "Phase_Main1"),
         t_casts_post_combat=our_turn and phase in ("Phase_Combat", "Phase_Main2"),
         t_instant_only=our_turn and phase == "Phase_Ending",
+        commanders=tuple(commanders),
     )  # fmt: skip

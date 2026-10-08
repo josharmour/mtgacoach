@@ -184,10 +184,11 @@ _PUMP = re.compile(
 
 _PERMANENT_TYPES = ("artifact", "enchantment", "creature", "planeswalker", "battle", "land")
 _QUOTED = re.compile(r"\"[^\"]*\"|“[^”]*”")
-_ENTERS_TRIGGER = re.compile(r"(?:when|whenever)\b[^.:]*?\benters\b")
+# "When ~ enter": the card's own enters trigger under a plural name (The Notary Hobbits).
+_ENTERS_TRIGGER = re.compile(r"(?:when|whenever)\b[^.:]*?\b(?:enters|(?<=~ )enter)\b")
 # The subject of an enters trigger ("when <subject> enters"), and the "or another ..." that lets
 # the card's own trigger fire again for other permanents.
-_ENTERS_SUBJECT = re.compile(r"(?:when|whenever) (?P<subject>[^.:,]*?) enters\b")
+_ENTERS_SUBJECT = re.compile(r"(?:when|whenever) (?P<subject>[^.:,]*?) (?:enters|(?<=~ )enter)\b")
 _OR_ANOTHER = re.compile(r"\s+or (?:another|one or more other)\b.*$")
 _CHAPTER_ONE = re.compile(r"i(?:\s*,\s*ii)?(?:\s*,\s*iii)?\s*[—–]")
 _TRIGGER_WORDS = re.compile(r"(?:when|whenever|at|if|as long as)\b")
@@ -710,6 +711,8 @@ class _Spell:
     has_x: bool
     value: float = 0.0
     uncastable: bool = False  # e.g. Threshold "can't cast this spell unless ..." not met
+    # "command": our commander, cast from the command zone (``mana_value`` includes the tax).
+    zone: str = "hand"
 
 
 @dataclass
@@ -803,6 +806,9 @@ class BoardAssessment:
     # can't value (``_unmodelled_castable``), and our own pending stack objects (``_our_pending``).
     unmodelled: list[str] = field(default_factory=list)
     pending: list[str] = field(default_factory=list)
+    # Commander games: per commander of ours in the command zone, its cost now (tax included)
+    # and when the lookahead can cast it (``_commander_facts``); empty elsewhere.
+    commander: list[str] = field(default_factory=list)
 
     @property
     def survival_mode(self) -> bool:
@@ -893,6 +899,8 @@ class BoardAssessment:
             lines.append(f"  NEXT: {next_turns}")
         if with_lines and self.line_search is not None and self.lines:
             lines.append("  " + self.lines_line(318))
+        if self.commander:
+            lines.append("  " + self.commander_line())
         hand = "?" if self.their_hand is None else str(self.their_hand)
         lines.append(
             f"  Board: us {self.our_creatures} creatures/{self.our_power} power vs them "
@@ -914,6 +922,15 @@ class BoardAssessment:
         else:
             lines.append("  Priority: develop the board on curve; card draw and rocks only with spare mana.")
         return "\n".join(lines)
+
+    def commander_line(self) -> str:
+        """'COMMANDER ...': our commanders in the command zone, their cost now and when castable."""
+        if not self.commander:
+            return ""
+        return (
+            "COMMANDER (command zone: cast it like a hand card; each cast from there adds {2} to the next): "
+            + " | ".join(self.commander)
+        )
 
     def lines_line(self, max_chars: int = 320) -> str:
         """The search's 'LINES ...' prompt line, marking casts it can't value and our pending choice."""
@@ -1065,6 +1082,18 @@ def _signature(state: dict) -> tuple:
         if isinstance(p, dict)
     )
     zones = state.get("zones") if isinstance(state.get("zones"), dict) else {}
+    # Commander games: the command zone and what our commanders cost now, tax included
+    # (Arena's cast action when there is one); empty elsewhere.
+    command = tuple(
+        (c.get("instance_id"), c.get("name"), c.get("owner_seat_id"), c.get("mana_cost"))
+        for c in state.get("command") or []
+        if isinstance(c, dict)
+    )
+    if command:
+        from arenamcp.board_model import our_commanders
+
+        command += tuple((c.name, c.cost, c.casts) for c in our_commanders(state))
+    casts = state.get("commander_casts") if isinstance(state.get("commander_casts"), dict) else {}
     return (
         state.get("match_id"),
         turn.get("turn_number"),
@@ -1078,6 +1107,8 @@ def _signature(state: dict) -> tuple:
         zones.get("library_count"),
         zones.get("opponent_hand_count"),
         bool(state.get("deck_catalog")),  # the deck curve only exists on prepared states
+        command,
+        tuple(sorted((str(k), str(v)) for k, v in casts.items())),
     )
 
 
@@ -1519,6 +1550,13 @@ def _assess(state: dict) -> BoardAssessment | None:
         reason = f"{reason}; {posture_reason}"
     reason += pending_note
 
+    commander: list[str] = []
+    if model.commanders:
+        try:
+            commander = _commander_facts(model, lookahead, found)
+        except Exception as error:
+            logger.debug("commander facts failed: %s", error, exc_info=True)
+
     zones = state.get("zones") if isinstance(state.get("zones"), dict) else {}
     library = _int(zones.get("library_count", state.get("library_count")))
     if str(zones.get("library_count_source") or "") == "unknown":
@@ -1570,9 +1608,86 @@ def _assess(state: dict) -> BoardAssessment | None:
         search_stats=search.stats() if search is not None else {},
         unmodelled=unmodelled,
         pending=pending,
+        commander=commander,
     )
     result.elapsed_ms = (time.perf_counter() - started) * 1000
     return result
+
+
+def _commander_facts(model: Any, lookahead: list[TurnProjection], search: Any) -> list[str]:
+    """One fact per commander of ours in the command zone; [] outside commander games.
+
+    Its cost now, tax included (Arena's own when the snapshot has its cast
+    action; an unknown tax is called that), when it is castable (now at
+    instant speed on their turn, else the first lookahead turn that can pay
+    for it), when the best line (or, without the search, the board-math
+    projection) casts it, and what its cast does that the search can't value.
+    """
+    from arenamcp.line_search_moves import hand_info, unmodelled_effect
+
+    best = search.best if search is not None else None
+    facts: list[str] = []
+    for commander in getattr(model, "commanders", ()):
+        name = commander.name
+        if not commander.cost:
+            facts.append(
+                f"{name}: cost unknown (no card data, no cast action from Arena) — judge it yourself"
+            )
+            continue
+        plural = "s" if commander.casts != 1 else ""
+        if commander.casts is None:
+            cost = f"{commander.cost} now" if commander.from_action else f"{commander.cost} + unknown tax"
+        elif commander.casts:
+            cost = (
+                f"{commander.cost} now ({{{commander.tax}}} tax for {commander.casts} previous cast{plural})"
+            )
+        else:
+            cost = f"{commander.cost} now (no tax yet)"
+        parts = [f"{name} {cost}"]
+        spell = next((s for s in model.spells if s.zone == "command" and s.name == name), None)
+        flash_now = (
+            spell is not None
+            and not model.our_turn
+            and bool(hand_info(spell.card).instant_speed)
+            and spell.mana_value <= len(model.sources_now)
+            and _pip_matching(spell.pips, list(model.sources_now))
+        )
+        when = next((k for k, row in enumerate(lookahead) if name in row.castable), None)
+        if flash_now:
+            parts.append("castable now at instant speed")
+        elif when == 0:
+            parts.append(
+                "castable this turn"
+                if model.our_turn
+                else f"castable on our next turn (T{lookahead[0].turn})"
+            )
+        elif when is not None:
+            parts.append(f"castable from T{lookahead[when].turn}")
+        elif lookahead:
+            parts.append(f"not castable by T{lookahead[-1].turn} ({commander.mana_value} mana needed)")
+        if best is not None:
+            cast = next((f"casts it on T{s.turn}" for s in best.steps if name in s.casts), "")
+            cast = cast or next((f"flashes it in on T{s.turn + 1}" for s in best.steps if name in s.held), "")
+            leaf = getattr(best, "_leaf", None)
+            if not cast and spell is not None and leaf is not None and model.their_attack_pending:
+                spells = getattr(getattr(search, "_search", None), "spells", None) or []
+                index = next((h.index for h in spells if h.spell.zone == "command" and h.name == name), None)
+                if index is not None and index not in leaf.hand:
+                    cast = "flashes it in against their attack now"
+            if cast or flash_now or when is not None:
+                parts.append(f"the best line {cast}" if cast else "the best line does not cast it")
+        elif when is not None:
+            cast_at = next((row.turn for row in lookahead if name in row.casts), None)
+            parts.append(
+                f"the board-math projection casts it on T{cast_at}"
+                if cast_at
+                else "the board-math projection does not cast it"
+            )
+        why = unmodelled_effect(spell.card, search) if spell is not None else ""
+        if why:
+            parts.append(f"not modelled: {why} — weigh that yourself")
+        facts.append("; ".join(parts))
+    return facts
 
 
 def _wins_by_next_turn(line: Any) -> bool:
@@ -1593,6 +1708,8 @@ def _unmodelled_castable(
     the battlefield, or castable on T). Before their next attack: on our
     turn (or theirs, after their attack), what T can cast; while their attack
     is still to come this turn, only instants payable from our untapped mana.
+    Our commanders in the command zone are spells like the hand's; one whose
+    cost is unknown (``BoardModel.commanders``) counts as castable now.
     """
     from arenamcp.line_search_moves import hand_info, unmodelled_effect
 
@@ -1632,6 +1749,14 @@ def _unmodelled_castable(
             before = 0 in turns and (instant or not model.t_instant_only)
         if before:
             first.append(spell.name)
+    # Our commander whose cost is unknown is never cast in a line: it may be castable now.
+    for commander in getattr(model, "commanders", ()):
+        if commander.cost or commander.name in found:
+            continue
+        found.append(commander.name)
+        instant = bool(hand_info(commander.card).instant_speed)
+        if instant if model.their_attack_pending else (instant or not model.t_instant_only):
+            first.append(commander.name)
     return found, first
 
 
@@ -1650,7 +1775,7 @@ def _our_pending(state: dict, model: Any) -> list[str]:
     from arenamcp.line_search_moves import bullets, card_flow, classify, token_specs, unmodelled_effect
 
     cards: dict[int, dict] = {}
-    for zone in ("battlefield", "graveyard", "exile", "hand"):
+    for zone in ("battlefield", "graveyard", "exile", "hand", "command"):
         for card in state.get(zone) or []:
             if isinstance(card, dict) and _int(card.get("instance_id")) is not None:
                 cards[_int(card.get("instance_id"))] = card
@@ -2445,7 +2570,10 @@ def _enabled_by_land(
     turn: int,
     friends: list[dict] | tuple = (),
 ) -> tuple[int, str] | None:
-    """Best survival play this land drop makes castable this turn: (loss, description)."""
+    """Best survival play this land drop makes castable this turn: (loss, description).
+
+    The play is a hand card or our commander in the command zone (its cost now, tax included).
+    """
     if not land or _enters_tapped(land):
         return None
     local, _opponent = _seats(state)
@@ -2459,13 +2587,21 @@ def _enabled_by_land(
     ]
     sources.append(SimpleNamespace(produces=frozenset(set(_land_colors(land)) or {"C"}), name=_name(land)))
     best: tuple[int, str] | None = None
-    for card in state.get("hand") or []:
+    cards: list[tuple[Any, str | None]] = [(card, None) for card in state.get("hand") or []]
+    if state.get("command"):
+        # Our commanders in the command zone, at what casting them costs now (tax included).
+        from arenamcp.board_model import our_commanders
+
+        cards += [(c.card, c.cost) for c in our_commanders(state, local) if c.cost]
+    for card, cost in cards:
         if not isinstance(card, dict) or card.get("instance_id") == land.get("instance_id"):
             continue
         role = card_role(card)
         if role not in ("creature", "removal"):
             continue
-        info = hand_card(card)
+        info = hand_card(
+            card if cost is None else {**card, "mana_cost": cost, "rarity": card.get("rarity") or "-"}
+        )
         if "x" in str(card.get("mana_cost") or "").lower() or info.mana_value > len(sources):
             continue
         if not _pip_matching(info.pips, sources):

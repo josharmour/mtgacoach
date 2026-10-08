@@ -22,14 +22,17 @@ BUG_FIXTURES = {
     "bug_20261006_135027": fx.BUG_135027,
     "bug_20261006_174855": fx.BUG_174855,
     "bug_20261006_180436": fx.BUG_180436,
+    "bug_20261007_183358": fx.BUG_183358,
+    "bug_20261007_182945": fx.BUG_182945,
+    "bug_20261007_183539": fx.BUG_183539,
 }
 STRATEGIC_CARD_FIELDS = (
     "instance_id", "grp_id", "name", "modified_name", "owner_seat_id", "controller_seat_id", "type_line",
     "card_types", "subtypes", "colors", "modified_colors", "color_production", "mana_cost", "cmc",
     "oracle_text", "power", "toughness", "modified_power", "modified_toughness", "printed_power",
     "printed_toughness", "keywords", "is_tapped", "turn_entered_battlefield", "is_attacking", "is_blocking",
-    "attack_target_id", "attached_to_id", "object_kind", "is_token", "is_phased_out", "counters", "damage",
-    "loyalty", "parent_instance_id", "summoning_sickness", "cant_be_blocked", "rarity",
+    "attack_target_id", "attached_to_id", "object_kind", "is_token", "is_copy", "is_phased_out", "counters",
+    "damage", "loyalty", "parent_instance_id", "summoning_sickness", "cant_be_blocked", "rarity",
 )  # fmt: skip
 # Recorded by the bridge but read by nothing in the strategic layer (a printing id).
 UNREAD_CARD_FIELDS = {"base_grp_id"}
@@ -98,7 +101,9 @@ def test_bug_fixture_reproduces_the_reports_game_state(report):
 
 def test_bug_fixtures_keep_the_bridge_names():
     for fixture in BUG_FIXTURES.values():
-        assert (fixture["turn"]["phase"], fixture["turn"]["step"]) == ("Main1", "None")
+        # The bridge's names: "Main1"/"None", "Combat"/"DeclareAttack" — never Player.log's "Phase_"/"Step_".
+        assert not fixture["turn"]["phase"].startswith("Phase_")
+        assert not fixture["turn"]["step"].startswith("Step_") and fixture["turn"]["step"]
         assert all(
             not kind.startswith("CardType_") for c in fixture["battlefield"] for kind in c["card_types"]
         )
@@ -114,6 +119,8 @@ def test_reference_copies_hold_no_secrets_or_names():
 def test_new_fixtures_are_json_safe():
     for name in (
         "G1_T14_ON_STACK", "G1_T14_MODE_STATE", "G3_T10_BLOCKS", "BUG_135027", "BUG_174855", "BUG_180436",
+        "BUG_183358", "BUG_183358_T16_MAIN1", "BUG_183358_ON_STACK", "BUG_182945", "BUG_182945_T13_UPKEEP",
+        "BUG_183539",
     ):  # fmt: skip
         state = getattr(fx, name)
         assert json.loads(json.dumps(state)) == state, name

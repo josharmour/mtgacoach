@@ -249,6 +249,13 @@ def _unmodelled_finisher(result: LineSearchResult, option: Any, state: dict) -> 
     return bool(unmodelled_cast(result, option, state))
 
 
+def _searched_commander(result: LineSearchResult | None, source: dict) -> dict | None:
+    """The search's own card for this command-zone card (its commander spell), or None."""
+    spells = getattr(getattr(result, "_search", None), "spells", None) or []
+    iid = _int(source.get("instance_id"))
+    return next((hs.spell.card for hs in spells if hs.spell.zone == "command" and hs.iid == iid), None)
+
+
 def unmodelled_cast(result: LineSearchResult | None, option: Any, state: dict) -> str:
     """'<card> (<why>)' when ``option`` casts a card the search can't value, else ''.
 
@@ -260,7 +267,11 @@ def unmodelled_cast(result: LineSearchResult | None, option: Any, state: dict) -
     action = str(meta.get("actionType") or "").removeprefix("ActionType_").lower()
     if _is_pass(option) or action in ("play", "playland", "activate"):
         return ""
-    source, _zone = _source_card(state, meta)
+    source, zone = _source_card(state, meta)
+    if zone == "command":
+        # Our commander as the search read it (``board_model.our_commanders``: a copy marked
+        # when its card data is unknown).
+        source = _searched_commander(result, source) or source
     why = unmodelled_effect(source, result) if source else ""
     return f"{_name(source)} ({why})" if why else ""
 

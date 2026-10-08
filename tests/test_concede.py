@@ -543,7 +543,7 @@ HULLBREAKER = (
 )
 
 
-def test_a_flash_commander_in_the_command_zone_is_an_out():
+def test_a_flash_commander_in_the_command_zone_is_an_out(monkeypatch):
     attackers = [
         creature(10, "Huge", 2, 8, 8, is_attacking=True, tapped=True, attack_target_id=1),
         creature(11, "Small", 2, 2, 2, is_attacking=True, tapped=True, attack_target_id=1),
@@ -556,9 +556,18 @@ def test_a_flash_commander_in_the_command_zone_is_an_out():
         attackers + islands, life=5, phase="Phase_Combat", step="Step_DeclareAttack", command=[horror]
     )
     estimate = estimate_loss(state)
+    # The line search casts the commander from the command zone too (2026-10-07): flashed in,
+    # it blocks the 8/8 and we survive this attack, so nothing is conceded at all.
+    assert estimate.confidence < 0.95 and estimate.reason == "not dead next attack"
+    assert estimate.facts["dead_in"] == 2
+    # Without the search, concede's own scan names the command-zone out.
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")
+    estimate = estimate_loss(state)
     assert estimate.confidence < 0.95 and any("command zone" in out for out in estimate.facts["outs"])
-    # Six Islands can't pay for it.
+    # Six Islands can't pay for it: dead, with the search or without it.
     state["battlefield"] = attackers + islands[:6]
+    assert estimate_loss(state).confidence >= 0.95
+    monkeypatch.delenv("ARENAMCP_LINE_SEARCH")
     assert estimate_loss(state).confidence >= 0.95
 
 

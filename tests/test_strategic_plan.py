@@ -428,3 +428,94 @@ def test_desktop_plan_card_renders_role_clocks_and_next_turns(qapp):
         assert panel.game_plan_label.isHidden()
     finally:
         panel.close()
+
+
+# --- commanders in the command zone (Brawl, 2026-10-07) ----------------------------------------
+
+
+def _brawl_plan(turns: list[dict]) -> GamePlan:
+    return _parsed(
+        {
+            "role": "defender",
+            "role_reason": "behind on board, build the Halfling engine",
+            "turns": turns,
+            "win_conditions": ["Halfling mana engine into our biggest creatures"],
+            "path": "commander first, then ramp",
+            "threat": "",
+            "develop_next": "",
+        },
+        turn=7,
+    )
+
+
+def test_a_plan_may_cast_our_commander_from_the_command_zone_once():
+    from tests.strategic_states import BRAWL_T7
+
+    # Before 2026-10-07 validation dropped it: "not in hand or castable from the graveyard".
+    state = deepcopy(BRAWL_T7)
+    plan = _brawl_plan(
+        [
+            {"turn": "T", "land": "Forest", "cast": ["The Notary Hobbits"], "attack": "none"},
+            {
+                "turn": "T+1",
+                "cast": ["Icetill Explorer", "The Notary Hobbits"],
+                "attack": "The Notary Hobbits",
+            },
+        ]
+    )
+    validate_plan(plan, assess(state), state)
+    t, t1 = plan.turn_plan
+    assert (t["turn"], t["land"], t["cast"], t["mana"]) == (7, "Forest", ["The Notary Hobbits"], 5)
+    assert (t1["cast"], t1["attack"]) == (["Icetill Explorer"], "The Notary Hobbits")
+    assert "T+1: dropped The Notary Hobbits (already cast earlier in the plan)" in plan.issues
+    assert not any("not in hand" in issue for issue in plan.issues)
+    # Its copies are not modelled, so the line check gives no verdict on the plan.
+    assert "line check skipped, the search can't value: T: The Notary Hobbits (its tokens)" in plan.issues
+
+
+def test_the_commander_tax_counts_against_the_plans_mana():
+    from tests.strategic_states import BRAWL_SECOND_CAST, BRAWL_TAXED_OUT
+
+    plan = _brawl_plan([{"turn": "T", "cast": ["Prosper, Tome-Bound"], "attack": "none"}])
+    state = deepcopy(BRAWL_TAXED_OUT)
+    validate_plan(plan, assess(state), state)
+    # Dropped; the emptied turn takes the board-math deployment instead.
+    assert (
+        plan.turn_plan[0]["cast"] == ["Mind Stone"] and "board-math deployment" in plan.turn_plan[0]["hold"]
+    )
+    assert any(
+        issue.startswith("T: dropped Prosper, Tome-Bound — not mana-legal (plan needs 6 mana, budget 4")
+        for issue in plan.issues
+    )
+    plan = _brawl_plan([{"turn": "T", "cast": ["Prosper, Tome-Bound"], "attack": "none"}])
+    state = deepcopy(BRAWL_SECOND_CAST)
+    validate_plan(plan, assess(state), state)
+    assert plan.turn_plan[0]["cast"] == ["Prosper, Tome-Bound"] and plan.turn_plan[0]["mana"] == 6
+
+
+def test_the_plan_prompt_and_the_decision_strategy_say_the_commander_is_castable_now():
+    from tests.strategic_states import BRAWL_T7, BRAWL_T7_MENU
+
+    fact = "The Notary Hobbits {3}{G}{G} now (no tax yet); castable this turn"
+    backend = _Backend(
+        {
+            "role": "defender",
+            "role_reason": "behind on board, build the Halfling engine",
+            "turns": [{"turn": "T", "land": "Forest", "cast": ["The Notary Hobbits"], "attack": "none"}],
+            "win_conditions": ["Halfling mana engine into our biggest creatures"],
+            "path": "commander first",
+        }
+    )
+    manager = GamePlanManager(backend)
+    plan = manager.maybe_reform(deepcopy(BRAWL_T7))
+    _system, user, _args, _kwargs = backend.calls[0]
+    assert "COMMANDER (command zone: cast it like a hand card" in user and fact in user
+    assert "Forest + The Notary Hobbits (not modelled)" in user  # a CANDIDATE LINE casts it
+    assert plan.turn_plan[0]["cast"] == ["The Notary Hobbits"]
+    # The typed decision's strategy block (the manager's renderer) carries the same fact once.
+    planner, decision_backend = _planner({"option_ids": ["idx:9"], "reasoning": "Forest first."})
+    planner.set_game_plan_source(manager.strategy_block)
+    planner.plan_decision_options(actions_decision(BRAWL_T7_MENU), deepcopy(BRAWL_T7))
+    prompt = decision_backend.prompts[-1]
+    assert prompt.count("COMMANDER (command zone") == 1 and fact in prompt
+    assert "THIS TURN (T7, now): play Forest; cast The Notary Hobbits; attack: none [game plan T7]" in prompt
