@@ -811,3 +811,129 @@ def test_bot_match_requeue_requires_the_bot_match_tile():
     parse_queue_action(proposal(**{**tile, "queue_name": "Bot Match"}), **expected)
     with pytest.raises(ValueError):
         parse_queue_action(proposal(**{**tile, "queue_name": "Brawl"}), **expected)
+
+
+# ---------------------------------------------------------------------------
+# Post-match survey ("Did you have fun in the match?")
+# ---------------------------------------------------------------------------
+
+
+def survey_bridge(states, dismissal=None):
+    return SimpleNamespace(
+        connected=True,
+        client_runtime="il2cpp-macos",
+        get_survey=Mock(side_effect=list(states)),
+        dismiss_survey=Mock(return_value=dismissal or {"ok": True, "closed": True}),
+    )
+
+
+def test_bridge_skips_the_survey_before_any_screenshot_or_click(monkeypatch):
+    monkeypatch.setattr("arenamcp.auto_queue.sys.platform", "darwin")
+    nav, controller, backend, _, statuses = navigator()
+    nav._bridge = survey_bridge([{"is_open": True, "skip_ready": True}, {"is_open": False}])
+    arm(nav)
+    step(nav)
+    nav._bridge.dismiss_survey.assert_called_once_with()
+    controller.capture.assert_not_called()
+    backend.complete_with_image.assert_not_called()
+    assert "Skipped the match survey" in statuses[-1]
+    # With the survey gone the ordinary screenshot navigation resumes.
+    step(nav)
+    assert nav._bridge.dismiss_survey.call_count == 1
+    controller.execute.assert_called_once()
+    assert nav.get_debug_info()["survey_skips"] == 1
+
+
+def test_bridge_survey_skips_are_bounded_then_the_screen_path_continues(monkeypatch):
+    monkeypatch.setattr("arenamcp.auto_queue.sys.platform", "darwin")
+    nav, controller, backend, _, _ = navigator()
+    nav._bridge = survey_bridge([{"is_open": True}] * 10, dismissal={"ok": False, "error": "timeout"})
+    arm(nav)
+    for _ in range(3):
+        step(nav)
+    assert nav._bridge.dismiss_survey.call_count == 3
+    controller.capture.assert_not_called()
+    assert not nav.paused_reason
+    step(nav)
+    assert nav._bridge.dismiss_survey.call_count == 3
+    assert controller.capture.call_count >= 1
+    controller.execute.assert_called_once()
+    assert not nav.paused_reason
+
+
+def test_bridge_without_survey_support_or_connection_is_ignored(monkeypatch):
+    monkeypatch.setattr("arenamcp.auto_queue.sys.platform", "darwin")
+    nav, controller, _, _, _ = navigator()
+    offline = survey_bridge([{"is_open": True}])
+    offline.connected = False
+    nav._bridge = offline
+    arm(nav)
+    step(nav)
+    offline.get_survey.assert_not_called()
+    controller.execute.assert_called_once()
+
+
+def test_survey_skip_click_is_verified_like_other_clicks():
+    nav, controller, backend, _, statuses = navigator()
+    arm(nav)
+    backend.complete_with_image.return_value = proposal(
+        "dismiss_survey", "survey", label="Skip", point=[0.5, 0.62], result_visible=False
+    )
+    step(nav)
+    controller.execute.assert_called_once()
+    assert controller.execute.call_args.args[1].point == (0.5, 0.62)
+    assert nav.get_debug_info()["recent_actions"] == [{"action": "dismiss_survey", "label": "Skip"}]
+    assert "Skip" in statuses[-1]
+    # The next observation decides whether it closed; a repeated identical click is bounded.
+    backend.complete_with_image.return_value = proposal("open_play", "home")
+    step(nav)
+    assert controller.execute.call_count == 2
+    assert not nav.paused_reason
+
+
+def test_survey_over_the_result_banner_is_skipped_not_clicked_through():
+    # The survey covers the VICTORY/DEFEAT overlay; a centre click would hit its shield.
+    data, action = parse_queue_action(
+        proposal(
+            "dismiss_survey",
+            "results",
+            label="Skip",
+            point=[0.5, 0.62],
+            result_visible=True,
+            result_title="VICTORY",
+        )
+    )
+    assert data["action"] == "dismiss_survey"
+    assert action is not None and action.point == (0.5, 0.62)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"label": ":)"},
+        {"label": "Good"},
+        {"label": "Happy face"},
+        {"label": "Continue"},
+        {"screen": "queue"},
+        {"screen": "match"},
+    ],
+)
+def test_survey_dismissal_only_accepts_the_skip_control(changes):
+    data = dict(screen="survey", label="Skip", point=[0.5, 0.62])
+    data.update(changes)
+    with pytest.raises(ValueError):
+        parse_queue_action(proposal("dismiss_survey", **data))
+
+
+def test_survey_without_a_skip_control_waits_bounded_without_clicking():
+    nav, controller, backend, _, statuses = navigator()
+    arm(nav)
+    backend.complete_with_image.return_value = proposal("wait", "survey", point=None)
+    for _ in range(24):
+        step(nav)
+        assert not nav.paused_reason
+    controller.execute.assert_not_called()
+    assert "survey" in statuses[-1]
+    step(nav)
+    assert "survey" in nav.paused_reason
+    assert nav.get_debug_info()["survey_waits"] == 25

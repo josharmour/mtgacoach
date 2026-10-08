@@ -40,6 +40,11 @@ Do not invent a Continue button or wait for one. Leave point null: the controlle
 the overlay once and then checks a fresh screenshot to confirm that it actually closed.
 If awaiting_result_dismissal is true, inspect whether the title is still present; an
 earlier click does not prove it closed. Report the current screen, not an assumed next step.
+Arena sometimes shows a small post-match survey "Did you have fun in the match?" with a happy
+face, a sad face and a "Skip" link, on top of the result or home screen. That is screen=survey
+and takes precedence over every other action: report action=dismiss_survey with label "Skip"
+and the center of the Skip control. Never click either face and never rate the match. If the
+survey is visible but no Skip control is, report screen=survey, action=wait.
 Open Play from home and use Recently Played. expected_queue names the deck and event the
 ended match used, read from Arena's own log. Recently Played shows queue tiles, each with a
 deck box labelled with the deck name, a queue name (Competitive Brawl, Brawl, Bot Match...)
@@ -73,8 +78,8 @@ that is not visible. Report wait/stop if no supported control is visible.
 If previous_click_had_no_visible_effect is present, that click missed: the screen did not
 change. It is not evidence the control was wrong; locate the same control again precisely.
 Return ONLY JSON:
-{"screen":"results|reward|home|play|recent|deck|queue|match|sideboard|blocked",
- "action":"claim|continue|dismiss_result|open_play|open_recent|select_recent|start_queue|wait|stop",
+{"screen":"results|reward|home|play|recent|deck|queue|match|sideboard|survey|blocked",
+ "action":"claim|continue|dismiss_result|dismiss_survey|open_play|open_recent|select_recent|start_queue|wait|stop",
  "label":"visible target label", "point":[0.5,0.5], "confidence":0.95,
  "recent_selected":false, "deck_selected":false,
  "free_entry":false, "result_visible":false, "result_title":null, "matchmaking_visible":false,
@@ -105,6 +110,14 @@ _REFINE_CROP = 0.3
 # A real correction is ~20-40px; a neighbouring tile's control is farther.
 _REFINE_MAX_SHIFT = 0.05
 _QUEUE_ACTIONS = {"select_recent", "start_queue"}
+# Arena's post-match survey ("Did you have fun in the match?", loc
+# DuelScene/EndMatch/PostMatchSurvey_Ask) blocks the result screen's Continue
+# until answered; MatchSceneManager force-closes it after 60 s. The bridge
+# presses its own Skip button (no rating); after this many skips the
+# screenshot path and Arena's timeout take over.
+_SURVEY_BRIDGE_ATTEMPTS = 3
+# Screenshot observations of the survey without a usable Skip control, 3 s apart.
+_SURVEY_WAIT_LIMIT = 25
 # Recently Played labels for log event IDs (confirmed from tiles + EventJoin, 2026-10-04).
 _QUEUE_DISPLAY_NAMES = {
     "Brawl_Ladder": "competitive brawl",
@@ -127,6 +140,8 @@ _ALLOWED = {
     "claim": {"reward", "results"},
     "continue": {"results", "reward"},
     "dismiss_result": {"results"},
+    # The survey sits on top of the result or home screen; the model may name either.
+    "dismiss_survey": {"survey", "results", "home", "reward"},
     "open_play": {"home"},
     "open_recent": {"play", "recent", "deck"},
     "select_recent": {"recent", "play"},
@@ -136,6 +151,8 @@ _LABELS = {
     "claim": {"claim", "claim reward", "claim rewards"},
     "continue": {"continue", "done", "click to continue", "click anywhere to continue", "tap to continue"},
     "dismiss_result": {"victory", "defeat", "draw"},
+    # Only the survey's own Skip (DuelScene/EndMatch/PostMatchSurvey_Skip); never a face.
+    "dismiss_survey": {"skip"},
     "open_play": {"play"},
     "open_recent": {"recently played"},
     "start_queue": {"play", "find match"},
@@ -164,6 +181,7 @@ def parse_queue_action(
         "queue",
         "match",
         "sideboard",
+        "survey",
         "blocked",
     }:
         raise ValueError("Unknown navigation screen")
@@ -323,6 +341,8 @@ class AutoQueueNavigator:
         self._resume_pending = False
         self._awaiting_result_dismissal = False
         self._last_click: tuple[Any, DesktopAction, dict] | None = None
+        self._survey_skips = 0
+        self._survey_waits = 0
 
     def _status(self, detail: str) -> None:
         if detail == self._last_status:
@@ -349,6 +369,7 @@ class AutoQueueNavigator:
             if self.active:
                 self._resume_pending = False
                 self._failures = self._result_waits = 0
+                self._survey_skips = self._survey_waits = 0
                 self._attempts.clear()
                 self._next_poll = 0
                 self._stage = "resuming"
@@ -388,6 +409,7 @@ class AutoQueueNavigator:
             self._history.clear()
             self._failures = 0
             self._result_waits = 0
+            self._survey_skips = self._survey_waits = 0
             self._queue_started = False
             self._queue_observed = False
             self._last_rejection = None
@@ -449,6 +471,16 @@ class AutoQueueNavigator:
             self._pause("Arena's result screen did not become ready to dismiss")
         else:
             self._status("Waiting for the match result overlay to become ready")
+
+    def _wait_for_survey(self) -> None:
+        """The survey is visible without a usable Skip: Arena closes it itself after 60 s."""
+        self._survey_waits += 1
+        self._failures = 0
+        self._next_poll = time.monotonic() + 3
+        if self._survey_waits >= _SURVEY_WAIT_LIMIT:
+            self._pause("Arena's post-match survey did not close")
+        else:
+            self._status("Waiting for Arena's post-match survey to offer Skip or close")
 
     def _joined_wrong_queue(self) -> str:
         """Arena's log, not a screenshot, proves which deck and event a Play click joined."""
@@ -544,6 +576,11 @@ class AutoQueueNavigator:
                     from arenamcp.gre_bridge import get_bridge
 
                     bridge = get_bridge()
+
+            # The post-match survey blocks every result-screen control, so it
+            # goes first; the client's own Skip handler beats a screenshot click.
+            if self._skip_survey_via_bridge(bridge, generation, aborted):
+                return
 
             # Bridge auto-queue is used on platforms without native desktop input (e.g. Windows via BepInEx),
             # or when explicitly supported by the connected runtime (bepinex).
@@ -688,6 +725,9 @@ class AutoQueueNavigator:
                     if self._stage == "results":
                         self._wait_for_results()
                         return
+                    if self._stage == "survey":
+                        self._wait_for_survey()
+                        return
                     matchmaking = self._stage == "queue" and (
                         self._queue_started
                         or (
@@ -762,6 +802,8 @@ class AutoQueueNavigator:
                     if clicked_result
                     else "Joining the last match's queue"
                     if data["action"] == "start_queue"
+                    else "Clicked Skip on the match survey; checking that it closed"
+                    if data["action"] == "dismiss_survey"
                     else "Returning to Recently Played"
                 )
             elif self._current(generation, aborted):
@@ -787,6 +829,43 @@ class AutoQueueNavigator:
                     self._pause("Could not verify the next Arena navigation step")
                 else:
                     self._status("Checking Arena again before navigation")
+
+    def _skip_survey_via_bridge(self, bridge: Any, generation: int, aborted: threading.Event) -> bool:
+        """Skip Arena's post-match survey through its own Skip handler when the bridge sees it.
+
+        A read-only check runs each step. At most _SURVEY_BRIDGE_ATTEMPTS skips
+        are sent; after that the screenshot path (and Arena's own 60 s
+        force-close) deal with it. True means this step was spent on the survey.
+        """
+        get_survey = getattr(bridge, "get_survey", None)
+        dismiss = getattr(bridge, "dismiss_survey", None)
+        if not (
+            bridge and getattr(bridge, "connected", False) and callable(get_survey) and callable(dismiss)
+        ):
+            return False
+        survey = get_survey() or {}
+        if not survey.get("is_open"):
+            return False
+        if self._survey_skips >= _SURVEY_BRIDGE_ATTEMPTS:
+            return False
+        self._survey_skips += 1
+        self._status("Skipping Arena's post-match survey")
+        if not self._current(generation, aborted):
+            return True
+        result = dismiss() or {}
+        if result.get("ok") and result.get("closed"):
+            self._status("Skipped the match survey; checking the current screen")
+        else:
+            logger.info(
+                "Auto queue: bridge survey skip %d/%d did not close it: %s",
+                self._survey_skips,
+                _SURVEY_BRIDGE_ATTEMPTS,
+                result.get("error") or "still open",
+            )
+            if self._survey_skips >= _SURVEY_BRIDGE_ATTEMPTS:
+                logger.info("Auto queue: leaving the survey to the screenshot path and Arena's timeout")
+        self._next_poll = time.monotonic() + 1.5
+        return True
 
     def _step_bridge(self, generation: int, aborted: threading.Event, bridge: Any) -> None:
         """Handle post-match screen dismissal and requeueing directly via GRE bridge."""
@@ -869,6 +948,8 @@ class AutoQueueNavigator:
                 "recent_actions": list(self._history),
                 "failures": self._failures,
                 "result_waits": self._result_waits,
+                "survey_skips": self._survey_skips,
+                "survey_waits": self._survey_waits,
                 "worker_running": bool(self._worker and self._worker.is_alive()),
             }
 

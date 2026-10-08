@@ -912,6 +912,34 @@ class GREBridge:
             logger.warning(f"GRE bridge return_to_home error: {e}")
             return False
 
+    def get_survey(self) -> dict[str, Any] | None:
+        """Read-only: Arena's post-match "Did you have fun?" survey, if it is open.
+
+        {"is_open": bool, "skip_ready": bool} from the Mac bridge
+        (mac_bridge_adapter); None when the runtime does not answer it.
+        """
+        try:
+            resp = self._send_safe({"action": "get_survey"}, timeout=8.0)
+        except GREBridgeError as e:
+            logger.debug(f"get_survey error: {e}")
+            return None
+        if not resp.get("ok"):
+            logger.debug(f"get_survey: {resp.get('error')}")
+            return None
+        return resp
+
+    def dismiss_survey(self) -> dict[str, Any]:
+        """Press the survey's own Skip button (sends no rating); never raises."""
+        try:
+            resp = self._send_safe({"action": "dismiss_survey"}, timeout=8.0)
+        except GREBridgeError as e:
+            return {"ok": False, "error": str(e)}
+        if resp.get("ok"):
+            logger.info("GRE bridge skipped the post-match survey (closed=%s)", resp.get("closed"))
+        else:
+            logger.warning(f"GRE bridge dismiss_survey failed: {resp.get('error')}")
+        return resp
+
     def submit_blockers(
         self,
         assignments: list[dict[str, Any]],

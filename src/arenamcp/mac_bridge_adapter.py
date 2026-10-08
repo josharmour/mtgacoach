@@ -38,6 +38,9 @@ EVENT_PAGE_CONTROLLER = "EventPage.EventPageContentController"
 EVENT_MAIN_BUTTON = "EventPage.Components.MainButtonComponent"
 # Sealed pool reveal after joining (members verified in live IL2CPP metadata 2026-10-06).
 SEALED_OPEN = "SealedBoosterOpenAnimation"
+# Post-match "Did you have fun in the match?" dialog (MatchEndScene.SurveyUI);
+# members verified in live IL2CPP metadata 2026-10-07 (see _cmd_dismiss_survey).
+SURVEY = "GameEndSurvey"
 # Emote ids a click on the emote wheel puts on the wire (onChat.text); members of
 # the emote path verified in live IL2CPP metadata 2026-10-06 (see _cmd_send_emote).
 EMOTE_IDS = {"oops": "Phrase_Basic_Oops"}
@@ -393,6 +396,9 @@ class MacBridgeAdapter:
         ("event_page", EVENT_PAGE_CONTROLLER),
         ("home", "HomePageContentController"),
         ("sealed_open", SEALED_OPEN),
+        # Only found while shown: the prefab is instantiated inactive at
+        # MatchEndScene.Init and FindAnyObjectByType skips inactive objects.
+        ("survey", SURVEY),
     )
 
     def _cmd_get_screen(self, command: dict, timeout: float | None) -> dict:
@@ -507,6 +513,99 @@ class MacBridgeAdapter:
             ops.call(controller, "ReserveCardAndLockIn", H(view["view"]), {"null": True})
         self._run(ops, timeout)
         return {"ok": True, "submitted_type": "DraftPick", "grp_ids": [view["grp_id"] for view in chosen]}
+
+    # A narrated pick: select first, confirm later. preview_draft_pick runs the
+    # single-click path (ToggleCardReservation: pick tag on, Confirm enabled)
+    # so viewers see the choice while it is explained; confirm_draft_pick
+    # presses Confirm (HandleOnConfirmPickButtonClicked, which drafts the
+    # reserved cards only when as many are reserved as the pick takes). The
+    # double-click handler is never called: two clicks within 0.5 s lock a card
+    # in. An unconfirmed selection is harmless: when the pick clock runs out,
+    # CardsToAutopick drafts reserved cards first. Members verified in live
+    # IL2CPP metadata 2026-10-07: DraftContentController.ToggleCardReservation/1,
+    # HandleOnConfirmPickButtonClicked/0, get_NumberOfCardsCurrentlySelected/0,
+    # get_AtMaxReservedCards/0; DraftDeckManager.IsCardAlreadyReserved/1.
+
+    def _ready_pick(self, command: dict, timeout: float | None) -> tuple[dict, list[dict]]:
+        """The open, pickable draft state and the pack views for the wanted cards."""
+        wanted = [card for card in command.get("cards") or [] if int(card.get("grp_id") or 0) > 0]
+        state = self._cmd_get_draft_state({}, timeout)
+        if not state.get("is_open"):
+            raise AdapterError("No draft pick screen is open")
+        if not state["ok_to_pick"] or state["animating"]:
+            raise AdapterError("The draft pack is not ready to pick yet")
+        if len(wanted) != state["pick_num_cards_to_take"]:
+            raise AdapterError(
+                f"This pick takes {state['pick_num_cards_to_take']} card(s), not {len(wanted)}"
+            )
+        chosen: list[dict] = []
+        for card in wanted:
+            free = [view for view in state["pack_views"] if view not in chosen]
+            title_id = int(card.get("title_id") or 0)
+            match = next((v for v in free if v["grp_id"] == int(card["grp_id"])), None) or next(
+                (v for v in free if title_id and v["title_id"] == title_id), None
+            )
+            if match is None:
+                raise AdapterError(f"Card {card['grp_id']} is not in the current pack")
+            chosen.append(match)
+        return state, chosen
+
+    def _reserved_views(self, state: dict, timeout: float | None) -> set[int]:
+        """Read-only: handles of the pack's card views the player has selected."""
+        ops = _Ops()
+        manager = ops.get(H(state["controller"]), "_draftDeckManager")
+        refs = [
+            (view["view"], ops.call(manager, "IsCardAlreadyReserved", H(view["view"])))
+            for view in state["pack_views"]
+        ]
+        values = self._run(ops, timeout)
+        return {view for view, ref in refs if num(values[ref["ref"]])}
+
+    def _cmd_preview_draft_pick(self, command: dict, timeout: float | None) -> dict:
+        """Select the pick's cards without drafting them; idempotent."""
+        state, chosen = self._ready_pick(command, timeout)
+        mine = {view["view"] for view in chosen}
+        reserved = self._reserved_views(state, timeout)
+        if reserved - mine:
+            raise AdapterError("Other cards are selected in this pack; not overriding a manual selection")
+        missing = [view for view in chosen if view["view"] not in reserved]
+        if missing:
+            ops = _Ops()
+            controller = H(state["controller"])
+            ops.expect_member(controller, "_okToPickCard", True)
+            # A toggle deselects a selected card: act only on the selection just read.
+            ops.expect_member(controller, "NumberOfCardsCurrentlySelected", len(reserved))
+            for view in missing:
+                ops.call(controller, "ToggleCardReservation", H(view["view"]))
+            self._run(ops, timeout)
+        if not mine <= self._reserved_views(state, timeout):
+            raise AdapterError("The cards did not stay selected")
+        return {
+            "ok": True,
+            "previewed": True,
+            "newly_selected": len(missing),
+            "grp_ids": [view["grp_id"] for view in chosen],
+        }
+
+    def _cmd_confirm_draft_pick(self, command: dict, timeout: float | None) -> dict:
+        """Press Confirm for exactly the cards preview_draft_pick selected."""
+        state, chosen = self._ready_pick(command, timeout)
+        if self._reserved_views(state, timeout) != {view["view"] for view in chosen}:
+            raise AdapterError("The selected cards changed; not confirming a different selection")
+        ops = _Ops()
+        controller = H(state["controller"])
+        ops.expect_member(controller, "_okToPickCard", True)
+        ops.expect_member(controller, "AtMaxReservedCards", True)
+        ops.call(controller, "HandleOnConfirmPickButtonClicked")
+        still_open = ops.get(controller, "_okToPickCard")
+        values = self._run(ops, timeout)
+        if num(values[still_open["ref"]]):
+            raise AdapterError("Confirm did not draft the selected cards")
+        return {
+            "ok": True,
+            "submitted_type": "DraftPickConfirm",
+            "grp_ids": [view["grp_id"] for view in chosen],
+        }
 
     def _limited_editor(self, timeout: float | None) -> tuple[dict, dict]:
         """The open, editable limited deck builder's widget and model handles."""
@@ -676,10 +775,82 @@ class MacBridgeAdapter:
         found = self._find("MatchEndScene", timeout)
         if not found:
             raise AdapterError("No match result screen is open")
+        if self._skip_open_survey(timeout):
+            # LeaveMatch is a no-op until the survey closes; the caller retries.
+            return {"ok": True, "survey_skipped": True}
         ops = _Ops()
         ops.call(H(found), "LeaveMatch")
         self._run(ops, timeout)
         return {"ok": True}
+
+    # -- post-match survey ---------------------------------------------------
+    # "Did you have fun in the match?" (loc DuelScene/EndMatch/PostMatchSurvey_Ask,
+    # buttons: good face, bad face, "Skip", plus a full-screen click shield).
+    # MatchSceneManager.MatchEndCoroutine activates MatchEndScene.SurveyUI (a
+    # GameEndSurvey under _canvasPopup) after the rank animation and waits up to
+    # 60 s for FeedbackSubmitted before EnableEndOfMatchControls and before it
+    # subscribes ExitMatchCompleted, so LeaveMatch does nothing while the survey
+    # is open. GameEndSurvey.Awake wires _buttonSkip.OnClick to
+    # FeedbackSubmitted("IntentionallySkipped") + ClearButtonCallbacks; the
+    # shield sends "NoFeedback"; ForceClose (the timeout) also sends "NoFeedback".
+    # CustomButton.Click runs the same OnClick UnityEvent a pointer click does,
+    # gated on Interactable. All members verified in live IL2CPP metadata 2026-10-07.
+
+    def _survey_state(self, timeout: float | None) -> dict:
+        """Read-only: is the survey shown and still waiting for an answer?"""
+        ops = _Ops()
+        survey = ops.add("find", **{"class": SURVEY}, depth=0, optional=True)
+        listener = ops.get(survey, "FeedbackSubmitted", optional=True)
+        skip = ops.get(survey, "_buttonSkip", optional=True)
+        interactable = ops.get(skip, "Interactable", optional=True)
+        shown = ops.get(ops.get(skip, "gameObject", optional=True), "activeInHierarchy", optional=True)
+        values = self._run(ops, timeout)
+        found = bool(handle(values[survey["ref"]]))
+        # The scene manager adds its FeedbackSubmitted handler right before
+        # showing the survey and removes it once any answer is in.
+        awaiting = found and bool(handle(values[listener["ref"]]))
+        skip_ready = bool(values[interactable["ref"]]) and values[shown["ref"]] is not False
+        return {
+            "ok": True,
+            "is_open": awaiting,
+            "found": found,
+            "skip_ready": awaiting and skip_ready,
+        }
+
+    def _cmd_get_survey(self, command: dict, timeout: float | None) -> dict:
+        return self._survey_state(timeout)
+
+    def _cmd_dismiss_survey(self, command: dict, timeout: float | None) -> dict:
+        """Press the survey's Skip button (no rating is sent), then re-check it."""
+        state = self._survey_state(timeout)
+        if not state["is_open"]:
+            raise AdapterError("The post-match survey is not open")
+        if not state["skip_ready"]:
+            raise AdapterError("The survey's Skip button is not clickable")
+        ops = _Ops()
+        survey = ops.add("find", **{"class": SURVEY}, depth=0)
+        skip = ops.get(survey, "_buttonSkip")
+        ops.expect_member(skip, "Interactable", True)
+        ops.call(skip, "Click")
+        self._run(ops, timeout)
+        logger.info("mac bridge: skipped the post-match survey (GameEndSurvey._buttonSkip.Click)")
+        after = self._survey_state(timeout)
+        return {
+            "ok": True,
+            "submitted_type": "SurveySkip",
+            "feedback": "IntentionallySkipped",
+            "closed": not after["is_open"],
+        }
+
+    def _skip_open_survey(self, timeout: float | None) -> bool:
+        """Skip the survey if it is blocking the result screen; False when absent."""
+        state = self._survey_state(timeout)
+        if not state["is_open"]:
+            return False
+        if not state["skip_ready"]:
+            raise AdapterError("The post-match survey is open but its Skip button is not clickable")
+        self._cmd_dismiss_survey({}, timeout)
+        return True
 
     # -- live game: shared guards for concede and emotes ----------------------
 
@@ -969,9 +1140,12 @@ class MacBridgeAdapter:
             raise AdapterError(
                 "no MatchEndScene or HomePageContentController active — not on the match-result screen"
             )
+        if self._skip_open_survey(timeout):
+            # LeaveMatch is a no-op until the survey closes; the caller retries.
+            return {"ok": True, "survey_skipped": True}
 
         ops = _Ops()
-        ops.add("call", target=H(found_end), method="LeaveMatch")
+        ops.call(H(found_end), "LeaveMatch")
         self._run(ops, timeout)
         return {"ok": True}
 

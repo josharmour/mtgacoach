@@ -1117,6 +1117,9 @@ def test_mac_bridge_return_to_home_calls_leave_match():
     def fake_send(command, timeout):
         ops = command["ops"]
         calls.append(ops)
+        if any(op.get("op") == "find" and op.get("class") == "GameEndSurvey" for op in ops):
+            # No post-match survey is open.
+            return {"ok": True, "results": [None] * len(ops)}
         if any(op.get("op") == "find" and op.get("class") == "MatchEndScene" for op in ops):
             return {"ok": True, "results": [{"$h": 42, "$c": "MatchEndScene"}, None]}
         if any(op.get("op") == "call" and op.get("method") == "LeaveMatch" for op in ops):
@@ -1151,3 +1154,116 @@ def test_mac_bridge_return_to_home_fails_when_neither_scene():
     resp = adapter.handle({"action": "return_to_home"})
     assert resp["ok"] is False
     assert "no MatchEndScene" in resp["error"]
+
+
+# ---------------------------------------------------------------------------
+# Post-match survey ("Did you have fun in the match?") on the Mac bridge
+# ---------------------------------------------------------------------------
+
+
+def survey_world(*, shown=True, awaiting=True, interactable=True):
+    """MatchEndScene with the GameEndSurvey popup, scripted like the client.
+
+    GameEndSurvey.Awake wires Skip to FeedbackSubmitted("IntentionallySkipped")
+    and clears the callbacks; the scene manager drops its handler on any
+    answer, so a pressed Skip reads back as FeedbackSubmitted == null.
+    """
+    from test_draft_autoplay import Obj, World
+
+    world = World()
+    world.finds["MatchEndScene"] = world.add(10, "MatchEndScene")
+    skip_object = world.add(21, "UnityEngine.GameObject", activeInHierarchy=True)
+    skip = world.add(20, "CustomButton", Interactable=interactable, gameObject=Obj(skip_object))
+    good = world.add(22, "CustomButton", Interactable=True)
+    bad = world.add(23, "CustomButton", Interactable=True)
+    shield = world.add(24, "CustomButton", Interactable=True)
+    listener = world.add(25, "System.Action<System.String>")
+    survey = world.add(
+        30,
+        "GameEndSurvey",
+        FeedbackSubmitted=Obj(listener) if awaiting else None,
+        _buttonSkip=Obj(skip),
+        _buttonGood=Obj(good),
+        _buttonBad=Obj(bad),
+        _clickShield=Obj(shield),
+    )
+    if shown:
+        world.finds["GameEndSurvey"] = survey
+
+    def pressed(_args):
+        world.objects[survey]["FeedbackSubmitted"] = None
+        world.finds.pop("GameEndSurvey", None)
+        return None
+
+    world.results[(skip, "Click")] = pressed
+    return world
+
+
+def clicks(world):
+    return [(h, m) for h, m, _a in world.calls if m in {"Click", "LeaveMatch", "Invoke"}]
+
+
+def test_survey_screen_is_only_reported_while_it_awaits_an_answer():
+    adapter = MacBridgeAdapter(survey_world().send)
+    assert adapter.handle({"action": "get_screen"})["survey"] is True
+    assert adapter.handle({"action": "get_survey"}) == {
+        "ok": True,
+        "is_open": True,
+        "found": True,
+        "skip_ready": True,
+    }
+    # The popup lingering after an answer, or not instantiated at all, is not an open survey.
+    answered = MacBridgeAdapter(survey_world(awaiting=False).send).handle({"action": "get_survey"})
+    assert answered["found"] and not answered["is_open"] and not answered["skip_ready"]
+    hidden = MacBridgeAdapter(survey_world(shown=False).send).handle({"action": "get_survey"})
+    assert hidden == {"ok": True, "is_open": False, "found": False, "skip_ready": False}
+
+
+def test_dismiss_survey_presses_only_skip_and_verifies_it_closed():
+    world = survey_world()
+    adapter = MacBridgeAdapter(world.send)
+    result = adapter.handle({"action": "dismiss_survey"})
+    assert result == {
+        "ok": True,
+        "submitted_type": "SurveySkip",
+        "feedback": "IntentionallySkipped",
+        "closed": True,
+    }
+    assert clicks(world) == [(20, "Click")]
+    assert not adapter.handle({"action": "get_survey"})["is_open"]
+    assert not adapter.handle({"action": "get_screen"})["survey"]
+
+
+@pytest.mark.parametrize(
+    "world,error",
+    [
+        (survey_world(shown=False), "not open"),
+        (survey_world(awaiting=False), "not open"),
+        (survey_world(interactable=False), "not clickable"),
+    ],
+)
+def test_dismiss_survey_never_presses_a_face_or_an_unready_skip(world, error):
+    result = MacBridgeAdapter(world.send).handle({"action": "dismiss_survey"})
+    assert result["ok"] is False and error in result["error"]
+    assert not world.calls
+
+
+@pytest.mark.parametrize("action", ["leave_match", "return_to_home"])
+def test_leaving_the_result_screen_skips_an_open_survey_first(action):
+    # LeaveMatch only fires ExitMatchCompleted, which the scene manager
+    # subscribes after the survey closes: pressing it under the survey does nothing.
+    world = survey_world()
+    adapter = MacBridgeAdapter(world.send)
+    first = adapter.handle({"action": action})
+    assert first == {"ok": True, "survey_skipped": True}
+    assert clicks(world) == [(20, "Click")]
+    second = adapter.handle({"action": action})
+    assert second == {"ok": True}
+    assert clicks(world) == [(20, "Click"), (10, "LeaveMatch")]
+
+
+def test_leaving_the_result_screen_reports_a_survey_it_cannot_skip():
+    world = survey_world(interactable=False)
+    result = MacBridgeAdapter(world.send).handle({"action": "leave_match"})
+    assert result["ok"] is False and "Skip button" in result["error"]
+    assert not world.calls
