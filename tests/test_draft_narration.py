@@ -77,7 +77,9 @@ def test_best_card_in_pack_is_said_from_17lands_data():
     narrator = DraftNarrator()
     narrator._lane = "UW"  # no lane story this pick
     text = line(narrator, score(1), [score(1), score(2)], after="WU", before="WU")
-    assert text.startswith("Taking Sky Ace: the best card in this pack on 17Lands data.")
+    assert text.startswith(
+        "Taking Sky Ace: the best card in this pack on 17Lands data, in our white-blue colors."
+    )
 
 
 def test_removal_need_and_archetype_role_are_grounded():
@@ -86,7 +88,7 @@ def test_removal_need_and_archetype_role_are_grounded():
     text = line(
         narrator, score(3, "pool needs removal (0 so far)"), [score(1), score(3)], before="UB", after="UB"
     )
-    assert "we need removal, and this answers creatures" in text
+    assert text.startswith("Taking Bog Snare: removal our blue-black deck needs.")
     narrator._lane = "WU"
     text = line(narrator, score(2, "in lane WU"), [score(1), score(2)], before="WU", after="WU")
     assert "a key common for Azorius Scry & Surveil Tempo" in text
@@ -145,3 +147,90 @@ def test_driver_commentary_toggle(primer):
             assert spoken[0].startswith("Taking ") and ":" in spoken[0]
         else:
             assert spoken[0] == "Taking Blue Ace."
+
+
+# ---------------------------------------------------------------------------
+# Pick-Two: each card its own reason, grammar for two, honesty about our lane
+# (2026-10-07 live PickTwoDraft_FRA: "Taking Twinned Vision and Extended
+# Absence: the best card in this pack on 17Lands data." for two cards, and
+# Haunted Ridge, a B/R dual, under "a solid card for our blue-black deck").
+# ---------------------------------------------------------------------------
+
+LANDS = [
+    card(40, "Ash Ridge", "", 0.63, types="Land", cmc=None, oracle="{oT}: Add {oB} or {oR}."),
+    card(41, "Tidal Fen", "", 0.54, types="Land", cmc=None, oracle="{oT}: Add {oU} or {oB}."),
+]
+LAND_PRIMER = Primer(CARDS + LANDS)
+
+
+def pair_line(narrator, picks, ranking, *, colors="UB", commitment=0.6, reasons=None, primer=PRIMER):
+    return narrator.pick_line(
+        names=[primer.card(p.grp_id).name for p in picks],
+        chosen=picks,
+        ranking=ranking,
+        pool=[1, 2],
+        lane_before=lane(colors, commitment),
+        lane_after=lane(colors, commitment),
+        primer=primer,
+        pack_number=1,
+        pick_number=5,
+        pack_size=7,
+        model_reasons=reasons,
+        verb="Choosing",
+    )
+
+
+def test_two_best_cards_are_spoken_in_the_plural():
+    narrator = DraftNarrator()
+    narrator._lane = "U"
+    text = pair_line(
+        narrator, [score(1), score(2)], [score(1), score(2), score(4)], colors="U", commitment=0.1
+    )
+    assert text == "Choosing Sky Ace and Tide Scholar: the two best cards in this pack on 17Lands data."
+    assert "the best card in this pack" not in text
+
+
+def test_pick_two_gives_each_card_its_own_deck_reason():
+    narrator = DraftNarrator()
+    narrator._lane = "UB"
+    picks = [score(1), score(3, "pool needs removal (1 so far)")]
+    text = pair_line(narrator, picks, [score(1), score(3), score(4)])
+    assert text == (
+        "Choosing Sky Ace — the best card in this pack on 17Lands data, in our blue-black colors; "
+        "and Bog Snare — removal our blue-black deck needs."
+    )
+
+
+def test_off_lane_cards_are_never_called_a_fit_even_when_the_model_says_so():
+    narrator = DraftNarrator()
+    narrator._lane = "UB"
+    reasons = ["", "Fits our deck perfectly and curves out nicely."]
+    text = pair_line(narrator, [score(1), score(5, "in lane UB")], [score(1), score(5)], reasons=reasons)
+    assert "Forge Pup — the strongest option left, though it's outside our blue-black colors" in text
+    assert "fits our deck" not in text.lower()
+
+
+def test_lands_are_described_by_the_mana_they_make_for_our_lane():
+    narrator = DraftNarrator()
+    narrator._lane = "UB"
+    picks = [score_in(LAND_PRIMER, 40), score_in(LAND_PRIMER, 41)]
+    text = pair_line(narrator, picks, picks + [score(1)], primer=LAND_PRIMER)
+    assert "Ash Ridge — only a black source for our blue-black deck" in text
+    assert "Tidal Fen — fixes our blue-black mana" in text
+    # Lands' inflated GIH never makes them "the best card in this pack".
+    assert "17Lands" not in text
+
+
+def test_model_reason_prefers_the_clause_about_our_deck_and_says_colors():
+    narrator = DraftNarrator()
+    narrator._lane = "UB"
+    reasons = [
+        "",
+        "Strongest body in the pack: a 1/5 flier. Fits our UB spells lane and adds a needed creature.",
+    ]
+    text = pair_line(narrator, [score(1), score(2)], [score(1), score(4), score(2)], reasons=reasons)
+    assert "Tide Scholar — fits our blue-black spells lane and adds a needed creature" in text
+
+
+def score_in(primer, grp_id, *reasons):
+    return PickScore(grp_id=grp_id, name=primer.card(grp_id).name, score=0.0, reasons=list(reasons))

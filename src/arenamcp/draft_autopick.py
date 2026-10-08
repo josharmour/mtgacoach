@@ -51,6 +51,20 @@ RARELY_PLAYED_SHARE = 0.45  # games vs. the median rated card of the same rarity
 UNRATED_ROLE_CAP = 0.1  # the model-written primer's roles cannot carry an unrated card
 SECOND_COLOR_FLOOR = 0.25  # least hold on any second color (an undecided one too)
 REMOVAL_SHARE = 0.12  # ~3 removal spells per 23-25 playables
+# 17Lands GIH overrates nonbasic lands: a dual is drawn into a two-color deck
+# whether or not it fixed anything (2026-10-07 P2p1: Haunted Ridge, a B/R dual
+# at 58.2%, outranked every UB card for a UB drafter). An above-average land
+# rating is pulled this far back toward average.
+LAND_GIH_DISCOUNT = 0.3
+# A dual that taps for only one lane color is a basic with a drawback.
+PARTIAL_LAND_FIT = -0.6
+# Redundant copies of a non-premium card lose value (2026-10-07: a third
+# Tam's Resistance, a hybrid pump spell, at P2p1): per copy held for spells,
+# per copy beyond the first for creatures (two of a playable body is normal).
+DUPLICATE_STEP_SPELL = 0.2
+DUPLICATE_STEP_BODY = 0.1
+PREMIUM_BASELINE = 0.75
+BASIC_LAND_COLORS = {"plains": "W", "island": "U", "swamp": "B", "mountain": "R", "forest": "G"}
 
 _REMOVAL_PATTERNS = tuple(
     re.compile(pattern)
@@ -158,6 +172,47 @@ def is_removal(card: Any) -> bool:
         if any(pattern.search(sentence) for pattern in _REMOVAL_PATTERNS):
             return True
     return False
+
+
+def is_nonbasic_land(card: Any) -> bool:
+    return "Land" in str(getattr(card, "types", "") or "") and not is_ordinary_basic(card.name)
+
+
+def land_colors(card: Any) -> str:
+    """Colors a land can tap for, from its rules text and basic land types ("" for none)."""
+    if "Land" not in str(getattr(card, "types", "") or ""):
+        return ""
+    text = html.unescape(re.sub(r"<[^>]*>", "", str(getattr(card, "oracle", "") or ""))).lower()
+    if re.search(r"\bmana of any (?:one )?color\b|\bmana of the chosen color\b", text):
+        return COLOR_ORDER
+    found = set()
+    for clause in re.findall(r"\badd ([^.\n]*)", text):
+        found |= {symbol.upper() for symbol in re.findall(r"\{o?([wubrg])\}", clause)}
+    words = re.findall(r"[a-z]+", f"{card.types} {text}".lower())
+    found |= {BASIC_LAND_COLORS[word] for word in words if word in BASIC_LAND_COLORS}
+    return "".join(color for color in COLOR_ORDER if color in found)
+
+
+def lane_fit(card: Any, colors: str, mana_costs: dict[int, str] | None = None) -> str:
+    """How a card fits a lane's colors.
+
+    "in": castable with the lane's colors; "colorless": needs no color;
+    "fixing": a land that taps for every lane color; "partial": a land that taps
+    for only some of them; "off": neither.
+    """
+    if card is None or not colors:
+        return "unknown"
+    if is_nonbasic_land(card):
+        produced = set(land_colors(card))
+        if not produced:
+            return "colorless"
+        if set(colors) <= produced:
+            return "fixing"
+        return "partial" if produced & set(colors) else "off"
+    needs = _mana_needs(card, mana_costs or {})
+    if not needs:
+        return "colorless"
+    return "in" if _payable(needs, colors) else "off"
 
 
 def _mana_needs(card: Any, mana_costs: dict[int, str]) -> list[set[str]]:
@@ -352,7 +407,29 @@ def rank_pack(
         colors = card.colors if card else ""
         commitment = lane.commitment
         needs = _mana_needs(card, mana_costs) if card is not None else []
-        if not needs:
+        land = card is not None and is_nonbasic_land(card)
+        if land:
+            # A land is judged by the mana it makes, not its (empty) cost.
+            if rated and base > 0:
+                score -= min(LAND_GIH_DISCOUNT, base)
+                reasons.append("land; GIH discounted")
+            how = lane_fit(card, lane.colors)
+            if not lane.colors or how == "colorless":
+                fit = 0.1
+            elif how == "fixing":
+                fit = 0.1
+                reasons.append(
+                    f"fixes lane {lane.colors}" if len(lane.colors) == 2 else f"taps for {lane.colors}"
+                )
+            elif how == "partial":
+                shared = "".join(c for c in land_colors(card) if c in lane.colors)
+                fit = PARTIAL_LAND_FIT * commitment
+                reasons.append(f"taps for only {shared} of lane {lane.colors}")
+            else:
+                fit = -1.2 * commitment
+                if commitment > 0.3:
+                    reasons.append(f"off lane {lane.colors}")
+        elif not needs:
             fit = 0.1
         elif not lane.colors:
             fit = 0.0 if any(_payable(needs, color) for color in COLOR_ORDER) else -0.15
@@ -445,6 +522,15 @@ def rank_pack(
             if primer.is_trap(card.name):
                 score -= 0.4
                 reasons.append("primer trap")
+
+            copies = pool_names[card.name.lower()]
+            if copies and not land and base < PREMIUM_BASELINE and not is_removal(card):
+                # A second body is just a playable; a second trick or pump spell is redundancy.
+                redundant = copies - 1 if provides_body(card) else copies
+                step = DUPLICATE_STEP_BODY if provides_body(card) else DUPLICATE_STEP_SPELL
+                if redundant > 0:
+                    score -= step * redundant
+                    reasons.append(f"{copies} already in pool")
         scores[grp_id] = PickScore(grp_id=grp_id, name=name, score=round(score, 4), reasons=reasons)
     return sorted(scores.values(), key=lambda pick: (is_ordinary_basic(pick.name), -pick.score))
 

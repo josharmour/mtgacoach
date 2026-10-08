@@ -1,0 +1,1836 @@
+{
+ "_source": "Live PickTwoDraft_FRA_20260929 2026-10-07: packs/picks from Player.log Draft.Notify + EventPlayerDraftMakePick; cards trimmed from the cached FRA set primer; Arena mana costs from the client card database.",
+ "mana_costs": {
+  "106229": "{1}{W}",
+  "106237": "{4}{W}{W}",
+  "106252": "{1}{U}",
+  "106255": "{2}{U}",
+  "106262": "{1}{U}",
+  "106269": "{1}{U}",
+  "106280": "{2}{B}",
+  "106283": "{3}{B}",
+  "106294": "{2}{B}",
+  "106317": "{3}{R}",
+  "106329": "{2}{R}",
+  "106335": "{1}{G}",
+  "106354": "{4}{G}{G}",
+  "106359": "{2}{G}{W}",
+  "106373": "{B}{R}",
+  "106387": "{2}{U}{B}",
+  "106393": "{B}{R}",
+  "106394": "{1}{G/U}",
+  "106399": "{1}{U/R}",
+  "106407": "{3}{B/R}",
+  "106411": "{2}",
+  "106417": "{2}",
+  "106418": "{2}",
+  "106458": "{1}{U}",
+  "106467": "{3}{U}",
+  "106478": "{B}",
+  "106480": "{2}{B}",
+  "106483": "{2}{B}",
+  "106511": "{3}{G}",
+  "106517": "{2/W}{2/U}{2/B}{2/R}{2/G}",
+  "106524": "{2}"
+ },
+ "names": {
+  "106229": "Campus Crier",
+  "106237": "Hexhaven Battalion",
+  "106252": "Cryotheory Adept",
+  "106255": "Divining Duelist",
+  "106262": "Precise Redaction",
+  "106269": "Surveillance Phantasm",
+  "106280": "Cast Away Doubt",
+  "106283": "Extended Absence",
+  "106294": "Screeching Soulbreaker",
+  "106317": "Heartstring Puller",
+  "106329": "Wrath of the Bloodmane",
+  "106335": "Compel Brutality",
+  "106354": "Vinelasher Adept",
+  "106359": "Bloombrute",
+  "106373": "Grim Repriser",
+  "106387": "Recursive Recruitment",
+  "106393": "Stinging Vitriol",
+  "106394": "Tam's Resistance",
+  "106399": "Twinned Vision",
+  "106407": "Whiplash Wordsmith",
+  "106411": "Afterthought Sentry",
+  "106417": "Living Library",
+  "106418": "Medic's Kitesail",
+  "106425": "Haunted Ridge",
+  "106434": "Shipwreck Marsh",
+  "106435": "Stingerquill Annex",
+  "106437": "Theorix Annex",
+  "106458": "Fblthp, Impossibly Lost",
+  "106467": "Traxos, Academy Guardian",
+  "106478": "Mabel, Bitter Recluse",
+  "106480": "Proft, Sinister Mastermind",
+  "106483": "Way of the Deathbringer",
+  "106511": "Titanbones, Towering Heart",
+  "106517": "Karn, Gilded Guardian",
+  "106524": "Karn, Argent Defender",
+  "106527": "Plains"
+ },
+ "packs": {
+  "P1p2": [
+   106335,
+   106407,
+   106229,
+   106394,
+   106418,
+   106417,
+   106399,
+   106373,
+   106434,
+   106467,
+   106478,
+   106527
+  ],
+  "P1p3": [
+   106269,
+   106229,
+   106294,
+   106329,
+   106394,
+   106237,
+   106387,
+   106483,
+   106458,
+   106435
+  ],
+  "P2p1": [
+   106394,
+   106252,
+   106280,
+   106354,
+   106229,
+   106317,
+   106262,
+   106359,
+   106393,
+   106425,
+   106524,
+   106517,
+   106511,
+   106437
+  ]
+ },
+ "picks": [
+  [
+   1,
+   1,
+   [
+    106399,
+    106283
+   ]
+  ],
+  [
+   1,
+   2,
+   [
+    106467,
+    106434
+   ]
+  ],
+  [
+   1,
+   3,
+   [
+    106458,
+    106387
+   ]
+  ],
+  [
+   1,
+   4,
+   [
+    106255,
+    106480
+   ]
+  ],
+  [
+   1,
+   5,
+   [
+    106394,
+    106411
+   ]
+  ],
+  [
+   1,
+   6,
+   [
+    106394,
+    106417
+   ]
+  ],
+  [
+   1,
+   7,
+   [
+    106294,
+    106483
+   ]
+  ]
+ ],
+ "primer": {
+  "archetypes": [
+   {
+    "avoid": [
+     "Predictive Preparations",
+     "Perfected Theory",
+     "Eye of Jace",
+     "Yoshimaru, Beloved Companion",
+     "Danitha, Sword of Hope"
+    ],
+    "colors": "WU",
+    "enablers": [
+     "Consider",
+     "Semester Foreseer",
+     "Proctor of Potential",
+     "Your Fate Ends Here",
+     "Refute Destiny",
+     "Fatehold Chronologist"
+    ],
+    "key_commons": [
+     "Consider",
+     "Semester Foreseer",
+     "Proctor of Potential",
+     "Fatehold Chronologist",
+     "Icy Reception",
+     "Unsummon",
+     "Sphinx's Approach",
+     "Infinite Coursework"
+    ],
+    "key_uncommons": [
+     "Diviner of Victory",
+     "Desperate Futurescribe",
+     "Fatehold Charm",
+     "Proft, Consulting Detective",
+     "Countersculpt",
+     "Mindseeker Oculus"
+    ],
+    "name": "Azorius Scry-Surveil Tempo",
+    "payoffs": [
+     "Diviner of Victory",
+     "Proft, Consulting Detective",
+     "Saheeli, Consul of Oversight",
+     "Desperate Futurescribe",
+     "Prudent Fateseer",
+     "Surveillance Phantasm"
+    ],
+    "plan": "Chain cheap scry/surveil effects to grow Diviner of Victory-style payoffs and enable Jace planeswalkers, while tapping down blockers with stun effects and flying attackers close the game.",
+    "tier": 1
+   },
+   {
+    "avoid": [
+     "Predictive Preparations",
+     "Cast Away Doubt",
+     "Massacre Girl, Most Wanted",
+     "Way of the Deathbringer",
+     "Mabel, Bitter Recluse"
+    ],
+    "colors": "WB",
+    "enablers": [
+     "Silence the Echo",
+     "Last Gasp",
+     "Break Under Pressure",
+     "Extended Absence",
+     "Multiply by Zero",
+     "Surgical Precision"
+    ],
+    "key_commons": [
+     "Break Under Pressure",
+     "Extended Absence",
+     "Last Gasp",
+     "Multiply by Zero",
+     "Surgical Precision",
+     "Blessed Ghoul",
+     "Apex Witchstalker",
+     "Void Extrapolator"
+    ],
+    "key_uncommons": [
+     "Rewrite Regrets",
+     "Generous Revival",
+     "Gideon the Oathless",
+     "Your Fate Ends Here",
+     "Prophesied End",
+     "Teyo, Lightshield Expert"
+    ],
+    "name": "Orzhov Removal & Recursion Midrange",
+    "payoffs": [
+     "Rewrite Regrets",
+     "Generous Revival",
+     "Blessed Ghoul",
+     "Theoretical Necromancer",
+     "Gallia, Tragic Host"
+    ],
+    "plan": "Win by out-removing the opponent with efficient black/white kill spells and life gain, then recurring key creatures (Rewrite Regrets, Generous Revival) to grind out value while premium rares like Garruk close.",
+    "tier": 2
+   },
+   {
+    "avoid": [
+     "Predictive Preparations",
+     "Blazing Crescendo",
+     "Eardrum Rattler",
+     "Chandra's Emberling",
+     "Hallway Heckler",
+     "Command the Stage",
+     "Jiang Yanggu, Alone",
+     "Charge the Sanctum"
+    ],
+    "colors": "WR",
+    "enablers": [
+     "Hexhaven Battalion",
+     "Germinate Recruits",
+     "No Admittance",
+     "Fulminous Forte",
+     "Surgical Precision",
+     "Your Fate Ends Here",
+     "Wrath of the Bloodmane",
+     "Awaken the Inferno"
+    ],
+    "key_commons": [
+     "Surgical Precision",
+     "No Admittance",
+     "Your Fate Ends Here",
+     "Skilled Battlecarver",
+     "Memory Trap",
+     "Keeper of the Quiet Hour",
+     "Afterthought Sentry",
+     "Dedicated Commons"
+    ],
+    "key_uncommons": [
+     "Repurposed Enforcer",
+     "Samut, Hazoret's Champion",
+     "Teyo, Lightshield Expert",
+     "Generous Revival",
+     "Fulminous Forte",
+     "Warrior's Blades",
+     "Violent Echoes",
+     "Guiding Hydra"
+    ],
+    "name": "Boros Aggro-Empower",
+    "payoffs": [
+     "Repurposed Enforcer",
+     "Master of Barbs",
+     "Tomik, Izzet Sparkmage",
+     "Winter, Team Player",
+     "Samut, Hazoret's Champion"
+    ],
+    "plan": "Win with cheap aggressive red-white creatures backed by efficient removal and combat tricks; wide boards turn Repurposed Enforcer and Master of Barbs into game-ending engines while premium spot removal clears blockers.",
+    "tier": 2
+   },
+   {
+    "avoid": [
+     "Predictive Preparations",
+     "Graft Surgeon",
+     "Fateshaper Aspirant",
+     "Yoshimaru, Beloved Companion",
+     "Titanbones, Towering Heart"
+    ],
+    "colors": "WG",
+    "enablers": [
+     "Greenhouse Propagator",
+     "Medic's Kitesail",
+     "Surgical Precision",
+     "Vigorbloom Charm",
+     "Liliana the Faultless",
+     "Koth of the Homestead",
+     "Generous Revival",
+     "Blossom-Blessed Angel"
+    ],
+    "key_commons": [
+     "Greenhouse Propagator",
+     "Surgical Precision",
+     "Vigorbloom Charm",
+     "Blossom-Blessed Angel"
+    ],
+    "key_uncommons": [
+     "Bloombrute",
+     "Lyra, Archangel of Dawn",
+     "Vigorbloom Vanguard",
+     "Generous Revival",
+     "Teyo, Lightshield Expert"
+    ],
+    "name": "Selesnya Lifegain Counters",
+    "payoffs": [
+     "Bloombrute",
+     "Lyra, Archangel of Dawn",
+     "Unflinching Hortimancer",
+     "Titanbones, Towering Heart",
+     "Kwia Vigorbloom",
+     "Ajani Resolute"
+    ],
+    "plan": "Gain life repeatedly through cheap lifelink/lifegain sources and convert it into +1/+1 counters and card advantage with Bloombrute, Lyra, and Unflinching Hortimancer, outscaling opponents in board stalls.",
+    "tier": 2
+   },
+   {
+    "avoid": [
+     "Cast Away Doubt",
+     "Solve for Disappointment",
+     "Perfected Theory",
+     "Way of the Deathbringer",
+     "Massacre Girl, Most Wanted"
+    ],
+    "colors": "UB",
+    "enablers": [
+     "Theorix Charm",
+     "Consider",
+     "Liliana the Repentant",
+     "Yuriko, Hope from the Shadows",
+     "Semester Foreseer",
+     "Eye of Jace"
+    ],
+    "key_commons": [
+     "Null Summoner",
+     "Theorix Charm",
+     "Void Extrapolator",
+     "Theorix Metamage",
+     "Recursive Recruitment",
+     "Mindseeker Oculus",
+     "Last Gasp",
+     "Multiply by Zero"
+    ],
+    "key_uncommons": [
+     "Uldaros Theorix",
+     "Dark Matter Manipulator",
+     "Rewrite Regrets",
+     "Loot, the Anomaly",
+     "Tinybones, Pocket Nuisance",
+     "Proft, Sinister Mastermind"
+    ],
+    "name": "Dimir Threshold Mill",
+    "payoffs": [
+     "Null Summoner",
+     "Void Extrapolator",
+     "Theorix Metamage",
+     "Dark Matter Manipulator",
+     "Recursive Recruitment",
+     "Rewrite Regrets",
+     "Loot, the Anomaly"
+    ],
+    "plan": "Fill your graveyard with cheap mills and surveil to hit seven cards, then deploy threshold payoffs like Null Summoner and Void Extrapolator while recursive spells such as Recursive Recruitment and Rewrite Regrets grind out value behind removal.",
+    "tier": 1
+   },
+   {
+    "avoid": [
+     "Eye of Jace",
+     "Hallway Heckler",
+     "Command the Stage",
+     "Chandra's Emberling",
+     "Blazing Crescendo",
+     "Perfected Theory",
+     "Traxos, Scourge Eternal",
+     "Way of the Cryomancer"
+    ],
+    "colors": "UR",
+    "enablers": [
+     "Twinned Vision",
+     "Protege's Awakening",
+     "Plan for All Outcomes",
+     "Jace's Machinations",
+     "Theorist's Sanctum",
+     "Consider",
+     "Unsummon",
+     "Icy Reception"
+    ],
+    "key_commons": [
+     "Twinned Vision",
+     "Protege's Awakening",
+     "Mindseeker Oculus",
+     "Icy Reception",
+     "Unsummon",
+     "Keeper of the Quiet Hour",
+     "Innovative Commons",
+     "Theorix Annex"
+    ],
+    "key_uncommons": [
+     "Variable Chaser",
+     "Countersculpt",
+     "Seasoned Cryomancer",
+     "Jace's Machinations",
+     "Plan for All Outcomes",
+     "Theorist's Proxy",
+     "Sphinx of False Conclusions",
+     "Theorist's Sanctum"
+    ],
+    "name": "Izzet Spells & Jace Empowerment",
+    "payoffs": [
+     "Variable Chaser",
+     "Tomik, Izzet Sparkmage",
+     "Seasoned Cryomancer",
+     "Sphinx of False Conclusions",
+     "The Theorist, Jace Beleren",
+     "Chandra, Chill of Compliance",
+     "Mindseeker Oculus",
+     "Countersculpt"
+    ],
+    "plan": "Cast lots of cheap instants/sorceries to grow prowess creatures and empower Jace planeswalkers, which generate card advantage and burn while prowess fliers close the game.",
+    "tier": 1
+   },
+   {
+    "avoid": [
+     "Eye of Jace",
+     "Titanbones, Towering Heart",
+     "Inspired Tethermage",
+     "Perfected Theory",
+     "Loot, the Nexus"
+    ],
+    "colors": "UG",
+    "enablers": [
+     "Simulacrum Shaper",
+     "Carnivorous Cultivator",
+     "Arcane Amphisbaena",
+     "Mindseeker Oculus",
+     "Keeper of the Quiet Hour",
+     "Protege's Awakening",
+     "Countersculpt",
+     "Heartwood Crafter"
+    ],
+    "key_commons": [
+     "Arcane Amphisbaena",
+     "Greenhouse Propagator",
+     "Something Worth Saving",
+     "Tam's Resistance",
+     "Wrecking Gecko",
+     "Bestial Incursion"
+    ],
+    "key_uncommons": [
+     "Simulacrum Shaper",
+     "Hungering Puppetbeast",
+     "Mindseeker Oculus",
+     "Fblthp, Knows the Way",
+     "Heartwood Crafter",
+     "Countersculpt"
+    ],
+    "name": "Simic Ramp-and-Empower",
+    "payoffs": [
+     "Verdant Kraken",
+     "Hungering Puppetbeast",
+     "Mind Meanderer",
+     "Kiora of Salt and Sand",
+     "Garruk, Curse Breaker"
+    ],
+    "plan": "Ramp early with land-fetch elves and mana dorks into huge green finishers like Verdant Kraken and Hungering Puppetbeast, while cheap 'empower Jace' triggers (Arcane Amphisbaena, Mindseeker Oculus) fuel planeswalkers that protect the board and generate value until the fatties close.",
+    "tier": 2
+   },
+   {
+    "avoid": [
+     "Massacre Girl, Most Wanted",
+     "Way of the Deathbringer",
+     "Hallway Heckler",
+     "Danitha, Spear of Agony",
+     "Mabel, Bitter Recluse"
+    ],
+    "colors": "BR",
+    "enablers": [
+     "Stinging Vitriol",
+     "Solve for Disappointment",
+     "Rank Rat",
+     "Screeching Soulbreaker",
+     "Cast Away Doubt"
+    ],
+    "key_commons": [
+     "Rank Rat",
+     "Stinging Vitriol",
+     "Solve for Disappointment",
+     "Last Gasp",
+     "Multiply by Zero",
+     "Break Under Pressure",
+     "Screeching Soulbreaker",
+     "Void Extrapolator"
+    ],
+    "key_uncommons": [
+     "Tinybones, Pocket Nuisance",
+     "Grim Repriser",
+     "Stingerquill Charm",
+     "Gideon the Oathless",
+     "Lich's Relic",
+     "Whiplash Wordsmith"
+    ],
+    "name": "Rakdos Noncombat Damage / Discard",
+    "payoffs": [
+     "Tinybones, Pocket Nuisance",
+     "Master of Barbs",
+     "Grim Repriser",
+     "Whiplash Wordsmith",
+     "Tomik, Izzet Sparkmage",
+     "Ingris Stingerquill"
+    ],
+    "plan": "Win by grinding opponents down with incidental noncombat damage from discard and sacrifice effects while pumping your team (Master of Barbs) and recurring threats like Grim Repriser; removal like Break Under Pressure and Multiply by Zero clears blockers so evasive prepared creatures close the game.",
+    "tier": 2
+   },
+   {
+    "avoid": [
+     "Cast Away Doubt",
+     "Solve for Disappointment",
+     "Screeching Soulbreaker",
+     "Mabel, Bitter Recluse",
+     "Winter, Tormented Loner",
+     "Way of the Deathbringer"
+    ],
+    "colors": "BG",
+    "enablers": [
+     "Primal Witchstalker",
+     "Something Worth Saving",
+     "Dark Matter Manipulator",
+     "Liliana the Repentant"
+    ],
+    "key_commons": [
+     "Last Gasp",
+     "Break Under Pressure",
+     "Multiply by Zero",
+     "Extended Absence",
+     "Carnivorous Cultivator",
+     "Arcane Amphisbaena",
+     "Rank Rat",
+     "Theoretical Necromancer"
+    ],
+    "key_uncommons": [
+     "Primal Witchstalker",
+     "Hapatra, the Desert Fang",
+     "Rewrite Regrets",
+     "Void Extrapolator",
+     "Gallia, Tragic Host",
+     "Proft, Sinister Mastermind"
+    ],
+    "name": "Golgari Graveyard Threshold",
+    "payoffs": [
+     "Void Extrapolator",
+     "Proft, Sinister Mastermind",
+     "Dark Matter Manipulator",
+     "Hapatra, the Desert Fang",
+     "Rewrite Regrets",
+     "Gallia, Tragic Host"
+    ],
+    "plan": "Mill your own library early with cheap enablers to hit seven cards in the graveyard for Threshold payoffs and big-mana recursion, while premium black removal and deathtouch bodies hold the board until large threats close the game.",
+    "tier": 2
+   },
+   {
+    "avoid": [
+     "Budding Insurgent",
+     "Inspired Tethermage",
+     "Sureshot Sower",
+     "Blazing Crescendo",
+     "Eardrum Rattler",
+     "Hallway Heckler",
+     "Titanbones, Towering Heart",
+     "Gallia, the Merrymaker"
+    ],
+    "colors": "RG",
+    "enablers": [
+     "Tenured Tethermage",
+     "Simulacrum Shaper",
+     "Carnivorous Cultivator",
+     "Konstrari Improviser",
+     "Murmuring Volume"
+    ],
+    "key_commons": [
+     "Konstrari Improviser",
+     "No Admittance",
+     "Wrath of the Bloodmane",
+     "Awaken the Inferno",
+     "Arcane Amphisbaena",
+     "Greenhouse Propagator",
+     "Rockfall Vale"
+    ],
+    "key_uncommons": [
+     "Tenured Tethermage",
+     "Simulacrum Shaper",
+     "Carnivorous Cultivator",
+     "Craftwork Crusher",
+     "Hungering Puppetbeast",
+     "Verdant Kraken",
+     "Kiora of Fire and Ashes",
+     "Violent Echoes"
+    ],
+    "name": "Gruul Heartwood Ramp",
+    "payoffs": [
+     "Hungering Puppetbeast",
+     "Craftwork Crusher",
+     "Verdant Kraken",
+     "Craterclaw Colossus",
+     "Aerid Konstrari"
+    ],
+    "plan": "Ramp out huge artifact-creature payoffs (Hungering Puppetbeast, Craftwork Crusher, Verdant Kraken) using Heartwood tokens and land-fetch enablers, then smash through with trample while burn spells clear blockers.",
+    "tier": 1
+   }
+  ],
+  "built_at": 1791330264.814993,
+  "cards": {
+   "106229": {
+    "alsa": 5.5976301,
+    "ata": 7.6304569,
+    "baseline": -0.047,
+    "cmc": 2.0,
+    "colors": "W",
+    "game_wr": 0.55997495,
+    "games": 4199,
+    "gih_wr": 0.55727554,
+    "grp_id": 106229,
+    "iwd": -0.004528470000000007,
+    "name": "Campus Crier",
+    "oh_wr": 0.56567426,
+    "oracle": "{o1}, Exile this card from your graveyard: Empower Jace 2.",
+    "play_rate": 0.7599365331217771,
+    "rarity": "C",
+    "types": "Creature - Human Advisor"
+   },
+   "106237": {
+    "alsa": 4.507024,
+    "ata": 5.7519413,
+    "baseline": 0.472,
+    "cmc": 6.0,
+    "colors": "W",
+    "game_wr": 0.56275033,
+    "games": 5838,
+    "gih_wr": 0.5769099,
+    "grp_id": 106237,
+    "iwd": 0.027893480000000026,
+    "name": "Hexhaven Battalion",
+    "oh_wr": 0.54887563,
+    "oracle": "Create three 2/2 colorless Wizard Soldier creature tokens named Cadet. Empower Jace 2.\nBasic landcycling {o2}",
+    "play_rate": 0.8165712728263832,
+    "rarity": "C",
+    "types": "Sorcery"
+   },
+   "106252": {
+    "alsa": 6.8262253,
+    "ata": 9.8270799,
+    "baseline": -0.813,
+    "cmc": 2.0,
+    "colors": "U",
+    "game_wr": 0.53236607,
+    "games": 2109,
+    "gih_wr": 0.52821242,
+    "grp_id": 106252,
+    "iwd": -0.00759213000000003,
+    "name": "Cryotheory Adept",
+    "oh_wr": 0.5500618,
+    "oracle": "Prowess\n{o3oU}, Exile this card from your graveyard: Tap target creature and put a stun counter on it. Activate only as a sorcery.",
+    "play_rate": 0.38868644803053964,
+    "rarity": "C",
+    "types": "Creature - Human Wizard"
+   },
+   "106255": {
+    "alsa": 6.9410962,
+    "ata": 9.9977414,
+    "baseline": -0.307,
+    "cmc": 3.0,
+    "colors": "U",
+    "game_wr": 0.54312354,
+    "games": 1920,
+    "gih_wr": 0.54739583,
+    "grp_id": 106255,
+    "iwd": 0.008578350000000068,
+    "name": "Divining Duelist",
+    "oh_wr": 0.5472561,
+    "oracle": "Flash\nWhen this creature enters, choose one \u2014 \n\u2022Tap target creature. \n\u2022Untap target creature. \n\u2022Draw a card, then discard a card.\nWhen this creature enters, choose one<nobr> \u2014</nobr> \n\u2022<indent=4%>Tap target creature. </indent>\n\u2022<indent=4%>Untap target creature. </indent>\n\u2022<indent=4%>Draw a card, then discard a card.</indent>\nWhen this creature enters, choose one \u2014 \n\u2022Tap target creature. \n\u2022Untap target creature. \n\u2022Draw a card, then discard a card.",
+    "play_rate": 0.3460297544362789,
+    "rarity": "C",
+    "types": "Creature - Merfolk Wizard"
+   },
+   "106262": {
+    "alsa": 8.5632303,
+    "ata": 12.317197,
+    "baseline": null,
+    "cmc": 2.0,
+    "colors": "U",
+    "game_wr": null,
+    "games": 19,
+    "gih_wr": null,
+    "grp_id": 106262,
+    "iwd": null,
+    "name": "Precise Redaction",
+    "oh_wr": null,
+    "oracle": "Counter target white or black spell.",
+    "play_rate": 0.00819840131174421,
+    "rarity": "U",
+    "types": "Instant"
+   },
+   "106269": {
+    "alsa": 4.941199,
+    "ata": 6.2893226,
+    "baseline": 0.436,
+    "cmc": 2.0,
+    "colors": "U",
+    "game_wr": 0.56791977,
+    "games": 7591,
+    "gih_wr": 0.57554999,
+    "grp_id": 106269,
+    "iwd": 0.016146839999999996,
+    "name": "Surveillance Phantasm",
+    "oh_wr": 0.55363067,
+    "oracle": "Defender\nFlying\nVigilance\nAs long as you've scried or surveilled this turn, this creature can attack as though it didn't have defender.\n{o3oU}: Surveil 1.",
+    "play_rate": 0.8768245991864082,
+    "rarity": "C",
+    "types": "Creature - Bird Illusion"
+   },
+   "106280": {
+    "alsa": 7.0467325,
+    "ata": 10.483596,
+    "baseline": -1.332,
+    "cmc": 3.0,
+    "colors": "B",
+    "game_wr": 0.51035451,
+    "games": 1286,
+    "gih_wr": 0.50855365,
+    "grp_id": 106280,
+    "iwd": -0.002657110000000018,
+    "name": "Cast Away Doubt",
+    "oh_wr": 0.47,
+    "oracle": "Draw two cards. Cast Away Doubt deals 2 damage to each player.",
+    "play_rate": 0.29646201873048905,
+    "rarity": "C",
+    "types": "Sorcery"
+   },
+   "106283": {
+    "alsa": 3.2545249,
+    "ata": 3.8680728,
+    "baseline": 0.717,
+    "cmc": 4.0,
+    "colors": "B",
+    "game_wr": 0.55935947,
+    "games": 7040,
+    "gih_wr": 0.58622159,
+    "grp_id": 106283,
+    "iwd": 0.05069298999999994,
+    "name": "Extended Absence",
+    "oh_wr": 0.54272985,
+    "oracle": "Exile target creature or planeswalker. Extended Absence deals 1 damage to each opponent and you gain 1 life.",
+    "play_rate": 0.9348303006839592,
+    "rarity": "C",
+    "types": "Instant"
+   },
+   "106294": {
+    "alsa": 6.1284155,
+    "ata": 9.1674947,
+    "baseline": -0.525,
+    "cmc": 3.0,
+    "colors": "B",
+    "game_wr": 0.52662582,
+    "games": 1877,
+    "gih_wr": 0.53915823,
+    "grp_id": 106294,
+    "iwd": 0.022323209999999927,
+    "name": "Screeching Soulbreaker",
+    "oh_wr": 0.53219448,
+    "oracle": "Flying\nWhenever this creature attacks, it deals 1 damage to each opponent and you gain 1 life.",
+    "play_rate": 0.47792792792792793,
+    "rarity": "C",
+    "types": "Creature - Siren Bard"
+   },
+   "106317": {
+    "alsa": 5.9786286,
+    "ata": 8.2076412,
+    "baseline": -0.634,
+    "cmc": 4.0,
+    "colors": "R",
+    "game_wr": 0.54274466,
+    "games": 3157,
+    "gih_wr": 0.53500158,
+    "grp_id": 106317,
+    "iwd": -0.014429519999999973,
+    "name": "Heartstring Puller",
+    "oh_wr": 0.53415638,
+    "oracle": "Trample\nWhen this creature enters, create a 2/2 colorless Wizard Soldier creature token named Cadet.",
+    "play_rate": 0.6106293466128617,
+    "rarity": "C",
+    "types": "Creature - Elf Sorcerer"
+   },
+   "106329": {
+    "alsa": 3.9057622,
+    "ata": 5.0861322,
+    "baseline": -0.052,
+    "cmc": 3.0,
+    "colors": "R",
+    "game_wr": 0.54908718,
+    "games": 4888,
+    "gih_wr": 0.55707856,
+    "grp_id": 106329,
+    "iwd": 0.014641869999999946,
+    "name": "Wrath of the Bloodmane",
+    "oh_wr": 0.54825462,
+    "oracle": "This spell costs {o1} less to cast if you control a legendary creature.\nWrath of the Bloodmane deals 4 damage to target creature or planeswalker.",
+    "play_rate": 0.8902894103988722,
+    "rarity": "C",
+    "types": "Instant"
+   },
+   "106335": {
+    "alsa": 4.3650777,
+    "ata": 5.8469072,
+    "baseline": -0.755,
+    "cmc": 2.0,
+    "colors": "G",
+    "game_wr": 0.53304705,
+    "games": 4783,
+    "gih_wr": 0.53042024,
+    "grp_id": 106335,
+    "iwd": -0.004992910000000017,
+    "name": "Compel Brutality",
+    "oh_wr": 0.49774521,
+    "oracle": "Choose one \u2014 \n\u2022Target creature you control deals damage equal to its power to target creature or planeswalker an opponent controls. \n\u2022Target planeswalker you control deals damage equal to its loyalty to target creature or planeswalker an opponent controls.\nChoose one<nobr> \u2014</nobr> \n\u2022<indent=4%><indent=4%>Target creature you control deals damage equal to its power to target creature or planeswalker an opponent controls. </indent></indent>\n\u2022<indent=4%><indent=4%>Target planeswalker you control deals damage equal to its loyalty to target creature or planeswalker an opponent controls.</indent></indent>\nChoose one \u2014 \n\u2022Target creature you control deals damage equal to its power to target creature or planeswalker an opponent controls. \n\u2022Target planeswalker you control deals damage equal to its loyalty to target creature or planeswalker an opponent controls.",
+    "play_rate": 0.8666666666666667,
+    "rarity": "C",
+    "types": "Instant"
+   },
+   "106354": {
+    "alsa": 5.4340523,
+    "ata": 7.4987431,
+    "baseline": -0.16,
+    "cmc": 6.0,
+    "colors": "G",
+    "game_wr": 0.54400083,
+    "games": 4474,
+    "gih_wr": 0.55297273,
+    "grp_id": 106354,
+    "iwd": 0.01724480000000006,
+    "name": "Vinelasher Adept",
+    "oh_wr": 0.51306818,
+    "oracle": "Reach\nWhen this creature enters, put three +1/+1 counters on target creature.\nWhen this creature enters, put three <nobr>+1/+1</nobr> counters on target creature.\nWhen this creature enters, put three +1/+1 counters on target creature.\nBasic landcycling {o2}",
+    "play_rate": 0.7719815227779547,
+    "rarity": "C",
+    "types": "Creature - Rhino Soldier"
+   },
+   "106359": {
+    "alsa": 3.8905069,
+    "ata": 4.8037135,
+    "baseline": 0.481,
+    "cmc": 4.0,
+    "colors": "WG",
+    "game_wr": 0.54298643,
+    "games": 1618,
+    "gih_wr": 0.57725587,
+    "grp_id": 106359,
+    "iwd": 0.06302927999999997,
+    "name": "Bloombrute",
+    "oh_wr": 0.54545455,
+    "oracle": "Whenever you gain life, draw a card. This ability triggers only once each turn.\n{o4oGoW}: Target creature gains trample and lifelink until end of turn.",
+    "play_rate": 0.7417663100482483,
+    "rarity": "U",
+    "types": "Creature - Plant Elemental"
+   },
+   "106373": {
+    "alsa": 6.2165732,
+    "ata": 8.6013333,
+    "baseline": -0.937,
+    "cmc": 2.0,
+    "colors": "BR",
+    "game_wr": 0.54595048,
+    "games": 978,
+    "gih_wr": 0.52351738,
+    "grp_id": 106373,
+    "iwd": -0.038671669999999936,
+    "name": "Grim Repriser",
+    "oh_wr": null,
+    "oracle": "Prowess\n{oBoR}: Return this card from your graveyard to the battlefield with a finality counter on it. Activate only if an opponent has been dealt noncombat damage this turn.",
+    "play_rate": 0.503592561284869,
+    "rarity": "U",
+    "types": "Creature - Zombie Bard"
+   },
+   "106387": {
+    "alsa": 3.6996709,
+    "ata": 4.0710696,
+    "baseline": 1.317,
+    "cmc": 4.0,
+    "colors": "UB",
+    "game_wr": 0.57899416,
+    "games": 3887,
+    "gih_wr": 0.60895292,
+    "grp_id": 106387,
+    "iwd": 0.05931733000000006,
+    "name": "Recursive Recruitment",
+    "oh_wr": 0.57470356,
+    "oracle": "Create two 2/2 colorless Wizard Soldier creature tokens named Cadet. If this spell was cast from a graveyard, put a +1/+1 counter on each of them for every three cards in your graveyard.\nCreate two 2/2 colorless Wizard Soldier creature tokens named Cadet. If this spell was cast from a graveyard, put a <nobr>+1/+1</nobr> counter on each of them for every three cards in your graveyard.\nCreate two 2/2 colorless Wizard Soldier creature tokens named Cadet. If this spell was cast from a graveyard, put a +1/+1 counter on each of them for every three cards in your graveyard.\nFlashback {o6oUoB}",
+    "play_rate": 0.8643249176728869,
+    "rarity": "U",
+    "types": "Sorcery"
+   },
+   "106393": {
+    "alsa": 4.4329349,
+    "ata": 5.907563,
+    "baseline": null,
+    "cmc": 2.0,
+    "colors": "BR",
+    "game_wr": 0.50977654,
+    "games": 314,
+    "gih_wr": null,
+    "grp_id": 106393,
+    "iwd": null,
+    "name": "Stinging Vitriol",
+    "oh_wr": null,
+    "oracle": "Stinging Vitriol deals 2 damage to target opponent. That player reveals their hand. You choose a nonland card from it. They discard that card.",
+    "play_rate": 0.5038705137227305,
+    "rarity": "R",
+    "types": "Sorcery"
+   },
+   "106394": {
+    "alsa": 5.7580606,
+    "ata": 8.360105,
+    "baseline": 0.229,
+    "cmc": 2.0,
+    "colors": "UG",
+    "game_wr": 0.53941528,
+    "games": 3211,
+    "gih_wr": 0.56773591,
+    "grp_id": 106394,
+    "iwd": 0.055995989999999995,
+    "name": "Tam's Resistance",
+    "oh_wr": 0.51926445,
+    "oracle": "Put a +1/+1 counter on up to one target creature. It gains vigilance until end of turn.\nPut a <nobr>+1/+1</nobr> counter on up to one target creature. It gains vigilance until end of turn.\nPut a +1/+1 counter on up to one target creature. It gains vigilance until end of turn.\nEmpower Jace 4.",
+    "play_rate": 0.5228072983354674,
+    "rarity": "C",
+    "types": "Sorcery"
+   },
+   "106399": {
+    "alsa": 5.3431465,
+    "ata": 7.1253449,
+    "baseline": 0.832,
+    "cmc": 2.0,
+    "colors": "UR",
+    "game_wr": 0.57931988,
+    "games": 5823,
+    "gih_wr": 0.59058904,
+    "grp_id": 106399,
+    "iwd": 0.021153210000000033,
+    "name": "Twinned Vision",
+    "oh_wr": 0.56191744,
+    "oracle": "Draw a card. If this spell wasn't cast from your hand, draw two cards instead.\nFlashback\u2014{o1o(U/R)o(U/R)}, Discard a card.",
+    "play_rate": 0.7463719715829741,
+    "rarity": "C",
+    "types": "Instant"
+   },
+   "106407": {
+    "alsa": 6.8811103,
+    "ata": 10.613549,
+    "baseline": -0.428,
+    "cmc": 4.0,
+    "colors": "BR",
+    "game_wr": 0.53734356,
+    "games": 1028,
+    "gih_wr": 0.54280156,
+    "grp_id": 106407,
+    "iwd": 0.00864007,
+    "name": "Whiplash Wordsmith",
+    "oh_wr": null,
+    "oracle": "This creature enters prepared.\nAs long as an opponent was dealt noncombat damage this turn, this creature has flying and haste.",
+    "play_rate": 0.2883921294679241,
+    "rarity": "C",
+    "types": "Creature - Vampire Sorcerer"
+   },
+   "106411": {
+    "alsa": 7.8389079,
+    "ata": 11.071744,
+    "baseline": -0.257,
+    "cmc": 2.0,
+    "colors": "",
+    "game_wr": 0.53673986,
+    "games": 1045,
+    "gih_wr": 0.5492823,
+    "grp_id": 106411,
+    "iwd": 0.02209196999999996,
+    "name": "Afterthought Sentry",
+    "oh_wr": null,
+    "oracle": "{o2}: This creature gains flying until end of turn.\nWhenever this creature attacks, exile up to one target card from a graveyard.",
+    "play_rate": 0.1999155761924863,
+    "rarity": "C",
+    "types": "Artifact Creature - Gargoyle"
+   },
+   "106417": {
+    "alsa": 8.4581212,
+    "ata": 11.986897,
+    "baseline": null,
+    "cmc": 2.0,
+    "colors": "",
+    "game_wr": 0.51263903,
+    "games": 441,
+    "gih_wr": null,
+    "grp_id": 106417,
+    "iwd": null,
+    "name": "Living Library",
+    "oh_wr": null,
+    "oracle": "{o6}, Sacrifice this creature: Choose target creature or planeswalker an opponent controls. Its owner shuffles it into their library.",
+    "play_rate": 0.09237810573510181,
+    "rarity": "C",
+    "types": "Artifact Creature - Book Illusion"
+   },
+   "106418": {
+    "alsa": 7.0931691,
+    "ata": 10.426489,
+    "baseline": -0.495,
+    "cmc": 2.0,
+    "colors": "",
+    "game_wr": 0.53098385,
+    "games": 1490,
+    "gih_wr": 0.54026846,
+    "grp_id": 106418,
+    "iwd": 0.01683095999999995,
+    "name": "Medic's Kitesail",
+    "oh_wr": 0.5245614,
+    "oracle": "Equipped creature gets +1/+0 and has flying and \"Whenever this creature attacks, you gain 1 life.\"\nEquipped creature gets <nobr>+1/+0</nobr> and has flying and \"Whenever this creature attacks, you gain 1 life.\"\nEquipped creature gets +1/+0 and has flying and \"Whenever this creature attacks, you gain 1 life.\"\nEquip {o2}",
+    "play_rate": 0.34460074891205345,
+    "rarity": "C",
+    "types": "Artifact - Equipment"
+   },
+   "106425": {
+    "alsa": 4.5928793,
+    "ata": 6.648318,
+    "baseline": 0.594,
+    "cmc": null,
+    "colors": "",
+    "game_wr": 0.55944056,
+    "games": 564,
+    "gih_wr": 0.58156028,
+    "grp_id": 106425,
+    "iwd": 0.03937494000000008,
+    "name": "Haunted Ridge",
+    "oh_wr": null,
+    "oracle": "This land enters tapped unless you control two or more other lands.\n{oT}: Add {oB} or {oR}.",
+    "play_rate": 0.5917241379310345,
+    "rarity": "R",
+    "types": "Land"
+   },
+   "106434": {
+    "alsa": 4.3184573,
+    "ata": 5.8174157,
+    "baseline": -0.127,
+    "cmc": null,
+    "colors": "",
+    "game_wr": 0.5482509,
+    "games": 830,
+    "gih_wr": 0.55421687,
+    "grp_id": 106434,
+    "iwd": 0.011290629999999968,
+    "name": "Shipwreck Marsh",
+    "oh_wr": null,
+    "oracle": "This land enters tapped unless you control two or more other lands.\n{oT}: Add {oU} or {oB}.",
+    "play_rate": 0.717128027681661,
+    "rarity": "R",
+    "types": "Land"
+   },
+   "106435": {
+    "alsa": 6.5558685,
+    "ata": 9.2207904,
+    "baseline": -0.509,
+    "cmc": null,
+    "colors": "",
+    "game_wr": 0.54284358,
+    "games": 1875,
+    "gih_wr": 0.53973333,
+    "grp_id": 106435,
+    "iwd": -0.005410020000000015,
+    "name": "Stingerquill Annex",
+    "oh_wr": 0.5596206,
+    "oracle": "This land enters tapped unless you control a planeswalker.\n{oT}: Add {oB} or {oR}.",
+    "play_rate": 0.5576439444076771,
+    "rarity": "C",
+    "types": "Land"
+   },
+   "106437": {
+    "alsa": 6.1575445,
+    "ata": 8.4585859,
+    "baseline": 0.111,
+    "cmc": null,
+    "colors": "",
+    "game_wr": 0.55629609,
+    "games": 3400,
+    "gih_wr": 0.56323529,
+    "grp_id": 106437,
+    "iwd": 0.013372280000000014,
+    "name": "Theorix Annex",
+    "oh_wr": 0.55387071,
+    "oracle": "This land enters tapped unless you control a planeswalker.\n{oT}: Add {oU} or {oB}.",
+    "play_rate": 0.7543859649122807,
+    "rarity": "C",
+    "types": "Land"
+   },
+   "106458": {
+    "alsa": 4.5021988,
+    "ata": 5.3440066,
+    "baseline": 1.845,
+    "cmc": 2.0,
+    "colors": "U",
+    "game_wr": 0.56978551,
+    "games": 4121,
+    "gih_wr": 0.62897355,
+    "grp_id": 106458,
+    "iwd": 0.09745680999999995,
+    "name": "Fblthp, Impossibly Lost",
+    "oh_wr": 0.60881295,
+    "oracle": "When one or more of your opponents are dealt combat damage during your turn, draw two cards. If your library has no cards in it, you win the game. Fblthp's owner shuffles him into their library. (If you draw from an empty library this way, you still win the game.)\nWhen one or more of your opponents are dealt combat damage during your turn, draw two cards. If your library has no cards in it, you win the game. Fblthp's owner shuffles him into their library. <i>(If you draw from an empty library this way, you still win the game.)</i>\nWhen one or more of your opponents are dealt combat damage during your turn, draw two cards. If your library has no cards in it, you win the game. Fblthp's owner shuffles him into their library. (If you draw from an empty library this way, you still win the game.)",
+    "play_rate": 0.8093081761006289,
+    "rarity": "U",
+    "types": "Legendary Creature - Homunculus"
+   },
+   "106467": {
+    "alsa": 4.4233045,
+    "ata": 5.6754675,
+    "baseline": 0.081,
+    "cmc": 4.0,
+    "colors": "U",
+    "game_wr": 0.54065828,
+    "games": 2069,
+    "gih_wr": 0.5621073,
+    "grp_id": 106467,
+    "iwd": 0.04082562000000001,
+    "name": "Traxos, Academy Guardian",
+    "oh_wr": 0.5443787,
+    "oracle": "This spell costs {o2} less to cast if you've cast a noncreature spell this turn.\nFlying\nVigilance\nProwess",
+    "play_rate": 0.7345777777777778,
+    "rarity": "U",
+    "types": "Legendary Artifact Creature - Dragon Construct"
+   },
+   "106478": {
+    "alsa": 4.9995953,
+    "ata": 6.9067909,
+    "baseline": -0.854,
+    "cmc": 1.0,
+    "colors": "B",
+    "game_wr": 0.53148615,
+    "games": 1462,
+    "gih_wr": 0.52667579,
+    "grp_id": 106478,
+    "iwd": -0.008601179999999986,
+    "name": "Mabel, Bitter Recluse",
+    "oh_wr": 0.52047782,
+    "oracle": "Deathtouch\nWhen Mabel enters, remove up to three counters from another target creature or planeswalker.",
+    "play_rate": 0.6936012229744486,
+    "rarity": "U",
+    "types": "Legendary Creature - Mouse Warlock"
+   },
+   "106480": {
+    "alsa": 4.9613449,
+    "ata": 6.6562848,
+    "baseline": -0.228,
+    "cmc": 3.0,
+    "colors": "B",
+    "game_wr": 0.53492869,
+    "games": 1964,
+    "gih_wr": 0.55040733,
+    "grp_id": 106480,
+    "iwd": 0.02965949999999995,
+    "name": "Proft, Sinister Mastermind",
+    "oh_wr": 0.48463687,
+    "oracle": "Threshold \u2014 You can't cast this spell unless there are seven or more cards in your graveyard.\n<i>Threshold</i><nobr> \u2014</nobr> You can't cast this spell unless there are seven or more cards in your graveyard.\nThreshold \u2014 You can't cast this spell unless there are seven or more cards in your graveyard.\nMenace\n{oB}, Discard this card: Target creature gets -3/-1 until end of turn.\n{oB}, Discard this card: Target creature gets <nobr>-3/-1</nobr> until end of turn.\n{oB}, Discard this card: Target creature gets -3/-1 until end of turn.",
+    "play_rate": 0.7310478883194911,
+    "rarity": "U",
+    "types": "Legendary Creature - Human Rogue"
+   },
+   "106483": {
+    "alsa": 5.4601635,
+    "ata": 7.7760968,
+    "baseline": -1.607,
+    "cmc": 3.0,
+    "colors": "B",
+    "game_wr": 0.50647059,
+    "games": 805,
+    "gih_wr": 0.49813665,
+    "grp_id": 106483,
+    "iwd": -0.016569229999999935,
+    "name": "Way of the Deathbringer",
+    "oh_wr": null,
+    "oracle": "When Way of the Deathbringer enters, empower Jace 5.\nPlaneswalkers you control have \"[-2]: You may sacrifice a creature. If you do, create a 4/4 green Beast creature token with trample.\"",
+    "play_rate": 0.4129220306048093,
+    "rarity": "U",
+    "types": "Legendary Enchantment"
+   },
+   "106511": {
+    "alsa": 4.3993786,
+    "ata": 6.0957265,
+    "baseline": -1.689,
+    "cmc": 4.0,
+    "colors": "G",
+    "game_wr": 0.51879117,
+    "games": 1109,
+    "gih_wr": 0.49504058,
+    "grp_id": 106511,
+    "iwd": -0.03887480000000004,
+    "name": "Titanbones, Towering Heart",
+    "oh_wr": null,
+    "oracle": "Reach\nWhenever you gain life, put two +1/+1 counters on Titanbones.\nWhenever you gain life, put two <nobr>+1/+1</nobr> counters on Titanbones.\nWhenever you gain life, put two +1/+1 counters on Titanbones.\nWhen you discard this card, you gain 3 life.",
+    "play_rate": 0.6756544502617801,
+    "rarity": "U",
+    "types": "Legendary Creature - Skeleton Druid"
+   },
+   "106517": {
+    "alsa": 6.1757493,
+    "ata": 9.3187919,
+    "baseline": null,
+    "cmc": 5.0,
+    "colors": "WUBRG",
+    "game_wr": null,
+    "games": 86,
+    "gih_wr": null,
+    "grp_id": 106517,
+    "iwd": null,
+    "name": "Karn, Gilded Guardian",
+    "oh_wr": null,
+    "oracle": "Vigilance\nTrample\nWhen Karn enters, draw a card for each color among other artifacts you control.",
+    "play_rate": 0.10348525469168901,
+    "rarity": "R",
+    "types": "Legendary Artifact Creature - Golem"
+   },
+   "106524": {
+    "alsa": 5.8022868,
+    "ata": 8.6205357,
+    "baseline": null,
+    "cmc": 2.0,
+    "colors": "",
+    "game_wr": null,
+    "games": 56,
+    "gih_wr": null,
+    "grp_id": 106524,
+    "iwd": null,
+    "name": "Karn, Argent Defender",
+    "oh_wr": null,
+    "oracle": "Artifacts and creatures entering the battlefield don't cause abilities to trigger.",
+    "play_rate": 0.09263311451495258,
+    "rarity": "R",
+    "types": "Legendary Artifact Creature - Golem"
+   }
+  },
+  "mechanics": [
+   {
+    "name": "Empower Jace / planeswalkers",
+    "summary": "Many spells 'Empower Jace X' to add loyalty counters to a Jace planeswalker; cards like Sanctum Lurker, Rewrite Regrets and Protege's Awakening feed it, and 'Way of' enchantments give planeswalkers extra abilities. Prioritize early planeswalkers and beholding them."
+   },
+   {
+    "name": "Prepared",
+    "summary": "Creatures enter or become prepared via various triggers (Stingerquill Voxmancer, Woodwork Prodigy) and prepared status gates stronger effects; Hexhaven Dueling Arena can prepare attackers."
+   },
+   {
+    "name": "Threshold & graveyard fill",
+    "summary": "Self-mill (Dark Matter Manipulator, Something Worth Saving, Theorix Charm) enables seven-card Threshold payoffs like Void Extrapolator and Proft, Sinister Mastermind plus recursion such as Recursive Recruitment."
+   },
+   {
+    "name": "Scry/surveil matters",
+    "summary": "Consider, Diviner of Victory, Proft Consulting Detective and Denzilore Fatehold reward repeated scrying/surveiling with pumps and card advantage."
+   },
+   {
+    "name": "Life gain payoffs",
+    "summary": "White-green builds life-gain engines (Lyra Archangel of Dawn, Bloombrute, Germinate Recruits creating Cadets off life gained); solid but weaker than blue shells."
+   },
+   {
+    "name": "Big-ramp green",
+    "summary": "Verdant Kraken tokens, Simulacrum Shaper ramp and discounted giants (Ghalta variants) power Gruul's mid-size beatdown plan."
+   }
+  ],
+  "overview": "FRAGMENTS OF THE ECHOVERSE is a planeswalker-centric format built around 'Empower Jace', the 'prepared' mechanic, and heavy self-mill/threshold payoffs. Blue-based decks dominate (Azorius 57.9%, Dimir 56.9%) alongside aggressive Gruul ramp; premium removal and planeswalkers carry decks while weak color pairs like Simic and Orzhov should be avoided.",
+  "pair_stats": {
+   "BG": {
+    "games": 7914,
+    "share": 0.0633,
+    "win_rate": 0.5557
+   },
+   "BR": {
+    "games": 14011,
+    "share": 0.1121,
+    "win_rate": 0.5409
+   },
+   "RG": {
+    "games": 18172,
+    "share": 0.1454,
+    "win_rate": 0.5668
+   },
+   "UB": {
+    "games": 19411,
+    "share": 0.1553,
+    "win_rate": 0.5689
+   },
+   "UG": {
+    "games": 4212,
+    "share": 0.0337,
+    "win_rate": 0.5261
+   },
+   "UR": {
+    "games": 12519,
+    "share": 0.1002,
+    "win_rate": 0.5628
+   },
+   "WB": {
+    "games": 6952,
+    "share": 0.0556,
+    "win_rate": 0.5306
+   },
+   "WG": {
+    "games": 15387,
+    "share": 0.1231,
+    "win_rate": 0.5479
+   },
+   "WR": {
+    "games": 8450,
+    "share": 0.0676,
+    "win_rate": 0.5425
+   },
+   "WU": {
+    "games": 17972,
+    "share": 0.1438,
+    "win_rate": 0.5789
+   }
+  },
+  "pick_principles": [
+   "Take rare/mythic planeswalkers extremely early \u2014 Garruk Veiled Butcher (+16.1 IWD), Ajani Unrelenting (+18.1) and The Theorist Jace (+16.6) are format-warping.",
+   "Draft premium interaction highly: Break Under Pressure (+7.7 IWD), Multiply by Zero (+5.9) and Extended Absence (+5.1) answer the format's big threats cheaply.",
+   "Commit to blue-white or blue-black early \u2014 they're the clear top pairs; avoid Simic and Orzhov lanes.",
+   "Secure an early Jace planeswalker before loading up on Empower payoffs \u2014 the payoffs need the walker to function.",
+   "In black decks, mill enablers feeding Threshold (Void Extrapolator) and recursion (Theoretical Necromancer) form a real engine.",
+   "Pick efficient stat-sticks with upside early: Sphinx of False Conclusions (+11.3 IWD) and Mindseeker Oculus (+7.3) outperform their slot.",
+   "Gruul wants ramp into oversized bodies \u2014 Verdant Kraken (+6.6 IWD) and Craftwork Crusher (+9.7) anchor it.",
+   "Two-land-check duals (Deserted Beach cycle) fix mana smoothly; grab them mid-draft over marginal playables."
+  ],
+  "set_code": "FRA",
+  "source": "model",
+  "speed": "medium",
+  "synergy_notes": [
+   {
+    "cards": [
+     "Consider",
+     "Diviner of Victory"
+    ],
+    "why": "Every surveil triggers Diviner's +1/+1 pump, turning a 1-mana cantrip into repeated combat growth."
+   },
+   {
+    "cards": [
+     "Proctor of Potential",
+     "Your Fate Ends Here"
+    ],
+    "why": "Proctor surveils on creature entry, enabling both its own recursion (requires having scried/surveilled) and payoffs like Denizlore Fatehold."
+   },
+   {
+    "cards": [
+     "Fatehold Charm",
+     "Desperate Futurescribe"
+    ],
+    "why": "Charm's draw mode empowers Jace while its +1/+2 mode stacks with Futurescribe's surveil-boosted combat pump."
+   },
+   {
+    "cards": [
+     "Mindseeker Oculus",
+     "The Theorist, Jace Beleren"
+    ],
+    "why": "Oculus empowers Jace 4 on entry, accelerating toward Jace's high-value ultimate and loyalty draws."
+   },
+   {
+    "cards": [
+     "Sphinx's Approach",
+     "Sphinx of False Conclusions"
+    ],
+    "why": "Four copies of Approach in the graveyard let you tutor out the Sphinx, whose death creates a copying token."
+   },
+   {
+    "cards": [
+     "Rewrite Regrets",
+     "Apex Witchstalker"
+    ],
+    "why": "Reanimating Apex Witchstalker re-triggers its enter-the-battlefield life gain and gives a menace body; its basic landcycling also fills the graveyard so Rewrite Regrets always has a target."
+   },
+   {
+    "cards": [
+     "Generous Revival",
+     "Blessed Ghoul"
+    ],
+    "why": "Returning Blessed Ghoul with a +1/+1 counter gives a cheap lifelink attacker that can later be recurred from the graveyard for repeated value."
+   },
+   {
+    "cards": [
+     "Silence the Echo",
+     "Theoretical Necromancer"
+    ],
+    "why": "Sacrificing a redundant creature as Silence the Echo's cost turns removal into card advantage when the sacrificed creature is recoverable via Theoretical Necromancer's exile-from-graveyard ability."
+   },
+   {
+    "cards": [
+     "Break Under Pressure",
+     "Extended Absence"
+    ],
+    "why": "Stacked removal lets you answer both the biggest threat (highest-mana-value sacrifice) and any follow-up threat with exile, keeping the board clear for your recursive creatures."
+   },
+   {
+    "cards": [
+     "Gideon the Oathless",
+     "Last Gasp"
+    ],
+    "why": "Every opposing creature killed by Last Gasp never enters again, denying Gideon's punish triggers to the opponent while your removal keeps their board empty for Gideon's ward to protect."
+   },
+   {
+    "cards": [
+     "Void Extrapolator",
+     "Apex Witchstalker"
+    ],
+    "why": "Landcycling and self-sacrifice effects fill your graveyard quickly so Void Extrapolator reliably hits threshold and becomes a 3/3 for two mana."
+   },
+   {
+    "cards": [
+     "Repurposed Enforcer",
+     "Hexhaven Battalion"
+    ],
+    "why": "Hexhaven Battalion creates three Cadet tokens and Empower Jace 2; with four-plus creatures attacking, Repurposed Enforcer triggers for large Jace empowerment each attack, stacking loyalty rewards on a cheap body."
+   },
+   {
+    "cards": [
+     "Master of Barbs",
+     "No Admittance"
+    ],
+    "why": "Every noncombat damage event from burn like No Admittance pumps your whole team +1/+0 for the turn, turning cheap removal into a combat-phase power spike."
+   },
+   {
+    "cards": [
+     "Tomik, Izzet Sparkmage",
+     "Fulminous Forte"
+    ],
+    "why": "Tomik upgrades all your noncombat damage by 1, so Fulminous Forte's mode dealing 1 to each opposing creature and planeswalker sweeps x+1 damage across their board."
+   },
+   {
+    "cards": [
+     "Samut, Hazoret's Champion",
+     "Skilled Battlecarver"
+    ],
+    "why": "Samut gives all creatures haste so Skilled Battlecarver can attack immediately and pump with its {1}{R} activation the same turn it enters."
+   },
+   {
+    "cards": [
+     "Winter, Team Player",
+     "Surgical Precision"
+    ],
+    "why": "Each noncreature spell you cast pumps your whole team; cheap instants/sorceries like Surgical Precision convert spell density into extra combat damage through Convoke-fueled turns."
+   },
+   {
+    "cards": [
+     "Guiding Hydra",
+     "Generous Revival"
+    ],
+    "why": "Guiding Hydra is an early pick (ALSA 1.6) that trades counters for card advantage; Generous Revival returns it from the graveyard with an extra +1/+1 counter to re-run the engine."
+   },
+   {
+    "cards": [
+     "Greenhouse Propagator",
+     "Bloombrute"
+    ],
+    "why": "Propagator gains 1 life for every other creature entering, reliably turning on Bloombrute's once-per-turn draw-a-card lifegain trigger."
+   },
+   {
+    "cards": [
+     "Medic's Kitesail",
+     "Unflinching Hortimancer"
+    ],
+    "why": "Equipping the Kitesail gives flying plus a lifegain trigger on each attack, stacking +1/+1 counters on the Hortimancer every combat."
+   },
+   {
+    "cards": [
+     "Surgical Precision",
+     "Titanbones, Towering Heart"
+    ],
+    "why": "Each mode of Surgical Precision gains life (1 or 2), feeding Titanbones two +1/+1 counters per lifegain event despite its low baseline."
+   },
+   {
+    "cards": [
+     "Koth of the Homestead",
+     "Lyra, Archangel of Dawn"
+    ],
+    "why": "Repeated landfall lifegain from Koth puts a +1/+1 counter on Lyra each time a land enters, quickly making her a game-ending flier."
+   },
+   {
+    "cards": [
+     "Vigorbloom Charm",
+     "Bloombrute"
+    ],
+    "why": "The draw-and-gain-3-life mode both replaces itself and triggers Bloombrute's card draw; the fight mode also protects your board."
+   },
+   {
+    "cards": [
+     "Generous Revival",
+     "Unflinching Hortimancer"
+    ],
+    "why": "Returning a small creature with an added +1/+1 counter re-triggers enter-the-battlefield lifegain sources like Liliana the Faultless or Greenhouse Propagator."
+   },
+   {
+    "cards": [
+     "Theorix Charm",
+     "Void Extrapolator"
+    ],
+    "why": "Mode three mills three cards toward the seven-card threshold that turns Void Extrapolator into a 3/3 body early."
+   },
+   {
+    "cards": [
+     "Liliana the Repentant",
+     "Null Summoner"
+    ],
+    "why": "Liliana mills two on every other creature entering, quickly enabling Null Summoner's threshold re-cast mode after it dies."
+   },
+   {
+    "cards": [
+     "Recursive Recruitment",
+     "Rewrite Regrets"
+    ],
+    "why": "Both recur from your own graveyard; Recursive Recruitment cast back from the graveyard makes buffed Cadets scaled to graveyard size."
+   },
+   {
+    "cards": [
+     "Dark Matter Manipulator",
+     "Theorix Charm"
+    ],
+    "why": "Manipulator mills three on entry and gains +2/+0 per seven cards in your graveyard, so repeated milling grows it to a 5/0-plus attacker."
+   },
+   {
+    "cards": [
+     "Uldaros Theorix",
+     "Rewrite Regrets"
+    ],
+    "why": "Uldaros copies and casts spells exiled from your graveyard on entry; Rewrite Regrets returns him (MV 6) from the graveyard to repeat the effect."
+   },
+   {
+    "cards": [
+     "Yuriko, Hope from the Shadows",
+     "Loot, the Anomaly"
+    ],
+    "why": "Yuriko's surveil 2 mode fills the graveyard toward the seven cards Loot needs to activate its sacrifice ability."
+   },
+   {
+    "cards": [
+     "Twinned Vision",
+     "Variable Chaser"
+    ],
+    "why": "Flashback/casting spells off the graveyard still triggers prowess and grows Variable Chaser; Twinned Vision draws two when not cast from hand, fueling more spells."
+   },
+   {
+    "cards": [
+     "Protege's Awakening",
+     "Mindseeker Oculus"
+    ],
+    "why": "Both are pure 'empower Jace' enablers \u2014 each cast pumps a Jace planeswalker toward ultimate-level loyalty abilities while Oculus also blocks as a body."
+   },
+   {
+    "cards": [
+     "Countersculpt",
+     "The Theorist, Jace Beleren"
+    ],
+    "why": "Beholding Jace lets Countersculpt skip its extra mana, and empowered Jaces convert every cheap spell into loyalty value."
+   },
+   {
+    "cards": [
+     "Seasoned Cryomancer",
+     "Twinned Vision"
+    ],
+    "why": "Discarding nonland cards to Seasoned Cryomancer taps down multiple attackers and feeds Twinned Vision's flashback from the graveyard."
+   },
+   {
+    "cards": [
+     "Tomik, Izzet Sparkmage",
+     "Protege's Awakening"
+    ],
+    "why": "Every point of noncombat damage from empowered-Jace burn effects gets amplified by +1 through Tomik's replacement effect."
+   },
+   {
+    "cards": [
+     "Plan for All Outcomes",
+     "Jace's Machinations"
+    ],
+    "why": "Each first noncreature spell empowers Jace 1, stacking with Jace's Machinations' empower 8 to reach big loyalty abilities quickly and activate them at instant speed."
+   },
+   {
+    "cards": [
+     "Simulacrum Shaper",
+     "Verdant Kraken"
+    ],
+    "why": "Shaper fetches an extra basic land onto the battlefield early, accelerating you by a full turn toward casting the 7-mana Kraken, whose upkeep tokens take over the ground game."
+   },
+   {
+    "cards": [
+     "Arcane Amphisbaena",
+     "Mindseeker Oculus"
+    ],
+    "why": "Both commons carry 'empower Jace' on entry, so a cheap deathtouch body and a 3-drop Homunculus each pump your Jace planeswalker several loyalty steps ahead of schedule for free."
+   },
+   {
+    "cards": [
+     "Carnivorous Cultivator",
+     "Something Worth Saving"
+    ],
+    "why": "Cultivator returns lands from graveyard to hand to keep ramping; Something Worth Saving mills four and lets you retrieve a permanent \u2014 either refueling Cultivator's recursion targets or grabbing a fatty."
+   },
+   {
+    "cards": [
+     "Hungering Puppetbeast",
+     "Heartwood Crafter"
+    ],
+    "why": "Puppetbeast creates a Heartwood token on entry and grows by sacrificing artifacts; Heartwood Crafter makes spare colorless mana that can't cast spells from hand but perfectly funds the {1} sac-activation pumps."
+   },
+   {
+    "cards": [
+     "Protege's Awakening",
+     "Countersculpt"
+    ],
+    "why": "Cheap instants that each empower Jace multiple loyalty counters, turning low-cost interaction into massive planeswalker acceleration before landing your finishers."
+   },
+   {
+    "cards": [
+     "Kiora of Salt and Sand",
+     "Tam's Resistance"
+    ],
+    "why": "Activate a planeswalker loyalty ability (e.g., via empowered Jace), then attack with Kiora to untap an attacker and make it unblockable \u2014 Tam's Resistance adds vigilance/counters so the same creature swings profitably every turn."
+   },
+   {
+    "cards": [
+     "Stinging Vitriol",
+     "Tinybones, Pocket Nuisance"
+    ],
+    "why": "Vitriol deals 2 noncombat damage and forces a discard; both halves trigger Tinybones' ping, stacking repeated damage each turn."
+   },
+   {
+    "cards": [
+     "Solve for Disappointment",
+     "Master of Barbs"
+    ],
+    "why": "Forced discard counts as noncombat damage to opponents via Tomik-boosted sources; Master of Barbs pumps your whole team whenever the discard package fires."
+   },
+   {
+    "cards": [
+     "Rank Rat",
+     "Tinybones, Pocket Nuisance"
+    ],
+    "why": "Rank Rat's ETB discard triggers Tinybones' damage immediately and fills the graveyard toward threshold for Void Extrapolator."
+   },
+   {
+    "cards": [
+     "Grim Repriser",
+     "Stinging Vitriol"
+    ],
+    "why": "Once you've dealt noncombat damage this turn (Vitriol, Soulbreaker, Tinybones), Repriser returns from the graveyard with prowess already online\u2014a free recursive threat."
+   },
+   {
+    "cards": [
+     "Whiplash Wordsmith",
+     "Screeching Soulbreaker"
+    ],
+    "why": "Soulbreaker's attack trigger deals noncombat damage to each opponent, turning on Wordsmith's flying and haste permanently after one attack."
+   },
+   {
+    "cards": [
+     "Tomik, Izzet Sparkmage",
+     "Stingerquill Charm"
+    ],
+    "why": "Tomik adds +1 to every noncombat damage source you control; Charm's 3-damage mode becomes 4 and every Tinybones/Soulbreaker ping grows by one."
+   },
+   {
+    "cards": [
+     "Primal Witchstalker",
+     "Void Extrapolator"
+    ],
+    "why": "Primal Witchstalker mills four on entry, pushing you toward the seven-card graveyard count that gives Void Extrapolator its Threshold +1/+1."
+   },
+   {
+    "cards": [
+     "Dark Matter Manipulator",
+     "Something Worth Saving"
+    ],
+    "why": "Manipulator mills three on entry and grows +2/+0 per seven cards in your graveyard; Something Worth Saving mills four more and lets you keep a permanent card, compounding both the buff and Threshold."
+   },
+   {
+    "cards": [
+     "Something Worth Saving",
+     "Rewrite Regrets"
+    ],
+    "why": "The mill fills your graveyard so Rewrite Regrets can reanimate a MV6-or-less creature or planeswalker late as a two-for-one threat."
+   },
+   {
+    "cards": [
+     "Liliana the Repentant",
+     "Rewrite Regrets"
+    ],
+    "why": "Liliana mills two per creature you control to feed Threshold fast, and her Exhaust ability returns a graveyard creature \u2014 the same yard Rewrite Regrets recurs."
+   },
+   {
+    "cards": [
+     "Hapatra, the Desert Fang",
+     "Primal Witchstalker"
+    ],
+    "why": "Hapatra's ETB puts -1/-1 counters equal to the greatest MV in your graveyard; milling high-MV cards with Primal Witchstalker makes her entry removal much stronger."
+   },
+   {
+    "cards": [
+     "Gallia, Tragic Host",
+     "Theoretical Necromancer"
+    ],
+    "why": "Both use the graveyard as a resource: Gallia exiles a creature card to recur herself with a counter, and Theoretical Necromancer exiles itself to return another creature to hand, extending the mill plan into card advantage."
+   },
+   {
+    "cards": [
+     "Tenured Tethermage",
+     "Hungering Puppetbeast"
+    ],
+    "why": "Tethermage sacrifices a land to make two tapped Heartwood artifact tokens; those artifacts both discount nothing directly but feed Puppetbeast's {1}, sacrifice another artifact activation for +1/+1 counters and also give it bodies to sac, while Puppetbeast itself creates a Heartwood token on entry t"
+   },
+   {
+    "cards": [
+     "Simulacrum Shaper",
+     "Verdant Kraken"
+    ],
+    "why": "Shaper ramps a basic land onto the battlefield early, accelerating you toward casting the 7-mana Verdant Kraken, whose upkeep 3/3 land-creature tokens then provide further lands and board presence."
+   },
+   {
+    "cards": [
+     "Carnivorous Cultivator",
+     "Craftwork Crusher"
+    ],
+    "why": "Cultivator returns land cards from graveyard to hand on combat damage, refueling the land-sacrifice/ramp plan so you can afford the 7-mana Craftwork Crusher and still hold interaction."
+   },
+   {
+    "cards": [
+     "Aerid Konstrari",
+     "Hungering Puppetbeast"
+    ],
+    "why": "Aerid creates Heartwood artifact tokens on entry and death and pumps off artifacts you control; those same artifacts fuel Puppetbeast's sacrifice activations, so one legend powers both the pump and the counter engine."
+   },
+   {
+    "cards": [
+     "No Admittance",
+     "Violent Echoes"
+    ],
+    "why": "Cheap red removal clears blockers so your big tramplers connect; Violent Echoes' 6 damage doubles as removal and empowers Jace when it overkills, adding planeswalker pressure on top of the beatdown plan."
+   },
+   {
+    "cards": [
+     "Kiora of Fire and Ashes",
+     "Craterclaw Colossus"
+    ],
+    "why": "Kiora makes 5/5 Dragon tokens immediately and repeatedly via her {8} ability; each Dragon is an artifact-free large body that Craterclaw Colossus buffs with trample and +X/+0 based on your artifact count for a lethal swing."
+   }
+  ],
+  "traps": [
+   {
+    "card": "Predictive Preparations",
+    "why": "-9.3 IWD and worst-in-set performance despite looking like flexible pump \u2014 pure filler."
+   },
+   {
+    "card": "Eye of Jace",
+    "why": "-4.1 IWD; slow artifact that mills yourself toward a weak payoff rather than advancing the board."
+   },
+   {
+    "card": "Grim Repriser",
+    "why": "-3.9 IWD; conditional graveyard return requires opponent damage first and rarely lines up."
+   },
+   {
+    "card": "Titanbones, Towering Heart",
+    "why": "-3.9 IWD; needs a dedicated life-gain engine that most decks lack."
+   },
+   {
+    "card": "Yoshimaru, Beloved Companion",
+    "why": "-3.0 IWD; counter-amplification payoff with no reliable counter sources in white."
+   },
+   {
+    "card": "Hallway Heckler",
+    "why": "-3.5 IWD; looting body that trades poorly in a format decided by bigger swings."
+   },
+   {
+    "card": "Charge the Sanctum",
+    "why": "-3.8 IWD; low-impact combat trick that Boros's mediocre win rate can't support."
+   },
+   {
+    "card": "Ferocity of the Hunt",
+    "why": "-1.6 IWD; aura deathtouch grant is easily blanked by the format's plentiful removal."
+   }
+  ],
+  "version": 1
+ }
+}

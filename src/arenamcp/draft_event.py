@@ -41,6 +41,16 @@ UNPAID_MODULES = {"Join", "Pay", "PayEntry"}
 # Model pick calls took 2.4-7.3s (8s timeout) on 2026-10-06; 25s skipped the
 # model for every pick from P1p10 on.
 PICK_LLM_MIN_SECONDS = 15.0
+# With commentary on, a pick is selected in Arena first (viewers see the cards
+# before the pack goes), explained aloud, then confirmed after a short beat.
+# The whole hold is bounded so a draft never stalls: no narration with less
+# than PICK_NARRATION_MIN_CLOCK_S on the pick clock, never more than
+# PICK_NARRATION_MAX_S per pick, and the confirm lands PICK_CLOCK_RESERVE_S
+# before the clock runs out.
+PICK_NARRATION_MIN_CLOCK_S = 15.0
+PICK_NARRATION_MAX_S = 12.0
+PICK_CLOCK_RESERVE_S = 5.0
+PICK_CONFIRM_BEAT_S = 1.0
 # The model may overrule the ranking only among near-equals: within this many
 # score units (~2 GIH points) of the ranking's own pick, or in its top few.
 MODEL_PICK_TOLERANCE = 0.5
@@ -74,6 +84,8 @@ class DraftRun:
     # The build decided for a pool, reused on retries so a retried submit is the deck narrated.
     deck_plan: dict | None = None
     reviewed_pool: tuple = ()
+    # The pick autoplay selected in Arena and has not confirmed yet (key, cards, decision).
+    preview: dict | None = None
 
 
 class DraftEventDriver:
@@ -97,6 +109,9 @@ class DraftEventDriver:
         review_fn: Callable[[str, Callable[[], bool]], bool] | None = None,
         commentary_fn: Callable[[], bool] = lambda: True,
         queue_fn: Callable[[], bool] = lambda: True,
+        narrate_fn: Callable[[str, Callable[[], bool]], bool] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._bridge_fn = bridge_fn
         self._tracker_fn = tracker_fn
@@ -118,6 +133,11 @@ class DraftEventDriver:
         self._commentary_fn = commentary_fn
         # Whether the player wants the next match queued (the Auto-queue toggle).
         self._queue_fn = queue_fn
+        # narrate_fn(line, cancelled) speaks a pick's explanation and returns once
+        # it has been heard (or cancelled() turned true); the pick is confirmed after.
+        self._narrate_fn = narrate_fn
+        self._clock = clock
+        self._sleep = sleep
         self._narrator = DraftNarrator()
         self._control = 0
         self._lock = threading.Lock()
@@ -289,15 +309,12 @@ class DraftEventDriver:
 
     def _step_pick(self) -> None:
         state = self._command("get_draft_state")
+        read_at = self._clock()
         if not state.get("is_open"):
             self._wait(1.0)
             return
         if not state.get("ok_to_pick") or state.get("animating") or not state.get("pack_cards"):
             self._wait(0.7)
-            return
-        if state.get("reserved_count"):
-            self._status("Cards are already reserved in this pack; letting the client finish that pick")
-            self._wait(2.0)
             return
         pack = [int(g) for g in state["pack_cards"]]
         pack_number, pick_number = int(state.get("pack_number") or 0), int(state.get("pick_number") or 0)
@@ -311,6 +328,15 @@ class DraftEventDriver:
             return
         if run.pick_attempts[key] >= 2:
             self._pause(f"pick P{pack_number}p{pick_number} did not register after 2 tries; pick it manually")
+            return
+        if state.get("reserved_count"):
+            if run.preview and run.preview["key"] == key:
+                # Autoplay's own selection, explained but not confirmed yet
+                # (autoplay was toggled meanwhile, or the confirm missed).
+                self._finish_previewed_pick(run.preview)
+                return
+            self._status("Cards are already reserved in this pack; letting the client finish that pick")
+            self._wait(2.0)
             return
         if not run.set_code:
             run.set_code = self._set_code_for(pack)
@@ -334,48 +360,188 @@ class DraftEventDriver:
             to_actual.setdefault(canon, actual)
         chosen = [to_actual[pick.grp_id] for pick in ranked]
         reasons = {to_actual[pick.grp_id]: "; ".join(pick.reasons[:3]) for pick in ranked}
-        source = "ranking"
+        source, from_model = "ranking", set()
         seconds = state.get("pick_seconds_remaining")
         if self._pick_advisor_fn and self._pack_fn and (not seconds or seconds >= PICK_LLM_MIN_SECONDS):
             refined = self._refine_pick(pack, primer, pool, ranked, required)
             if refined:
-                chosen, reasons, source = refined[0], refined[1], "model"
+                chosen, reasons, source, from_model = refined
         views = {view["grp_id"]: view.get("title_id") for view in state.get("pack_views") or []}
-        result = self._command(
-            "submit_draft_pick", cards=[{"grp_id": g, "title_id": views.get(g)} for g in chosen], timeout=8.0
-        )
+        decision = {
+            "key": key,
+            "cards": [{"grp_id": g, "title_id": views.get(g)} for g in chosen],
+            "chosen": chosen,
+            "reasons": reasons,
+            "source": source,
+        }
+        context = {
+            "pack": pack,
+            "pool": pool,
+            "primer": primer,
+            "pack_number": pack_number,
+            "pick_number": pick_number,
+            "model_reasons": {g: reasons.get(g, "") for g in chosen if g in from_model},
+            "required": required,
+        }
+        deadline = self._narration_deadline(seconds, read_at)
+        if deadline is not None:
+            self._narrate_then_pick(decision, context, deadline)
+            return
+        result = self._command("submit_draft_pick", cards=decision["cards"], timeout=8.0)
         run.pick_attempts[key] += 1
         if not result.get("ok"):
             self._status(f"Pick P{pack_number}p{pick_number} not accepted yet: {result.get('error')}")
             self._wait(1.5)
             return
-        run.last_pick_key, run.last_pick_at = key, time.monotonic()
-        run.pool += chosen
-        names = [self._card_name(g) for g in chosen]
-        run.picks.append({"key": key[:2], "grp_ids": chosen, "source": source})
-        self._status(f"P{pack_number}p{pick_number}: took {' and '.join(names)} ({source})")
-        logger.info(
-            "Draft pick P%sp%s %s: %s", pack_number, pick_number, names, [reasons.get(g) for g in chosen]
-        )
-        self._say(
-            self._pick_commentary(
-                chosen=chosen,
-                names=names,
-                pack=pack,
-                pool=pool,
-                primer=primer,
-                pack_number=pack_number,
-                pick_number=pick_number,
-                model_reason=reasons.get(chosen[0], "") if source == "model" and chosen else "",
-            )
-        )
+        names = self._record_pick(decision)
+        self._say(self._pick_commentary(chosen=chosen, names=names, **context))
         self._wait(1.2)
 
+    # -- narrated picks: select, explain, beat, confirm ---------------------------
+
+    def _commentary_on(self) -> bool:
+        try:
+            return bool(self._commentary_fn())
+        except Exception:
+            return False
+
+    def _narration_deadline(self, seconds: Any, read_at: float) -> float | None:
+        """When a narrated pick must be confirmed by, or None to pick first and explain after."""
+        if self._narrate_fn is None or not self._commentary_on():
+            return None
+        now = self._clock()
+        deadline = now + PICK_NARRATION_MAX_S
+        if seconds:
+            left = float(seconds) - (now - read_at)
+            if left < PICK_NARRATION_MIN_CLOCK_S:
+                logger.info("Pick clock at %.0fs: picking without narrating first", left)
+                return None
+            deadline = min(deadline, now + left - PICK_CLOCK_RESERVE_S)
+        return deadline
+
+    def _narrate_then_pick(self, decision: dict, context: dict, deadline: float) -> None:
+        """Select the cards in Arena, say why, give viewers a beat, then confirm.
+
+        2026-10-07 (live Pick-Two): the pick was submitted first and explained
+        after the cards had left the screen. Everything here ends by
+        ``deadline``; switching autoplay off while it speaks leaves the cards
+        selected but never confirms them (the client's own clock then drafts
+        the selected cards).
+        """
+        run, key = self.run, decision["key"]
+        control = self._control
+
+        def cancelled() -> bool:
+            return not self.enabled or self._control != control
+
+        self.owns_ui = True
+        names = [self._card_name(g) for g in decision["chosen"]]
+        line = self._pick_commentary(chosen=decision["chosen"], names=names, verb="Choosing", **context)
+        shown = self._draft_command_quiet("preview_draft_pick", cards=decision["cards"], timeout=8.0)
+        if shown.get("ok"):
+            run.preview = decision
+        else:
+            logger.info("Draft pick not selected before narrating: %s", shown.get("error"))
+        self._status(f"P{key[0]}p{key[1]}: {line}")
+        narration_ends = deadline - PICK_CONFIRM_BEAT_S
+        try:
+            self._narrate_fn(line, lambda: cancelled() or self._clock() >= narration_ends)
+        except Exception as exc:
+            logger.warning("Draft pick narration failed: %s", exc)
+        if cancelled():
+            logger.info(
+                "Draft pick P%sp%s not confirmed: autoplay was switched off while narrating", *key[:2]
+            )
+            return
+        self._hold(min(PICK_CONFIRM_BEAT_S, max(0.0, deadline - self._clock())), cancelled)
+        if cancelled():
+            logger.info("Draft pick P%sp%s not confirmed: autoplay was switched off", *key[:2])
+            return
+        # Arena may have moved on (the pick clock, a manual pick) while we spoke.
+        fresh = self._command("get_draft_state")
+        fresh_key = (
+            int(fresh.get("pack_number") or 0),
+            int(fresh.get("pick_number") or 0),
+            tuple(sorted(int(g) for g in fresh.get("pack_cards") or [])),
+        )
+        if not fresh.get("is_open") or fresh_key != key:
+            run.preview = None
+            self._status(f"P{key[0]}p{key[1]} moved on while narrating; not picking it again")
+            self._wait(1.0)
+            return
+        if not fresh.get("ok_to_pick") or fresh.get("animating"):
+            self._wait(0.7)  # the next step finishes our selection if it is still there
+            return
+        self._confirm_pick(decision, selected=run.preview is decision)
+
+    def _finish_previewed_pick(self, decision: dict) -> None:
+        """Confirm a pick autoplay already selected and explained."""
+        shown = self._draft_command_quiet("preview_draft_pick", cards=decision["cards"], timeout=8.0)
+        if not shown.get("ok"):
+            self.run.preview = None
+            self._status("Different cards are selected in this pack; letting the client finish that pick")
+            self._wait(2.0)
+            return
+        self._confirm_pick(decision, selected=True)
+
+    def _confirm_pick(self, decision: dict, *, selected: bool) -> bool:
+        """Confirm the selected cards (or pick them outright when they could not be selected)."""
+        key = decision["key"]
+        action = "confirm_draft_pick" if selected else "submit_draft_pick"
+        result = self._command(action, cards=decision["cards"], timeout=8.0)
+        self.run.pick_attempts[key] += 1
+        if not result.get("ok"):
+            self._status(f"Pick P{key[0]}p{key[1]} not accepted yet: {result.get('error')}")
+            self._wait(1.5)
+            return False
+        self._record_pick(decision)
+        self._wait(1.2)
+        return True
+
+    def _record_pick(self, decision: dict) -> list[str]:
+        run, key, chosen = self.run, decision["key"], decision["chosen"]
+        run.last_pick_key, run.last_pick_at = key, time.monotonic()
+        run.pool += chosen
+        run.preview = None
+        names = [self._card_name(g) for g in chosen]
+        run.picks.append({"key": key[:2], "grp_ids": chosen, "source": decision["source"]})
+        self._status(f"P{key[0]}p{key[1]}: took {' and '.join(names)} ({decision['source']})")
+        logger.info(
+            "Draft pick P%sp%s %s: %s", key[0], key[1], names, [decision["reasons"].get(g) for g in chosen]
+        )
+        return names
+
+    def _draft_command_quiet(self, action: str, **fields: Any) -> dict:
+        """A bridge command whose absence is not fatal (an older bridge lacks the pick preview)."""
+        bridge = self._bridge_fn()
+        if bridge is None or not getattr(bridge, "connected", False):
+            return {"ok": False, "error": "bridge not connected"}
+        return bridge.draft_command(action, **fields)
+
+    def _hold(self, seconds: float, cancelled: Callable[[], bool]) -> None:
+        end = self._clock() + seconds
+        while not cancelled():
+            left = end - self._clock()
+            if left <= 0:
+                return
+            self._sleep(min(0.25, left))
+
     def _pick_commentary(
-        self, *, chosen, names, pack, pool, primer, pack_number, pick_number, model_reason
+        self,
+        *,
+        chosen,
+        names,
+        pack,
+        pool,
+        primer,
+        pack_number,
+        pick_number,
+        model_reasons,
+        required=1,
+        verb="Taking",
     ) -> str:
-        """Why this pick and where the draft is heading, or just the card when commentary is off."""
-        brief = f"Taking {' and '.join(names)}."
+        """Why these cards and where the draft is heading, or just the cards when commentary is off."""
+        brief = f"{verb} {' and '.join(names)}."
         try:
             if not self._commentary_fn():
                 return brief
@@ -391,10 +557,11 @@ class DraftEventDriver:
                 mana_costs=mana,
             )
             by_id = {pick.grp_id: pick for pick in ranking}
-            taken = [canon[g] for g in chosen]
+            spoken = [(g, name) for g, name in zip(chosen, names, strict=False) if canon.get(g) in by_id]
+            taken = [canon[g] for g in chosen if g in canon]
             line = self._narrator.pick_line(
-                names=names,
-                chosen=[by_id[g] for g in taken if g in by_id],
+                names=[name for _g, name in spoken],
+                chosen=[by_id[canon[g]] for g, _name in spoken],
                 ranking=ranking,
                 pool=pool + taken,
                 lane_before=pool_lane(pool, primer, mana),
@@ -402,8 +569,11 @@ class DraftEventDriver:
                 primer=primer,
                 pack_number=pack_number,
                 pick_number=pick_number,
-                pack_size=pick_number + len(pack) - 1,
-                model_reason=model_reason,
+                # Picks left in this pack, Pick-Two included (it takes two per pass).
+                pack_size=pick_number + -(-len(pack) // max(1, required)) - 1,
+                model_reasons=[model_reasons.get(g, "") for g, _name in spoken],
+                mana_costs=mana,
+                verb=verb,
             )
             logger.info("Draft commentary P%sp%s: %s", pack_number, pick_number, line)
             return line
@@ -440,8 +610,11 @@ class DraftEventDriver:
                 costs[self._canonical(grp_id, primer)] = cost
         return costs
 
-    def _refine_pick(self, pack, primer, pool, ranked, required) -> tuple[list[int], dict, str] | None:
-        """Let the draft advisor choose with the primer; its answer is validated against the pack."""
+    def _refine_pick(self, pack, primer, pool, ranked, required) -> tuple[list[int], dict, str, set] | None:
+        """Let the draft advisor choose with the primer; its answer is validated against the pack.
+
+        Returns (picks, reasons, source, the picks that are the model's own).
+        """
         try:
             details = self._pack_fn() or {}
             if sorted(int(c["grp_id"]) for c in details.get("cards") or []) != sorted(pack):
@@ -476,28 +649,65 @@ class DraftEventDriver:
             if result.get("reasoning_source") != "card_rules":
                 return None
             picks = [int(rec["grp_id"]) for rec in result.get("recommendations") or []]
-            if len(picks) != required or any(p not in pack for p in picks):
+            if len(picks) != required or len(set(picks)) != required or any(p not in pack for p in picks):
                 return None
             nonbasics = sum(not is_ordinary_basic(self._card_name(g)) for g in pack)
-            basic_picks = sum(is_ordinary_basic(self._card_name(g)) for g in picks)
-            if basic_picks > max(0, required - nonbasics):
-                logger.warning("Ignoring model basic-land pick while nonbasic cards remain")
-                return None
+            basics_allowed = max(0, required - nonbasics)
             # The ranking is 17Lands quality plus lane, curve and interaction
-            # needs; the model only breaks near-ties with its reasoning.
+            # needs; the model only breaks near-ties with its reasoning. Each
+            # card is judged on its own: in Pick-Two a far-off second card no
+            # longer throws away an acceptable first (2026-10-07 P2p1).
             position = {pick.grp_id: index for index, pick in enumerate(ranking)}
             floor = ranking[min(required, len(ranking)) - 1].score - MODEL_PICK_TOLERANCE if ranking else 0.0
+            kept: list[int] = []
             for grp_id in picks:
+                if is_ordinary_basic(self._card_name(grp_id)):
+                    if basics_allowed <= 0:
+                        logger.warning("Ignoring model basic-land pick while nonbasic cards remain")
+                        continue
+                    basics_allowed -= 1
                 canon = self._canonical(grp_id, primer)
                 index = position.get(canon, len(ranking))
                 if index >= required + 2 and (index >= len(ranking) or ranking[index].score < floor):
                     logger.warning(
-                        "Model pick %s ranks #%d (%.2f) vs ranking floor %.2f; keeping the ranking's pick",
+                        "Model pick %s ranks #%d (%.2f) vs ranking floor %.2f; %s",
                         self._card_name(grp_id),
                         index + 1,
                         ranking[index].score if index < len(ranking) else float("nan"),
                         floor,
+                        "replacing it with the ranking's choice"
+                        if required > 1
+                        else "keeping the ranking's pick",
                     )
+                    continue
+                kept.append(grp_id)
+            if not kept:
+                return None
+            reasons = {
+                int(rec["grp_id"]): rec.get("reason", "")
+                for rec in result["recommendations"]
+                if int(rec["grp_id"]) in kept
+            }
+            from_model = set(kept)
+            if len(kept) < required:
+                actual = {}
+                for grp_id in pack:
+                    actual.setdefault(self._canonical(grp_id, primer), grp_id)
+                fill = [actual[p.grp_id] for p in list(ranked) + ranking if p.grp_id in actual]
+                by_canon = {p.grp_id: p for p in list(ranked) + ranking}
+                for grp_id in fill:
+                    if len(kept) >= required:
+                        break
+                    if grp_id in kept or (is_ordinary_basic(self._card_name(grp_id)) and basics_allowed <= 0):
+                        continue
+                    kept.append(grp_id)
+                    reasons[grp_id] = "; ".join(by_canon[self._canonical(grp_id, primer)].reasons[:3])
+                    logger.info(
+                        "Pick-Two: keeping model pick %s; the ranking's %s replaces the rejected one",
+                        " and ".join(self._card_name(g) for g in from_model),
+                        self._card_name(grp_id),
+                    )
+                if len(kept) < required:
                     return None
             logger.info(
                 "Draft strategy P%sp%s: lane=%s; plan=%s; needs=%s",
@@ -507,11 +717,8 @@ class DraftEventDriver:
                 result.get("plan", ""),
                 "; ".join(result.get("needs") or []),
             )
-            return (
-                picks,
-                {int(rec["grp_id"]): rec.get("reason", "") for rec in result["recommendations"]},
-                "model",
-            )
+            source = "model" if len(from_model) == required else "model+ranking"
+            return kept, reasons, source, from_model
         except Exception as exc:
             logger.info("Draft pick refinement unavailable: %s", exc)
             return None

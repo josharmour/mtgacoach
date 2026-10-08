@@ -1,17 +1,22 @@
 """Spoken draft commentary: why each pick, and where the draft is heading.
 
 Every claim comes from data the pick already used — 17Lands ratings, the
-ranking's own reasons, the pool's colors, and the set primer's archetypes and
-pair win rates. A model's synergy claim is spoken only when the rules-text
-check accepted it. Lines stay short: the next pick's speech replaces this one.
+ranking's own reasons, the cards' mana against our lane, and the set primer's
+archetypes and pair win rates. A model's reason is spoken only when the
+rules-text check accepted it, and never as deck fit for a card outside our
+colors. Pick-Two lines give each card its own short reason, so the line says
+what each card does for the deck we are drafting rather than repeating that
+one of them rates well. Lines stay short: the next pick's speech replaces
+this one.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
-from arenamcp.draft_autopick import Lane, PickScore, is_removal
+from arenamcp.draft_autopick import Lane, PickScore, is_nonbasic_land, is_removal, land_colors, lane_fit
 from arenamcp.limited_rules import rules_profile
 
 COLOR_NAMES = {"W": "white", "U": "blue", "B": "black", "R": "red", "G": "green"}
@@ -21,6 +26,11 @@ ROLE_WORDS = {
     "key_commons": "key common",
     "key_uncommons": "key uncommon",
 }
+# A lane is spoken as "our deck" once the pool leans this firmly (the lane story's bar).
+LANE_SETTLED = 0.3
+# Model clauses that talk about the deck are preferred over generic praise.
+DECK_WORDS = re.compile(r"\b(?:our|lane|deck|plan|needed|needs|curve|mana)\b", re.IGNORECASE)
+PAIR_CODE = re.compile(r"\b([WUBRG])/?([WUBRG])\b")
 
 
 def _colors(code: str) -> str:
@@ -29,6 +39,29 @@ def _colors(code: str) -> str:
 
 def _pair_key(code: str) -> str:
     return "".join(c for c in "WUBRG" if c in code)
+
+
+def _short(name: str) -> str:
+    """How a card is said in a list: "Traxos, Academy Guardian" -> "Traxos"."""
+    head = name.split(" // ")[0]
+    return head.split(",")[0].strip() or name
+
+
+def _expand_codes(text: str) -> str:
+    """Say "UB" or "U/B" as "blue-black" (the speech engine spells codes out)."""
+
+    def expand(match: re.Match) -> str:
+        first, second = match.groups()
+        return match.group(0) if first == second else _colors(_pair_key(first + second))
+
+    return PAIR_CODE.sub(expand, text)
+
+
+@dataclass
+class _Reason:
+    text: str  # follows "Taking Card: " or "Card — "
+    kind: str
+    plural: str = ""  # the same reason for both cards of a Pick-Two ("both ..."), without "top-rated"
 
 
 class DraftNarrator:
@@ -58,62 +91,185 @@ class DraftNarrator:
         pick_number: int,
         pack_size: int,
         model_reason: str = "",
+        model_reasons: list[str] | None = None,
+        mana_costs: dict[int, str] | None = None,
+        verb: str = "Taking",
     ) -> str:
+        """``verb`` is "Choosing" when the line is spoken before the pick is confirmed."""
         if pack_number == 1 and pick_number == 1:
             self.reset()
-        lead = f"Taking {' and '.join(names)}"
-        why = self._why(chosen, ranking, lane_after, primer, model_reason)
-        line = f"{lead}: {why}." if why else f"{lead}."
+        if model_reasons is None:
+            model_reasons = [model_reason] + [""] * max(0, len(chosen) - 1)
+        line = self._lead(verb, names, chosen, ranking, lane_after, primer, model_reasons, mana_costs or {})
         story = self._story(
             pool, lane_before, lane_after, primer, pack_number, pick_number, pack_size, ranking
         )
         self._since_story = 0 if story else self._since_story + 1
         return f"{line} {story}" if story else line
 
-    # -- why this card ------------------------------------------------------------
+    # -- why these cards -----------------------------------------------------------
 
-    def _why(self, chosen, ranking, lane, primer, model_reason) -> str:
+    def _lead(self, verb, names, chosen, ranking, lane, primer, model_reasons, mana) -> str:
         if not chosen:
-            return ""
-        pick = chosen[0]
+            return f"{verb} {' and '.join(names)}."
+        labels = names if len(names) == len(chosen) else [pick.name for pick in chosen]
+        quality = self._quality_ranks(ranking, primer)
+        reasons = [
+            self._why(
+                pick,
+                index,
+                lane,
+                primer,
+                mana,
+                model_reasons[index] if index < len(model_reasons) else "",
+                quality,
+                several=len(chosen) > 1,
+                own_names=labels,
+            )
+            for index, pick in enumerate(chosen)
+        ]
+        if len(chosen) == 1:
+            return f"{verb} {labels[0]}: {reasons[0].text}."
+        shorts = [_short(label) for label in labels]
+        both = f"{verb} {shorts[0]} and {shorts[1]}"
+        if len(chosen) == 2 and all(r.kind == "quality" for r in reasons):
+            if sorted(quality.get(p.grp_id, 99) for p in chosen) in ([1, 1], [1, 2]):
+                text = "the two best cards in this pack on 17Lands data"
+                if self._settled(lane) and all(
+                    self._fit(p, lane, primer, mana) in ("in", "colorless") for p in chosen
+                ):
+                    text += f", both in our {_colors(lane.colors)} colors"
+                return f"{both}: {text}."
+        if len(chosen) == 2 and reasons[0].plural and reasons[0].plural == reasons[1].plural:
+            text = reasons[0].plural
+            if sorted(quality.get(p.grp_id, 99) for p in chosen) in ([1, 1], [1, 2]):
+                text += ", and the two best cards in this pack on 17Lands data"
+            return f"{both}: {text}."
+        parts = [f"{short} — {reason.text}" for short, reason in zip(shorts, reasons, strict=True)]
+        return f"{verb} " + "; ".join(parts[:-1]) + f"; and {parts[-1]}."
+
+    @staticmethod
+    def _settled(lane: Lane) -> bool:
+        return len(lane.colors) == 2 and lane.commitment >= LANE_SETTLED
+
+    @staticmethod
+    def _fit(pick, lane, primer, mana) -> str:
         card = primer.card(pick.grp_id) if primer is not None else None
-        rated = [(p, primer.card(p.grp_id)) for p in ranking] if primer is not None else []
-        gihs = [c.gih_wr for _p, c in rated if c is not None and c.gih_wr is not None]
-        reasons = " | ".join(pick.reasons)
-        if card is not None and card.gih_wr is not None and gihs and card.gih_wr >= max(gihs) - 1e-9:
-            return "the best card in this pack on 17Lands data"
-        if "pool needs removal" in reasons and card is not None and is_removal(card):
-            return "we need removal, and this answers creatures"
-        if "early creature curve" in reasons:
-            return "it fills our early creature curve"
-        if "pool needs more creatures" in reasons:
-            return "we need more creatures"
-        open_note = re.search(r"\b([WUBRG]+) looks open", reasons)
-        if open_note:
-            return f"{_colors(open_note.group(1))} looks open, so this card should keep coming"
+        return lane_fit(card, lane.colors, mana) if card is not None else "unknown"
+
+    @staticmethod
+    def _quality_ranks(ranking, primer) -> dict[int, int]:
+        """17Lands GIH rank among this pack's spells (lands' GIH overrates them)."""
+        if primer is None:
+            return {}
+        rated = []
+        for pick in ranking:
+            card = primer.card(pick.grp_id)
+            if card is not None and card.gih_wr is not None and "Land" not in (card.types or ""):
+                rated.append((pick.grp_id, card.gih_wr))
+        return {grp_id: 1 + sum(other > gih + 1e-9 for _g, other in rated) for grp_id, gih in rated}
+
+    def _why(self, pick, index, lane, primer, mana, model_reason, quality, *, several, own_names) -> _Reason:
+        card = primer.card(pick.grp_id) if primer is not None else None
+        notes = " | ".join(pick.reasons)
+        settled = self._settled(lane)
+        colors = _colors(lane.colors)
+        fit = self._fit(pick, lane, primer, mana) if settled else "unknown"
+        rank = quality.get(pick.grp_id)
+
+        if card is not None and is_nonbasic_land(card):
+            produced = land_colors(card)
+            if settled and fit == "fixing":
+                return _Reason(f"fixes our {colors} mana", "land", f"both fix our {colors} mana")
+            if settled and fit == "partial":
+                shared = "".join(c for c in produced if c in lane.colors)
+                return _Reason(f"only a {_colors(shared)} source for our {colors} deck", "land")
+            if settled and fit == "off":
+                return _Reason(f"a {_colors(produced)} land, outside our colors", "land")
+            if len(produced) == 5:
+                return _Reason("a land that taps for any color", "land")
+            if len(produced) >= 2:
+                return _Reason(f"a {_colors(produced)} dual that keeps our options open", "land")
+            return _Reason("a utility land", "land")
+
+        if fit == "off":
+            # Never claim deck fit for a card outside our colors.
+            if rank == 1:
+                return _Reason(
+                    f"the best card here on 17Lands data, though it's outside our {colors} colors", "off"
+                )
+            return _Reason(f"the strongest option left, though it's outside our {colors} colors", "off")
+
+        deck = f"our {colors} deck" if settled else "our pool"
+        top = ", and the top-rated card here" if rank == 1 else ""
+        if card is not None and is_removal(card):
+            if "pool needs removal" in notes:
+                return _Reason(f"removal {deck} needs{top}", "removal", f"both removal {deck} needs")
+            return _Reason(f"removal that answers creatures{top}", "removal")
         role = self._archetype_role(card, lane, primer)
         if role:
-            return role
-        reason = (model_reason or "").strip()
-        if reason and "(synergy unverified)" not in reason:
-            clause = re.split(r"(?<=[.;:])\s|\s[—–]\s", reason, maxsplit=1)[0].rstrip(".;: ")
-            words = clause.split()
-            if 3 <= len(words) <= 18:
-                return clause[0].lower() + clause[1:]
-        if "in lane" in reasons and lane.colors:
-            return f"a solid card for our {_colors(lane.colors)} deck"
-        return "the strongest option here for our pool"
+            word, archetype = role
+            return _Reason(f"a {word} for {archetype}{top}", "role", f"both {word}s for {archetype}")
+        if "early creature curve" in notes:
+            curve = f"our {colors} curve" if settled else "our early curve"
+            return _Reason(f"a cheap creature for {curve}{top}", "curve", f"both cheap creatures for {curve}")
+        if "pool needs more creatures" in notes:
+            return _Reason(f"a creature {deck} needs{top}", "creatures", f"both creatures {deck} needs")
+        clause = self._model_clause(model_reason, 14 if several else 18, own_names)
+        if clause:
+            return _Reason(clause, "model")
+        open_note = re.search(r"\b([WUBRG]+) looks open", notes)
+        if open_note:
+            return _Reason(
+                f"{_colors(open_note.group(1))} looks open, so cards like this should keep coming", "open"
+            )
+        if rank == 1:
+            text = "the best card in this pack on 17Lands data"
+            if settled and fit == "in":
+                text += f", in our {colors} colors"
+            return _Reason(text, "quality")
+        if rank == 2 and several and index > 0:
+            return _Reason("the second-best card in this pack on 17Lands data", "quality")
+        if settled and fit == "in":
+            return _Reason(
+                f"a solid card for our {colors} deck", "lane", f"both solid cards for our {colors} deck"
+            )
+        if settled and fit == "colorless":
+            return _Reason(f"a colorless card that fits our {colors} deck", "lane")
+        if index > 0:
+            return _Reason("the next-best option for our pool", "default")
+        return _Reason("the strongest option here for our pool", "default")
 
-    def _archetype_role(self, card, lane, primer) -> str:
-        if card is None or primer is None or not lane.colors:
+    @staticmethod
+    def _model_clause(reason: str, limit: int, own_names: list[str]) -> str:
+        """One verified clause of the model's reason, preferring one about our deck."""
+        reason = (reason or "").strip()
+        if not reason or "(synergy unverified)" in reason:
             return ""
+        clauses = [
+            part.strip().rstrip(".;:, ")
+            for part in re.split(r"(?<=[.;:])\s+|\s[—–]\s", reason)
+            if part.strip()
+        ]
+        fitting = [clause for clause in clauses if 3 <= len(clause.split()) <= limit]
+        if not fitting:
+            return ""
+        clause = _expand_codes(next((c for c in fitting if DECK_WORDS.search(c)), fitting[0]))
+        first = clause.split()[0]
+        proper = first.isupper() or any(_short(name).split()[0] == first for name in own_names if name)
+        return clause if proper else clause[0].lower() + clause[1:]
+
+    def _archetype_role(self, card, lane, primer) -> tuple[str, str] | None:
+        """(role word, archetype name) when the primer lists this card for our lane's archetype."""
+        if card is None or primer is None or not lane.colors:
+            return None
         lane_key = _pair_key(lane.colors)
         for colors, role in primer.card_roles(card.name):
             if _pair_key(colors) == lane_key:
                 name = self._archetype_name(primer, colors)
                 if name:
-                    return f"a {ROLE_WORDS.get(role, 'key card')} for {name}"
-        return ""
+                    return ROLE_WORDS.get(role, "key card"), name
+        return None
 
     @staticmethod
     def _archetype(primer, colors: str) -> dict | None:
@@ -136,7 +292,7 @@ class DraftNarrator:
             self._packs_summarized.add(pack_number)
             return self._pack_summary(pool, lane_after, primer, pack_number)
         new_lane = _pair_key(lane_after.colors)
-        if len(new_lane) == 2 and new_lane != self._lane and lane_after.commitment >= 0.3:
+        if len(new_lane) == 2 and new_lane != self._lane and lane_after.commitment >= LANE_SETTLED:
             self._lane = new_lane
             return self._lane_story(new_lane, primer)
         if pack_number <= 2 and 4 <= pick_number <= 10:
@@ -178,8 +334,13 @@ class DraftNarrator:
         return text + (f"; still looking for {needs}." if needs else ".")
 
     def _needs(self, pool, lane, primer) -> str:
+        """Every few picks: the plan we are drafting toward and what it still lacks."""
         needs = self._missing(self._pool_cards(pool, lane, primer))
-        return f"For our {_colors(lane.colors)} deck we still want {needs}." if needs else ""
+        name = self._archetype_name(primer, lane.colors) if len(lane.colors) == 2 else ""
+        deck = f"{name} deck" if name else f"{_colors(lane.colors)} deck"
+        if needs:
+            return f"For our {deck} we still want {needs}."
+        return f"Still on plan: {name}." if name else ""
 
     @staticmethod
     def _missing(cards) -> str:

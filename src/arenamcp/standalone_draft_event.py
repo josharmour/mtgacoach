@@ -8,6 +8,7 @@ event's matches are then played through to the end (see draft_event.py).
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,7 @@ class _DraftEventMixin:
             status_fn=status,
             speak_fn=lambda text: self.speak_advice(text, blocking=False),
             review_fn=self._narrate_deck_review,
+            narrate_fn=self._narrate_draft_pick,
             commentary_fn=lambda: bool(
                 getattr(self, "settings", None) and self.settings.get("draft_commentary", True)
             ),
@@ -94,13 +96,24 @@ class _DraftEventMixin:
         The desktop owns audio, so completion comes back over the pipe as
         speech_status acknowledgments (speech_completion.py).
         """
-        from arenamcp.speech_completion import narrate_and_wait
+        return self._narrate_until_heard(text, cancelled, "deck review", local_blocking=True)
+
+    def _narrate_draft_pick(self, text: str, cancelled: Any) -> bool:
+        """Speak why autoplay is choosing these cards, before it confirms them.
+
+        Same handshake as the deck review; ``cancelled`` also turns true at the
+        pick's deadline, so this never holds the draft past the pick clock.
+        """
+        return self._narrate_until_heard(text, cancelled, "draft pick", local_blocking=False)
+
+    def _narrate_until_heard(self, text: str, cancelled: Any, label: str, *, local_blocking: bool) -> bool:
+        from arenamcp.speech_completion import narrate_and_wait, speaking_seconds
 
         ui = getattr(self, "ui", None)
         voice = getattr(self, "_voice_output", None)
         completion = getattr(ui, "speech_completion", None)
         emit = getattr(ui, "emit_speech_request", None)
-        logger.info("SPEAK (deck review): %r", text[:160])
+        logger.info("SPEAK (%s): %r", label, text[:160])
         if voice is None:
             return narrate_and_wait(text, send=None, completion=None, cancelled=cancelled)
         muted = bool(getattr(voice, "muted", False))
@@ -122,8 +135,15 @@ class _DraftEventMixin:
             )
         if muted:
             return narrate_and_wait(text, send=None, completion=None, cancelled=cancelled, muted=True)
-        # In-process TTS (no desktop) plays synchronously when blocking.
-        voice.speak(text, blocking=True)
+        if local_blocking:
+            # In-process TTS (no desktop) plays synchronously when blocking.
+            voice.speak(text, blocking=True)
+            return not cancelled()
+        # A pick must stay interruptible: play in the background, hold for its length.
+        voice.speak(text, blocking=False)
+        end = time.monotonic() + speaking_seconds(text, float(getattr(voice, "speed", 1.0) or 1.0))
+        while time.monotonic() < end and not cancelled():
+            time.sleep(0.25)
         return not cancelled()
 
     @staticmethod
