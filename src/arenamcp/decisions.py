@@ -36,7 +36,10 @@ logger = logging.getLogger(__name__)
 class DecisionOption:
     option_id: str
     label: str  # display only — NEVER parsed for semantics
-    payable: bool | None = None  # casts: autotap solution exists; else None
+    # Casts: autotap solution exists. Activations: True with an autotap
+    # solution, False when the log's mana check proved the cost unpayable,
+    # else None (free or unknown).
+    payable: bool | None = None
     meta: dict = field(default_factory=dict)  # prompt enrichment only
 
 
@@ -186,6 +189,35 @@ def _default_instance_card(instance_id: int) -> dict[str, Any]:
             {k: info[k] for k in ("name", "type_line", "mana_cost", "cmc") if info.get(k) not in (None, "")}
         )
     return card
+
+
+def _default_activation_unaffordable(action: dict[str, Any]) -> bool:
+    """The log's mana check proved this activation unpayable now.
+
+    Player.log's ActionsAvailableReq carries the same actions as the bridge
+    poll. When Arena attaches no autotap solution to an activation,
+    gamestate_decisions checks the ability's mana cost against our untapped
+    sources and flags the action ``_unaffordable`` (the coach's
+    "[NEED:{2}{G}]" tag). False when the log has no verdict for it.
+    """
+    instance_id = int(action.get("instanceId") or 0)
+    if not instance_id:
+        return False
+    ability_id = int(action.get("abilityGrpId") or 0)
+    state = _live_game_state()
+    try:
+        raw_actions = list(getattr(state, "legal_actions_raw", None) or [])
+    except Exception:
+        return False
+    for raw in raw_actions:
+        if (
+            isinstance(raw, dict)
+            and str(raw.get("actionType") or "").removeprefix("ActionType_") == "Activate"
+            and int(raw.get("instanceId") or 0) == instance_id
+            and int(raw.get("abilityGrpId") or 0) == ability_id
+        ):
+            return bool(raw.get("_unaffordable"))
+    return False
 
 
 _ZONE_NAMES = {
@@ -368,6 +400,7 @@ def build_pending_decision(
     resolve_instance: Callable[[int], str] | None = None,
     resolve_zone: Callable[[int], str] | None = None,
     resolve_card: Callable[[int], dict[str, Any]] | None = None,
+    activation_unaffordable: Callable[[dict[str, Any]], bool] | None = None,
 ) -> PendingDecision | None:
     """Build a PendingDecision from a raw get_pending_actions() response.
 
@@ -377,9 +410,12 @@ def build_pending_decision(
 
     ``resolve_zone`` / ``resolve_card`` map a bridge instance id to its zone
     and card identity for labels; both default to the log-fed GameState.
+    ``activation_unaffordable`` answers whether an activation Arena gave no
+    autotap solution failed the mana check (default: the log's verdict).
     """
     resolve_zone = resolve_zone or _default_instance_zone
     resolve_card = resolve_card or _default_instance_card
+    activation_unaffordable = activation_unaffordable or _default_activation_unaffordable
     if not poll or not poll.get("has_pending"):
         return None
 
@@ -434,7 +470,14 @@ def build_pending_decision(
 
     if rtype in _ACTIONS_AVAILABLE_TYPES or (not rtype and poll.get("actions")):
         return _build_actions_available(
-            poll, request_id, can_pass, can_cancel, source_label, resolve_name, resolve_zone
+            poll,
+            request_id,
+            can_pass,
+            can_cancel,
+            source_label,
+            resolve_name,
+            resolve_zone,
+            activation_unaffordable,
         )
     if rtype in _SELECT_TARGETS_TYPES or request_class in _SELECT_TARGETS_TYPES:
         source_id = int(
@@ -486,6 +529,7 @@ def _build_actions_available(
     source_label: str,
     resolve_name: Callable[[int], str],
     resolve_zone: Callable[[int], str] | None = None,
+    activation_unaffordable: Callable[[dict[str, Any]], bool] | None = None,
 ) -> PendingDecision | None:
     options: list[DecisionOption] = []
     saw_pass = False
@@ -525,7 +569,19 @@ def _build_actions_available(
         elif atype == "ActionType_Play":
             label = f"Play land: {name or 'land'}"
         elif atype == "ActionType_Activate":
+            # Arena offers an activation whenever it is legal to announce; it
+            # does not promise the cost is payable. No autotap solution plus a
+            # failed mana check means announcing it only reaches a PayCosts
+            # nothing can pay (2026-10-07 18:03:46: Kami of Bamboo Groves'
+            # {2}{G} channel with every land tapped, picked and cancelled
+            # twice). Free activations (tap/sacrifice only) stay None.
             payable = True if has_autotap_solution(action) else None
+            if payable is None and activation_unaffordable is not None:
+                try:
+                    if activation_unaffordable(action):
+                        payable = False
+                except Exception:
+                    logger.debug("activation affordability lookup failed", exc_info=True)
             source_id = int(action.get("instanceId") or 0)
             zone = ""
             if source_id and resolve_zone is not None:

@@ -1035,6 +1035,20 @@ def _handle_pay_costs(game_state: "GameState", msg: dict) -> bool:
             ],
             "num_lands": len(tap_actions),
         }
+    # Every other way the client can answer a PayCostsReq (decompiled
+    # PayCostsRequest): mana abilities to activate (paymentActions), mana
+    # already floating to select (paymentSelection.ids) and a non-mana cost
+    # step (effectCostReq). With none of them and no Auto Pay solution the
+    # cost cannot be paid at all — only cancelling answers it (2026-10-07
+    # 18:03:46: "paymentActions": {} for a {2}{G} channel, lands all tapped).
+    payment_actions = req.get("paymentActions")
+    payment_action_count = (
+        len(_ensure_dict_list(payment_actions.get("actions", []))) if isinstance(payment_actions, dict) else 0
+    )
+    payment_selection = req.get("paymentSelection")
+    pool_mana_count = len(payment_selection.get("ids") or []) if isinstance(payment_selection, dict) else 0
+    has_effect_cost = bool(req.get("effectCostReq"))
+    no_payment_route = not (has_autotap or payment_action_count or pool_mana_count or has_effect_cost)
 
     # PayCostsReq replaces the previous priority window. Keeping the old
     # ActionsAvailable data around causes the planner to try to cast again.
@@ -1048,7 +1062,9 @@ def _handle_pay_costs(game_state: "GameState", msg: dict) -> bool:
         game_state.legal_actions_raw = []
 
     logger.info(
-        f"Captured Decision: Pay Costs (source: {source_name}, mana: {mana_str}, autotap={has_autotap})"
+        f"Captured Decision: Pay Costs (source: {source_name}, mana: {mana_str}, autotap={has_autotap}"
+        + (", no payment route" if no_payment_route else "")
+        + ")"
     )
     game_state.pending_decision = "Pay Costs"
     game_state.decision_seat_id = game_state.local_seat_id
@@ -1061,7 +1077,16 @@ def _handle_pay_costs(game_state: "GameState", msg: dict) -> bool:
         "has_autotap": has_autotap,
         "mana_requirements": {k: v for k, v in mana_requirements.items() if v},
         "autotap_solution": autotap_info,
+        "payment_action_count": payment_action_count,
+        "pool_mana_count": pool_mana_count,
+        "has_effect_cost": has_effect_cost,
+        "no_payment_route": no_payment_route,
     }
+    # An activated ability's cost names the ability object; its parent is the
+    # card the autopilot activated (self-cancel attribution needs it).
+    parent_id = getattr(source_obj, "parent_instance_id", None) if source_obj else None
+    if parent_id:
+        game_state.decision_context["source_parent_instance_id"] = parent_id
     return False
 
 

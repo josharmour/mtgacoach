@@ -746,6 +746,38 @@ class AutopilotEngine(
             game_state,
         )
 
+    def _recent_own_play_name(self, game_state: dict[str, Any]) -> str:
+        """Name of the cast/activation the autopilot submitted moments ago, else ""."""
+        now = time.monotonic()
+        last_cast = self._last_cast_submitted
+        if last_cast and now - self._last_cast_submitted_ts <= self._OPTIONAL_COST_OWN_ACTION_WINDOW_S:
+            return str(last_cast[1])
+        note = getattr(self, "_last_typed_play", None)
+        if note:
+            noted_at, turn, _kind, instance_id, _ability_id, name = note
+            fresh = now - noted_at <= self._OPTIONAL_COST_OWN_ACTION_WINDOW_S
+            if fresh and turn == self._turn_number(game_state):
+                return str(name or instance_id)
+        return ""
+
+    def _cancel_unpayable_costs(self, game_state: dict[str, Any], trigger: str, why: str) -> bool:
+        """Cancel a PayCosts the autopilot cannot pay and back its play out for the turn.
+
+        The play that opened it — a legacy cast or a typed cast/activation —
+        cannot be paid on this board: count the rollback, un-count the
+        activation, and withhold it so the planner stops re-picking it
+        (2026-10-07 18:03:51: the same unpayable channel was picked again
+        five seconds after the first cancel).
+        """
+        if not self._progress_bridge(game_state).cancel_action():
+            return False
+        self._log_execution_path(ExecutionPath.GRE_AWARE, "cancel PayCosts")
+        self._note_cast_rollback(why)
+        self._undo_activation_after_cancel(game_state, why)
+        self._withhold_after_self_cancel(game_state, why)
+        self._record_autopilot_decision(game_state, trigger, action_type="pay_costs", summary=why)
+        return True
+
     @staticmethod
     def _request_source_is_ability(game_state: dict[str, Any], context: dict[str, Any]) -> bool:
         """The pending request's source is an ability on the stack (a trigger), not a spell."""
@@ -2737,6 +2769,37 @@ class AutopilotEngine(
                         "Optional cost needs a manual pay/decline decision",
                     )
                     return False
+                # Player.log's PayCostsReq lists every way to pay: an Auto Pay
+                # solution, mana abilities to activate, floating mana. With
+                # none, submit_auto_tap can only fail (2026-10-07 18:03:46: a
+                # {2}{G} channel with every land tapped, "no AutoTapActions-
+                # Request available" twice per attempt) — cancel at once.
+                pay_context = game_state.get("decision_context") or {}
+                if (
+                    pay_context.get("type") == "pay_costs"
+                    and pay_context.get("no_payment_route") is True
+                    and not self._config.dry_run
+                    and (self._gre_bridge.connected or self._gre_bridge.connect())
+                ):
+                    logger.info(
+                        "Autopilot: nothing can pay %s's %s (no Auto Pay solution, mana source "
+                        "or floating mana); cancelling PayCostsRequest",
+                        pay_context.get("source_card") or "the pending cost",
+                        pay_context.get("mana_cost") or "cost",
+                    )
+                    if self._cancel_unpayable_costs(
+                        game_state, trigger, "PayCosts cancelled (no payment route)"
+                    ):
+                        return True
+                    if self._live_pending_request_is("PayCosts") is False:
+                        self._state = AutopilotState.IDLE  # already answered elsewhere
+                        return True
+                    self._pause_for_manual(
+                        f"Cancel {pay_context.get('source_card') or 'the pending cost'} manually — "
+                        "nothing can pay its cost",
+                        game_state,
+                    )
+                    return True
                 # User preference (2026-04-30): always click Auto Pay when
                 # MTGA offers it — never try to manually decide which lands
                 # to tap. submit_auto_tap walks PayCostsRequest's children
@@ -2790,13 +2853,12 @@ class AutopilotEngine(
                     # MTGA wants paid manually (observed on every command-
                     # zone Hei Bai cast — even [OK]-tagged ones). Cancelling
                     # silently fizzles the spell and accrues rollback
-                    # strikes; hand it to the user instead.
-                    if self._last_cast_submitted and (
-                        time.monotonic() - self._last_cast_submitted_ts
-                        <= self._OPTIONAL_COST_OWN_ACTION_WINDOW_S
-                    ):
+                    # strikes; hand it to the user instead. Typed-path plays
+                    # (every priority window since Phase E) count too.
+                    own_play = self._recent_own_play_name(game_state)
+                    if own_play:
                         self._pause_for_manual(
-                            f"Pay for {self._last_cast_submitted[1]} manually "
+                            f"Pay for {own_play} manually "
                             "(tap lands or click Auto Pay) — the bridge found "
                             "no auto-payment route for this cast",
                             game_state,
@@ -2804,11 +2866,7 @@ class AutopilotEngine(
                         return True
                     # No autotap child available — fall back to cancel.
                     logger.info("Autopilot: no AutoTap solution; cancelling PayCostsRequest")
-                    if self._progress_bridge(game_state).cancel_action():
-                        self._log_execution_path(ExecutionPath.GRE_AWARE, "cancel PayCosts")
-                        # The cast that opened this PayCosts can't be paid —
-                        # remember it so the planner stops re-picking it.
-                        self._note_cast_rollback("PayCosts cancelled (no autotap)")
+                    if self._cancel_unpayable_costs(game_state, trigger, "PayCosts cancelled (no autotap)"):
                         return True
                 self._record_autopilot_decision(
                     game_state,
