@@ -190,3 +190,51 @@ def test_option_display_order_does_not_reset_rejection_history():
     assert decision_fingerprint(decision) == decision_fingerprint(
         replace(decision, options=tuple(reversed(decision.options)))
     )
+
+
+# --- window-aware settlement (2026-10-08, match 07c043d8 17:05:35/39) --------
+
+
+def _window(stack=(), phase="Phase_Main1", step=""):
+    from arenamcp.request_tracker import request_window
+
+    return request_window(
+        {
+            "turn": {"turn_number": 4, "active_player": 2, "phase": phase, "step": step},
+            "stack": [{"instance_id": i} for i in stack],
+        }
+    )
+
+
+def test_same_options_in_a_new_window_settle_as_advanced(monkeypatch):
+    """We passed with Geist on the stack; Geist resolved and the GRE offered the same
+    three options again 2.3 s later. That is a new window, not a rejected answer."""
+    t = RequestTracker()
+    monkeypatch.setattr(t, "REJECT_GRACE_S", 0.0)
+    fp = decision_fingerprint(_decision())
+    t.note_submitted(fp, _window(stack=(211,)))
+    t.observe(fp, _window(stack=()))
+    assert t.rejections(fp) == 0
+    assert t.may_submit(fp)
+    t.note_submitted(fp, _window())
+    t.observe(fp, _window(phase="Phase_Combat", step="Step_BeginCombat"))
+    assert t.rejections(fp) == 0
+    assert not t.exhausted(fp)
+
+
+def test_same_options_in_the_same_window_still_count_as_rejected(monkeypatch):
+    t = RequestTracker()
+    monkeypatch.setattr(t, "REJECT_GRACE_S", 0.0)
+    fp = decision_fingerprint(_decision())
+    t.note_submitted(fp, _window(stack=(211,)))
+    t.observe(fp, _window(stack=(211,)))
+    assert t.rejections(fp) == 1
+
+
+def test_window_less_callers_keep_the_old_behaviour(monkeypatch):
+    t = RequestTracker()
+    monkeypatch.setattr(t, "REJECT_GRACE_S", 0.0)
+    fp = decision_fingerprint(_decision())
+    t.note_submitted(fp, _window())
+    t.observe(fp)  # no window known at observation time: content decides
+    assert t.rejections(fp) == 1

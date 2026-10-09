@@ -53,13 +53,79 @@ def attack_target_prompt(state: dict, context: dict) -> str:
             lines.append(f"{names.get(identity) or identity}: {'; '.join(labels)}")
     if not lines:
         return ""
-    return "\nATTACK RECIPIENTS (choose separately for each attacker):\n" + "\n".join(lines)
+    return (
+        "\nATTACK RECIPIENTS (choose separately for each attacker; an attacker you name without a "
+        "recipient attacks the opponent player):\n" + "\n".join(lines)
+    )
 
 
-def choose_recipient(target: str, legal: list[dict], state: dict) -> dict[str, Any]:
+def default_recipient(legal: list[dict], state: dict, attacker: dict | None = None) -> dict[str, Any] | None:
+    """The recipient an unnamed attacker hits when several are legal, or None.
+
+    bug_20261008_172415 (game 2, T18): the planner named Screeching
+    Soulbreaker with no recipient while the opponent controlled a Jace, so
+    submission raised and the window went MANUAL REQUIRED. The opponent
+    player is the default; a planeswalker only when this attacker's damage
+    kills it outright (power >= loyalty) and no untapped opposing creature
+    can block the attacker, so the hit is certain.
+    """
+    players = [recipient for recipient in legal if _kind(recipient) == "player"]
+    walkers = [recipient for recipient in legal if _kind(recipient) == "planeswalker"]
+    if attacker and walkers:
+        from arenamcp.combat_solver import _can_block
+        from arenamcp.combat_strategy import loyalty
+
+        try:
+            power = int(attacker.get("power"))
+        except (TypeError, ValueError):
+            power = 0
+        local = next((p.get("seat_id") for p in state.get("players", []) if p.get("is_local")), None)
+        blockers = [
+            card
+            for card in state.get("battlefield", [])
+            if (card.get("controller_seat_id") or card.get("owner_seat_id")) not in (None, local)
+            and (
+                "creature" in str(card.get("type_line", "")).lower()
+                or "CardType_Creature" in (card.get("card_types") or [])
+            )
+            and not card.get("is_tapped")
+        ]
+        cards = {card.get("instance_id"): card for card in state.get("battlefield", [])}
+        if power > 0 and not any(_can_block(attacker, blocker) for blocker in blockers):
+            killable = []
+            for recipient in walkers:
+                walker = cards.get(recipient_key(recipient)[1]) or {}
+                remaining = loyalty(walker)
+                if remaining is not None and 0 < remaining <= power:
+                    killable.append((remaining, recipient))
+            if killable:
+                return max(killable, key=lambda item: item[0])[1]
+    if players:
+        return players[0]
+    if walkers:
+        cards = {card.get("instance_id"): card for card in state.get("battlefield", [])}
+        from arenamcp.combat_strategy import loyalty
+
+        return min(walkers, key=lambda r: loyalty(cards.get(recipient_key(r)[1]) or {}) or 0)
+    return None
+
+
+def _kind(recipient: dict) -> str:
+    try:
+        return recipient_key(recipient)[0]
+    except (TypeError, ValueError):
+        return ""
+
+
+def choose_recipient(
+    target: str, legal: list[dict], state: dict, attacker: dict | None = None
+) -> dict[str, Any]:
     if not target:
         if len(legal) == 1:
             return legal[0]
+        picked = default_recipient(legal, state, attacker)
+        if picked is not None:
+            return picked
         raise ValueError("Choose an explicit player or planeswalker recipient for each attacker")
     query = target.strip().casefold()
     matches = []

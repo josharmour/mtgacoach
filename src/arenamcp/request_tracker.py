@@ -93,6 +93,42 @@ def decision_fingerprint(decision: Any) -> Fingerprint:
     return base
 
 
+Window = tuple
+
+
+def request_window(game_state: dict | None) -> Window | None:
+    """Where in the game a request was seen: turn, phase, step and the stack.
+
+    2026-10-08 17:05:35/39 (match 07c043d8): we passed an opponent's-turn
+    priority window twice; the GRE presented a fresh window with the same
+    three options each time (Geist resolved, then the combat step began)
+    and the tracker, content-addressed only, logged two false REJECTED
+    verdicts. A third identical window would have hit the submission cap
+    and gone MANUAL REQUIRED. A re-presented (rejected) request comes back
+    in the same window; a new window with the same shape differs in phase,
+    step or stack contents.
+    """
+    if not isinstance(game_state, dict):
+        return None
+    turn = game_state.get("turn") or {}
+    if not turn:
+        return None
+    stack = tuple(
+        sorted(
+            int(item.get("instance_id") or 0)
+            for item in game_state.get("stack") or []
+            if isinstance(item, dict)
+        )
+    )
+    return (
+        turn.get("turn_number"),
+        turn.get("active_player"),
+        str(turn.get("phase") or "").removeprefix("Phase_"),
+        str(turn.get("step") or "").removeprefix("Step_"),
+        stack,
+    )
+
+
 @dataclass
 class _Record:
     fingerprint: Fingerprint
@@ -102,6 +138,7 @@ class _Record:
     submitted_at: float = 0.0
     in_flight: bool = False
     first_seen_at: float = field(default_factory=time.monotonic)
+    window: Window | None = None
 
 
 class RequestTracker:
@@ -128,18 +165,22 @@ class RequestTracker:
 
     # -- lifecycle ----------------------------------------------------
 
-    def observe(self, fp: Fingerprint | None) -> None:
+    def observe(self, fp: Fingerprint | None, window: Window | None = None) -> None:
         """Feed the currently-pending decision fingerprint (None = nothing).
 
         Settles any in-flight submission:
           - different/absent fingerprint → ADVANCED
+          - same fingerprint in a different game window → ADVANCED (a new
+            request that happens to offer the same options; see
+            :func:`request_window`)
           - same fingerprint after the grace period → REJECTED
         """
         flight = self._in_flight
         if flight is None:
             return
         rec = self._record(flight)
-        if fp != flight:
+        moved_on = window is not None and rec.window is not None and window != rec.window
+        if fp != flight or moved_on:
             rec.in_flight = False
             self._in_flight = None
             # The cap counts answers that did NOT advance the game. Identity is
@@ -184,11 +225,12 @@ class RequestTracker:
             return False  # one in-flight submission per request
         return rec.submissions < self.MAX_SUBMISSIONS_PER_REQUEST
 
-    def note_submitted(self, fp: Fingerprint) -> None:
+    def note_submitted(self, fp: Fingerprint, window: Window | None = None) -> None:
         rec = self._record(fp)
         rec.submissions += 1
         rec.submitted_at = time.monotonic()
         rec.in_flight = True
+        rec.window = window
         self._in_flight = fp
 
     def note_rolled_back(self, fp: Fingerprint) -> None:

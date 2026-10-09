@@ -272,6 +272,9 @@ class AutopilotEngine(
         # Stashed combat decision context (survives across triggers)
         self._last_combat_context: dict[str, Any] | None = None
         self._last_combat_context_time: float = 0.0
+        # The combat window handed to the user by MANUAL REQUIRED
+        # (match, turn, step, decision type): never re-planned while it lasts.
+        self._manual_window: tuple[Any, ...] | None = None
         self._last_combat_context_turn: int = -1
 
         # Post-plan continuation depth (prevents runaway recursion)
@@ -1834,6 +1837,18 @@ class AutopilotEngine(
             logger.debug(f"plan-advancing submit failed: {e}")
         return False
 
+    @staticmethod
+    def _combat_window_key(game_state: dict[str, Any] | None) -> tuple[Any, ...] | None:
+        """(match, turn, step, decision type) for a declare-attackers/blockers window, else None."""
+        if not isinstance(game_state, dict):
+            return None
+        dec_type = str((game_state.get("decision_context") or {}).get("type") or "")
+        if dec_type not in ("declare_attackers", "declare_blockers"):
+            return None
+        turn = game_state.get("turn") or {}
+        _, step = _canonical_turn(turn)
+        return (game_state.get("match_id"), turn.get("turn_number"), step, dec_type)
+
     def _pause_for_manual(self, reason: str, game_state: dict[str, Any] | None = None) -> None:
         """Pause the autopilot and surface that manual input is required.
 
@@ -1853,6 +1868,13 @@ class AutopilotEngine(
         if self._abort_event.is_set():
             self._state = AutopilotState.PAUSED
             return
+        window = self._combat_window_key(game_state)
+        if window is not None:
+            # bug_20261008_172415: after "take this action manually" on a
+            # declare-attackers window the user attacked by hand; the
+            # backstop re-planned the same window 51 s later and the retry
+            # hit "window closed before submission". The user owns it now.
+            self._manual_window = window
         if not self._config.dry_run and self._try_submit_plan_advancing_play(game_state):
             self._state = AutopilotState.IDLE
             return
@@ -3108,6 +3130,18 @@ class AutopilotEngine(
                 logger.debug("Clearing stashed combat context (turn changed)")
                 self._last_combat_context = None
 
+            # A combat window already handed to the user (MANUAL REQUIRED)
+            # is theirs until the step changes; planning it again races their
+            # clicks (bug_20261008_172415: "window closed before submission").
+            manual_window = self._combat_window_key(game_state)
+            if manual_window is not None and manual_window == self._manual_window:
+                logger.info(
+                    "Autopilot: %s window was handed to the user (manual required) — not re-planning it",
+                    manual_window[3],
+                )
+                self._state = AutopilotState.IDLE
+                return True
+
             # --- COMBAT STEP GUARD ---
             # During DeclareBlock/DeclareAttack, the LLM often fails to parse
             # and the fallback picks "Pass" which is wrong.  If the game is in
@@ -4150,6 +4184,9 @@ class AutopilotEngine(
 
     _LOG_CATCH_UP_TIMEOUT_S = 3.0
     _SEARCH_IDENTITY_WAIT_S = 10.0
+    # A SelectN over our own hand (a loot's discard) only waits for the log to
+    # name the card just drawn; it is never handed to the user over a name.
+    _SELECT_N_IDENTITY_WAIT_S = 2.5
 
     def _wait_for_search_identities(self, decision: Any, game_state: dict[str, Any]) -> bool:
         """Let newly revealed search cards arrive without spending a model call.
@@ -4159,9 +4196,28 @@ class AutopilotEngine(
         poll can resolve those identities; cap the wait for genuinely unreadable
         choices. Returning True owns this trigger and prevents legacy fallback.
         """
+        is_search = decision.request_type == "Search"
         unknown = decision.request_type == "Search" and any(
             option.meta.get("identity_known") is False for option in decision.options
         )
+        if decision.request_type == "SelectN" and not unknown:
+            # Only a choice among our own hand cards (a loot's discard) can be
+            # missing a name the log is about to supply; crew/payment and
+            # trigger-ordering choices are decided as they come.
+            hand_ids = {
+                int(card.get("instance_id") or 0)
+                for card in game_state.get("hand") or []
+                if isinstance(card, dict)
+            }
+            option_ids = []
+            for option in decision.options:
+                try:
+                    option_ids.append(int(str(option.option_id).split(":", 1)[1]))
+                except (IndexError, ValueError):
+                    option_ids.append(0)
+            unknown = any(oid in hand_ids for oid in option_ids) and any(
+                option.meta.get("identity_known") is False for option in decision.options
+            )
         if not unknown:
             self._search_identity_wait = None
             return False
@@ -4173,14 +4229,27 @@ class AutopilotEngine(
         )
         waiting = getattr(self, "_search_identity_wait", None)
         now = time.monotonic()
+        limit = self._SEARCH_IDENTITY_WAIT_S if is_search else self._SELECT_N_IDENTITY_WAIT_S
         if waiting is None or waiting[0] != key:
             self._search_identity_wait = (key, now, False)
-            self._notify("AUTOPILOT", "Waiting for Arena to reveal the search choices…")
-        elif now - waiting[1] >= self._SEARCH_IDENTITY_WAIT_S:
-            if not waiting[2]:
-                self._search_identity_wait = (key, waiting[1], True)
-                self._pause_for_manual("Search choices are still unreadable — pick manually", game_state)
-            return True
+            if is_search:
+                self._notify("AUTOPILOT", "Waiting for Arena to reveal the search choices…")
+            else:
+                # 2026-10-08 game 1: a loot's SelectN arrived before the log
+                # had the card just drawn, so the model chose among "Option
+                # 256" entries (and discarded Sphinx's Approach unseen).
+                logger.info("typed-decision: SelectN names an unknown card; waiting for the log to name it")
+        elif now - waiting[1] >= limit:
+            if is_search:
+                if not waiting[2]:
+                    self._search_identity_wait = (key, waiting[1], True)
+                    self._pause_for_manual("Search choices are still unreadable — pick manually", game_state)
+                return True
+            logger.info(
+                "typed-decision: SelectN identities still unknown after %.1fs; deciding anyway", limit
+            )
+            self._search_identity_wait = None
+            return False
         self._state = AutopilotState.IDLE
         return True
 
@@ -4280,8 +4349,10 @@ class AutopilotEngine(
             return True
         # Feed the tracker the current decision (or None) so any in-flight
         # submission settles as ADVANCED/REJECTED before we act.
+        from arenamcp.request_tracker import request_window
+
         fp = decision_fingerprint(decision) if decision else None
-        self._request_tracker.observe(fp)
+        self._request_tracker.observe(fp, request_window(game_state))
         if decision is None or decision.request_type not in self._TYPED_DECISION_FAMILIES:
             return None
         assert fp is not None
@@ -4400,7 +4471,7 @@ class AutopilotEngine(
             return True
         fresh_fp = decision_fingerprint(fresh_decision) if fresh_decision else None
         if fresh_fp != fp or fresh_decision.request_id != decision.request_id:
-            self._request_tracker.observe(fresh_fp)
+            self._request_tracker.observe(fresh_fp, request_window(game_state))
             logger.info("typed-decision: request changed during planning; yielding for a fresh decision")
             self._state = AutopilotState.IDLE
             return True
@@ -4461,7 +4532,7 @@ class AutopilotEngine(
             # The request tracker still requires Arena to advance and caps retries.
             self._given_up_semantics = None
             self._given_up_window_sig = None
-            self._request_tracker.note_submitted(fp)
+            self._request_tracker.note_submitted(fp, request_window(game_state))
             if decision.request_type == "ActionsAvailable":
                 # A new priority action supersedes the last play's attribution.
                 self._last_typed_play = None

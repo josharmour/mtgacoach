@@ -1219,6 +1219,9 @@ class ActionPlanner(_ActionLegalityMixin):
         self._check_losing_attacks(
             plan, game_state, decision_context or game_state.get("decision_context") or {}
         )
+        self._ensure_free_attacks(
+            plan, game_state, decision_context or game_state.get("decision_context") or {}
+        )
 
         # Attach GRE action refs if raw actions are available. If the bridge says
         # the current request has no actions (e.g. PayCostsReq), do not fall back
@@ -1410,6 +1413,70 @@ class ActionPlanner(_ActionLegalityMixin):
             plan.voice_advice = f"Not attacking with {held}: {outcome} for nothing." + (
                 f" {plan.spoken_actions()}" if kept else ""
             )
+
+    def _ensure_free_attacks(self, plan: ActionPlan, state: dict, context: dict) -> None:
+        """Attack with every free attacker whatever the model planned (WP13, first half).
+
+        2026-10-08 FRA QuickDraft game 1: three declare-attackers windows were
+        answered "Develop behind their unblockable clock" / "Defensive
+        posture" / "Stabilize at 7 life" while the board facts said the
+        attack was free; game 2 T8-T10 sent one flyer into an empty board.
+        :func:`combat_strategy.free_attackers` names the largest set whose
+        attackers all survive their best blocks, that gets damage through,
+        and that lets no more crackback through than holding everything.
+        That set is always declared: the model may add attackers (its own
+        picks survive the losing-attack guard above) but never drop free
+        ones. Lethal and all-in boards keep their own rules (free_attackers
+        returns None for all-in; a lethal plan already attacks).
+        """
+        if str(context.get("type") or "").lower() != "declare_attackers":
+            return
+        actions = plan.actions
+        declared = next((a for a in actions if a.action_type == ActionType.DECLARE_ATTACKERS), None)
+        no_attack = declared is None and all(
+            a.action_type in (ActionType.CLICK_BUTTON, ActionType.PASS_PRIORITY) for a in actions
+        )
+        if declared is None and not no_attack:
+            return  # the plan does something else first; leave it alone
+        from arenamcp.combat_strategy import free_attackers
+
+        try:
+            free = free_attackers(state)
+        except Exception as error:  # never block a declaration on the rule's own failure
+            logger.debug("free-attack rule failed: %s", error)
+            return
+        if free is None:
+            return
+        planned_ids = set(declared.attacker_instance_ids) if declared else set()
+        planned_names = {name.lower() for name in (declared.attacker_names if declared else [])}
+        missing = [
+            (name, identity)
+            for name, identity in zip(free.attacker_names, free.attacker_ids, strict=True)
+            if identity not in planned_ids and name.lower() not in planned_names
+        ]
+        if not missing:
+            return
+        if declared is None:
+            declared = GameAction(ActionType.DECLARE_ATTACKERS)
+            plan.actions = [declared]
+        # Attackers bound by name only (the model's convention) stay name-bound:
+        # the bridge refuses a declaration whose ids and names disagree in length.
+        bind_ids = not declared.attacker_names or bool(declared.attacker_instance_ids)
+        for name, identity in missing:
+            declared.attacker_names.append(name)
+            if bind_ids:
+                declared.attacker_instance_ids.append(identity)
+            declared.attacker_targets.setdefault(name, "Opponent")
+        from arenamcp.narration import spoken_list, spoken_name
+
+        added = spoken_list([spoken_name(name) for name, _ in missing])
+        logger.warning("Free attack: adding %s to the declaration — %s", added, free.explanation)
+        declared.reasoning = (declared.reasoning + " " if declared.reasoning else "") + (
+            f"Free attack: {free.explanation}."
+        )
+        plan.fallback_reason = "planner_free_attack"
+        plan.overall_strategy = f"Free attack with {added}: {free.damage} damage through and nothing dies."
+        plan.voice_advice = f"Attacking with {added}: {free.damage} through and nothing dies."
 
     def _check_block_recovery(self, plan: ActionPlan, state: dict, context: dict) -> None:
         """Price supported recovery before committing a same-outcome trade."""
@@ -4092,6 +4159,12 @@ class ActionPlanner(_ActionLegalityMixin):
         local_seat, controllers = self._battlefield_controllers(game_state)
         target_objects = self._target_objects(game_state)
         target_trace = []
+        if decision.request_type == "SelectN":
+            from arenamcp.decisions import select_n_discard_note
+
+            discard_note = select_n_discard_note(decision, game_state)
+            if discard_note:
+                lines.insert(1, discard_note)
         if decision.request_type == "SelectTargets":
             lines.insert(1, f"YOU ARE SEAT {local_seat}; control determines YOURS/opponent, not ownership.")
             lines.insert(

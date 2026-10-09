@@ -895,7 +895,18 @@ class _BridgeSubmitMixin:
                 ):
                     raise ValueError("Combat recipients are missing; do not guess the attack target")
                 legal = [{"type": "DamageRecType_Player", "playerSystemSeatId": opponent}]
-            recipient = choose_recipient(target, legal, state)
+            attacker_card = next(
+                (card for card in battlefield if int(card.get("instance_id") or 0) == identity), None
+            )
+            recipient = choose_recipient(target, legal, state, attacker_card)
+            if not target and len(legal) > 1:
+                from arenamcp.combat_targets import recipient_label
+
+                logger.info(
+                    "Attack recipient for %s not named by the plan; defaulting to %s",
+                    name,
+                    recipient_label(recipient, state),
+                )
             entries.append({"attackerInstanceId": identity, "damageRecipient": recipient})
         return entries
 

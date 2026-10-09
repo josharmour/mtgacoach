@@ -115,16 +115,28 @@ def test_split_attack_preserves_each_recipient(method):
     pilot._attack_override.assert_not_called()
 
 
-@pytest.mark.parametrize("target", ["", "Missing walker", "You"])
-def test_missing_or_illegal_target_does_not_silently_attack_face(target):
+@pytest.mark.parametrize("target", ["Missing walker", "You"])
+def test_an_illegal_target_does_not_silently_attack_face(target):
     pilot = engine()
     action = GameAction(
         action_type=ActionType.DECLARE_ATTACKERS,
         attacker_names=["Beast"],
-        target_names=[target] if target else [],
+        target_names=[target],
     )
     assert pilot._try_bridge_declare_attackers(action) is None
     pilot._gre_bridge.submit_attackers_raw.assert_not_called()
+
+
+def test_a_missing_target_defaults_to_the_opponent_player():
+    """bug_20261008_172415: an unnamed recipient used to raise and go MANUAL REQUIRED."""
+    pilot = engine()
+    action = GameAction(action_type=ActionType.DECLARE_ATTACKERS, attacker_names=["Beast"])
+    result = pilot._try_bridge_declare_attackers(action)
+    assert result is not None and result.success
+    submitted = pilot._gre_bridge.submit_attackers_raw.call_args[0][0]
+    assert submitted == [
+        {"attackerInstanceId": 288, "damageRecipient": {"type": "Player", "playerSystemSeatId": 1}}
+    ]
 
 
 def test_current_bridge_recipients_override_stale_log_targets():

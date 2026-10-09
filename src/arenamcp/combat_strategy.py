@@ -608,6 +608,170 @@ def losing_attackers(state: dict, attacker_ids: list[int], pending: dict | None 
     return losing
 
 
+# --- Free-attack rule ----------------------------------------------------------
+#
+# 2026-10-08 FRA QuickDraft review (WP13): the legacy planner answered three
+# declare-attackers windows with "develop / hold blockers" while the board
+# facts said the attack was free, and in game 2 Arni looted before combat every
+# turn instead of attacking into an empty board. An attack is FREE when the
+# opponent's best blocks (worst case for us, tricks excluded) kill none of the
+# attackers, at least one point reaches a recipient, and the creatures left
+# home still stop every point of crackback that holding everything would stop.
+# The autopilot attacks with that set whatever the model's plan says; the model
+# may add attackers but never drop free ones (``ActionPlanner._ensure_free_attacks``),
+# and a tap ability that would forfeit a free attack is withheld before combat
+# (``play_safety.tap_forfeits_free_attack``).
+
+_DEFENDER = re.compile(r"(?:^|\n)\s*defender\b", re.IGNORECASE)
+_CANT_ATTACK_TEXT = re.compile(r"(?:^|\n)\s*(?:~|this creature)? ?can't attack\b", re.IGNORECASE)
+
+
+@dataclass
+class FreeAttack:
+    attacker_ids: list[int]
+    attacker_names: list[str]
+    damage: int  # through their best blocks
+    crackback: int  # worst case next turn with the rest home
+    hold_crackback: int  # worst case next turn holding everything
+    explanation: str = ""
+
+
+def able_attackers(state: dict) -> list[dict]:
+    """Our creatures that could be declared as attackers now (no live request needed).
+
+    Untapped, not summoning sick (or haste), no defender/can't-attack text,
+    with known power and toughness. Used before combat, where the GRE has not
+    yet listed the legal attackers.
+    """
+    local = _local_player(state)
+    if local is None:
+        return []
+    turn = int((state.get("turn") or {}).get("turn_number") or 0)
+    result = []
+    for card in state.get("battlefield") or []:
+        if _controller(card) != local.get("seat_id") or "creature" not in _types(card):
+            continue
+        if card.get("is_tapped") or card.get("is_phased_out"):
+            continue
+        if not _is_int(card.get("power")) or not _is_int(card.get("toughness")):
+            continue
+        text = _rules_text(card)
+        if _DEFENDER.search(text) or _CANT_ATTACK_TEXT.search(text) or _has(card, "defender"):
+            continue
+        entered = card.get("turn_entered_battlefield")
+        sick = card.get("summoning_sickness")
+        if not _has(card, "haste") and (sick or (_is_int(entered) and turn and entered >= turn)):
+            continue
+        result.append(card)
+    return result
+
+
+def free_attackers(
+    state: dict, pending: dict | None = None, *, candidate_ids: list[int] | None = None
+) -> FreeAttack | None:
+    """The largest attack set that is free, or None.
+
+    Candidates are the live request's legal attackers (``candidate_ids`` or
+    ``attack_candidates``), else :func:`able_attackers`. Zero-power and
+    mandatory-attack bookkeeping is left to the existing guards. Returns None
+    with an all-in board (that rule attacks with everything anyway), when
+    nothing survives their best blocks, when nothing gets through, or when
+    the attack lets more crackback through than holding would.
+    """
+    from arenamcp.combat_solver import _search_blocks, evaluate_attack
+
+    players = state.get("players") or []
+    local = next((player for player in players if player.get("is_local")), None)
+    opponent = next((player for player in players if not player.get("is_local")), None)
+    if local is None or opponent is None:
+        return None
+    if _all_in(state):
+        return None
+    battlefield = state.get("battlefield") or []
+    annotate_cant_be_blocked(battlefield)
+    cards = {card.get("instance_id"): card for card in battlefield}
+    if candidate_ids is None:
+        raw = attack_candidates(state, pending)
+        if raw:
+            candidate_ids = [int(entry.get("attackerInstanceId") or 0) for entry in raw]
+        else:
+            candidate_ids = [card["instance_id"] for card in able_attackers(state)]
+    candidates = []
+    for identity in candidate_ids:
+        card = cards.get(identity)
+        if (
+            card is None
+            or _controller(card) != local.get("seat_id")
+            or not _is_int(card.get("power"))
+            or not _is_int(card.get("toughness"))
+            or int(card["power"]) <= 0
+        ):
+            continue
+        candidates.append(card)
+    if not candidates or len(candidates) > 8:
+        return None  # a wide board is the solver's call, not a cheap rule's
+    our_life = int(local.get("life_total", 20))
+    opp_life = int(opponent.get("life_total", 20))
+    theirs = [
+        card
+        for card in battlefield
+        if _controller(card) == opponent.get("seat_id") and "creature" in _types(card)
+    ]
+    blockers = _eligible_blockers(state, opponent.get("seat_id"))
+    ours_home = [
+        card
+        for card in battlefield
+        if _controller(card) == local.get("seat_id")
+        and "creature" in _types(card)
+        and not card.get("is_tapped")
+        and _is_int(card.get("power"))
+        and _is_int(card.get("toughness"))
+    ]
+    hold = evaluate_attack([], ours_home, blockers, opp_life, our_life, theirs)
+    attacking = list(candidates)
+    damage = 0
+    for _ in range(len(candidates) + 1):
+        if not attacking:
+            return None
+        plan = _search_blocks(attacking, blockers, opp_life)
+        if plan is None:
+            damage = sum(int(card["power"]) for card in attacking)
+            dead = []
+        else:
+            groups: dict[int, list[dict]] = {}
+            by_id = {card["instance_id"]: card for card in blockers}
+            for blocker_id, attacker_id in plan.assignments.items():
+                if attacker_id and blocker_id in by_id:
+                    groups.setdefault(attacker_id, []).append(by_id[blocker_id])
+            dead = [
+                card
+                for card in attacking
+                if _resolve_attacker(card, groups.get(card["instance_id"], [])).attacker_died
+            ]
+            damage = plan.damage_through
+        if not dead:
+            break
+        attacking = [card for card in attacking if card not in dead]
+    if not attacking or damage <= 0:
+        return None
+    home = [card for card in ours_home if card not in attacking or _has(card, "vigilance")]
+    attack = evaluate_attack(attacking, home, blockers, opp_life, our_life, theirs)
+    if attack.worst_case_crackback > hold.worst_case_crackback:
+        return None
+    names = [str(card.get("name") or card["instance_id"]) for card in attacking]
+    return FreeAttack(
+        attacker_ids=[card["instance_id"] for card in attacking],
+        attacker_names=names,
+        damage=damage,
+        crackback=attack.worst_case_crackback,
+        hold_crackback=hold.worst_case_crackback,
+        explanation=(
+            f"{', '.join(names)}: {damage} through their best blocks, none of them dies, "
+            f"crackback {attack.worst_case_crackback} (holding everything: {hold.worst_case_crackback})"
+        ),
+    )
+
+
 # --- Declare-blockers safety ----------------------------------------------------
 #
 # 2026-10-06 G2 T10 (match 3da54de9): at 20 life the model chump-blocked a

@@ -744,8 +744,11 @@ def _build_select_n(
         if not name and resolve_instance is not None:
             name = resolve_instance(oid)
         metadata = {"grpId": grp_id}
+        # A SelectN choice is usually one of our own hand cards (a loot's
+        # discard); the log can trail the bridge by the card just drawn, so an
+        # unnamed "Option N" is a transient the typed path waits out.
+        metadata["identity_known"] = bool(name) and not is_unknown_card_name(name)
         if is_search:
-            metadata["identity_known"] = not is_unknown_card_name(name)
             metadata["card"] = {
                 key: card_info[key]
                 for key in ("name", "oracle_text", "type_line", "mana_cost", "cmc", "power", "toughness")
@@ -1578,3 +1581,53 @@ def submit_option(
         return bool(bridge.submit_group(groups))
     logger.warning("submit_option: unknown option id scheme %r", first)
     return False
+
+
+_DISCARD_TEXT = re.compile(
+    r"\bdiscards? (?:a|one|two|three|that|those|\d+) cards?\b|\bdiscard a card\b", re.IGNORECASE
+)
+
+
+def select_n_discard_note(decision: Any, state: dict[str, Any]) -> str:
+    """A prompt line saying that this SelectN picks what we DISCARD, or ''.
+
+    2026-10-08 game 1 (match 07c043d8): Arni's loot ("Draw a card, then
+    discard a card") presents a SelectN over our hand with no source label.
+    The model read it as "choose a card to keep" five times and discarded
+    the Swamp it needed for Garruk (T7), Garruk itself (T11), Screeching
+    Soulbreaker (T13) and Plan for All Outcomes (T15), each with a rationale
+    praising the card it was throwing away. The framing is deterministic:
+    every option is one of our hand cards and the resolving stack object
+    (or the decision's source) says "discard".
+    """
+    if getattr(decision, "request_type", "") != "SelectN":
+        return ""
+    hand_ids = {
+        int(card.get("instance_id") or 0) for card in state.get("hand") or [] if isinstance(card, dict)
+    }
+    ids = []
+    for option in getattr(decision, "options", ()) or ():
+        option_id = str(getattr(option, "option_id", "") or "")
+        if not option_id.startswith("sel:"):
+            return ""
+        try:
+            ids.append(int(option_id[4:]))
+        except ValueError:
+            return ""
+    if not ids or not hand_ids or any(i not in hand_ids for i in ids):
+        return ""
+    sources = [str(getattr(decision, "source_label", "") or "")]
+    sources += [
+        f"{item.get('name') or ''}: {item.get('oracle_text') or ''}"
+        for item in state.get("stack") or []
+        if isinstance(item, dict)
+    ]
+    source = next((text for text in sources if _DISCARD_TEXT.search(text)), "")
+    if not source:
+        return ""
+    return (
+        "THIS IS A DISCARD: the card you pick goes to your graveyard "
+        f"(resolving: {source.strip()[:120]}). Pick the card you need LEAST — keep removal, "
+        "planeswalkers, bombs and any land you still need for your colours; discard extra lands or the "
+        "weakest spell. The card's value is a reason NOT to pick it."
+    )
