@@ -264,6 +264,8 @@ class StandaloneCoach(
         self._match_boundary_ts: float = 0.0  # Suppress stale triggers after reset
         self._last_game_end_check_error: str = ""
         self._post_match_analysis_running: bool = False
+        # Log offsets for the match in progress (arenamcp.match_bundle).
+        self._match_bundle_ctx = None
 
         # Vision watchdog: tempo anomaly detection + missed decision tracking
         self._tempo_tracker = _TempoTracker()
@@ -2083,30 +2085,19 @@ class StandaloneCoach(
                                 replay_path=self._get_latest_replay_path(),
                                 reason="event-signal",
                             )
+                            packet_path = None
                             try:
                                 from arenamcp.match_packets import stop_match_packet
 
-                                packet = stop_match_packet()
-                                if packet:
-                                    packet.result = game_result
-                                    packet.replay_path = self._get_latest_replay_path()
-                                    if self._coach:
-                                        packet.deck_strategy = self._coach._deck_strategy
-                                    if packet.replay_path:
-                                        try:
-                                            from arenamcp.match_history import parse_replay_cosmetics
-
-                                            cosmetics = parse_replay_cosmetics(packet.replay_path)
-                                            if cosmetics:
-                                                # Header shape: {Local, Opponent:{ScreenName,...}, BattlefieldId}
-                                                packet.opponent_name = (cosmetics.get("Opponent") or {}).get(
-                                                    "ScreenName"
-                                                )
-                                        except Exception:
-                                            pass
-                                    packet.save()
+                                packet_path = self._finalize_match_packet(stop_match_packet(), game_result)
                             except Exception as e:
                                 logger.warning(f"Failed to save match packet on event-signal: {e}")
+                            self._finish_match_bundle(
+                                result=game_result,
+                                final_state=snapshot or dict(curr_state),
+                                packet_path=packet_path,
+                                reason="event-signal",
+                            )
                             # Match boundary (game-end event): conversation
                             # memory is per-match — clear it here too.
                             self._conversation_reset_for_match(curr_match_id)
@@ -2156,30 +2147,20 @@ class StandaloneCoach(
                             replay_path=self._get_latest_replay_path(),
                             reason="match-boundary",
                         )
+                    boundary_result = self._detect_match_result() or "unknown"
+                    packet_path = None
                     try:
                         from arenamcp.match_packets import stop_match_packet
 
-                        packet = stop_match_packet()
-                        if packet:
-                            packet.result = self._detect_match_result() or "unknown"
-                            packet.replay_path = self._get_latest_replay_path()
-                            if self._coach:
-                                packet.deck_strategy = self._coach._deck_strategy
-                            if packet.replay_path:
-                                try:
-                                    from arenamcp.match_history import parse_replay_cosmetics
-
-                                    cosmetics = parse_replay_cosmetics(packet.replay_path)
-                                    if cosmetics:
-                                        # Header shape: {Local, Opponent:{ScreenName,...}, BattlefieldId}
-                                        packet.opponent_name = (cosmetics.get("Opponent") or {}).get(
-                                            "ScreenName"
-                                        )
-                                except Exception:
-                                    pass
-                            packet.save()
+                        packet_path = self._finalize_match_packet(stop_match_packet(), boundary_result)
                     except Exception as e:
                         logger.warning(f"Failed to save match packet on match-boundary: {e}")
+                    self._finish_match_bundle(
+                        result=boundary_result,
+                        final_state=dict(prev_state) if prev_state else None,
+                        packet_path=packet_path,
+                        reason="match-boundary",
+                    )
 
                     prev_state = {}
                     last_advice_turn = 0
@@ -2216,6 +2197,7 @@ class StandaloneCoach(
                                 packet.deck_strategy = self._coach._deck_strategy
                         except Exception as e:
                             logger.warning(f"Failed to start match packet: {e}")
+                        self._begin_match_bundle(curr_match_id)
 
                 # Debug: Log if turn_num is 0 (every 30 seconds)
                 if turn_num == 0:
@@ -2255,6 +2237,10 @@ class StandaloneCoach(
                             "Skipping fallback post-match analysis on turn-drop: "
                             "no explicit game-end evidence"
                         )
+                    # Bo3: game 2/3 of the same match id gets its own packet and
+                    # bundle (the game-end signal consumed game 1's context); runs
+                    # before the advice history is cleared below.
+                    self._begin_next_game_bundle(curr_match_id)
 
                     prev_state = {}
                     last_advice_turn = 0

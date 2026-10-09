@@ -169,6 +169,15 @@ class MainWindow(QMainWindow):
             "stuck on something it can't do or makes a clear blunder (at most twice a game)."
         )
         oops_act.toggled.connect(self._set_oops_emote)
+        share_logs_act = tools_menu.addAction("Share Match Logs to Improve the Coach")
+        share_logs_act.setCheckable(True)
+        share_logs_act.setChecked(bool(self._settings.get("share_match_logs", True)))
+        share_logs_act.setToolTip(
+            "After each match, upload a redacted record of it (decisions, coach log, game events, "
+            "bug reports) to mtgacoach.com. Names, keys and file paths are removed first; only "
+            "this install's id is kept."
+        )
+        share_logs_act.toggled.connect(self._set_share_match_logs)
         tts_server_act = tools_menu.addAction("Remote TTS Server…")
         tts_server_act.triggered.connect(self._configure_remote_tts)
         tools_menu.addSeparator()
@@ -260,6 +269,11 @@ class MainWindow(QMainWindow):
         """Let autoplay send Arena's Oops emote when it's stuck or blunders; applies to the running engine."""
         self._settings.set("oops_emote", bool(enabled))
         self._session.set_oops_emote(bool(enabled))
+
+    def _set_share_match_logs(self, enabled: bool) -> None:
+        """Upload a redacted record of each finished match, or keep it local; applies to the running engine."""
+        self._settings.set("share_match_logs", bool(enabled))
+        self._session.set_share_match_logs(bool(enabled))
 
     def _configure_remote_tts(self) -> None:
         current_url = str(self._settings.get("tts_server_url") or "")

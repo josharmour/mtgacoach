@@ -211,6 +211,10 @@ class CoachSession(QObject):
         """Choose whether autoplay sends Arena's "Oops" emote when it gets stuck or blunders."""
         self._process.send_payload({"cmd": "set_oops_emote", "enabled": bool(enabled)})
 
+    def set_share_match_logs(self, enabled: bool) -> None:
+        """Choose whether a redacted record of each finished match is uploaded to mtgacoach.com."""
+        self._process.send_payload({"cmd": "set_share_match_logs", "enabled": bool(enabled)})
+
     def cancel_concede(self) -> None:
         """Stop a running auto-concede countdown and keep playing this game."""
         self._process.send_payload({"cmd": "cancel_concede"})

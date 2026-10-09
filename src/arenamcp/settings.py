@@ -59,6 +59,10 @@ DEFAULTS = {
     # With autoplay on, send Arena's "Oops" emote when the autopilot gets stuck
     # or makes a clear blunder (arenamcp.oops; Tools > Send 'Oops' Emote).
     "oops_emote": True,
+    # Upload a redacted record of each finished match (decisions, coach log,
+    # GRE traffic, bug reports; no names or keys) to mtgacoach.com so the
+    # coach can be improved from real games (Tools > Share Match Logs).
+    "share_match_logs": True,
     "tts_server_url": "",
     "tts_mode": "auto",
     "tts_lag_threshold_ms": 1000,

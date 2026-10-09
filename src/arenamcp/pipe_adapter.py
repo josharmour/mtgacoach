@@ -599,6 +599,14 @@ class PipeAdapter:
                 else:
                     coach.settings.set("oops_emote", enabled)
                 self.log(f"'Oops' emote when autoplay gets stuck or blunders {'on' if enabled else 'off'}")
+            elif action == "set_share_match_logs":
+                enabled = cmd.get("enabled") is True
+                setter = getattr(coach, "set_share_match_logs", None)
+                if callable(setter):
+                    setter(enabled)
+                else:
+                    coach.settings.set("share_match_logs", enabled)
+                self.log(f"Sharing match logs to improve the coach {'on' if enabled else 'off'}")
             elif action == "analyze_screen":
                 threading.Thread(target=coach.take_screenshot_analysis, daemon=True).start()
             elif action == "debug_report":

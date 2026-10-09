@@ -2,6 +2,7 @@
 
 Pure move: methods are unchanged and mixed back into StandaloneCoach."""
 
+import contextlib
 import json
 import logging
 import time
@@ -59,6 +60,13 @@ class _DiagnosticsMixin:
 
             with open(bug_file, "w") as f:
                 json.dump(report, f, indent=2, default=str)
+
+            # Reports saved during a match ride along in its match bundle
+            # (redacted there — arenamcp.match_bundle).
+            bundle_ctx = getattr(self, "_match_bundle_ctx", None)
+            if bundle_ctx is not None:
+                with contextlib.suppress(Exception):
+                    bundle_ctx.bug_reports.append(bug_file)
 
             # Make path clickable and copy a shareable link to clipboard
             file_url = f"file:///{str(bug_file).replace(chr(92), '/')}"

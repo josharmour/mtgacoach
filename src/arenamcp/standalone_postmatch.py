@@ -2,6 +2,7 @@
 
 Pure move: methods are unchanged and mixed back into StandaloneCoach."""
 
+import contextlib
 import importlib
 import json
 import logging
@@ -32,6 +33,164 @@ def _background_priority() -> int:
 
 
 class _PostMatchMixin:
+    # -- match bundles (arenamcp.match_bundle) ------------------------------------
+
+    def _begin_match_bundle(self, match_id: str | None, game_number: int = 1) -> None:
+        """Remember where the logs stand when game *game_number* of *match_id* starts (never raises)."""
+        self._match_bundle_ctx = None
+        self._bundle_game_number = max(1, int(game_number or 1))
+        if not match_id:
+            return
+        try:
+            from arenamcp import match_bundle
+
+            player_log_path = None
+            player_log_offset = None
+            server = getattr(getattr(self, "_mcp", None), "_server", None)
+            watcher = getattr(server, "watcher", None)
+            if watcher is not None:
+                player_log_path = Path(str(getattr(watcher, "log_path", "") or "")) or None
+                player_log_offset = getattr(watcher, "file_position", None)
+            self._match_bundle_ctx = match_bundle.begin_match(
+                str(match_id),
+                coach_log_path=LOG_FILE,
+                player_log_path=player_log_path if player_log_path and str(player_log_path) != "." else None,
+                player_log_offset=player_log_offset,
+                game_number=self._bundle_game_number,
+            )
+        except Exception as e:
+            logger.debug(f"[BUNDLE] could not start match context: {e}")
+
+    def _begin_next_game_bundle(self, match_id: str | None) -> None:
+        """A new game of the same (Bo3) match started: bundle the previous game, arm the next.
+
+        Called from the turn-drop ("New game detected") path. The game-end
+        signal has normally already consumed the previous game's context; when
+        it has not and there is explicit game-end evidence, the pending context
+        is finished here first. Without such evidence the turn drop is a resync
+        of the same game and nothing changes. The match packet is restarted
+        under the per-game id so games 2/3 record their decisions too.
+        """
+        if not match_id:
+            return
+        pending = getattr(self, "_match_bundle_ctx", None)
+        if pending is not None:
+            try:
+                ended = bool(self._has_explicit_game_end_evidence())
+            except Exception:
+                ended = False
+            if not ended:
+                return
+            result = self._detect_match_result()
+            packet_path = None
+            try:
+                from arenamcp.match_packets import stop_match_packet
+
+                packet_path = self._finalize_match_packet(stop_match_packet(), result)
+            except Exception as e:
+                logger.warning(f"Failed to save match packet on turn-drop: {e}")
+            self._finish_match_bundle(
+                result=result, final_state=None, packet_path=packet_path, reason="turn-drop"
+            )
+        next_game = int(getattr(self, "_bundle_game_number", 1) or 1) + 1
+        self._begin_match_bundle(match_id, game_number=next_game)
+        ctx = getattr(self, "_match_bundle_ctx", None)
+        if ctx is None:
+            return
+        try:
+            from arenamcp.match_packets import get_current_packet, start_match_packet
+
+            if get_current_packet() is None:
+                packet = start_match_packet(ctx.bundle_id)
+                coach = getattr(self, "_coach", None)
+                if packet is not None and coach is not None:
+                    packet.deck_strategy = getattr(coach, "_deck_strategy", None)
+        except Exception as e:
+            logger.debug(f"[BUNDLE] could not restart the match packet for game {next_game}: {e}")
+        logger.info(f"[BUNDLE] game {next_game} of {match_id} started; bundling it separately")
+
+    def _finalize_match_packet(self, packet, result: str | None) -> Path | None:
+        """Fill the packet's end-of-match fields and save it; returns the saved path."""
+        if packet is None:
+            return None
+        packet.result = result or "unknown"
+        packet.replay_path = self._get_latest_replay_path()
+        coach = getattr(self, "_coach", None)
+        if coach is not None:
+            packet.deck_strategy = getattr(coach, "_deck_strategy", None)
+        if packet.replay_path:
+            try:
+                from arenamcp.match_history import parse_replay_cosmetics
+
+                cosmetics = parse_replay_cosmetics(packet.replay_path)
+                if cosmetics:
+                    # Header shape: {Local, Opponent:{ScreenName,...}, BattlefieldId}
+                    packet.opponent_name = (cosmetics.get("Opponent") or {}).get("ScreenName")
+            except Exception:
+                pass
+        return packet.save()
+
+    def _bundle_config(self) -> dict:
+        """Non-identifying run configuration for the match bundle."""
+        config: dict = {}
+        for key, attr in (
+            ("backend", "backend_name"),
+            ("draft_mode", "draft_mode"),
+            ("set_code", "set_code"),
+        ):
+            with contextlib.suppress(Exception):
+                config[key] = getattr(self, attr, None)
+        with contextlib.suppress(Exception):
+            config["served_model"] = self._get_served_model()
+        with contextlib.suppress(Exception):
+            config["autopilot_engine"] = type(self._autopilot).__name__ if self._autopilot else None
+        return config
+
+    def _finish_match_bundle(
+        self,
+        *,
+        result: str | None,
+        final_state: dict | None,
+        packet_path: Path | None,
+        reason: str,
+    ) -> None:
+        """Build and upload this match's bundle on a background thread (never raises).
+
+        The context captured by ``_begin_match_bundle`` is consumed here, so
+        the second game-end path (event signal, then match boundary) is a no-op.
+        """
+        ctx = getattr(self, "_match_bundle_ctx", None)
+        self._match_bundle_ctx = None
+        if ctx is None:
+            # Normal after the event signal consumed it (the match boundary
+            # follows every game end); anything else is a gap worth seeing.
+            level = logging.DEBUG if reason == "match-boundary" else logging.INFO
+            logger.log(level, f"[BUNDLE] skipped: no match context ({reason})")
+            return
+        try:
+            from arenamcp import match_bundle
+
+            match_bundle.schedule_upload(
+                ctx,
+                settings=self.settings,
+                result=result or "unknown",
+                final_state=final_state,
+                packet_path=packet_path,
+                advice_history=list(getattr(self, "_advice_history", None) or []),
+                config=self._bundle_config(),
+                bug_dir=LOG_DIR / "bug_reports",
+            )
+            logger.debug(f"[BUNDLE] scheduled for {ctx.bundle_id} ({reason})")
+        except Exception as e:
+            logger.warning(f"[BUNDLE] could not schedule match bundle: {e}")
+
+    def set_share_match_logs(self, enabled: bool) -> bool:
+        """Turn match-log sharing on or off (saved)."""
+        enabled = bool(enabled)
+        self.settings.set("share_match_logs", enabled)
+        logger.info("[BUNDLE] match log sharing turned %s", "on" if enabled else "off")
+        return enabled
+
     def _stage_post_match_analysis(
         self,
         *,
