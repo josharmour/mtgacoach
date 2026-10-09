@@ -289,17 +289,29 @@ class _GameStateAnnotationsMixin:
                         "affected_ids": affected_ids,
                     }
                     self._add_event(event)
-                    # Build a concise action history entry
+                    # Build a concise action history entry. The GRE writes the
+                    # action type as its enum number, the acting seat as the
+                    # annotation's affectorId and the card as the affected
+                    # instance (bug reports 2026-10-09 showed seat 0, "3", "").
                     action_type = detail_map.get("actionType", "")
                     grp_id = _coerce_int(detail_map.get("grpId", 0), 0)
-                    seat = _coerce_int(detail_map.get("seatId", 0), 0)
+                    seat = _coerce_int(detail_map.get("seatId", 0), 0) or _coerce_int(
+                        ann.get("affectorId", 0), 0
+                    )
+                    if not grp_id:
+                        for obj_id in affected_ids:
+                            obj = self.game_objects.get(obj_id)
+                            if obj is not None and obj.grp_id:
+                                grp_id = obj.grp_id
+                                break
                     card_name = self._resolve_card_name(grp_id) if grp_id else ""
                     history_entry = {
                         "turn": self.turn_info.turn_number,
                         "phase": self.turn_info.phase,
                         "seat": seat,
-                        "action": str(action_type).replace("ActionType_", "") if action_type else "unknown",
+                        "action": _action_type_name(action_type),
                         "card": card_name,
+                        "instance_ids": list(affected_ids[:4]),
                     }
                     self.action_history.append(history_entry)
                     # Cap at 50 entries
@@ -758,3 +770,24 @@ class _GameStateAnnotationsMixin:
                         affected_ids,
                         detail_map,
                     )
+
+
+# GreProtobuf ActionType (re-output/GreProtobuf/.../ActionType.cs): the log
+# carries the number, the bridge the name.
+_ACTION_TYPE_NAMES = {
+    0: "None", 1: "Cast", 2: "Activate", 3: "Play", 4: "ActivateMana", 5: "Pass", 6: "ActivateTest",
+    7: "Special", 8: "SpecialTurnFaceUp", 9: "ResolutionCost", 10: "CastLeft", 11: "CastRight",
+    12: "MakePayment", 14: "CombatCost", 15: "OpeningHandAction", 16: "CastAdventure", 17: "FloatMana",
+    18: "CastMdfc", 19: "PlayMdfc", 20: "SpecialPayment",
+}  # fmt: skip
+
+
+def _action_type_name(value: object) -> str:
+    """'Play' for 3, 'ActionType_Play' or 'Play'; 'unknown' for nothing."""
+    if value in (None, "", []):
+        return "unknown"
+    if isinstance(value, list) and value:
+        value = value[0]
+    if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
+        return _ACTION_TYPE_NAMES.get(int(value), f"ActionType_{value}")
+    return str(value).replace("ActionType_", "")

@@ -36,20 +36,60 @@ class MatchPacket:
         self.replay_path: str | None = None
         self.decisions: list[dict[str, Any]] = []
 
-    def add_decision(self, decision: PendingDecision, chosen_options: list[str]) -> None:
-        """Log a decision faced and option chosen."""
+    def add_decision(
+        self,
+        decision: PendingDecision,
+        chosen_options: list[str],
+        *,
+        trace: dict[str, Any] | None = None,
+        explanation: str = "",
+        game_state: dict[str, Any] | None = None,
+    ) -> None:
+        """Log a decision faced and option chosen, with the planner's trace (policy, reasoning, lines)."""
         from arenamcp.request_tracker import decision_fingerprint
 
         fp = decision_fingerprint(decision)
-        self.decisions.append(
-            {
-                "pending_decision": decision_to_dict(decision),
-                "chosen_options": list(chosen_options),
-                "outcome": "pending",
-                "fingerprint": fp,
-                "timestamp": time.time(),
-            }
-        )
+        entry: dict[str, Any] = {
+            "pending_decision": decision_to_dict(decision),
+            "chosen_options": list(chosen_options),
+            "outcome": "pending",
+            "fingerprint": fp,
+            "timestamp": time.time(),
+        }
+        if trace:
+            entry["trace"] = trace
+        if explanation:
+            entry["explanation"] = explanation
+        turn = (game_state or {}).get("turn") if isinstance(game_state, dict) else None
+        if isinstance(turn, dict):
+            entry["turn"] = {k: turn.get(k) for k in ("turn_number", "phase", "step", "active_player")}
+        self.decisions.append(entry)
+
+    def recent_decisions(self, count: int = 40) -> list[dict[str, Any]]:
+        """The last decisions, compact enough for a bug report: labels, the pick, the trace."""
+        out = []
+        for entry in self.decisions[-count:]:
+            pending = entry.get("pending_decision") or {}
+            options = pending.get("options") or []
+            chosen = set(entry.get("chosen_options") or [])
+            out.append(
+                {
+                    "at": datetime.fromtimestamp(entry.get("timestamp", 0)).isoformat(timespec="seconds"),
+                    "turn": entry.get("turn"),
+                    "request_type": pending.get("request_type"),
+                    "source": pending.get("source_label"),
+                    "chosen": [o.get("label") for o in options if o.get("option_id") in chosen]
+                    or list(chosen),
+                    "options": [
+                        f"{o.get('label')}{' [unpayable]' if o.get('payable') is False else ''}"
+                        for o in options[:16]
+                    ],
+                    "explanation": entry.get("explanation", ""),
+                    "trace": entry.get("trace"),
+                    "outcome": entry.get("outcome"),
+                }
+            )
+        return out
 
     def add_executed_action(
         self,

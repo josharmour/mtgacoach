@@ -944,12 +944,24 @@ class Moves:
         return before_rocks, before_rocks + list(node.rocks)
 
     def land_options(self, node: Node) -> list:
-        """One land per class (colours, enters tapped), at most three; [None] when no drop."""
+        """One land per class (colours, enters tapped), at most three; [None] when no drop.
+
+        Ranked first by the hand's pips the land is the only way to pay (a colour
+        no source on the board makes yet), then by every pip it can pay. Four
+        Forests in play and Forest + Mountain in hand with a {U/R} spell: the
+        Mountain adds a colour, the fifth Forest adds nothing (bug 2026-10-09
+        07:58, sealed FRA: Forest kept, Twinned Vision stranded).
+        """
         if node.k == 0 and self.our_turn and (not self.model.land_drop_now or self.model.t_instant_only):
             return [None]
         if not node.lands:
             return [None]
         pips = [p for i in node.hand for p in self.spells[i].spell.pips]
+        base = self.model.sources_now if (node.k == 0 and self.our_turn) else self.model.sources_all
+        have: set = set()
+        for source in list(base) + list(node.played) + list(node.rocks):
+            have |= set(source.produces)
+        have.discard("C")
         by_key: dict = {}
         for land in node.lands:
             by_key.setdefault(land.key, land)
@@ -957,6 +969,7 @@ class Moves:
             by_key.values(),
             key=lambda land: (
                 land.tapped,
+                -sum(1 for p in pips if p & land.source.produces and not p & have),
                 -sum(1 for p in pips if p & land.source.produces),
                 "".join(sorted(land.colors)),
                 land.name,

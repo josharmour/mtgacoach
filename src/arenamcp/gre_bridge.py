@@ -22,6 +22,7 @@ import select
 import socket
 import threading
 import time
+from collections import deque
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,7 @@ class GREBridge:
         # Set when the connected client is the native-Mac IL2CPP library, which
         # speaks generic reflection; the adapter answers plugin commands on it.
         self._mac_adapter = None
+        self._recent_commands: deque = deque(maxlen=80)
         # Runtime the connected client reported ("il2cpp-android", "il2cpp-macos",
         # "bepinex"), for the UI; None when disconnected.
         self.client_runtime: str | None = None
@@ -443,16 +445,70 @@ class GREBridge:
     # report 2026-05-01 (select_target lockup on Optimistic Scavenger).
     _DEFAULT_READ_TIMEOUT_S: float = 5.0
 
+    # Polls that run every second or so; recorded only when they fail.
+    _QUIET_COMMANDS = frozenset(
+        {"ping", "get_pending_actions", "get_game_state", "get_timer_state", "get_match_info",
+         "get_screen", "get_draft_state", "get_event_page", "get_deck_editor", "get_survey",
+         "get_replay_status"}
+    )  # fmt: skip
+
     def _send_command(
         self,
         cmd: dict[str, Any],
         timeout: float | None = None,
     ) -> dict[str, Any]:
-        """Send a plugin command; on native Mac the adapter translates it."""
-        adapter = self._mac_adapter
-        if adapter is not None and adapter.handles(cmd):
-            return adapter.handle(cmd, timeout)
-        return self._send_command_raw(cmd, timeout)
+        """Send a plugin command; on native Mac the adapter translates it.
+
+        Every command that changes something (and every failed poll) lands in
+        ``recent_commands()`` for bug reports: on 2026-10-09 the report could
+        not say what the bridge had asked Arena to do between two games.
+        """
+        started = time.monotonic()
+        action = str(cmd.get("action") or "")
+        outcome: dict[str, Any] | None = None
+        error: str | None = None
+        try:
+            adapter = self._mac_adapter
+            if adapter is not None and adapter.handles(cmd):
+                outcome = adapter.handle(cmd, timeout)
+            else:
+                outcome = self._send_command_raw(cmd, timeout)
+            return outcome
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"[:200]
+            raise
+        finally:
+            failed = error is not None or (isinstance(outcome, dict) and outcome.get("ok") is False)
+            if action not in self._QUIET_COMMANDS or failed:
+                self._note_command(cmd, outcome, error, (time.monotonic() - started) * 1000.0)
+
+    def _note_command(
+        self, cmd: dict[str, Any], outcome: dict[str, Any] | None, error: str | None, ms: float
+    ) -> None:
+        entry: dict[str, Any] = {
+            "at": time.time(),
+            "action": str(cmd.get("action") or ""),
+            "ms": round(ms, 1),
+        }
+        args = {k: v for k, v in cmd.items() if k != "action"}
+        if args:
+            text = json.dumps(args, default=str)
+            entry["args"] = text if len(text) <= 400 else text[:400] + "…"
+        if error is not None:
+            entry["error"] = error
+        elif isinstance(outcome, dict):
+            entry["ok"] = outcome.get("ok")
+            if outcome.get("error"):
+                entry["error"] = str(outcome.get("error"))[:200]
+            for key in ("submitted_type", "survey_skipped", "already_home", "step", "event_name", "module"):
+                if key in outcome:
+                    entry[key] = outcome[key]
+        with contextlib.suppress(Exception):
+            self._recent_commands.append(entry)
+
+    def recent_commands(self) -> list[dict[str, Any]]:
+        """The last bridge commands that changed something (or failed), oldest first."""
+        return list(getattr(self, "_recent_commands", ()))
 
     def _send_command_raw(
         self,

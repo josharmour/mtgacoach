@@ -364,10 +364,31 @@ class MacBridgeAdapter:
                 "error": f"not supported by the macOS IL2CPP bridge: {action}",
             }
         try:
-            return handler(command, timeout)
+            result = handler(command, timeout)
         except AdapterError as exc:
             logger.info("mac bridge %s failed: %s", action, exc)
             return {"ok": False, "error": str(exc)}
+        if action not in self._READ_ONLY_COMMANDS and action != "submit_action":
+            # submit_action logs its own line; everything else that changes the
+            # client is logged here so the coaching log shows each "hand" the
+            # bridge lent Arena (2026-10-09: between-game navigation was invisible).
+            summary = (
+                {k: v for k, v in result.items() if k in self._LOGGED_RESULT_KEYS}
+                if isinstance(result, dict)
+                else result
+            )
+            logger.info("mac bridge %s: %s", action, summary)
+        return result
+
+    _READ_ONLY_COMMANDS = frozenset(
+        {"ping", "get_pending_actions", "get_game_state", "get_timer_state", "get_match_info",
+         "get_screen", "get_draft_state", "get_event_page", "get_deck_editor", "get_survey",
+         "get_limited_pool", "preview_draft_pick", "get_replay_status", "list_replays"}
+    )  # fmt: skip
+    _LOGGED_RESULT_KEYS = frozenset(
+        {"ok", "submitted_type", "survey_skipped", "already_home", "step", "event_name", "module",
+         "scope", "game_number", "turn", "gems_added", "deck_id", "error"}
+    )  # fmt: skip
 
     def _require(self, timeout: float | None, *classes: str) -> Snapshot:
         snapshot = self.snapshot(timeout=timeout)

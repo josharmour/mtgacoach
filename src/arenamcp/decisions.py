@@ -1212,6 +1212,74 @@ def _worth_keeping(meta: dict[str, Any], profile: tuple[int, int] | None) -> boo
     return mana_value is None or mana_value <= lands + 1
 
 
+_BASIC_TYPE_COLORS = {"plains": "W", "island": "U", "swamp": "B", "mountain": "R", "forest": "G"}
+
+
+def _land_card_colors(card: dict[str, Any]) -> set[str]:
+    """Colours a land makes, from its basic land types (good enough for the flood guard)."""
+    text = str(card.get("type_line") or "").lower()
+    return {color for word, color in _BASIC_TYPE_COLORS.items() if word in text}
+
+
+def land_flood_group_choice(
+    decision: PendingDecision | None, game_state: dict[str, Any] | None
+) -> tuple[list[str], str]:
+    """Scry/surveil of nothing but lands the board no longer needs: bin them, no model call.
+
+    2026-10-09 08:04 (sealed FRA): fourteen lands in play, a Mountain in hand,
+    the surveilled card a Mountain — the model kept it on top "to guarantee a
+    land draw". Returns ([], "") whenever anything argues for keeping a card:
+    a non-land in the group, an unknown card or board, a land still wanted by
+    :func:`_worth_keeping`, or a land adding a colour the hand needs and no
+    land of ours makes. The choice itself comes from :func:`default_group_choice`.
+    """
+    if decision is None or decision.request_type != "Group" or not game_state:
+        return [], ""
+    cards: dict[int, dict[str, Any]] = {}
+    for option in decision.options:
+        if "spec_index" not in option.meta or not option.meta.get("type_line"):
+            return [], ""
+        cards[option.meta["instance_id"]] = option.meta
+    if not cards or not all(_is_land_card(meta) for meta in cards.values()):
+        return [], ""
+    profile = _mana_profile(game_state)
+    if profile is None or any(_worth_keeping(meta, profile) for meta in cards.values()):
+        return [], ""
+    seat = game_state.get("local_seat_id")
+    ours = [
+        card
+        for card in game_state.get("battlefield") or []
+        if isinstance(card, dict)
+        and _is_land_card(card)
+        and (seat is None or (card.get("controller_seat_id") or card.get("owner_seat_id")) == seat)
+    ]
+    have = set().union(*(_land_card_colors(card) for card in ours)) if ours else set()
+    needed = {
+        symbol.upper()
+        for card in game_state.get("hand") or []
+        if isinstance(card, dict) and not _is_land_card(card)
+        for symbol in re.findall(r"[WUBRG]", str(card.get("mana_cost") or ""))
+    }
+    if any(_land_card_colors(meta) & (needed - have) for meta in cards.values()):
+        return [], ""
+    choice = default_group_choice(decision, game_state)
+    tops = {
+        option.option_id
+        for option in decision.options
+        if option.meta.get("zone") == "Library" and option.meta.get("sub_zone") == "Top"
+    }
+    if not choice or any(option_id in tops for option_id in choice):
+        return [], ""
+    lands, biggest = profile
+    names = ", ".join(str(meta.get("card_name") or "a land") for meta in cards.values())
+    reason = (
+        f"{names} off the top: {lands} lands in play or hand already"
+        + (f" against a biggest spell costing {biggest}" if biggest else "")
+        + ", and no colour in it that the hand needs."
+    )
+    return choice, reason
+
+
 def default_group_choice(
     decision: PendingDecision | None, game_state: dict[str, Any] | None = None
 ) -> list[str]:

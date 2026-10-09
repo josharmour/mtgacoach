@@ -458,7 +458,9 @@ class _DiagnosticsMixin:
         report["llm_context"] = self._get_llm_context()
 
         _progress("Collecting logs and diagnostics...")
-        report["recent_logs"] = self._get_recent_logs(100)
+        # 400 lines: 100 covered about two seconds of a match (2026-10-09).
+        report["recent_logs"] = self._get_recent_logs(400)
+        report["desktop_log"] = self._get_desktop_log()
         report["enrichment_failures"] = self._get_enrichment_failures()
         report["autopilot"] = self._collect_autopilot_info()
         report["bridge_state"] = self._collect_bridge_state()
@@ -523,6 +525,16 @@ class _DiagnosticsMixin:
                 info["engine"] = ap.get_debug_info()
             except Exception as e:
                 info["engine_error"] = str(e)
+        # Every decision this match with its options, the pick, the planner's
+        # trace (policy / reasoning / lines) — the 2026-10-09 reports held only
+        # the last request type, so "why Forest over Mountain" was unanswerable.
+        try:
+            from arenamcp.match_packets import get_current_packet
+
+            packet = get_current_packet()
+            info["recent_decisions"] = packet.recent_decisions(40) if packet else []
+        except Exception as e:
+            info["recent_decisions_error"] = str(e)
         concede_snapshot = getattr(self, "_concede_snapshot", None)
         if callable(concede_snapshot):
             try:
@@ -567,6 +579,9 @@ class _DiagnosticsMixin:
                 }
             else:
                 info["last_poll"] = None
+            recent = getattr(bp._bridge, "recent_commands", None) if bp._bridge else None
+            if callable(recent):
+                info["recent_commands"] = recent()
             return info
         except Exception as e:
             return {"available": True, "error": str(e)}
@@ -711,34 +726,44 @@ class _DiagnosticsMixin:
             return ""
 
     def _get_mtga_log_status(self) -> dict:
-        """Get MTGA Player.log file status."""
-        import os
+        """MTGA Player.log status plus a bounded excerpt (scene changes, exceptions, raw tail).
 
-        # Use the same path logic as watcher.py: LOCALAPPDATA (AppData\Local)
-        # -> parent (AppData) -> LocalLow sibling
-        _local_appdata = os.environ.get("LOCALAPPDATA", "")
-        if _local_appdata:
-            default_path = str(
-                Path(os.path.dirname(_local_appdata))
-                / "LocalLow"
-                / "Wizards Of The Coast"
-                / "MTGA"
-                / "Player.log"
-            )
-        else:
-            default_path = ""
-        log_path = os.environ.get("MTGA_LOG_PATH", default_path)
-        result: dict = {"path": log_path}
+        The path is the one the watcher is actually reading — the old
+        Windows-only guess reported an empty path on macOS, and Arena rotates
+        the file on relaunch, so the 2026-10-09 sideboarding glitch left no
+        evidence in its report.
+        """
+        from arenamcp.log_excerpt import player_log_excerpt
+
+        log_path = None
         try:
-            p = Path(log_path)
-            result["exists"] = p.exists()
-            if p.exists():
-                stat = p.stat()
-                result["size_bytes"] = stat.st_size
-                result["last_modified"] = datetime.fromtimestamp(stat.st_mtime).isoformat()
-        except Exception as e:
-            result["error"] = str(e)
-        return result
+            from arenamcp import server
+
+            log_path = server._log_path()
+        except Exception as error:
+            logger.debug("Player.log path lookup failed: %s", error)
+        if not log_path:
+            import os
+
+            from arenamcp.watcher import DEFAULT_LOG_PATH
+
+            log_path = os.environ.get("MTGA_LOG_PATH", DEFAULT_LOG_PATH)
+        try:
+            return player_log_excerpt(log_path)
+        except Exception as error:
+            return {"path": str(log_path), "error": str(error)}
+
+    def _get_desktop_log(self, num_lines: int = 150) -> list:
+        """Tail of the desktop app's own log (launches, MTGA start requests, restarts)."""
+        from arenamcp.log_excerpt import tail_lines
+
+        try:
+            from arenamcp.desktop.runtime import get_runtime_root
+
+            path = Path(get_runtime_root()) / "desktop.log"
+        except Exception:
+            return []
+        return [line.rstrip("\n") for line in tail_lines(path, num_lines)]
 
     def _read_bepinex_log(self) -> str | None:
         """Read BepInEx plugin log for bridge debugging."""
@@ -838,14 +863,13 @@ class _DiagnosticsMixin:
             logger.debug(f"Could not get enrichment failures: {e}")
             return []
 
-    def _get_recent_logs(self, num_lines: int = 100) -> list:
-        """Get recent log entries from standalone.log."""
+    def _get_recent_logs(self, num_lines: int = 400) -> list:
+        """The tail of standalone.log, read from the end (the file reaches 50 MB)."""
+        from arenamcp.log_excerpt import tail_lines
+
         try:
             if LOG_FILE.exists():
-                with open(LOG_FILE, encoding="utf-8", errors="replace") as f:
-                    # Read last N lines efficiently
-                    lines = f.readlines()
-                    return lines[-num_lines:]
+                return tail_lines(LOG_FILE, num_lines)
         except Exception as e:
             return [f"Error reading logs: {e}"]
         return []

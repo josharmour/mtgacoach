@@ -217,8 +217,8 @@ def _unmodelled_mark(line: Line, unmodelled: Collection[str]) -> str:
     return f" ({', '.join(names)} not modelled)" if names else ""
 
 
-def _deployment(line: Line) -> tuple[int, int]:
-    """The T step's (creature bodies cast, mana left unspent): the tie-break behind the score.
+def _deployment(line: Line) -> tuple[int, int, int]:
+    """The T step's (creature bodies cast, colours available, mana left unspent): the tie-break behind the score.
 
     Two lines with exactly the same outcome class, timing and value differ
     only in what T puts on the board and keeps in reserve: the one that casts
@@ -234,7 +234,11 @@ def _deployment(line: Line) -> tuple[int, int]:
     _land, casts, _ids = step.plays
     bodies = sum(1 for var, _target in casts if var.kind == "cast" and (var.body is not None or var.tokens))
     spent = sum(var.mana_value for var, _target in casts if var.kind == "cast")
-    return (bodies, step.mana - spent)
+    # A land drop that adds a colour (more distinct colours among T's sources)
+    # beats a repeat of one we have: bug 2026-10-09 07:58 played a fifth
+    # Forest over the Mountain and stranded a {U/R} spell on a tie.
+    colours = len(set(step.colors) - {"C"})
+    return (bodies, colours, step.mana - spent)
 
 
 def _order(line: Line) -> tuple:

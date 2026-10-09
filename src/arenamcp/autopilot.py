@@ -4579,7 +4579,11 @@ class AutopilotEngine(
 
                 packet = get_current_packet()
                 if packet:
-                    packet.add_decision(decision, option_ids)
+                    get_trace = getattr(self._planner, "get_last_decision_trace", None)
+                    trace = get_trace() if callable(get_trace) else None
+                    packet.add_decision(
+                        decision, option_ids, trace=trace or None, explanation=explanation, game_state=game_state
+                    )
             except Exception as e:
                 logger.warning(f"MatchPacket: failed to record decision: {e}")
             self._log_execution_path(

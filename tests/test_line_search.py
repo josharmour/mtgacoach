@@ -1441,3 +1441,22 @@ def test_the_notary_hobbits_copies_are_unmodelled_and_a_plan_may_cast_the_comman
         ],
     )
     assert again.issues == ["T+1: The Notary Hobbits is not in the command zone (cast earlier)"]
+
+
+def test_land_drop_adds_the_colour_the_board_lacks_over_a_fifth_copy():
+    """Four Forests out, Forest + Mountain in hand, Twinned Vision ({1}{U/R}) in hand.
+
+    Sealed FRA 2026-10-09 07:58: the autopilot played the fifth Forest "toward
+    Garruk" (two G pips) and left the red hybrid spell uncastable. A land that
+    adds a colour no source makes yet outranks one that only repeats a pip count.
+    """
+    source = state(
+        turn=9, active=1, phase="Phase_Main1", step="", life={1: 20, 2: 17}, lands_played={1: 0, 2: 0},
+        library=25, opponent_hand=3,
+        battlefield=[(401, "Forest", 1, False, 1), (402, "Forest", 1, False, 3), (403, "Forest", 1, False, 5),
+                     (404, "Forest", 1, False, 7), (405, "Sureshot Sower", 1, False, 7), (411, "Mountain", 2, False, 2)],
+        hand=[(501, "Twinned Vision"), (502, "Forest"), (503, "Mountain")], graveyard=[],
+    )  # fmt: skip
+    result = _search(source)
+    assert result.best.steps[0].land == "Mountain"
+    assert ("land", (frozenset("R"), False)) in result.first_action

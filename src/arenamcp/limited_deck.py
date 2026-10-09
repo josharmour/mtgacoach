@@ -68,19 +68,50 @@ def _castable(card: dict, colors: tuple[str, ...]) -> bool:
     return True
 
 
+def _name_key(name: str) -> str:
+    return " ".join(name.lower().replace("’", "'").split())
+
+
+def _entry_grp_id(entry: Any, by_name: dict[str, int], what: str) -> int:
+    """The pool grp_id an entry names: its integer ``grp_id``, or its ``name`` looked up in the pool.
+
+    Every rejection says exactly what was wrong, because the message is fed
+    back to the model for its one retry. 2026-10-09 sealed: both attempts died
+    with a bare KeyError ``'grp_id'`` (entries carried names only), so the
+    retry prompt said "rejected ('grp_id')" and the review never ran.
+    """
+    if not isinstance(entry, dict):
+        raise ValueError(f'Each {what} entry must be an object like {{"grp_id": 123, ...}}')
+    grp_id = entry.get("grp_id")
+    if grp_id is None and isinstance(entry.get("name"), str):
+        grp_id = by_name.get(_name_key(entry["name"]))
+        if grp_id is None:
+            raise ValueError(f"{what} entry names a card not in the pool: {entry['name']!r}")
+    if type(grp_id) is not int:
+        raise ValueError(f"Each {what} entry needs the integer grp_id of a pool card (got {entry!r})")
+    return grp_id
+
+
 def validate_deck(payload: dict, pool: list[dict], *, source: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Deck response must be a JSON object")
     cards = _nonbasics(pool)
     available = Counter(card["grp_id"] for card in cards)
     by_id = {card["grp_id"]: card for card in cards}
+    by_name = {_name_key(str(card.get("name") or "")): card["grp_id"] for card in cards}
     kept: Counter = Counter()
-    for entry in payload["main_deck"]:
-        grp_id, count = entry["grp_id"], entry["count"]
-        if type(grp_id) is not int or type(count) is not int or count <= 0:
+    main_deck = payload.get("main_deck")
+    if not isinstance(main_deck, list):
+        raise ValueError("Deck response needs a main_deck list")
+    for entry in main_deck:
+        grp_id = _entry_grp_id(entry, by_name, "main_deck")
+        count = entry.get("count", 1)
+        if type(count) is not int or count <= 0:
             raise ValueError("Deck entries need integer IDs and positive counts")
         kept[grp_id] += count
         if kept[grp_id] > available[grp_id]:
             raise ValueError("Deck uses unavailable cards or too many copies")
-    basics = payload["basic_lands"]
+    basics = payload.get("basic_lands")
     if not isinstance(basics, dict) or any(
         color not in BASIC_NAMES or type(count) is not int or count < 0 for color, count in basics.items()
     ):
@@ -106,7 +137,10 @@ def validate_deck(payload: dict, pool: list[dict], *, source: str) -> dict[str, 
     lands += sum(basics.values())
     if total != 40 or not 15 <= lands <= 19:
         raise ValueError("Draft deck must total 40 cards with a supported land count")
-    reasons = {entry["grp_id"]: entry.get("reason", "") for entry in payload.get("cuts", [])}
+    cut_entries = payload.get("cuts") or []
+    if not isinstance(cut_entries, list):
+        raise ValueError("cuts must be a list")
+    reasons = {_entry_grp_id(entry, by_name, "cuts"): entry.get("reason", "") for entry in cut_entries}
     cuts = []
     for grp_id, count in (available - kept).items():
         reason = reasons.get(grp_id)

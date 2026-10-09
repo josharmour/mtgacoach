@@ -520,3 +520,66 @@ def test_typed_path_surveil_uses_the_safe_default_when_the_model_answer_is_unusa
     engine = _engine(monkeypatch, bridge, _planner_with("nonsense"))
     assert engine._try_typed_decision_path(_state(), "decision_required") is True
     assert bridge.groups[0]["ids"] == [298] and bridge.groups[1]["ids"] == []
+
+
+# --- land-flood guard (bug_20261009_080439) -----------------------------------
+
+
+def _flood_decision():
+    return build_pending_decision({**SURVEIL_LOG_POLL, "group_instance_ids": [303]}, resolve_card=CARDS.get)
+
+
+def test_surveil_of_a_land_on_a_flooded_board_is_binned_without_the_model(monkeypatch):
+    """14 lands out, a Mountain in hand, the surveilled card a Mountain: it goes to the graveyard."""
+    planner = ActionPlanner.__new__(ActionPlanner)
+
+    def never(decision, game_state):
+        raise AssertionError("the model must not be consulted")
+
+    monkeypatch.setattr(planner, "_llm_decision_options", never, raising=False)
+    choice = planner.plan_decision_options(_flood_decision(), _board(14, [MOUNTAIN]))
+    assert choice == ["grp:303:graveyard"]
+    assert planner.get_last_decision_trace()["policy"] == "land_flood"
+    assert "15 lands" in planner.get_decision_reasoning(choice)
+
+
+def test_surveil_of_a_land_still_wanted_goes_to_the_model(monkeypatch):
+    planner = ActionPlanner.__new__(ActionPlanner)
+    asked = []
+
+    def answer(decision, game_state):
+        asked.append(decision.request_type)
+        planner._last_decision_reasoning = "Keep it: three lands is short."
+        return ["grp:303:top"]
+
+    monkeypatch.setattr(planner, "_llm_decision_options", answer, raising=False)
+    assert planner.plan_decision_options(_flood_decision(), _board(3, [])) == ["grp:303:top"]
+    assert asked == ["Group"]
+
+
+def test_surveil_of_a_land_adding_a_needed_colour_goes_to_the_model(monkeypatch):
+    """Eight Islands out, a red spell in hand, the surveilled card a Mountain: not a flood call."""
+    planner = ActionPlanner.__new__(ActionPlanner)
+    asked = []
+
+    def answer(decision, game_state):
+        asked.append(decision.request_type)
+        return ["grp:303:top"]
+
+    monkeypatch.setattr(planner, "_llm_decision_options", answer, raising=False)
+    red_spell = {"type_line": "Instant", "mana_cost": "{1}{R}", "cmc": 2}
+    assert planner.plan_decision_options(_flood_decision(), _board(8, [red_spell])) == ["grp:303:top"]
+    assert asked == ["Group"]
+
+
+def test_surveil_with_a_spell_in_the_group_goes_to_the_model(monkeypatch):
+    planner = ActionPlanner.__new__(ActionPlanner)
+    asked = []
+
+    def answer(decision, game_state):
+        asked.append(decision.request_type)
+        return ["grp:298:top"]
+
+    monkeypatch.setattr(planner, "_llm_decision_options", answer, raising=False)
+    assert planner.plan_decision_options(_surveil(), _board(14, [MOUNTAIN])) == ["grp:298:top"]
+    assert asked == ["Group"]

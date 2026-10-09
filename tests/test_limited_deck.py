@@ -227,3 +227,22 @@ def test_shrink_edict_and_modal_kill_spells_count_as_removal(text):
     from arenamcp.limited_deck import _interaction_kind
 
     assert _interaction_kind({"name": "X", "oracle_text": text, "type_line": "Instant"}) == "removal"
+
+
+@pytest.mark.parametrize("where", ["main_deck", "cuts"])
+def test_entries_without_grp_id_are_rejected_with_a_message_the_model_can_act_on(where):
+    """Sealed FRA 2026-10-09 07:56: both review attempts died with KeyError 'grp_id'."""
+    payload = model_build()
+    if where == "main_deck":
+        payload["main_deck"][0] = {"count": 1}
+    else:
+        payload["cuts"] = [{"reason": "off-color"}]
+    with pytest.raises(ValueError, match="grp_id"):
+        validate_deck(payload, pool(), source="card_rules")
+
+
+def test_cut_named_by_card_name_is_mapped_to_its_pool_id():
+    payload = model_build()
+    payload["cuts"] = [{"name": "Expensive red dragon", "reason": "off-color and too expensive"}]
+    result = validate_deck(payload, pool(), source="card_rules")
+    assert result["cuts"][0]["grp_id"] == 90

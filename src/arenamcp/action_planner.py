@@ -3017,6 +3017,18 @@ class ActionPlanner(_ActionLegalityMixin):
             bottom = self._plan_mulligan_bottom(decision, game_state)
             if bottom:
                 return bottom
+        if decision.request_type == "Group":
+            from arenamcp.decisions import land_flood_group_choice
+
+            flood, why = land_flood_group_choice(decision, game_state)
+            if flood:
+                self._last_decision_option_ids = flood
+                self._last_decision_reasoning = why[:1].upper() + why[1:]
+                self._last_decision_trace = {"policy": "land_flood", "validated_ids": flood, "reasoning": why}
+                logger.warning(
+                    "Scry/surveil guard: binning %s — deterministic policy, LLM not consulted", why
+                )
+                return flood
         decision = filter_play_options(decision, game_state)
         if not decision.options:
             if decision.request_type == "Search" and decision.selection_is_valid([]):
@@ -3041,6 +3053,7 @@ class ActionPlanner(_ActionLegalityMixin):
             return [DECLINE_DECISION]
         try:
             chosen = self._llm_decision_options(decision, game_state)
+            self._correct_false_lethal_claim(game_state)
             valid = decision.option_ids()
             if decision.request_type == "ActionsAvailable":
                 valid = {option.option_id for option in decision.options if option.payable is not False}
@@ -3696,6 +3709,65 @@ class ActionPlanner(_ActionLegalityMixin):
             and controllers.get(_as_int(card.get("instance_id"))) not in (None, local_seat)
             and "creature" in str(card.get("type_line") or "").lower()
         ]
+
+    # A sentence claiming the kill is now: "exactly lethal", "lethal this turn",
+    # "lethal now"; never "lethal next turn", "lethal on T27", "toward lethal".
+    _LETHAL_NOW = re.compile(
+        r"\b(?:exactly|precisely)\s+lethal\b|\blethal\s+(?:this turn|now|right now|immediately)\b"
+        r"|\b(?:this turn|now)\b[^.!?]*\blethal\b|\blethal\b[^.!?]*\bthis turn\b",
+        re.I,
+    )
+    _LETHAL_LATER = re.compile(
+        r"\b(?:next turn|following turn|on T\+?\d|T\+\d|in \d|toward|towards|set(?:s|ting)? up|threaten|"
+        r"clock|if (?:they|the opponent)|unless|would be lethal)\b",
+        re.I,
+    )
+
+    def _correct_false_lethal_claim(self, game_state: dict[str, Any]) -> None:
+        """Strip a "lethal this turn" claim the deterministic board facts contradict.
+
+        2026-10-09 08:05:01 (bug_20261009_080525): "putting the +1/+1 counter on
+        Marwyn, the Preserver makes total attacking power 6, exactly lethal
+        against their 6 life this turn" — Marwyn, the Clearcutter was tapped
+        (it had just looted), so 4 power attacked into 6 life. The board facts
+        (``BoardAssessment.lethal_now``, the lethal posture, a line winning on T)
+        decide; the pick stands, the narration loses the false sentence and
+        says what the math found, and the trace records the claim.
+        """
+        reasoning = self._last_decision_reasoning
+        if not reasoning or "lethal" not in reasoning.lower():
+            return
+        sentences = re.split(r"(?<=[.!?])\s+", reasoning)
+        claims = [
+            sentence
+            for sentence in sentences
+            if self._LETHAL_NOW.search(sentence) and not self._LETHAL_LATER.search(sentence)
+        ]
+        if not claims:
+            return
+        try:
+            from arenamcp import board_assessment
+
+            facts = board_assessment.assess(game_state)
+        except Exception:  # the strategic layer never blocks a decision
+            return
+        if facts is None:
+            return
+        best = facts.lines[0] if getattr(facts, "lines", None) else None
+        if facts.lethal_now or facts.posture == "lethal" or (best is not None and best.win_at == 1):
+            return
+        when = f"; the best line is lethal on T{best.win_turn}" if best is not None and best.win_turn else ""
+        correction = f"Board math: not lethal this turn (they are at {facts.opp_life}{when})."
+        kept = [sentence for sentence in sentences if sentence not in claims]
+        self._last_decision_reasoning = " ".join(kept + [correction]).strip()
+        if isinstance(self._last_decision_trace, dict):
+            self._last_decision_trace["false_lethal_claim"] = claims
+        logger.warning(
+            "typed-decision: the reasoning claims lethal this turn but the board math does not (%s); "
+            "narrating the math instead: %s",
+            " / ".join(claim[:120] for claim in claims),
+            correction,
+        )
 
     def _reject_false_kill_claim(
         self, decision: Any, game_state: dict[str, Any], chosen: list[str]

@@ -1978,6 +1978,11 @@ def _budget_turns(
         new_land = None
         can_drop = land_drop_now if k == 0 else True
         if can_drop and lands:
+            # Untapped first, then the land adding the most colours no source
+            # (board or an earlier drop) makes yet: a Mountain over a fifth Forest
+            # (bug 2026-10-09 07:58 stranded a {U/R} spell).
+            have = {c for s in [*sources_all, *played] for c in s.produces} - {"C"}
+            lands.sort(key=lambda c: (_enters_tapped(c), -len(set(_land_colors(c)) - have), _name(c)))
             card = lands.pop(0)
             land_name = _name(card)
             new_land = SimpleNamespace(produces=frozenset(set(_land_colors(card)) or {"C"}), name=land_name)

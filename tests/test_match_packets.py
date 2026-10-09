@@ -148,3 +148,32 @@ def test_opponent_name_extracted_from_real_replay_header():
         "BattlefieldId": 1,
     }
     assert (cosmetics.get("Opponent") or {}).get("ScreenName") == "Primal"
+
+
+def test_recent_decisions_summarize_options_pick_and_trace():
+    from tests.strategic_states import actions_decision
+
+    from arenamcp.match_packets import MatchPacket
+
+    packet = MatchPacket("m1")
+    decision = actions_decision(
+        [
+            ("idx:0", "Play Land: Forest", None, True),
+            ("idx:1", "Play Land: Mountain", None, True),
+            ("pass", "Pass", None, None),
+        ]
+    )
+    packet.add_decision(
+        decision,
+        ["idx:0"],
+        trace={"policy": "line_search", "reasoning": "follows the best line"},
+        explanation="Playing Forest.",
+        game_state={"turn": {"turn_number": 5, "phase": "Phase_Main1", "active_player": 2, "step": ""}},
+    )
+    (summary,) = packet.recent_decisions()
+    assert summary["request_type"] == "ActionsAvailable"
+    assert summary["chosen"] == ["Play Land: Forest"]
+    assert summary["options"] == ["Play Land: Forest", "Play Land: Mountain", "Pass"]
+    assert summary["trace"]["policy"] == "line_search"
+    assert summary["explanation"] == "Playing Forest."
+    assert summary["turn"]["turn_number"] == 5
