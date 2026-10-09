@@ -12,12 +12,17 @@ this one.
 
 from __future__ import annotations
 
+import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from arenamcp.draft_autopick import Lane, PickScore, is_nonbasic_land, is_removal, land_colors, lane_fit
+from arenamcp.draft_plan import PlanColors
+from arenamcp.draft_plan import plan_colors as _plan_colors
 from arenamcp.limited_rules import rules_profile
+
+logger = logging.getLogger(__name__)
 
 COLOR_NAMES = {"W": "white", "U": "blue", "B": "black", "R": "red", "G": "green"}
 ROLE_WORDS = {
@@ -57,6 +62,23 @@ def _expand_codes(text: str) -> str:
     return PAIR_CODE.sub(expand, text)
 
 
+def plan_colors(plan: str, primer: Any = None) -> str:
+    """The color pair a deck plan names, or "" when it names none or only one.
+
+    "Izzet spells with Jace", "the Dimir Threshold Mill deck", "blue-red tempo"
+    and "UR spells" all give "UR"/"UB"; a splash is not a lane color and a
+    plan that is still open ("Izzet or Azorius", "staying open to Dimir") does
+    not commit to the alternatives. See ``arenamcp.draft_plan``.
+    """
+    main = plan_reading(plan, primer).main
+    return main if len(main) == 2 else ""
+
+
+def plan_reading(plan: str, primer: Any = None) -> PlanColors:
+    """Main colors, splash and archetype a plan names (``main`` may be one color)."""
+    return _plan_colors(plan, getattr(primer, "archetypes", None) or [])
+
+
 @dataclass
 class _Reason:
     text: str  # follows "Taking Card: " or "Card — "
@@ -72,10 +94,54 @@ class DraftNarrator:
 
     def reset(self) -> None:
         self._lane = ""
+        self._plan = PlanColors()
+        self._disagreements_told: set[tuple[str, str]] = set()
         self._open_told: set[str] = set()
         self._packs_summarized: set[int] = set()
         self._archetypes_told: set[str] = set()
         self._since_story = 0
+
+    def _planned(self, lane: Lane, model_plan: str, primer: Any, model_lane: str = "") -> Lane:
+        """The lane we speak about: the model's stated plan when it names colors, else the pool estimate.
+
+        2026-10-08: the pool estimate tipped to blue-black at P1p9 and P3p1-p4
+        while the model's plan stayed Izzet, and the commentary announced a
+        Dimir deck and called the Izzet picks off-color. The last plan that
+        named colors holds until the model states another; a plan naming one
+        color ("blue-based, Izzet or Azorius") keeps the second color open, and
+        a named splash is our splash, not off-color.
+        """
+        stated = plan_reading(model_plan, primer)
+        if not stated.main and model_lane and 1 <= len(_pair_key(model_lane)) <= 2:
+            stated = PlanColors(main=_pair_key(model_lane))
+        if stated.main:
+            self._plan = stated
+        plan = self._plan
+        if not plan.main:
+            return lane
+        estimate = _pair_key(lane.colors)
+        if (
+            estimate != plan.main
+            and self._settled(lane)
+            and (plan.main, estimate) not in self._disagreements_told
+        ):
+            self._disagreements_told.add((plan.main, estimate))
+            name = plan.archetype or (self._archetype_name(primer, plan.main) if len(plan.main) == 2 else "")
+            logger.info(
+                "Draft lane: the plan says %s%s but the pool estimate says %s; following the plan",
+                plan.main,
+                f" ({name})" if name else "",
+                estimate,
+            )
+        commitment = max(lane.commitment, LANE_SETTLED) if len(plan.main) == 2 else lane.commitment
+        return replace(
+            lane,
+            colors=plan.main,
+            main=plan.main[0],
+            commitment=commitment,
+            second_hold=1.0 if len(plan.main) == 2 else 0.0,
+            splash=plan.splash,
+        )
 
     def pick_line(
         self,
@@ -94,10 +160,19 @@ class DraftNarrator:
         model_reasons: list[str] | None = None,
         mana_costs: dict[int, str] | None = None,
         verb: str = "Taking",
+        model_plan: str = "",
+        model_lane: str = "",
     ) -> str:
-        """``verb`` is "Choosing" when the line is spoken before the pick is confirmed."""
+        """``verb`` is "Choosing" when the line is spoken before the pick is confirmed.
+
+        ``model_plan`` is the deck plan the model last stated; when it names
+        colors, those are our lane for every line until a later plan names
+        others, whatever the pool's color counts estimate. ``model_lane`` is
+        the advisor's validated lane code, used only for a plan naming no colors.
+        """
         if pack_number == 1 and pick_number == 1:
             self.reset()
+        lane_after = self._planned(lane_after, model_plan, primer, model_lane)
         if model_reasons is None:
             model_reasons = [model_reason] + [""] * max(0, len(chosen) - 1)
         line = self._lead(verb, names, chosen, ranking, lane_after, primer, model_reasons, mana_costs or {})
@@ -154,8 +229,14 @@ class DraftNarrator:
 
     @staticmethod
     def _fit(pick, lane, primer, mana) -> str:
+        """``lane_fit`` plus "splash": castable only with a color the plan splashes."""
         card = primer.card(pick.grp_id) if primer is not None else None
-        return lane_fit(card, lane.colors, mana) if card is not None else "unknown"
+        if card is None:
+            return "unknown"
+        fit = lane_fit(card, lane.colors, mana)
+        if fit == "off" and lane.splash and lane_fit(card, lane.colors + lane.splash, mana) == "in":
+            return "splash"
+        return fit
 
     @staticmethod
     def _quality_ranks(ranking, primer) -> dict[int, int]:
@@ -181,6 +262,9 @@ class DraftNarrator:
             produced = land_colors(card)
             if settled and fit == "fixing":
                 return _Reason(f"fixes our {colors} mana", "land", f"both fix our {colors} mana")
+            if settled and fit in ("partial", "off") and lane.splash and set(produced) & set(lane.splash):
+                shared = "".join(c for c in produced if c in lane.colors + lane.splash)
+                return _Reason(f"a {_colors(shared)} source for our {_colors(lane.splash)} splash", "land")
             if settled and fit == "partial":
                 shared = "".join(c for c in produced if c in lane.colors)
                 return _Reason(f"only a {_colors(shared)} source for our {colors} deck", "land")
@@ -192,6 +276,15 @@ class DraftNarrator:
                 return _Reason(f"a {_colors(produced)} dual that keeps our options open", "land")
             return _Reason("a utility land", "land")
 
+        top = ", and the top-rated card here" if rank == 1 else ""
+        if fit == "splash":
+            # The plan names this color as our splash: it is ours, not outside our colors.
+            splash = _colors(lane.splash)
+            if card is not None and is_removal(card):
+                return _Reason(f"removal for our {splash} splash{top}", "splash")
+            if rank == 1:
+                return _Reason(f"the best card here on 17Lands data, in our {splash} splash", "splash")
+            return _Reason(f"a card for our {splash} splash", "splash")
         if fit == "off":
             # Never claim deck fit for a card outside our colors.
             if rank == 1:
@@ -201,7 +294,6 @@ class DraftNarrator:
             return _Reason(f"the strongest option left, though it's outside our {colors} colors", "off")
 
         deck = f"our {colors} deck" if settled else "our pool"
-        top = ", and the top-rated card here" if rank == 1 else ""
         if card is not None and is_removal(card):
             if "pool needs removal" in notes:
                 return _Reason(f"removal {deck} needs{top}", "removal", f"both removal {deck} needs")
@@ -327,7 +419,8 @@ class DraftNarrator:
     def _pack_summary(self, pool, lane, primer, pack_number) -> str:
         on_color = self._pool_cards(pool, lane, primer)
         best = sorted((c for c in on_color if c.gih_wr is not None), key=lambda c: -c.gih_wr)[:2]
-        text = f"End of pack {pack_number}: we're {_colors(lane.colors)} with {len(on_color)} on-color cards"
+        splash = f" splashing {_colors(lane.splash)}" if lane.splash else ""
+        text = f"End of pack {pack_number}: we're {_colors(lane.colors)}{splash} with {len(on_color)} on-color cards"
         if best:
             text += f", led by {' and '.join(c.name for c in best)}"
         needs = self._missing(on_color)

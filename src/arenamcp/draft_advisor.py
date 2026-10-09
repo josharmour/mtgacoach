@@ -11,7 +11,9 @@ from collections import Counter
 from typing import Any
 
 from arenamcp.draft_guidance import FormatContext, analyze_pool, compute_lane, normalize_card
+from arenamcp.draft_plan import plan_colors
 from arenamcp.limited_rules import rules_profile, synergy_evidence, synergy_graph
+from arenamcp.set_primer import normalize_colors
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +78,11 @@ already_drafted_not_pickable lists cards we already own; they can never be picke
 Return ONLY JSON:
 {"picks": [{"grp_id": 123, "reason": "1-2 concise sentences explaining why",
 "synergy_with": []}], "plan": "one sentence describing the deck's supported theme",
+"lane": "the plan's main colors as a WUBRG code such as UR, or an empty string while open",
 "needs": ["up to three concrete remaining needs"],
 "alternative": {"grp_id": 789, "reason": "why it loses to the chosen pick(s)"}}
+lane must be exactly the main colors the plan names (an archetype or guild such as
+Izzet is UR); a splash or a color merely kept open is never part of lane.
 synergy_with may contain only pool_grp_id values of already drafted cards (or the other chosen card)
 that supported_synergies links to this pick; when supported_synergies is empty,
 synergy_with must be []. Unsupported ids are discarded. Only assert named synergies
@@ -91,6 +96,25 @@ An alternative is optional. Keep each explanation under 40 words.
 
 def _text(value: Any, words: int = 40) -> str:
     return " ".join(value.split()[:words]) if isinstance(value, str) else ""
+
+
+def _plan_lane(plan: str, stated: Any, archetypes: list[dict] | None) -> dict[str, str]:
+    """The lane the plan text names, overriding the model's ``lane`` when they disagree.
+
+    2026-10-08 FRA: the plan said Izzet from P1p5 on while the spoken lane said
+    blue-black, so the lane is recomputed from the plan; the model's own code
+    counts only for a plan that names no colors.
+    """
+    stated = normalize_colors(stated) if isinstance(stated, str) and len(stated.strip()) <= 2 else ""
+    parsed = plan_colors(plan, archetypes)
+    if parsed.main and stated and stated != parsed.main:
+        logger.warning(
+            "Draft lane %s disagrees with the plan's colors %s (%s); using the plan",
+            stated,
+            parsed.main,
+            plan,
+        )
+    return {"lane": parsed.main or stated, "splash": parsed.splash}
 
 
 def _card_details(card: dict[str, Any]) -> dict[str, Any]:
@@ -295,7 +319,9 @@ class DraftAdvisor:
             if start < 0:
                 raise ValueError("Draft response has no JSON object")
             payload, _end = json.JSONDecoder().raw_decode(response[start:])
-            result = self._validate(payload, cards, pool, required)
+            result = self._validate(
+                payload, cards, pool, required, (pack.get("set_strategy") or {}).get("archetypes")
+            )
         except Exception as exc:
             logger.warning("Draft reasoning unavailable; using card-text guidance: %s", exc)
             if payload is not None:
@@ -322,7 +348,13 @@ class DraftAdvisor:
         }
 
     @staticmethod
-    def _validate(payload: Any, cards: list[dict], pool: list[dict], required: int) -> dict[str, Any]:
+    def _validate(
+        payload: Any,
+        cards: list[dict],
+        pool: list[dict],
+        required: int,
+        archetypes: list[dict] | None = None,
+    ) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("Draft response must be an object")
         picks = payload.get("picks")
@@ -387,6 +419,7 @@ class DraftAdvisor:
         if not isinstance(needs, list):
             raise ValueError("Draft needs must be a list")
         result = {"recommendations": selected, "plan": plan, "needs": [_text(need, 16) for need in needs[:3]]}
+        result.update(_plan_lane(plan, payload.get("lane"), archetypes))
         alternative = payload.get("alternative")
         if isinstance(alternative, dict):
             grp_id = alternative.get("grp_id")

@@ -86,6 +86,9 @@ class DraftRun:
     reviewed_pool: tuple = ()
     # The pick autoplay selected in Arena and has not confirmed yet (key, cards, decision).
     preview: dict | None = None
+    # The deck plan the model last stated; the commentary's lane follows it, not the pool estimate.
+    plan: str = ""
+    plan_lane: str = ""  # the advisor's validated lane code for that plan
 
 
 class DraftEventDriver:
@@ -574,6 +577,8 @@ class DraftEventDriver:
                 model_reasons=[model_reasons.get(g, "") for g, _name in spoken],
                 mana_costs=mana,
                 verb=verb,
+                model_plan=self.run.plan,
+                model_lane=self.run.plan_lane,
             )
             logger.info("Draft commentary P%sp%s: %s", pack_number, pick_number, line)
             return line
@@ -709,15 +714,21 @@ class DraftEventDriver:
                     )
                 if len(kept) < required:
                     return None
+            # lane= is the plan's own colors (validated by the advisor); pool= is
+            # the color-count estimate, which the commentary no longer speaks
+            # when a plan names colors (2026-10-08: it said Dimir over an Izzet plan).
             logger.info(
-                "Draft strategy P%sp%s: lane=%s; plan=%s; needs=%s",
+                "Draft strategy P%sp%s: lane=%s; pool=%s; plan=%s; needs=%s",
                 details.get("pack_number"),
                 details.get("pick_number"),
+                result.get("lane") or "open",
                 lane.colors or "open",
                 result.get("plan", ""),
                 "; ".join(result.get("needs") or []),
             )
             source = "model" if len(from_model) == required else "model+ranking"
+            self.run.plan = str(result.get("plan") or "")
+            self.run.plan_lane = str(result.get("lane") or "")
             return kept, reasons, source, from_model
         except Exception as exc:
             logger.info("Draft pick refinement unavailable: %s", exc)

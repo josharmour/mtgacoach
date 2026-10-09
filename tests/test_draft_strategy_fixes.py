@@ -740,3 +740,51 @@ def test_rejected_answers_are_logged_in_card_names(caplog):
     assert result["reasoning_source"] == "heuristic"
     logged = next(message for message in caplog.messages if message.startswith("Rejected draft answer"))
     assert '"synergy_with": ["Card 20"]' in logged and "Empowers Jace again." in logged
+
+
+# ---------------------------------------------------------------------------
+# The structured lane must match the plan's main colors (2026-10-08 FRA: the
+# plan said Izzet with a black splash while the lane said UB).
+# ---------------------------------------------------------------------------
+
+
+def lane_answer(plan: str, lane) -> str:
+    return json.dumps(
+        {"picks": [{"grp_id": 10, "reason": "Empowers Jace again."}], "plan": plan, "lane": lane, "needs": []}
+    )
+
+
+def test_lane_disagreeing_with_the_plan_is_recomputed_and_logged(caplog):
+    backend = Mock()
+    backend.complete.return_value = lane_answer(
+        "Izzet spells/Jace-empowerment tempo with a light black splash for Garruk and Void Extrapolator.",
+        "UB",
+    )
+    pack = {
+        **advisor_pack(),
+        "set_strategy": {"archetypes": [{"colors": "UR", "name": "Izzet Spells & Jace Empowerment"}]},
+    }
+    with caplog.at_level(logging.WARNING, logger="arenamcp.draft_advisor"):
+        result = DraftAdvisor(backend).recommend(pack, {})
+    assert result["reasoning_source"] == "card_rules"
+    assert result["lane"] == "UR" and result["splash"] == "B"
+    assert any(m.startswith("Draft lane UB disagrees with the plan's colors UR") for m in caplog.messages)
+
+
+def test_lane_from_the_model_is_kept_only_for_a_plan_naming_no_colors():
+    backend = Mock()
+    backend.complete.return_value = lane_answer("Grind them out with removal and card advantage.", "ur")
+    assert DraftAdvisor(backend).recommend(advisor_pack(), {})["lane"] == "UR"
+    backend.complete.return_value = lane_answer("Grind them out with removal and card advantage.", "Izzet")
+    assert DraftAdvisor(backend).recommend(advisor_pack(), {})["lane"] == ""
+    backend.complete.return_value = lane_answer(
+        "Blue-based tempo (Izzet or Azorius), second color open.", "UR"
+    )
+    assert DraftAdvisor(backend).recommend(advisor_pack(), {})["lane"] == "U"
+
+
+def test_prompt_tells_the_model_the_lane_must_match_the_plan():
+    from arenamcp.draft_advisor import DRAFT_SYSTEM_PROMPT
+
+    assert '"lane":' in DRAFT_SYSTEM_PROMPT
+    assert "a splash or a color merely kept open is never part of lane" in DRAFT_SYSTEM_PROMPT

@@ -109,6 +109,8 @@ class Lane:
     main: str = ""
     # How firmly the weaker lane color is held: 0 = still open, 1 = settled.
     second_hold: float = 1.0
+    # Colors the stated plan splashes (never set by the pool estimate).
+    splash: str = ""
 
 
 @dataclass
