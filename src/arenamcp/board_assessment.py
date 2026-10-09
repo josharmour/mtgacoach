@@ -68,7 +68,8 @@ ROLE_RACE = "race"
 ROLE_CONTROL = "control/stabilize"
 ROLES = (ROLE_AGGRESSOR, ROLE_DEFENDER, ROLE_RACE, ROLE_CONTROL)
 
-# Attacks simulated for a clock; beyond this the last attack is extrapolated.
+# Attacks simulated for a clock; beyond this, once nobody dies any more, the
+# last attack is extrapolated (``_simulate_attacks``).
 _HORIZON = 6
 # Clocks longer than this are reported as this value.
 _MAX_CLOCK = 20
@@ -615,13 +616,18 @@ def _attack_round(attackers: list[dict], blockers: list[dict], life: int) -> tup
     Attacking with everything and letting the defender's best blocks answer it
     is the worst case for the defender's life; withholding attackers that only
     die keeps the attacker's board for the next turn. The attacker picks the
-    line with more damage (ties keep the creatures home).
+    line with more damage (ties keep the creatures home). A held-back attack
+    that gets nothing through and kills no blocker is no attack at all: nobody
+    is sent to die for nothing (2026-10-08: the survivors of a full attack were
+    re-blocked and killed one by one, "losing" creatures that never attacked).
     """
     full = _combat(attackers, blockers, life)
     if not full[1]:
         return full
     survivors = [a for a in attackers if a["instance_id"] not in full[1]]
     held = _combat(survivors, blockers, life) if survivors else (0, set(), set())
+    if held[0] <= 0 and not held[2]:
+        held = (0, set(), set())
     return full if full[0] > held[0] else held
 
 
@@ -634,17 +640,23 @@ def _simulate_attacks(
     first_blockers: list[dict] | None,
     horizon: int = _HORIZON,
 ) -> tuple[int | None, list[int]]:
-    """Attacks needed to kill the defender (None within the horizon) and life after each.
+    """Attacks needed to kill the defender (None when the board stalls) and life after each
+    of the first ``horizon`` attacks.
 
     Board-only: no new creatures on either side. ``first_attackers`` /
     ``first_blockers`` restrict the immediate attack to creatures that can act
     now (untapped, not summoning sick); later attacks use everything alive.
+    Attacks are simulated one by one for ``horizon`` attacks; from then on, as
+    soon as an attack changes neither board (nobody died) its damage repeats
+    and the rest is arithmetic (a lone 1/2 flyer is a 20-turn clock, not "no
+    clock"). While creatures keep dying past the horizon — chump blocks, trades
+    — the simulation goes on (at most ``_MAX_CLOCK`` attacks): a chump at the
+    horizon is one attack of nothing, not "no clock".
     """
     alive_att = list(attackers)
     alive_def = list(defenders)
     lives: list[int] = []
-    defender_start = life
-    for index in range(horizon):
+    for index in range(_MAX_CLOCK):
         if index == 0 and first_attackers is not None:
             able = [a for a in first_attackers if a["_can_attack"]]
             blockers = list(first_blockers if first_blockers is not None else alive_def)
@@ -653,18 +665,17 @@ def _simulate_attacks(
             blockers = list(alive_def)
         damage, dead_att, dead_def = _attack_round(able, blockers, life)
         life -= damage
-        lives.append(life)
+        if index < horizon:
+            lives.append(life)
         alive_att = [a for a in alive_att if a["instance_id"] not in dead_att]
         alive_def = [d for d in alive_def if d["instance_id"] not in dead_def]
         if life <= 0:
             return index + 1, lives
-        if damage <= 0 and not dead_att and not dead_def and index > 0:
+        settled = not dead_att and not dead_def
+        if damage <= 0 and settled and index > 0:
             return None, lives  # a stalled board repeats; no progress
-    # Past the horizon the boards have settled: extrapolate the last attack
-    # (a lone 1/2 flyer is a 20-turn clock, not "no clock").
-    last = (lives[-2] if len(lives) > 1 else defender_start) - lives[-1] if lives else 0
-    if lives and last > 0 and len(lives) == horizon:
-        return min(_MAX_CLOCK, horizon + math.ceil(lives[-1] / last)), lives
+        if damage > 0 and settled and index + 1 >= horizon:
+            return min(_MAX_CLOCK, index + 1 + math.ceil(life / damage)), lives
     return None, lives
 
 
@@ -1200,6 +1211,14 @@ def _leaf_race(search: Any, line: Any) -> float | None:
         return None
 
 
+def _stalled_text(who: str, lives: list[int], start: int) -> str:
+    """Why a side has no clock: nothing gets through, or some did before the board stalled."""
+    low = min(lives) if lives else start
+    if low >= start:
+        return f"{who} get nothing through"
+    return f"{who} get {start - low} through before the blocks stall it ({low} life left)"
+
+
 def _clock_facts(model: Any) -> SimpleNamespace:
     """Board-only clocks, race and the survival hint the deployment values (and the search) use."""
     ours, theirs = list(model.ours), list(model.theirs)
@@ -1221,6 +1240,23 @@ def _clock_facts(model: Any) -> SimpleNamespace:
         first_attackers=first_their_attackers,
         # On our turn, creatures that attacked stay tapped through theirs.
         first_blockers=list(model.our_first_blockers),
+    )
+    # Their first attack with no blocks at all: when our best blocks stop none
+    # of it, their clock is evasive and "hold blockers" is an empty lane
+    # (2026-10-08 game 1 T8-T12: Tetsuko made every 1-power attacker
+    # unblockable and the role said "defender — block, trade, deploy bodies").
+    _unblocked_clock, unblocked_lives = _simulate_attacks(
+        theirs, [], model.our_life, first_attackers=first_their_attackers, first_blockers=[]
+    )
+    # Only with creatures of our own to block with: an empty board is "deploy
+    # bodies" (defender), not an evasion problem.
+    evasive_clock = bool(
+        their_clock is not None
+        and ours
+        and their_lives
+        and unblocked_lives
+        and model.our_life - their_lives[0] > 0
+        and unblocked_lives[0] >= their_lives[0]
     )
     lethal_now = our_attack_pending and our_clock == 1
     if our_attack_pending and not lethal_now:
@@ -1246,9 +1282,11 @@ def _clock_facts(model: Any) -> SimpleNamespace:
     if our_clock is None and their_clock is None:
         race, race_detail = "stalled", "neither side gets damage through the other's blocks"
     elif their_clock is None:
-        race, race_detail = "ahead", f"we kill in {our_clock}, they get nothing through"
+        race = "ahead"
+        race_detail = f"we kill in {our_clock}, {_stalled_text('they', their_lives, model.our_life)}"
     elif our_clock is None:
-        race, race_detail = "behind", f"they kill in {their_clock}, we get nothing through"
+        race = "behind"
+        race_detail = f"they kill in {their_clock}, {_stalled_text('we', our_lives, model.opp_life)}"
     else:
         ours_at, theirs_at = attack_time(our_clock, True), attack_time(their_clock, False)
         if ours_at < theirs_at:
@@ -1279,6 +1317,7 @@ def _clock_facts(model: Any) -> SimpleNamespace:
         race=race,
         race_detail=race_detail,
         survival_hint=survival_hint,
+        evasive_clock=evasive_clock,
     )
 
 
@@ -1537,6 +1576,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         lookahead=lookahead,
         best_line=best,
         line_text=best_text,
+        evasive_clock=bool(getattr(clocks, "evasive_clock", False)),
         # "Only" claims force no role while a cast or pending effect they can't see could change them.
         only_survivor=bool(found and found.only_survivor) and not caveat,
         greedy_dies=bool(found and getattr(found, "greedy_dies", False)) and not caveat,
@@ -2282,8 +2322,14 @@ def _role(
     race_term: float | None = None,
     greedy_dies: bool = False,
     caveat: str = "",
+    evasive_clock: bool = False,
 ) -> tuple[str, str]:
     """Who's the beatdown: lethal and survival first, then fast clocks, then board/cards/curve.
+
+    ``evasive_clock``: our best blocks stop none of their next attack (flying
+    we can't reach, "can't be blocked"), so a defender lane built on holding
+    blockers is empty — behind such a clock the role is RACE: push damage and
+    find removal, keep nothing home that changes nothing.
 
     A clock within the simulation horizon (<= 6 attacks) is "fast" and drives
     the role; slower clocks only break ties, so a lone 1/2 flyer does not turn
@@ -2345,6 +2391,11 @@ def _role(
         )
         return ROLE_CONTROL, f"dead in {dead_in} turns{after} ({board}) — stabilize: block, remove, gain life"
     if race == "behind" and fast(their_clock):
+        if evasive_clock:
+            return ROLE_RACE, (
+                f"their clock {their_clock} vs ours {text(our_clock)} ({board}) is evasive — our blockers stop "
+                "none of it: race it or remove it, holding creatures back changes nothing"
+            )
         return ROLE_DEFENDER, (
             f"their clock {their_clock} vs ours {text(our_clock)} ({board}) — behind: block, trade, deploy bodies"
         )
@@ -2388,6 +2439,8 @@ def _role(
     if race == "ahead":
         return ROLE_AGGRESSOR, f"{slow} — we're slightly ahead: keep pressure, add evasion"
     if race == "behind" or their_power > our_power:
+        if evasive_clock and race == "behind":
+            return ROLE_RACE, f"{slow} — their damage is evasive, blockers stop none of it: race or remove it"
         return ROLE_DEFENDER, f"{slow} — hold blockers, develop bigger threats"
     return ROLE_RACE, f"{slow} — find evasion or removal to break the stall"
 

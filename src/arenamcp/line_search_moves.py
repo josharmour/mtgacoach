@@ -66,7 +66,7 @@ from arenamcp.board_assessment import (
     removal_reach,
     ward_cost,
 )
-from arenamcp.board_model import BoardModel, _regular_damage_part
+from arenamcp.board_model import BoardModel, _regular_damage_part, cast_bans, spell_banned
 from arenamcp.combat_keywords import has_combat_keyword
 from arenamcp.mulligan_policy import _land_colors, _pip_matching, hand_card
 
@@ -656,6 +656,7 @@ class Moves:
         self._memo: dict = {}
         self._kill_memo: dict = {}
         self._ward_memo: dict = {}
+        self._ban_memo: dict = {}
         self._m_memo: dict = {}
         self._value_memo: dict = {}
         self._cast_memo: dict = {}
@@ -873,6 +874,26 @@ class Moves:
             found = self._ward_memo[id(body)] = ward_cost(body)
         return found
 
+    def bans(self, node: Node) -> frozenset:
+        """Spell kinds a permanent this line put onto the battlefield stops us casting.
+
+        "You can't cast permanent spells." (Codie, Vociferous Codex) cast on T
+        leaves T+1 and T+2 with instants and sorceries only; the search never
+        pays for a body with the rest of the hand. A restriction already on the
+        board is ``_Spell.uncastable`` (``board_model.board_cast_bans``).
+        """
+        key = ids_of(node.ours)
+        found = self._ban_memo.get(key)
+        if found is None:
+            kinds: set = set()
+            for body in node.ours:
+                kinds |= cast_bans(body.get("_card") or body, ours=True)
+            found = self._ban_memo[key] = frozenset(kinds)
+        return found
+
+    def banned(self, hs: HandSpell, bans: frozenset) -> bool:
+        return bool(bans) and spell_banned(hs.spell.card, bans)
+
     def material(self, body: dict) -> float:
         """m(b) = power + toughness / 2, +1 if it flies or can't be blocked."""
         found = self._m_memo.get(id(body))
@@ -1016,6 +1037,7 @@ class Moves:
         A set whose life payments would kill us is never cast.
         """
         theirs, their_tapped = node.theirs, node.their_tapped
+        bans = self.bans(node)
         key = (
             node.hand,
             tuple(sorted("".join(sorted(s.produces)) for s in sources)),
@@ -1024,6 +1046,7 @@ class Moves:
             instant_only,
             max((b["power"] for b in node.ours), default=-1),
             node.our_life,
+            bans,
         )
         found = self._cast_memo.get(key)
         if found is not None:
@@ -1031,10 +1054,11 @@ class Moves:
         options: list[tuple[int, list]] = []
         for position, index in enumerate(node.hand):
             items = []
+            banned = self.banned(self.spells[index], bans)
             for var in self.spells[index].variants:
                 if (instant_only and not var.instant) or var.mana_value > len(sources):
                     continue
-                if var.loss >= node.our_life:
+                if (banned and var.kind == "cast") or var.loss >= node.our_life:
                     continue
                 if var.reach is not None:  # no killable target: hold it
                     spare = len(sources) - var.mana_value
@@ -1230,7 +1254,7 @@ class Moves:
             "mana": len(mid.sources),
             "colors": _colors(mid.sources),
             "source_colors": tuple("".join(sorted(s.produces)) for s in mid.base_sources),
-            "castable": self.castable(mid.sources),
+            "castable": self.castable(mid.sources, mid.ours),
             "opp_life_after": opp_after,
             "greedy": greedy,
             "keys": frozenset(mid.keys | {("attack", frozenset(ids)) if ids else ("noattack",)}),
@@ -1297,13 +1321,18 @@ class Moves:
             attacks=attacks,
         )
 
-    def castable(self, sources) -> tuple[str, ...]:
-        """Every hand spell castable alone with these sources (as ``_schedule`` lists them)."""
+    def castable(self, sources, ours=()) -> tuple[str, ...]:
+        """Every hand spell castable alone with these sources (as ``_schedule`` lists them),
+        ``ours`` being the bodies on the battlefield (a cast restriction among them applies)."""
+        bans: frozenset = frozenset()
+        for body in ours:
+            bans |= cast_bans(body.get("_card") or body, ours=True)
         return tuple(
             hs.name
             for hs in self.spells
             if not hs.spell.has_x
             and not hs.spell.uncastable
+            and not self.banned(hs, bans)
             and hs.spell.mana_value <= len(sources)
             and _pip_matching(hs.spell.pips, sources)
         )
@@ -1675,7 +1704,7 @@ class Moves:
                     k=node.k, turn=node.abs_turn, label=LABELS[node.k], land=mid.land.name if mid.land else "",
                     casts=tuple(mid.cast_names), modes=tuple(mid.modes), targets=tuple(mid.targets),
                     cycles=tuple(mid.cycles), mana=len(sources), colors=_colors(sources),
-                    source_colors=tuple("".join(sorted(s.produces)) for s in base), castable=self.castable(sources),
+                    source_colors=tuple("".join(sorted(s.produces)) for s in base), castable=self.castable(sources, mid.ours),
                     greedy=True,
                 )
             )  # fmt: skip

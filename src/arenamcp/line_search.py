@@ -217,9 +217,29 @@ def _unmodelled_mark(line: Line, unmodelled: Collection[str]) -> str:
     return f" ({', '.join(names)} not modelled)" if names else ""
 
 
+def _deployment(line: Line) -> tuple[int, int]:
+    """The T step's (creature bodies cast, mana left unspent): the tie-break behind the score.
+
+    Two lines with exactly the same outcome class, timing and value differ
+    only in what T puts on the board and keeps in reserve: the one that casts
+    more creature bodies, then the one that leaves more mana open (the dearer
+    spell stays castable next turn, the mana answers their turn), wins. Before
+    this (2026-10-08, bug_20261006_185403 T10 with the model down) "Codie +
+    Necromancer" and "Geist + Necromancer" tied at 43.6 and the summary text
+    decided: the 6-mana pair over the 5-mana pair.
+    """
+    step = line.steps[0] if line.steps else None
+    if step is None or not step.plays:
+        return (0, 0)
+    _land, casts, _ids = step.plays
+    bodies = sum(1 for var, _target in casts if var.kind == "cast" and (var.body is not None or var.tokens))
+    spent = sum(var.mana_value for var, _target in casts if var.kind == "cast")
+    return (bodies, step.mana - spent)
+
+
 def _order(line: Line) -> tuple:
-    """Sort key, higher is better: the score, then a stable text tiebreak."""
-    return (line.cls, line.timing, line.v, tuple(-ord(c) for c in line.summary()))
+    """Sort key, higher is better: the score, the T step's deployment, then a stable text tiebreak."""
+    return (line.cls, line.timing, line.v, _deployment(line), tuple(-ord(c) for c in line.summary()))
 
 
 @dataclass
@@ -389,6 +409,8 @@ class _Search(Moves):
                 var = hs.plain
                 if var is None or hs.index not in node.hand or var.loss >= life:
                     continue
+                if self.banned(hs, self.bans(node)):
+                    continue  # "you can't cast permanent spells" from a body cast earlier in the line
                 if k == 0 and self.our_turn and model.t_instant_only and not var.instant:
                     continue
                 target = None

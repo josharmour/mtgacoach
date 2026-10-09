@@ -28,7 +28,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from functools import lru_cache
-from itertools import product
+from itertools import combinations, product
 from typing import Any
 
 from arenamcp.combat_keywords import can_be_blocked_by, has_combat_keyword
@@ -165,14 +165,46 @@ class CombatOutcome:
     blockers_died: list[dict] = field(default_factory=list)
 
 
+def _damage_order(power: int, blockers: list[dict], deathtouch: bool) -> list[dict]:
+    """The attacker's damage assignment order (rule 510.1c): the blockers it kills first.
+
+    With ``power`` to assign and lethal damage per blocker (its toughness, 1 with
+    deathtouch), the attacker picks the set it can kill outright — the most
+    blockers, then the most power and toughness among them — and puts those
+    first (cheapest lethal leading), the rest after, indestructible last. Up to
+    eight killable blockers are searched exactly; beyond that the cheapest
+    kills lead.
+    """
+    killable = [b for b in blockers if not _has(b, "indestructible")]
+    lethal = {id(b): (1 if deathtouch else _pt(b)[1]) for b in killable}
+    chosen: tuple[dict, ...] = ()
+    if len(killable) <= 8:
+        for size in range(len(killable), 0, -1):
+            best = None
+            for combo in combinations(killable, size):
+                if sum(lethal[id(b)] for b in combo) <= power:
+                    key = sum(_pt(b)[0] + _pt(b)[1] for b in combo)
+                    if best is None or key > best[0]:
+                        best = (key, combo)
+            if best is not None:
+                chosen = best[1]
+                break
+    chosen_ids = {id(b) for b in chosen}
+    first = sorted(chosen, key=lambda b: lethal[id(b)])
+    rest = sorted((b for b in killable if id(b) not in chosen_ids), key=lambda b: lethal[id(b)])
+    return first + rest + [b for b in blockers if _has(b, "indestructible")]
+
+
 def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
     """Resolve one attacker against its assigned blockers.
 
     Simplified damage model:
       - If no blockers: all power goes through.
-      - If blockers: damage is assigned to blockers in the order given
-        until each has received lethal, then remaining spills to player
-        iff attacker has trample.
+      - If blockers: the attacker orders them (rule 510.1c) to kill as many as
+        it can, the biggest bodies among equal counts (``_damage_order``),
+        then remaining damage spills to player iff attacker has trample. A
+        3/2 double-blocked by a 1/5 and a 1/2 kills the 1/2; it does not dump
+        its damage into the 1/5.
       - First strike: attacker strikes first. Blockers killed in the FS
         step don't deal damage back.
       - Deathtouch: any damage to a blocker is lethal; when choosing how
@@ -192,6 +224,8 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
     if not assigned:
         out.damage_through = atk_p * (2 if atk_ds else 1)
         return out
+
+    assigned = _damage_order(atk_p, assigned, atk_dth)
 
     # Pre-fight state — attacker takes damage from blockers unless
     # one-sided first strike kills attacker before they fight.
@@ -524,7 +558,17 @@ def _greedy_block_plan(
     *,
     blocker_allowed_attackers: dict[int, set[int]] | None,
 ) -> BlockPlan:
-    """Fallback for large combat — greedy chump-block biggest attackers first."""
+    """Fallback for large combat — one blocker per attacker, biggest attackers first.
+
+    Each attacker gets the single blocker whose block scores best
+    (``_block_score`` on that fight alone, at the life left after the
+    attackers already handled): a free block beats a chump, a chump beats a
+    hit that matters, and no block at all when every block loses more than
+    the hit costs. The old rule took the cheapest body that could block and
+    chump-blocked with it (2026-10-08: Rank Rat 1/1 died to Hallway Heckler
+    2/3 while Prudent Fateseer 1/4 stood idle, and the line search read the
+    0 damage as "their attacks are stopped"). Multi-blocks are not tried.
+    """
     sorted_atk = sorted(enumerate(attackers), key=lambda ia: -_pt(ia[1])[0])
     remaining_blockers = list(blockers)
     assignments: dict[int, int] = {}
@@ -536,25 +580,31 @@ def _greedy_block_plan(
 
     for _atk_idx, atk in sorted_atk:
         atk_iid = int(atk.get("instance_id") or 0)
-        # Pick a blocker that can block this attacker with minimum material.
-        candidates = []
+        life_left = max(1, your_life - total_damage)
+        unblocked = _resolve_attacker(atk, [])
+        best: tuple[float, int, int, dict, CombatOutcome] | None = None
         for blk in remaining_blockers:
             blk_iid = int(blk.get("instance_id") or 0)
             allowed = (
                 blocker_allowed_attackers.get(blk_iid) if blocker_allowed_attackers is not None else None
             )
-            if _can_block_this_attacker(atk, blk, allowed):
-                candidates.append(blk)
-        if not candidates:
-            total_damage += _pt(atk)[0]
+            if not _can_block_this_attacker(atk, blk, allowed):
+                continue
+            outcome = _resolve_attacker(atk, [blk])
+            killed = _material(atk) if outcome.attacker_died else 0
+            lost = sum(_material(dead) for dead in outcome.blockers_died)
+            score = _block_score(outcome.damage_through, killed, lost, life_left)
+            # Ties: the cheapest surviving body, then the tougher one.
+            key = (score, -_material(blk), _pt(blk)[1])
+            if best is None or key > best[:3]:
+                best = (*key, blk, outcome)
+        no_block = _block_score(unblocked.damage_through, 0, 0, life_left)
+        if best is None or best[0] <= no_block:
+            total_damage += unblocked.damage_through
             continue
-        # Prefer minimum material blocker that still survives if possible.
-        candidates.sort(key=lambda b: (_material(b), -_pt(b)[1]))
-        chosen = candidates[0]
+        chosen, outcome = best[3], best[4]
         remaining_blockers.remove(chosen)
         assignments[int(chosen.get("instance_id") or 0)] = atk_iid
-
-        outcome = _resolve_attacker(atk, [chosen])
         total_damage += outcome.damage_through
         if outcome.attacker_died:
             atk_killed_material += _material(atk)

@@ -47,8 +47,8 @@ def test_their_attack_policy_is_valued_after_our_crackback_on_the_logged_board()
     assert result is not None and not result.truncated
 
     # Every line: their life never drops by more than the power we attacked with (no
-    # damage from anywhere else is modelled on this board), and the three turns of attacks
-    # can't take 24 below 13 — before the fix the best line read "opponent at 5".
+    # damage from anywhere else is modelled on this board) — before the fix the best line
+    # read "opponent at 5".
     power = _power(model, {"Traxos, Academy Guardian": 1, "Void Extrapolator": 2})
     for line in result.lines:
         opp_life = model.opp_life
@@ -57,13 +57,27 @@ def test_their_attack_policy_is_valued_after_our_crackback_on_the_logged_board()
                 continue
             assert opp_life - step.opp_life_after <= sum(power[name] for name in step.attack), line.summary()
             opp_life = step.opp_life_after
-        assert opp_life >= 13, line.summary()
+    # The best line, by hand (2026-10-08, after the clock-math and greedy-block fixes):
+    # T13 (now): their two 1/4 fliers attack past our five ground bodies, Heckler stays
+    #   home (a triple block kills it): 10 -> 8.
+    # T14: Theorix Annex (tapped) + Traxos 1/5 flying vigilance (4 of our 6 mana); no attack
+    #   into the untapped Heckler. T15: they attack with everything — Traxos blocks one
+    #   flier, Fateseer 1/4 blocks Heckler for free, the other flier connects: 8 -> 7.
+    # T16: Void Extrapolator; all six bodies (1+1+1+1+2+1 = 7 power) attack their tapped-out
+    #   board: 24 -> 17. T17: Heckler alone attacks (the fliers stay home against the
+    #   crackback), Traxos + Void double-block and kill it, Void dies: 7 -> 7.
+    # T18: no attack into two untapped 1/4 fliers. T19: one flier attacks, Traxos blocks.
     best = result.best
-    assert best.outcome == "alive" and best.lives() == [8, 8, 8, 8]
-    assert [s.opp_life_after for s in best.steps] == [21, None, 16]
-    # Their fliers no longer tap out every turn into our five bodies for two damage.
-    assert all(step.policy != "all" for step in best.steps), [s.policy for s in best.steps]
-    assert "opponent at 16" in result.posture_reason and "opponent at 15" in result.posture_reason
+    assert best.outcome == "alive" and best.lives() == [8, 7, 7, 7]
+    assert [s.casts for s in best.steps] == [("Traxos, Academy Guardian",), ("Void Extrapolator",), ()]
+    assert [s.opp_life_after for s in best.steps] == [None, 17, None]
+    assert [s.policy for s in best.steps] == ["all", "keep-2", "keep-1"]
+    # Their fliers no longer tap out every turn into our bodies for two damage: after the one
+    # all-out attack our seven power hit an empty board, and from then on they hold back.
+    assert not all(step.policy == "all" for step in best.steps)
+    # Attacking on T14 (four 1-power bodies into Heckler: 24 -> 21) ends within a point of
+    # holding, so the posture is neither.
+    assert result.posture == "either" and result.posture_reason == "attacking and holding end alike"
     assert "opponent at 5" not in assessment.role_reason and "opponent at 8" not in assessment.role_reason
 
 
@@ -71,7 +85,11 @@ def test_the_report_board_itself_keeps_their_life_near_26():
     # 18:29:45: Apex Witchstalker resolved (26 life, a 6/4 menace blocker): at most a few through.
     result = _assess(fx.BUG_182945).line_search
     assert result.best.outcome == "alive"
-    assert min(s.opp_life_after for s in result.best.steps if s.opp_life_after is not None) >= 22
+    # The best line holds everything back (their fliers then stay home too: life 8, 8, 8, 8);
+    # whichever line attacks gets at most a few through.
+    after = [s.opp_life_after for line in result.lines for s in line.steps if s.opp_life_after is not None]
+    assert after and min(after) >= 22
+    assert result.best.lives() == [8, 8, 8, 8]
 
 
 @pytest.mark.parametrize("name", REAL_BOARDS)

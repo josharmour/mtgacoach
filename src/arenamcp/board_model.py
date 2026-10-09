@@ -102,6 +102,58 @@ def _cast_gate_unmet(card: dict, graveyard: int) -> bool:
     return graveyard < needed
 
 
+# A permanent's unconditional cast restriction: "You can't cast permanent
+# spells." (Codie, Vociferous Codex), "Players can't cast creature spells.",
+# "Noncreature spells can't be cast." One kind per clause, a whole line, no
+# condition ("unless", "with mana value", "during", "more than one").
+_CAST_KINDS = "creature|noncreature|permanent|artifact|enchantment|planeswalker|instant|sorcery"
+_CAST_BAN = re.compile(
+    rf"^\s*(?P<who>you|players|each player) can't cast (?P<kind>{_CAST_KINDS}) spells\.?\s*$"
+    rf"|^\s*(?P<kind2>{_CAST_KINDS}) spells can't be cast\.?\s*$",
+    re.MULTILINE,
+)
+
+
+def cast_bans(card: dict, *, ours: bool) -> frozenset[str]:
+    """The spell kinds ``card`` (on the battlefield) stops its controller — or, with "players",
+    everyone — from casting; ``ours`` says the card is ours. Empty for the usual card."""
+    found = set()
+    for match in _CAST_BAN.finditer(_text(card)):
+        kind = match.group("kind") or match.group("kind2")
+        who = match.group("who")
+        if who == "you" and not ours:
+            continue
+        found.add(kind)
+    return frozenset(found)
+
+
+def spell_banned(card: dict, bans: frozenset[str]) -> bool:
+    """Whether a spell of ``card``'s types can't be cast under ``bans`` (``cast_bans`` kinds)."""
+    if not bans:
+        return False
+    types = _types(card)
+    creature = "creature" in types
+    permanent = bool(types.strip()) and not re.search(r"\b(?:instant|sorcery)\b", types)
+    for kind in bans:
+        if (
+            (kind == "permanent" and permanent)
+            or (kind == "creature" and creature)
+            or (kind == "noncreature" and not creature)
+            or (kind not in ("permanent", "creature", "noncreature") and kind in types)
+        ):
+            return True
+    return False
+
+
+def board_cast_bans(battlefield: list[dict], local: int | None) -> frozenset[str]:
+    """Every cast restriction our permanents (and "players can't" ones of either side) impose on us."""
+    bans: set[str] = set()
+    for card in battlefield:
+        if isinstance(card, dict) and not card.get("is_phased_out"):
+            bans |= cast_bans(card, ours=_controller(card) == local)
+    return frozenset(bans)
+
+
 _STRIKES = frozenset({"first strike", "double strike"})
 _STRIKE_TEXT = re.compile(r"\b(?:first|double) strike\b", re.IGNORECASE)
 
@@ -459,6 +511,9 @@ def build_board_model(state: dict) -> BoardModel | None:
         for c in state.get("graveyard") or []
         if isinstance(c, dict) and c.get("owner_seat_id", c.get("controller_seat_id")) == local
     )
+    # "You can't cast permanent spells" on our board (Codie, Vociferous Codex): those
+    # spells are uncastable for the schedule and the search alike (``spell_banned``).
+    bans = board_cast_bans(battlefield, local)
     spells: list[_Spell] = []
     for card in hand:
         if _is_land(card) and not _is_creature(card):
@@ -476,7 +531,7 @@ def build_board_model(state: dict) -> BoardModel | None:
                 mana_value=info.mana_value + extra_mana_cost(card),
                 pips=info.pips,
                 has_x="x" in cost.lower(),
-                uncastable=_cast_gate_unmet(card, our_graveyard),
+                uncastable=_cast_gate_unmet(card, our_graveyard) or spell_banned(card, bans),
             )
         )
     # Our commanders in the command zone: cast like hand cards, at their current cost.
@@ -494,7 +549,7 @@ def build_board_model(state: dict) -> BoardModel | None:
                 mana_value=info.mana_value + extra_mana_cost(card),
                 pips=info.pips,
                 has_x="x" in (commander.printed or commander.cost).lower(),
-                uncastable=_cast_gate_unmet(card, our_graveyard),
+                uncastable=_cast_gate_unmet(card, our_graveyard) or spell_banned(card, bans),
                 zone="command",
             )
         )
