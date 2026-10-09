@@ -199,10 +199,15 @@ def _require_admin(request: Request):
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Basic "):
         import base64
-        decoded = base64.b64decode(auth[6:]).decode()
+        import binascii
+
+        try:
+            decoded = base64.b64decode(auth[6:], validate=True).decode()
+        except (binascii.Error, ValueError, UnicodeDecodeError):
+            decoded = ""  # malformed header: fall through to the 403
         username, _, password = decoded.partition(":")
         admin_user = config.get("admin", {}).get("username", "admin")
-        if username == admin_user and password == admin_password:
+        if decoded and username == admin_user and password == admin_password:
             return True
 
     raise HTTPException(403, "Admin access required")

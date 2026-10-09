@@ -354,11 +354,25 @@
                         ? 'day'
                         : `${bucketSeconds / 86400}d bucket`;
 
+            // Match bundles uploaded by coaches (share-match-logs). Optional:
+            // the chart must still render when this endpoint is unavailable.
+            let bundleTiles = '';
+            try {
+                const bresp = await api('/admin/api/match-bundles/stats');
+                if (bresp.ok) {
+                    const b = await bresp.json();
+                    bundleTiles = `
+                <div class="stat"><div class="number">${(b.last_7d || 0).toLocaleString()}</div><div class="label">Match Bundles (7d)</div></div>
+                <div class="stat"><div class="number">${(b.installs_7d || 0).toLocaleString()}</div><div class="label">Bundle Installs (7d)</div></div>
+                <div class="stat"><div class="number">${(b.total || 0).toLocaleString()}</div><div class="label">Match Bundles (all)</div></div>`;
+                }
+            } catch (e) { /* tile is optional */ }
+
             document.getElementById('activity-stats').innerHTML = `
                 <div class="stat"><div class="number">${totalReqs.toLocaleString()}</div><div class="label">Requests</div></div>
                 <div class="stat"><div class="number">${(totalPrompt + totalCompletion).toLocaleString()}</div><div class="label">Total Tokens</div></div>
                 <div class="stat"><div class="number">${peak.toLocaleString()}</div><div class="label">Peak / ${bucketLabel}</div></div>
-                <div class="stat"><div class="number">${buckets.length}</div><div class="label">Buckets</div></div>
+                <div class="stat"><div class="number">${buckets.length}</div><div class="label">Buckets</div></div>${bundleTiles}
             `;
 
             if (totalReqs === 0) {

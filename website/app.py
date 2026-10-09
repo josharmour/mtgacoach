@@ -102,6 +102,11 @@ app.include_router(admin_router)
 from arenaonair import router as arenaonair_router
 app.include_router(arenaonair_router)
 
+# Match-bundle intake ("Share match logs to improve the coach").
+import match_bundles
+match_bundles.init_db()
+app.include_router(match_bundles.router)
+
 # Compatibility exports for tests and direct module consumers
 config = state.config
 router = state.router
