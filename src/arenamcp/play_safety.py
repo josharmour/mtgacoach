@@ -867,6 +867,7 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
             damage_removal_kills_nothing(card, state)
             or power_only_debuff_wasted(card, state)
             or temporary_shrink_wasted(card, state)
+            or counter_tax_payable_wasted(card, state)
         )
         if reason:
             return reason
@@ -917,6 +918,18 @@ def filter_play_options(decision: Any, state: dict) -> Any:
             for option in wasted:
                 logger.info("Withholding %s: -N/-0 outside combat never kills", option.label)
             options = tuple(option for option in options if option not in wasted)
+        if decision.can_cancel:
+            # "Counter ... unless its controller pays {3}" with the tax payable is no counter.
+            payable = [
+                (option, why)
+                for option in options
+                if option.meta.get("choiceKind") == "modal"
+                and (why := counter_tax_payable(_mode_text(option.label), state))
+            ]
+            for option, why in payable:
+                logger.info("Withholding %s: %s", option.label, why)
+            withheld = {id(option) for option, _why in payable}
+            options = tuple(option for option in options if id(option) not in withheld)
         return replace(decision, options=options)
     if decision.request_type != "ActionsAvailable":
         return decision
@@ -926,8 +939,265 @@ def filter_play_options(decision: Any, state: dict) -> Any:
         metadata = option.meta or {}
         source = find_source(state, metadata)
         reason = unsafe_play_reason(state, source, metadata.get("actionType", ""), metadata)
+        if (
+            not reason
+            and str(metadata.get("actionType", "")).removeprefix("ActionType_").lower() == "activate"
+        ):
+            reason = tap_forfeits_free_attack(option.label, source, state) or loyalty_minus_exposes_walker(
+                option.label, source, state
+            )
         if option.payable is not False and not reason:
             kept.append(option)
         elif reason:
             logger.info("Withholding %s: %s", option.label, reason)
     return replace(decision, options=tuple(kept))
+
+
+_TAP_COST = re.compile(r"^\s*\{o?T\}")
+_NO_PRECOMBAT_WITHHOLD = re.compile(
+    r"\badd\b[^.]*(?:\bmana\b|\{[wubrgc]\})|\bdamage\b|\bdestroy\b|\bexile\b|\b(?:gets?|gains?) \+|\bfight\b|\bsacrifice\b"
+    r"|\bcan't block\b|\btap target\b|\bcounter target\b|\breturn target\b",
+    re.IGNORECASE,
+)
+# Below this many points of free damage the loot/scry may be worth more.
+FREE_ATTACK_MIN_DAMAGE = 2
+
+
+def tap_forfeits_free_attack(label: str, source: dict, state: dict) -> str:
+    """Withhold a {T} ability of a creature whose free attack is worth more this turn.
+
+    2026-10-08 game 2 (match 3288cb65): Arni, Humble Scribe looted before
+    combat on T8, T10, T12, T14, T16 and T18 and never attacked; on T8 the
+    opposing board was empty and the loot cost 3 free damage. Fires only in
+    our own precombat main phase, for a tap ability whose text is a loot,
+    scry, surveil or similar value effect (never mana, damage, removal,
+    pumps or taps), when :func:`combat_strategy.free_attackers` counts the
+    creature in a free attack worth at least FREE_ATTACK_MIN_DAMAGE more
+    than the same attack without it. After combat the ability is offered
+    again (Arni untaps when another creature enters).
+    """
+    if not source or "creature" not in str(source.get("type_line") or "").lower():
+        return ""
+    turn = state.get("turn") or {}
+    local = _local_seat(state)
+    if local is None or turn.get("active_player") != local:
+        return ""
+    phase = str(turn.get("phase") or "").lower()
+    if "main1" not in phase and "main_1" not in phase and phase not in ("main",):
+        return ""
+    if state.get("decision_context", {}).get("type") == "declare_attackers":
+        return ""
+    detail = label.split("[", 1)[1] if "[" in label else ""
+    if not _TAP_COST.search(detail):
+        return ""
+    effect = detail.split(":", 1)[1] if ":" in detail else detail
+    if _NO_PRECOMBAT_WITHHOLD.search(effect):
+        return ""
+    from arenamcp.combat_strategy import free_attackers
+
+    try:
+        with_creature = free_attackers(state)
+    except Exception:  # the rule never blocks an activation on its own failure
+        return ""
+    identity = source.get("instance_id")
+    if with_creature is None or identity not in with_creature.attacker_ids:
+        return ""
+    others = [i for i in with_creature.attacker_ids if i != identity]
+    without = free_attackers(state, candidate_ids=others) if others else None
+    gain = with_creature.damage - (without.damage if without else 0)
+    if gain < FREE_ATTACK_MIN_DAMAGE:
+        return ""
+    logger.info(
+        "Free attack: %s attacks for %d unopposed this turn — holding its tap ability until after combat",
+        source.get("name"),
+        gain,
+    )
+    return (
+        f"Free attack: {source.get('name')} attacks for {gain} through their best blocks this turn "
+        f"({with_creature.explanation}); tapping it now forfeits that damage"
+    )
+
+
+# --- counter-unless-pay and the planeswalker loyalty floor ----------------------
+#
+# 2026-10-08 game 1 (match 07c043d8), from the post-match review:
+#
+# * 17:10:23, their T12: Icy Reception was cast to "counter the resolving
+#   Fblthp (opponent has only ~2 open mana, can't pay the {3})" with four of
+#   their lands untapped. They paid; the card and two mana went for nothing.
+# * 17:08:39, our T9: Jace went from 5 to 2 loyalty for a card into Tetsuko
+#   Umezawa's board — Tetsuko, Geist and Traxos, three power, every one of
+#   them unblockable — and was attacked down to nothing.
+
+_COUNTER_UNLESS = re.compile(
+    r"\bcounter target (?P<what>[^.•\n]*?\bspell\b[^.•\n]*?) unless (?:its controller|that player|they) pays?"
+    r" \{o?(?P<n>\d+)\}",
+    re.IGNORECASE,
+)
+_LOYALTY_MINUS = re.compile(r"\[(?:from [^\]:]+: )?[-\u2212](?P<n>\d+): ")
+
+
+def _mode_text(label: str) -> str:
+    """A casting-time mode label without its "Mode 2:" prefix and Arena's tags."""
+    text = re.sub(r"<[^>]*>", "", str(label or "")).strip()
+    return re.sub(r"^(?:mode \d+|modal)\s*:\s*", "", text, flags=re.IGNORECASE)
+
+
+def _opponent_seat(state: dict) -> int | None:
+    local = _local_seat(state)
+    seat = state.get("opponent_seat_id")
+    if seat is None:
+        seat = next(
+            (p.get("seat_id") for p in state.get("players") or [] if p.get("seat_id") not in (None, local)),
+            None,
+        )
+    return seat if seat != local else None
+
+
+def opponent_open_mana(state: dict) -> int | None:
+    """Mana the opponent can pay right now: their untapped lands, rocks and mana creatures that
+    can tap (``opponent_tricks._mana_sources``) plus their floating pool, restricted mana
+    ("spend only to cast ...") left out. None when the snapshot shows no land of theirs at all,
+    i.e. their board is unknown rather than empty."""
+    opponent = _opponent_seat(state)
+    if opponent is None:
+        return None
+    theirs = [
+        card
+        for card in state.get("battlefield") or []
+        if isinstance(card, dict) and (card.get("controller_seat_id") or card.get("owner_seat_id")) == opponent
+    ]
+    if not any(
+        "land" in str(card.get("type_line") or "").lower()
+        or any("land" in str(kind).lower() for kind in card.get("card_types") or [])
+        for card in theirs
+    ):
+        return None
+    from arenamcp.opponent_tricks import _mana_sources
+
+    return sum(1 for source in _mana_sources(state, opponent) if not getattr(source, "restricted", False))
+
+
+def counter_tax_payable(text: str, state: dict) -> str:
+    """Why a 'counter target ... spell unless its controller pays {N}' in ``text`` counters nothing:
+    the opposing spell's controller has N or more mana open. '' when the clause is absent, no
+    opposing spell is on the stack, their open mana is unknown, or they are short."""
+    taxes = [int(match.group("n")) for match in _COUNTER_UNLESS.finditer(str(text or ""))]
+    if not taxes or not opponent_spell_on_stack(state):
+        return ""
+    open_mana = opponent_open_mana(state)
+    if open_mana is None:
+        return ""
+    tax = max(taxes)
+    if open_mana < tax:
+        return ""
+    return (
+        f"'counter unless its controller pays {{{tax}}}' counters nothing: the opponent has "
+        f"{open_mana} mana open and pays"
+    )
+
+
+def counter_tax_payable_wasted(card: dict, state: dict) -> str:
+    """Withhold casting a counter-unless-pay spell when the opponent can pay the tax and no other
+    mode of the card does anything now (a -N/-0 mode outside combat: ``power_only_debuff_wasted``).
+    A mode that may still be the point (draw, damage, a -X/-Y) leaves the cast with the model."""
+    effects = _cast_effects(card)
+    counters = [effect for effect in effects if _COUNTER_UNLESS.search(effect)]
+    if not counters:
+        return ""
+    why = counter_tax_payable("\n".join(counters), state)
+    if not why:
+        return ""
+    others = [effect for effect in effects if effect not in counters]
+    for effect in others:
+        if _POWER_ONLY_MODE.match(effect) and not power_debuff_has_combat_use(state):
+            continue
+        return ""
+    return why + ("; its -N/-0 mode outside combat never kills" if others else "")
+
+
+def evasive_power_next_turn(state: dict) -> tuple[int, list[str]]:
+    """(power, names) of their creatures that can attack next turn and that our board can't block:
+    marked "can't be blocked" (``annotate_cant_be_blocked``: Tetsuko Umezawa's grant, auras, own
+    text), flyers while we have no flying or reach blocker, or everything while we have no creature
+    that can block. Our creatures all count as blockers (none has attacked yet)."""
+    from copy import deepcopy
+
+    from arenamcp.combat_keywords import annotate_cant_be_blocked
+
+    local = _local_seat(state)
+    if local is None:
+        return 0, []
+    battlefield = [deepcopy(card) for card in state.get("battlefield") or [] if isinstance(card, dict)]
+    annotate_cant_be_blocked(battlefield)  # marks the copies, never the live snapshot
+    creatures = [c for c in battlefield if "creature" in str(c.get("type_line") or "").lower()]
+
+    def controller(card: dict) -> Any:
+        return card.get("controller_seat_id") or card.get("owner_seat_id")
+
+    def rules(card: dict) -> str:
+        return re.sub(r"<[^>]*>", "", str(card.get("oracle_text") or "")).lower()
+
+    blockers = [c for c in creatures if controller(c) == local and not re.search(r"can(?:'|no)t block\b", rules(c))]
+    air = any(has_combat_keyword(c, "flying") or has_combat_keyword(c, "reach") for c in blockers)
+    total, names = 0, []
+    for card in creatures:
+        if controller(card) == local:
+            continue
+        power = card.get("power")
+        if isinstance(power, bool) or not isinstance(power, int) or power <= 0:
+            continue
+        if has_combat_keyword(card, "defender") or re.search(r"(?m)^(?:this creature )?can't attack\b", rules(card)):
+            continue
+        evasive = bool(card.get("cant_be_blocked")) or not blockers or (has_combat_keyword(card, "flying") and not air)
+        if evasive:
+            total += power
+            names.append(str(card.get("name") or "a creature"))
+    return total, names
+
+
+def loyalty_minus_exposes_walker(label: str, source: dict, state: dict) -> str:
+    """Withhold a loyalty-minus ability that leaves the planeswalker at or below the evasive power
+    the opponent can attack it with next turn (``evasive_power_next_turn``).
+
+    Our own turn only. Not when the walker is moot anyway: we have lethal on
+    board, or no defensive line survives their next attack (``all_in``,
+    ``dead_in == 1`` from the board assessment — the ability may be what
+    saves us, and that is the model's call). The search does not model
+    loyalty abilities, so "the minus wins the game" can only mean lethal now.
+    """
+    if not source or "planeswalker" not in str(source.get("type_line") or "").lower():
+        return ""
+    match = _LOYALTY_MINUS.search(str(label or ""))
+    if not match:
+        return ""
+    cost = int(match.group("n"))
+    from arenamcp.combat_strategy import loyalty
+
+    current = loyalty(source)
+    if current is None:
+        return ""
+    turn = state.get("turn") or {}
+    local = _local_seat(state)
+    if local is None or turn.get("active_player") != local:
+        return ""
+    threat, names = evasive_power_next_turn(state)
+    after = current - cost
+    if threat <= 0 or after > threat:
+        return ""
+    try:
+        from arenamcp.board_assessment import assess
+
+        assessment = assess(state)
+    except Exception as exc:  # the rule never blocks an activation on its own failure
+        logger.debug("No board assessment for the loyalty floor: %s", exc)
+        assessment = None
+    if assessment is not None and (assessment.lethal_now or assessment.all_in or assessment.dead_in == 1):
+        return ""
+    name = str(source.get("name") or "the planeswalker")
+    reason = (
+        f"{name} at {current} loyalty: -{cost} leaves {after}, within the {threat} evasive power "
+        f"({', '.join(names)}) they can attack it with next turn"
+    )
+    logger.info("Loyalty floor: %s", reason)
+    return reason
