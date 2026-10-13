@@ -151,7 +151,10 @@ def frame_changed(before: DesktopFrame, after: DesktopFrame, action: DesktopActi
 class NativeMacInput:
     """Use Quartz screen points, independent of the screenshot's Retina scale."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, raise_when_idle_s: float | None = None) -> None:
+        """``raise_when_idle_s``: bring Arena to the front once the user has not
+        touched keyboard or mouse for this long, instead of waiting for them to
+        (auto-queue only; None keeps the old wait)."""
         if sys.platform != "darwin":
             raise RuntimeError("Native Mac input requires macOS")
         try:
@@ -167,6 +170,7 @@ class NativeMacInput:
         self._system_element = ApplicationServices.AXUIElementCreateSystemWide()
         ApplicationServices.AXUIElementSetMessagingTimeout(self._system_element, 0.5)
         self._foreground = _ForegroundProcess()
+        self._raise_when_idle_s = raise_when_idle_s
 
     def check_permissions(self, *, request: bool = False) -> None:
         missing = []
@@ -208,10 +212,57 @@ class NativeMacInput:
         raise DesktopUnavailable("Open the native Steam Arena client and keep its game window visible.")
 
     def _check_focus(self, window: GameWindow) -> None:
-        if self._foreground.pid() != window.pid:
-            raise DesktopUnavailable("Autoplay is waiting: bring Arena to the foreground.")
+        if self._foreground.pid() != window.pid and not self._bring_forward_when_idle(window):
+            idle = getattr(self, "_raise_when_idle_s", None)
+            raise DesktopUnavailable(
+                "Autoplay is waiting: bring Arena to the foreground"
+                + (f" (or leave the keyboard and mouse for {idle:.0f}s)." if idle else ".")
+            )
         if self._game_window() != window:
             raise DesktopUnavailable("Arena's window moved; waiting for a fresh screenshot.")
+
+    def _idle_seconds(self) -> float:
+        quartz = self._quartz
+        return float(
+            quartz.CGEventSourceSecondsSinceLastEventType(
+                quartz.kCGEventSourceStateHIDSystemState, quartz.kCGAnyInputEventType
+            )
+        )
+
+    def _bring_forward_when_idle(self, window: GameWindow) -> bool:
+        """Activate Arena when the user has left keyboard and mouse alone; True once it is in front.
+
+        Auto-queue's clicks are real HID events that move the pointer, so they
+        wait while someone is using another app. 2026-10-13 00:09-00:14: with
+        Auto-Queue on and the coach's terminal in front, the Victory and Reward
+        screens sat until Arena was clicked by hand.
+        """
+        threshold = getattr(self, "_raise_when_idle_s", None)
+        if not threshold or self._idle_seconds() < threshold:
+            return False
+        from AppKit import NSApplicationActivateIgnoringOtherApps, NSRunningApplication
+
+        app = NSRunningApplication.runningApplicationWithProcessIdentifier_(window.pid)
+        if app is None:
+            return False
+        app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+        if self._wait_for_front(window, 0.8):
+            return True
+        # Cooperative activation can refuse a background request; LaunchServices
+        # activates the running instance (it never starts a second Arena).
+        bundle = app.bundleURL()
+        if bundle is not None:
+            subprocess.run(["/usr/bin/open", str(bundle.path())], capture_output=True, timeout=5, check=False)
+        return self._wait_for_front(window, 1.5)
+
+    def _wait_for_front(self, window: GameWindow, seconds: float) -> bool:
+        deadline = time.monotonic() + seconds
+        while True:
+            if self._foreground.pid() == window.pid:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.1)
 
     def capture(self) -> DesktopFrame:
         self.check_permissions()

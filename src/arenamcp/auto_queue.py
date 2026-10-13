@@ -104,6 +104,9 @@ If several controls carry this label, choose the one nearest the crop's center.
 If the named control does not appear in this crop, set found=false and point=null.
 Return ONLY JSON: {"found":true,"label":"visible label","point":[0.5,0.5]}
 """
+# Bring Arena forward after this long without keyboard/mouse input, rather than
+# waiting on a Victory or Reward screen until someone clicks Arena.
+FOCUS_WHEN_IDLE_S = 20.0
 _REFINE_CROP = 0.3
 # Observed 23:15:20: a crop held two "Play" buttons and refinement hopped
 # ~160px to another Recently Played tile, joining the wrong deck and queue.
@@ -600,7 +603,7 @@ class AutoQueueNavigator:
                         "Automatic post-match navigation currently requires native macOS Arena (or the MTGA bridge on Windows)"
                     )
                     return
-                self._controller = NativeMacInput()
+                self._controller = NativeMacInput(raise_when_idle_s=FOCUS_WHEN_IDLE_S)
             if not callable(getattr(self._backend, "complete_with_image", None)):
                 self._pause("Auto queue needs a model that accepts screenshots")
                 return
