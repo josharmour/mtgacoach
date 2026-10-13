@@ -1583,8 +1583,18 @@ def _get_bridge_overlay(
     fallback_zones: dict[str, Any],
     fallback_local_seat_id: int | None,
     fallback_opponent_seat_id: int | None,
+    log_game_state_id: int = 0,
 ) -> dict[str, Any]:
-    """Return bridge-authoritative visible state that can safely overlay the snapshot."""
+    """Return bridge-authoritative visible state that can safely overlay the snapshot.
+
+    The bridge reads ``GameManager.CurrentGameState``: the state MTGA's
+    playback is showing, which trails the GRE (``LatestGameState``) through
+    turn-change and draw animations. A bridge state older than what the log
+    has parsed is not overlaid (bug_20261012_225437, 22:54:49: the log had
+    turn 7 Main 1 at gameStateId 130 while the bridge still showed turn 6 at
+    the opponent's Main 1; the planner read "opponent's turn" and passed our
+    whole Main 1 with a land, The Ooze and Mutagen payable).
+    """
     try:
         from arenamcp.gre_bridge import get_bridge
     except Exception:
@@ -1598,6 +1608,29 @@ def _get_bridge_overlay(
     }
 
     if not bridge_state:
+        return overlay
+
+    bridge_turn_raw = bridge_state.get("turn") if isinstance(bridge_state.get("turn"), dict) else {}
+    # Windows puts the id at the top level, the Mac adapter inside "turn" (compared here
+    # only: the autopilot's window checks treat _bridge_game_state_id as authoritative).
+    bridge_game_state_id = (
+        _coerce_int(bridge_state.get("game_state_id"), 0)
+        or _coerce_int(bridge_turn_raw.get("game_state_id"), 0)
+        or 0
+    )
+    log_turn = _coerce_int(fallback_turn.get("turn_number"), 0) or 0
+    bridge_turn = _coerce_int(bridge_turn_raw.get("turn_number"), 0) or 0
+    if (bridge_game_state_id and log_game_state_id and bridge_game_state_id < log_game_state_id) or (
+        bridge_turn and log_turn and bridge_turn < log_turn
+    ):
+        logger.debug(
+            "Bridge state behind the log (gameStateId %s < %s, turn %s vs %s); keeping the log's board",
+            bridge_game_state_id,
+            log_game_state_id,
+            bridge_turn,
+            log_turn,
+        )
+        overlay["_bridge_state_stale"] = True
         return overlay
 
     snapshot_lookup = _build_snapshot_object_lookup(fallback_zones)
@@ -1839,6 +1872,7 @@ def get_game_state() -> dict[str, Any]:
         fallback_zones=zones,
         fallback_local_seat_id=local_seat_id,
         fallback_opponent_seat_id=opponent_seat_id,
+        log_game_state_id=_coerce_int(snap.get("_log_game_state_id"), 0) or 0,
     )
     if bridge_overlay:
         response.update(bridge_overlay)

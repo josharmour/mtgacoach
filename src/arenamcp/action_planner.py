@@ -519,6 +519,7 @@ RULES:
 - TRUST [OK] tags. "[OK]" on a Cast or Activate Ability action means MTGA's mana solver already verified the cost is payable from your current mana — including hybrid, phyrexian, cost reductions, and affinity. Do NOT recompute the cost yourself or claim you "lack the mana": the Mana summary shows floating mana only, not what your untapped lands can produce. If an action is [OK] in the legal list, you CAN take it. Failing to play affordable [OK] actions wastes the turn. Every action in the legal list is offered by MTGA as currently legal — a missing [OK] on an Activate Ability does NOT mean it is unaffordable; tap/sacrifice activations cost no mana at all (e.g. cracking a fetch land — which also triggers landfall). The one exception is an explicit "[NEED:<cost>]" tag: that ability's mana cost was checked against your actual mana and you cannot pay it, so never recommend it.
 - If a pending decision is shown, resolve that decision (not a new cast/play).
 - ONE action per plan. Don't sequence (no "play land" + "cast spell").
+- LANDFALL ORDER: an [OK] permanent with a landfall trigger ("whenever a land you control enters") that you will cast this turn comes BEFORE the land drop, so the land triggers it.
 - EXCEPTION: declare_attackers/declare_blockers carry the full set in one action — do NOT add a "done" click.
 - ATTACK TARGETS: Supply attacker_names AND attacker_targets mapping each chosen creature to its legal recipient. When a planeswalker and the opponent are available, explicitly choose who each creature attacks; split attacks when useful. Compare killing the planeswalker (loyalty, abilities, future value) with lethal or pressure on the player. Damage to a planeswalker is NOT damage to the opponent. Prefer the recipient-aware combat search over the older player-only attack line when both appear. The search models visible combat approximately, not hidden tricks, triggered abilities, or future loyalty activations; never invent unknown loyalty. Say the chosen recipients in voice_advice; never leave that choice to a default UI target.
 - ZERO-POWER ATTACKERS: A legal attacker need not be a useful attacker. Leave zero-power creatures untapped for mana or defense unless an actual attack trigger, required attack, pump plan, or damage-replacement effect gives attacking a concrete benefit. Flying alone does not make a zero-power attack useful.
@@ -2195,6 +2196,11 @@ class ActionPlanner(_ActionLegalityMixin):
             return None
         if not self._land_drop_first or not legal_actions:
             return None
+        # A payable landfall permanent may belong before the land: the model decides.
+        from arenamcp.landfall_order import landfall_cast_pending
+
+        if landfall_cast_pending(game_state, legal_actions):
+            return None
 
         bridge_request = (game_state.get("_bridge_request_type") or "").strip()
         bridge_class = (game_state.get("_bridge_request_class") or "").strip()
@@ -2947,7 +2953,9 @@ class ActionPlanner(_ActionLegalityMixin):
         "turn outside combat it does nothing against their attack, so use it only when it kills now "
         "(toughness <= Y) or in this turn's combat. SEQUENCING: each option is payable alone — casting one "
         "spell can leave another unpayable (a cheaper spell after a bigger one, or a card castable only now, "
-        "such as under threshold), so order the plays you want. A sorcery-speed cast missing only while "
+        "such as under threshold), so order the plays you want. A payable permanent with a landfall trigger "
+        "('whenever a land you control enters') that you mean to cast this turn goes BEFORE the land drop, "
+        "so the land triggers it. A sorcery-speed cast missing only while "
         "your own spell is on the stack returns once it resolves: pass to resolve it rather than discarding "
         "that card. Never discard a castable card for an effect that kills nothing."
     )
@@ -3090,6 +3098,8 @@ class ActionPlanner(_ActionLegalityMixin):
                 chosen = self._reject_false_kill_claim(decision, game_state, chosen)
             if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
                 chosen = self._apply_role_guard(decision, game_state, chosen)
+            if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
+                chosen = self._apply_landfall_order(decision, game_state, chosen)
             if chosen and decision.min_weight is not None:
                 chosen = list(dict.fromkeys(chosen))
                 if decision.selection_is_valid(chosen):
@@ -3218,6 +3228,45 @@ class ActionPlanner(_ActionLegalityMixin):
         trace = getattr(self, "_last_decision_trace", None)
         if isinstance(trace, dict):
             trace["role_guard"] = {"replaced": chosen[0], "with": verdict.option_id, "reason": verdict.reason}
+        return [verdict.option_id]
+
+    def _apply_landfall_order(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> list[str]:
+        """The model picked the land drop: cast this turn's planned landfall permanent first.
+
+        See :mod:`arenamcp.landfall_order` (2026-10-12 T11: Ba Sing Se, then
+        Evolution Sage, lost the proliferate and its Terrasymbiosis draw).
+        """
+        try:
+            plan_block = self._grounded_plan_block(game_state, with_lines=False)
+        except Exception as error:  # the model's reasoning still names its intent
+            logger.debug("landfall order: no plan block: %s", error)
+            plan_block = ""
+        try:
+            from arenamcp.landfall_order import landfall_first
+
+            verdict = landfall_first(
+                decision,
+                game_state,
+                chosen[0],
+                reasoning=self._last_decision_reasoning or "",
+                plan_block=plan_block,
+            )
+        except Exception as error:  # the guard never blocks the normal path
+            logger.debug("landfall order skipped: %s", error)
+            return chosen
+        if verdict is None:
+            return chosen
+        logger.warning(
+            "Landfall order: %s [model chose %s: %s]",
+            verdict.reason,
+            verdict.land_name,
+            (self._last_decision_reasoning or "")[:160],
+        )
+        self._last_decision_reasoning = verdict.reason
+        self._last_decision_option_ids = [verdict.option_id]
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace["landfall_order"] = {"replaced": chosen[0], "with": verdict.option_id, "reason": verdict.reason}
         return [verdict.option_id]
 
     def _apply_line_guard(
@@ -4639,6 +4688,12 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
             or next((option for option in lands if untapped_land_drop(game_state, [option])), None)
             or lands[0]
         )
+        # A landfall permanent the line casts this turn goes down before the land.
+        from arenamcp.landfall_order import landfall_first
+
+        first = landfall_first(decision, game_state, pick.option_id, planned_names=scheduled | greedy)
+        if first is not None:
+            return [first.option_id], first.reason
         return [pick.option_id], plan_text or "no board assessment, so the land drop comes first"
 
     picks: list[tuple[int, Any]] = []

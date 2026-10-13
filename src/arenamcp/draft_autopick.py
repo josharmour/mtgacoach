@@ -49,6 +49,8 @@ RARELY_PLAYED_PRIOR = -1.4
 RARELY_PLAYED_RATE = 0.35  # 17lands play rate; the median rated card is ~0.7
 RARELY_PLAYED_SHARE = 0.45  # games vs. the median rated card of the same rarity
 UNRATED_ROLE_CAP = 0.1  # the model-written primer's roles cannot carry an unrated card
+ALSA_FIT_MIN_CARDS = 30  # rated cards with an ALSA needed to read quality from pick order
+UNRATED_ALSA_MIN, UNRATED_ALSA_MAX = -1.0, 1.2  # an unrated rare's pick-order prior stays modest
 SECOND_COLOR_FLOOR = 0.25  # least hold on any second color (an undecided one too)
 REMOVAL_SHARE = 0.12  # ~3 removal spells per 23-25 playables
 # 17Lands GIH overrates nonbasic lands: a dual is drawn into a two-color deck
@@ -118,6 +120,25 @@ class _SetStats:
     median_games: dict[str, float]
     game_wr_mean: float | None
     game_wr_sd: float | None
+    # Rated cards' quality against how early drafters take them (ALSA): (intercept, slope).
+    alsa_fit: tuple[float, float] | None = None
+
+
+def _alsa_fit(rated: list[Any]) -> tuple[float, float] | None:
+    """Least-squares line baseline ~ ALSA over the rated cards (FRA 2026-10: r = -0.61)."""
+    points = [(card.alsa, card.baseline) for card in rated if getattr(card, "alsa", None)]
+    if len(points) < ALSA_FIT_MIN_CARDS:
+        return None
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    spread = statistics.pvariance(xs)
+    if spread <= 0:
+        return None
+    mean_x, mean_y = statistics.fmean(xs), statistics.fmean(ys)
+    slope = sum((x - mean_x) * (y - mean_y) for x, y in points) / len(points) / spread
+    if slope >= 0:
+        return None  # later picks rating higher: no usable signal
+    return mean_y - slope * mean_x, slope
 
 
 def _set_stats(primer: SetPrimer | None) -> _SetStats:
@@ -130,10 +151,11 @@ def _set_stats(primer: SetPrimer | None) -> _SetStats:
         games = [card.games for card in rated if card.rarity == rarity and card.games > 0]
         if len(games) >= 3:
             median_games[rarity] = float(statistics.median(games))
+    fit = _alsa_fit(rated)
     game_wrs = [card.game_wr for card in rated if card.game_wr is not None]
     if len(game_wrs) >= 10 and statistics.pstdev(game_wrs) > 0:
-        return _SetStats(median_games, statistics.fmean(game_wrs), statistics.pstdev(game_wrs))
-    return _SetStats(median_games, None, None)
+        return _SetStats(median_games, statistics.fmean(game_wrs), statistics.pstdev(game_wrs), fit)
+    return _SetStats(median_games, None, None, fit)
 
 
 def _rarely_played(card: Any, stats: _SetStats) -> str | None:
@@ -157,12 +179,42 @@ def card_value(card: Any, stats: _SetStats) -> tuple[float, str, bool]:
     rarely = _rarely_played(card, stats)
     if rarely:
         return RARELY_PLAYED_PRIOR, f"unrated; rarely played ({rarely})", False
-    if card.game_wr is not None and stats.game_wr_sd:
-        z = max(-2.0, min(1.5, (card.game_wr - stats.game_wr_mean) / stats.game_wr_sd))
-        return round(z, 3), f"unrated; game win rate {card.game_wr:.1%}", False
+    prior, prior_reason = _unrated_prior(card, stats)
+    if card.game_wr is not None and stats.game_wr_sd and stats.game_wr_mean is not None:
+        # 2026-10-12 P2p1: Darklight Phoenix (mythic, taken ~2.5th) went unrated with a
+        # 52.3% game win rate over 238 games, read at face value as z -1.07, and the
+        # ranking vetoed the model's pick for a common. 238 games carry a +-3.2 point
+        # sampling error, more than the 2.1-point spread between FRA cards, so the win
+        # rate only moves the prior by its share of real signal.
+        sd = stats.game_wr_sd
+        noise = card.game_wr * (1.0 - card.game_wr) / max(1, card.games)
+        weight = sd * sd / (sd * sd + noise)
+        prior_wr = stats.game_wr_mean + prior * sd
+        estimate = prior_wr + weight * (card.game_wr - prior_wr)
+        z = max(-2.0, min(1.5, (estimate - stats.game_wr_mean) / sd))
+        reason = f"unrated; game win rate {card.game_wr:.1%} over {card.games} games"
+        if "drafters" in prior_reason:
+            reason += ", " + prior_reason.removeprefix("unrated; ")
+        return round(z, 3), reason, False
+    return prior, prior_reason, False
+
+
+def _unrated_prior(card: Any, stats: _SetStats) -> tuple[float, str]:
+    """Where an unrated card starts: rares by when drafters take them, others below average.
+
+    A rare or mythic goes unrated because few copies exist, not because nobody
+    plays it, so how early drafters take it (ALSA, r = -0.61 with quality on
+    FRA's rated cards) predicts its quality. An unrated common or uncommon in a
+    mature format is one drafters leave out, so it starts below average.
+    """
     if card.rarity in UNRATED_RARE_PRIOR:
-        return UNRATED_RARE_PRIOR[card.rarity], "unrated rare; rarity prior", False
-    return UNRATED_PRIOR, "unrated; assumed below average", False
+        alsa = getattr(card, "alsa", None)
+        if alsa and stats.alsa_fit:
+            intercept, slope = stats.alsa_fit
+            z = max(UNRATED_ALSA_MIN, min(UNRATED_ALSA_MAX, intercept + slope * alsa))
+            return round(z, 3), f"unrated; drafters take it around pick {alsa:.1f}"
+        return UNRATED_RARE_PRIOR[card.rarity], "unrated rare; rarity prior"
+    return UNRATED_PRIOR, "unrated; assumed below average"
 
 
 def is_removal(card: Any) -> bool:

@@ -339,3 +339,44 @@ def test_get_game_state_uses_bridge_local_seat_for_pending_decision(monkeypatch)
     assert result["opponent_seat_id"] == 9
     assert result["pending_decision"] == "Pay Costs"
     assert result["decision_context"]["type"] == "mana_payment"
+
+
+# bug_20261012_225437 (22:54:49): the log had parsed turn 7 Main 1 (gameStateId 130,
+# ActionsAvailableReq with a land, The Ooze and Mutagen payable) while the Mac bridge's
+# CurrentGameState (MTGA's playback, behind the GRE during turn-change animations) still
+# showed the opponent's turn 6. The overlay replaced the log's turn and hand; the planner
+# read "opponent's turn" and passed our Main 1.
+_STALE_MAC_BRIDGE = {
+    "ok": True,
+    "turn": {"turn_number": 6, "phase": "Main1", "active_player": 2, "game_state_id": 121},
+    "players": [{"seat_id": 1, "life_total": 25}, {"seat_id": 2, "life_total": 24}],
+    "zones": {"battlefield": {"cards": []}, "local_hand": {"cards": []}},
+}
+_LOG_TURN_7 = {"turn_number": 7, "active_player": 1, "priority_player": 1, "phase": "Phase_Main1", "step": ""}
+
+
+def test_a_bridge_state_behind_the_log_is_not_overlaid(monkeypatch):
+    monkeypatch.setattr(gre_bridge_module, "get_bridge", lambda: _DummyBridge(_STALE_MAC_BRIDGE))
+    overlay = server_module._get_bridge_overlay(_LOG_TURN_7, [], {}, 1, 2, log_game_state_id=130)
+    assert overlay.get("_bridge_state_stale") is True
+    assert "turn" not in overlay and "hand" not in overlay and "battlefield" not in overlay
+    assert overlay["bridge_connected"] is True
+
+
+def test_an_older_bridge_turn_is_stale_even_without_ids(monkeypatch):
+    state = {**_STALE_MAC_BRIDGE, "turn": {**_STALE_MAC_BRIDGE["turn"], "game_state_id": 0}}
+    monkeypatch.setattr(gre_bridge_module, "get_bridge", lambda: _DummyBridge(state))
+    overlay = server_module._get_bridge_overlay(_LOG_TURN_7, [], {}, 1, 2)
+    assert "turn" not in overlay
+
+
+def test_a_current_bridge_state_still_overlays(monkeypatch):
+    fresh = {
+        **_STALE_MAC_BRIDGE,
+        "turn": {"turn_number": 7, "phase": "Main1", "active_player": 1, "game_state_id": 130},
+    }
+    monkeypatch.setattr(gre_bridge_module, "get_bridge", lambda: _DummyBridge(fresh))
+    overlay = server_module._get_bridge_overlay(_LOG_TURN_7, [], {}, 1, 2, log_game_state_id=130)
+    assert overlay["turn"]["turn_number"] == 7 and overlay["turn"]["active_player"] == 1
+    # The Mac id is compared, not published: autopilot window checks read _bridge_game_state_id.
+    assert "_bridge_game_state_id" not in overlay

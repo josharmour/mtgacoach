@@ -7,11 +7,17 @@ _QUANTITY = r"(?:(?:up to )?(?:one|two|three|four|five|six|seven|eight|nine|ten|
 # Charm's "deals 3 damage to any target" went unread, its other mode ("Target
 # creature gains first strike and deathtouch") made the card read beneficial,
 # and the autopilot redirected the 3 damage from the opponent's creature to ours.
+# A player target can come first: "Target opponent sacrifices a creature" (Break
+# Under Pressure, 2026-10-12 23:42, bug_20261012_234250) read as unclassified, so
+# the model's correct pick of the opponent was cancelled three times. "Target
+# player mills" stays unclassified: self-mill decks aim it at themselves.
 _HARMFUL = re.compile(
     rf"\b(?:destroy|exile|sacrifice|sacrifices|counter|return|fight|fights) (?:{_QUANTITY})?target\b"
     rf"|\bdamage to (?:{_QUANTITY}|any )?target\b"
     r"|\bgets? [-−]|\bloses (?:all abilities|flying)\b"
     r"|\btarget [^.]*?(?:you don['’]t control|an opponent controls)"
+    r"|\btarget opponent\b"
+    r"|\btarget player (?:sacrifices|discards|loses \d+ life)\b"
 )
 _BENEFICIAL = re.compile(
     r"\b(?:target|enchanted|equipped) [^.]*?\bgets? \+(?:\d+|x)/\+(?:\d+|x)"
@@ -42,9 +48,13 @@ _BLINK = re.compile(r"\bexile[^.]*?\breturn (?:it|them|that card|those cards)\b[
 # Theoretical Necromancer's "Return another target creature card from your
 # graveyard to your hand" read as harmful, so every pick of our own card was
 # cancelled and the activation was re-picked in a loop.
+# A qualifier can sit between "card" and the zone: Rewrite Regrets' "return target
+# creature or planeswalker card with mana value 6 or less from your graveyard"
+# read as a bounce of our own card and was cancelled (2026-10-12 23:52,
+# bug_20261012_235251).
 _RECURSION = re.compile(
-    rf"\b(?:return|put) (?:{_QUANTITY})?target [^.]*?\bcards? from (?:your|my) graveyard\b"
-    rf"|\b(?:return|put) (?:{_QUANTITY})?target [^.]*?\bcards? from a graveyard\b[^.]*?\bunder your control\b"
+    rf"\b(?:return|put) (?:{_QUANTITY})?target [^.]*?\bcards?\b[^.]*?\bfrom (?:your|my) graveyard\b"
+    rf"|\b(?:return|put) (?:{_QUANTITY})?target [^.]*?\bcards?\b[^.]*?\bfrom a graveyard\b[^.]*?\bunder your control\b"
 )
 _ATTACH_KEYWORD = re.compile(r"^\s*(?:equip|reconfigure)\b[^\n]*$", re.IGNORECASE)
 

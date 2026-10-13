@@ -841,7 +841,52 @@ def _known_body(card: dict | None) -> bool:
     return card is not None and _is_int(card.get("power")) and _is_int(card.get("toughness"))
 
 
-def _damage_through(attackers: list[dict], assignments: dict[int, int], cards: dict) -> int:
+# Replacement effects that multiply a source's damage to us. 2026-10-12 T9
+# (bug_20261012_224324): Absorbing Man and Titania ("Double all damage that
+# creature sources you control would deal") was out; the chump guard counted
+# Railway Brawler's 11 at face value, dropped the Arboreal Grazer block ("at 21
+# life we stay at 10") and the doubled 22 killed us — the block left us at 5.
+_DAMAGE_MULTIPLIER = re.compile(
+    r"\b(?P<all>double|triple) all damage that [^.]*?sources? (?P<all_whose>you control )?would deal"
+    r"|\bif an? (?:[a-z]+ )?(?:source|creature)s? (?P<whose>you control )?would deal (?:combat )?damage "
+    r"to (?P<to>[^,.]*), (?:it|that source|that creature) deals (?P<mult>double|triple) that damage"
+)
+_FACTORS = {"double": 2, "triple": 3}
+
+
+def damage_to_us_factor(state: dict, attacker_seat, local_seat) -> int:
+    """How many times over ``attacker_seat``'s creatures' damage reaches us (1 = printed power).
+
+    Each doubler on the battlefield counts once per permanent (Arena's text
+    sometimes repeats a clause), and several stack. A colour-restricted
+    clause ("a red source") is counted anyway: overstating their damage only
+    keeps a block.
+    """
+    factor = 1
+    for card in state.get("battlefield") or []:
+        controller = _controller(card)
+        clauses = set()
+        for match in _DAMAGE_MULTIPLIER.finditer(_rules_text(card)):
+            whose = match.group("all_whose") or match.group("whose")
+            if whose and controller != attacker_seat:
+                continue  # their sources only when they control the doubler
+            to = match.group("to")
+            if to is not None and not (
+                "player" in to
+                or ("opponent" in to and controller != local_seat)
+                or (re.search(r"\byou\b", to) and controller == local_seat)
+            ):
+                continue
+            clauses.add(match.group("all") or match.group("mult"))
+        for word in clauses:
+            factor *= _FACTORS[word]
+    return factor
+
+
+def _damage_through(
+    attackers: list[dict], assignments: dict[int, int], cards: dict, factors: dict | None = None
+) -> int:
+    """Damage reaching us, with ``factors`` (controller seat -> multiplier) applied per attacker."""
     total = 0
     for attacker in attackers:
         group = [
@@ -849,8 +894,16 @@ def _damage_through(attackers: list[dict], assignments: dict[int, int], cards: d
             for blocker, target in assignments.items()
             if target == attacker.get("instance_id") and blocker in cards
         ]
-        total += _resolve_attacker(attacker, group).damage_through
+        total += _resolve_attacker(attacker, group).damage_through * (factors or {}).get(
+            _controller(attacker), 1
+        )
     return total
+
+
+def _damage_factors(state: dict, creatures: list[dict], local_seat) -> dict:
+    """Controller seat -> damage multiplier for the controllers of ``creatures``."""
+    seats = {_controller(card) for card in creatures}
+    return {seat: damage_to_us_factor(state, seat, local_seat) for seat in seats}
 
 
 def _affordable_block_trick(state: dict, local: dict) -> str:
@@ -922,7 +975,6 @@ def wasteful_chump_blocks(
     groups: dict[int, list[int]] = {}
     for blocker, attacker in assignments.items():
         groups.setdefault(attacker, []).append(blocker)
-    through = _damage_through(attackers, assignments, cards)
     # Every opposing creature (combat deaths ignored): roughly next turn's attack.
     threats = [
         card
@@ -931,6 +983,8 @@ def wasteful_chump_blocks(
         and "creature" in _types(card)
         and _is_int(card.get("power"))
     ]
+    factors = _damage_factors(state, attackers + threats, local_seat)
+    through = _damage_through(attackers, assignments, cards, factors)
     wasteful: dict[int, str] = {}
     for attacker_id, blockers in groups.items():
         attacker, blocker = cards.get(attacker_id), cards.get(blockers[0])
@@ -946,11 +1000,11 @@ def wasteful_chump_blocks(
         if _may_guard_planeswalker(attacker, outcome.damage_through, cards, local_seat):
             continue
         without = {b: a for b, a in assignments.items() if b != blockers[0]}
-        through_without = _damage_through(attackers, without, cards)
+        through_without = _damage_through(attackers, without, cards, factors)
         life_without, life_with = life - through_without, life - through
         if life_without <= CHUMP_DANGER_LIFE:
             continue  # lethal or near-lethal: the chump buys survival
-        clock = sum(max(0, card["power"]) for card in threats)
+        clock = sum(max(0, card["power"]) * factors.get(_controller(card), 1) for card in threats)
         if life_without <= clock < life_with:
             continue  # the block keeps us out of lethal range next turn
         saved = through_without - through
@@ -987,16 +1041,19 @@ def safe_default_blocks(state: dict, pending: dict | None = None) -> tuple[dict[
     if not attackers or not all(_known_body(card) for card in attackers):
         return None
     blockers = [cards[blocker] for blocker in legal if _known_body(cards.get(blocker))]
-    unblocked = _damage_through(attackers, {}, cards)
+    factors = _damage_factors(state, attackers, local.get("seat_id"))
+    unblocked = _damage_through(attackers, {}, cards, factors)
     if not blockers:
         if unblocked >= life:
             return None  # only unknown blockers could save us: leave it to a human
         return {}, f"no blocker with known power and toughness; {unblocked} damage at {life} life"
-    plan = optimal_blocks(attackers, blockers, life, blocker_allowed_attackers=legal)
+    # The solver counts printed power: x-times damage is lethal at 1/x of our life.
+    factor = max(factors.values(), default=1)
+    plan = optimal_blocks(attackers, blockers, math.ceil(life / factor), blocker_allowed_attackers=legal)
     assignments = dict(plan.assignments) if plan is not None else {}
     for blocker in wasteful_chump_blocks(state, assignments, pending):
         assignments.pop(blocker, None)
-    through = _damage_through(attackers, assignments, cards)
+    through = _damage_through(attackers, assignments, cards, factors)
     if not assignments:
         return {}, f"no blocks: {through} damage at {life} life"
 

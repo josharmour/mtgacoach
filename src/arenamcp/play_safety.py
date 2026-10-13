@@ -131,6 +131,106 @@ def pending_x_source(state: dict) -> dict:
     return {}
 
 
+# 2026-10-12 23:13:57 (bug_20261012_231415): turn 2 with one Forest, Arena offered
+# "Cast Goldvein Hydra [OK]" ({X}{G}: payable at X=0 only), the model chose X=1 ("~2
+# mana available"), PayCosts had no autotap solution and was cancelled, and the
+# cast / X=1 / cancel loop ran until the turn ended. At X=0 the 0/0 just dies.
+#
+# Our mana count is one per untapped source, so it is exact only without these:
+# multi-mana or variable sources (Sol Ring, Rofellos, Notary Hobbits, Kami of
+# Whispered Hopes), extra-mana auras (Utopia Sprawl) and cost reducers (Emerald
+# Medallion). With any of them the X cap is unknown and the choice stays open.
+_INEXACT_MANA = re.compile(
+    r"\badd (?:\{[^}]+\}){2,}"
+    r"|\badd (?:two|three|four|five|x\b|that much|an amount|mana equal)"
+    r"|\badd [^.]*\bfor each\b"
+    r"|\badditional\b[^.]*\bmana\b"
+    r"|\bcosts? (?:\{[^}]+\}|x|\d+|one|two|three) less\b"
+    r"|\btwice\b|\bthree times\b"
+)
+_ENTERS_WITH_X = re.compile(r"\benters (?:the battlefield )?with x\b[^.]*\+1/\+1 counters?")
+
+
+def _plain_text(card: dict) -> str:
+    return re.sub(r"<[^>]*>", "", _normalize_mana_symbols(str(card.get("oracle_text") or ""))).lower()
+
+
+def exact_mana_total(state: dict) -> int | None:
+    """Mana we can make right now, or None when one-per-untapped-source is not exact."""
+    local = _local_seat(state)
+    if local is None:
+        return None
+    for card in state.get("battlefield") or []:
+        if (card.get("controller_seat_id") or card.get("owner_seat_id")) == local and _INEXACT_MANA.search(
+            _plain_text(card)
+        ):
+            return None
+    return int(RulesEngine._get_mana_pool(state, local).get("total") or 0)
+
+
+def affordable_x(state: dict, card: dict) -> int | None:
+    """The largest X our mana pays for ``card``, or None (no X, or mana not exactly known)."""
+    cost = str(card.get("mana_cost") or "")
+    x_count = cost.upper().count("{X}")
+    if not x_count:
+        return None
+    total = exact_mana_total(state)
+    if total is None:
+        return None
+    return max(0, (total - RulesEngine._parse_cmc(cost)) // x_count)
+
+
+def x_body_dies_at(card: dict, value: int) -> bool:
+    """A 0/0 creature that enters with X +1/+1 counters dies at X=0."""
+    return (
+        value == 0
+        and "creature" in str(card.get("type_line") or "").lower()
+        and str(card.get("toughness")) == "0"
+        and bool(_ENTERS_WITH_X.search(_plain_text(card)))
+    )
+
+
+def x_spell_dead_at_affordable_x(state: dict, card: dict) -> str:
+    """Withhold an X creature whose only affordable X leaves it a dying 0/0."""
+    maximum = affordable_x(state, card)
+    if maximum == 0 and x_body_dies_at(card, 0):
+        return f"{card.get('name') or 'this X creature'} would enter as a 0/0 at the affordable X=0"
+    return ""
+
+
+def x_choice_reason(state: dict, card: dict, value: int) -> str:
+    """Why an X value for ``card`` cannot or should not be chosen ('' when it can)."""
+    maximum = affordable_x(state, card)
+    if maximum is not None and value > maximum:
+        return f"X={value} is more than our mana pays for (largest affordable X is {maximum})"
+    if x_body_dies_at(card, value):
+        return f"{card.get('name') or 'the creature'} would enter as a 0/0 and die"
+    return ""
+
+
+def numeric_option_source(state: dict, decision: Any) -> dict:
+    """The X spell a casting-time numeric choice belongs to: its sourceId, the ChooseX request, or our X spell on the stack."""
+    local = _local_seat(state)
+    for option in decision.options:
+        source_id = (option.meta or {}).get("sourceId")
+        if (option.meta or {}).get("numericValue") is not None and source_id:
+            card = find_source(state, {"instanceId": source_id})
+            if card:
+                return card
+    card = pending_x_source(state)
+    if card:
+        return card
+    return next(
+        (
+            card
+            for card in reversed(state.get("stack") or [])
+            if "{X}" in str(card.get("mana_cost") or "").upper()
+            and (card.get("controller_seat_id") or card.get("owner_seat_id")) == local
+        ),
+        {},
+    )
+
+
 def removal_lacks_opponent_target(card: dict, state: dict, *, activation: bool = False) -> bool:
     """Reject simple mandatory removal with no plausible opposing target."""
     oracle = str(card.get("oracle_text") or "").lower()
@@ -868,6 +968,7 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
             or power_only_debuff_wasted(card, state)
             or temporary_shrink_wasted(card, state)
             or counter_tax_payable_wasted(card, state)
+            or x_spell_dead_at_affordable_x(state, card)
         )
         if reason:
             return reason
@@ -900,13 +1001,19 @@ def filter_play_options(decision: Any, state: dict) -> Any:
     from dataclasses import replace
 
     if decision.request_type == "CastingTimeOptions":
-        source = pending_x_source(state)
-        options = tuple(
-            option
-            for option in decision.options
-            if option.meta.get("numericValue") is None
-            or useful_tutor_x(state, source, int(option.meta["numericValue"]))
-        )
+        source = numeric_option_source(state, decision)
+        kept_options = []
+        for option in decision.options:
+            value = option.meta.get("numericValue")
+            if value is None:
+                kept_options.append(option)
+                continue
+            why = x_choice_reason(state, source, int(value)) if source else ""
+            if why:
+                logger.info("Withholding %s: %s", option.label, why)
+            elif useful_tutor_x(state, source, int(value)):
+                kept_options.append(option)
+        options = tuple(kept_options)
         # A -N/-0 mode with no attacker or blocker to shrink wastes the card;
         # with nothing left, the planner declines and the cast is cancelled.
         if decision.can_cancel and not power_debuff_has_combat_use(state):

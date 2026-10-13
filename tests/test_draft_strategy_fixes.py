@@ -441,7 +441,9 @@ def rated_set(**extra: SetCard) -> SetPrimer:
             gih_wr=0.55,
             baseline=0.0,
             games=2000,
-            game_wr=0.54 + (i % 5) * 0.004,
+            # A realistic spread between cards (FRA: sd 2.1 points), so a few hundred
+            # games of an unrated card carry about as much signal as they would live.
+            game_wr=0.51 + (i % 5) * 0.015,
             play_rate=0.7,
         )
         for i in range(1, 13)

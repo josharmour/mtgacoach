@@ -498,6 +498,15 @@ def _handle_quick_draft_pack(draft_state: DraftState, payload: dict) -> None:
     pack_num = _find_nested_value(payload, "PackNumber")
     pick_num = _find_nested_value(payload, "PickNumber")
 
+    # Arena's own list of everything picked so far. The pick requests are logged
+    # as "==> BotDraftDraftPick" with "CardIds" (no underscore, no GrpId), which no
+    # handler matched, so Quick Draft picked_cards stayed empty: every pick said
+    # "only 0 creatures so far", and a coach restarted at P3p1 (2026-10-12 23:29)
+    # drafted pack 3 as if the pool were empty.
+    picked = _find_nested_value(payload, "PickedCards")
+    if isinstance(picked, list):
+        draft_state.picked_cards = [int(c) for c in picked if str(c).isdigit() and int(c)]
+
     # Only process on PickNext status
     if draft_status == "PickNext" and draft_pack:
         draft_state.cards_in_pack = [int(c) for c in draft_pack if c]
