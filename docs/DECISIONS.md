@@ -7,6 +7,32 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-10-11 — Limited autoplay submits one deck; the deck model needs a full point to overrule
+
+- **User decision:** autoplay "should just pick the right deck and not give the
+  options". The spoken comparison of deck options before submitting
+  (`deck_review_narration`, the `review_fn` gate in `DraftEventDriver`) is
+  removed. The chosen deck is written and submitted directly, then explained
+  once with `deck_choice_summary` ("I built …").
+- **Evidence (ArenaDirect_FRA_Collector_Sealed, 0–2):** the counted builder
+  ranked BG splashing W first (score 290, Vraska, the Cutting Glare at 62.4% GIH
+  as the only bomb, 9 removal). The 17Lands deck model preferred WG 51.9% vs
+  51.3% and, at the 0.5 pp sealed margin from 2026-10-06 (f2d0455), overruled
+  it. Every build of that pool rated at the 8th–10th percentile; a 0.6 pp gap is
+  a tie. `STRENGTH_OVERRIDE_MARGIN["sealed"]` is now 0.01 (draft stays 0.015),
+  so near-ties keep the counted choice, which weighs bombs and removal. The
+  same margin bounds how much weaker an LLM-refined sealed deck may rate.
+- **Deck-advisor robustness:** the model review of the deck was discarded twice
+  over cut notes ("Every cut needs an explanation" on an 84-card pool with 40+
+  cuts; a `" grp_id"` key with a leading space on 2026-10-10). Missing cut
+  notes now get a default ("not in the final 40") and entry keys are stripped;
+  legality checks (pool cards, 40 cards, castable mana, plan) are unchanged.
+- **Verify:** `tests/test_sealed_deck.py::test_strongest_option_needs_a_clear_margin_and_more_in_draft`
+  (51.3/51.4/51.9 → no override), `tests/test_draft_autoplay.py::test_deck_is_submitted_without_options_and_explained_once`,
+  `tests/test_limited_deck.py::test_a_missing_cut_note_does_not_void_a_legal_deck`.
+
+---
+
 ## 2026-10-04 — Price commander recovery before accepting equivalent blocks (v3.2.1)
 
 - Close the recorded autoplay blocker-selection acceptance issue from v3.2.0.
@@ -929,3 +955,236 @@ prompts — and never accept "stale code" as an explanation without evidence
 5. Wheel/ALSA math and 17Lands API routes borrowed from the unrealities fork
    (they noted the old `/card_ratings/data` route silently ignores filters —
    use `/api/card_data`).
+
+## 2026-10-10 — Draft lane discipline follows how strong drafters commit
+
+Observed: the spoken lane flipped BG, RG, BG, UG, RG, UB, BG, BG over picks 3-10
+of a FRA quick draft (the model re-derived it from each pack's best card); after
+the first sticky-lane fix, a lane was declared RG on P1p4 from one green card and
+held for four picks of blue cards ("outside our red-green colors").
+
+Research (no source gives hard numbers; the consensus shape):
+- Picks 1-4 of pack 1: take the best card, declare nothing. "Don't marry your
+  first pick." (Three For One Trading, "Drafting the Correct Way"; Star City
+  Games, "When To Pick Lanes Early In Dominaria United Limited"; gamertagmythras
+  beginner guide: picks 1-4 form a loose lean only.)
+- From about pick 5-7: settle a main colour from what the pool actually holds
+  and what arrives late; second colour by the end of pack 1 / start of pack 2.
+- A lane needs several quality playables in it, not one bomb.
+- Switching is judged by value above replacement and gets costlier as the pool
+  grows (about 23 playables needed; abandoning a colour loses roughly half the
+  picks so far).
+- A splash needs fixing and is for premium cards only.
+
+Rules now in `draft_advisor.validate_lane` / `validate_splash`:
+- P1p1-4 with nothing committed: lane stays "" whatever the model proposes.
+- Declaring a pair or a single main colour requires the pool to cast >= 2
+  cards in it and to be within one card of the best lane of that width.
+- Settling the second colour (U -> UB) uses the same support test.
+- A committed lane switches only when the proposed pair casts >= 2 more pool
+  cards (>= 3 from pack 2 on); proposing fewer colours or "open" never
+  un-commits.
+- A splash colour is kept only when a pool card adds it or any colour.
+- The advisor's validated lane/splash are authoritative for the commentary
+  (`DraftNarrator._planned(model_lane, model_splash)`); the plan text's lean
+  ("Open toward Gruul ramp") no longer makes picks "off-colour".
+
+Sources:
+https://www.threeforonetrading.com/en/drafting-the-correct-way
+https://articles.starcitygames.com/magic-the-gathering/when-to-pick-lanes-early-in-dominaria-united-limited/
+https://gamertagmythras.com/blog/magic-the-gathering/mtg-limited-draft-guide-beginners
+https://magic.wizards.com/en/news/feature/drafting-101-understanding-signals-2016-04-12
+https://blog.17lands.com/posts/simulating-draft-strategies/
+
+Added the same day (gaps against the research):
+- The table's signal now reaches the lane decision. `draft_autopick.note_openness`
+  accumulates each pick's per-colour openness under its pack and
+  `color_signals(store, pack)` weights by direction (packs 1 and 3 pass the
+  same way: full weight; the other direction: half). `validate_lane(signals=)`
+  declares a pair two cards short of the best when its colours are clearly
+  flowing (signal >= 0.5 and >= 0.25 above the alternative), refuses a near
+  pair when a better- or equally-supported pair is clearly flowing, and lowers
+  the switch margin by one for a flowing pair. The signals go to the model as
+  `color_signals` and to the log as `signals=`.
+- Value above replacement: `lane_quality` (mean GIH win rate of the cards a
+  lane casts) moves the switch margin by one when the pairs differ by >= 0.02.
+
+## 2026-10-10 — Game 3 loss: false lethal, unmodelled recursion, zero topdeck risk
+
+T34 at 4 life the combat plan locked "All-out attack for lethal this turn"
+(11 power into 10 life through blockers; the math said T36), tapped all three
+creatures; T35 they top-decked Terminal Criticism (killed Theorix), recast
+Blessed Ghoul from the graveyard, hit us to 2; T37 5 through vs 2.
+
+Fixes:
+- `ActionPlanner._check_attack_crackback`: the combat-plan counterpart of the
+  typed path's false-lethal correction, plus a crackback guard — when the
+  attack is not lethal by the board math, attackers are held back (best life
+  gained per power given up) until `evaluate_attack`'s worst-case crackback
+  leaves us above 2 life. Logged as "Crackback guard"; fallback_reason
+  `planner_crackback_guard`.
+- `opponent_tricks.TrickRisk.p_draw`: their next draw step's chance of a
+  castable trick/removal (expected copies left / library); appended to the
+  verdict line as "next draw ~N%" when >= 5%.
+- `plan_ledger`: snapshots carry the search's projected lethal turn; three
+  rising projections in a row become the lesson "Projected lethal turn
+  slipped ... keep blockers home".
+- Auto-concede: default 3 s (range 2-60), the countdown runs while the short
+  offer is spoken (no wait for it to be heard), "Good game." is spoken as the
+  concede goes out, and a running countdown survives estimate flicker
+  (aborts only below threshold - 0.15). User's settings.json set to 3.
+- Deferred: modelling return-to-hand recursion as a repeating blocker inside
+  the line search.
+
+## 2026-10-10 — Deck reference quotes rules only for cards seen this game
+
+- Evidence: Brawl bug report 164315. The game-plan prompt was ~24k tokens
+  (84k chars): the deck reference quoted all 99 cards' rules (29.9k chars,
+  ~8.5k tokens) and the playbook render quoted 154 rule lines for 32 of the
+  same cards (31k chars). Decision prompts carried the same reference
+  (15-18k tokens). Plan calls took 24-69 s at high effort; during a 69 s plan
+  a decision got "no first token within 8.0s" and fell to a safe land drop.
+- `prepare_match_context` now lists the whole deck compactly (count, name,
+  cost, type, P/T) and quotes full rules only for cards seen this game
+  (hand, battlefield, graveyards, exile, stack; commanders always). The seen
+  list is kept per match in first-seen order, so the rules section is
+  append-only: every call within a turn shares the same prefix for vLLM's
+  prefix cache. `reveal=` quotes a pending decision's candidate cards (tutor
+  / search options) for that call only; `full_rules=True` quotes every card
+  for the library inspection and win-in-N paths; a nonland tutor in hand
+  quotes every card (it can find any of them). `deck_rules_grp_ids` on the
+  prepared state says which cards are quoted; the coach's board block and
+  the playbook render (`omit_oracle_for`) use it to avoid quoting twice.
+- The playbook render groups each mechanism's evidence per card (one line
+  with its cited rules) instead of one line per rule.
+- Measured on the report: deck reference 8.5k -> 2.4k tokens; playbook
+  8.9k -> 7.0k tokens. Roughly 8k tokens off every plan call and 6k off
+  every decision call for this deck.
+- Trade-off accepted by the user: library cards are names only, so the plan
+  cannot read a never-seen card's rules unless the playbook cites it. The
+  plan prompt says so ("do not invent abilities for it").
+
+## 2026-10-11 — Decks window: build deck strategies before a match
+
+- The deck playbook (two model passes over every card's rules, cached per
+  deck for 30 days) was the product's deepest read of a deck and its
+  cheapest call: discovery ran with no effort set (proxy default low, 444-861
+  reasoning tokens on a 99-card Brawl deck), notes capped at 1800 tokens,
+  JSON at 2500, roles for 5-10 cards (the Hobbits deck got 3). Discovery now
+  thinks at high effort with 12000 output tokens and a 300 s timeout; the
+  prompt asks for every two-card interaction, the curve by turn, the
+  finishers and 8-15 card roles. The pass settings are part of the cache
+  fingerprint, so every deck rebuilds once.
+- `deck_library.py` (log-first): `<== DeckGetDeckSummariesV3` names every
+  deck; `<== EventGetCoursesV2` and `==> EventSetDeckV3` carry full lists for
+  decks attached to events or queued. On this Mac: 108 decks, 15 with lists.
+  The native bridge reads the whole library in one `get_decks` command
+  (`WrapperController.Instance.DecksManager.GetAllCachedDecks()`; contents
+  are filled at login, `GetFullDeck` is a cache read). The wrapper is
+  unloaded during a duel (`Instance` null), so the bridge path works from
+  the home screen; mid-match the page shows the log's decks.
+- `coach.prepare_playbook` builds or loads a deck's playbook into the cache
+  without publishing it (a live match keeps its own). `standalone_decks.py`
+  lists decks with their cache status and runs analyses in worker threads;
+  pipe commands `list_decks`, `analyze_deck`, `analyze_all_decks`; events
+  `deck_list`, `deck_analysis` (stages: discovery, compile, done).
+- Desktop: Tools > Decks… page (`desktop/decks_tab.py`): table of decks with
+  strategy status, "Deck strategy" / "Rebuild" / "Build all missing", and a
+  report (archetype, how it pops off, backup plan, engines and combos with
+  card names, key cards, phases, commander policy, when to break the usual
+  rules). A playbook built here has the same identity the next match looks
+  up, so the match starts with no analysis call.
+- Deferred: the Windows BepInEx plugin has no `get_decks` (log path only
+  there); reading the collection (owned cards) for deck building.
+
+## 2026-10-11 — 10:44 bug report: cast a trick, then did not attack
+
+- Evidence: bug_20261011_104508, standalone.log 10:44:43-10:45:05,
+  Player.log DeclareAttackersReq at 10:44:58 (attackers 304 Titanbones and
+  319 Frostbite Pyromental), match packet 104746. The engine was reloaded
+  mid-turn (10:44:43), came up with no game plan, cast Frostbite Pyromental
+  (haste, sacrificed at end step) at low effort, cast Blazing Crescendo
+  (+3/+1) precombat on Titanbones "to attack through blockers", then the
+  attack window's menu listed only Titanbones and the legacy planner
+  followed the just-formed low-effort plan ("attack: none") and clicked
+  Done. Five mana, a card and a one-shot 4/4 trampler were wasted.
+- Fixes: (1) `card_has_haste` reads Arena's keyword list on the object as
+  well as the rules text (a freshly resolved card can have keywords before
+  its text is resolved); used by every summoning-sickness check in
+  rules_engine. (2) The attack prompt now carries DECISIONS YOU ALREADY MADE
+  THIS TURN and THIS TURN'S INVESTMENTS (end-step sacrifices, creatures
+  pumped above printed power by our own spell) with "follow through on
+  them". (3) A pump instant offered in our precombat main gets a timing
+  note. (4) Each attack window logs offered vs menu attackers and our
+  creatures, so the next dropped attacker is visible in the log.
+- Not proven: which of the two attacker lists (bridge poll or log-side
+  request handling) dropped Pyromental; neither path recorded its offer.
+
+## 2026-10-11 — 10:52 bug report: "no game plan" for a whole match
+
+- Evidence: bug_20261011_105454 (turn 10, game_plan null), standalone.log
+  10:52:07-10:55:17: "No game plan on turn N (0 attempts ... reform not
+  running)" every turn, and every 10 s a `background.deck_playbook` request
+  cancelled with attempts 0, alternating with a second request
+  "superseded by a newer call".
+- Cause: the deck playbook had to be rebuilt (new pass settings change the
+  cache fingerprint). A newer analysis set the older worker's cancel event,
+  but the worker's retry loop only checked the deck identity, so it re-sent
+  the request every 10 s for up to 300 s; each retry was cancelled at once
+  and each superseded the live analysis's call in the proxy's background
+  lane, so neither finished. The game plan manager is suspended while a
+  deck analysis is pending, with no bound, so no plan ever formed.
+- Fixes: the retry loop stops when its own cancel event is set; the plan
+  waits at most 45 s for a deck analysis (`_deck_analysis_blocks_plan`),
+  then forms from the board and whatever seed exists; analysis start logs
+  the deck identity so duplicate workers are visible.
+
+## 2026-10-11 — 12:43 bug report: token copy traded while the commander stood by
+
+- Evidence: bug_20261011_124350, standalone.log 12:43:30-12:43:38. Opponent's
+  turn 9 attack (Lyra 6/6 flying, Dazzling Angel 5/6 flying, Alseid 1/1
+  lifelink) into Arboreal Grazer, Eldrazi Spawn, The Notary Hobbits
+  (commander, id 577) and its two token copies (584, 585). The legacy block
+  planner (decision.plan, low effort, 13.3k tokens, 6.7 s) chose "Grazer
+  chumps Lyra; spare token trades for Alseid". The prompt carried the
+  playbook's commander policy and the commander-recovery ledger; the model
+  still read "protect the commander" as the default.
+- The deterministic swap in `combat_recovery.improve_block_recovery` did
+  not fire because it required an EMPTY hand (opportunity cost of the
+  recast is left to the planner) and four cards were in hand.
+- Decision: a token COPY of the commander with the same printed body,
+  no counters/attachments on either, making the same block with the same
+  combat result, is a dominated choice regardless of hand or tax: the
+  surviving board is identical, the token's death is permanent and the
+  commander's death is a free, optional, taxed recast with the entry
+  trigger. `improve_block_recovery` now swaps that pair first ("Identical
+  copy: …", fallback `planner_commander_identity`) before the priced path;
+  it yields only when a visible rule tells a nontoken/legendary/commander
+  death apart from a token's (a card's own "when this dies" trigger does
+  not count). The planned recovery is recorded so the return-to-command-zone
+  prompt is accepted deterministically.
+
+## 2026-10-11 — 12:45 bug report: concede offered with Emrakul in hand
+
+- Evidence: bug_20261011_124532, standalone.log 12:43:53-12:45:16. The
+  concede offer came at 12:45:07 on the opponent's turn 11 declare-attack
+  step: 24 flying power vs 19 life with no flying/reach blocker. Emrakul,
+  the World Anew is a creature (sorcery speed) and could not be cast then;
+  the concede estimate was right for that moment and the loss followed at
+  12:45:16.
+- The real miss was turn 10 (12:43:53-12:44:12). Arena listed "Cast
+  Emrakul, the World Anew" without [OK] (ten mana tappable before the
+  land drop) and the typed decisions treated it as unavailable, casting
+  Vaultborn Tyrant then Badgermole Cub. Sequenced, the turn had twelve:
+  five lands + Utopia Sprawl + the Forest drop (6), two Hobbit taps (4),
+  the Spawn (1), and the Cub cast first from land mana (+1 per creature
+  tapped, +1 for an earthbent untapped land, -2 cost). Emrakul's cast
+  trigger takes every angel; the line search does not model the Cub's
+  mana bonus or Emrakul's cast trigger.
+- Decision: `mana_potential.mana_reach_note` (deterministic, Oracle-derived,
+  lower bound) is added to the typed decision prompt and the legacy action
+  prompt on our main phase whenever a hand card without [OK] becomes
+  payable through the land drop, creature taps, sacrifice mana, aura
+  bonuses, a floating pool, or a creature-tap enabler cast first. It states
+  the total, the breakdown, the unlocked card and the order, and warns that
+  any other spell first forfeits it. It never makes a spell legal.

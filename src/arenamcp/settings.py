@@ -54,7 +54,7 @@ DEFAULTS = {
     # coach recommends conceding; with autoplay on it also concedes after a
     # cancellable countdown (Tools > Auto-Concede When Lost).
     "auto_concede": True,
-    "concede_countdown_s": 10,  # clamped to 3-60
+    "concede_countdown_s": 3,  # clamped to 2-60
     "concede_threshold": 0.95,  # loss confidence needed; clamped to 0.90-0.99
     # With autoplay on, send Arena's "Oops" emote when the autopilot gets stuck
     # or makes a clear blunder (arenamcp.oops; Tools > Send 'Oops' Emote).

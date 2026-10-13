@@ -28,7 +28,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from arenamcp.draft_autopick import choose_picks, is_ordinary_basic, pool_lane, rank_pack, wheel_adjust
+from arenamcp.draft_autopick import (
+    choose_picks,
+    color_openness,
+    color_signals,
+    is_ordinary_basic,
+    note_openness,
+    pool_lane,
+    rank_pack,
+    wheel_adjust,
+)
 from arenamcp.draft_narration import DraftNarrator
 from arenamcp.event_course import LIMITED_MARKERS
 from arenamcp.set_primer import SetPrimer
@@ -61,7 +70,11 @@ DECK_SCORE_TOLERANCE = 8.0
 # The 17Lands deck-strength model ranks two builds of one pool well in sealed
 # (slope 0.82 vs real results) but weakly in draft (0.30), so it may overrule
 # the counted builder's first choice by these predicted win-rate margins.
-STRENGTH_OVERRIDE_MARGIN = {"sealed": 0.005, "draft": 0.015}
+# 2026-10-11 Collector Sealed: at 0.5 pp the model swapped the counted BG+W
+# build (Vraska, the pool's only bomb, 9 removal) for WG on 51.9% vs 51.3% and
+# the deck went 0-2. Under a point the model is calling a tie, and the counted
+# choice, which weighs bombs and removal, stands.
+STRENGTH_OVERRIDE_MARGIN = {"sealed": 0.01, "draft": 0.015}
 
 
 @dataclass
@@ -81,14 +94,17 @@ class DraftRun:
     queued_at: float = 0.0
     finished: bool = False
     sealed_done_presses: int = 0
-    # The build decided for a pool, reused on retries so a retried submit is the deck narrated.
+    # The build decided for a pool, reused on retries so a retried submit is the same deck.
     deck_plan: dict | None = None
-    reviewed_pool: tuple = ()
     # The pick autoplay selected in Arena and has not confirmed yet (key, cards, decision).
     preview: dict | None = None
     # The deck plan the model last stated; the commentary's lane follows it, not the pool estimate.
     plan: str = ""
     plan_lane: str = ""  # the advisor's validated lane code for that plan
+    plan_splash: str = ""  # the advisor's validated splash for that plan (needs fixing in the pool)
+    # The table's signal: per pack, accumulated per-color openness (draft_autopick.note_openness).
+    signals: dict = field(default_factory=dict)
+    signals_seen: set = field(default_factory=set)  # (pack, pick) already accumulated
 
 
 class DraftEventDriver:
@@ -109,7 +125,6 @@ class DraftEventDriver:
         in_match_fn: Callable[[], bool] = lambda: False,
         status_fn: Callable[[str], None] | None = None,
         speak_fn: Callable[[str], None] | None = None,
-        review_fn: Callable[[str, Callable[[], bool]], bool] | None = None,
         commentary_fn: Callable[[], bool] = lambda: True,
         queue_fn: Callable[[], bool] = lambda: True,
         narrate_fn: Callable[[str, Callable[[], bool]], bool] | None = None,
@@ -128,10 +143,6 @@ class DraftEventDriver:
         self._in_match_fn = in_match_fn
         self._status_fn = status_fn
         self._speak_fn = speak_fn
-        # review_fn(narration, cancelled) speaks the deck comparison and returns
-        # True only after it has been heard; cancelled() turns true when autoplay
-        # is switched off or resumed meanwhile.
-        self._review_fn = review_fn
         # Whether picks are explained aloud (setting draft_commentary).
         self._commentary_fn = commentary_fn
         # Whether the player wants the next match queued (the Auto-queue toggle).
@@ -578,7 +589,9 @@ class DraftEventDriver:
                 mana_costs=mana,
                 verb=verb,
                 model_plan=self.run.plan,
-                model_lane=self.run.plan_lane,
+                # The advisor's validated lane; None before any plan (narration reads the plan text).
+                model_lane=self.run.plan_lane if self.run.plan else None,
+                model_splash=self.run.plan_splash if self.run.plan else None,
             )
             logger.info("Draft commentary P%sp%s: %s", pack_number, pick_number, line)
             return line
@@ -626,11 +639,21 @@ class DraftEventDriver:
                 return None
             lane = pool_lane(pool, primer, self._mana_costs(self._drafted_pool(), primer))
             details = {**details, "picks_per_pack": required}
+            pack_no, pick_no = int(details.get("pack_number") or 1), int(details.get("pick_number") or 1)
+            if (pack_no, pick_no) not in self.run.signals_seen:
+                self.run.signals_seen.add((pack_no, pick_no))
+                note_openness(
+                    self.run.signals,
+                    pack_no,
+                    color_openness([self._canonical(g, primer) for g in pack], pick_no, primer),
+                )
+            details["color_signals"] = color_signals(self.run.signals, pack_no)
             if self._pool_cards_fn:
                 # The model and ranking must see the same pool after a takeover.
                 details["picked_cards"] = self._pool_cards_fn(self._drafted_pool(), self.run.set_code)
             if primer is not None:
-                details["set_strategy"] = primer.prompt_context(lane.colors)
+                # The committed lane's archetypes lead; the pool estimate only while open.
+                details["set_strategy"] = primer.prompt_context(self.run.plan_lane or lane.colors)
             ranking = rank_pack(
                 [self._canonical(g, primer) for g in pack],
                 pool,
@@ -717,18 +740,28 @@ class DraftEventDriver:
             # lane= is the plan's own colors (validated by the advisor); pool= is
             # the color-count estimate, which the commentary no longer speaks
             # when a plan names colors (2026-10-08: it said Dimir over an Izzet plan).
+            flowing = ", ".join(
+                f"{color} {value:.2f}"
+                for color, value in sorted(details["color_signals"].items(), key=lambda kv: -kv[1])[:3]
+                if value >= 0.5
+            )
             logger.info(
-                "Draft strategy P%sp%s: lane=%s; pool=%s; plan=%s; needs=%s",
+                "Draft strategy P%sp%s: lane=%s%s; pool=%s; signals=%s; plan=%s; needs=%s",
                 details.get("pack_number"),
                 details.get("pick_number"),
                 result.get("lane") or "open",
+                f" (held; the model proposed {result['lane_rejected'] or 'open'})"
+                if result.get("lane_rejected") is not None
+                else "",
                 lane.colors or "open",
+                flowing or "none",
                 result.get("plan", ""),
                 "; ".join(result.get("needs") or []),
             )
             source = "model" if len(from_model) == required else "model+ranking"
             self.run.plan = str(result.get("plan") or "")
             self.run.plan_lane = str(result.get("lane") or "")
+            self.run.plan_splash = str(result.get("splash") or "")
             return kept, reasons, source, from_model
         except Exception as exc:
             logger.info("Draft pick refinement unavailable: %s", exc)
@@ -779,11 +812,9 @@ class DraftEventDriver:
         if target is None:
             self._pause("no basic lands of the deck's colors are in the pool; finish the deck manually")
             return
-        reviewed = False
-        if self._review_fn and run.reviewed_pool != pool_signature:
-            if not self._review_deck(build, plan["options"], cards, basics, counts):
-                return
-            run.reviewed_pool, reviewed = pool_signature, True
+        # 2026-10-11: the player wants the right deck picked and submitted, not a
+        # spoken comparison of options to sit through first. One explanation of
+        # the chosen deck follows the submit.
         run.deck_attempts += 1
         written = self._command("set_limited_deck", main_deck=target, timeout=12.0)
         if not written.get("ok"):
@@ -798,14 +829,11 @@ class DraftEventDriver:
         run.deck_submitted_at = time.monotonic()
         total = sum(entry["count"] for entry in target)
         self._status(f"Submitted a {total}-card deck ({source}): {build.get('plan') or ''}".strip())
-        if reviewed:
-            self._say("Deck submitted.")
-        else:
-            from arenamcp.limited_deck import deck_choice_summary
+        from arenamcp.limited_deck import deck_choice_summary
 
-            explanation = deck_choice_summary(build, cards)
-            logger.info("Draft deck explanation: %s", explanation)
-            self._say(explanation)
+        explanation = deck_choice_summary(build, cards)
+        logger.info("Draft deck explanation: %s", explanation)
+        self._say(explanation)
         self._wait(3.0)
 
     def _decide_deck(self, pool_ids: list[int]) -> dict | None:
@@ -939,45 +967,6 @@ class DraftEventDriver:
         elif step == "open":
             self._status("Opening the sealed pool")
         self._wait(3.0)
-
-    def _review_deck(self, build: dict, options: list[dict], cards: list[dict], basics, counts) -> bool:
-        """Narrate the deck and its best alternative; True only when submitting is still right."""
-        from arenamcp.limited_deck import deck_review_narration
-
-        narration, _described = deck_review_narration(build, options, cards)
-        logger.info("Deck review narration: %s", narration)
-        self._status("Reviewing deck options before submitting: " + narration)
-        self.owns_ui = True
-        control = self._control
-
-        def cancelled() -> bool:
-            return not self.enabled or self._control != control
-
-        try:
-            heard = bool(self._review_fn(narration, cancelled))
-        except Exception as exc:
-            logger.warning("Deck review narration failed: %s", exc)
-            heard = False
-        if cancelled():
-            return False  # autoplay was switched off or resumed; the next step starts over
-        if not heard:
-            self._pause(
-                "deck review was stopped before it finished; turn autoplay off and on to hear it again and submit"
-            )
-            return False
-        # The narration takes a while; Arena may have moved on meanwhile.
-        if not self._command("get_screen").get("deck_builder"):
-            self._wait(2.0, owns=False)
-            return False
-        refreshed = self._command("get_limited_pool", basic_candidates=list(basics), timeout=10.0)
-        observed: Counter = Counter()
-        for entry in (refreshed.get("main_deck") or []) + (refreshed.get("sideboard") or []):
-            if entry["grp_id"] not in basics:
-                observed[entry["grp_id"]] += entry["count"]
-        if not refreshed.get("ok") or observed != counts:
-            self._wait(2.0)
-            return False
-        return True
 
     # -- event page and matches ----------------------------------------------
 

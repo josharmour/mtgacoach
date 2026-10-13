@@ -621,6 +621,12 @@ class PipeAdapter:
                 coach._on_read_win_plan()
             elif action == "win_probability":
                 threading.Thread(target=self._handle_win_probability, daemon=True).start()
+            elif action == "list_decks":
+                self._handle_list_decks()
+            elif action == "analyze_deck":
+                self._handle_analyze_deck(cmd)
+            elif action == "analyze_all_decks":
+                self._handle_analyze_all_decks()
             elif action == "deck_strategy":
                 threading.Thread(target=self._handle_deck_strategy, daemon=True).start()
             elif action == "bugreport":
@@ -1104,6 +1110,35 @@ class PipeAdapter:
             self._handle_game_assessment()
         else:
             self._handle_out_of_match_deck_suggestions()
+
+    def emit_deck_list(self, decks: list[dict[str, Any]], error: str = "") -> None:
+        self._emit({"type": "deck_list", "decks": decks, "error": error})
+
+    def emit_deck_analysis(self, payload: dict[str, Any]) -> None:
+        self._emit({"type": "deck_analysis", **payload})
+
+    def _handle_list_decks(self) -> None:
+        coach = self._coach
+        lister = getattr(coach, "list_decks_async", None)
+        if not callable(lister):
+            self.emit_deck_list([], "Deck library unavailable")
+            return
+        lister()
+
+    def _handle_analyze_deck(self, cmd: dict[str, Any]) -> None:
+        coach = self._coach
+        runner = getattr(coach, "analyze_deck_async", None)
+        deck_id = str(cmd.get("deck_id") or "")
+        if not callable(runner) or not deck_id:
+            self.emit_deck_analysis({"deck_id": deck_id, "status": "error", "error": "Deck analysis unavailable"})
+            return
+        runner(deck_id, refresh=bool(cmd.get("refresh")))
+
+    def _handle_analyze_all_decks(self) -> None:
+        coach = self._coach
+        runner = getattr(coach, "analyze_all_decks_async", None)
+        if callable(runner):
+            runner()
 
     def _handle_out_of_match_deck_suggestions(self) -> None:
         self.log("Deck builder is disabled in streamlined mode.")

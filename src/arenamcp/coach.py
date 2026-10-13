@@ -106,10 +106,16 @@ _PLACEHOLDER_SUMMARY_RE = re.compile(
 # strategic reasoning happens, so it keeps full thinking at the template
 # default (no effort cap); compiling the audited JSON runs at low effort.
 # Part of the cache fingerprint: changing either rebuilds cached playbooks.
+# 2026-10-11: discovery ran with no effort set (the proxy's default is low:
+# 444-861 reasoning tokens for a 99-card Brawl deck) and a 1800-token note
+# budget; the one call meant to understand the whole deck was the cheapest
+# call in the product. It now thinks at high effort with a larger budget.
 _PLAYBOOK_PASS_SETTINGS = {
-    "discovery": {"enable_thinking": True},
+    "discovery": {"enable_thinking": True, "reasoning_effort": "high"},
     "compile": {"enable_thinking": False, "reasoning_effort": "low"},
 }
+_PLAYBOOK_DISCOVERY_MAX_TOKENS = 12000
+_PLAYBOOK_COMPILE_MAX_TOKENS = 12288
 
 
 def _playbook_prompt_fingerprint() -> str:
@@ -205,7 +211,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 from arenamcp.game_plan import GamePlanManager
 
                 self._game_plan_mgr = GamePlanManager(self._backend)
-                self._game_plan_mgr.background_suspended_fn = lambda: self._deck_strategy_pending
+                # The plan waits for the deck analysis, but not for ever: a
+                # 99-card deck at high effort takes minutes, and 2026-10-11
+                # 10:52 a stuck analysis left a whole match with no plan.
+                self._game_plan_mgr.background_suspended_fn = self._deck_analysis_blocks_plan
+                self._game_plan_mgr.set_playbook_source(lambda: getattr(self, "_deck_playbook", None))
             except Exception as e:
                 logger.debug(f"GamePlanManager unavailable: {e}")
                 return None
@@ -611,6 +621,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             if self._game_plan_mgr is not None:
                 self._game_plan_mgr.reset()
 
+    _PLAN_WAITS_FOR_DECK_ANALYSIS_S = 45.0
+
+    def _deck_analysis_blocks_plan(self) -> bool:
+        """True only for the first seconds of a deck analysis; after that the plan forms without it."""
+        if not self._deck_strategy_pending:
+            return False
+        since = getattr(self, "_deck_strategy_pending_since", None)
+        return since is not None and time.monotonic() - since < self._PLAN_WAITS_FOR_DECK_ANALYSIS_S
+
     def begin_deck_analysis(self, identity: str) -> int:
         """Reserve this analysis before starting its worker, not after enrichment.
 
@@ -620,10 +639,16 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         with self._deck_analysis_lock:
             for other, cancel in self._playbook_cancels.items():
                 if other != identity:
+                    logger.info(
+                        "Deck analysis %s cancelled: a different deck (%s) is being analysed",
+                        other[:8],
+                        identity[:8],
+                    )
                     cancel.set()
             self.clear_deck_strategy()
             self._deck_analysis_identity = identity
             self._deck_strategy_pending = True
+            self._deck_strategy_pending_since = time.monotonic()
             return self._deck_analysis_generation
 
     def analyze_deck(
@@ -682,7 +707,46 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 if generation == self._deck_analysis_generation:
                     self._deck_strategy_pending = False
 
-    def _build_playbook(self, game_state: dict, be: Any, identity: str, generation: int):
+    def prepare_playbook(self, game_state: dict, backend=None, *, refresh: bool = False, progress=None):
+        """Build (or load) the playbook for ``game_state``'s deck without publishing it.
+
+        The Decks window uses this between matches: the result is stored in
+        the playbook cache so the next match with that deck starts with no
+        model call, and the live match's own playbook is left untouched.
+        ``progress(stage)`` is told "cache", "discovery", "compile" or "done".
+        """
+        from arenamcp.deck_strategy import deck_identity
+
+        identity = deck_identity(game_state)
+        if not identity:
+            raise ValueError("The deck list is empty or unknown")
+        be = backend or self._backend
+        playbook = None if refresh else self._cached_playbook(identity, game_state)
+        if playbook is not None:
+            if progress:
+                progress("cache")
+            return playbook
+        run, running = self._claim_playbook_run(identity)
+        if running is not None:
+            running.wait(self._PLAYBOOK_MODEL_WAIT_S + 2 * 300.0)
+            playbook = self._cached_playbook(identity, game_state)
+            if playbook is None:
+                raise ValueError("The concurrent analysis of this deck produced no playbook")
+            return playbook
+        try:
+            playbook = self._build_playbook(
+                game_state, be, identity, -1, wanted=lambda: True, progress=progress
+            )
+            self._store_playbook(playbook)
+            if progress:
+                progress("done")
+            return playbook
+        finally:
+            self._finish_playbook_run(identity, run)
+
+    def _build_playbook(
+        self, game_state: dict, be: Any, identity: str, generation: int, *, wanted=None, progress=None
+    ):
         """The two model calls: discovery notes, then the audited JSON playbook."""
         from arenamcp.deck_strategy import (
             DECK_DISCOVERY_PROMPT,
@@ -693,10 +757,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         )
         from arenamcp.match_context import prepare_match_context
 
-        def wanted() -> bool:
-            # A cleared identity ("") is a match boundary, not a different deck.
-            with self._deck_analysis_lock:
-                return self._deck_analysis_identity in ("", identity)
+        if wanted is None:
+
+            def wanted() -> bool:
+                # A cleared identity ("") is a match boundary, not a different deck.
+                with self._deck_analysis_lock:
+                    return self._deck_analysis_identity in ("", identity)
 
         prepared = prepare_match_context(game_state)
         catalog = prepared.get("deck_catalog") or {}
@@ -731,9 +797,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             # to omitted branches and repeated invalid/truncated JSON.
             def complete(system, message, *, discovery=False):
                 options = dict(
-                    max_tokens=6000 if discovery else 12288,
+                    max_tokens=_PLAYBOOK_DISCOVERY_MAX_TOKENS if discovery else _PLAYBOOK_COMPILE_MAX_TOKENS,
                     temperature=0.0,
-                    request_timeout_s=120.0,
+                    request_timeout_s=300.0 if discovery else 120.0,
                     background=True,
                     **_PLAYBOOK_PASS_SETTINGS["discovery" if discovery else "compile"],
                     **labels,
@@ -755,6 +821,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                         break
                     if not wanted():
                         raise ValueError("Deck changed during analysis")
+                    if cancel.is_set():
+                        # 2026-10-11 10:52: a cancelled worker retried every
+                        # 10 s for the whole match (each attempt cancelled at
+                        # once, each superseding the live analysis's call),
+                        # and the game plan stayed suspended behind it.
+                        raise ValueError("Deck analysis cancelled by a newer analysis")
                     # Skipped while the server is down, or dropped by the
                     # proxy's background lane: nothing failed, try again.
                     remaining = deadline - time.monotonic()
@@ -766,10 +838,14 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     raise ValueError("Deck analysis backend returned no usable response")
                 return response
 
+            if progress:
+                progress("discovery")
             notes = complete(DECK_DISCOVERY_PROMPT, user_message, discovery=True)
             user_message += _PLAYBOOK_AUDIT_INSTRUCTIONS + notes
             playbook = None
             for attempt in range(2):
+                if progress:
+                    progress("compile")
                 response = complete(DECK_ANALYSIS_PROMPT, user_message)
                 try:
                     playbook = DeckPlaybook.parse(response, catalog, commanders, identity)
@@ -1811,6 +1887,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         entry = catalog.get(card.get("grp_id")) or catalog.get(str(card.get("grp_id")))
         if not isinstance(entry, dict):
             return False
+        quoted = game_state.get("deck_rules_grp_ids")
+        if quoted is not None and card.get("grp_id") not in quoted:
+            return False  # the reference lists this card by name only
         return bool(card.get("oracle_text")) and (
             (card.get("modified_name") or card.get("name")) == entry.get("name")
             and card.get("oracle_text") == entry.get("oracle_text")

@@ -380,6 +380,9 @@ class AutopilotEngine(
             provider = getattr(self._planner, "_deck_strategy_fn", None)
             if callable(provider):
                 mgr.seed(provider())
+            set_playbook = getattr(mgr, "set_playbook_source", None)
+            if callable(set_playbook):
+                set_playbook(getattr(self._planner, "_deck_playbook_fn", None))
             self._planner.set_game_plan(mgr.plan_text())
             # Each prompt re-renders ROLE + this turn + facts from its own
             # snapshot (board_assessment), then this plan.
@@ -387,6 +390,20 @@ class AutopilotEngine(
             set_source = getattr(self._planner, "set_game_plan_source", None)
             if callable(source) and callable(set_source):
                 set_source(source)
+            # The reform reads what we did since the last plan.
+            feed = getattr(self._planner, "recent_decisions_text", None)
+            set_feed = getattr(mgr, "set_recent_actions_source", None)
+            if callable(feed) and callable(set_feed):
+                set_feed(feed)
+            per_turn = getattr(self._planner, "decisions_for_turn", None)
+            set_per_turn = getattr(mgr, "set_turn_decisions_source", None)
+            if callable(per_turn) and callable(set_per_turn):
+                set_per_turn(per_turn)
+            # A decision call cancels an in-flight reform rather than sharing the server with it.
+            yield_fn = getattr(mgr, "yield_for_decision", None)
+            set_yield = getattr(self._planner, "set_background_yield", None)
+            if callable(yield_fn) and callable(set_yield):
+                set_yield(yield_fn)
             self._announce_game_plan(game_state)
             if self._config.afk_mode or self._config.land_drop_mode:
                 return
@@ -662,10 +679,15 @@ class AutopilotEngine(
             return
         if equipment_key is not None:
             getattr(self, "_equipment_activation_states", set()).discard(equipment_key)
-        for key in ((turn, "iid", instance_id) if instance_id else None, (turn, "name", name) if name else None):
+        for key in (
+            (turn, "iid", instance_id) if instance_id else None,
+            (turn, "name", name) if name else None,
+        ):
             if key is not None and self._activation_counts.get(key, 0) > 0:
                 self._activation_counts[key] -= 1
-        logger.info("Repeat-activation guard: %r was rolled back (%s); not counting it", name or instance_id, why)
+        logger.info(
+            "Repeat-activation guard: %r was rolled back (%s); not counting it", name or instance_id, why
+        )
 
     # A cast or activation the autopilot backed out of itself (declined its
     # targets/costs and cancelled) is withheld for the rest of the turn: the
@@ -3260,6 +3282,24 @@ class AutopilotEngine(
                 f"bridge={game_state.get('_bridge_request_type')}"
             )
 
+            if decision_context and decision_context.get("type") == "declare_attackers":
+                # 2026-10-11 10:44: Arena offered two attackers, the menu had
+                # one, and no record said where the other went. Log both sides.
+                local_seat = game_state.get("local_seat_id")
+                ours = [
+                    f"{c.get('name')}#{c.get('instance_id')}"
+                    for c in game_state.get("battlefield") or []
+                    if c.get("controller_seat_id") in (None, local_seat)
+                    and "creature" in str(c.get("type_line") or "").lower()
+                ]
+                logger.info(
+                    "Attack window: offered=%s ids=%s menu=%s our creatures=%s",
+                    decision_context.get("legal_attackers"),
+                    decision_context.get("legal_attacker_ids"),
+                    [a for a in legal_actions or [] if str(a).startswith("Attack with")],
+                    ours,
+                )
+
             self._refresh_game_plan(game_state)
 
             _plan_started_at = time.perf_counter()
@@ -4488,9 +4528,7 @@ class AutopilotEngine(
                     f"typed-decision {decision.request_type}: declined (cancel)",
                 )
                 if decision.request_type != "ActionsAvailable":
-                    self._undo_activation_after_cancel(
-                        game_state, f"{decision.request_type} cancelled"
-                    )
+                    self._undo_activation_after_cancel(game_state, f"{decision.request_type} cancelled")
                     self._withhold_after_self_cancel(game_state, f"{decision.request_type} cancelled")
                 self._record_autopilot_decision(
                     game_state,
@@ -4582,7 +4620,11 @@ class AutopilotEngine(
                     get_trace = getattr(self._planner, "get_last_decision_trace", None)
                     trace = get_trace() if callable(get_trace) else None
                     packet.add_decision(
-                        decision, option_ids, trace=trace or None, explanation=explanation, game_state=game_state
+                        decision,
+                        option_ids,
+                        trace=trace or None,
+                        explanation=explanation,
+                        game_state=game_state,
                     )
             except Exception as e:
                 logger.warning(f"MatchPacket: failed to record decision: {e}")

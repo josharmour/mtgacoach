@@ -1,4 +1,5 @@
 import json
+import logging
 import sys
 import threading
 from types import SimpleNamespace
@@ -263,3 +264,216 @@ def test_pack_choices_come_first_and_pool_ids_cannot_pass_for_pickable_ones():
     assert message["already_drafted_not_pickable"][0]["pool_grp_id"] == 3
     assert "pickable_grp_ids" in captured["system"]
     assert result["recommendations"][0]["grp_id"] == 7
+
+
+def _lane_pack(pool, plan, lane, pick_number=5, pack_number=1):
+    pack = draft_pack()
+    pack["pack_number"] = pack_number
+    pack["pick_number"] = pick_number
+    pack["picked_cards"] = pool
+    payload = response()
+    payload["plan"] = plan
+    payload["lane"] = lane
+    return pack, payload
+
+
+WU_POOL = [
+    card(11, "Tide Scholar", "{1}{U}", "Flying"),
+    card(12, "Meadow Squire", "{W}", "Vigilance"),
+    card(13, "Cloud Sentry", "{2}{W}{U}", "Flying"),
+    card(14, "Hybrid Knight", "{1}{W/B}", "Lifelink"),  # hybrid: castable in WU
+]
+BR_CARDS = [
+    card(21, "Ember Hound", "{1}{R}", "Haste"),
+    card(22, "Bog Snare", "{1}{B}", "Destroy target creature.", "Instant"),
+    card(23, "Blood Pact", "{B}{R}", "Menace"),
+    card(24, "Cinder Imp", "{R}", "Flying"),
+    card(25, "Grave Rat", "{B}", "Deathtouch"),
+    card(26, "Rakdos Cutter", "{2}{B}{R}", "Trample"),
+]
+
+
+def test_lane_holds_when_the_model_rationalises_one_off_color_card(caplog):
+    # 2026-10-10 FRA: lane=BG, RG, BG, UG, RG, UB, BG over eight picks while the
+    # pool stayed the same handful of cards.
+    backend = Mock()
+    advisor = DraftAdvisor(backend)
+    pack, payload = _lane_pack(WU_POOL, "Build white-blue fliers and tempo.", "WU", 6)
+    backend.complete.return_value = json.dumps(payload)
+    first = advisor.recommend(pack, {})
+    assert first["lane"] == "WU" and "lane_rejected" not in first
+
+    pack, payload = _lane_pack(
+        WU_POOL + BR_CARDS[:1], "Pivot to black-red aggro around Ember Hound.", "BR", 7
+    )
+    backend.complete.return_value = json.dumps(payload)
+    with caplog.at_level(logging.INFO, logger="arenamcp.draft_advisor"):
+        second = advisor.recommend(pack, {})
+    assert second["lane"] == "WU"
+    assert second["lane_rejected"] == "BR"
+    assert second["plan"] == "Build white-blue fliers and tempo."
+    assert second["rejected_plan"].startswith("Pivot to black-red")
+    assert "Plan: Build white-blue" in second["spoken_advice"]
+    assert any(m.startswith("Draft lane held at WU: BR casts 2 vs 4 (needs +2)") for m in caplog.messages)
+    # The next prompt continues from the held lane and plan, not the discarded pivot.
+    backend.complete.return_value = json.dumps(payload)
+    advisor.recommend(_lane_pack(WU_POOL + BR_CARDS[:1], "x", "BR", 8)[0], {})
+    message = json.loads(backend.complete.call_args.args[1])
+    assert message["previous_lane"] == "WU"
+    assert message["previous_plan"] == "Build white-blue fliers and tempo."
+
+
+def test_lane_switches_once_the_pool_casts_clearly_more_in_the_new_pair(caplog):
+    backend = Mock()
+    advisor = DraftAdvisor(backend)
+    pack, payload = _lane_pack(WU_POOL, "Build white-blue fliers and tempo.", "WU", 6)
+    backend.complete.return_value = json.dumps(payload)
+    advisor.recommend(pack, {})
+    # WU casts 4 pool cards (hybrid included); BR must cast at least 6 to take over in pack 1.
+    pool = WU_POOL + BR_CARDS[:5]  # BR casts 5 (+ the hybrid knight = 6)
+    pack, payload = _lane_pack(pool, "Switch to black-red aggro: the pool is now mostly Rakdos.", "BR", 10)
+    backend.complete.return_value = json.dumps(payload)
+    with caplog.at_level(logging.INFO, logger="arenamcp.draft_advisor"):
+        result = advisor.recommend(pack, {})
+    assert result["lane"] == "BR" and "lane_rejected" not in result
+    assert any(
+        m.startswith("Draft lane switch: the pool casts 6 cards in BR vs 4 in WU") for m in caplog.messages
+    )
+    # One card short of the margin holds.
+    advisor2 = DraftAdvisor(backend)
+    pack, payload = _lane_pack(WU_POOL, "Build white-blue fliers and tempo.", "WU", 6)
+    backend.complete.return_value = json.dumps(payload)
+    advisor2.recommend(pack, {})
+    pack, payload = _lane_pack(WU_POOL + BR_CARDS[:4], "Switch to black-red aggro.", "BR", 9)
+    backend.complete.return_value = json.dumps(payload)
+    assert advisor2.recommend(pack, {})["lane"] == "WU"
+    # From pack 2 the same six-card edge is one short of the late margin.
+    advisor3 = DraftAdvisor(backend)
+    pack, payload = _lane_pack(WU_POOL, "Build white-blue fliers and tempo.", "WU", 6)
+    backend.complete.return_value = json.dumps(payload)
+    advisor3.recommend(pack, {})
+    pack, payload = _lane_pack(WU_POOL + BR_CARDS[:5], "Switch to black-red aggro.", "BR", 2, pack_number=2)
+    backend.complete.return_value = json.dumps(payload)
+    assert advisor3.recommend(pack, {})["lane"] == "WU"
+
+
+def test_opening_picks_declare_no_lane_and_a_lane_needs_pool_support(caplog):
+    # 2026-10-10 15:41: lane=RG declared on P1p4 from one green card, held for
+    # four picks of blue cards ("outside our red-green colors").
+    backend = Mock()
+    advisor = DraftAdvisor(backend)
+    pack, payload = _lane_pack([BR_CARDS[0]], "Open toward Gruul ramp around Ember Hound.", "RG", 2)
+    backend.complete.return_value = json.dumps(payload)
+    with caplog.at_level(logging.INFO, logger="arenamcp.draft_advisor"):
+        result = advisor.recommend(pack, {})
+    assert result["lane"] == "" and result["lane_rejected"] == "RG"
+    assert result["plan"].startswith("Open toward Gruul")  # the lean stays in the plan text
+    assert any("picks 1-4 take the best card; no lane yet" in m for m in caplog.messages)
+    # Pick 5: one red card does not support a red-green lane while the pool casts 3 white-blue cards.
+    pack, payload = _lane_pack(WU_POOL[:3] + BR_CARDS[:1], "Gruul ramp.", "RG", 5)
+    backend.complete.return_value = json.dumps(payload)
+    result = advisor.recommend(pack, {})
+    assert result["lane"] == "" and result["lane_rejected"] == "RG"
+    # A single main color is a valid first commitment once two pool cards are mono-blue.
+    drake = card(15, "Mist Drake", "{2}{U}", "Flying")
+    pack, payload = _lane_pack(
+        WU_POOL[:3] + [drake] + BR_CARDS[:1], "Blue-based tempo, second color open.", "U", 6
+    )
+    backend.complete.return_value = json.dumps(payload)
+    assert advisor.recommend(pack, {})["lane"] == "U"
+    # Settling the pair needs the pool to back it; WU casts 5 of 6, the best pair.
+    pack, payload = _lane_pack(WU_POOL + [drake] + BR_CARDS[:1], "Azorius fliers.", "WU", 7)
+    backend.complete.return_value = json.dumps(payload)
+    assert advisor.recommend(pack, {})["lane"] == "WU"
+    # A committed pair is not dropped for "open".
+    pack, payload = _lane_pack(WU_POOL + [drake] + BR_CARDS[:1], "Staying open between several pairs.", "", 8)
+    backend.complete.return_value = json.dumps(payload)
+    result = advisor.recommend(pack, {})
+    assert result["lane"] == "WU" and result["lane_rejected"] == ""
+
+
+def test_a_splash_is_kept_only_with_fixing_in_the_pool(caplog):
+    # 2026-10-10 P3p10: "in our red splash" from a plan's "possible light red splash" with no red source.
+    backend = Mock()
+    advisor = DraftAdvisor(backend)
+    pack, payload = _lane_pack(
+        WU_POOL, "Azorius fliers with a possible light red splash for Ember Hound.", "WU", 9
+    )
+    backend.complete.return_value = json.dumps(payload)
+    with caplog.at_level(logging.INFO, logger="arenamcp.draft_advisor"):
+        result = advisor.recommend(pack, {})
+    assert result["lane"] == "WU" and result["splash"] == ""
+    assert any(
+        m.startswith("Draft splash dropped: no fixing in the pool for a R splash") for m in caplog.messages
+    )
+    rock = card(30, "Murmuring Volume", "{2}", "{T}: Add one mana of any color.", "Artifact")
+    pack, payload = _lane_pack(
+        WU_POOL + [rock], "Azorius fliers with a light red splash for Ember Hound.", "WU", 10
+    )
+    backend.complete.return_value = json.dumps(payload)
+    assert advisor.recommend(pack, {})["splash"] == "R"
+
+
+# --- the table's signal and value above replacement (2026-10-10 research) ---------------
+
+from arenamcp.draft_advisor import lane_quality, validate_lane  # noqa: E402
+from arenamcp.draft_autopick import color_signals, note_openness  # noqa: E402
+
+
+def test_signals_accumulate_per_pack_with_direction_weighting():
+    store = {}
+    note_openness(store, 1, {"W": 0.0, "U": 1.0, "B": 0.2, "R": 0.0, "G": 0.0})
+    note_openness(store, 1, {"W": 0.0, "U": 1.0, "B": 0.6, "R": 0.0, "G": 0.0})
+    assert color_signals(store, 1) == {"W": 0.0, "U": 1.0, "B": 0.4, "R": 0.0, "G": 0.0}
+    note_openness(store, 2, {"W": 1.0, "U": 0.0, "B": 0.0, "R": 0.0, "G": 0.0})
+    # Pack 2 comes from the other neighbour: pack 1's blue counts half there.
+    assert color_signals(store, 2) == {"W": 1.0, "U": 1.0, "B": 0.4, "R": 0.0, "G": 0.0}
+    # Pack 3 passes the same way as pack 1: blue is back in full, white at half.
+    assert color_signals(store, 3)["U"] == 1.0 and color_signals(store, 3)["W"] == 0.25
+    assert color_signals({}, 1) == {"W": 0.0, "U": 0.0, "B": 0.0, "R": 0.0, "G": 0.0}
+
+
+def test_a_flowing_pair_can_be_declared_two_short_and_a_cut_pair_is_refused():
+    pool = WU_POOL[:3] + BR_CARDS[:3]  # WU casts 3, BR casts 3 (+hybrid knight? no: knight is WU_POOL[3])
+    blue_flowing = {"W": 0.1, "U": 1.0, "B": 0.2, "R": 0.3, "G": 0.0}
+    # Equal support: WU is declared (within one of the best pair) with the signal noted.
+    lane, why = validate_lane("", "WU", pool, pick_number=6, signals=blue_flowing)
+    assert lane == "WU" and "declared" in why and "WU signal 0.55" in why
+    # BR is within one card of WU but WU's colours are clearly flowing: stay open rather than fight the table.
+    lane, why = validate_lane("", "BR", pool, pick_number=6, signals=blue_flowing)
+    assert lane == "" and "is flowing" in why
+    # Two short of the best pair is enough when the proposed pair is clearly flowing.
+    drake = card(15, "Mist Drake", "{2}{U}", "Flying")
+    pool = BR_CARDS[:4] + [WU_POOL[0], drake]  # BR 4, WU 2
+    lane, why = validate_lane(
+        "", "WU", pool, pick_number=7, signals={"W": 0.6, "U": 1.0, "B": 0.2, "R": 0.1, "G": 0.0}
+    )
+    assert lane == "WU" and "on the signal" in why
+    lane, _why = validate_lane("", "WU", pool, pick_number=7)  # no signal: support decides
+    assert lane == ""
+
+
+def test_switch_margin_scales_with_signal_and_card_quality():
+    def rated(c, rate):
+        return {**c, "gih_wr": rate}
+
+    held = [rated(c, 0.54) for c in WU_POOL]  # WU casts 4
+    # One card short of the pack-1 margin holds; the same edge switches when BR is flowing.
+    pool = held + [rated(c, 0.54) for c in BR_CARDS[:4]]  # BR casts 4 (+hybrid) = 5
+    assert validate_lane("WU", "BR", pool, pick_number=10)[0] == "WU"
+    lane, why = validate_lane(
+        "WU", "BR", pool, pick_number=10, signals={"W": 0.1, "U": 0.2, "B": 0.9, "R": 1.0, "G": 0.0}
+    )
+    assert lane == "BR" and "BR is flowing" in why
+    # Clearly stronger cards in the new pair also lower the bar (value above replacement)...
+    pool = held + [rated(c, 0.58) for c in BR_CARDS[:4]]
+    lane, why = validate_lane("WU", "BR", pool, pick_number=10)
+    assert lane == "BR" and "BR cards stronger" in why
+    # ...and clearly stronger held cards raise it: six vs four is not enough any more.
+    pool = [rated(c, 0.60) for c in WU_POOL] + [rated(c, 0.54) for c in BR_CARDS[:5]]
+    lane, why = validate_lane("WU", "BR", pool, pick_number=10)
+    assert lane == "WU" and "WU cards stronger" in why and "needs +3" in why
+    assert lane_quality(pool, "WU") > lane_quality(pool, "BR")
+    assert (
+        lane_quality([{"grp_id": 1, "name": "x", "mana_cost": "{U}", "type_line": "Creature"}], "U") is None
+    )

@@ -66,7 +66,9 @@ def _signed(body: dict) -> tuple[bytes, dict]:
 
 def _pledge_event(email="pat@example.com", status="active_patron"):
     return {
-        "data": {"attributes": {"patron_status": status}},
+        "data": {"type": "member", "id": "member-1",
+                 "attributes": {"patron_status": status},
+                 "relationships": {"user": {"data": {"type": "user", "id": "12345"}}}},
         "included": [
             {
                 "type": "user",
@@ -136,7 +138,7 @@ def test_pledge_delete_deletes_gateway_key(env):
     headers["X-Patreon-Event"] = "members:pledge:create"
     client.post("/patreon/webhook", content=raw, headers=headers)
 
-    raw, headers = _signed(_pledge_event())
+    raw, headers = _signed(_pledge_event(status="former_patron"))
     headers["X-Patreon-Event"] = "members:pledge:delete"
     client.post("/patreon/webhook", content=raw, headers=headers)
 
@@ -168,3 +170,110 @@ def test_membership_gate():
     assert patreon._membership_allows_key(former)[0] is False
     # Ambiguous (no member objects) fails open so key recovery keeps working.
     assert patreon._membership_allows_key(empty)[0] is True
+
+
+@pytest.mark.parametrize("event", ["members:create", "members:update", "members:pledge:create", "members:pledge:update"])
+def test_v2_member_events_use_linked_user(env, event):
+    _, db, fake, client = env
+    body = _pledge_event()
+    body["included"].append({"type": "user", "id": "creator", "attributes": {
+        "email": "creator@example.com", "full_name": "Creator"}})
+    raw, headers = _signed(body)
+    headers["X-Patreon-Event"] = event
+    assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 200
+    assert fake.minted[0]["payload"]["metadata"]["patron_id"] == "12345"
+    assert db.list_subscribers()[0]["email"] == "pat@example.com"
+
+
+def test_member_attributes_supply_email_without_included_user(env):
+    _, db, _, client = env
+    body = _pledge_event()
+    body["included"] = []
+    body["data"]["attributes"].update(email="member@example.com", full_name="Member")
+    raw, headers = _signed(body)
+    headers["X-Patreon-Event"] = "members:update"
+    assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 200
+    assert db.list_subscribers()[0]["email"] == "member@example.com"
+
+
+@pytest.mark.parametrize("event", ["members:pledge:delete", "members:update"])
+def test_cancellation_preserves_active_paid_membership(env, event):
+    _, db, fake, client = env
+    body = _pledge_event()
+    body["data"]["attributes"].update(currently_entitled_amount_cents=999, will_pay_amount_cents=0)
+    raw, headers = _signed(body)
+    headers["X-Patreon-Event"] = "members:create"
+    client.post("/patreon/webhook", content=raw, headers=headers)
+    headers["X-Patreon-Event"] = event
+    assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 200
+    assert not fake.deleted
+    assert len(fake.minted) == 1
+    assert db.list_subscribers()[0]["status"] == "active"
+
+
+@pytest.mark.parametrize("status", ["declined_patron", "former_patron", None])
+def test_member_update_revokes_inactive_membership(env, status):
+    _, db, fake, client = env
+    raw, headers = _signed(_pledge_event())
+    headers["X-Patreon-Event"] = "members:create"
+    client.post("/patreon/webhook", content=raw, headers=headers)
+    raw, headers = _signed(_pledge_event(status=status))
+    headers["X-Patreon-Event"] = "members:update"
+    assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 200
+    assert fake.deleted == ["sk-fake-0"]
+    assert db.list_subscribers()[0]["status"] == "revoked"
+
+
+@pytest.mark.parametrize("missing", ["status", "email", "relationship"])
+def test_incomplete_payload_does_not_revoke(env, missing):
+    _, db, fake, client = env
+    raw, headers = _signed(_pledge_event())
+    headers["X-Patreon-Event"] = "members:create"
+    client.post("/patreon/webhook", content=raw, headers=headers)
+    body = _pledge_event()
+    if missing == "status":
+        body["data"]["attributes"].pop("patron_status")
+    elif missing == "email":
+        body["included"] = []
+    else:
+        body["data"].pop("relationships")
+    raw, headers = _signed(body)
+    headers["X-Patreon-Event"] = "members:update"
+    assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 400
+    assert not fake.deleted
+    assert db.list_subscribers()[0]["status"] == "active"
+
+
+def test_webhook_requires_configured_secret(env, monkeypatch):
+    patreon, _, fake, client = env
+    monkeypatch.setattr(patreon, "PATREON_WEBHOOK_SECRET", "")
+    raw, headers = _signed(_pledge_event())
+    headers["X-Patreon-Event"] = "members:create"
+    assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 503
+    assert not fake.minted
+
+
+def test_malformed_json_returns_400(env):
+    _, _, _, client = env
+    raw = b"{bad json"
+    headers = {"X-Patreon-Event": "members:update", "X-Patreon-Signature":
+               hmac.new(WEBHOOK_SECRET.encode(), raw, hashlib.md5).hexdigest()}
+    assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 400
+
+
+@pytest.mark.parametrize("operation", ["mint", "revoke"])
+def test_gateway_failure_is_retryable_without_local_state_change(env, monkeypatch, operation):
+    patreon, db, _, client = env
+    raw, headers = _signed(_pledge_event())
+    headers["X-Patreon-Event"] = "members:create"
+    if operation == "revoke":
+        client.post("/patreon/webhook", content=raw, headers=headers)
+        raw, headers = _signed(_pledge_event(status="former_patron"))
+        headers["X-Patreon-Event"] = "members:update"
+    async def fail(*args, **kwargs):
+        raise RuntimeError("gateway unavailable")
+    monkeypatch.setattr(patreon, "mint_litellm_key" if operation == "mint" else "delete_litellm_key", fail)
+    client = TestClient(client.app, raise_server_exceptions=False)
+    assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 500
+    rows = db.list_subscribers()
+    assert (rows[0]["status"] == "active") if operation == "revoke" else not rows

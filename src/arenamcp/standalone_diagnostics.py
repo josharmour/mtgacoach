@@ -839,6 +839,15 @@ class _DiagnosticsMixin:
                 context["deck_playbook"] = playbook.export() if playbook else None
                 context["deck_analysis_pending"] = getattr(self._coach, "_deck_strategy_pending", False)
                 context["deck_analysis_error"] = getattr(self._coach, "_deck_analysis_error", "")
+                # The game plan the decisions were following, and the match
+                # ledger behind it (what the plan said each turn, what we did,
+                # how the board moved, the lessons drawn) — 2026-10-10.
+                mgr = getattr(self._coach, "_game_plan_mgr", None)
+                if mgr is not None:
+                    plan = getattr(mgr, "_plan", None)
+                    context["game_plan"] = plan.as_payload() if plan is not None else None
+                    ledger_fn = getattr(mgr, "ledger_payload", None)
+                    context["match_ledger"] = ledger_fn() if callable(ledger_fn) else None
 
                 # Use the game_context from the last advice_history entry instead of
                 # regenerating it, to avoid timing issues where game state has changed

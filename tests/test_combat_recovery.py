@@ -261,20 +261,71 @@ def test_planner_checks_the_trade_and_updates_identity_narration_and_training_or
     assert "The Notary Hobbits [id:1034]" in plan.actions[0].blocker_assignments
     assert "[id:1042]" not in plan.voice_advice
     assert "[id:1034]" in plan.voice_advice
-    assert "recast" in plan.voice_advice and "I'm" not in plan.voice_advice
-    assert "tax = 9" in plan.actions[0].reasoning
-    assert plan_fallback_reason(plan) == "planner_combat_recovery"
+    assert "command zone" in plan.voice_advice and "I'm" not in plan.voice_advice
+    assert plan.actions[0].reasoning.startswith("Identical copy")
+    assert "9 mana including observed commander tax" in plan.actions[0].reasoning
+    assert plan_fallback_reason(plan) == "planner_commander_identity"
     backend.complete.assert_called_once()
     assert planner._committed_commander_return(report, {"recipient_ids": [1034]})
     assert not planner._committed_commander_return(report, {"recipient_ids": [1042]})
 
 
+@pytest.mark.parametrize("change", ["hand", "unknown_hand", "tax"])
+def test_identical_copy_swap_needs_no_pricing_hand_or_tax(report, change):
+    """2026-10-11 12:43: the token copy traded with Alseid while the commander (same body) stood by.
+
+    Four cards were in hand, so the priced path declined; but the surviving board
+    is identical either way and only the commander can come back.
+    """
+    if change == "hand":
+        report["hand"] = [{"name": "Another plan", "mana_cost": "{5}{G}{G}"}]
+    elif change == "unknown_hand":
+        report.pop("hand")
+    else:
+        report["commander_casts"] = {}
+    improved = improve_block_recovery(report, report["decision_context"], {1042: 1046, 1057: 849})
+    assert improved is not None and improved[0] == {1034: 1046, 1057: 849}
+    assert improved[1].startswith("Identical copy: The Notary Hobbits [id:1034] blocks *Samurai [id:1046]")
+    assert "*The Notary Hobbits [id:1042]" in improved[1] and "gone for good" in improved[1]
+    if change == "tax":
+        assert "UNKNOWN commander tax" in improved[1]
+
+
+@pytest.mark.parametrize("rule", ["nontoken", "legendary", "commander"])
+def test_identical_copy_swap_yields_when_a_board_rule_tells_the_deaths_apart(report, rule):
+    text = {
+        "nontoken": "Whenever a nontoken creature you control dies, draw a card.",
+        "legendary": "Whenever a legendary creature dies, each opponent loses 2 life.",
+        "commander": "Whenever a commander leaves the battlefield, its controller draws a card.",
+    }[rule]
+    report["hand"] = [{"name": "Another plan", "mana_cost": "{5}{G}{G}"}]
+    next(c for c in report["battlefield"] if c["instance_id"] == 849)["oracle_text"] += "\n" + text
+    assert improve_block_recovery(report, report["decision_context"], {1042: 1046, 1057: 849}) is None
+
+
+def test_a_cards_own_death_trigger_does_not_block_the_identical_copy_swap(report):
+    report["hand"] = [{"name": "Another plan", "mana_cost": "{5}{G}{G}"}]
+    report["battlefield"].append(
+        {
+            "instance_id": 1099,
+            "grp_id": 90681,
+            "name": "Vaultborn Tyrant",
+            "oracle_text": "When this creature dies, if it's not a token, create a token that's a copy of it.",
+            "type_line": "Creature — Dinosaur",
+            "owner_seat_id": report["local_seat_id"],
+            "controller_seat_id": report["local_seat_id"],
+            "power": 6,
+            "toughness": 6,
+            "object_kind": "CARD",
+        }
+    )
+    improved = improve_block_recovery(report, report["decision_context"], {1042: 1046, 1057: 849})
+    assert improved is not None and improved[0] == {1034: 1046, 1057: 849}
+
+
 @pytest.mark.parametrize(
     "change",
     [
-        "hand",
-        "unknown_hand",
-        "tax",
         "counter",
         "illegal",
         "other_damage",
@@ -286,13 +337,7 @@ def test_planner_checks_the_trade_and_updates_identity_narration_and_training_or
 )
 def test_trade_check_keeps_planner_choice_when_assumptions_fail(report, change):
     commander = next(c for c in report["battlefield"] if c["instance_id"] == 1034)
-    if change == "hand":
-        report["hand"] = [{"name": "Another plan", "mana_cost": "{5}{G}{G}"}]
-    elif change == "unknown_hand":
-        report.pop("hand")
-    elif change == "tax":
-        report["commander_casts"] = {}
-    elif change == "counter":
+    if change == "counter":
         commander["counters"] = {"+1/+1": 1}
     elif change == "illegal":
         report["decision_context"]["raw_blockers"][0]["attackerInstanceIds"] = []

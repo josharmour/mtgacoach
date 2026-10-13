@@ -105,7 +105,11 @@ class _DeckAnalysisMixin:
         generation = coach.begin_deck_analysis(identity)
         self._deck_analysis_attempts += 1
         self._last_deck_analysis_attempt = time.monotonic()
-        logger.info("Starting deck playbook analysis for %d cards", len(snapshot["deck_cards"]))
+        logger.info(
+            "Starting deck playbook analysis for %d cards (identity %s)",
+            len(snapshot["deck_cards"]),
+            identity[:8],
+        )
 
         def analyze():
             backend = None
@@ -367,7 +371,7 @@ class _DeckAnalysisMixin:
         """Shared complete inventory; full rules are cached in the deck prefix."""
         from arenamcp.match_context import prepare_match_context, with_deck_reference
 
-        prepared = prepare_match_context(game_state)
+        prepared = prepare_match_context(game_state, full_rules=detailed)
         summary = prepared.get("library_summary", "")
         return with_deck_reference(summary, prepared) if detailed else summary
 

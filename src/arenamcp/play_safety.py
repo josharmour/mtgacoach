@@ -6,7 +6,7 @@ from collections import Counter
 from typing import Any
 
 from arenamcp.combat_keywords import has_combat_keyword
-from arenamcp.mana import has_autotap_solution
+from arenamcp.mana import has_autotap_solution, mana_cost_to_cmc
 from arenamcp.rules_engine import RulesEngine, _normalize_mana_symbols
 
 logger = logging.getLogger(__name__)
@@ -241,6 +241,45 @@ def removal_lacks_opponent_target(card: dict, state: dict, *, activation: bool =
         oracle = abilities[0]
     else:
         oracle = "\n".join(line for line in oracle.splitlines() if ":" not in line)
+        kicked = _kicked_clauses(oracle)
+        if kicked:
+            # Tear Asunder (2026-10-11 T8): unkicked it exiles an artifact or
+            # enchantment, kicked any nonland permanent. The kicked reading
+            # counts when base cost plus kicker fits our untapped mana.
+            base = re.sub(_KICKED_SENTENCE, " ", oracle)
+            if not _lacks_opposing_target(base, state):
+                return False
+            return _lacks_opposing_target(" ".join(kicked), state) or not _kicker_affordable(card, state)
+    return _lacks_opposing_target(oracle, state)
+
+
+_KICKED_SENTENCE = re.compile(r"[^.\n]*\b(?:if|when) (?:this spell|it) was kicked\b[^.\n]*\.?", re.IGNORECASE)
+_KICKER_COST = re.compile(r"\bkicker ((?:\{[^}]+\})+)", re.IGNORECASE)
+
+
+def _kicked_clauses(oracle: str) -> list[str]:
+    return [match.group(0) for match in _KICKED_SENTENCE.finditer(oracle)]
+
+
+def _kicker_affordable(card: dict, state: dict) -> bool:
+    """Whether base cost plus kicker fits our untapped mana (True when either cost is unknown)."""
+    from arenamcp.ward import available_mana
+
+    kicker = _KICKER_COST.search(str(card.get("oracle_text") or ""))
+    cost = str(card.get("mana_cost") or "")
+    if not kicker or not cost:
+        return True
+    try:
+        needed = mana_cost_to_cmc(_normalize_mana_symbols(cost)) + mana_cost_to_cmc(
+            _normalize_mana_symbols(kicker.group(1))
+        )
+    except Exception:
+        return True
+    return available_mana(state) >= needed
+
+
+def _lacks_opposing_target(oracle: str, state: dict) -> bool:
+    """The body of :func:`removal_lacks_opponent_target` for one reading of the text."""
     if not re.search(r"\b(?:exile|destroy) target\b", oracle):
         return False
     if any(

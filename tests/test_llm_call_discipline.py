@@ -756,12 +756,26 @@ def test_a_plan_for_a_turn_that_has_passed_is_cancelled_and_discarded(plan_threa
     cancel = backend.calls[0][3]["cancel_event"]
     assert not mgr.request_reform(_game(5))  # our turn 5: still the turn it plans for
     assert not cancel.is_set()
+    # 2026-10-10: with no plan at all, the first plan's request outlives its
+    # turn (up to the patience bound) and its late answer is kept.
     assert not mgr.request_reform(_game(6, active=2))  # turn 5 has passed
-    assert cancel.is_set()
+    assert not cancel.is_set()
     backend.release.set()
     plan_threads[-1].join(timeout=3)
-    assert mgr.current is None
-    assert STRATEGIC_LANE.holder is None
+    assert mgr.current is not None and STRATEGIC_LANE.holder is None
+    # With a plan in hand, a request for a turn that has passed is cancelled and discarded.
+    backend2 = GatedPlanBackend([_plan_json("stale line")])
+    mgr2 = GamePlanManager(backend2)
+    mgr2._plan = mgr.current
+    mgr2._last_sig = (6,)
+    assert mgr2.request_reform(_game(6, active=2))
+    assert backend2.entered.wait(3)
+    cancel2 = backend2.calls[0][3]["cancel_event"]
+    assert not mgr2.request_reform(_game(8, active=2))  # turn 7 has passed
+    assert cancel2.is_set()
+    backend2.release.set()
+    plan_threads[-1].join(timeout=3)
+    assert mgr2.current is mgr.current and STRATEGIC_LANE.holder is None
 
 
 def test_a_superseded_plan_frees_the_manager_and_the_lane_at_once(monkeypatch, plan_threads):
@@ -967,7 +981,7 @@ def test_deck_calls_are_labelled_background_work_and_discovery_keeps_full_thinki
     assert CoachEngine(backend).analyze_deck(state)
     discovery, compile_pass = backend.complete.call_args_list
     assert discovery.kwargs["enable_thinking"] is True
-    assert "reasoning_effort" not in discovery.kwargs
+    assert discovery.kwargs["reasoning_effort"] == "high"  # 2026-10-11: the deep read of the deck
     assert compile_pass.kwargs["enable_thinking"] is False
     assert compile_pass.kwargs["reasoning_effort"] == "low"
     for call in (discovery, compile_pass):

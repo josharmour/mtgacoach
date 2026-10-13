@@ -52,6 +52,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
+from arenamcp.plan_ledger import PlanLedger
 
 logger = logging.getLogger(__name__)
 
@@ -244,9 +245,10 @@ BOARD FACTS are computed from the live board (clocks through best blocks, race, 
 - When BOARD FACTS lists CANDIDATE LINES (a deterministic 2-turn search), build "turns" from one of them and keep its attack/hold posture unless you name a concrete card or combat reason.
 - As defender/control, prioritise creatures that block and removal on attackers over card draw, mana rocks or cycling until the clock is under control. As aggressor, maximise damage; spend removal on blockers.
 - Win conditions must be realistic for the CURRENT state: no empty-library/alternate wins while the library is large, and no combo whose pieces are not in hand or on the battlefield (label a needed draw explicitly).
-Use the complete deck and remaining library to identify realistic engines, outs and backup plans; cards in the library are possibilities, not cards in hand or guaranteed draws. Preserve the prior plan when still sound, and adapt when its assumptions change.
+Use the deck list and remaining library to identify realistic engines, outs and backup plans; cards in the library are possibilities, not cards in hand or guaranteed draws. Rules are quoted for the cards seen this game and for the playbook's key cards; a library card listed by name only has no quoted rules, so do not invent abilities for it. Preserve the prior plan when still sound, and adapt when its assumptions change.
 Removal and tutoring are conditional decisions: compare the current threat, timing, mana and opportunity cost. Hold interaction when that protects the winning line; remove a threat when it prevents loss or unlocks progress. A tutor should find the currently useful legal card still in the library, with a feasible follow-up, rather than repeat an old preferred target.
 Use the playbook's conditional decision rules, not just its archetype or finishers. Evaluate commander deployment/recovery from its actual rules and current tax. Do not treat a desirable library card as an available plan.
+The MATCH LEDGER (when present) is the record of this match: each turn's planned step, what we actually did, and how life and board moved. Learn from it: keep the prior plan's win condition while the ledger shows progress toward it; change it when the ledger shows it failing (two of our turns without damage or board gain while pursuing it, a planned cast repeatedly not made, a large life loss). Carry forward the prior plan's lessons that still hold and add new ones from the ledger; a lesson is a short observation about this match, not a general principle.
 
 Respond with ONLY a JSON object, no prose, no markdown:
 {
@@ -264,7 +266,8 @@ Respond with ONLY a JSON object, no prose, no markdown:
   "switch_if": ["board change that flips the role or plan, e.g. 'they lose their flyer -> attack'"],
   "active_mechanisms": ["relevant deck playbook mechanism ID and current applicability"],
   "resource_priorities": ["what to preserve versus spend/recover, with a reason"],
-  "assumptions": ["mana, timing, survival or availability condition to recheck"]
+  "assumptions": ["mana, timing, survival or availability condition to recheck"],
+  "lessons": ["what has worked or failed so far THIS match, from the ledger (<=12 words each, up to 4)"]
 }"""
 
 
@@ -289,6 +292,12 @@ class GamePlan:
     switch_if: list[str] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
     facts: dict = field(default_factory=dict)
+    # What has worked and not worked so far this match (carried across reforms
+    # and refreshed from the match ledger; see plan_ledger.py).
+    lessons: list[str] = field(default_factory=list)
+    # Reasoning effort the plan was formed with ("low" for a quick first plan
+    # that a high-effort reform then deepens at the next quiet moment).
+    effort: str = ""
 
     def is_empty(self) -> bool:
         return not (self.win_conditions or self.path or self.develop_next or self.turn_plan)
@@ -323,6 +332,7 @@ class GamePlan:
         lines.extend(f"  Active mechanism: {item}" for item in self.active_mechanisms)
         lines.extend(f"  Resource priority: {item}" for item in self.resource_priorities)
         lines.extend(f"  Recheck assumption: {item}" for item in self.assumptions)
+        lines.extend(f"  Lesson so far: {item}" for item in self.lessons)
         lines.append(
             "  Develop toward this win, but treat the plan as conditional guidance. "
             "The current board, stack, legal choices and immediate survival/lethal "
@@ -360,6 +370,7 @@ class GamePlan:
             "turn_plan": [dict(step) for step in self.turn_plan],
             "switch_if": list(self.switch_if),
             "issues": list(self.issues),
+            "lessons": list(self.lessons),
         }
 
 
@@ -1325,6 +1336,69 @@ def _with_progress(step: dict, assessment: Any, state: dict | None) -> dict:
     return marked
 
 
+def _plan_mentions(name: str, text: str) -> bool:
+    if not name or not text:
+        return False
+    full = name.casefold()
+    if full in text:
+        return True
+    short = full.split(",")[0].strip()
+    return len(short) > 3 and re.search(rf"\b{re.escape(short)}\b", text) is not None
+
+
+def plan_card_losses(plan: GamePlan | None, state: dict | None) -> str:
+    """Cards the plan names that are now in our graveyard or exile, with no copy still available.
+
+    2026-10-10 FRA game 1: Proft was discarded on turn 5 and the plan kept
+    naming "Proft at threshold as closer" for three more turns. The reform
+    only runs every turn or two, so every decision prompt gets this line
+    deterministically; "" when nothing named is gone.
+    """
+    if plan is None or plan.is_empty() or not isinstance(state, dict):
+        return ""
+    text = " ".join(
+        [
+            *plan.win_conditions,
+            plan.path,
+            plan.develop_next,
+            *plan.active_mechanisms,
+            *plan.resource_priorities,
+        ]
+        + [step_text(step) for step in plan.turn_plan]
+    ).casefold()
+    if not text.strip():
+        return ""
+    local = state.get("local_seat_id")
+    if local is None:
+        for player in state.get("players") or []:
+            if player.get("is_local"):
+                local = player.get("seat_id")
+    available = {
+        str(card.get("name") or "").casefold()
+        for zone in ("hand", "battlefield", "command", "stack")
+        for card in state.get(zone) or []
+    }
+    gone: dict[str, str] = {}
+    for zone in ("graveyard", "exile"):
+        for card in state.get(zone) or []:
+            owner = card.get("owner_seat_id")
+            if local is not None and owner is not None and owner != local:
+                continue
+            name = str(card.get("name") or "")
+            if not name or name.casefold() in available or name in gone:
+                continue
+            if _plan_mentions(name, text):
+                gone[name] = "graveyard" if zone == "graveyard" else "exile"
+    if not gone:
+        return ""
+    listed = "; ".join(f"{name} (in our {zone})" for name, zone in gone.items())
+    return (
+        f"  PLAN CARDS NO LONGER AVAILABLE: {listed}. The plan was written before this. "
+        "Do not plan to cast or hold them; a win condition built on them needs a recursion "
+        "effect that is actually in hand, or a different route."
+    )
+
+
 def compose_strategy_block(
     assessment: Any,
     plan: GamePlan | None,
@@ -1372,6 +1446,9 @@ def compose_strategy_block(
         block = f"{block[:at]}\n{extra}{block[at:]}" if at >= 0 else f"{block}\n{extra}"
     if plan is not None and not plan.is_empty():
         block += "\n" + plan.as_planner_block(with_role_and_turns=False)
+        losses = plan_card_losses(plan, state)
+        if losses:
+            block += "\n" + losses
     return block
 
 
@@ -1518,7 +1595,13 @@ class GamePlanManager:
     # Reform reasons that can wait until no decision is pending, so the plan
     # call does not share the server with the decision call it would delay.
     _ROUTINE_REASONS = frozenset(
-        {"plan our next turn", "stale plan", "deck playbook changed", "new opposing permanent"}
+        {
+            "plan our next turn",
+            "stale plan",
+            "deck playbook changed",
+            "new opposing permanent",
+            "resumed after a decision",
+        }
     )
     # A board-math role change between these two alone, with the lethal and
     # dead-soon flags unchanged, is noise (2026-10-07 replay: turn 6 went
@@ -1528,15 +1611,126 @@ class GamePlanManager:
 
     # The strategic call runs in the background, at most once per turn side,
     # with a larger token/time budget than per-decision calls (12 s, 2048
-    # tokens) but the same low reasoning effort: 3000 tokens, 75 s.
+    # tokens): 3000 tokens, 75 s, at HIGH reasoning effort.
     # 2026-10-06 17:45: unrestricted thinking on a ~34k-char prompt ran past 45 s
-    # ("LLM streaming time budget exhausted") so no plan ever formed; low effort
-    # took ~33 s on a busy gateway. The board facts and lookahead come from
-    # board_assessment instantly; the model only writes the plan, in the
-    # background, during the opponent's turn so it is ready for ours.
-    _PLAN_MAX_TOKENS = 3000
+    # ("LLM streaming time budget exhausted") on the then single-lane gateway,
+    # so the plan ran at low effort. 2026-10-10: the server has four slots and
+    # priority scheduling, the per-decision calls stay at low effort, and the
+    # prior plan keeps serving decisions while a slow reform runs, so this is
+    # the one call that gets to think. Watch background.game_plan metrics
+    # (reasoning_tokens, total_ms, status) after the change.
+    # 2026-10-10 15:28: at high effort a stabilise-or-die board spent all
+    # 3000 tokens reasoning (finish_reason=length, no plan). The JSON needs
+    # ~800; the 75 s budget, not the cap, bounds a long think.
+    _PLAN_MAX_TOKENS = 6000
     _PLAN_TIMEOUT_S = 75.0
-    _PLAN_REASONING_EFFORT = "low"
+    _PLAN_REASONING_EFFORT = "high"
+    # A reform younger than this yields to a decision call; an older one finishes.
+    _YIELD_GRACE_S = 4.0
+    # With no plan at all, a reform outlives its turn up to this long before it
+    # is superseded (a normal first plan on a big Brawl prompt takes ~35 s).
+    _FIRST_PLAN_PATIENCE_S = 45.0
+
+    def set_recent_actions_source(self, source: Callable[[], str] | None) -> None:
+        """Where the reform reads what we did since the last plan (ActionPlanner.recent_decisions_text)."""
+        self._recent_actions_source = source
+
+    def set_playbook_source(self, source: Callable[[], Any] | None) -> None:
+        """Where the reform reads the DeckPlaybook object (to render it without the rules the deck reference quotes)."""
+        self._playbook_source = source
+
+    def _seed_text(self, game_state: dict[str, Any]) -> str | None:
+        """The playbook text for this reform: rendered without the rules already in the deck reference."""
+        source = getattr(self, "_playbook_source", None)
+        if callable(source):
+            try:
+                playbook = source()
+                if playbook is not None and hasattr(playbook, "render"):
+                    quoted = game_state.get("deck_rules_grp_ids") or ()
+                    return str(playbook.render(omit_oracle_for=quoted)).strip() or None
+            except Exception as error:  # the seed string stands in
+                logger.debug("playbook source failed: %s", error)
+        return self._seed
+
+    def yield_for_decision(self) -> None:
+        """Cancel an in-flight reform so a per-decision call has the server to itself.
+
+        The reform is re-requested at the next quiet moment ("resumed after a
+        decision"), from the newer board. 2026-10-10 15:28: a 23 s high-effort
+        reform overlapped the declare-blockers call, which then ran out its
+        15 s budget and fell back to the safe-default blocks.
+        """
+        with self._lock:
+            if not self._inflight or self._inflight_cancel is None or self._inflight_cancel.is_set():
+                return
+            # 2026-10-10 Brawl game: decisions came every few seconds on our turn
+            # and every reform was cancelled before finishing (no plan by turn
+            # 10). The first plan of a game is never cancelled: a plan is worth
+            # more than one faster decision. With a plan in hand, a reform that
+            # has already run a while is left to finish; only a fresh one steps
+            # aside.
+            if self._plan is None:
+                logger.info("Game plan reform keeps running alongside a decision call: no plan exists yet")
+                return
+            started = getattr(self, "_inflight_started_at", None)
+            running = time.monotonic() - float(started) if started else 0.0
+            if running > self._YIELD_GRACE_S:
+                logger.info("Game plan reform keeps running (%.0fs in) alongside a decision call", running)
+                return
+            logger.info("Game plan reform yields to a decision call; it will be re-requested afterwards")
+            self._plan_cancels += 1
+            self._plan_outcome = "yielded to a decision"
+            self._abandon_inflight_locked()
+            self._resume_after_yield = True
+            # Let the re-request happen as soon as no decision is pending.
+            self._last_attempt_at = None
+
+    def set_turn_decisions_source(self, source: Callable[[int], list[str]] | None) -> None:
+        """Where the ledger reads one turn's decisions (ActionPlanner.decisions_for_turn)."""
+        self._turn_decisions_source = source
+
+    def ledger_block(self) -> str:
+        """The match ledger as rendered for the reform prompt ("" before the first turn)."""
+        return self._ledger.prompt_block()
+
+    def ledger_payload(self) -> dict[str, Any]:
+        """The ledger for bug reports: the rendered block plus per-turn entries."""
+        return {
+            "block": self._ledger.prompt_block(),
+            "lessons": self._ledger.lessons(),
+            "turns": [
+                {
+                    "turn": e.turn,
+                    "ours": e.ours,
+                    "role": e.role,
+                    "plan_formed": e.plan_formed,
+                    "planned": e.planned,
+                    "did": list(e.did),
+                    "start": dict(e.start),
+                    "end": dict(e.end),
+                }
+                for e in self._ledger.entries
+            ],
+        }
+
+    def _ledger_turn_started(self, game_state: dict[str, Any], turn: int) -> None:
+        """Close the previous turn and open ``turn`` in the ledger (caller holds the lock; never raises)."""
+        try:
+            from arenamcp.board_assessment import assess
+            from arenamcp.plan_ledger import snapshot_from_assessment
+
+            assessment = assess(game_state)
+            self._ledger.turn_started(
+                turn,
+                ours=bool(getattr(assessment, "our_turn", self._our_turn(game_state))),
+                snapshot=snapshot_from_assessment(assessment),
+                role=str(getattr(assessment, "role", "") or ""),
+                plan=self._plan,
+                decisions_for_turn=self._turn_decisions_source,
+            )
+        except Exception as error:
+            logger.debug("match ledger skipped for turn %s: %s", turn, error)
+
     _CALL_CLASS = "background.game_plan"
 
     def __init__(self, backend: Any, timeout: float | None = None):
@@ -1554,6 +1748,19 @@ class GamePlanManager:
         self._generation = 0
         self._match_id: str | None = None
         self._observed_turn = 0
+        # The match ledger (plan_ledger.py): per-turn plan step, decisions and
+        # board swing, fed to every reform. Decisions come from the planner
+        # through set_turn_decisions_source.
+        self._ledger = PlanLedger()
+        self._turn_decisions_source: Callable[[int], list[str]] | None = None
+        # Plan status for the sidebar and the log: what the last reform attempt
+        # did ("ok", "yielded to a decision", "superseded", "no usable plan",
+        # "call failed", "arrived late"), how many attempts and cancels this
+        # game, and the turn the missing-plan warning was last logged for.
+        self._plan_outcome = ""
+        self._plan_attempts = 0
+        self._plan_cancels = 0
+        self._no_plan_warned_turn = 0
         self._last_seed: str | None = None
         self._inflight = False
         self._last_attempt_at: float | None = None
@@ -1591,6 +1798,11 @@ class GamePlanManager:
             self._stall_hint = ""
             self._match_id = None
             self._observed_turn = 0
+            self._ledger.reset()
+            self._plan_outcome = ""
+            self._plan_attempts = 0
+            self._plan_cancels = 0
+            self._no_plan_warned_turn = 0
             self._last_attempt_at = None
             self._trick_logged = None
             self._trick_predicted = None
@@ -1611,6 +1823,8 @@ class GamePlanManager:
                 self.reset()
             if match_id:
                 self._match_id = match_id
+            if turn > self._observed_turn:
+                self._ledger_turn_started(game_state, turn)
             self._observed_turn = max(turn, self._observed_turn)
             self._observe_tricks(game_state, turn)
 
@@ -1767,7 +1981,51 @@ class GamePlanManager:
         risk = opponent_interaction(state, self._tricks()) if state is not None else None
         verdict = risk.verdict_line() if risk is not None and risk.known else ""
         extra = f"  OPP INTERACTION: {verdict}" if verdict else ""
-        return compose_strategy_block(assessment, plan, extra_facts=extra, state=state, with_lines=with_lines)
+        block = compose_strategy_block(
+            assessment, plan, extra_facts=extra, state=state, with_lines=with_lines
+        )
+        # The ledger's deterministic lessons reach every tactical prompt at
+        # once, not only after the next reform echoes them into the plan.
+        lessons = [item for item in self._ledger.lessons() if item not in (plan.lessons if plan else ())]
+        if lessons:
+            block += "\n" + "\n".join(f"  Ledger this match: {item}" for item in lessons)
+        return block
+
+    def plan_status(self, game_state: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Whether a plan exists, how old it is, and what the last reform attempt did (for the sidebar)."""
+        turn = (
+            _round(((game_state or {}).get("turn") or {}).get("turn_number"))
+            if isinstance(game_state, dict)
+            else 0
+        )
+        with self._lock:
+            plan = self._plan
+            inflight = bool(self._inflight)
+            started = getattr(self, "_inflight_started_at", None)
+            running = round(time.monotonic() - float(started)) if inflight and started else 0
+            status: dict[str, Any] = {
+                "state": "ready" if plan is not None else ("forming" if inflight else "none"),
+                "turn_formed": plan.turn_formed if plan is not None else 0,
+                "age_turns": max(0, turn - plan.turn_formed) if plan is not None and turn else 0,
+                "inflight": inflight,
+                "inflight_s": running,
+                "inflight_for_turn": self._inflight_plan_turn if inflight else 0,
+                "last_outcome": self._plan_outcome,
+                "attempts": self._plan_attempts,
+                "cancels": self._plan_cancels,
+                "effort": plan.effort if plan is not None else "",
+            }
+            if plan is None and turn >= 3 and self._no_plan_warned_turn != turn:
+                self._no_plan_warned_turn = turn
+                logger.warning(
+                    "No game plan on turn %d (%d attempts, %d cancelled; last: %s; reform %s)",
+                    turn,
+                    self._plan_attempts,
+                    self._plan_cancels,
+                    self._plan_outcome or "never attempted",
+                    f"running {running}s" if inflight else "not running",
+                )
+        return status
 
     def ui_payload(self, game_state: dict[str, Any] | None = None) -> dict[str, Any]:
         """Plan payload for the desktop plan card, with current board facts.
@@ -1777,6 +2035,7 @@ class GamePlanManager:
         model plan arrives; ``{}`` when there is neither a plan nor a board.
         """
         payload: dict[str, Any] = dict(self._plan.as_payload()) if self._plan else {}
+        payload["plan_status"] = self.plan_status(game_state)
         if isinstance(game_state, dict):
             try:
                 from arenamcp.board_assessment import assess
@@ -1787,6 +2046,15 @@ class GamePlanManager:
                 assessment = None
             if assessment is not None:
                 payload["facts"] = assessment.as_payload()
+                try:
+                    from arenamcp.outlook import outlook
+
+                    now = outlook(assessment)
+                    trend = self._ledger.outlook_trend()
+                    if now:
+                        payload["outlook"] = {**now, "trend": trend[-6:]}
+                except Exception as error:
+                    logger.debug("outlook unavailable: %s", error)
                 payload.setdefault("role", assessment.role)
                 if not payload.get("role"):
                     payload["role"] = assessment.role
@@ -1796,6 +2064,12 @@ class GamePlanManager:
                 risk = opponent_interaction(game_state, self._tricks())
                 if risk is not None and risk.known:
                     payload["opp_interaction"] = risk.as_payload()
+        entries = self._ledger.entries
+        if entries:
+            payload["ledger"] = {
+                "lessons": self._ledger.lessons(),
+                "turns": [e.line().strip().lstrip("- ").strip() for e in entries[-4:]],
+            }
         return payload
 
     # ----- reform decision -------------------------------------------------
@@ -1851,11 +2125,14 @@ class GamePlanManager:
             snapshot = deepcopy(game_state)
             generation = self._generation
             cancel = threading.Event()
+            self._resume_after_yield = False
             self._inflight = True
             self._inflight_cancel = cancel
             self._inflight_lane = token
             self._inflight_plan_turn = self._plan_turn(snapshot)
+            self._inflight_started_at = now
             self._last_attempt_at = now
+            self._plan_attempts += 1
             logger.info(
                 "Game plan reform (%s): turn %d, plan for turn %d", reason, sig[0], self._inflight_plan_turn
             )
@@ -1896,11 +2173,29 @@ class GamePlanManager:
         turn = _round((game_state.get("turn") or {}).get("turn_number"))
         if cancel is None or cancel.is_set() or turn <= self._inflight_plan_turn:
             return
+        started = getattr(self, "_inflight_started_at", None)
+        running = time.monotonic() - float(started) if started else 0.0
+        if self._plan is None and running <= self._FIRST_PLAN_PATIENCE_S:
+            # 2026-10-10 Brawl, turn 20 after a restart: the first plan's call
+            # (73k-character prompt) outlived the turn and was superseded, then
+            # the next one too. With no plan at all, a late plan is kept (see
+            # the apply path), so the call runs on; only a request stuck past
+            # the patience bound is cancelled (2026-10-07: a stuck request held
+            # the lane for its whole 75 s budget).
+            logger.info(
+                "Game plan reform for turn %d keeps running on turn %d (%.0fs in): no plan exists yet",
+                self._inflight_plan_turn,
+                turn,
+                running,
+            )
+            return
         logger.info(
             "Superseding the in-flight game plan for turn %d (now turn %d); its answer will be discarded",
             self._inflight_plan_turn,
             turn,
         )
+        self._plan_cancels += 1
+        self._plan_outcome = "superseded by a newer turn"
         self._abandon_inflight_locked()
 
     def _abandon_inflight_locked(self) -> None:
@@ -1968,14 +2263,27 @@ class GamePlanManager:
         with self._lock:
             if generation != self._generation:
                 return self._plan
-            if plan is not None and self._observed_turn > plan_turn:
+            if plan is not None and self._observed_turn > plan_turn and self._plan is not None:
                 logger.info(
                     "Discarded the game plan for turn %d: it arrived on turn %d",
                     plan_turn,
                     self._observed_turn,
                 )
+                self._plan_outcome = "arrived late"
                 return self._plan
+            if plan is not None and self._observed_turn > plan_turn:
+                # 2026-10-10 Brawl: with no plan at all, a late one still carries
+                # the win condition, path and lessons; the validator's turn steps
+                # are re-grounded on the next reform.
+                logger.info(
+                    "Keeping the late game plan for turn %d (arrived on turn %d): there was no plan",
+                    plan_turn,
+                    self._observed_turn,
+                )
+            if plan is None and not self._plan_outcome.startswith(("yielded", "superseded")):
+                self._plan_outcome = "no usable plan from the model"
             if plan is not None:
+                self._plan_outcome = "ok"
                 self._plan = plan
                 self._last_sig = sig
                 self._last_key = key
@@ -1998,6 +2306,8 @@ class GamePlanManager:
             return "first plan"
         if self._seed != self._last_seed:
             return "deck playbook changed"
+        if getattr(self, "_resume_after_yield", False):
+            return "resumed after a decision"
         turn_num = sig[0]
         if turn_num - self._last_reform_turn >= self._STALE_TURNS:
             return "stale plan"
@@ -2252,7 +2562,8 @@ class GamePlanManager:
         # Stable text first, for the server's prefix cache: system prompt,
         # deck reference (with_deck_reference) and the deck playbook, then the
         # volatile board.
-        user_parts = [f"DECK PLAYBOOK / STRATEGY:\n{self._seed}\n"] if self._seed else []
+        seed = self._seed_text(game_state)
+        user_parts = [f"DECK PLAYBOOK / STRATEGY:\n{seed}\n"] if seed else []
         user_parts.append(context)
         if assessment is not None:
             logger.info(
@@ -2272,6 +2583,24 @@ class GamePlanManager:
             )
         if self._plan:
             user_parts.append(self._plan.as_planner_block())
+            losses = plan_card_losses(self._plan, game_state)
+            if losses:
+                user_parts.append(losses)
+        recent = ""
+        source = getattr(self, "_recent_actions_source", None)
+        if callable(source):
+            try:
+                recent = str(source() or "")
+            except Exception as error:  # the feed never blocks a reform
+                logger.debug("recent actions unavailable: %s", error)
+        if recent:
+            user_parts.append(
+                "\nWHAT WE DID SINCE THE LAST PLAN (our own decisions, oldest first; "
+                "the plan must account for cards these spent):\n" + recent
+            )
+        ledger = self._ledger.prompt_block()
+        if ledger:
+            user_parts.append("\n" + ledger)
         if self._stall_count >= self._STALL_REFORM_THRESHOLD and self._stall_hint:
             user_parts.append(
                 f"\nPRIOR PLAN STALLED: the previous plan-advancing play "
@@ -2283,7 +2612,14 @@ class GamePlanManager:
         user_message = with_deck_reference("\n".join(user_parts), game_state)
 
         try:
-            response = self._complete(GAME_PLAN_PROMPT, user_message, cancel=cancel)
+            # 2026-10-10 Brawl: the first plan after a mid-game restart took 35 s
+            # at high effort on a 21k-token prompt. With no plan at all, a quick
+            # low-effort plan comes first; the next reform (their turn, a role
+            # flip, staleness) runs at high effort as usual.
+            effort = "low" if self._plan is None else self._PLAN_REASONING_EFFORT
+            if effort == "low":
+                logger.info("Game plan: first plan at low effort for speed; a high-effort reform follows")
+            response = self._complete(GAME_PLAN_PROMPT, user_message, cancel=cancel, effort=effort)
         except Exception as e:
             logger.warning("game-plan LLM call failed (keeping prior plan): %s", e)
             return None
@@ -2306,6 +2642,7 @@ class GamePlanManager:
         if plan is None or plan.is_empty():
             logger.info("game-plan answer had no usable plan (keeping prior plan)")
             return None
+        plan.effort = effort
         try:
             validate_plan(plan, assessment, game_state)
         except Exception as error:  # a validator bug must not discard the plan
@@ -2325,12 +2662,17 @@ class GamePlanManager:
         return plan
 
     def _complete(
-        self, system_prompt: str, user_message: str, *, cancel: threading.Event | None = None
+        self,
+        system_prompt: str,
+        user_message: str,
+        *,
+        cancel: threading.Event | None = None,
+        effort: str | None = None,
     ) -> str:
         """Call the backend, tolerating the small signature differences across clients.
 
-        Background strategy: low reasoning effort like the per-decision calls,
-        but a larger token/time budget (3000 tokens, 75 s). Labelled as
+        Background strategy: high reasoning effort (the per-decision calls
+        use low) with a larger token/time budget (3000 tokens, 75 s). Labelled as
         background work at low scheduling priority, and cancellable once its
         turn has passed, where the backend supports those keywords.
         """
@@ -2345,7 +2687,7 @@ class GamePlanManager:
                 temperature=0.0,
                 request_timeout_s=self._timeout,
                 background=True,
-                reasoning_effort=self._PLAN_REASONING_EFFORT,
+                reasoning_effort=effort or self._PLAN_REASONING_EFFORT,
                 **labels,
             )
         except TypeError:
@@ -2431,4 +2773,5 @@ class GamePlanManager:
             # Kept raw until validate_plan maps them to absolute turns.
             turn_plan=[t for t in turns if isinstance(t, dict)][:3] if isinstance(turns, list) else [],
             switch_if=items("switch_if"),
+            lessons=items("lessons")[:4],
         )

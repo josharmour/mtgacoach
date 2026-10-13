@@ -329,21 +329,80 @@ class CombatRecovery:
         return sum(f.credit for f in self.forecasts(dead_ids))
 
 
+_SELF_DEATH_RE = re.compile(
+    r"^When (?:this (?:creature|permanent)|~)[^.\n]*(?:dies|leaves|is put into)", re.I
+)
+_IDENTITY_OBSTRUCTION_RE = re.compile(
+    r"(?:nontoken|non-token|legendary|commander|token)[^.\n]*(?:dies|die|leaves|put into|graveyard)"
+    r"|(?:dies|die|leaves)[^.\n]*(?:nontoken|non-token|legendary|commander|token)",
+    re.I,
+)
+
+
+def _token(card: dict) -> bool:
+    return bool(card.get("is_token")) or "token" in str(card.get("object_kind", "")).lower()
+
+
+def _label(card: dict) -> str:
+    return f"{'*' if _token(card) else ''}{card.get('name', 'Creature')} [id:{card.get('instance_id')}]"
+
+
+def _identity_obstructed(state: dict) -> bool:
+    """Any visible rule that tells a token's death from a nontoken/legendary/commander's."""
+    for card in state.get("battlefield", []):
+        name = re.escape(card.get("name") or "~")
+        for line in _text(card).splitlines():
+            line = line.strip()
+            if _SELF_DEATH_RE.match(line) or re.match(rf"^When {name}[^.\n]*(?:dies|leaves)", line, re.I):
+                continue  # a card's own death trigger does not tell our copies apart
+            if _IDENTITY_OBSTRUCTION_RE.search(line):
+                return True
+    return False
+
+
+def _identical_copy(commander: dict, copy: dict, attached: set) -> bool:
+    """A token copy of the commander with the same printed body and no investment on either."""
+    if not _token(copy) or _token(commander) or commander.get("is_copy"):
+        return False
+    grp = commander.get("grp_id")
+    if not grp or copy.get("grp_id") != grp:
+        return False
+    for card in (commander, copy):
+        if any(v for v in (card.get("counters") or {}).values()) or card.get("attachments"):
+            return False
+        if card.get("instance_id") in attached:
+            return False
+    if (commander.get("power"), commander.get("toughness")) != (copy.get("power"), copy.get("toughness")):
+        return False
+    return _text(commander) == _text(copy) or not (commander.get("oracle_text") and copy.get("oracle_text"))
+
+
 def improve_block_recovery(
     state: dict, context: dict, assignments: dict[int, int]
 ) -> tuple[dict[int, int], str] | None:
-    """Compare the planner's single-block trades with affordable recovery.
+    """Compare the planner's single-block trades with commander recovery.
 
     Keep its combat intent: same attackers blocked, damage through, attackers
-    killed and number of bodies lost. Only replace a losing single blocker
-    when the resulting whole-board continuation scores materially better.
-    Unknown/occupied hands leave opportunity-cost decisions to the planner.
-    Nothing here keys on a name, subtype or token label to choose a sacrifice.
+    killed and number of bodies lost. Two swaps are supported:
+
+    1. Identical copy (2026-10-11 Notary Hobbits game, turn 9): the planner
+       chump/trades a TOKEN COPY of our commander while the commander itself
+       could make the same block with the same result. The surviving board is
+       identical either way, but a dead token is gone for good while the
+       commander returns to the command zone with an optional, taxed recast
+       that replays its entry trigger. No pricing is needed and cards in hand
+       do not change the comparison, so this swap applies regardless of hand.
+    2. Priced recovery: a losing blocker is replaced by the commander when
+       the forecast recast is affordable and the continuation scores
+       materially better. Unknown/occupied hands leave that opportunity-cost
+       decision to the planner.
+
+    Nothing here keys on a name or subtype; token identity comes from Arena.
     """
-    if state.get("hand") != [] or not assignments or state.get("stack"):
+    if not assignments or state.get("stack"):
         return None
     recovery = CombatRecovery(state)
-    if recovery.obstructed or len(recovery.commanders) != 1:
+    if len(recovery.commanders) != 1:
         return None
     allowed = blocker_allowed_attackers_map(context.get("raw_blockers") or [])
     cards = {c.get("instance_id"): c for c in state.get("battlefield", [])}
@@ -388,13 +447,48 @@ def improve_block_recovery(
     local = next((p for p in state.get("players", []) if p.get("is_local")), {})
     if original_outcome[0] >= local.get("life_total", 0):
         return None
+
+    def swappable(blocker, attacker):
+        if blocker not in original_dead or attacker not in allowed[cid]:
+            return False
+        return (
+            list(assignments.values()).count(attacker) == 1
+        )  # damage order and multiblocks stay with the planner
+
+    # 1. Identical copy: same board after combat, plus a recoverable commander.
+    if not _identity_obstructed(state):
+        for blocker, attacker in assignments.items():
+            copy = cards.get(blocker, {})
+            if not swappable(blocker, attacker) or not _identical_copy(commander, copy, recovery.attached):
+                continue
+            candidate = {b: a for b, a in assignments.items() if b != blocker}
+            candidate[cid] = attacker
+            candidate_outcome, dead, _value = outcome(candidate)
+            if candidate_outcome != original_outcome or cid not in dead:
+                continue
+            gid = commander.get("grp_id")
+            cost = _cost(commander, recovery.casts.get(gid, recovery.casts.get(str(gid))))
+            recast = (
+                f"{cost[0]} mana including observed commander tax"
+                if cost
+                else f"printed {commander.get('mana_cost') or 'UNKNOWN'} plus UNKNOWN commander tax"
+            )
+            explanation = (
+                f"Identical copy: {_label(commander)} blocks {_label(cards[attacker])} instead of its token copy "
+                f"{_label(copy)}. Same combat result ({original_outcome[0]} damage through, {original_outcome[2]} "
+                "body lost) and the same surviving board, but the commander returns to the command zone where "
+                f"an optional later cast ({recast}) replays its entry trigger; a token copy that dies is gone for good."
+            )
+            return candidate, explanation
+
+    # 2. Priced recovery against a different body.
+    if state.get("hand") != [] or recovery.obstructed:
+        return None
     best = None
     best_value = original_value + 3  # require a meaningful gain, not a tie
     for blocker, attacker in assignments.items():
-        if blocker not in original_dead or attacker not in allowed[cid]:
+        if not swappable(blocker, attacker):
             continue
-        if list(assignments.values()).count(attacker) != 1:
-            continue  # damage order and multiblocks remain with the planner
         candidate = {b: a for b, a in assignments.items() if b != blocker}
         candidate[cid] = attacker
         candidate_outcome, dead, value = outcome(candidate)

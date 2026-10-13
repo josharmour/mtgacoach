@@ -65,6 +65,41 @@ class MatchPacket:
             entry["turn"] = {k: turn.get(k) for k in ("turn_number", "phase", "step", "active_player")}
         self.decisions.append(entry)
 
+    def add_combat_decision(
+        self,
+        kind: str,
+        *,
+        chosen: list[str],
+        options: list[str],
+        explanation: str = "",
+        trace: dict[str, Any] | None = None,
+        game_state: dict[str, Any] | None = None,
+    ) -> None:
+        """Log an attack or block declaration (model plan or safe default) beside the typed decisions.
+
+        2026-10-10: a bug report about an attack held only typed decisions;
+        the declaration and its reasoning were in the log alone.
+        """
+        entry: dict[str, Any] = {
+            "pending_decision": {
+                "request_type": kind,
+                "source_label": "",
+                "options": [{"option_id": label, "label": label} for label in options],
+            },
+            "chosen_options": list(chosen),
+            "outcome": "executed",
+            "fingerprint": f"{kind}:{time.time():.3f}",
+            "timestamp": time.time(),
+        }
+        if trace:
+            entry["trace"] = trace
+        if explanation:
+            entry["explanation"] = explanation
+        turn = (game_state or {}).get("turn") if isinstance(game_state, dict) else None
+        if isinstance(turn, dict):
+            entry["turn"] = {k: turn.get(k) for k in ("turn_number", "phase", "step", "active_player")}
+        self.decisions.append(entry)
+
     def recent_decisions(self, count: int = 40) -> list[dict[str, Any]]:
         """The last decisions, compact enough for a bug report: labels, the pick, the trace."""
         out = []

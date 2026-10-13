@@ -181,8 +181,57 @@ def _line_rows(facts: dict[str, Any], label: Callable[[str], str]) -> list[str]:
     return rows
 
 
+def _outlook_html(outlook: dict[str, Any]) -> str:
+    """A ten-segment bar, the percentage, the label and the trend since our last turns."""
+    pct = max(0, min(100, int(outlook.get("pct") or 0)))
+    tone = str(outlook.get("tone") or "muted")
+    filled = int(round(pct / 10))
+    bar = span("▮" * filled, tone, weight=700) + span("▯" * (10 - filled), "muted")
+    text = f" {pct}% · {outlook.get('label') or ''}".rstrip(" ·")
+    trend = [p for p in (outlook.get("trend") or []) if isinstance(p, (list, tuple)) and len(p) == 2]
+    arrow = ""
+    if len(trend) >= 2:
+        delta = int(trend[-1][1]) - int(trend[-2][1])
+        if abs(delta) >= 5:
+            arrow = f" · {'↑' if delta > 0 else '↓'} {abs(delta)} since T{trend[-2][0]}"
+    return bar + span(text, tone, weight=600) + (span(arrow, "muted") if arrow else "")
+
+
+def _plan_status_html(status: dict[str, Any]) -> str:
+    """'formed T8' in good, 'forming… 6s' in warn, 'NO GAME PLAN' in bad, with the last attempt's outcome."""
+    state = str(status.get("state") or "none")
+    outcome = str(status.get("last_outcome") or "")
+    if state == "ready":
+        age = int(status.get("age_turns") or 0)
+        text = f"formed T{status.get('turn_formed')}" + (f", {age} turns old" if age >= 4 else "")
+        if status.get("effort") == "low":
+            text += " (quick)"
+        tone = "warn" if age >= 4 else "good"
+        if status.get("inflight"):
+            text += f" · updating ({status.get('inflight_s', 0)}s)"
+        return span(text, tone, weight=600)
+    if state == "forming":
+        text = f"forming… {status.get('inflight_s', 0)}s"
+        if status.get("inflight_for_turn"):
+            text += f" for T{status['inflight_for_turn']}"
+        html = span(text, "warn", weight=600)
+    else:
+        html = span("NO GAME PLAN", "bad", weight=700)
+    attempts, cancels = int(status.get("attempts") or 0), int(status.get("cancels") or 0)
+    detail = []
+    if attempts:
+        detail.append(f"{attempts} attempt{'s' if attempts != 1 else ''}")
+    if cancels:
+        detail.append(f"{cancels} cancelled")
+    if outcome and outcome != "ok":
+        detail.append(f"last: {outcome}")
+    if detail:
+        html += span(" · " + ", ".join(detail), "muted")
+    return html
+
+
 _NOW_EMPTY = "Advice shows up here when you have a decision to make."
-_BUG_REPORT_LABEL = "Debug report  ·  F12"
+_BUG_REPORT_LABEL = "Debug report"
 
 
 def _str_value(value: Any, default: str = "") -> str:
@@ -361,6 +410,11 @@ class CompactCoachPanel(QWidget):
         self.startup_label.setWordWrap(True)
         self.startup_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         startup_layout.addWidget(self.startup_label)
+        from arenamcp.support import contact_josh
+
+        support = QPushButton("Contact Josh…")
+        support.clicked.connect(lambda: contact_josh(self))
+        startup_layout.addWidget(support)
         self.startup_banner.hide()
         root.addWidget(self.startup_banner)
 
@@ -533,9 +587,14 @@ class CompactCoachPanel(QWidget):
         recovery_controls.setSpacing(6)
         self.bug_report_btn = QPushButton(_BUG_REPORT_LABEL)
         self.bug_report_btn.setObjectName("bugReportButton")
+        self.bug_report_btn.setStyleSheet("padding: 5px 6px;")
         self.bug_report_btn.setToolTip("Save a debug-report snapshot and copy its link (F12 or Ctrl+Shift+D)")
         self.bug_report_btn.clicked.connect(self._on_bug_report_clicked)
         recovery_controls.addWidget(self.bug_report_btn)
+        self.support_btn = QPushButton("Contact Josh")
+        self.support_btn.setStyleSheet("padding: 5px 6px;")
+        self.support_btn.clicked.connect(lambda: contact_josh(self))
+        recovery_controls.addWidget(self.support_btn)
 
         self.reload_engine_btn = QPushButton("Reload engine")
         self.reload_engine_btn.setObjectName("reloadEngineButton")
@@ -1010,7 +1069,8 @@ class CompactCoachPanel(QWidget):
         facts = plan.get("facts") if isinstance(plan.get("facts"), dict) else {}
         role = str(facts.get("role") or plan.get("role") or "")
         steps = [s for s in plan.get("turn_plan") or [] if isinstance(s, dict)]
-        if not role and not steps:
+        status = plan.get("plan_status") if isinstance(plan.get("plan_status"), dict) else {}
+        if not role and not steps and not status:
             self.game_plan_label.hide()
             self._sync_now_divider()
             return
@@ -1019,6 +1079,12 @@ class CompactCoachPanel(QWidget):
             return span(text, "muted", weight=700) + "&nbsp;&nbsp;"
 
         lines = []
+        if status:
+            # The plan's own status comes first: a missing plan is the thing to notice.
+            lines.append(block(label("Plan") + _plan_status_html(status), size="caption"))
+        outlook = plan.get("outlook") if isinstance(plan.get("outlook"), dict) else {}
+        if outlook.get("pct") is not None:
+            lines.append(block(label("Outlook") + _outlook_html(outlook), size="caption"))
         if role:
             head = label("Role") + span(role.upper(), _ROLE_TONES.get(role, "accent"), weight=700)
             reason = str(facts.get("role_reason") or plan.get("role_reason") or "")
@@ -1057,6 +1123,13 @@ class CompactCoachPanel(QWidget):
         wins = [str(w) for w in plan.get("win_conditions") or [] if w]
         if wins:
             lines.append(block(label("Win") + span(wins[0], "muted"), size="caption"))
+        ledger = plan.get("ledger") if isinstance(plan.get("ledger"), dict) else {}
+        lessons = [str(item) for item in ledger.get("lessons") or [] if item]
+        for lesson in lessons[:2]:
+            lines.append(block(label("So far") + span(lesson, "warn"), size="caption"))
+        turns = [str(item) for item in ledger.get("turns") or [] if item]
+        if turns and not lessons:
+            lines.append(block(label("So far") + span(turns[-1], "muted"), size="caption"))
         self.game_plan_label.setText("".join(lines))
         self.game_plan_label.show()
         self._sync_now_divider()

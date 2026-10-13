@@ -101,7 +101,14 @@ class DraftNarrator:
         self._archetypes_told: set[str] = set()
         self._since_story = 0
 
-    def _planned(self, lane: Lane, model_plan: str, primer: Any, model_lane: str = "") -> Lane:
+    def _planned(
+        self,
+        lane: Lane,
+        model_plan: str,
+        primer: Any,
+        model_lane: str | None = None,
+        model_splash: str | None = None,
+    ) -> Lane:
         """The lane we speak about: the model's stated plan when it names colors, else the pool estimate.
 
         2026-10-08: the pool estimate tipped to blue-black at P1p9 and P3p1-p4
@@ -111,9 +118,27 @@ class DraftNarrator:
         color ("blue-based, Izzet or Azorius") keeps the second color open, and
         a named splash is our splash, not off-color.
         """
-        stated = plan_reading(model_plan, primer)
-        if not stated.main and model_lane and 1 <= len(_pair_key(model_lane)) <= 2:
-            stated = PlanColors(main=_pair_key(model_lane))
+        parsed = plan_reading(model_plan, primer)
+        if model_lane is None:
+            stated = parsed
+        else:
+            # 2026-10-10: the advisor validates the lane against the pool
+            # (draft_advisor.validate_lane); its code is authoritative and ""
+            # means open, however the plan text leans ("Open toward Gruul").
+            code = _pair_key(model_lane) if 1 <= len(model_lane) <= 2 else ""
+            if not code:
+                self._plan = PlanColors()
+                return lane
+            # The splash too: the advisor keeps one only with fixing in the pool
+            # (2026-10-10 P3p10: "in our red splash" from a plan's "possible light red splash").
+            splash = (
+                parsed.splash if model_splash is None else _pair_key(model_splash) if model_splash else ""
+            )
+            stated = PlanColors(
+                main=code,
+                splash=splash,
+                archetype=parsed.archetype if parsed.main == code else "",
+            )
         if stated.main:
             self._plan = stated
         plan = self._plan
@@ -133,12 +158,14 @@ class DraftNarrator:
                 f" ({name})" if name else "",
                 estimate,
             )
-        commitment = max(lane.commitment, LANE_SETTLED) if len(plan.main) == 2 else lane.commitment
+        # 2026-10-10: the plan's pair used to count as settled on its own, so
+        # every lane the model named got a "We're leaning ..." beat (eight in
+        # one pack). The pool's own commitment now decides when a pair is spoken
+        # as our deck; the plan only chooses which pair that is.
         return replace(
             lane,
             colors=plan.main,
             main=plan.main[0],
-            commitment=commitment,
             second_hold=1.0 if len(plan.main) == 2 else 0.0,
             splash=plan.splash,
         )
@@ -161,7 +188,8 @@ class DraftNarrator:
         mana_costs: dict[int, str] | None = None,
         verb: str = "Taking",
         model_plan: str = "",
-        model_lane: str = "",
+        model_lane: str | None = None,
+        model_splash: str | None = None,
     ) -> str:
         """``verb`` is "Choosing" when the line is spoken before the pick is confirmed.
 
@@ -172,7 +200,7 @@ class DraftNarrator:
         """
         if pack_number == 1 and pick_number == 1:
             self.reset()
-        lane_after = self._planned(lane_after, model_plan, primer, model_lane)
+        lane_after = self._planned(lane_after, model_plan, primer, model_lane, model_splash)
         if model_reasons is None:
             model_reasons = [model_reason] + [""] * max(0, len(chosen) - 1)
         line = self._lead(verb, names, chosen, ranking, lane_after, primer, model_reasons, mana_costs or {})

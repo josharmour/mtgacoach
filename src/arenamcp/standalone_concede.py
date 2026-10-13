@@ -212,44 +212,24 @@ class _ConcedeMixin:
         self._concede_record(text, state)
 
     def _concede_announce(self, text: str, state: dict | None, cancelled: Callable[[], bool]) -> bool:
-        """Show and speak the auto-concede offer; return once it has been heard.
+        """Show and speak the auto-concede offer without waiting for it to be heard.
 
-        The countdown starts after this returns, so the player hears the whole
-        offer before any of its seconds run. The desktop owns audio and
-        acknowledges the utterance (speech_completion); an older desktop that
-        never does gets a conservative estimate of the speaking time instead.
-        Muted or without a voice there is nothing to hear: return at once and
-        let the banner carry the countdown.
+        2026-10-10: waiting for the whole offer to be spoken (8 s) before a 10 s
+        countdown meant the opponent's lethal attack resolved first. The
+        countdown now runs while the short offer is spoken; the banner carries
+        the seconds, and "Good game" is spoken as the concede goes out.
         """
-        from arenamcp.speech_completion import narrate_and_wait
-
         self.ui.advice(text, "CONCEDE")
         self._concede_record(text, state)
         voice = getattr(self, "_voice_output", None)
         if voice is None or getattr(voice, "muted", False):
             logger.info("[CONCEDE] offer shown, not spoken (no voice or muted)")
             return True
-        ui = self.ui
-        completion = getattr(ui, "speech_completion", None)
-        emit = getattr(ui, "emit_speech_request", None)
         logger.info("SPEAK (concede offer): %r", text[:160])
-        if completion is not None and callable(emit):
-            voice_id, voice_name = voice.current_voice
-            speed = float(getattr(voice, "speed", 1.0) or 1.0)
-
-            def send(narration: str, speech_id: str) -> None:
-                emit(
-                    text=narration,
-                    voice_id=voice_id,
-                    voice_name=voice_name,
-                    speed=speed,
-                    speech_id=speech_id,
-                )
-
-            heard = narrate_and_wait(text, send=send, completion=completion, cancelled=cancelled, speed=speed)
-            logger.info("[CONCEDE] offer %s", "heard" if heard else "cut short")
-            return heard
-        voice.speak(text, blocking=True)  # in-process TTS plays synchronously
+        try:
+            self.speak_advice(text, blocking=False)
+        except Exception as error:
+            logger.debug("[CONCEDE] offer not spoken: %s", error)
         return not cancelled()
 
     def _concede_emit(self, payload: dict) -> None:

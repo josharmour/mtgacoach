@@ -26,6 +26,7 @@ from arenamcp.settings import get_settings
 
 from .coach_session import CoachSession
 from .compact_coach import CompactCoachPanel
+from .decks_tab import DecksTab
 from .hotkeys import HotkeyManager
 from .performance_tab import PerformanceTab
 from .repair_tab import RepairTab
@@ -117,6 +118,8 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(self.coach_panel)  # Index 0
         self._stack.addWidget(_build_page("Setup & Repair", self.repair_tab, self._show_coach_view))  # 1
         self._stack.addWidget(_build_page("Match History", PerformanceTab(), self._show_coach_view))  # 2
+        self.decks_tab = DecksTab(session=self._session)
+        self._stack.addWidget(_build_page("Decks", self.decks_tab, self._show_coach_view))  # 3
         self.setCentralWidget(self._stack)
 
     def _build_menus(self) -> None:
@@ -131,6 +134,8 @@ class MainWindow(QMainWindow):
         repair_act.triggered.connect(self._show_repair_view)
         perf_act = tools_menu.addAction("Match History…")
         perf_act.triggered.connect(self._show_performance_view)
+        decks_act = tools_menu.addAction("Decks…")
+        decks_act.triggered.connect(self._show_decks_view)
         tools_menu.addSeparator()
         advice_act = tools_menu.addAction("Get Advice Now\tF5")
         advice_act.triggered.connect(lambda: self._session.send_command("force_advice"))
@@ -206,7 +211,10 @@ class MainWindow(QMainWindow):
         action_group.triggered.connect(self._handle_theme_action)
 
         # Help Menu
+        from arenamcp.support import contact_josh
         help_menu = menu_bar.addMenu("Help")
+        contact_act = help_menu.addAction("Contact Josh…")
+        contact_act.triggered.connect(lambda: contact_josh(self))
         keys_act = help_menu.addAction("Keyboard Shortcuts")
         keys_act.triggered.connect(self._show_shortcuts)
         docs_act = help_menu.addAction("Online Documentation")
@@ -308,6 +316,12 @@ class MainWindow(QMainWindow):
 
     def _show_performance_view(self) -> None:
         self._stack.setCurrentIndex(2)
+
+    def _show_decks_view(self) -> None:
+        """The Decks page; lists the decks on first open."""
+        self._stack.setCurrentIndex(3)
+        if not self.decks_tab._decks:
+            self.decks_tab.refresh()
 
     def _reload_engine(self, *_args) -> None:
         """Apply engine code fixes without closing this UI or restarting MTGA."""

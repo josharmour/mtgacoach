@@ -60,7 +60,7 @@ def test_counted_build_speaks_named_cuts_and_exact_forty():
     assert "Cut 1 Forest" not in result["spoken_advice"]
 
 
-@pytest.mark.parametrize("failure", ["wrong_total", "extra_copy", "unknown_card", "no_reason", "all_lands"])
+@pytest.mark.parametrize("failure", ["wrong_total", "extra_copy", "unknown_card", "all_lands"])
 def test_invalid_model_build_is_rejected(failure):
     payload = model_build()
     if failure == "wrong_total":
@@ -69,13 +69,33 @@ def test_invalid_model_build_is_rejected(failure):
         payload["main_deck"][0]["count"] = 2
     elif failure == "unknown_card":
         payload["main_deck"][0]["grp_id"] = 999
-    elif failure == "no_reason":
-        payload["cuts"] = []
     else:
         payload["main_deck"] = []
         payload["basic_lands"] = {"G": 40}
     with pytest.raises(ValueError):
         validate_deck(payload, pool(), source="card_rules")
+
+
+def test_a_missing_cut_note_does_not_void_a_legal_deck():
+    """2026-10-11 Collector Sealed: 40+ cuts, a few without notes, and both review
+    attempts died on "Every cut needs an explanation"; the deck itself was legal."""
+    payload = model_build()
+    payload["cuts"] = []
+    result = validate_deck(payload, pool(), source="card_rules")
+    assert result["total_cards"] == 40
+    assert result["cuts"] == [
+        {"grp_id": 90, "name": "Expensive red dragon", "count": 2, "reason": "not in the final 40"}
+    ]
+
+
+def test_entry_keys_with_stray_whitespace_are_read():
+    """2026-10-10 14:56 sealed: a cut keyed " grp_id" voided the whole review."""
+    payload = model_build()
+    payload["cuts"] = [{" grp_id": 90, " reason": "off-color dragon"}]
+    payload["main_deck"][0] = {" grp_id": 1, "count": 1}
+    result = validate_deck(payload, pool(), source="card_rules")
+    assert result["cuts"][0]["reason"] == "off-color dragon"
+    assert result["main_deck"][0]["grp_id"] == 1
 
 
 def test_unrated_pool_still_gets_named_cuts_and_land_counts():

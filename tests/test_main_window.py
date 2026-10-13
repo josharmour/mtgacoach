@@ -12,7 +12,7 @@ def test_main_window_init(qapp):
     win.show()
     assert win.coach_panel is not None
     assert win.repair_tab is not None
-    assert win._stack.count() == 3
+    assert win._stack.count() == 4  # coach, Setup & Repair, Match History, Decks
 
     # Test navigation
     win._show_repair_view()

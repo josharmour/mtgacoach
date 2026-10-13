@@ -375,6 +375,39 @@ def color_openness(pack: list[int], pick_number: int, primer: SetPrimer | None) 
     return {color: (value / peak if peak else 0.0) for color, value in openness.items()}
 
 
+# Pack direction: packs 1 and 3 pass the same way (what the right-hand neighbour
+# leaves us), pack 2 the other way. A pack's own signal counts in full; the
+# same-direction pack counts in full too; the other direction counts half.
+def _signal_weight(source_pack: int, pack_number: int) -> float:
+    if source_pack == pack_number or {source_pack, pack_number} == {1, 3}:
+        return 1.0
+    return 0.5
+
+
+def note_openness(store: dict[int, dict[str, float]], pack_number: int, openness: dict[str, float]) -> None:
+    """Accumulate one pick's per-color openness (0-1, peak color = 1) under its pack."""
+    totals = store.setdefault(pack_number, {color: 0.0 for color in COLOR_ORDER})
+    for color, value in openness.items():
+        if color in totals:
+            totals[color] += float(value or 0.0)
+
+
+def color_signals(store: dict[int, dict[str, float]], pack_number: int) -> dict[str, float]:
+    """Accumulated openness per color, 0-1 (strongest = 1), weighted by pack direction.
+
+    2026-10-10: the table's signal was computed per pack and used only as a
+    small ranking bonus; it never reached the lane decision. Strong drafters
+    settle the second color on what is flowing.
+    """
+    totals = {color: 0.0 for color in COLOR_ORDER}
+    for source_pack, values in store.items():
+        weight = _signal_weight(int(source_pack), pack_number)
+        for color in COLOR_ORDER:
+            totals[color] += weight * float(values.get(color, 0.0))
+    peak = max(totals.values())
+    return {color: (round(value / peak, 3) if peak else 0.0) for color, value in totals.items()}
+
+
 def rank_pack(
     pack: list[int],
     pool: list[int],

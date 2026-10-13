@@ -1024,11 +1024,12 @@ def test_in_match_gate_ignores_a_finished_match_and_an_open_draft(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Deck review narration gates the submission (2026-10-06 FRA draft)
+# The chosen deck is submitted directly, then explained once (2026-10-11:
+# no spoken comparison of options before submitting)
 # ---------------------------------------------------------------------------
 
 
-def review_world(primer, review, *, screens=None, writes=None, advisor=None):
+def deck_step_world(primer, *, screens=None, writes=None, advisor=None):
     pool = sealed_pool()
     sideboard = [{"grp_id": g, "count": n} for g, n in Counter(c["grp_id"] for c in pool).items()]
     by_id = {c["grp_id"]: c for c in pool}
@@ -1055,7 +1056,6 @@ def review_world(primer, review, *, screens=None, writes=None, advisor=None):
         bridge,
         primer,
         pool_cards_fn=lambda ids, code: [by_id[g] for g in ids],
-        review_fn=review,
         speak_fn=spoken.append,
         **kwargs,
     )
@@ -1067,65 +1067,16 @@ def actions(bridge):
     return [action for action, _ in bridge.sent]
 
 
-def test_deck_is_submitted_only_after_the_review_has_been_heard(primer):
-    heard: list[tuple[str, list[str]]] = []
-    holder: dict = {}
-
-    def review(text, cancelled):
-        assert not cancelled()
-        heard.append((text, actions(holder["bridge"])))
-        return True
-
-    driver, bridge, spoken = review_world(primer, review)
-    holder["bridge"] = bridge
+def test_deck_is_submitted_without_options_and_explained_once(primer):
+    driver, bridge, spoken = deck_step_world(primer)
     driver._step()
-    text, before = heard[0]
-    assert "set_limited_deck" not in before and "submit_limited_deck" not in before
-    assert "Option 1 is" in text and "Option 2 is" in text and "I'm submitting option 1" in text
-    after = actions(bridge)[len(before) :]
-    # Arena is re-read after the narration, then the deck is written and submitted.
-    assert after == ["get_screen", "get_limited_pool", "set_limited_deck", "submit_limited_deck"]
-    assert spoken == ["Deck submitted."]
+    sent = actions(bridge)
+    assert sent.index("set_limited_deck") < sent.index("submit_limited_deck")
+    assert len(spoken) == 1 and spoken[0].startswith("I built ")
+    assert "Option" not in spoken[0]
 
 
-def test_stopped_review_pauses_without_submitting(primer):
-    driver, bridge, _ = review_world(primer, lambda text, cancelled: False)
-    driver._step()
-    assert "set_limited_deck" not in actions(bridge)
-    assert "turn autoplay off and on" in driver.paused_reason
-
-
-def test_turning_autoplay_off_during_review_cancels_quietly(primer):
-    seen = {}
-
-    def review(text, cancelled):
-        driver.set_enabled(False)
-        seen["cancelled"] = cancelled()
-        return False
-
-    driver, bridge, _ = review_world(primer, review)
-    driver._step()
-    assert seen["cancelled"]
-    assert "set_limited_deck" not in actions(bridge)
-    assert not driver.paused_reason
-
-
-def test_review_is_repeated_if_arena_left_the_deck_builder_meanwhile(primer):
-    reviews = []
-    driver, bridge, _ = review_world(
-        primer,
-        lambda text, cancelled: reviews.append(text) or True,
-        screens=[{"ok": True, "deck_builder": True}, {"ok": True, "home": True}],
-    )
-    driver._step()  # first screen read routes to the deck step; the post-review read sees home
-    assert "set_limited_deck" not in actions(bridge)
-    driver._next_poll = 0.0
-    driver._step()
-    assert len(reviews) == 2 and "submit_limited_deck" in actions(bridge)
-
-
-def test_retried_submission_reuses_the_narrated_build_without_rereviewing(primer):
-    reviews = []
+def test_retried_submission_reuses_the_decided_build(primer):
     calls = []
 
     class Advisor:
@@ -1133,9 +1084,8 @@ def test_retried_submission_reuses_the_narrated_build_without_rereviewing(primer
             calls.append(build)
             return build
 
-    driver, bridge, _ = review_world(
+    driver, bridge, _ = deck_step_world(
         primer,
-        lambda text, cancelled: reviews.append(text) or True,
         writes=[{"ok": False, "error": "builder busy"}],
         advisor=Advisor(),
     )
@@ -1143,7 +1093,7 @@ def test_retried_submission_reuses_the_narrated_build_without_rereviewing(primer
     driver._step()
     written = [fields["main_deck"] for action, fields in bridge.sent if action == "set_limited_deck"]
     assert len(written) == 2 and written[0] == written[1]
-    assert len(reviews) == 1 and len(calls) == 1
+    assert len(calls) == 1
     assert "submit_limited_deck" in actions(bridge)
 
 

@@ -1467,6 +1467,17 @@ def _assess(state: dict) -> BoardAssessment | None:
 
     # --- flags ---------------------------------------------------------------
     flags: list[str] = []
+    # An assembled drain loop (Vito + Exquisite Blood, 2026-10-11) kills on the
+    # next life change whatever the combat math says: it leads the flags.
+    try:
+        from arenamcp.drain_loop import facts_flag
+
+        loop_flag = facts_flag(state)
+    except Exception as error:
+        logger.debug("drain-loop flag failed: %s", error, exc_info=True)
+        loop_flag = ""
+    if loop_flag:
+        flags.append(loop_flag)
     if lethal_now:
         flags.append(
             f"LETHAL AVAILABLE NOW ({opp_life - our_lives[0]} through their blocks vs {opp_life} life)"

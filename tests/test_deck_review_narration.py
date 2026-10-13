@@ -1,4 +1,4 @@
-"""Deck review before submitting a draft deck: grounded narration and waiting for it to be heard."""
+"""Spoken deck explanations grounded in the built cards, and waiting for narration to be heard."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import pytest
 from arenamcp.limited_deck import (
     _deck_cards,
     deck_choice_summary,
-    deck_review_narration,
     fallback_deck,
     validate_deck,
 )
@@ -76,7 +75,7 @@ def sentences(text: str) -> list[str]:
     return [part for part in re.split(r"(?<=[.!?])\s+", text.strip()) if part]
 
 
-def test_each_option_is_two_grounded_sentences_from_a_legal_build():
+def test_each_counted_build_is_legal_and_explained_in_two_grounded_sentences():
     pool = izzet_pool()
     build = fallback_deck(pool)
     options = build["deck_options"]
@@ -85,31 +84,23 @@ def test_each_option_is_two_grounded_sentences_from_a_legal_build():
         # Every option is itself a validated, castable 40-card build from the pool.
         assert option["total_cards"] == 40 and 15 <= option["land_count"] <= 19
         validate_deck(option, pool, source="heuristic")
-
-    narration, described = deck_review_narration(build, options, pool)
-    assert described[0] is build and described[1] is not build
-    for index, option in enumerate(described, 1):
-        text = deck_choice_summary(option, pool, option=index, compared_to=build if index == 2 else None)
+        text = deck_choice_summary(option, pool)
         assert len(sentences(text)) == 2, text
-        assert text in narration
+        assert text.startswith("I built ") and "Option" not in text
         deck = _deck_cards(option, pool)
         creatures = sum("Creature" in c["type_line"] for c in deck)
         assert f"with {creatures} creature or token spells" in text
-        named = re.search(r"(?:led by|swapping in) (.+?), with", text).group(1).split(" and ")
+        named = re.search(r"led by (.+?), with", text).group(1).split(" and ")
         assert all(name in {c["name"] for c in deck} for name in named)
-        if index == 2:  # the alternative is described by what it has that option 1 lacks
-            assert not set(named) & {c["name"] for c in _deck_cards(build, pool)}
-    assert narration.count("Option 1") == 1 and narration.count("Option 2") == 1
-    assert sentences(narration)[-1].startswith("I'm submitting option 1 because")
-    # Card statistics are never presented as a deck win rate.
-    assert "%" not in narration and "win rate" not in narration.lower()
+        # Card statistics are never presented as a deck win rate.
+        assert "%" not in text and "win rate" not in text.lower()
 
 
 def test_interaction_is_split_into_removal_and_tempo_from_rules_text():
     pool = izzet_pool()
     build = fallback_deck(pool)
     izzet = next(o for o in build["deck_options"] if set(o["basic_lands"]) >= {"U", "R"})
-    text = deck_choice_summary(izzet, pool, option=1)
+    text = deck_choice_summary(izzet, pool)
     assert "4 removal spells and 1 bounce, tap, or counter spell." in text
 
 
@@ -123,19 +114,9 @@ def test_model_plan_is_reduced_to_one_clause_so_the_option_stays_two_sentences()
         "cuts": [{"grp_id": c["grp_id"], "reason": "weaker"} for c in counted["cuts"]],
     }
     model = validate_deck(payload, pool, source="card_rules")
-    text = deck_choice_summary(model, pool, option=1)
+    text = deck_choice_summary(model, pool)
     assert len(sentences(text)) == 2
     assert "Its plan: Fly over the top with drakes, " in text
-    narration, _ = deck_review_narration(model, counted["deck_options"], pool)
-    assert "deck advisor's refined build" in narration
-
-
-def test_single_distinct_build_says_so_instead_of_inventing_an_alternative():
-    pool = [card(i, f"Grove Bear {i}", "{1}{G}", gih=0.55) for i in range(1, 24)]
-    build = fallback_deck(pool)
-    narration, described = deck_review_narration(build, [build], pool)
-    assert narration.startswith("Only one legal 40-card build fits this pool.")
-    assert described == [build] and "Option 2" not in narration
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +227,7 @@ def test_muted_voice_holds_for_reading_time_and_honors_cancel():
     )
 
 
-def test_engine_sends_review_with_a_speech_id_and_waits_for_the_desktop():
+def test_engine_sends_pick_narration_with_a_speech_id_and_waits_for_the_desktop():
     from types import SimpleNamespace
 
     from arenamcp.standalone_draft_event import _DraftEventMixin
@@ -262,11 +243,5 @@ def test_engine_sends_review_with_a_speech_id_and_waits_for_the_desktop():
     coach = _DraftEventMixin()
     coach.ui = SimpleNamespace(speech_completion=completion, emit_speech_request=emit)
     coach._voice_output = SimpleNamespace(current_voice=("am_eric", "Eric"), speed=1.2, muted=False)
-    assert coach._narrate_deck_review("Option 1 is blue-red.", lambda: False)
+    assert coach._narrate_draft_pick("Taking the removal spell.", lambda: False)
     assert emitted[0]["speech_id"] and emitted[0]["voice_id"] == "am_eric" and emitted[0]["speed"] == 1.2
-
-    spoken = []
-    coach.ui = SimpleNamespace()
-    coach._voice_output = SimpleNamespace(muted=False, speak=lambda text, blocking: spoken.append(blocking))
-    assert coach._narrate_deck_review("Option 1 is blue-red.", lambda: False)
-    assert spoken == [True]  # in-process voice plays synchronously

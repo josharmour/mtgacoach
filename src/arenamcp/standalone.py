@@ -67,6 +67,7 @@ from arenamcp.standalone_auto_queue import _AutoQueueMixin
 from arenamcp.standalone_autopilot_capture import _AutopilotCaptureMixin
 from arenamcp.standalone_concede import _ConcedeMixin
 from arenamcp.standalone_deck import _DeckAnalysisMixin
+from arenamcp.standalone_decks import _DeckLibraryMixin
 from arenamcp.standalone_diagnostics import _DiagnosticsMixin
 from arenamcp.standalone_draft_event import _DraftEventMixin
 from arenamcp.standalone_hotkeys import _StandaloneHotkeysMixin
@@ -101,6 +102,7 @@ class StandaloneCoach(
     _OopsMixin,
     _StartupMixin,
     _DeckAnalysisMixin,
+    _DeckLibraryMixin,
     _PostMatchMixin,
     _DiagnosticsMixin,
     _StandaloneWindowsMixin,
@@ -738,6 +740,10 @@ class StandaloneCoach(
     def _local_threat_line(self, game_state: dict[str, Any], threat: dict[str, Any]) -> str:
         """The deterministic threat line (tagged), for display without a model call."""
         line = ""
+        if threat.get("combo"):
+            # The drain-loop warning already names the combo and our answer;
+            # the generic threat line would pick an unrelated card to "use on it".
+            return f"{LOCAL_FALLBACK_PREFIX} {threat.get('warning', '')}".strip()
         advise = getattr(getattr(self, "_coach", None), "deterministic_advice", None)
         if callable(advise):
             with contextlib.suppress(Exception):
@@ -2969,6 +2975,15 @@ class StandaloneCoach(
                                 logger.info(f"THREAT (autopilot on, no model call): {local}")
                                 with contextlib.suppress(Exception):
                                     self.ui.log(f"[THREAT] {local}")
+                                if threat.get("combo"):
+                                    # A drain loop kills between two clicks
+                                    # (2026-10-11): say it aloud even while
+                                    # the autopilot drives, since the player
+                                    # may be passing priority too. No model call.
+                                    self._record_advice(local, trigger, game_state=curr_state)
+                                    with contextlib.suppress(Exception):
+                                        self.ui.advice(local, "THREAT")
+                                    self.speak_advice(local, blocking=False)
                                 continue
                             advice = (
                                 self._coach.get_advice(

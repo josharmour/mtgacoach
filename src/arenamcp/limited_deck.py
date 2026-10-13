@@ -1,6 +1,7 @@
 """Counted, validated forty-card builds and spoken cuts for Limited pools."""
 
 import html
+import logging
 import re
 from collections import Counter
 from itertools import combinations
@@ -9,6 +10,8 @@ from typing import Any
 
 from arenamcp.draft_guidance import normalize_card
 from arenamcp.limited_rules import rules_profile, synergy_evidence
+
+logger = logging.getLogger(__name__)
 
 BASIC_NAMES = {"W": "Plains", "U": "Islands", "B": "Swamps", "R": "Mountains", "G": "Forests"}
 COLOR_NAMES = {"W": "white", "U": "blue", "B": "black", "R": "red", "G": "green"}
@@ -82,6 +85,9 @@ def _entry_grp_id(entry: Any, by_name: dict[str, int], what: str) -> int:
     """
     if not isinstance(entry, dict):
         raise ValueError(f'Each {what} entry must be an object like {{"grp_id": 123, ...}}')
+    # 2026-10-10 14:56 sealed: a cut came back keyed " grp_id" (leading space)
+    # and the whole deck review was discarded over the stray whitespace.
+    entry = {str(key).strip(): value for key, value in entry.items()}
     grp_id = entry.get("grp_id")
     if grp_id is None and isinstance(entry.get("name"), str):
         grp_id = by_name.get(_name_key(entry["name"]))
@@ -90,6 +96,9 @@ def _entry_grp_id(entry: Any, by_name: dict[str, int], what: str) -> int:
     if type(grp_id) is not int:
         raise ValueError(f"Each {what} entry needs the integer grp_id of a pool card (got {entry!r})")
     return grp_id
+
+
+CUT_REASON_DEFAULT = "not in the final 40"
 
 
 def validate_deck(payload: dict, pool: list[dict], *, source: str) -> dict[str, Any]:
@@ -140,12 +149,21 @@ def validate_deck(payload: dict, pool: list[dict], *, source: str) -> dict[str, 
     cut_entries = payload.get("cuts") or []
     if not isinstance(cut_entries, list):
         raise ValueError("cuts must be a list")
-    reasons = {_entry_grp_id(entry, by_name, "cuts"): entry.get("reason", "") for entry in cut_entries}
+    reasons = {
+        _entry_grp_id(entry, by_name, "cuts"): {str(k).strip(): v for k, v in entry.items()}.get("reason", "")
+        for entry in cut_entries
+    }
     cuts = []
+    missing_reasons = 0
     for grp_id, count in (available - kept).items():
         reason = reasons.get(grp_id)
         if not isinstance(reason, str) or not reason.strip():
-            raise ValueError("Every cut needs an explanation")
+            # 2026-10-11 Collector Sealed: an 84-card pool leaves 40+ cuts and the
+            # model skipped a few notes, so both attempts died on "Every cut needs
+            # an explanation" and the review of the deck itself was thrown away.
+            # The cut set is derived from the deck, not from these notes.
+            missing_reasons += 1
+            reason = CUT_REASON_DEFAULT
         cuts.append(
             {
                 "grp_id": grp_id,
@@ -154,6 +172,8 @@ def validate_deck(payload: dict, pool: list[dict], *, source: str) -> dict[str, 
                 "reason": " ".join(reason.split()[:16]),
             }
         )
+    if missing_reasons:
+        logger.info("Deck review left %d cut(s) unexplained; using the default note", missing_reasons)
     plan = payload.get("plan")
     if not isinstance(plan, str) or not plan.strip():
         raise ValueError("Deck needs a plan")
@@ -667,42 +687,17 @@ def _concerns(profile: dict) -> list[str]:
     return concerns[:2]
 
 
-def deck_choice_summary(
-    build: dict, pool: list[dict], *, option: int | None = None, compared_to: dict | None = None
-) -> str:
-    """Two spoken sentences grounded in the deck's actual cards, never a win-rate forecast.
-
-    With ``compared_to``, the first sentence names the best cards this deck
-    has that the other one lacks, so two options sharing a color sound different.
-    """
+def deck_choice_summary(build: dict, pool: list[dict]) -> str:
+    """Two spoken sentences grounded in the deck's actual cards, never a win-rate forecast."""
     profile = _deck_profile(build, pool)
     if profile is None:
         return "Deck submitted. I couldn't verify enough card details to explain its strategy."
     featured = "led by " + " and ".join(profile["leaders"]) if profile["leaders"] else ""
-    if compared_to is not None:
-        shared = {card.get("name") for card in _deck_cards(compared_to, pool)}
-        splashed = {
-            card["name"] for card in profile["cards"] if _required_colors(card) - set(profile["colors"][:2])
-        }
-        unique = [
-            name
-            for name in dict.fromkeys(
-                card.get("name", "") for card in sorted(profile["cards"], key=_card_value, reverse=True)
-            )
-            if name and name not in shared and name not in splashed
-        ]
-        if unique:
-            featured = "swapping in " + " and ".join(unique[:2])
     interaction = _count(profile["removal"], "removal spell")
     if profile["tempo"]:
         interaction += " and " + _count(profile["tempo"], "bounce, tap, or counter spell")
-    subject = (
-        f"Option {option} is {profile['color_text']}"
-        if option is not None
-        else f"I built {profile['color_text']}"
-    )
     first = (
-        f"{subject}{', ' + featured if featured else ''}, with {profile['bodies']} creature or token spells, "
+        f"I built {profile['color_text']}{', ' + featured if featured else ''}, with {profile['bodies']} creature or token spells, "
         f"{profile['early_bodies']} of them costing three or less, and {interaction}."
     )
     model_plan = _one_clause(build.get("plan") or "") if build.get("reasoning_source") == "card_rules" else ""
@@ -728,71 +723,8 @@ def deck_choice_summary(
     return f"{first} {lead}{plan}, {risk}."
 
 
-def _same_deck(first: dict, second: dict) -> bool:
-    def signature(build):
-        return Counter({e["grp_id"]: e["count"] for e in build.get("main_deck") or []}), {
-            c: n for c, n in (build.get("basic_lands") or {}).items() if n
-        }
-
-    return signature(first) == signature(second)
-
-
-def deck_review_narration(build: dict, options: list[dict], pool: list[dict]) -> tuple[str, list[dict]]:
-    """Describe the deck to submit and its strongest distinct alternative, then why.
-
-    ``build`` is the deck that will be submitted; ``options`` are the counted,
-    validated builds (fallback_deck's deck_options). Returns (text, decks described).
-    """
-    alternatives = [option for option in options if not _same_deck(option, build)]
-    first = deck_choice_summary(build, pool, option=1)
-    if not alternatives:
-        return f"Only one legal 40-card build fits this pool. {first} Submitting it.", [build]
-    other = alternatives[0]
-    second = deck_choice_summary(other, pool, option=2, compared_to=build)
-    mine, theirs = _deck_profile(build, pool), _deck_profile(other, pool)
-    if mine is None or theirs is None:
-        return f"{first} {second} Submitting option 1.", [build, other]
-    better, worse = [], []
-    for label, key, margin in (
-        ("better 17Lands card quality", "avg_gih", 0.3),
-        ("more bombs", "bombs", 1),
-        ("more creatures", "creatures", 2),
-    ):
-        a = mine["quality"].get(key)
-        b = theirs["quality"].get(key)
-        a, b = (len(a), len(b)) if isinstance(a, list) and isinstance(b, list) else (a, b)
-        if a is None or b is None:
-            continue
-        if a >= b + margin:
-            better.append(label)
-        elif b >= a + margin:
-            worse.append(label)
-    for label, key, margin in (("a faster curve", "early_bodies", 2), ("more removal", "removal", 1)):
-        if mine[key] >= theirs[key] + margin:
-            better.append(label)
-        elif theirs[key] >= mine[key] + margin:
-            worse.append(label)
-    score_gap = (mine["quality"].get("score") or 0) - (theirs["quality"].get("score") or 0)
-    if score_gap >= 3:
-        better.append("a higher combined build score")
-    if build.get("strength_preferred"):
-        better.insert(0, "the stronger rating from 17Lands deck results")
-    if build.get("reasoning_source") == "card_rules":
-        why = "it is the deck advisor's refined build, which held up against the counted builds"
-    elif better:
-        why = "it has " + _join(better[:3])
-    else:
-        why = "its overall build score is higher once card quality, curve, interaction, and color-pair data are combined"
-    tradeoff = f", although option 2 has {_join(worse[:2])}" if worse else ""
-    return f"{first} {second} I'm submitting option 1 because {why}{tradeoff}.", [build, other]
-
-
 def _count(number: int, noun: str) -> str:
     return f"{number} {noun}" + ("" if number == 1 else "s")
-
-
-def _join(parts: list[str]) -> str:
-    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
 
 
 def reconcile_logged_deck(build: dict) -> dict:

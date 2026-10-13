@@ -718,6 +718,65 @@ class MacBridgeAdapter:
         "ClaimPrize",
     }
 
+    # -- deck library ---------------------------------------------------------
+    # WrapperController.Instance.DecksManager.GetAllCachedDecks(): every
+    # constructed deck with its contents, filled by the client at login (see
+    # re-output DeckDataProvider: GetFullDeck is a cache read, no request).
+    _DECKS_PER_BATCH = 4
+    _PILE_NAMES = {"Main": "main", "Sideboard": "sideboard", "CommandZone": "command_zone", "Companions": "companions"}
+
+    def _cmd_get_decks(self, command: dict, timeout: float | None) -> dict:
+        ops = _Ops()
+        wrapper = ops.add("static", **{"class": "WrapperController"}, member="Instance", depth=0)
+        manager = ops.get(wrapper, "DecksManager", optional=True)
+        decks = ops.add("call", target=manager, method="GetAllCachedDecks", depth=1, optional=True)
+        values = self._run(ops, timeout)
+        if handle(values[wrapper["ref"]]) is None:
+            # The front-end wrapper is unloaded during a duel (Instance = null
+            # in OnDestroy, live 2026-10-11 10:46); the home screen has it.
+            return {"ok": False, "error": "Arena's deck list is only readable outside a match (home screen)"}
+        handles = [handle(node) for node in items(values[decks["ref"]]) if handle(node)]
+        out: list[dict] = []
+        for start in range(0, len(handles), self._DECKS_PER_BATCH):
+            chunk = handles[start : start + self._DECKS_PER_BATCH]
+            ops = _Ops()
+            refs = []
+            for deck_handle in chunk:
+                summary = ops.get(H(deck_handle), "Summary", depth=2)
+                fmt = ops.get(summary, "Format", optional=True)
+                contents = ops.get(H(deck_handle), "Contents", optional=True)
+                piles = ops.add("get", target=contents, member="Piles", depth=6, optional=True, max_items=256)
+                refs.append((summary, fmt, piles))
+            values = self._run(ops, timeout)
+            for summary, fmt, piles in refs:
+                node = values[summary["ref"]]
+                if not isinstance(node, dict):
+                    continue
+                try:
+                    deck_id = guid(field(node, "DeckId"))
+                except AdapterError:
+                    continue
+                record: dict[str, Any] = {
+                    "deck_id": deck_id,
+                    "name": str(field(node, "Name") or ""),
+                    "format": str(values[fmt["ref"]] or ""),
+                    "main": [],
+                    "sideboard": [],
+                    "command_zone": [],
+                    "companions": [],
+                }
+                for entry in items(field(values[piles["ref"]], "entries")):
+                    pile = self._PILE_NAMES.get(enum_name(field(entry, "key")))
+                    if pile is None:
+                        continue
+                    record[pile] = [
+                        {"grp_id": num(field(card, "Id")), "count": num(field(card, "Quantity"))}
+                        for card in items(field(entry, "value"))
+                        if num(field(card, "Id")) > 0 and num(field(card, "Quantity")) > 0
+                    ]
+                out.append(record)
+        return {"ok": True, "decks": out}
+
     def _cmd_get_event_page(self, command: dict, timeout: float | None) -> dict:
         found = self._find(EVENT_PAGE_CONTROLLER, timeout)
         if not found:

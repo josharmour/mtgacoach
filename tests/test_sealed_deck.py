@@ -99,8 +99,8 @@ def test_sealed_splashes_a_single_pip_bomb_with_enough_sources():
     assert 1 + build["basic_lands"]["B"] >= 3
     assert build["basic_lands"]["U"] >= 6 and build["basic_lands"]["R"] >= 6
     validate_deck(build, pool, source="heuristic")
-    summary = deck_choice_summary(build, pool, option=1)
-    assert summary.startswith("Option 1 is blue-red splashing black for Grave Tyrant")
+    summary = deck_choice_summary(build, pool)
+    assert summary.startswith("I built blue-red splashing black for Grave Tyrant")
 
 
 def test_draft_splash_needs_fixing_unless_the_card_is_a_bomb():
@@ -284,14 +284,18 @@ def _options(*names):
 
 
 def test_strongest_option_needs_a_clear_margin_and_more_in_draft():
-    rates = {"A": 0.560, "B": 0.567, "C": 0.570}
+    rates = {"A": 0.560, "B": 0.567, "C": 0.572}
     options = _options("A", "B", "C")
     score = lambda build: rates[build["label"]]  # noqa: E731
     assert DraftEventDriver._strongest_option(options, score, "sealed")["label"] == "C"
-    assert DraftEventDriver._strongest_option(options, score, "draft") is None  # +1.0 pp < 1.5 pp
+    assert DraftEventDriver._strongest_option(options, score, "draft") is None  # +1.2 pp < 1.5 pp
     rates["C"] = 0.563
     rates["B"] = 0.562
     assert DraftEventDriver._strongest_option(options, score, "sealed") is None  # +0.3 pp
+    # 2026-10-11 Collector Sealed: WG 51.9% vs the counted BG+W (Vraska) 51.3% is a
+    # tie, so the counted choice stands.
+    rates.update({"A": 0.513, "B": 0.514, "C": 0.519})
+    assert DraftEventDriver._strongest_option(options, score, "sealed") is None
     assert DraftEventDriver._strongest_option(options, None, "sealed") is None
 
 
@@ -299,7 +303,6 @@ def test_sealed_deck_follows_the_model_and_says_why(monkeypatch):
     pool = sealed_pool()
     by_id = {c["grp_id"]: c for c in pool}
     sideboard = [{"grp_id": g, "count": n} for g, n in Counter(c["grp_id"] for c in pool).items()]
-    narrations = []
     bridge = Bridge(
         {
             "get_screen": {"ok": True, "deck_builder": True},
@@ -316,7 +319,6 @@ def test_sealed_deck_follows_the_model_and_says_why(monkeypatch):
     d = driver(
         bridge,
         pool_cards_fn=lambda ids, code: [by_id[g] for g in ids],
-        review_fn=lambda text, cancelled: narrations.append(text) or True,
     )
     d.run.event_name = "Sealed_TST"
     d._basics = {7001: "U", 7002: "R", 7003: "B", 7004: "W", 7005: "G"}
@@ -331,4 +333,3 @@ def test_sealed_deck_follows_the_model_and_says_why(monkeypatch):
     assert written, bridge.sent
     assert "R" not in d.run.deck_plan["build"]["basic_lands"]
     assert "17Lands deck model" in d.run.deck_plan["source"]
-    assert "the stronger rating from 17Lands deck results" in narrations[0]

@@ -29,6 +29,8 @@ class CoachSession(QObject):
     spokenLine = Signal(str)
     logEmitted = Signal(str, str)  # message, role
     adviceReceived = Signal(str, str)  # text, label
+    deckListChanged = Signal(list, str)  # decks, note
+    deckAnalysisChanged = Signal(dict)
     bugReportSaved = Signal(str, str)  # path, error
     errorOccurred = Signal(str)
 
@@ -186,6 +188,15 @@ class CoachSession(QObject):
     def send_command(self, command: str, *args: Any) -> None:
         """Send a JSON command to the coach subprocess."""
         self._process.send_command(command, *args)
+
+    def request_deck_list(self) -> None:
+        self._process.send_payload({"cmd": "list_decks"})
+
+    def analyze_deck(self, deck_id: str, *, refresh: bool = False) -> None:
+        self._process.send_payload({"cmd": "analyze_deck", "deck_id": deck_id, "refresh": bool(refresh)})
+
+    def analyze_all_decks(self) -> None:
+        self._process.send_payload({"cmd": "analyze_all_decks"})
 
     def _report_speech_status(self, speech_id: str, state: str) -> None:
         """Tell the engine how an utterance it is waiting on ended (or started)."""
@@ -584,6 +595,13 @@ class CoachSession(QObject):
         elif ev_type in ("error", "emit_error"):
             err = str(event.get("message") or event.get("error") or "Unknown error")
             self.errorOccurred.emit(err)
+
+        elif ev_type == "deck_list":
+            decks = event.get("decks")
+            self.deckListChanged.emit(list(decks) if isinstance(decks, list) else [], str(event.get("error") or ""))
+
+        elif ev_type == "deck_analysis":
+            self.deckAnalysisChanged.emit({k: v for k, v in event.items() if k != "type"})
 
     def _handle_stderr(self, line: str) -> None:
         logger.debug(f"[coach stderr] {line}")

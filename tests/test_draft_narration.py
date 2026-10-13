@@ -605,6 +605,69 @@ def test_driver_logs_the_plans_lane_beside_the_pool_estimate(primer, caplog):
     with caplog.at_level(logging.INFO, logger="arenamcp.draft_event"):
         driver._step()
     strategy = next(m for m in caplog.messages if m.startswith("Draft strategy P1p6"))
-    assert strategy.startswith("Draft strategy P1p6: lane=UR; pool=UB; plan=Izzet spells tempo")
+    assert strategy.startswith("Draft strategy P1p6: lane=UR; pool=UB; signals=")
+    assert "; plan=Izzet spells tempo" in strategy
     assert driver.run.plan_lane == "UR"
     assert spoken and "blue-black" not in spoken[0] and "Dimir" not in spoken[0]
+
+
+def test_a_named_pair_is_not_announced_until_the_pool_is_settled():
+    # 2026-10-10: eight "We're leaning ..." beats in one pack, one per model lane.
+    narrator = DraftNarrator()
+    text = narrator.pick_line(
+        names=["Sky Ace"],
+        chosen=[score(1)],
+        ranking=[score(1), score(3)],
+        pool=[1],
+        lane_before=lane("U", 0.1),
+        lane_after=lane("UB", 0.15),
+        primer=PRIMER,
+        pack_number=1,
+        pick_number=3,
+        pack_size=14,
+        model_plan="Dimir Control with cheap interaction.",
+        model_lane="UB",
+        verb="Choosing",
+    )
+    assert "We're leaning" not in text
+    assert "outside our" not in text
+
+
+def test_an_open_validated_lane_silences_the_plan_texts_lean():
+    # 2026-10-10: the plan said "Open toward Gruul ramp" while the advisor's
+    # lane was open; the commentary called blue picks "outside our red-green colors".
+    narrator = DraftNarrator()
+    text = narrator.pick_line(
+        names=["Sky Ace"],
+        chosen=[score(1)],
+        ranking=[score(1), score(3)],
+        pool=[1],
+        lane_before=lane("U", 0.1),
+        lane_after=lane("U", 0.15),
+        primer=PRIMER,
+        pack_number=1,
+        pick_number=4,
+        pack_size=14,
+        model_plan="Open toward Gruul ramp anchored by a red-green rare.",
+        model_lane="",
+        verb="Choosing",
+    )
+    assert "outside our" not in text and "red-green" not in text
+    # With the validated code given, it wins over a plan text naming other colors.
+    narrator = DraftNarrator()
+    text = narrator.pick_line(
+        names=["Bog Snare"],
+        chosen=[score(3)],
+        ranking=[score(3), score(1)],
+        pool=[1, 2, 3],
+        lane_before=lane("UB", 0.6),
+        lane_after=lane("UB", 0.6),
+        primer=PRIMER,
+        pack_number=1,
+        pick_number=8,
+        pack_size=14,
+        model_plan="Azorius tempo with fliers.",
+        model_lane="UB",
+        verb="Choosing",
+    )
+    assert "blue-black" in text and "white-blue" not in text

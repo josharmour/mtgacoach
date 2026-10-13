@@ -70,12 +70,20 @@ from arenamcp.mulligan_policy import _land_colors, _mana_value, _pip_matching, _
 logger = logging.getLogger(__name__)
 
 DEFAULT_THRESHOLD = 0.95
-DEFAULT_COUNTDOWN_S = 10
+# 2026-10-10: 10 s plus the spoken offer (8 s) meant the game ended before the
+# concede; the player wants a short count and a "Good game" before it goes.
+DEFAULT_COUNTDOWN_S = 3
 # Confidence when every condition holds. Below 1.0: the opponent's hand and
 # our next draw are never certain, but none of them can arrive in time.
 DEAD_CONFIDENCE = 0.97
 THRESHOLD_RANGE = (0.90, 0.99)
-COUNTDOWN_RANGE = (3, 60)
+COUNTDOWN_RANGE = (2, 60)
+# A running countdown survives estimate flicker: it aborts only when the loss
+# confidence falls this far under the threshold (decisions in progress and
+# stack activity lowered it 0.97 -> 0.60 within a turn on 2026-10-10).
+ABORT_HYSTERESIS = 0.15
+# Spoken right before the concede is sent.
+FAREWELL = "Good game."
 # Countdowns per game: a flickering estimate must not re-announce forever.
 MAX_ARMS_PER_GAME = 3
 # How long to watch for the game end after a concede before warning.
@@ -1006,8 +1014,8 @@ def _concede_reason(evasive: list[dict], through: int, our_life: int, when: str)
 
 
 def offer_text(seconds: int) -> str:
-    """The spoken auto-concede offer; the countdown starts once it has been heard."""
-    return f"Auto-concede in {seconds} seconds — say cancel or press Cancel to keep playing."
+    """The spoken auto-concede offer; the countdown runs while it is spoken."""
+    return f"Conceding in {seconds} seconds — say cancel to keep playing."
 
 
 # --- the countdown -----------------------------------------------------------------------
@@ -1261,7 +1269,7 @@ class ConcedeController:
                 why = "the game changed"
             elif drafting:
                 why = "a draft is active"
-            elif estimate.confidence < threshold:
+            elif estimate.confidence < threshold - ABORT_HYSTERESIS:
                 why = f"loss confidence dropped to {estimate.confidence:.2f} ({estimate.reason})"
             elif not self._autopilot_on():
                 why = "autoplay is no longer on"
@@ -1379,8 +1387,7 @@ class ConcedeController:
                 self._armed = armed
                 _remember(self._arms, game_key, self._arms.get(game_key, 0) + 1)
             logger.warning(
-                "[CONCEDE] auto-concede offered (countdown %d, %ds once the offer is heard, "
-                "confidence %.2f, game %r)",
+                "[CONCEDE] auto-concede offered (countdown %d, %ds, confidence %.2f, game %r)",
                 armed.token,
                 seconds,
                 estimate.confidence,
@@ -1501,6 +1508,10 @@ class ConcedeController:
                     (fresh.get("turn") or {}).get("turn_number"),
                 )
                 self._emit({"state": "conceding", "id": armed.token})
+            try:
+                self._advise(FAREWELL, None)
+            except Exception as error:  # the farewell never blocks the concede
+                logger.debug("[CONCEDE] farewell not spoken: %s", error)
             try:
                 result = self._concede_fn(fresh)
             except Exception as error:  # the bridge raised: report, never retry

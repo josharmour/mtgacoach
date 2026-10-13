@@ -58,7 +58,7 @@ class GameStateTrigger:
         """
         self.life_threshold = life_threshold
         # Track threats we've already warned about (by instance_id)
-        self._seen_threats: set[int] = set()
+        self._seen_threats: set[Any] = set()
         # Track whether we've already fired the losing_badly trigger this game
         self._losing_badly_fired = False
         self._last_threat: dict | None = None
@@ -413,6 +413,38 @@ class GameStateTrigger:
                         },
                     }
                     logger.info(f"Threat detected (planeswalker): {card_name}")
+                    triggers.append("threat_detected")
+
+            # An infinite drain loop (Vito + Exquisite Blood, 2026-10-11) is
+            # deadlier than any single card on the list: warn the moment its
+            # second piece is cast, and let it override a single-card threat.
+            try:
+                from arenamcp.drain_loop import opponent_drain_loop, warning_line
+
+                loop = opponent_drain_loop(curr_state, include_stack=True)
+            except Exception as error:
+                logger.debug(f"drain-loop check failed: {error}")
+                loop = None
+            if loop is not None and ("drain_loop", loop.key()) not in self._seen_threats:
+                self._seen_threats.add(("drain_loop", loop.key()))
+                piece = loop.drainers[0]
+                warning = warning_line(curr_state, loop)
+                self._last_threat = {
+                    "name": loop.names(),
+                    "warning": warning,
+                    "combo": True,
+                    "card": {
+                        "name": piece.get("name"),
+                        "type_line": piece.get("type_line"),
+                        "oracle_text": piece.get("oracle_text"),
+                        "power": piece.get("power"),
+                        "toughness": piece.get("toughness"),
+                        "mana_cost": piece.get("mana_cost"),
+                        "counters": piece.get("counters"),
+                    },
+                }
+                logger.info(f"Threat detected (drain loop): {warning}")
+                if "threat_detected" not in triggers:
                     triggers.append("threat_detected")
 
         # LOSING BADLY detection — proactive concede suggestion

@@ -36,6 +36,8 @@ tools/monitoring/*
 !tools/monitoring/
 docs/
 CLAUDE.md
+# Ops runbook: production hosts, LAN IPs, container paths, image hashes
+website/PATREON.md
 *.spec
 venv/
 .venv/

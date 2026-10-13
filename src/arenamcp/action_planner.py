@@ -16,7 +16,10 @@ from enum import Enum
 from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
+from arenamcp.cast_notes import combat_cast_note, loot_mode_note, trick_timing_note, turn_investments_note
+from arenamcp.decision_memory import DecisionMemory, critical_decision
 from arenamcp.decisions import expand_target_selection
+from arenamcp.mana_potential import mana_reach_note
 from arenamcp.match_context import STRATEGIC_POLICY, prepare_match_context, with_deck_reference
 from arenamcp.play_safety import filter_play_options, find_source, shrink_note, unsafe_play_reason
 from arenamcp.target_effects import (
@@ -42,6 +45,13 @@ def _as_int(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _is_opponent_turn(game_state: dict[str, Any], local_seat: Any) -> bool:
+    """Whether the opponent is the active player (False when either seat is unknown)."""
+    active = _as_int((game_state.get("turn") or {}).get("active_player"))
+    local = _as_int(local_seat)
+    return bool(active and local and active != local)
 
 
 def _ability_rules_text(ability_grp_id: int) -> str:
@@ -695,6 +705,9 @@ class ActionPlanner(_ActionLegalityMixin):
         # subsequent priority windows reason as "continue the plan" instead
         # of re-deriving strategy from scratch (the flip-flop pattern).
         self._turn_intent: str | None = None
+        # Our own recent typed decisions (this match): prompt memory, reversal
+        # detection and the game-plan reform's action feed (decision_memory.py).
+        self._decision_memory: DecisionMemory | None = DecisionMemory()
         # Active multi-step turn plan: the ordered list of user-visible plays
         # we intend to make this turn. Built once on the first non-trivial
         # own-turn LLM call (an additional `plan_turn` LLM call), then
@@ -719,6 +732,15 @@ class ActionPlanner(_ActionLegalityMixin):
         # "unavailable" (model server failed or circuit open), "bad_answer"
         # (it answered, but nothing usable), or "" (the model decided).
         self.last_llm_failure: str = ""
+
+    def set_background_yield(self, fn: Callable[[], None] | None) -> None:
+        """Called before each decision call so background strategy work gets out of its way.
+
+        2026-10-10 15:28: a high-effort game-plan reform (23 s, 3000 reasoning
+        tokens) shared the server with the declare-blockers call, which then
+        ran past its 15 s budget and fell to the safe-default blocks.
+        """
+        self._background_yield = fn
 
     def set_game_plan_source(self, source: Callable[[dict], str] | None) -> None:
         """Render the strategy block per decision from the live snapshot.
@@ -850,16 +872,29 @@ class ActionPlanner(_ActionLegalityMixin):
         timeout_s: float,
         call_class: str,
         first_token_timeout_s: float | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         """One planner model call: deterministic, raising on backend errors, labelled.
+
+        ``reasoning_effort`` ("high" for a critical decision) is forwarded to
+        backends whose complete() accepts it; the proxy sends "low" otherwise.
 
         Raises :class:`LLMUnavailableError` for an error-sentinel answer
         (legacy backends without raise_on_error), so no caller ever parses one.
         """
+        if call_class.startswith("decision."):
+            yield_fn = getattr(self, "_background_yield", None)
+            if callable(yield_fn):
+                try:
+                    yield_fn()
+                except Exception as error:  # never block a decision on the hook
+                    logger.debug("background yield failed: %s", error)
         complete = self._backend.complete
         extras: dict[str, Any] = {"call_class": call_class}
         if first_token_timeout_s is not None:
             extras["first_token_timeout_s"] = min(first_token_timeout_s, timeout_s)
+        if reasoning_effort:
+            extras["reasoning_effort"] = reasoning_effort
         extras = _accepted_extras(complete, extras)
         try:
             response = complete(
@@ -1223,6 +1258,9 @@ class ActionPlanner(_ActionLegalityMixin):
         self._ensure_free_attacks(
             plan, game_state, decision_context or game_state.get("decision_context") or {}
         )
+        self._check_attack_crackback(
+            plan, game_state, decision_context or game_state.get("decision_context") or {}
+        )
 
         # Attach GRE action refs if raw actions are available. If the bridge says
         # the current request has no actions (e.g. PayCostsReq), do not fall back
@@ -1415,6 +1453,186 @@ class ActionPlanner(_ActionLegalityMixin):
                 f" {plan.spoken_actions()}" if kept else ""
             )
 
+    # After an attack that is not lethal by the board math, the planned taps must
+    # not leave us at or under this life against their best crackback.
+    _CRACKBACK_DANGER_LIFE = 2
+
+    def _check_attack_crackback(self, plan: ActionPlan, state: dict, context: dict) -> None:
+        """Strip a false "lethal this turn" from an attack plan and keep blockers home when it is not lethal.
+
+        2026-10-10 game 3, turn 34 at 4 life: the model locked "All-out attack
+        for lethal this turn" (11 power into 10 life through blockers; the
+        board math said lethal on T36 at best), tapped all three creatures,
+        and the crackback plus a top-decked removal spell ended the game. The
+        typed-decision path already corrects such claims; this is the combat
+        plan's equivalent, plus a crackback check the free-attack rule only
+        applied to its own additions. Deterministic: the attack's worst-case
+        crackback (combat_solver.evaluate_attack) against our remaining
+        untapped blockers must leave us above ``_CRACKBACK_DANGER_LIFE``;
+        otherwise attackers are held back, cheapest damage first, until it
+        does. Lethal and all-in boards are left alone.
+        """
+        if str(context.get("type") or "").lower() != "declare_attackers":
+            return
+        declared = next((a for a in plan.actions if a.action_type == ActionType.DECLARE_ATTACKERS), None)
+        if declared is None or not declared.attacker_names:
+            return
+        try:
+            from arenamcp import board_assessment
+
+            facts = board_assessment.assess(state)
+        except Exception as error:  # the strategic layer never blocks a declaration
+            logger.debug("crackback guard: no assessment (%s)", error)
+            return
+        if facts is None or facts.all_in:
+            return
+        best = facts.lines[0] if getattr(facts, "lines", None) else None
+        lethal = facts.lethal_now or facts.posture == "lethal" or (best is not None and best.win_at == 1)
+        strategy = plan.overall_strategy or ""
+        claims = [
+            sentence
+            for sentence in re.split(r"(?<=[.!?])\s+", strategy)
+            if self._LETHAL_NOW.search(sentence) and not self._LETHAL_LATER.search(sentence)
+        ]
+        if claims and not lethal:
+            when = (
+                f"; the best line is lethal on T{best.win_turn}" if best is not None and best.win_turn else ""
+            )
+            correction = f"Board math: not lethal this turn (they are at {facts.opp_life}{when})."
+            plan.overall_strategy = " ".join(
+                [sentence for sentence in re.split(r"(?<=[.!?])\s+", strategy) if sentence not in claims]
+                + [correction]
+            ).strip()
+            logger.warning(
+                "Attack plan claims lethal this turn but the board math does not (%s); %s",
+                " / ".join(claim[:120] for claim in claims),
+                correction,
+            )
+        if lethal:
+            return
+        try:
+            from arenamcp.combat_keywords import annotate_cant_be_blocked
+            from arenamcp.combat_solver import evaluate_attack
+            from arenamcp.combat_strategy import _controller, _eligible_blockers, _has, _is_int, _types
+        except Exception as error:
+            logger.debug("crackback guard unavailable: %s", error)
+            return
+        players = state.get("players") or []
+        local = next((pl for pl in players if pl.get("is_local")), None)
+        opponent = next((pl for pl in players if not pl.get("is_local")), None)
+        if local is None or opponent is None:
+            return
+        battlefield = state.get("battlefield") or []
+        annotate_cant_be_blocked(battlefield)
+        ours = [
+            card
+            for card in battlefield
+            if _controller(card) == local.get("seat_id")
+            and "creature" in _types(card)
+            and not card.get("is_tapped")
+            and _is_int(card.get("power"))
+            and _is_int(card.get("toughness"))
+        ]
+        by_name = {str(card.get("name", "")).lower(): card for card in ours}
+        by_id = {card.get("instance_id"): card for card in ours}
+        attacking = []
+        for index, name in enumerate(declared.attacker_names):
+            identity = (
+                declared.attacker_instance_ids[index] if index < len(declared.attacker_instance_ids) else None
+            )
+            card = by_id.get(identity) or by_name.get(name.lower())
+            if card is not None and card not in attacking:
+                attacking.append(card)
+        if not attacking:
+            return
+        theirs = [
+            card
+            for card in battlefield
+            if _controller(card) == opponent.get("seat_id") and "creature" in _types(card)
+        ]
+        blockers = _eligible_blockers(state, opponent.get("seat_id"))
+        our_life = int(local.get("life_total", 20))
+        opp_life = int(opponent.get("life_total", 20))
+
+        def life_after(attack_set: list[dict]) -> int:
+            home = [card for card in ours if card not in attack_set or _has(card, "vigilance")]
+            result = evaluate_attack(attack_set, home, blockers, opp_life, our_life, theirs)
+            return our_life - int(result.worst_case_crackback)
+
+        try:
+            after = life_after(attacking)
+        except Exception as error:
+            logger.debug("crackback guard skipped: %s", error)
+            return
+        if after > self._CRACKBACK_DANGER_LIFE:
+            return
+        held: list[dict] = []
+        remaining = list(attacking)
+        while remaining and after <= self._CRACKBACK_DANGER_LIFE:
+            # Hold the attacker that buys the most life per point of attack given up.
+            options = []
+            for card in remaining:
+                trial = [c for c in remaining if c is not card]
+                try:
+                    gain = life_after(trial) - after
+                except Exception:
+                    continue
+                options.append((gain / max(1, int(card.get("power") or 0)), gain, card))
+            if not options:
+                break
+            _ratio, gain, card = max(options, key=lambda item: (item[0], item[1]))
+            if gain <= 0 and after > 0:
+                break  # no hold helps and we survive: let it stand
+            remaining = [c for c in remaining if c is not card]
+            held.append(card)
+            after = life_after(remaining) if remaining else life_after([])
+        if not held:
+            return
+        held_names = [str(card.get("name") or "") for card in held]
+        if after <= self._CRACKBACK_DANGER_LIFE and not remaining:
+            note = f"holding everything back keeps us at {after}"
+        else:
+            note = f"holding {', '.join(held_names)} back keeps us at {after}"
+        logger.warning(
+            "Crackback guard: the planned attack leaves us at %d after their best attack (danger line %d); %s",
+            life_after(attacking),
+            self._CRACKBACK_DANGER_LIFE,
+            note,
+        )
+        kept_ids = {card.get("instance_id") for card in remaining}
+        kept_names = {str(card.get("name") or "").lower() for card in remaining}
+        pairs = list(
+            zip(
+                declared.attacker_names,
+                declared.attacker_instance_ids or [None] * len(declared.attacker_names),
+                strict=False,
+            )
+        )
+        keep = [
+            (name, identity)
+            for name, identity in pairs
+            if (identity in kept_ids if identity is not None else name.lower() in kept_names)
+        ]
+        declared.attacker_names = [name for name, _ in keep]
+        if declared.attacker_instance_ids:
+            declared.attacker_instance_ids = [identity for _, identity in keep]
+        declared.attacker_targets = {
+            name: target
+            for name, target in declared.attacker_targets.items()
+            if name in declared.attacker_names
+        }
+        declared.reasoning = (declared.reasoning + " " if declared.reasoning else "") + (
+            f"Crackback guard: not lethal this turn, and attacking with everything would leave us at "
+            f"{life_after(attacking)} after their best attack; {note}."
+        )
+        plan.fallback_reason = "planner_crackback_guard"
+        from arenamcp.narration import spoken_list, spoken_name
+
+        plan.voice_advice = (
+            f"Holding {spoken_list([spoken_name(n) for n in held_names])} back: not lethal this turn, "
+            f"and their crackback would leave us at {life_after(attacking)}."
+        )
+
     def _ensure_free_attacks(self, plan: ActionPlan, state: dict, context: dict) -> None:
         """Attack with every free attacker whatever the model planned (WP13, first half).
 
@@ -1508,12 +1726,21 @@ class ActionPlanner(_ActionLegalityMixin):
         action.blocker_instance_assignments = assignments
         action.blocker_assignments = {label(b): label(a) for b, a in assignments.items()}
         action.reasoning = explanation
-        plan.fallback_reason = "planner_combat_recovery"
-        plan.overall_strategy = (
-            "Keep the same combat outcome and use affordable commander recovery to rebuild resources."
-        )
         blocks = "; ".join(f"{label(b)} against {label(a)}" for b, a in assignments.items())
-        plan.voice_advice = f"Blocking with {blocks} to rebuild through an affordable recast of my commander."
+        if explanation.startswith("Identical copy"):
+            plan.fallback_reason = "planner_commander_identity"
+            plan.overall_strategy = (
+                "Same combat outcome; lose the commander (recoverable from the command zone) rather than a token copy."
+            )
+            plan.voice_advice = (
+                f"Blocking with {blocks}: the commander comes back from the command zone, a token copy would not."
+            )
+        else:
+            plan.fallback_reason = "planner_combat_recovery"
+            plan.overall_strategy = (
+                "Keep the same combat outcome and use affordable commander recovery to rebuild resources."
+            )
+            plan.voice_advice = f"Blocking with {blocks} to rebuild through an affordable recast of my commander."
         local = next((p for p in state.get("players", []) if p.get("is_local")), {})
         recovering = set(assignments) & set(local.get("commander_ids") or [])
         if len(recovering) == 1 and state.get("match_id") and state.get("turn", {}).get("turn_number"):
@@ -2420,6 +2647,20 @@ class ActionPlanner(_ActionLegalityMixin):
         if strategy_context:
             parts.append(strategy_context)
 
+        # 2026-10-11: the attack window followed a plan formed before this
+        # turn's casts (a haste creature that dies at end step, a pump on
+        # Titanbones) and held everything back. The window now sees what it
+        # already did this turn and what only pays off by attacking.
+        memory_block = self._memory().prompt_block(game_state)
+        if memory_block:
+            parts.append(memory_block)
+        investments = turn_investments_note(game_state)
+        if investments:
+            parts.append(investments)
+        reach = mana_reach_note(game_state, _legal_payable(game_state, legal_actions or []))
+        if reach:
+            parts.append(reach)
+
         # Locked turn intent: a single high-level plan for the whole turn,
         # captured on the first non-trivial LLM call of the turn. Subsequent
         # windows see it as TURN PLAN and are pushed to continue executing
@@ -2961,6 +3202,108 @@ class ActionPlanner(_ActionLegalityMixin):
     )
 
     def plan_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
+        """Choose option ids for a typed PendingDecision, remembering the choice.
+
+        The decision and its reasoning (model, guard or fallback) go into the
+        planner's decision memory, which the next typed prompt of this turn
+        and the background game-plan reform both read.
+        """
+        chosen = self._plan_decision_options(decision, game_state)
+        try:
+            self._memory().record(game_state, decision, chosen, self._last_decision_reasoning)
+        except Exception as error:  # memory never blocks a decision
+            logger.debug("decision memory skipped: %s", error)
+        return chosen
+
+    def recent_decisions_text(self) -> str:
+        """Our latest typed decisions, one per line, for the game-plan reform prompt."""
+        return self._memory().recent_actions_text()
+
+    def decisions_for_turn(self, turn: int) -> list[str]:
+        """Our typed decisions during ``turn``, for the game-plan match ledger."""
+        return self._memory().lines_for_turn(int(turn))
+
+    def _memory(self) -> DecisionMemory:
+        """The decision memory, created on first use (tests build planners without __init__)."""
+        memory = getattr(self, "_decision_memory", None)
+        if memory is None:
+            memory = DecisionMemory()
+            self._decision_memory = memory
+        return memory
+
+    # How long a drain-loop cast stays linked to the target request that follows it.
+    _DRAIN_LOOP_LINK_S = 30.0
+
+    def _drain_loop_pick(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
+        """Break the opponent's infinite drain loop with no model call, or [].
+
+        2026-10-11 turn 9 (bug_20261011_131147): Vito + Exquisite Blood drained
+        us from 22 to 5 over 13 priority windows that each closed within three
+        seconds. Tear Asunder was castable in all of them; the one high-effort
+        model call took its full 15 s budget and timed out. A live loop kills
+        on the next life change, so the answer is cast at once and its target
+        request aims at the loop piece.
+        """
+        from arenamcp.drain_loop import loop_answer, loop_target, opponent_drain_loop
+
+        try:
+            loop = opponent_drain_loop(game_state)
+            if loop is None or not loop.live:
+                return []
+            if decision.request_type == "ActionsAvailable":
+                found = loop_answer(decision, game_state)
+                if found is None:
+                    return []
+                option_id, card, piece = found
+                self._drain_loop_answer = {
+                    "source": str(card.get("name") or ""),
+                    "piece": _as_int(piece.get("instance_id")),
+                    "at": time.monotonic(),
+                }
+                why = (
+                    f"Cast {card.get('name')} on {piece.get('name')}: {loop.names()} is an infinite "
+                    "drain loop, and the next life change on either side chains until we are dead."
+                )
+            elif decision.request_type == "SelectTargets":
+                source = self._drain_loop_source(decision, game_state)
+                pick = loop_target(decision, game_state, source)
+                if not pick or not expand_target_selection(decision, [pick]):
+                    return []
+                option_id = pick
+                piece_name = next(
+                    (p.get("name") for p in loop.pieces if f"tgt:{p.get('instance_id')}" == pick), pick
+                )
+                why = f"Target {piece_name} with {source.get('name')} to break {loop.names()}."
+            else:
+                return []
+        except Exception as error:  # the guard never blocks the normal path
+            logger.debug("drain-loop guard skipped: %s", error, exc_info=True)
+            return []
+        self._last_decision_option_ids = [option_id]
+        self._last_decision_reasoning = why
+        self._last_decision_trace = {"policy": "drain_loop", "validated_ids": [option_id], "reasoning": why}
+        logger.warning("Drain-loop guard: %s — deterministic policy, LLM not consulted", why)
+        return [option_id]
+
+    def _drain_loop_source(self, decision: Any, game_state: dict[str, Any]) -> dict[str, Any]:
+        """The removal spell whose targets are being chosen, for the drain-loop guard."""
+        source_id = self._decision_source_instance(game_state)
+        label = str(getattr(decision, "source_label", "") or "").strip().lower()
+        recent = getattr(self, "_drain_loop_answer", None) or {}
+        if recent and time.monotonic() - float(recent.get("at") or 0.0) > self._DRAIN_LOOP_LINK_S:
+            recent = {}
+        names = {name for name in (label, str(recent.get("source") or "").lower()) if name}
+        for zone in ("stack", "hand"):
+            for card in game_state.get(zone, []) or []:
+                if not isinstance(card, dict) or str(card.get("object_kind") or "").upper() == "ABILITY":
+                    continue
+                if source_id and _as_int(card.get("instance_id")) == source_id:
+                    return card
+                if str(card.get("name") or "").lower() in names:
+                    return card
+        return {}
+
+    def _plan_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         """Choose option ids for a typed PendingDecision.
 
         Verified commander returns use the same deterministic policy as the
@@ -3004,6 +3347,16 @@ class ActionPlanner(_ActionLegalityMixin):
             self._last_decision_trace = {"policy": "commander_return", "validated_ids": ["optional:accept"]}
             logger.info("typed-decision: returning %s to the command zone without an LLM choice", names)
             return ["optional:accept"]
+        if decision.request_type == "OptionalAction":
+            from arenamcp.optional_prompts import life_payment_decline
+
+            declined = life_payment_decline(decision, game_state)
+            if declined:
+                self._last_decision_option_ids = ["optional:decline"]
+                self._last_decision_reasoning = declined
+                self._last_decision_trace = {"policy": "low_life_payment", "validated_ids": ["optional:decline"]}
+                logger.info("typed-decision: %s — no LLM choice", declined)
+                return ["optional:decline"]
         if decision.request_type == "OptionalAction" and accept is not None:
             # An opposing ward trigger asking us to pay: we aimed at that
             # permanent on purpose, and declining counters our whole effect.
@@ -3042,6 +3395,9 @@ class ActionPlanner(_ActionLegalityMixin):
             if decision.request_type == "Search" and decision.selection_is_valid([]):
                 return []
             return [DECLINE_DECISION]
+        loop_pick = self._drain_loop_pick(decision, game_state)
+        if loop_pick:
+            return loop_pick
         if decision.request_type == "SelectN":
             # "As it enters, choose a color" (Room of Refuge, live 2026-10-07):
             # the colour our hand needs and our lands lack is a counting job.
@@ -4242,6 +4598,9 @@ class ActionPlanner(_ActionLegalityMixin):
         return chosen
 
     _DECISION_MAX_TOKENS = 2048
+    # Budget for a critical typed decision (removal, spending a plan card):
+    # high reasoning effort needs room to think; Arena's priority timer allows it.
+    _CRITICAL_DECISION_BUDGET_S = 15.0
 
     def _llm_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         # Circuit open: fail before formatting a 25k-character prompt, so the
@@ -4252,7 +4611,8 @@ class ActionPlanner(_ActionLegalityMixin):
         line_source, lines_text, unmodelled = self._line_prompt_context(decision, game_state)
         tag_state = game_state
         line_tags: dict[str, str] = {}
-        game_state = prepare_match_context(game_state)
+        # A search/tutor offers library cards: their rules are quoted for this call.
+        game_state = prepare_match_context(game_state, reveal=_option_grp_ids(decision))
         lines = [
             f"PENDING DECISION: {decision.request_type}"
             + (f" (source: {decision.source_label})" if decision.source_label else ""),
@@ -4302,6 +4662,10 @@ class ActionPlanner(_ActionLegalityMixin):
                 "Do not call your own creature an opponent's threat. Unknown control is not permission "
                 "to infer a side from the card name or deck reference."
             )
+        if decision.request_type == "OptionalAction":
+            from arenamcp.optional_prompts import prompt_note
+
+            lines.insert(1, prompt_note(decision, game_state))
         commander_ids = {
             card.get("instance_id")
             for card in game_state.get("command", []) or []
@@ -4336,12 +4700,15 @@ class ActionPlanner(_ActionLegalityMixin):
             if "weight" in o.meta:
                 note += f"  [contribution: {o.meta['weight']}]"
             if o.meta.get("actionType") == "ActionType_Cast":
+                note += combat_cast_note(game_state, find_source(game_state, o.meta) or {})
+                note += trick_timing_note(game_state, find_source(game_state, o.meta) or {})
                 note += linked_cast_note(game_state, o.meta)
                 note += ward_cast_note(game_state, o.meta, land_drop=land_drop)
                 note += power_only_note((find_source(game_state, o.meta) or {}).get("oracle_text"))
                 note += shrink_note(game_state, find_source(game_state, o.meta) or {}, activation=False)
             if decision.request_type == "CastingTimeOptions":
                 note += power_only_note(label)
+                note += loot_mode_note(label, game_state)
             if o.meta.get("actionType") == "ActionType_Activate":
                 source = find_source(game_state, o.meta)
                 note += shrink_note(game_state, source, activation=True, metadata=o.meta)
@@ -4440,12 +4807,41 @@ class ActionPlanner(_ActionLegalityMixin):
                     if option.meta or option.option_id == "pass"
                 ],
             }
+        # 2026-10-11 turn 10: "Cast Emrakul" without [OK] read as unavailable while
+        # the land drop, the Cub cast first and the Hobbit taps reached its cost.
+        reach = mana_reach_note(
+            game_state,
+            {
+                o.meta.get("instanceId"): o.payable
+                for o in decision.options
+                if o.meta and o.meta.get("actionType") == "ActionType_Cast"
+            },
+        )
+        if reach:
+            lines.append(reach)
         lines.append(self._decision_game_context(context_state))
         # The LINES line is shown once, above OPTIONS: not again in the strategy block.
         strategy_context = self._strategy_context(game_state, with_lines=not lines_text.startswith("LINES"))
         if strategy_context:
             lines.append(strategy_context)
+        memory_block = self._memory().prompt_block(game_state)
+        if memory_block:
+            lines.append("")
+            lines.append(memory_block)
         user_message = with_deck_reference("\n".join(lines), game_state)
+        # Removal, spending a plan card, or targeting a removal effect: the
+        # model thinks at high effort with a longer budget. Routine priority
+        # windows stay at low effort within the short budget.
+        critical = critical_decision(decision, game_state, getattr(self, "_game_plan", ""))
+        # On the opponent's turn the windows close fast (2026-10-11 turn 9: 13
+        # windows each answered within 3 s while one high-effort call ran its
+        # full 15 s and timed out), so every decision there runs at low effort.
+        opponent_turn = _is_opponent_turn(game_state, local_seat)
+        if critical and opponent_turn:
+            logger.info("typed-decision: %s, but on the opponent's turn — low effort", critical)
+            critical = ""
+        elif critical:
+            logger.info("typed-decision: high reasoning effort (%s)", critical)
         self._last_decision_trace = {
             "request_type": decision.request_type,
             "request_id": list(decision.request_id),
@@ -4471,39 +4867,79 @@ class ActionPlanner(_ActionLegalityMixin):
         # 512 on reasoning (finish_reason=length, 7x on 2026-10-04) and the
         # autopilot passed its turn 12 with Tooth and Nail castable. The
         # time budget above, not the token cap, bounds latency.
-        response = self._call_llm(
-            self._DECISION_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY,
-            user_message,
-            self._DECISION_MAX_TOKENS,
-            timeout_s=min(self._timeout, 12.0),
-            call_class=(
-                "decision.mulligan"
-                if decision.request_type == "Mulligan" or "LondonMulligan" in str(decision.source_label or "")
-                else "decision.typed"
-            ),
-            first_token_timeout_s=self._FIRST_TOKEN_TIMEOUT_S,
+        call_class = (
+            "decision.mulligan"
+            if decision.request_type == "Mulligan" or "LondonMulligan" in str(decision.source_label or "")
+            else "decision.typed"
         )
 
-        # P1-1: models prose-prefix the JSON despite "reply ONLY with JSON"
-        # (0/5 typed-decision parses on 2026-07-05, one reply in Chinese) —
-        # extract the first JSON object instead of parsing the whole string,
-        # and log a preview when even that fails so the failure is
-        # diagnosable from the log.
-        json_str = self._extract_first_json(response)
-        if not json_str:
-            logger.info(f"typed-decision: no JSON object in response: {(response or '')[:160]!r}")
-            raise ValueError("typed-decision response contained no JSON object")
-        try:
-            data = json.loads(json_str)
-        except json.JSONDecodeError:
-            logger.info(f"typed-decision: bad JSON: {json_str[:160]!r}")
-            raise
-        if not isinstance(data.get("option_ids"), list):
-            raise ValueError("typed-decision response must contain an option_ids list")
-        ids = data["option_ids"]
-        if any(type(option_id) not in (str, int) for option_id in ids):
-            raise ValueError("typed-decision option_ids must contain only ids")
-        chosen = [str(option_id) for option_id in ids]
+        def ask(message: str, *, effort: str | None, budget: float) -> str:
+            return self._call_llm(
+                self._DECISION_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY,
+                message,
+                self._DECISION_MAX_TOKENS,
+                timeout_s=budget,
+                call_class=call_class,
+                first_token_timeout_s=self._FIRST_TOKEN_TIMEOUT_S,
+                reasoning_effort=effort,
+            )
+
+        def parse(response: str) -> tuple[dict, list[str]]:
+            # P1-1: models prose-prefix the JSON despite "reply ONLY with JSON"
+            # (0/5 typed-decision parses on 2026-07-05, one reply in Chinese) —
+            # extract the first JSON object instead of parsing the whole string,
+            # and log a preview when even that fails so the failure is
+            # diagnosable from the log.
+            json_str = self._extract_first_json(response)
+            if not json_str:
+                logger.info(f"typed-decision: no JSON object in response: {(response or '')[:160]!r}")
+                raise ValueError("typed-decision response contained no JSON object")
+            try:
+                data = json.loads(json_str)
+            except json.JSONDecodeError:
+                logger.info(f"typed-decision: bad JSON: {json_str[:160]!r}")
+                raise
+            if not isinstance(data.get("option_ids"), list):
+                raise ValueError("typed-decision response must contain an option_ids list")
+            ids = data["option_ids"]
+            if any(type(option_id) not in (str, int) for option_id in ids):
+                raise ValueError("typed-decision option_ids must contain only ids")
+            return data, [str(option_id) for option_id in ids]
+
+        effort = "high" if critical else None
+        budget = self._CRITICAL_DECISION_BUDGET_S if critical else min(self._timeout, 12.0)
+        response = ask(user_message, effort=effort, budget=budget)
+        data, chosen = parse(response)
+        reversed_record = self._memory().reversal(game_state, decision, chosen)
+        if reversed_record is not None:
+            # The model is taking an action it passed on moments ago with the
+            # board unchanged: one more call, at high effort, with the
+            # contradiction in front of it. Its second answer stands.
+            logger.info(
+                "typed-decision: %s reverses an earlier pass this turn (%s); asking again at high effort",
+                chosen,
+                reversed_record.reasoning[:120],
+            )
+            check = (
+                "\n\nREVERSAL CHECK: earlier this turn, on this same board, you PASSED with this action "
+                f'available, saying: "{reversed_record.reasoning}". Nothing on the board has changed '
+                "since. Either keep passing, or choose the action only if you can state what is "
+                "different now (for example mana that was not available then)."
+            )
+            try:
+                data, chosen = parse(
+                    ask(
+                        user_message + check,
+                        effort=None if opponent_turn else "high",
+                        budget=min(self._timeout, 12.0) if opponent_turn else self._CRITICAL_DECISION_BUDGET_S,
+                    )
+                )
+                self._last_decision_trace["reversal_check"] = {
+                    "earlier": reversed_record.reasoning,
+                    "final": chosen,
+                }
+            except Exception as error:
+                logger.info("typed-decision: reversal re-check failed (%s); keeping the first answer", error)
         reason = data.get("reasoning")
         self._last_decision_target_controllers = (
             data.get("target_controllers") if isinstance(data.get("target_controllers"), dict) else {}
@@ -4584,6 +5020,36 @@ class ActionPlanner(_ActionLegalityMixin):
 # Cast roles that need a target or a moment only the model would pick
 # (counterspells, combat tricks): never cast blind on our own main phase.
 _REACTIVE_CAST_ROLES = frozenset({"counter", "pump"})
+
+
+def _legal_payable(game_state: dict[str, Any], legal_actions: list[str]) -> dict[int, bool | None]:
+    """Hand instance id -> Arena's [OK] verdict for each "Cast X" in the legacy legal-action strings."""
+    by_name: dict[str, int] = {}
+    for card in game_state.get("hand") or []:
+        if isinstance(card, dict) and card.get("name") and isinstance(card.get("instance_id"), int):
+            by_name.setdefault(str(card["name"]).casefold(), card["instance_id"])
+    verdicts: dict[int, bool | None] = {}
+    for entry in legal_actions:
+        text = str(entry or "").strip()
+        if not text.lower().startswith("cast "):
+            continue
+        name = re.sub(r"\s*\[[^\]]*\]", "", text[5:]).strip().casefold()
+        iid = by_name.get(name)
+        if iid is not None:
+            verdicts[iid] = "[ok]" in text.lower()
+    return verdicts
+
+
+def _option_grp_ids(decision: Any) -> list[int]:
+    """The card grp ids a decision's options name (bridge ``grpId`` metadata)."""
+    out: list[int] = []
+    for option in getattr(decision, "options", ()) or ():
+        meta = getattr(option, "meta", None) or {}
+        for key in ("grpId", "grp_id", "card_grp_id"):
+            value = meta.get(key)
+            if isinstance(value, int) and value > 0 and value not in out:
+                out.append(value)
+    return out
 
 
 def _accepts_keyword(fn: Callable, name: str) -> bool:

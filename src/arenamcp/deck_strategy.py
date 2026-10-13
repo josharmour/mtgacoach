@@ -11,13 +11,14 @@ import hashlib
 import json
 import re
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass
 
 PLAYBOOK_VERSION = 1
 
 DECK_ANALYSIS_PROMPT = """Analyze every card in the supplied Magic deck using its supplied Oracle text, costs, types and faces. Build a reusable playbook for both coaching and autoplay, not a generic archetype summary. Explicitly analyze each designated commander; a legendary card is not necessarily the commander. If there is no commander, analyze the deck's engines normally.
 
-Identify how resources become a win: setup, repeatable engines, payoffs, protection, interaction and recovery. Consider every supplied card, including lands. Record concise roles for the 5-10 cards that materially determine the plan; do not spend the output budget restating every basic land or filler card. Explain the actual mechanisms, not just pairs of card names. Reserve the first mechanism(s) for the designated commander(s), including the commander card ID in cards; then cover the other key engines. For each mechanism list EVERY involved card by its supplied card ID. The application attaches those cards' original rules directly; never retype or invent quotations. Only reference supplied card IDs. Missing rules are unknown; do not invent abilities.
+Identify how resources become a win: setup, repeatable engines, payoffs, protection, interaction and recovery. Consider every supplied card, including lands. Record concise roles for the 8-15 cards that materially determine the plan (engines, payoffs, game-changers, key interaction, mana engines); do not spend the output budget restating every basic land or filler card. Explain the actual mechanisms, not just pairs of card names. Reserve the first mechanism(s) for the designated commander(s), including the commander card ID in cards; then cover the other key engines. For each mechanism list EVERY involved card by its supplied card ID. The application attaches those cards' original rules directly; never retype or invent quotations. Only reference supplied card IDs. Missing rules are unknown; do not invent abilities.
 
 Study trigger event, controller/owner, destination, token/nontoken restrictions, optionality, timing, once-per-turn limits, activation and additional costs, mana spending restrictions, summoning sickness and commander tax. Casting is different from entering; tutoring/returning to hand is different from putting onto the battlefield. Calculate resource changes after costs, sacrifices and losses. Do not assume a combo wins without sufficient mana, bodies, damage and timing.
 
@@ -27,7 +28,7 @@ RESOURCE CONSERVATION EXAMPLE (apply this bookkeeping, not a fixed strategy): St
 
 For each commander compare equal immediate outcomes from ONE shared starting resource state (for example, either of two bodies can be spent to prevent the same damage; BOTH branches must pay that one-body cost). Do not compare losing the commander against losing nothing. Build both branches explicitly in resource_comparison: keeping it while spending a substitute, versus spending it and recovering/recasting it. Account for what survives, what a replay adds, what is permanently lost, colored mana, increasing commander tax and tempo. Explicitly count the resulting bodies and usable resource production AFTER each line, including new triggers and which survivors can pay the recovery cost. Do not describe a recoverable death as forfeiting future regeneration. Use variables/formulas for unknown future resource counts. An increasing cost does not by itself make a replay bad: express actual affordability and payoff, never invent cutoffs such as "only at low tax" or "only below N previous casts". A static ability is not a per-turn growth trigger; without another event its output stays constant. A necessary-but-missing recovery resource invalidates reuse, whereas a resource supplied by the surviving board supports it. Then explain when to deploy, preserve, trade, sacrifice, replay or recur it, IF its rules and this deck support those lines. Compare unique ongoing value with repeatable cast/enter/death value. Commander and token copies may share combat stats but have different recovery value. Resources created by a new trigger are ADDED to unaffected surviving resources; never silently erase surviving tokens or conflate old copies with new copies. Compute mana output as number of eligible untapped producers times their actual per-producer yield, not all creatures of a counted type unless they actually share that mana ability. An ETB trigger is spent once it resolves: merely keeping its source does not repeat that trigger. Distinguish the original's CURRENT ongoing abilities from the future value of replaying it, and compare the abilities of copies independently. Neither 'always preserve the commander' nor 'always sacrifice the commander' is a policy. Explain conditions and opportunity costs. Other decks may need to preserve an engine or protect counters/equipment instead. Derive all such priorities from this deck's rules.
 
-Return ONLY JSON with this shape. Use 3-6 meaningful mechanisms (fewer for a simple deck) and 3-6 decision rules. Keep the entire output under 2500 tokens, prioritizing game-changing interactions and their conditions over card summaries. Internal analysis is not the spoken summary.
+Return ONLY JSON with this shape. Use 3-6 meaningful mechanisms (fewer for a simple deck) and 3-6 decision rules. Keep the entire output under 4000 tokens, prioritizing game-changing interactions and their conditions over card summaries. Internal analysis is not the spoken summary.
 {
   "archetype": "specific deck identity",
   "primary_plan": "how this deck actually wins, with prerequisites",
@@ -48,7 +49,10 @@ DECK_DISCOVERY_PROMPT = DECK_ANALYSIS_PROMPT.split("Return ONLY JSON", 1)[0] + (
     "Write concise analytical notes, not JSON. Identify source card IDs, 3-6 mechanisms, "
     "key game-changing cards and conditional exceptions. Explicitly compare BOTH alternatives "
     "for each commander; list the remaining original and old copies separately from new bodies. "
-    "State when to preserve and when to spend/recover the resource. Keep under 1800 tokens."
+    "State when to preserve and when to spend/recover the resource. Work through the whole list: "
+    "every two-card interaction that changes how the deck wins, the mana curve and what the deck wants "
+    "to do on each of turns 1-5, the cards that end the game and what they need, and the interaction "
+    "that keeps the plan alive. Keep under 4000 tokens."
 )
 
 
@@ -431,9 +435,31 @@ class DeckPlaybook:
                 )
         return "\n".join(lines)
 
-    def render(self) -> str:
+    def render(self, *, omit_oracle_for: Collection[int] = ()) -> str:
+        """The full playbook text.
+
+        ``omit_oracle_for``: cards whose rules the prompt already quotes (the
+        deck reference's seen cards); their evidence lines collapse to a
+        pointer so the rules are not sent twice.
+        """
+        omit = {int(gid) for gid in omit_oracle_for}
+
         def name(gid):
             return f"{self.catalog[gid].get('name', 'Unknown')} [grp:{gid}]"
+
+        def evidence_lines(mechanism):
+            # One line per card (its cited rules in order), not one per rule:
+            # the 2026-10-10 Brawl playbook spent 7k chars repeating names.
+            quoted: dict[int, list[int]] = {}
+            pointed: dict[int, list[int]] = {}
+            for e in mechanism["evidence"]:
+                bucket = pointed if e["card"] in omit else quoted
+                bucket.setdefault(e["card"], []).append(e["rule"])
+            for gid, rules in quoted.items():
+                text = "; ".join(f"rule {r}: {oracle_rules(self.catalog[gid])[r - 1]}" for r in rules)
+                yield f"  Oracle — {name(gid)}: {text}"
+            for gid, rules in pointed.items():
+                yield f"  Oracle — {name(gid)}, rule {', '.join(str(r) for r in rules)}: quoted in the deck reference"
 
         data = self.data
         lines = [
@@ -461,10 +487,7 @@ class DeckPlaybook:
             lines.append(f"MECHANISM {mechanism['id']}: {mechanism['effect']}")
             lines.extend(f"  Requires: {item}" for item in mechanism["requires"])
             lines.extend(f"  Avoid: {item}" for item in mechanism["avoid"])
-            lines.extend(
-                f"  Oracle — {name(e['card'])}, rule {e['rule']}: {oracle_rules(self.catalog[e['card']])[e['rule'] - 1]}"
-                for e in mechanism["evidence"]
-            )
+            lines.extend(evidence_lines(mechanism))
         lines.extend(
             f"{phase.title()}: {data['phases'][phase]}" for phase in ("early", "mid", "late", "recovery")
         )

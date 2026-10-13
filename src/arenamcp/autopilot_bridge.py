@@ -1163,6 +1163,65 @@ class _BridgeSubmitMixin:
             note(game_state, [entry.get("attackerInstanceId") for entry in entries or []], pending)
 
     def _try_gre_bridge_blockers(self, action: GameAction) -> ClickResult | None:
+        """Submit blockers via the bridge and record the declaration for bug reports."""
+        # Unbound call: tests drive these handlers on plain fake objects.
+        result = _BridgeSubmitMixin._try_gre_bridge_blockers_inner(self, action)
+        if result is not None and result.success:
+            _BridgeSubmitMixin._record_combat_decision(self, "DeclareBlockers", action, result)
+        return result
+
+    def _try_gre_bridge_attackers_inner(self, action: GameAction) -> ClickResult | None:
+        """Submit attackers via the bridge and record the declaration for bug reports."""
+        result = _BridgeSubmitMixin._try_gre_bridge_attackers_inner(self, action)
+        if result is not None and result.success:
+            _BridgeSubmitMixin._record_combat_decision(self, "DeclareAttackers", action, result)
+        return result
+
+    def _record_combat_decision(self, kind: str, action: GameAction, result: ClickResult) -> None:
+        """The declaration, its reasoning, the legal choices and the plan's origin, into the match packet."""
+        try:
+            from arenamcp.match_packets import get_current_packet
+
+            packet = get_current_packet()
+            if packet is None:
+                return
+            game_state = self._get_game_state() or {}
+            submitted = getattr(result, "submitted_action", None) or action
+            if kind == "DeclareAttackers":
+                names = list(getattr(submitted, "attacker_names", None) or [])
+                targets = getattr(submitted, "attacker_targets", None) or {}
+                chosen = [f"{name} -> {targets.get(name, 'Opponent')}" for name in names] or ["No attacks"]
+                prefix = "attack with:"
+            else:
+                assignments = getattr(submitted, "blocker_assignments", None) or {}
+                chosen = [f"{blocker} blocks {attacker}" for blocker, attacker in assignments.items()] or [
+                    "No blocks"
+                ]
+                prefix = "block with:"
+            options = [
+                str(item)
+                for item in game_state.get("legal_actions") or []
+                if str(item).lower().startswith(prefix)
+            ]
+            plan = getattr(self, "_current_plan", None)
+            trace = {
+                "reasoning": str(getattr(action, "reasoning", "") or ""),
+                "fallback_reason": str(getattr(plan, "fallback_reason", "") or ""),
+                "strategy": str(getattr(plan, "overall_strategy", "") or ""),
+                "via": str(getattr(result, "method", "") or "GRE bridge"),
+            }
+            packet.add_combat_decision(
+                kind,
+                chosen=chosen,
+                options=options,
+                explanation=trace["reasoning"],
+                trace={k: v for k, v in trace.items() if v},
+                game_state=game_state,
+            )
+        except Exception as error:  # recording never blocks a declaration
+            logger.debug("combat decision not recorded: %s", error)
+
+    def _try_gre_bridge_blockers_inner(self, action: GameAction) -> ClickResult | None:
         """Submit blocker assignments via the GRE bridge.
 
         Resolves blocker/attacker instance IDs from the bridge's own

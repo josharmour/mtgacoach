@@ -8,10 +8,11 @@ to prepare a request. Library composition is an estimate, never a known order.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections import Counter, OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from functools import lru_cache
 from typing import Any
 
@@ -21,6 +22,23 @@ logger = logging.getLogger(__name__)
 _ZONES = ("hand", "battlefield", "graveyard", "exile", "stack", "command")
 _resolved_cards: OrderedDict[tuple[int, int], tuple[Any, dict]] = OrderedDict()
 _cache_lock = threading.Lock()
+
+# 2026-10-10 Brawl: the deck reference quoted the rules of all 99 cards in every
+# call (~7k tokens of a 24k-token plan prompt, ~15k-token decision prompts).
+# The reference now lists the whole deck compactly (name, cost, type) and quotes
+# full rules only for cards seen this game. The seen list is kept per match in
+# first-seen order, so the rules section only ever grows: within a turn every
+# call shares the same prefix for the server's prefix cache.
+_seen_lock = threading.Lock()
+_seen_rules: tuple[Any, list[int]] = (None, [])
+
+
+def reset_seen_rules() -> None:
+    """Forget which cards' rules have been quoted (tests, and a new match)."""
+    global _seen_rules
+    with _seen_lock:
+        _seen_rules = (None, [])
+
 
 STRATEGIC_POLICY = (
     "Follow the deck's win conditions and current game plan, but reassess every decision against "
@@ -93,6 +111,67 @@ def _zone(state: dict, name: str) -> list[dict]:
     return zones.get(name) or (zones.get("my_hand") if name == "hand" else []) or []
 
 
+def _compact_line(info: dict, count: int, grp_id: int) -> str:
+    """One line per deck card without rules: count, name, cost, type, printed stats."""
+    name = info.get("name") or f"Unknown({grp_id})"
+    fields = [
+        f"{count}x {name} [grp:{grp_id}]",
+        str(info.get("mana_cost") or ""),
+        str(info.get("type_line") or ""),
+    ]
+    if info.get("power") not in (None, "") and info.get("toughness") not in (None, ""):
+        fields.append(f"{info['power']}/{info['toughness']}")
+    return " ".join(" ".join(part.split()) for part in fields if part)
+
+
+def _visible_grp_ids(state: dict, catalog: dict[int, dict]) -> list[int]:
+    """Deck cards in a visible zone now (either side's copy), in zone order."""
+    out: list[int] = []
+    for zone_name in _ZONES:
+        for card in _zone(state, zone_name):
+            for key in ("grp_id", "original_grp_id", "base_grp_id"):
+                gid = card.get(key)
+                if isinstance(gid, int) and gid in catalog and gid not in out:
+                    out.append(gid)
+    return out
+
+
+def _rules_order(state: dict, catalog: dict[int, dict], visible: list[int]) -> list[int]:
+    """Cards whose rules the reference quotes: everything seen so far this match, first-seen first."""
+    match_id = state.get("match_id")
+    if match_id is None:
+        return sorted(visible)
+    global _seen_rules
+    with _seen_lock:
+        key, seen = _seen_rules
+        if key != match_id:
+            seen = []
+        seen = seen + [gid for gid in visible if gid not in seen]
+        _seen_rules = (match_id, seen)
+    return [gid for gid in seen if gid in catalog]
+
+
+_TUTOR_RE = re.compile(r"search your library for", re.I)
+_LAND_SEARCH_RE = re.compile(
+    r"search your library for (?:a |an |up to \w+ |two |three )?(?:basic )?(?:land|forest|plains|island|swamp|mountain)",
+    re.I,
+)
+
+
+def _tutor_in_hand(state: dict) -> bool:
+    """A nonland tutor in our hand can find any library card, so every card's rules matter."""
+    local = state.get("local_seat_id") or next(
+        (p.get("seat_id") for p in state.get("players", []) if p.get("is_local")), None
+    )
+    for card in _zone(state, "hand"):
+        if local is not None and card.get("owner_seat_id") not in (None, local):
+            continue
+        text = str(card.get("oracle_text") or "")
+        if _TUTOR_RE.search(text) and not _LAND_SEARCH_RE.search(text):
+            return True
+    return False
+
+
 def _card_line(info: dict, count: int, grp_id: int) -> str:
     name = info.get("name") or f"Unknown({grp_id})"
     fields = [
@@ -114,14 +193,25 @@ def _card_line(info: dict, count: int, grp_id: int) -> str:
     return " | ".join(" ".join(part.split()) for part in fields if part)
 
 
-def prepare_match_context(state: dict, *, card_lookup: Callable[[int], Any] | None = None) -> dict:
-    """Return a shallow snapshot with full deck rules and remaining inventory.
+def prepare_match_context(
+    state: dict,
+    *,
+    card_lookup: Callable[[int], Any] | None = None,
+    reveal: Iterable[int] = (),
+    full_rules: bool = False,
+) -> dict:
+    """Return a shallow snapshot with the deck reference, catalog and remaining inventory.
 
+    The reference lists the whole deck compactly and quotes rules for the
+    cards seen this game (plus ``reveal``: grp ids a pending decision offers,
+    such as tutor candidates, quoted for this call only). ``full_rules=True``
+    quotes every card (the library inspection and win-in-N paths).
     Ownership (not controller) determines library membership. Tokens/abilities
     and duplicated instance records do not consume deck copies. Hidden, copied,
     transformed or generated cards can make this estimate incomplete; report
     that uncertainty instead of pretending the draw probabilities are exact.
     ``card_lookup`` is a local resolver hook for offline renders and tests.
+    ``deck_rules_grp_ids`` on the result names the cards whose rules are quoted.
     """
     result = dict(state)
     observed = observed_library_count(state)
@@ -158,15 +248,34 @@ def prepare_match_context(state: dict, *, card_lookup: Callable[[int], Any] | No
             logger.debug("Local deck lookup failed for %s: %s", grp_id, exc)
             catalog[grp_id] = {}
     reference = [
-        "DECK REFERENCE (starting composition; current locations and modified stats are below)",
-        "Printed rules are reference facts, not evidence that a card is in hand or currently castable.",
+        "DECK REFERENCE (starting composition: count, name, cost, type; current locations and modified stats are below)",
+        "Printed facts, not evidence that a card is in hand or currently castable.",
     ]
-    reference.extend(_card_line(catalog[gid], count, gid) for gid, count in sorted(deck.items()))
+    reference.extend(_compact_line(catalog[gid], count, gid) for gid, count in sorted(deck.items()))
     if commanders:
         reference.append("COMMANDER REFERENCE (availability and command tax depend on live state)")
         reference.extend(_card_line(catalog[gid], count, gid) for gid, count in sorted(commanders.items()))
+    full_rules = full_rules or _tutor_in_hand(state)
+    if full_rules:
+        quoted = sorted(deck)
+    else:
+        quoted = _rules_order(state, catalog, _visible_grp_ids(state, catalog))
+        quoted += sorted(
+            gid for gid in {int(g) for g in reveal if isinstance(g, int)} if gid in deck and gid not in quoted
+        )
+    quoted = [gid for gid in quoted if gid not in commanders]
+    if quoted:
+        reference.append(
+            "RULES OF THE CARDS SEEN THIS GAME (hand, battlefield, graveyards, exile, stack"
+            + (", and the pending decision's candidates" if reveal else "")
+            + "; the rest of the library is listed above by name only: do not invent its rules)"
+            if not full_rules
+            else "RULES (every card in the deck: a tutor in hand or a library inspection can reach any of them)"
+        )
+        reference.extend(_card_line(catalog[gid], deck[gid], gid) for gid in quoted)
     result["deck_reference"] = "\n".join(reference)
     result["deck_catalog"] = catalog
+    result["deck_rules_grp_ids"] = sorted(set(quoted) | set(commanders))
 
     remaining = deck.copy()
     seen: set[int] = set()

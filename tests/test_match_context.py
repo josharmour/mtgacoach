@@ -5,7 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from arenamcp.match_context import prepare_match_context, with_deck_reference
+from arenamcp.match_context import prepare_match_context, reset_seen_rules, with_deck_reference
+
+
+@pytest.fixture(autouse=True)
+def _fresh_seen_rules():
+    reset_seen_rules()
+    yield
+    reset_seen_rules()
 
 
 def card_lookup(grp_id):
@@ -38,7 +45,7 @@ def prepare(snapshot):
 
 def test_full_catalog_and_library_have_more_than_fifteen_distinct_cards():
     deck = list(range(100, 140)) + [100, 100]
-    result = prepare(state(deck))
+    result = prepare_match_context(state(deck), card_lookup=card_lookup, reveal=range(100, 140))
     for gid in range(100, 140):
         assert f"Rules for card {gid}." in result["deck_reference"]
         assert f"[grp:{gid}]" in result["library_summary"]
@@ -48,24 +55,85 @@ def test_full_catalog_and_library_have_more_than_fifteen_distinct_cards():
     assert "printed 2/3" in result["deck_reference"]
 
 
-def test_prefix_is_identical_as_board_hand_and_options_change():
-    first = prepare(state(turn_info={"turn_number": 1}))
+def test_library_cards_are_listed_by_name_and_rules_quoted_only_once_seen():
+    # 2026-10-10 Brawl: 99 cards' rules in every prompt (~7k tokens a call).
+    result = prepare(state(hand=[obj(100, 10)], graveyard=[obj(200, 20)]))
+    reference = result["deck_reference"]
+    assert "2x Card 100 [grp:100] {2}{G} Creature — Test 2/3" in reference
+    assert "1x Card 300 [grp:300]" in reference
+    assert "Rules for card 100." in reference
+    assert "Rules for card 200." in reference
+    assert "Rules for card 300." not in reference
+    assert "do not invent its rules" in reference
+    assert result["deck_rules_grp_ids"] == [100, 200]
+    assert reference.index("Rules for card 100.") > reference.index("1x Card 300")
+    assert len(result["deck_catalog"]) == 3
+
+
+def test_prefix_only_grows_as_cards_are_seen_within_a_match():
+    first = prepare(state(match_id="m1", turn_info={"turn_number": 1}))
     second = prepare(
         state(
+            match_id="m1",
             hand=[obj(100, 10)],
             battlefield=[obj(200, 20, power=7)],
             turn_info={"turn_number": 9},
         )
     )
-    assert first["deck_reference"] == second["deck_reference"]
+    assert second["deck_reference"].startswith(first["deck_reference"])
     assert first["library_summary"] != second["library_summary"]
+    # The card cast from hand and the one shuffled away keep their place: the
+    # rules section is append-only, so every call this turn shares the prefix.
+    third = prepare(state(match_id="m1", graveyard=[obj(100, 10)], turn_info={"turn_number": 10}))
+    assert third["deck_reference"] == second["deck_reference"]
+    fourth = prepare(state(match_id="m1", hand=[obj(300, 30)], turn_info={"turn_number": 11}))
+    assert fourth["deck_reference"].startswith(second["deck_reference"])
+    assert "Rules for card 300." in fourth["deck_reference"]
     prompts = [
         with_deck_reference("Decision: " + option, snapshot)
         for option, snapshot in [("play land", first), ("cast removal", second)]
     ]
-    prefix = first["deck_reference"] + "\n\n"
+    prefix = first["deck_reference"]
     assert all(prompt.startswith(prefix) for prompt in prompts)
     assert prompts[0] != prompts[1]
+
+
+def test_seen_rules_reset_for_a_new_match_and_without_a_match_id():
+    prepare(state(match_id="m1", hand=[obj(100, 10)]))
+    other = prepare(state(match_id="m2", hand=[obj(300, 30)]))
+    assert "Rules for card 100." not in other["deck_reference"]
+    assert "Rules for card 300." in other["deck_reference"]
+    stateless = prepare(state(hand=[obj(200, 20)]))
+    assert "Rules for card 200." in stateless["deck_reference"]
+    assert "Rules for card 300." not in stateless["deck_reference"]
+
+
+def test_reveal_quotes_a_decisions_library_candidates_for_this_call_only():
+    revealed = prepare_match_context(state(match_id="m1"), card_lookup=card_lookup, reveal=[300, 999])
+    assert "Rules for card 300." in revealed["deck_reference"]
+    assert "pending decision's candidates" in revealed["deck_reference"]
+    assert "999" not in revealed["deck_reference"]
+    after = prepare(state(match_id="m1"))
+    assert "Rules for card 300." not in after["deck_reference"]
+
+
+def test_full_rules_quotes_every_card_for_library_inspection():
+    result = prepare_match_context(state(), card_lookup=card_lookup, full_rules=True)
+    for gid in (100, 200, 300):
+        assert f"Rules for card {gid}." in result["deck_reference"]
+    assert "RULES (every card in the deck" in result["deck_reference"]
+    assert result["deck_rules_grp_ids"] == [100, 200, 300]
+
+
+def test_a_nonland_tutor_in_hand_quotes_every_card_but_a_fetch_land_does_not():
+    tutor = obj(
+        100, 10, oracle_text="Search your library for a creature card, reveal it, put it into your hand."
+    )
+    result = prepare(state(hand=[tutor]))
+    assert "Rules for card 300." in result["deck_reference"]
+    fetch = obj(100, 10, oracle_text="{T}, Sacrifice this land: Search your library for a basic land card.")
+    result = prepare(state(hand=[fetch]))
+    assert "Rules for card 300." not in result["deck_reference"]
 
 
 def test_multiset_subtracts_our_stolen_cards_but_not_opponents_cards_we_control():
@@ -182,7 +250,7 @@ def test_missing_card_rules_are_explicit_and_lookup_failures_do_not_break_contex
             raise LookupError("unknown")
         return None
 
-    result = prepare_match_context(state(), card_lookup=missing)
+    result = prepare_match_context(state(hand=[obj(100, 10)]), card_lookup=missing)
     assert "Unknown(100)" in result["deck_reference"]
     assert "Rules text unavailable; do not invent abilities." in result["deck_reference"]
     assert "Unknown(300)" in result["library_summary"]
@@ -218,7 +286,7 @@ def test_other_face_rules_remain_in_catalog():
             ],
         }
 
-    result = prepare_match_context(state([100]), card_lookup=lookup)
+    result = prepare_match_context(state([100], hand=[obj(100, 10)]), card_lookup=lookup)
     assert "Back face rules." in result["deck_reference"]
 
 
@@ -257,8 +325,9 @@ def test_default_resolver_excludes_network_adapter_and_caches_local_reads(monkey
     try:
         first = prepare_match_context(state())
         second = prepare_match_context(state(hand=[obj(100, 10)]))
-        assert "Rules for card 100." in first["deck_reference"]
-        assert first["deck_reference"] == second["deck_reference"]
+        assert "Rules for card 100." not in first["deck_reference"]
+        assert "Rules for card 100." in second["deck_reference"]
+        assert second["deck_reference"].startswith(first["deck_reference"])
         monkeypatch.setattr(match_context.time, "monotonic", lambda: 200)
         assert prepare_match_context(state())["deck_reference"] == first["deck_reference"]
         assert local_reads == [100, 200, 300]

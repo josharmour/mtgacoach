@@ -10,7 +10,13 @@ import pytest
 
 from arenamcp.action_planner import ActionPlanner
 from arenamcp.coach import CoachEngine
-from arenamcp.deck_strategy import DECK_ANALYSIS_PROMPT, DeckPlaybook, commander_ids, deck_identity
+from arenamcp.deck_strategy import (
+    DECK_ANALYSIS_PROMPT,
+    DeckPlaybook,
+    commander_ids,
+    deck_identity,
+    oracle_rules,
+)
 from arenamcp.game_plan import GamePlanManager
 from arenamcp.standalone_deck import _DeckAnalysisMixin
 
@@ -433,6 +439,21 @@ def test_plan_preserves_learned_resource_tradeoff_and_refreshes_after_commander_
     assert backend.complete.call_count == 2
 
 
+def test_reform_renders_the_playbook_without_rules_the_deck_reference_quotes(deck):
+    state, catalog, _ = deck
+    book = playbook_for()
+    manager = GamePlanManager(Mock())
+    manager.seed(book.render())
+    assert manager._seed_text({}) == book.render()
+    manager.set_playbook_source(lambda: book)
+    quoted = {e["card"] for m in book.data["mechanisms"] for e in m["evidence"]}
+    text = manager._seed_text({"deck_rules_grp_ids": sorted(quoted)})
+    assert "quoted in the deck reference" in text
+    assert len(text) < len(book.render())
+    manager.set_playbook_source(lambda: (_ for _ in ()).throw(RuntimeError("down")))
+    assert manager._seed_text({"deck_rules_grp_ids": [1001]}) == book.render()
+
+
 def test_reload_round_trip_revalidates_identity_version_and_evidence(deck):
     state, _, _ = deck
     book = playbook_for()
@@ -472,7 +493,8 @@ def test_background_learning_starts_during_opening_hand_without_changing_tactica
     assert background.enable_thinking is False
     # Discovery reasons with full thinking; the JSON compile pass runs at low effort.
     assert background.complete.call_args_list[0].kwargs["enable_thinking"] is True
-    assert "reasoning_effort" not in background.complete.call_args_list[0].kwargs
+    # 2026-10-11: discovery is the deep read of the whole deck; it thinks at high effort.
+    assert background.complete.call_args_list[0].kwargs["reasoning_effort"] == "high"
     assert background.complete.call_args_list[-1].kwargs["enable_thinking"] is False
     assert background.complete.call_args_list[-1].kwargs["reasoning_effort"] == "low"
     assert all(
@@ -499,6 +521,20 @@ def test_half_a_resource_comparison_cannot_be_published(deck):
     del response["commanders"][0]["resource_comparison"]["spend_and_recover"]
     with pytest.raises(ValueError):
         DeckPlaybook.parse(json.dumps(response), catalog, commander_ids(state))
+
+
+def test_render_can_point_at_rules_the_deck_reference_already_quotes():
+    state, catalog, response = deck_case("replay")
+    book = DeckPlaybook.parse(json.dumps(response), catalog, commander_ids(state), deck_identity(state))
+    quoted = {e["card"] for m in book.data["mechanisms"] for e in m["evidence"]}
+    trimmed = book.render(omit_oracle_for=quoted)
+    full = book.render()
+    assert len(trimmed) < len(full)
+    assert "quoted in the deck reference" in trimmed
+    for gid in quoted:
+        for rule in oracle_rules(catalog[gid]):
+            assert rule not in trimmed or rule in book.data["primary_plan"]
+    assert book.render(omit_oracle_for=()) == full
 
 
 def test_tactical_prompt_reuses_relevant_rules_without_repeating_full_playbook():

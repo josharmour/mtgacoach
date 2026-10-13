@@ -889,14 +889,14 @@ def test_autopilot_off_recommends_once_and_never_arms():
 def test_autopilot_on_concedes_after_the_offer_is_heard_and_the_countdown():
     harness = Harness(bug_state())
     harness.observe()
-    assert harness.states == ["offering"] and harness.events[0]["seconds"] == 10
+    assert harness.states == ["offering"] and harness.events[0]["seconds"] == 3
     assert harness.advice == [] and harness.announced == []  # spoken on the countdown thread
     harness.run_countdown()
     text = harness.announced[0]
     assert text.startswith("Concede: their 3/3 flying Thopter") and text.endswith(
-        "Auto-concede in 10 seconds — say cancel or press Cancel to keep playing."
+        "Conceding in 3 seconds — say cancel to keep playing."
     )
-    assert harness.waits[0] == 10 and len(harness.concedes) == 1
+    assert harness.waits[0] == 3 and len(harness.concedes) == 1
     assert harness.states == ["offering", "armed", "conceding", "sent", "conceded"]
 
 
@@ -1033,7 +1033,7 @@ def test_a_sent_concede_is_confirmed_only_when_the_game_ends():
     ended.on_concede = lambda: setattr(ended, "state", bug_state(0))
     ended.observe()
     ended.run_countdown()
-    assert ended.states[-2:] == ["sent", "conceded"] and ended.advice == []
+    assert ended.states[-2:] == ["sent", "conceded"] and ended.advice == ["Good game."]
 
 
 def test_a_cancel_on_another_thread_waits_for_the_armed_event():
@@ -1100,7 +1100,7 @@ def test_a_reload_mid_countdown_aborts_without_declining():
     second.observe()
     second.run_countdown()
     # Recommended already: only the offer is repeated, then the countdown runs.
-    assert second.announced == ["Auto-concede in 10 seconds — say cancel or press Cancel to keep playing."]
+    assert second.announced == ["Conceding in 3 seconds — say cancel to keep playing."]
     assert len(second.concedes) == 1
 
 

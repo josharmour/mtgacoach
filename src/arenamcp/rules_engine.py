@@ -29,6 +29,26 @@ def _normalize_mana_symbols(text: str) -> str:
     return _MTGA_SYMBOL_BLOCK_RE.sub(_expand_mtga_symbol_block, text)
 
 
+def card_has_haste(card: dict) -> bool:
+    """Haste from the rules text OR Arena's own keyword list on the object.
+
+    2026-10-11 10:44: Frostbite Pyromental (haste, sacrificed at end step) was
+    cast and resolved; the GRE object carried keywords ['trample', 'haste']
+    but its oracle text had not been resolved yet, so the attacker filter
+    treated it as summoning sick and the planner never saw it. Five mana and
+    the card were wasted.
+    """
+    if not isinstance(card, dict):
+        return False
+    if "haste" in str(card.get("oracle_text") or "").lower():
+        return True
+    for key in ("keywords", "abilities"):
+        for item in card.get(key) or []:
+            if "haste" in str(item).lower():
+                return True
+    return False
+
+
 class RulesEngine:
     """
     A deterministic rules engine to calculate legal game actions.
@@ -79,7 +99,7 @@ class RulesEngine:
                         has_mana_ability = True
                         break
             entered = card.get("turn_entered_battlefield", -1)
-            has_haste = "haste" in oracle.lower()
+            has_haste = card_has_haste(card)
             is_sick = is_creature and (entered == turn_num) and not has_haste
             # Any permanent with a tap-for-mana ability is a source, not just
             # lands and mana creatures — Talismans, Signets, Sol Ring and the
@@ -952,10 +972,7 @@ class RulesEngine:
             saw_local_creature = True
             if card.get("is_tapped"):
                 continue
-            if (
-                card.get("turn_entered_battlefield", -1) == turn_num
-                and "haste" not in (card.get("oracle_text") or "").lower()
-            ):
+            if card.get("turn_entered_battlefield", -1) == turn_num and not card_has_haste(card):
                 continue
             name = card.get("name")
             if not name:
@@ -1013,10 +1030,7 @@ class RulesEngine:
                     # "being declared", so keep it for the P/T annotation.
                     if card.get("is_tapped") and not in_live_step:
                         continue
-                    if (
-                        card.get("turn_entered_battlefield", -1) == turn_num
-                        and "haste" not in (card.get("oracle_text") or "").lower()
-                    ):
+                    if card.get("turn_entered_battlefield", -1) == turn_num and not card_has_haste(card):
                         continue
                     name = card.get("name")
                     if name:
@@ -1353,7 +1367,7 @@ class RulesEngine:
             for c in my_creatures:
                 # Check Sickness
                 entered = c.get("turn_entered_battlefield", -1)
-                has_haste = "haste" in c.get("oracle_text", "").lower()
+                has_haste = card_has_haste(c)
                 is_tapped = c.get("is_tapped", False)
 
                 is_sick = (entered == current_turn_int) and not has_haste
@@ -1389,7 +1403,7 @@ class RulesEngine:
                 continue
             # Summoning sickness: creatures can't use {T} abilities the turn they enter
             entered = c.get("turn_entered_battlefield", -1)
-            has_haste = "haste" in oracle.lower()
+            has_haste = card_has_haste(c)
             is_sick = (entered == current_turn_int) and not has_haste
             uses_tap = bool(re.search(r"\{T\}", oracle))
             if is_sick and uses_tap:

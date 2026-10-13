@@ -81,6 +81,50 @@ def _auto_clear_stale_decision(game_state: "GameState") -> bool:
     return False
 
 
+def prompt_card_ids(prompt: Any) -> list[int]:
+    """Instance ids a GRE prompt names in its CardId parameters (zeros dropped).
+
+    Accepts the log's camelCase shape and the bridge's reflected PascalCase one.
+    """
+    if not isinstance(prompt, dict):
+        return []
+    ids: list[int] = []
+    for param in prompt.get("parameters") or prompt.get("Parameters") or []:
+        if not isinstance(param, dict):
+            continue
+        name = str(param.get("parameterName") or param.get("ParameterName") or "")
+        if name != "CardId":
+            continue
+        value = _coerce_int(param.get("numberValue", param.get("NumberValue")), 0)
+        if value > 0 and value not in ids:
+            ids.append(value)
+    return ids
+
+
+def _optional_prompt_cards(game_state: "GameState", prompt: Any) -> list[dict[str, Any]]:
+    """The cards an optional prompt names, with their rules text, for the decision prompt."""
+    cards: list[dict[str, Any]] = []
+    for instance_id in prompt_card_ids(prompt):
+        obj = game_state.game_objects.get(instance_id)
+        if obj is None or not obj.grp_id:
+            continue
+        entry: dict[str, Any] = {
+            "instance_id": instance_id,
+            "grp_id": obj.grp_id,
+            "name": game_state._resolve_card_name(obj.grp_id),
+            "controller_seat_id": obj.controller_seat_id or obj.owner_seat_id,
+            "oracle_text": "",
+        }
+        try:
+            from arenamcp import server
+
+            entry["oracle_text"] = str(server.enrich_with_oracle_text(obj.grp_id).get("oracle_text") or "")
+        except Exception as error:
+            logger.debug(f"optional prompt oracle lookup failed for {obj.grp_id}: {error}")
+        cards.append(entry)
+    return cards
+
+
 def _set_simple_decision(game_state: "GameState", label: str, dec_type: str, raw: dict | None = None) -> None:
     """Set a simple pending decision with optional raw data."""
     import time as _time
@@ -580,8 +624,14 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
             )
         )
         recipient_names = [game_state._resolve_card_name(card.grp_id) for card in recipients if card]
+        # The prompt's CardId parameters name the card asking (2026-10-11:
+        # Witch-Blessed Meadow's "pay 3 life?" arrived with only a numeric
+        # source id, and the autopilot judged it as a free Shrine at 5 life).
+        prompt_cards = _optional_prompt_cards(game_state, prompt)
         if commander_return:
             prompt_text = f"Return {', '.join(recipient_names)} to the command zone?"
+        elif not prompt_text and prompt_cards:
+            prompt_text = "Optional effect of " + ", ".join(card["name"] for card in prompt_cards)
         logger.info(f"Captured Decision: Optional Action ({prompt_text[:60]})")
         game_state.pending_decision = "Optional Action"
         game_state.decision_seat_id = game_state.local_seat_id
@@ -593,6 +643,7 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
             "recipient_ids": recipient_ids,
             "recipient_names": recipient_names,
             "optional_action_types": action_types,
+            "prompt_cards": prompt_cards,
             "commander_return": commander_return,
             "raw": {k: v for k, v in msg.items() if k != "type"},
         }

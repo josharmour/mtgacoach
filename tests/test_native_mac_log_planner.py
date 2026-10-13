@@ -213,7 +213,8 @@ def test_vision_fallback_receives_deck_library_and_strategy(monkeypatch):
     prompt = _prompt(backend)
     assert next(iter(prompt)) == "deck_reference"
     assert "1x Answer" in prompt["deck_reference"]
-    assert "Destroy target creature." in prompt["deck_reference"]
+    # Still in the library: listed by name, its rules are not quoted (2026-10-10).
+    assert "Destroy target creature." not in prompt["deck_reference"]
     assert "1x Answer" in prompt["library_summary"]
     assert "Arena library count 1" in prompt["library_summary"]
     assert prompt["game_plan"] == manager.plan_text()

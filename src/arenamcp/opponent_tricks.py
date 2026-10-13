@@ -770,6 +770,10 @@ class TrickRisk:
     known: bool = False
     p_any: float = 0.0
     p_hand: float = 0.0  # hidden hand only
+    # Their next draw step: chance the card drawn is a castable trick or removal
+    # (2026-10-10: "no unknown cards in hand" read as no risk at 4 life; the
+    # top-decked Terminal Criticism decided the game).
+    p_draw: float = 0.0
     q_by_class: dict[str, float] = field(default_factory=dict)  # display only
     top: list[tuple[str, str, float]] = field(default_factory=list)  # (name, kind, expected copies in hand)
     certain: list[dict] = field(default_factory=list)  # visible options, q = 1
@@ -845,6 +849,10 @@ class TrickRisk:
                     f"Opponent interaction risk elevated ({base}, mostly {_KIND_WORDS.get(kind, kind)}): "
                     f"{self._advice(kind)}"
                 )
+        if self.p_draw >= 0.05:
+            # Their draw step is a risk the hand count cannot show (2026-10-10).
+            suffix = f"; next draw {_percent(self.p_draw)}"
+            return text[: 160 - len(suffix)] + suffix
         return text[:160]
 
     def ui_line(self) -> str:
@@ -1425,6 +1433,8 @@ def _trick_risk(state: dict | None, table: TrickTable | None, deck_size: int | N
     # lambda_{c,h} = hand_unknown * RHO * K_h(c) / 40, K shrunk toward the generic
     # density of its kind for a big deck.
     p_hand = 0.0
+    p_draw = 0.0
+    library_left = library if library is not None and library > 0 else max(1, deck_size - hand - len(public))
     q_by_class = dict.fromkeys(_ordered(SCORED_KINDS), 0.0)
     expected: Counter[int] = Counter()
     for key, post in posterior.items():
@@ -1436,6 +1446,9 @@ def _trick_risk(state: dict | None, table: TrickTable | None, deck_size: int | N
                 totals[card.kind] += k
         rates: Counter[str] = Counter()
         relevant_rate = 0.0
+        # One card off the top (p_draw): expected castable trick/removal copies
+        # still in the library, any kind, over the cards left.
+        drawable = 0.0
         for grp, card in castable.items():
             k = row.get(grp, 0.0)
             if k <= 0 or not kinds_now[grp]:
@@ -1448,9 +1461,11 @@ def _trick_risk(state: dict | None, table: TrickTable | None, deck_size: int | N
                 rates[kind] += lam
             if relevant.intersection(kinds_now[grp]):
                 relevant_rate += lam
+            drawable += k * deck_size / DECK_REFERENCE
         p_hand += post * (1.0 - math.exp(-relevant_rate))
         for kind, rate in rates.items():
             q_by_class[kind] += post * (1.0 - math.exp(-rate))
+        p_draw += post * min(1.0, drawable / library_left)
 
     signals = _signals(state, opponent, hand)
     for signal in signals:
@@ -1485,6 +1500,7 @@ def _trick_risk(state: dict | None, table: TrickTable | None, deck_size: int | N
         known=True,
         p_any=min(1.0, max(0.0, p_any)),
         p_hand=min(1.0, max(0.0, p_hand)),
+        p_draw=min(1.0, max(0.0, p_draw)),
         q_by_class={kind: q for kind, q in q_by_class.items() if q > 0},
         top=[(name, kind, round(value, 6)) for name, kind, value in top],
         certain=certain,

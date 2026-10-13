@@ -393,6 +393,30 @@ _OPTIONAL_TYPES = {
 }
 
 
+def _prompt_card_ids(poll: dict[str, Any]) -> list[int]:
+    """Instance ids in the request prompt's CardId parameters (log or reflected bridge shape)."""
+    containers = (poll, poll.get("request_payload"), poll.get("decision_context"))
+    for container in containers:
+        prompt = container.get("prompt") if isinstance(container, dict) else None
+        if not isinstance(prompt, dict):
+            continue
+        ids: list[int] = []
+        for param in prompt.get("parameters") or prompt.get("Parameters") or []:
+            if not isinstance(param, dict):
+                continue
+            if str(param.get("parameterName") or param.get("ParameterName") or "") != "CardId":
+                continue
+            try:
+                value = int(param.get("numberValue", param.get("NumberValue")) or 0)
+            except (TypeError, ValueError):
+                continue
+            if value > 0 and value not in ids:
+                ids.append(value)
+        if ids:
+            return ids
+    return []
+
+
 def build_pending_decision(
     poll: dict[str, Any] | None,
     *,
@@ -428,7 +452,9 @@ def build_pending_decision(
     )
     can_pass = bool(poll.get("can_pass"))
     can_cancel = bool(poll.get("can_cancel"))
-    source_label = str(poll.get("source_card") or poll.get("prompt") or "")
+    prompt_label = poll.get("prompt")
+    # A structured prompt ({promptId, parameters}) is not a label.
+    source_label = str(poll.get("source_card") or (prompt_label if isinstance(prompt_label, str) else "") or "")
 
     if rtype in _CASTING_TYPES or request_class in _CASTING_TYPES:
         options = tuple(
@@ -453,11 +479,21 @@ def build_pending_decision(
         source_id = int(poll.get("source_instance_id") or 0)
         if not source_label and resolve_instance and source_id:
             source_label = resolve_instance(source_id)
+        # The source id is often a trigger object that names nothing; the
+        # prompt's CardId parameters name the card asking (2026-10-11:
+        # Witch-Blessed Meadow's "pay 3 life?" reached the model unnamed).
+        prompt_ids = _prompt_card_ids(poll)
+        prompt_names = [name for name in (resolve_instance(i) for i in prompt_ids) if name] if resolve_instance else []
+        if not source_label and prompt_names:
+            source_label = prompt_names[0]
         details = {
             "sourceId": source_id,
             "mechanics": poll.get("optional_mechanics") or [],
             "recipients": poll.get("optional_recipients") or [],
         }
+        if prompt_ids:
+            details["promptCardIds"] = prompt_ids
+            details["promptCards"] = prompt_names
         return PendingDecision(
             request_id,
             "OptionalAction",

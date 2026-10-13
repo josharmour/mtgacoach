@@ -290,56 +290,64 @@ async def patreon_webhook(request: Request):
     """Handle Patreon webhook events for membership changes."""
     body_bytes = await request.body()
 
-    if PATREON_WEBHOOK_SECRET:
-        signature = request.headers.get("X-Patreon-Signature", "")
-        expected = hmac.new(
-            PATREON_WEBHOOK_SECRET.encode(), body_bytes, hashlib.md5
-        ).hexdigest()
-        if not hmac.compare_digest(signature, expected):
-            logger.warning("Patreon webhook: invalid signature")
-            raise HTTPException(403, "Invalid signature")
+    if not PATREON_WEBHOOK_SECRET:
+        logger.error("Patreon webhook secret is not configured")
+        raise HTTPException(503, "Webhook is not configured")
+    signature = request.headers.get("X-Patreon-Signature", "")
+    expected = hmac.new(
+        PATREON_WEBHOOK_SECRET.encode(), body_bytes, hashlib.md5
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        logger.warning("Patreon webhook: invalid signature")
+        raise HTTPException(403, "Invalid signature")
 
     event_type = request.headers.get("X-Patreon-Event", "")
-    data = json.loads(body_bytes)
-    logger.info(f"Patreon webhook: {event_type}")
+    supported_events = {
+        "members:create", "members:update", "members:delete",
+        "members:pledge:create", "members:pledge:update", "members:pledge:delete",
+    }
+    if event_type not in supported_events:
+        return {"ok": True, "ignored": "unsupported event"}
+    logger.info("Patreon webhook: %s", event_type)
 
-    patron_email = ""
-    patron_name = ""
-    patron_id = ""
-    pledge_active = False
     try:
-        for item in data.get("included", []):
-            if item.get("type") == "user":
-                attrs = item.get("attributes", {})
-                patron_email = attrs.get("email", "")
-                patron_name = attrs.get("full_name", "")
-                patron_id = item.get("id", "")
-        member_attrs = data.get("data", {}).get("attributes", {})
-        pledge_active = member_attrs.get("patron_status", "") == "active_patron"
-    except Exception as e:
-        logger.error(f"Patreon webhook parse error: {e}")
-        return {"ok": True}  # Malformed payload — retrying won't help.
+        data = json.loads(body_bytes)
+        member = data["data"]
+        if member.get("type") != "member":
+            raise ValueError("Expected a v2 member")
+        attrs = member["attributes"]
+        # Included can contain the creator as well as the patron. Never choose
+        # a user by array position, or confuse a member ID with a user ID.
+        user_ref = member["relationships"]["user"]["data"]
+        if user_ref.get("type") != "user" or not user_ref.get("id"):
+            raise ValueError("Missing member user relationship")
+        patron_id = user_ref["id"]
+        user_attrs = next(
+            (item.get("attributes", {}) for item in data.get("included", [])
+             if item.get("type") == "user" and item.get("id") == patron_id),
+            {},
+        )
+        patron_email = attrs.get("email") or user_attrs.get("email")
+        patron_name = attrs.get("full_name") or user_attrs.get("full_name") or ""
+        status = attrs.get("patron_status")
+        if not isinstance(patron_email, str) or not patron_email.strip():
+            raise ValueError("Missing member email; check webhook scopes")
+        # Missing fields must not silently revoke a working subscription.
+        if "patron_status" not in attrs or status not in (
+            "active_patron", "declined_patron", "former_patron", None,
+        ):
+            raise ValueError("Missing or unknown membership status")
+    except (ValueError, KeyError, TypeError, AttributeError, StopIteration):
+        logger.warning("Patreon webhook: incomplete or invalid v2 member payload")
+        raise HTTPException(400, "Incomplete or invalid v2 member payload")
 
-    if not patron_email:
-        logger.warning(f"Patreon webhook {event_type}: no patron email in payload")
-        return {"ok": True}
-
-    # A gateway hiccup below raises out of here -> 500 -> Patreon retries the
-    # event, which is exactly what we want for transient LiteLLM outages.
-    if event_type in ("members:pledge:create", "members:create"):
-        if pledge_active:
-            await ensure_active_key(patron_email, patron_name, patron_id, "webhook signup")
-        else:
-            logger.info(f"Patreon: {patron_email} created but not active yet")
-
-    elif event_type in ("members:pledge:delete", "members:delete"):
-        await revoke_access(patron_email, event_type)
-
-    elif event_type == "members:pledge:update":
-        if pledge_active:
-            await ensure_active_key(patron_email, patron_name, patron_id, "webhook update")
-        else:
-            await revoke_access(patron_email, "pledge inactive")
+    # All v2 triggers carry member state. A pledge cancellation can still have
+    # paid access remaining: active_patron must win over the event name.
+    # Gateway failures propagate as 5xx so Patreon can retry delivery.
+    if status == "active_patron":
+        await ensure_active_key(patron_email, patron_name, patron_id, "webhook membership")
+    else:
+        await revoke_access(patron_email, "membership inactive")
 
     return {"ok": True}
 

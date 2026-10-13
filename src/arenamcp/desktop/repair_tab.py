@@ -92,6 +92,11 @@ class RepairTab(QWidget):
         self._restart_btn.clicked.connect(lambda: self.restart_requested.emit(False, False, False))
         self._restart_btn.hide()
         buttons.addWidget(self._restart_btn)
+        from arenamcp.support import contact_josh
+
+        support = QPushButton("Contact Josh…")
+        support.clicked.connect(lambda: contact_josh(self))
+        buttons.addWidget(support)
         buttons.addStretch(1)
         root.addLayout(buttons)
 
