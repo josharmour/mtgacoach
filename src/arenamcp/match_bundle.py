@@ -63,6 +63,7 @@ SETTINGS_WHITELIST = (
     "auto_concede",
     "oops_emote",
     "draft_commentary",
+    "draft_research_online",
     "auto_deck_strategy",
     "auto_post_match_analysis",
     "conversation_mode",

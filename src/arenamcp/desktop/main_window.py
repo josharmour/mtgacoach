@@ -158,6 +158,15 @@ class MainWindow(QMainWindow):
         commentary_act.setCheckable(True)
         commentary_act.setChecked(bool(self._settings.get("draft_commentary", True)))
         commentary_act.toggled.connect(self._set_draft_commentary)
+        research_act = tools_menu.addAction("Online Draft Research")
+        research_act.setCheckable(True)
+        research_act.setChecked(bool(self._settings.get("draft_research_online", False)))
+        research_act.setToolTip(
+            "Before a set's first draft, also read published draft guides and set reviews "
+            "(archetypes, signposts, format speed) alongside 17lands data and card text. "
+            "Off keeps the draft research local."
+        )
+        research_act.toggled.connect(self._set_draft_research_online)
         concede_act = tools_menu.addAction("Auto-Concede When Lost")
         concede_act.setCheckable(True)
         concede_act.setChecked(bool(self._settings.get("auto_concede", True)))
@@ -267,6 +276,11 @@ class MainWindow(QMainWindow):
         """Explain each draft pick aloud, or just name it; applies to the running engine."""
         self._settings.set("draft_commentary", bool(enabled))
         self._session.set_draft_commentary(bool(enabled))
+
+    def _set_draft_research_online(self, enabled: bool) -> None:
+        """Read published draft guides when building a set's strategy; applies to the running engine."""
+        self._settings.set("draft_research_online", bool(enabled))
+        self._session.set_draft_research_online(bool(enabled))
 
     def _set_auto_concede(self, enabled: bool) -> None:
         """Let autoplay concede a lost game after a countdown; applies to the running engine."""

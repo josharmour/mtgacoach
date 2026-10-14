@@ -712,6 +712,10 @@ class PipeAdapter:
                 enabled = cmd.get("enabled") is True
                 coach.settings.set("draft_commentary", enabled)
                 self.log(f"Draft pick commentary {'on' if enabled else 'off'}")
+            elif action == "set_draft_research_online":
+                enabled = cmd.get("enabled") is True
+                coach.settings.set("draft_research_online", enabled)
+                self.log(f"Online draft research {'on' if enabled else 'off'} (applies to the next set strategy built)")
             elif action == "speech_status":
                 self.speech_completion.update(str(cmd.get("speech_id") or ""), str(cmd.get("state") or ""))
             elif action == "stop_speech":

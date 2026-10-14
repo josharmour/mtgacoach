@@ -33,6 +33,8 @@ ROLE_WORDS = {
 }
 # A lane is spoken as "our deck" once the pool leans this firmly (the lane story's bar).
 LANE_SETTLED = 0.3
+# Weighted score a deck component needs before it is the spoken reason.
+SPOKEN_DECK_MIN = 0.75
 # Model clauses that talk about the deck are preferred over generic praise.
 DECK_WORDS = re.compile(r"\b(?:our|lane|deck|plan|needed|needs|curve|mana)\b", re.IGNORECASE)
 PAIR_CODE = re.compile(r"\b([WUBRG])/?([WUBRG])\b")
@@ -323,9 +325,14 @@ class DraftNarrator:
 
         deck = f"our {colors} deck" if settled else "our pool"
         if card is not None and is_removal(card):
+            scarce = (getattr(pick, "components", None) or {}).get("scarcity", 0.0) >= SPOKEN_DECK_MIN
+            left = ", and little removal this good is left to come" if scarce and not top else ""
             if "pool needs removal" in notes:
-                return _Reason(f"removal {deck} needs{top}", "removal", f"both removal {deck} needs")
-            return _Reason(f"removal that answers creatures{top}", "removal")
+                return _Reason(f"removal {deck} needs{top}{left}", "removal", f"both removal {deck} needs")
+            return _Reason(f"removal that answers creatures{top}{left}", "removal")
+        deck_reason = self._deck_reason(pick, own_names)
+        if deck_reason:
+            return deck_reason
         role = self._archetype_role(card, lane, primer)
         if role:
             word, archetype = role
@@ -359,6 +366,36 @@ class DraftNarrator:
         if index > 0:
             return _Reason("the next-best option for our pool", "default")
         return _Reason("the strongest option here for our pool", "default")
+
+    @staticmethod
+    def _deck_reason(pick, own_names: list[str]) -> _Reason | None:
+        """What the card does for the deck we hold, when that is what decided it (2026-10-13).
+
+        Rules-text links to drafted cards first ("it works with our Saheeli and
+        Proft"), then the engine slot it fills ("a payoff for our 8 noncreature
+        spells"), then its archetype fit; only when they carry real weight.
+        """
+        parts = getattr(pick, "components", None) or {}
+        scarce = parts.get("scarcity", 0.0) >= SPOKEN_DECK_MIN and any(
+            r.startswith("scarce: ") for r in pick.reasons
+        )
+        tail = ", and few like it are left to come" if scarce else ""
+        partners = [
+            _short(name) for name in getattr(pick, "partners", None) or [] if _short(name) not in own_names
+        ]
+        if partners and parts.get("edges", 0.0) >= SPOKEN_DECK_MIN:
+            named = " and ".join(dict.fromkeys(partners[:2]))
+            return _Reason(f"it works with our {named}{tail}", "synergy")
+        engine = next((r[len("engine: ") :] for r in pick.reasons if r.startswith("engine: ")), "")
+        if engine and parts.get("engine", 0.0) >= SPOKEN_DECK_MIN:
+            return _Reason(f"{engine}{tail}", "engine")
+        fit = next((r[len("fits ") :] for r in pick.reasons if r.startswith("fits ")), "")
+        if fit and parts.get("archetype", 0.0) >= SPOKEN_DECK_MIN:
+            # "a payoff for noncreature spells (Izzet ...)" reads aloud as "... in Izzet ...".
+            return _Reason(_expand_codes(re.sub(r" \(([^()]+)\)$", r" in \1", fit)) + tail, "archetype")
+        if scarce:
+            return _Reason("few cards like it are left to come in this set", "scarcity")
+        return None
 
     @staticmethod
     def _model_clause(reason: str, limit: int, own_names: list[str]) -> str:

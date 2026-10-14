@@ -214,6 +214,10 @@ class CoachSession(QObject):
         """Turn spoken draft-pick explanations on or off in the running engine."""
         self._process.send_payload({"cmd": "set_draft_commentary", "enabled": bool(enabled)})
 
+    def set_draft_research_online(self, enabled: bool) -> None:
+        """Let the set strategy research read published draft guides too."""
+        self._process.send_payload({"cmd": "set_draft_research_online", "enabled": bool(enabled)})
+
     def set_auto_concede(self, enabled: bool) -> None:
         """Choose whether autoplay concedes a game the board math says is lost."""
         self._process.send_payload({"cmd": "set_auto_concede", "enabled": bool(enabled)})

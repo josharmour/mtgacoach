@@ -50,6 +50,10 @@ DEFAULTS = {
     # Draft autoplay explains each pick and where the draft is heading;
     # off = just "Taking <card>." (Tools > Draft Pick Commentary).
     "draft_commentary": True,
+    # Draft strategy research also reads published draft guides and set reviews
+    # (set_research.py) before a set's first draft; off = local only (17lands
+    # data, card rules, model synthesis). Tools > Online Draft Research.
+    "draft_research_online": False,
     # When the board says we are dead no matter what (arenamcp.concede), the
     # coach recommends conceding; with autoplay on it also concedes after a
     # cancellable countdown (Tools > Auto-Concede When Lost).

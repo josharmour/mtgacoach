@@ -1863,13 +1863,7 @@ def _default_ratings(set_code: str) -> list[dict]:
 
 
 def _default_color_ratings(set_code: str) -> list[dict] | None:
-    from arenamcp.draftstats import CACHE_DIR, DraftStatsCache
+    from arenamcp.draftstats import DraftStatsCache
 
-    path = CACHE_DIR / f"{set_code.upper()}_ColorRatings.json"
-    if not path.exists():
-        DraftStatsCache().get_color_pair_stats(set_code)  # downloads and caches the raw rows
-    try:
-        rows = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return rows if isinstance(rows, list) else None
+    # The split rows: pure pairs, "+ Splash" and the class summaries.
+    return DraftStatsCache().get_color_rows(set_code, combine_splash=False)

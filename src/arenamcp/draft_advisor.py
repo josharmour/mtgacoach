@@ -81,13 +81,23 @@ density, removal, mana requirements, and top-end saturation. Avoid a deck of fiv
 creatures and buffs with no early board. Off-color cards need realistic fixing.
 Do not spend picks on ordinary basic lands while useful spells remain in the pack.
 
-When set_strategy is supplied it is this set's pre-draft analysis (17lands data plus card
-rules): its archetype tiers, payoffs, enablers, synergy notes and traps say which lanes
-win and what each needs. Use it to choose and support a lane; prefer open tier-1
-archetypes. heuristic_rankings already combine it with card quality and the pool lane.
-Heuristic scores and win rates are supporting evidence, not instructions. Missing
-17lands ratings are UNKNOWN, not zero strength. Do not claim win-rate evidence
-when none is supplied. If card rules are missing, say so and avoid invented synergy.
+Draft the DECK, not the best card. In order of importance:
+1. Lane: stay castable in the deck we are building (deck_plan, previous_lane).
+2. The planned archetype: set_strategy is this set's pre-draft research (archetype
+   tiers, plans, engines, payoffs, enablers, synergy notes, traps). deck_plan lists
+   the live archetypes for this pool, each with its engine and what the pool already
+   holds (creatures, two-drops, removal, card advantage, finishers, engine enablers
+   and payoffs). Fill what the deck lacks: a payoff when enablers are plentiful,
+   enablers when payoffs wait for them, removal and early creatures when short.
+3. Rules-text synergy with cards ALREADY drafted (supported_synergies, card text).
+4. Card quality: quality_band (strong / good / average / below average / weak /
+   rarely played / unknown) summarizes 17lands results. It is about a quarter of the
+   decision: it breaks ties between cards that serve the deck about equally, and a
+   true bomb can still be worth a lane change early. "unknown" is not weak.
+heuristic_rankings is the deterministic ranking on exactly these terms (rank,
+deck_value, quality_band, why); pick from its top cards unless the card rules
+show it missed something. Never cite win-rate numbers; none are supplied. If card
+rules are missing, say so and avoid invented synergy.
 
 Pick ONLY from pack_choices: every picks[].grp_id must appear in pickable_grp_ids.
 already_drafted_not_pickable lists cards we already own; they can never be picked again.
@@ -335,6 +345,16 @@ def validate_lane(
     return previous, f"held at {previous}: {proposed} casts {theirs} vs {mine} (needs +{margin}{extra})"
 
 
+def _band_from_gih(gih: Any) -> str:
+    """A coarse 17lands band when the caller supplied a raw GIH win rate (no set baseline)."""
+    if not isinstance(gih, (int, float)):
+        return "unknown"
+    for floor, word in ((0.60, "strong"), (0.57, "good"), (0.54, "average"), (0.52, "below average")):
+        if gih >= floor:
+            return word
+    return "weak"
+
+
 def _card_details(card: dict[str, Any]) -> dict[str, Any]:
     normalized = normalize_card(card)
     oracle = html.unescape(re.sub(r"<[^>]+>", "", str(card.get("oracle_text") or "")))
@@ -347,7 +367,7 @@ def _card_details(card: dict[str, Any]) -> dict[str, Any]:
         "colors": list(normalized.colors),
         "type_line": card.get("type_line", ""),
         "oracle_text": "\n".join(lines),
-        "gih_wr": card.get("gih_wr"),
+        "quality_band": card.get("quality_band") or _band_from_gih(card.get("gih_wr")),
         "power": card.get("power", ""),
         "toughness": card.get("toughness", ""),
         "related_faces": card.get("related_faces") or [],
@@ -379,6 +399,23 @@ def _answer_summary(payload: Any, cards: list[dict[str, Any]]) -> str:
     return json.dumps(
         {"picks": summary, "plan": _text(payload.get("plan"), 30)}, ensure_ascii=False, default=str
     )
+
+
+_WIN_RATE_NOTE = re.compile(r"(?:GIH|WR|win rate)[^;|,]*\d|\d+(?:\.\d+)?%|\bz [+-]?\d", re.IGNORECASE)
+
+
+def _without_win_rates(row: Any) -> Any:
+    """A ranking row for the prompt with any win-rate figures left out."""
+    if not isinstance(row, dict):
+        return row
+    clean = dict(row)
+    for key in ("reason", "why"):
+        if isinstance(clean.get(key), str):
+            parts = re.split(r"\s*[;|]\s*", clean[key])
+            clean[key] = "; ".join(part for part in parts if part and not _WIN_RATE_NOTE.search(part))
+    for key in ("gih_wr", "win_rate", "score_breakdown"):
+        clean.pop(key, None)
+    return clean
 
 
 def pool_summary(cards: list[dict[str, Any]]) -> dict[str, Any]:
@@ -446,6 +483,7 @@ class DraftAdvisor:
                 "previous_plan": self._plan,
                 "supported_synergies": synergy_graph(pool),
                 "set_strategy": fallback.get("set_strategy") or {},
+                "deck_plan": fallback.get("deck_plan") or {},
                 "scored_candidates": fallback.get("candidates") or [],
                 "pool": [{**_card_details(card), "count": counts[grp_id]} for grp_id, card in unique.items()],
             },
@@ -528,8 +566,9 @@ class DraftAdvisor:
                 "color_signals": pack.get("color_signals") or {},
                 "already_drafted_not_pickable": list(counted_pool.values()),
                 "pool_summary": pool_summary(pool),
-                "heuristic_rankings": fallback.get("evaluations") or [],
+                "heuristic_rankings": [_without_win_rates(row) for row in fallback.get("evaluations") or []],
                 "set_strategy": pack.get("set_strategy") or {},
+                "deck_plan": pack.get("deck_plan") or [],
             }
         )
         message = json.dumps(request, ensure_ascii=False)

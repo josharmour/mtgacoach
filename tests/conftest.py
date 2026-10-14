@@ -57,6 +57,8 @@ os.environ.setdefault("QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM", "1")
 # root, which stands in for ~/.arenamcp).
 _HOME_PATHS = (
     ("arenamcp.logging_config", "LOG_DIR", ""),
+    ("arenamcp.draft_event", "DRAFT_RUN_DIR", "draft_runs"),
+    ("arenamcp.set_research", "RESEARCH_DIR", "cache/set_research"),
     ("arenamcp.match_packets", "PACKETS_DIR", "match_packets"),
     ("arenamcp.match_history", "HISTORY_DIR", "match_history"),
     ("arenamcp.match_history", "HISTORY_FILE", "match_history/history.json"),

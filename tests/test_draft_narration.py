@@ -575,7 +575,9 @@ def test_driver_logs_the_plans_lane_beside_the_pool_estimate(primer, caplog):
     def recommend(details, fallback):
         return {
             "reasoning_source": "card_rules",
-            "recommendations": [{"grp_id": 3, "reason": "Burn for the Izzet deck."}],
+            # 2026-10-13: Red Ace (no red in the pool) is now 4+ points behind Blue Ace,
+            # beyond the model's tolerance; the line under test is the plan's lane.
+            "recommendations": [{"grp_id": 1, "reason": "Card advantage for the Izzet deck."}],
             "plan": "Izzet spells tempo with a light black splash for removal.",
             "lane": "UR",
             "splash": "B",

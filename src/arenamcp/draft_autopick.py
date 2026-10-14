@@ -11,9 +11,11 @@ Industry-standard bot drafting, made explicit and explainable:
   flexible and late off-color picks are discounted. A weak second color stays
   open through pack 2 and is re-chosen every pick (pool quality, signals and
   the set's pair win rates), so an open pair can still take over.
-- Archetype role: payoffs, enablers and key commons the primer lists for the
-  archetype the pool is heading toward (or the format's best archetypes early).
-- Synergy: primer synergy notes and archetype lists shared with picked cards.
+- Archetype: the live deck hypotheses (``draft_deck_plan``) score each card by
+  its rules-text fit to the archetype's engine and roles (``draft_playbook``),
+  what it adds to the engine given the pool's enablers and payoffs, and its
+  rules-text links to cards already drafted.
+- Synergy: the primer's synergy notes shared with picked cards.
 - Signals: in pack 1, good cards arriving well after their average pick (ATA)
   suggest their colors are open upstream.
 
@@ -36,8 +38,46 @@ from arenamcp.limited_rules import rules_profile
 from arenamcp.set_primer import COLOR_ORDER, SetPrimer, normalize_colors
 
 RARITY_PRIOR = {"M": 0.3, "R": 0.2, "U": -0.15, "C": -0.4}  # only when there is no primer at all
-ROLE_WEIGHT = {"payoffs": 0.35, "enablers": 0.3, "key_uncommons": 0.25, "key_commons": 0.25}
-TIER_WEIGHT = {1: 1.0, 2: 0.7, 3: 0.4}
+
+# How a pick's components combine (2026-10-13 user direction: the deck we are
+# drafting -- lane, archetype, engine, rules-text synergy -- decides; 17Lands
+# quality is about a quarter of what separates a pack's contenders, signals
+# about a sixth). Units: one point of "quality" is one standard deviation of
+# 17Lands GIH within the set. Calibrated on recorded FRA drafts
+# (tests/test_draft_strategic_picks.py measures the shares).
+SCORE_WEIGHTS = {
+    "quality": 1.0,
+    "bomb": 1.5,
+    "lane": 4.0,
+    "needs": 2.0,
+    "archetype": 6.0,
+    "engine": 4.0,
+    "edges": 4.0,
+    "notes": 4.0,
+    "signal": 5.5,
+    "scarcity": 3.0,
+    "penalty": 1.0,
+}
+DECK_CREDIT = ("archetype", "engine", "edges", "notes", "scarcity")
+# With six removal spells the deck has enough: scarcity of more counts less.
+REMOVAL_ENOUGH = 6
+# Below PLAYABLE_Z (GIH z) deck credit fades, to UNPLAYABLE_CREDIT of itself at UNPLAYABLE_Z.
+PLAYABLE_Z = -0.75
+UNPLAYABLE_Z = -1.5
+UNPLAYABLE_CREDIT = 0.25
+PAYOFF_ENOUGH = 5
+# Quality above this (a top-few card in the set) counts again: bombs still win packs.
+BOMB_BASELINE = 1.5
+# Most an unrated (not rarely played) card's weighted deck credit may add.
+UNRATED_DECK_CAP = 0.25
+FIT_NOTE_MIN = 0.3
+SCARCITY_NOTE_MIN = 0.4
+SCARCITY_GAIN = 0.5
+ENGINE_NOTE_MIN = 0.05
+SYNERGY_OVERLAP = 0.5
+# Archetype, engine and synergy credit ramps in over the first picks of the draft.
+DECK_RAMP_PICKS = 5
+RARELY_PLAYED_LANE = 0.5
 
 # 17lands hides GIH below ~500 games in hand. In a mature format a common or
 # uncommon that short of games is one drafters leave in the sideboard
@@ -48,7 +88,6 @@ UNRATED_RARE_PRIOR = {"M": 0.2, "R": 0.0}
 RARELY_PLAYED_PRIOR = -1.4
 RARELY_PLAYED_RATE = 0.35  # 17lands play rate; the median rated card is ~0.7
 RARELY_PLAYED_SHARE = 0.45  # games vs. the median rated card of the same rarity
-UNRATED_ROLE_CAP = 0.1  # the model-written primer's roles cannot carry an unrated card
 ALSA_FIT_MIN_CARDS = 30  # rated cards with an ALSA needed to read quality from pick order
 UNRATED_ALSA_MIN, UNRATED_ALSA_MAX = -1.0, 1.2  # an unrated rare's pick-order prior stays modest
 SECOND_COLOR_FLOOR = 0.25  # least hold on any second color (an undecided one too)
@@ -65,6 +104,7 @@ PARTIAL_LAND_FIT = -0.6
 # per copy beyond the first for creatures (two of a playable body is normal).
 DUPLICATE_STEP_SPELL = 0.2
 DUPLICATE_STEP_BODY = 0.1
+DUPLICATE_CREDIT = 0.6  # deck credit kept per redundant copy already held
 PREMIUM_BASELINE = 0.75
 BASIC_LAND_COLORS = {"plains": "W", "island": "U", "swamp": "B", "mountain": "R", "forest": "G"}
 
@@ -82,6 +122,24 @@ _REMOVAL_PATTERNS = tuple(
 )
 
 
+# 17Lands quality as words (quality z-score lower bounds). The pick model sees
+# only these: the user's 2026-10-13 direction is that win rate is a minor input.
+QUALITY_BANDS = ((1.0, "strong"), (0.35, "good"), (-0.35, "average"), (-1.0, "below average"))
+_QUALITY_NOTE = re.compile(r"^(?:GIH \d|unrated|not in the set data|basic/utility land|land; GIH)")
+
+
+def quality_band(z: float | None, note: str = "") -> str:
+    """strong / good / average / below average / weak, or rarely played / unknown."""
+    if "rarely played" in note:
+        return "rarely played"
+    if z is None or note.startswith(("unrated; rarity prior", "not in the set data")):
+        return "unknown"
+    for floor, word in QUALITY_BANDS:
+        if z >= floor:
+            return word
+    return "weak"
+
+
 def is_ordinary_basic(name: str) -> bool:
     """These five basics can be added freely after drafting, even without ratings."""
     return name.strip().casefold() in {"plains", "island", "swamp", "mountain", "forest"}
@@ -93,6 +151,12 @@ class PickScore:
     name: str
     score: float
     reasons: list[str] = field(default_factory=list)
+    # Weighted parts of ``score`` by name (SCORE_WEIGHTS keys).
+    components: dict[str, float] = field(default_factory=dict)
+    # 17Lands quality in words (QUALITY_BANDS), for prompts that get no win rates.
+    band: str = ""
+    # Drafted cards this one has a rules-text link with, strongest first.
+    partners: list[str] = field(default_factory=list)
 
     def as_evaluation(self) -> dict[str, Any]:
         return {
@@ -100,6 +164,18 @@ class PickScore:
             "name": self.name,
             "score": round(self.score, 3),
             "reason": "; ".join(self.reasons),
+        }
+
+    def as_plan_evaluation(self, rank: int) -> dict[str, Any]:
+        """The ranking for the pick model: deck value and a quality band, no win rates."""
+        deck = sum(v for k, v in self.components.items() if k not in ("quality", "bomb", "signal"))
+        return {
+            "grp_id": self.grp_id,
+            "name": self.name,
+            "rank": rank,
+            "deck_value": round(deck, 2),
+            "quality_band": self.band or "unknown",
+            "why": "; ".join(r for r in self.reasons if not _QUALITY_NOTE.match(r)),
         }
 
 
@@ -408,6 +484,47 @@ def color_signals(store: dict[int, dict[str, float]], pack_number: int) -> dict[
     return {color: (round(value / peak, 3) if peak else 0.0) for color, value in totals.items()}
 
 
+def second_color_hold(lane: Lane, pack_number: int, pick_number: int) -> float:
+    """How firmly the weaker color is held: open through pack 2; pack 3 settles it by pick 8."""
+    hold = lane.second_hold
+    if pack_number >= 3:
+        hold = max(hold, min(1.0, max(0.0, (pick_number - 2) / 6)))
+    return hold
+
+
+def deck_plan_for(
+    pool: list[int],
+    primer: SetPrimer | None,
+    *,
+    pack_number: int = 1,
+    pick_number: int = 1,
+    mana_costs: dict[int, str] | None = None,
+    plan_lane: str = "",
+    signals: dict[str, float] | None = None,
+    lane: Lane | None = None,
+):
+    """The live deck hypotheses the ranking uses for this pool (``draft_deck_plan``)."""
+    from arenamcp.draft_deck_plan import build_deck_plan
+
+    if primer is None:
+        return None
+    mana_costs = mana_costs or {}
+    lane = lane or pool_lane(pool, primer, mana_costs)
+    return build_deck_plan(
+        pool,
+        primer,
+        lane_colors=lane.colors,
+        lane_main=lane.main or (lane.colors[:1] if lane.colors else ""),
+        commitment=lane.commitment,
+        second_hold=second_color_hold(lane, pack_number, pick_number),
+        lane_weights=lane.weights,
+        plan_lane=plan_lane,
+        signals=signals,
+        pack_number=pack_number,
+        mana_costs=mana_costs,
+    )
+
+
 def rank_pack(
     pack: list[int],
     pool: list[int],
@@ -417,18 +534,31 @@ def rank_pack(
     pick_number: int = 1,
     names: dict[int, str] | None = None,
     mana_costs: dict[int, str] | None = None,
+    plan_lane: str = "",
+    signals: dict[str, float] | None = None,
+    picks_per_pass: int = 1,
 ) -> list[PickScore]:
-    """Best pick first; never returns cards outside the pack."""
+    """Best pick first; never returns cards outside the pack.
+
+    Each card's score is a weighted sum of named components (kept on
+    ``PickScore.components``): 17Lands quality, the deck we are drafting
+    (lane, curve and removal needs, archetype fit, engine slots, rules-text
+    links to the pool, the primer's synergy notes) and the table's signals.
+    The weights (``SCORE_WEIGHTS``) keep 17Lands to about a quarter of what
+    separates the contenders in a pack. What the rest of the draft can still
+    offer (``draft_deck_plan.future_supply``) values payoffs by the enablers
+    still to come and adds scarcity: removal or a payoff with few comparable
+    substitutes left is worth taking now.
+    """
+    from arenamcp.draft_deck_plan import engine_gain, future_supply, pool_edges, scarcity
+
     names = names or {}
     mana_costs = mana_costs or {}
     stats = _set_stats(primer)
     lane = pool_lane(pool, primer, mana_costs)
     main = lane.main or (lane.colors[:1] if lane.colors else "")
     second = "".join(color for color in lane.colors if color != main)
-    # The weaker color stays open through pack 2; pack 3 settles it by pick 8.
-    hold = lane.second_hold
-    if pack_number >= 3:
-        hold = max(hold, min(1.0, max(0.0, (pick_number - 2) / 6)))
+    hold = second_color_hold(lane, pack_number, pick_number)
     soft_hold = max(hold, SECOND_COLOR_FLOOR)
 
     def fits_lane(card):
@@ -462,6 +592,47 @@ def rank_pack(
     )
     expensive = sum(card.cmc is not None and card.cmc >= 5 for card in playable_pool)
     removal = sum(is_removal(card) for card in playable_pool)
+    deck_plan = deck_plan_for(
+        pool,
+        primer,
+        pack_number=pack_number,
+        pick_number=pick_number,
+        mana_costs=mana_costs,
+        plan_lane=plan_lane,
+        signals=signals,
+        lane=lane,
+    )
+    lead = deck_plan.lead() if deck_plan is not None else None
+    supply = (
+        future_supply(deck_plan.playbook, pack_number, pick_number, picks_per_pass)
+        if deck_plan is not None
+        else None
+    )
+    quality_cache: dict[int, float] = {}
+    castable_cache: dict[tuple[int, str], bool] = {}
+
+    def quality_of(grp_id: int) -> float:
+        if grp_id not in quality_cache:
+            known = primer.card(grp_id) if primer else None
+            quality_cache[grp_id] = card_value(known, stats)[0] if known is not None else UNRATED_PRIOR
+        return quality_cache[grp_id]
+
+    def castable_in(grp_id: int, colors: str) -> bool:
+        key = (grp_id, colors)
+        if key not in castable_cache:
+            known = primer.card(grp_id) if primer else None
+            castable_cache[key] = lane_fit(known, colors, mana_costs) in ("in", "colorless", "fixing")
+        return castable_cache[key]
+
+    # Rules-text partners: the lead deck's castable cards once we lean, else the whole pool.
+    if lead is not None and (deck_plan.committed or lane.commitment >= 0.5):
+        partners = list(lead.ledger.cards)
+    else:
+        partners = [
+            g
+            for g in pool
+            if primer and primer.card(g) is not None and not is_ordinary_basic(primer.card(g).name)
+        ]
     scores: dict[int, PickScore] = {}
     for grp_id in pack:
         if grp_id in scores:
@@ -477,6 +648,17 @@ def rank_pack(
             )
             continue
         reasons: list[str] = []
+        linked: list[str] = []
+        parts = dict.fromkeys(SCORE_WEIGHTS, 0.0)
+        castable = (
+            {
+                h.plan.colors: lane_fit(card, h.plan.colors, mana_costs) in ("in", "colorless", "fixing")
+                for h in deck_plan.hypotheses
+            }
+            if deck_plan is not None and deck_plan.hypotheses and card is not None
+            else None
+        )
+        share = deck_plan.castable_share(castable) if castable is not None else 1.0
         rated, rarely = True, False
         if card is not None:
             base, note, rated = card_value(card, stats)
@@ -489,7 +671,7 @@ def rank_pack(
         else:
             base = RARITY_PRIOR.get("", -0.5)
             reasons.append("unrated; rarity prior")
-        score = base
+        parts["quality"] = base
 
         colors = card.colors if card else ""
         commitment = lane.commitment
@@ -498,7 +680,7 @@ def rank_pack(
         if land:
             # A land is judged by the mana it makes, not its (empty) cost.
             if rated and base > 0:
-                score -= min(LAND_GIH_DISCOUNT, base)
+                parts["quality"] -= min(LAND_GIH_DISCOUNT, base)
                 reasons.append("land; GIH discounted")
             how = lane_fit(card, lane.colors)
             if not lane.colors or how == "colorless":
@@ -517,9 +699,17 @@ def rank_pack(
                 if commitment > 0.3:
                     reasons.append(f"off lane {lane.colors}")
         elif not needs:
-            fit = 0.1
+            # Colorless: castable in whatever deck we end up in.
+            fit = max(0.1, 0.6 * commitment) if castable is not None else 0.1
         elif not lane.colors:
             fit = 0.0 if any(_payable(needs, color) for color in COLOR_ORDER) else -0.15
+        elif castable is not None and len(deck_plan.hypotheses) > 1 and share > 0:
+            # Undecided between live decks: the lane is worth the chance the
+            # card ends up castable (2026-10-06: a mono-blue card's full lane
+            # bonus kept black out while it flowed).
+            fit = 0.6 * commitment * share
+            live = [h.plan.colors for h in deck_plan.hypotheses if castable.get(h.plan.colors)]
+            reasons.append(f"in lane {lane.colors}" if share > 0.99 else f"castable in {'/'.join(live)}")
         elif _payable(needs, main):
             fit = 0.6 * commitment
             reasons.append(f"in lane {lane.colors}")
@@ -538,87 +728,169 @@ def rank_pack(
             fit = -1.2 * commitment
             if commitment > 0.3:
                 reasons.append(f"off lane {lane.colors}")
-        score += fit
+        parts["lane"] = fit
 
         if primer is not None and card is not None:
-            if len(playable_pool) >= 4 and fits_lane(card):
+            in_deck = share > 0 if castable is not None and len(deck_plan.hypotheses) > 1 else fits_lane(card)
+            if len(playable_pool) >= 4 and in_deck:
                 if provides_body(card):
                     if bodies < len(playable_pool) * 0.6:
-                        score += 0.45
+                        parts["needs"] += 0.45
                         reasons.append("pool needs more creatures")
                     if (
                         card.cmc is not None
                         and card.cmc <= 2
                         and cheap_bodies < max(2, len(playable_pool) * 0.18)
                     ):
-                        score += 0.45
+                        parts["needs"] += 0.45
                         reasons.append("fills the early creature curve; needs one- and two-mana bodies")
                     elif (
                         card.cmc is not None
                         and card.cmc <= 3
                         and early_bodies < max(3, len(playable_pool) * 0.25)
                     ):
-                        score += 0.35
+                        parts["needs"] += 0.35
                         reasons.append("fills the early creature curve")
                 if card.cmc is not None and card.cmc >= 5 and expensive >= max(2, len(playable_pool) * 0.2):
-                    score -= 0.5
+                    parts["needs"] -= 0.5
                     reasons.append("pool already has enough expensive spells")
                 if is_removal(card) and removal < max(2.0, len(playable_pool) * REMOVAL_SHARE):
                     cheap = card.cmc is not None and card.cmc <= 3
-                    score += 0.4 if cheap else 0.2
+                    parts["needs"] += 0.4 if cheap else 0.2
                     reasons.append(f"pool needs removal ({removal} so far)")
-            best_role = 0.0
-            role_notes = []
-            for arch_colors, role in primer.card_roles(card.name):
-                archetype = primer.archetype(arch_colors) or {}
-                if lane.colors and commitment >= 0.3:
-                    shared = len(set(arch_colors) & set(lane.colors))
-                    relevance = 1.0 if arch_colors == lane.colors else 0.6 if shared else 0.1
-                else:
-                    relevance = 0.5 * TIER_WEIGHT.get(archetype.get("tier", 2), 0.7)
-                value = ROLE_WEIGHT.get(role, 0.2) * relevance
-                if value > best_role:
-                    best_role = value
-                    role_notes = [
-                        f"{role.rstrip('s').replace('_', ' ')} for {archetype.get('name', arch_colors)}"
-                    ]
-            if not rated:
-                # The primer's archetype lists are model-written; they cannot
-                # lift a card the data says nobody plays.
-                best_role = min(best_role, 0.0 if rarely else UNRATED_ROLE_CAP)
-                role_notes = role_notes if best_role > 0 else []
-            score += best_role
-            reasons += role_notes
 
-            synergy = 0.0
+            if deck_plan is not None:
+                book = deck_plan.playbook
+                tags = book.tag(grp_id)
+                # Each reason comes from the hypothesis that contributed most.
+                fit_note, fit_best = "", FIT_NOTE_MIN * 0.5
+                engine_note, engine_best = "", 0.0
+                scarce_note, scarce_best = "", 0.0
+                for hypothesis in deck_plan.hypotheses:
+                    castable = lane_fit(card, hypothesis.plan.colors, mana_costs) in (
+                        "in",
+                        "colorless",
+                        "fixing",
+                    )
+                    value, why = book.fit(grp_id, hypothesis.plan, castable, roles=False)
+                    parts["archetype"] += hypothesis.weight * value
+                    if why and value > FIT_NOTE_MIN and hypothesis.weight * value > fit_best:
+                        fit_best = hypothesis.weight * value
+                        fit_note = why if hypothesis.plan.name in why else f"{why} ({hypothesis.plan.name})"
+                    if castable and tags is not None:
+                        gain, why = engine_gain(tags, hypothesis, supply)
+                        parts["engine"] += hypothesis.weight * gain
+                        if why and hypothesis.weight * gain > engine_best:
+                            engine_best = hypothesis.weight * gain
+                            engine_note = why
+                        rare, why = scarcity(tags, base, hypothesis.plan, supply, castable_in, quality_of)
+                        ledger = hypothesis.ledger
+                        # Scarce or not, a role the deck has filled matters less.
+                        if "removal" in tags.roles and ledger.removal >= REMOVAL_ENOUGH or "removal" not in tags.roles and any(
+                            ledger.payoffs.get(e, 0) >= PAYOFF_ENOUGH for e in tags.engine_payoffs()
+                        ):
+                            rare *= 0.3
+                        parts["scarcity"] += hypothesis.weight * SCARCITY_GAIN * rare
+                        if why and hypothesis.weight * rare > scarce_best:
+                            scarce_best, scarce_note = hypothesis.weight * rare, why
+                if fit_note:
+                    reasons.append(f"fits {fit_note}")
+                if engine_note and engine_best >= ENGINE_NOTE_MIN:
+                    reasons.append(f"engine: {engine_note}")
+                if scarce_note and scarce_best >= SCARCITY_NOTE_MIN:
+                    reasons.append(scarce_note)
+                parts["edges"], linked = pool_edges(primer, grp_id, partners, book)
+                if linked:
+                    reasons.append(f"works with {' / '.join(linked[:3])}")
+                # Engine slots and pool links often describe one fact (a payoff
+                # for the spells we hold): the larger counts in full, the other half.
+                smaller = "engine" if parts["engine"] <= parts["edges"] else "edges"
+                parts[smaller] *= SYNERGY_OVERLAP
+
             for note in primer.synergy_notes:
                 members = [n.lower() for n in note.get("cards") or []]
                 if card.name.lower() in members:
-                    partners = sum(pool_names[m] for m in members if m != card.name.lower())
-                    if partners:
-                        synergy += 0.2 * partners
+                    paired = sum(pool_names[m] for m in members if m != card.name.lower())
+                    if paired:
+                        parts["notes"] += 0.2 * paired
                         reasons.append(f"synergy: {note.get('why', '')[:80]}")
-            score += min(synergy, 0.6 if rated else 0.0 if rarely else UNRATED_ROLE_CAP)
+            parts["notes"] = min(parts["notes"], 0.6)
+            # Picks 1-4 take the best card (2026-10-10 lane discipline): the
+            # deck we are drafting toward counts in full once the pool can show it.
+            ramp = min(1.0, (len(pool) + 1) / DECK_RAMP_PICKS)
+            for key in DECK_CREDIT:
+                parts[key] *= ramp
+            if castable is not None and len(deck_plan.hypotheses) > 1:
+                parts["needs"] *= share
+            if rated and base < PLAYABLE_Z:
+                # 17Lands GIH is measured in the decks that played the card: one
+                # that loses even there fills no slot and carries no synergy
+                # (2026-10-13 live P1p4: Inspired Tethermage, 50.0% GIH, won on
+                # the research's "Simic payoff" listing).
+                playable = max(UNPLAYABLE_CREDIT, 1.0 - (PLAYABLE_Z - base) / (PLAYABLE_Z - UNPLAYABLE_Z))
+                for key in (*DECK_CREDIT, "needs"):
+                    if parts[key] > 0:
+                        parts[key] *= playable
+            if rarely:
+                # A card drafters leave in the sideboard fills no curve slot
+                # either, and being castable matters less when it rarely makes the deck.
+                parts["needs"] = min(parts["needs"], 0.0)
+                if parts["lane"] > 0:
+                    parts["lane"] *= RARELY_PLAYED_LANE
+            if not rated:
+                # Text and primer lists cannot lift a card the data says
+                # nobody plays; a merely unrated one gets a little credit.
+                cap = 0.0 if rarely else UNRATED_DECK_CAP
+                credit = sum(SCORE_WEIGHTS[k] * parts[k] for k in DECK_CREDIT)
+                if credit > cap:
+                    scale = max(0.0, cap) / credit
+                    for key in DECK_CREDIT:
+                        parts[key] *= scale
+                    reasons[:] = [
+                        r
+                        for r in reasons
+                        if not r.startswith(("fits ", "engine: ", "works with ", "synergy: ", "scarce: "))
+                    ]
+                    linked = []
 
             if pack_number <= 2 and 4 <= pick_number <= 10 and colors:
                 signal = 0.3 * max(openness[c] for c in colors)
                 if signal >= 0.15:
                     reasons.append(f"{colors} looks open")
-                score += signal
+                parts["signal"] = signal
 
             if primer.is_trap(card.name):
-                score -= 0.4
+                parts["penalty"] -= 0.4
                 reasons.append("primer trap")
 
             copies = pool_names[card.name.lower()]
             if copies and not land and base < PREMIUM_BASELINE and not is_removal(card):
+                # Each copy we hold already supplies this card's role and links:
+                # another adds less (2026-10-13 live P3p2: a third Tam's Resistance).
+                extra = copies if not provides_body(card) else copies - 1
+                for key in DECK_CREDIT:
+                    if parts[key] > 0 and extra > 0:
+                        parts[key] *= DUPLICATE_CREDIT**extra
                 # A second body is just a playable; a second trick or pump spell is redundancy.
                 redundant = copies - 1 if provides_body(card) else copies
                 step = DUPLICATE_STEP_BODY if provides_body(card) else DUPLICATE_STEP_SPELL
                 if redundant > 0:
-                    score -= step * redundant
+                    parts["penalty"] -= step * redundant
                     reasons.append(f"{copies} already in pool")
-        scores[grp_id] = PickScore(grp_id=grp_id, name=name, score=round(score, 4), reasons=reasons)
+        if parts["quality"] > BOMB_BASELINE:
+            # A true bomb stays a bomb: quality above this line counts in full.
+            parts["bomb"] = parts["quality"] - BOMB_BASELINE
+        components = {key: round(SCORE_WEIGHTS[key] * value, 4) for key, value in parts.items()}
+        score = sum(components.values())
+        scores[grp_id] = PickScore(
+            grp_id=grp_id,
+            name=name,
+            score=round(score, 4),
+            reasons=reasons,
+            components=components,
+            band=quality_band(base, reasons[0] if reasons else ""),
+            partners=list(linked),
+        )
     return sorted(scores.values(), key=lambda pick: (is_ordinary_basic(pick.name), -pick.score))
 
 
@@ -679,6 +951,9 @@ def wheel_adjust(
         grp_id=second.grp_id,
         name=second.name,
         score=second.score,
+        components=second.components,
+        band=second.band,
+        partners=second.partners,
         reasons=second.reasons
         + [
             f"{first.name} likely wheels ({p_a:.0%} by 17Lands last-seen); expecting it back at pick {wheel_pick}"
@@ -700,7 +975,7 @@ def choose_picks(
     remaining = list(pack)
     working_pool = list(pool)
     for index in range(max(1, min(picks_required, len(pack)))):
-        ranked = rank_pack(remaining, working_pool, primer, **kwargs)
+        ranked = rank_pack(remaining, working_pool, primer, picks_per_pass=picks_required, **kwargs)
         if not ranked:
             break
         if index == 0:

@@ -394,9 +394,14 @@ def test_p1p7_rated_two_drop_beats_unrated_rarely_played_payoff(play_data):
 def test_p2p7_open_black_bomb_uncommon_beats_unrated_red_filler():
     # Live: Arni, Renowned Champion (unrated; 20% played) over Rewrite Regrets
     # (60.4% GIH) seventh pick, with red only a sliver of the pool.
+    # 2026-10-13: the deck now leads the pick (lane, curve, archetype), so the
+    # in-lane two-drop the pool needs may come first; the open black cards
+    # still stay alive (castable in UB) and rank far above the red filler.
     picks = ranked("P2p7", ACTUAL_PICKS[:20])
-    assert picks[0].name == "Rewrite Regrets"
-    assert any("second color still open" in reason for reason in picks[0].reasons)
+    assert picks[0].name != "Arni, Renowned Champion"
+    rewrite = picks[position(picks, "Rewrite Regrets")]
+    assert any("castable in" in reason and "UB" in reason for reason in rewrite.reasons)
+    assert position(picks, "Rewrite Regrets") < position(picks, "Arni, Renowned Champion")
     assert position(picks, "Arni, Renowned Champion") > position(picks, "Cryotheory Adept")
 
 

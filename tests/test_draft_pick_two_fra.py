@@ -145,7 +145,7 @@ def test_p2p1_off_lane_dual_and_third_pump_spell_are_discounted():
 
 
 def test_p1p3_still_takes_the_two_best_blue_black_cards():
-    assert [pick.name for pick in choose("P1p3", (1, 3))] == [
+    assert sorted(pick.name for pick in choose("P1p3", (1, 3))) == [
         "Fblthp, Impossibly Lost",
         "Recursive Recruitment",
     ]
@@ -226,6 +226,8 @@ def test_real_picks_are_explained_card_by_card():
     p2p1 = commentary(d, "P2p1", (2, 1), ["Tam's Resistance", "Haunted Ridge"], model=False)
     # Live: "Taking Tam's Resistance and Haunted Ridge: a solid card for our blue-black deck."
     assert "Haunted Ridge — only a black source for our blue-black deck" in p2p1
+    # A third copy earns little synergy credit (2026-10-13 duplicate credit), so the
+    # line is the plain lane reason.
     assert "Tam's Resistance — a solid card for our blue-black deck" in p2p1
 
 

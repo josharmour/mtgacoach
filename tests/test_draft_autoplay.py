@@ -629,8 +629,12 @@ def test_model_takeover_sees_all_picks_and_current_pack_signals(primer, pack_num
     assert seen["pool_ids"] == logged_pool
     assert len(seen["details"]["picked_cards"]) == len(logged_pool)
     assert seen["details"]["set_strategy"]
-    has_signal = any("looks open" in row["reason"] for row in seen["rankings"])
+    has_signal = any("looks open" in row["why"] for row in seen["rankings"])
     assert has_signal == (pack_number == 1)
+    # 2026-10-13: the model gets the deck plan and quality bands, never win rates.
+    assert seen["details"]["deck_plan"]
+    assert all("quality_band" in row and "GIH" not in row["why"] for row in seen["rankings"])
+    assert all("gih_wr" not in card for card in seen["details"]["cards"])
     assert driver.run.picks[-1]["source"] == "model"
     assert driver.run.picks[-1]["grp_ids"] == [3]
 

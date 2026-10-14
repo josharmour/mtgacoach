@@ -36,6 +36,89 @@ class _DraftEventMixin:
         completed = get_completed_match_for_navigation()
         return not (completed.get("match_complete") and completed.get("match_id") == state.get("match_id"))
 
+    def _set_primer_service(self) -> Any:
+        """The set research service, shared by the pre-draft prefetch and the draft driver."""
+        service = getattr(self, "_set_primers", None)
+        if service is not None:
+            return service
+        from arenamcp import server
+        from arenamcp.set_primer import SetPrimerService, arena_rules_lookup
+
+        stats = server._get_draft_stats()
+
+        def research(set_code: str) -> dict:
+            settings = getattr(self, "settings", None)
+            if not (settings and settings.get("draft_research_online", False)):
+                return {}
+            from arenamcp.set_research import fetch_set_research
+
+            return fetch_set_research(set_code)
+
+        service = self._set_primers = SetPrimerService(
+            backend_fn=self._draft_event_backend,
+            ratings_fn=stats.get_raw_ratings,
+            color_stats_fn=stats.get_color_pair_stats,
+            rules_lookup=arena_rules_lookup(server._get_mtgadb()),
+            research_fn=research,
+        )
+        return service
+
+    def _upcoming_draft_set(self, draft_pack: dict | None) -> str:
+        """The set of a draft or sealed event we joined, before (or during) its first pick."""
+        pack = draft_pack or {}
+        if pack.get("is_active") and pack.get("set_code"):
+            return str(pack["set_code"]).upper()
+        try:
+            from arenamcp import server
+            from arenamcp.draftstate import extract_set_code
+
+            state = getattr(server, "draft_state", None)
+            if state is not None and getattr(state, "is_active", False) and getattr(state, "set_code", ""):
+                return str(state.set_code).upper()
+            tracker = server.get_course_tracker()
+            course = tracker.active_limited() if tracker else None
+            if course is not None:
+                return extract_set_code(course.event_name).upper()
+        except Exception as exc:
+            logger.debug("upcoming draft set unavailable: %s", exc)
+        return ""
+
+    def _prefetch_draft_research(self, draft_pack: dict | None) -> None:
+        """Research the set as soon as a limited event is joined, not at the first pick.
+
+        2026-10-13: the research (17lands data + 11 model calls, 82 s) started at
+        P1p1, so the first three picks had none. Joining a pod showed the set
+        2.5 minutes earlier; a course already in progress shows it at startup.
+        """
+        code = self._upcoming_draft_set(draft_pack)
+        if not code:
+            return
+        service = self._set_primer_service()
+        seen = self.__dict__.setdefault("_research_announced", {})
+        status = service.status(code)
+        if status in ("missing", "stale"):
+            service.ensure(code)
+            status = service.status(code)
+        if seen.get(code) == status:
+            return
+        seen[code] = status
+        ui = getattr(self, "ui", None)
+        if status == "ready":
+            from arenamcp.set_primer import research_summary
+
+            primer = service.get(code)
+            line = f"[DRAFT RESEARCH] {code} ready. {research_summary(primer)}" if primer else ""
+        elif status in ("building", "refreshing"):
+            line = f"[DRAFT RESEARCH] {code}: researching the set before the first pick" + (
+                " (serving the previous research meanwhile)" if status == "refreshing" else ""
+            )
+        else:
+            line = ""
+        if line:
+            logger.info(line)
+            if ui is not None:
+                ui.log(line + "\n")
+
     def _draft_event_driver_instance(self) -> Any:
         driver = getattr(self, "_draft_event_driver", None)
         if driver is not None:
@@ -44,16 +127,9 @@ class _DraftEventMixin:
         from arenamcp.draft_advisor import DraftAdvisor
         from arenamcp.draft_event import DraftEventDriver
         from arenamcp.gre_bridge import get_bridge
-        from arenamcp.set_primer import SetPrimerService, arena_rules_lookup
 
-        stats = server._get_draft_stats()
         card_db = server._get_mtgadb()
-        primers = SetPrimerService(
-            backend_fn=self._draft_event_backend,
-            ratings_fn=stats.get_raw_ratings,
-            color_stats_fn=stats.get_color_pair_stats,
-            rules_lookup=arena_rules_lookup(card_db),
-        )
+        primers = self._set_primer_service()
         advisors: dict[str, Any] = {}
 
         def advisor(kind: str, timeout: float) -> Any:
@@ -157,6 +233,11 @@ class _DraftEventMixin:
         """
         driver = getattr(self, "_draft_event_driver", None)
         self._draft_event_pack = draft_pack
+        try:
+            # Research the set while the pod fills, autoplay or not.
+            self._prefetch_draft_research(draft_pack)
+        except Exception:
+            logger.debug("Draft research prefetch failed", exc_info=True)
         try:
             settings = getattr(self, "settings", None)
             active = (

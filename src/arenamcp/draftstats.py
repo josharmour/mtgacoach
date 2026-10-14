@@ -210,20 +210,31 @@ class DraftStatsCache:
 
     # -- Color-pair win rates -----------------------------------------------
 
-    def _get_color_cache_path(self, set_code: str) -> Path:
-        return self._cache_dir / f"{set_code.upper()}_ColorRatings.json"
+    def _get_color_cache_path(self, set_code: str, combine_splash: bool = True) -> Path:
+        # "Combined": each pair includes its splash decks; the split rows (pure,
+        # "+ Splash", three-color summaries) stay in the original file.
+        suffix = "ColorRatingsCombined" if combine_splash else "ColorRatings"
+        return self._cache_dir / f"{set_code.upper()}_{suffix}.json"
 
-    def _download_color_data(self, set_code: str) -> list[dict[str, Any]]:
-        """Download per-color-pair win rates from 17lands."""
+    def _download_color_data(self, set_code: str, combine_splash: bool = True) -> list[dict[str, Any]]:
+        """Download per-color-pair win rates from 17lands.
+
+        Pair strength uses ``combine_splash`` (splash decks counted in their
+        pair). 2026-10-13: the pure two-color rows left out ~60% of BG decks
+        (they splash) and ranked it 6th; combined it is 3rd, as the post-release
+        guides and the 17lands rankings have it. The split rows are kept for
+        opponent deck priors (``opponent_tricks``).
+        """
         url = (
             f"{SEVENTEEN_LANDS_COLOR_URL}?expansion={set_code.upper()}"
             f"&event_type=PremierDraft&start_date=2020-01-01&end_date=2099-12-31"
+            + ("&combine_splash=true" if combine_splash else "")
         )
         logger.info(f"Downloading 17lands color data from {url}...")
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         data = response.json()
-        cache_path = self._get_color_cache_path(set_code)
+        cache_path = self._get_color_cache_path(set_code, combine_splash)
         cache_path.write_text(json.dumps(data), encoding="utf-8")
         logger.info(f"Cached 17lands color data to {cache_path}")
         return data
@@ -274,8 +285,21 @@ class DraftStatsCache:
         logger.info(f"Loaded {len(parsed)} color-pair entries for {set_code}")
         return parsed
 
+    def get_color_rows(self, set_code: str, combine_splash: bool = False) -> list[dict[str, Any]] | None:
+        """17lands color-rating rows as served (split rows by default), cached on disk."""
+        path = self._get_color_cache_path(set_code, combine_splash)
+        try:
+            if path.exists() and self._file_cache.is_cache_valid(path):
+                rows = json.loads(path.read_text(encoding="utf-8"))
+            else:
+                rows = self._download_color_data(set_code, combine_splash)
+        except Exception as e:
+            logger.debug(f"Color rows for {set_code} unavailable: {e}")
+            return None
+        return rows if isinstance(rows, list) else None
+
     def get_color_pair_stats(self, set_code: str) -> dict[str, ColorPairStats]:
-        """Return per-color-pair win rates for a set.
+        """Return per-color-pair win rates for a set (splash decks counted in their pair).
 
         Keyed by normalized WUBRG-ordered color letters (e.g. "WU", "BRG").
         Empty dict if the lookup fails.

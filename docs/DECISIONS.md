@@ -1188,3 +1188,71 @@ Fixes:
   bonuses, a floating pool, or a creature-tap enabler cast first. It states
   the total, the breakdown, the unlocked card and the order, and warns that
   any other spell first forfeits it. It never makes a spell legal.
+
+## 2026-10-13 — Strategic draft picks: the deck decides, 17Lands is a quarter
+
+- Evidence: 2026-10-13 FRA Contender Draft (draft 3f231a57, standalone.log
+  18:06-18:19, Player.log Draft.Notify/MakePick). Picks followed 17Lands GIH:
+  a 1-SD GIH edge outweighed the largest archetype-role bonus plus the synergy
+  cap; the model's reasons led with GIH; limited_rules missed FRA's mechanics
+  (noncreature-spell triggers, "if you've surveilled this turn", Jace/behold),
+  so 3 of 10 stripped synergy claims were real; only 125/290 cards had any
+  archetype role (Saheeli, Jewel of Avishkar had none).
+- User decision: lane, rules-text synergy and pre-researched archetypes decide
+  picks; 17Lands is about 25%; the pick model sees a quality band, never win
+  rates; research stays local with an opt-in online enrichment.
+- Built: limited_rules mechanics (noncreature_spell, instant_sorcery, prepared,
+  jace/planeswalker/loyalty with indirect Jace-token surveil, graveyard incl.
+  reanimation, noncombat_damage, dies, Heartwood/artifact payoffs; reminder
+  text ignored). draft_playbook (per-card tags for the whole set, archetype
+  engines from the synthesis or derived from payoff density, payoff strength).
+  draft_deck_plan (hypotheses from tier, signals, pool_lane colour mass and
+  archetype-specific fit; committed lane or held colours commit; open second
+  colour keeps the main colour's pairs; engine gain; pool edges).
+  rank_pack: named components x SCORE_WEIGHTS, calibrated on the recorded draft
+  to 17Lands 25%, signals 15% (P1-P2 picks 4-10), deck ~68%
+  (tests/test_draft_strategic_picks.py measures it). Model tolerance 1.0 point
+  (top-few within 2.0). Advisor prompt: deck_plan, quality bands, ranking
+  without GIH. Narration: pool links / engine / archetype before 17Lands.
+  Primer v2: synthesis names engines from a vocabulary, key lists rarity-checked,
+  low-sample bombs shown, research sources kept; 17Lands pair win rates now
+  combine splash decks (split rows kept for opponent_tricks).
+  set_research.py + setting draft_research_online (default off).
+- Verify: tests/test_draft_strategic_picks.py, test_limited_rules_fra_mechanics.py,
+  test_set_research_and_primer.py.
+- Same day, after a live draft (9b4b602e, Simic Jace Empower): research now
+  starts when a limited event is joined (it had started at P1p1, 82 s, so
+  P1p1-p3 picked without it) and a stale primer is served while it rebuilds
+  (3-day refresh). Pick score adds what the rest of the draft can still offer
+  (draft_deck_plan.future_supply: copies per pack by rarity x survival from
+  17lands ALSA) -- payoffs valued by enablers still to come, scarcity for
+  removal/payoffs with few substitutes left -- plus a playability fade below
+  GIH z -0.75 (live P1p4: a 50% "Simic payoff" won on the research listing)
+  and diminishing deck credit per redundant copy (live: a third Tam's
+  Resistance). The deck build follows the draft: limited_deck.DeckStrategy
+  (archetype fit, engine balance, weighted rules-text links, the drafted lane's
+  bonus); the drafted plan is saved per pick (~/.arenamcp/draft_runs) so a
+  restart before the build keeps it. Card quality keeps full weight in the
+  build: at 0.75 the live build swapped Verdant Kraken (58.7%) for two 50%
+  cards.
+
+## 2026-10-13 — Autopilot: hopeless attacks with a "trick" in hand; "up to one target" with none
+
+- bug_20261013_201811 (turn 11): the planner sent Emergency Phytomedic 1/1
+  ("chip in with the unblockable 1/1" -- the opponent's Tetsuko only helps the
+  opponent) into four untapped blockers. board_assessment had it blockable;
+  combat_strategy.losing_attackers stepped aside because any affordable play
+  counted as a trick: Divining Duelist (flash, tap one creature) and Heartwood
+  Crafter's prepared Soul Tether (a sorcery). Decision: tricks are judged by
+  effect -- pumps, protection, blocker shrinks and sacrifice outlets count;
+  tapping/removing a blocker counts only when the rest can no longer answer
+  every attacker; prepared spells count only when the linked face is an
+  instant; card draw/untap/surveil do not.
+- bug_20261013_202204 (turn 6): Tam's Resistance ("up to one target creature")
+  cast with no creature on the battlefield; the SelectTargets request had no
+  candidates, build_pending_decision returned None and the safe default went
+  MANUAL REQUIRED every second until the user took over. Decision: with every
+  slot optional, commit the targets as they are (bridge.submit_targets([]));
+  a required target with none legal cancels when Arena allows it.
+- Verify: tests/test_losing_attack_guard.py (tetsuko board), test_llm_down_fallback.py
+  (no-target requests).

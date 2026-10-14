@@ -20,21 +20,27 @@ of guessing. Entry-fee and drop/resign paths are never called.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from arenamcp.draft_autopick import (
+    _set_stats,
+    card_value,
     choose_picks,
     color_openness,
     color_signals,
+    deck_plan_for,
     is_ordinary_basic,
     note_openness,
     pool_lane,
+    quality_band,
     rank_pack,
     wheel_adjust,
 )
@@ -61,8 +67,11 @@ PICK_NARRATION_MAX_S = 12.0
 PICK_CLOCK_RESERVE_S = 5.0
 PICK_CONFIRM_BEAT_S = 1.0
 # The model may overrule the ranking only among near-equals: within this many
-# score units (~2 GIH points) of the ranking's own pick, or in its top few.
-MODEL_PICK_TOLERANCE = 0.5
+# score units of the ranking's own pick (one point is one standard deviation
+# of 17Lands quality, or the same in deck value), or in its top few and no
+# more than twice that below.
+MODEL_PICK_TOLERANCE = 1.0
+MODEL_PICK_TOP_FEW_SLACK = 2.0
 QUEUE_WAIT_S = 240.0
 # A model deck is kept only if it scores within this of the best counted build
 # (scores run ~250-280; a couple of card swaps move them a few points).
@@ -75,6 +84,13 @@ DECK_SCORE_TOLERANCE = 8.0
 # the deck went 0-2. Under a point the model is calling a tie, and the counted
 # choice, which weighs bombs and removal, stands.
 STRENGTH_OVERRIDE_MARGIN = {"sealed": 0.01, "draft": 0.015}
+
+
+# The plan each draft followed, saved after every pick so the deck build knows
+# the lane it drafted for even after a coach restart between the last pick and
+# the build (2026-10-13). Kept for DRAFT_RUN_MAX_AGE_S.
+DRAFT_RUN_DIR = Path.home() / ".arenamcp" / "draft_runs"
+DRAFT_RUN_MAX_AGE_S = 12 * 3600
 
 
 @dataclass
@@ -368,6 +384,8 @@ class DraftEventDriver:
             names={canonical[g]: self._card_name(g) for g in pack},
             mana_costs=self._mana_costs(pack + self._drafted_pool(), primer),
             players=self._pod_size(),
+            plan_lane=run.plan_lane,
+            signals=self._table_signals(pack, primer, pack_number or 1, pick_number or 1),
         )
         to_actual = {}
         for actual, canon in canonical.items():
@@ -519,6 +537,7 @@ class DraftEventDriver:
         run.preview = None
         names = [self._card_name(g) for g in chosen]
         run.picks.append({"key": key[:2], "grp_ids": chosen, "source": decision["source"]})
+        self._save_run()
         self._status(f"P{key[0]}p{key[1]}: took {' and '.join(names)} ({decision['source']})")
         logger.info(
             "Draft pick P%sp%s %s: %s", key[0], key[1], names, [decision["reasons"].get(g) for g in chosen]
@@ -569,6 +588,8 @@ class DraftEventDriver:
                 pick_number=pick_number,
                 names={canon[g]: self._card_name(g) for g in pack},
                 mana_costs=mana,
+                plan_lane=self.run.plan_lane,
+                signals=color_signals(self.run.signals, pack_number),
             )
             by_id = {pick.grp_id: pick for pick in ranking}
             spoken = [(g, name) for g, name in zip(chosen, names, strict=False) if canon.get(g) in by_id]
@@ -628,6 +649,34 @@ class DraftEventDriver:
                 costs[self._canonical(grp_id, primer)] = cost
         return costs
 
+    def _with_bands(self, cards: list[dict], primer: SetPrimer | None) -> list[dict]:
+        """Cards for the pick prompt: a 17Lands quality band in place of win rates."""
+        stats = _set_stats(primer)
+        banded = []
+        for card in cards:
+            entry = {
+                k: v
+                for k, v in card.items()
+                if k not in ("gih_wr", "alsa", "ata", "iwd", "oh_wr", "win_rate")
+            }
+            known = primer.card(self._canonical(int(card["grp_id"]), primer)) if primer is not None else None
+            if known is not None:
+                z, note, _rated = card_value(known, stats)
+                entry["quality_band"] = quality_band(z, note)
+            banded.append(entry)
+        return banded
+
+    def _table_signals(self, pack: list[int], primer: SetPrimer | None, pack_no: int, pick_no: int) -> dict:
+        """What the table is passing, with this pack counted once (0-1 per color)."""
+        if (pack_no, pick_no) not in self.run.signals_seen:
+            self.run.signals_seen.add((pack_no, pick_no))
+            note_openness(
+                self.run.signals,
+                pack_no,
+                color_openness([self._canonical(g, primer) for g in pack], pick_no, primer),
+            )
+        return color_signals(self.run.signals, pack_no)
+
     def _refine_pick(self, pack, primer, pool, ranked, required) -> tuple[list[int], dict, str, set] | None:
         """Let the draft advisor choose with the primer; its answer is validated against the pack.
 
@@ -640,20 +689,32 @@ class DraftEventDriver:
             lane = pool_lane(pool, primer, self._mana_costs(self._drafted_pool(), primer))
             details = {**details, "picks_per_pack": required}
             pack_no, pick_no = int(details.get("pack_number") or 1), int(details.get("pick_number") or 1)
-            if (pack_no, pick_no) not in self.run.signals_seen:
-                self.run.signals_seen.add((pack_no, pick_no))
-                note_openness(
-                    self.run.signals,
-                    pack_no,
-                    color_openness([self._canonical(g, primer) for g in pack], pick_no, primer),
-                )
-            details["color_signals"] = color_signals(self.run.signals, pack_no)
+            details["color_signals"] = self._table_signals(pack, primer, pack_no, pick_no)
             if self._pool_cards_fn:
                 # The model and ranking must see the same pool after a takeover.
                 details["picked_cards"] = self._pool_cards_fn(self._drafted_pool(), self.run.set_code)
             if primer is not None:
                 # The committed lane's archetypes lead; the pool estimate only while open.
-                details["set_strategy"] = primer.prompt_context(self.run.plan_lane or lane.colors)
+                details["set_strategy"] = primer.prompt_context(
+                    self.run.plan_lane or lane.colors, card_stats=False
+                )
+                # 2026-10-13: the model sees the deck we are drafting toward and
+                # 17Lands only as a quality band, never as win rates.
+                plan = deck_plan_for(
+                    pool,
+                    primer,
+                    pack_number=pack_no,
+                    pick_number=pick_no,
+                    mana_costs=self._mana_costs(self._drafted_pool(), primer),
+                    plan_lane=self.run.plan_lane,
+                    signals=details["color_signals"],
+                    lane=lane,
+                )
+                if plan is not None:
+                    details["deck_plan"] = plan.as_prompt()
+                details["cards"] = self._with_bands(details.get("cards") or [], primer)
+                if details.get("picked_cards"):
+                    details["picked_cards"] = self._with_bands(details["picked_cards"], primer)
             ranking = rank_pack(
                 [self._canonical(g, primer) for g in pack],
                 pool,
@@ -662,6 +723,8 @@ class DraftEventDriver:
                 pick_number=int(details.get("pick_number") or 1),
                 names={self._canonical(g, primer): self._card_name(g) for g in pack},
                 mana_costs=self._mana_costs(pack + self._drafted_pool(), primer),
+                plan_lane=self.run.plan_lane,
+                signals=details["color_signals"],
             )
             # The model sees the same wheel plan the ranking would follow.
             ranking = wheel_adjust(
@@ -672,7 +735,7 @@ class DraftEventDriver:
                 players=self._pod_size(),
                 picks_per_pass=required,
             )
-            evaluations = [pick.as_evaluation() for pick in ranking[:10]]
+            evaluations = [pick.as_plan_evaluation(rank) for rank, pick in enumerate(ranking[:10], 1)]
             result = self._pick_advisor_fn().recommend(details, {"evaluations": evaluations})
             if result.get("reasoning_source") != "card_rules":
                 return None
@@ -681,8 +744,9 @@ class DraftEventDriver:
                 return None
             nonbasics = sum(not is_ordinary_basic(self._card_name(g)) for g in pack)
             basics_allowed = max(0, required - nonbasics)
-            # The ranking is 17Lands quality plus lane, curve and interaction
-            # needs; the model only breaks near-ties with its reasoning. Each
+            # The ranking is the deck (lane, archetype, engine, rules-text links,
+            # curve and removal needs) with 17Lands about a quarter; the model
+            # only chooses among near-equals with its reasoning. Each
             # card is judged on its own: in Pick-Two a far-off second card no
             # longer throws away an acceptable first (2026-10-07 P2p1).
             position = {pick.grp_id: index for index, pick in enumerate(ranking)}
@@ -696,7 +760,9 @@ class DraftEventDriver:
                     basics_allowed -= 1
                 canon = self._canonical(grp_id, primer)
                 index = position.get(canon, len(ranking))
-                if index >= required + 2 and (index >= len(ranking) or ranking[index].score < floor):
+                score = ranking[index].score if index < len(ranking) else float("-inf")
+                top_few_floor = floor - (MODEL_PICK_TOP_FEW_SLACK - 1.0) * MODEL_PICK_TOLERANCE
+                if score < floor and (index >= required + 2 or score < top_few_floor):
                     logger.warning(
                         "Model pick %s ranks #%d (%.2f) vs ranking floor %.2f; %s",
                         self._card_name(grp_id),
@@ -774,6 +840,72 @@ class DraftEventDriver:
             self._basics = basic_land_ids(self._db)
         return self._basics
 
+    def _run_path(self, event_name: str) -> Path:
+        safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in event_name) or "draft"
+        return DRAFT_RUN_DIR / f"{safe}.json"
+
+    def _save_run(self) -> None:
+        """The drafted plan and picks, for a deck build after a restart."""
+        run = self.run
+        try:
+            DRAFT_RUN_DIR.mkdir(parents=True, exist_ok=True)
+            self._run_path(run.event_name).write_text(
+                json.dumps(
+                    {
+                        "event_name": run.event_name,
+                        "set_code": run.set_code,
+                        "plan": run.plan,
+                        "plan_lane": run.plan_lane,
+                        "plan_splash": run.plan_splash,
+                        "pool": list(run.pool),
+                        "saved_at": time.time(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.debug("draft run not saved: %s", exc)
+
+    def _restore_plan(self, pool_ids: list[int]) -> str:
+        """The lane this pool was drafted for: this run's, a saved run's, or the pool's own.
+
+        Returns where it came from ("draft", "saved", "pool", or "").
+        """
+        run = self.run
+        if run.plan_lane:
+            return "draft"
+        held = Counter(pool_ids)
+        candidates = []
+        try:
+            paths = [self._run_path(run.event_name)] if run.event_name else list(DRAFT_RUN_DIR.glob("*.json"))
+        except OSError:
+            paths = []
+        for path in paths:
+            try:
+                saved = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            picked = Counter(int(g) for g in saved.get("pool") or [])
+            fresh = time.time() - float(saved.get("saved_at") or 0) < DRAFT_RUN_MAX_AGE_S
+            # Nearly all our picks must be in this pool (the same draft, not a
+            # previous one); basics and alternate printings may be missing.
+            found = sum((picked & held).values())
+            if (
+                fresh
+                and saved.get("plan_lane")
+                and len(picked) >= 10
+                and found >= 0.85 * sum(picked.values())
+            ):
+                candidates.append(saved)
+        if candidates:
+            saved = max(candidates, key=lambda row: float(row.get("saved_at") or 0))
+            run.plan = str(saved.get("plan") or "")
+            run.plan_lane = str(saved.get("plan_lane") or "")
+            run.plan_splash = str(saved.get("plan_splash") or "")
+            logger.info("Draft plan restored for the deck build: lane %s (%s)", run.plan_lane, run.plan[:120])
+            return "saved"
+        return ""
+
     def _step_deck(self) -> None:
         run = self.run
         if run.deck_submitted_at and time.monotonic() - run.deck_submitted_at < 20.0:
@@ -843,11 +975,26 @@ class DraftEventDriver:
             run.set_code = self._set_code_for(pool_ids)
         primer = self._primer(run.set_code)
         cards = self._pool_cards_fn(pool_ids, run.set_code) if self._pool_cards_fn else []
-        from arenamcp.limited_deck import fallback_deck, score_deck
+        from arenamcp.limited_deck import DeckStrategy, fallback_deck, score_deck
 
         fmt = self._limited_format(pool_ids)
         pair_rates = {key: row["win_rate"] for key, row in (primer.pair_stats if primer else {}).items()}
-        build = fallback_deck(cards, pair_rates, fmt=fmt)
+        # Build the deck the draft was heading for (2026-10-13): its lane and the
+        # set playbook's archetype engines, with 17Lands a minor part, as in the picks.
+        lane_source = self._restore_plan(pool_ids)
+        drafted_lane = self.run.plan_lane
+        if not drafted_lane and primer is not None:
+            canon = [self._canonical(g, primer) for g in pool_ids]
+            plan = deck_plan_for(
+                canon, primer, pack_number=3, pick_number=14, mana_costs=self._mana_costs(pool_ids, primer)
+            )
+            lead = plan.lead() if plan is not None else None
+            if lead is not None and (plan.committed or lead.weight >= 0.5):
+                drafted_lane, lane_source = lead.plan.colors, "pool"
+        strategy = (
+            DeckStrategy(primer, plan_lane=drafted_lane, plan=self.run.plan) if primer is not None else None
+        )
+        build = fallback_deck(cards, pair_rates, fmt=fmt, strategy=strategy)
         if not build.get("main_deck"):
             self._pause("no legal 40-card build was found in this pool; build it manually")
             return None
@@ -855,7 +1002,15 @@ class DraftEventDriver:
             [self._canonical(g, primer) for g in pool_ids], primer, self._mana_costs(pool_ids, primer)
         )
         if primer is not None:
-            build["set_strategy"] = primer.prompt_context(lane.colors)
+            build["set_strategy"] = primer.prompt_context(drafted_lane or lane.colors, card_stats=False)
+        if drafted_lane:
+            build["deck_plan"] = {
+                "drafted_lane": drafted_lane,
+                "from": lane_source,
+                "plan": self.run.plan,
+                "splash": self.run.plan_splash,
+            }
+            logger.info("Deck build follows the drafted lane %s (%s)", drafted_lane, lane_source)
         build["format"] = fmt
         build["pool_cards"] = cards
         options = build.get("deck_options") or []
@@ -863,7 +1018,11 @@ class DraftEventDriver:
         strength = self._strength_scorer(cards, fmt, primer)
         preferred = self._strongest_option(options, strength, fmt)
         if preferred is not None:
-            extras = {key: build[key] for key in ("set_strategy", "format", "pool_cards") if key in build}
+            extras = {
+                key: build[key]
+                for key in ("set_strategy", "format", "pool_cards", "deck_plan")
+                if key in build
+            }
             options = [preferred] + [option for option in options if option is not preferred]
             build = {**build, **preferred, **extras, "deck_options": options, "strength_preferred": True}
             source = "counted build, 17Lands deck model"
@@ -871,7 +1030,7 @@ class DraftEventDriver:
         if self._deck_advisor_fn:
             refined = self._deck_advisor_fn().recommend_deck(build)
             if refined is not build and refined.get("main_deck"):
-                quality = score_deck(refined["main_deck"], cards, pair_rates, fmt=fmt)
+                quality = score_deck(refined["main_deck"], cards, pair_rates, fmt=fmt, strategy=strategy)
                 weaker = (
                     strength is not None
                     and fmt == "sealed"

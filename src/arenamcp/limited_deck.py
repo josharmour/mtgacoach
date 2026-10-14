@@ -30,11 +30,14 @@ Honor the previous theme only if this actual pool supports it. Missing ratings a
 When set_strategy is supplied (this set's 17lands data plus card-rules analysis), prefer its
 stronger archetypes the pool supports, include its payoffs only with enough enablers, and
 avoid its traps unless the pool has nothing better.
+deck_plan.drafted_lane is the lane the draft committed to (deck_plan.plan its plan): build
+that deck unless this pool clearly supports a stronger one, and say why if you change it.
 scored_candidates are complete counted builds per color pair (some with a supported splash),
-scored on 17lands card quality, bombs, removal, creature count, cheap plays, archetype win
-rate and splash consistency; "format" says draft or sealed. Start from the highest
-scoring candidate; change colors or cards only for a concrete reason (a bomb, real synergy,
-missing early plays) and say why in plan.
+scored on the archetype's engine (enablers vs payoffs), rules-text links between the chosen
+cards, the drafted lane, creature count, cheap plays, removal, bombs, splash consistency and
+card quality (a minor part); "archetype" and "engine" name the plan each one plays.
+"format" says draft or sealed. Start from the highest scoring candidate; change colors or
+cards only for a concrete reason (a bomb, real synergy, missing early plays) and say why in plan.
 Use supported_synergies as grounded links, checking the supplied rules' conditions and
 costs. For unmodeled interactions, describe roles rather than inventing a verified combo.
 Return JSON only: {"main_deck": [{"grp_id":123,"count":2}],
@@ -217,15 +220,16 @@ def _gih(card: dict) -> float | None:
     return normalize_card(card).gih_wr_pct
 
 
-def _card_value(card: dict) -> float:
+def _card_value(card: dict, quality_scale: float = 1.0) -> float:
     """Card quality in GIH points above 50; unrated rares/mythics get a prior, not zero.
 
     2026-10-05 sealed: an unrated mythic (Craterclaw Colossus) scored 0 and was
     never considered, while ordinary commons with data outranked it.
+    ``quality_scale`` < 1 when a DeckStrategy carries the deck's synergy.
     """
     normalized = normalize_card(card)
     if normalized.gih_wr_pct is not None:
-        value = normalized.gih_wr_pct - 50
+        value = (normalized.gih_wr_pct - 50) * quality_scale
     else:
         value = RARITY_PRIOR.get(str(card.get("rarity") or "").lower(), 0.0)
     value += 4 if rules_profile(card)["unconditional_body"] else 0
@@ -233,6 +237,144 @@ def _card_value(card: dict) -> float:
     value += 2 if "card_advantage" in normalized.tags else 0
     value += 2 if normalized.cmc <= 3 else -max(0, normalized.cmc - 4)
     return value
+
+
+class DeckStrategy:
+    """The draft's strategy for the build: the set playbook and the lane we drafted toward.
+
+    2026-10-13: picks follow the deck (archetype engine, rules-text links, lane)
+    with 17Lands about a quarter; the build now uses the same knowledge. Card
+    quality still counts, scaled by QUALITY_SCALE, and a card 17Lands rates
+    as unplayable gets little synergy credit. ``plan_lane`` (the advisor's
+    committed lane, saved with the draft) earns PLAN_BONUS for its colors.
+    """
+
+    def __init__(self, primer: Any, plan_lane: str = "", plan: str = "") -> None:
+        from arenamcp.draft_autopick import _set_stats
+        from arenamcp.draft_playbook import playbook_for
+
+        self.primer = primer
+        self.book = playbook_for(primer)
+        self.plan_lane = "".join(c for c in "WUBRG" if c in str(plan_lane or "").upper())
+        self.plan = plan
+        self.stats = _set_stats(primer)
+        self._by_name = {card.name.lower(): grp_id for grp_id, card in primer.cards.items()}
+
+    def _grp(self, card: dict) -> int | None:
+        grp_id = card.get("grp_id")
+        if grp_id is not None and self.primer.card(grp_id) is not None:
+            return int(grp_id)
+        return self._by_name.get(str(card.get("name") or "").lower())
+
+    def tags(self, card: dict):
+        grp_id = self._grp(card)
+        return self.book.tag(grp_id) if self.book is not None and grp_id is not None else None
+
+    def z(self, card: dict) -> float | None:
+        from arenamcp.draft_autopick import card_value
+
+        grp_id = self._grp(card)
+        known = self.primer.card(grp_id) if grp_id is not None else None
+        return card_value(known, self.stats)[0] if known is not None else None
+
+    def playable(self, card: dict) -> float:
+        from arenamcp.draft_autopick import PLAYABLE_Z, UNPLAYABLE_CREDIT, UNPLAYABLE_Z
+
+        z = self.z(card)
+        if z is None or z >= PLAYABLE_Z:
+            return 1.0
+        return max(UNPLAYABLE_CREDIT, 1.0 - (PLAYABLE_Z - z) / (PLAYABLE_Z - UNPLAYABLE_Z))
+
+    def archetype(self, colors: tuple[str, ...]):
+        main = "".join(c for c in "WUBRG" if c in colors)
+        return self.book.archetype(main) if self.book is not None and len(main) == 2 else None
+
+    def fit_points(self, card: dict, colors: tuple[str, ...]) -> float:
+        plan = self.archetype(colors)
+        grp_id = self._grp(card)
+        if plan is None or grp_id is None:
+            return 0.0
+        return ARCHETYPE_POINTS * self.book.fit(grp_id, plan, roles=False)[0] * self.playable(card)
+
+    def link_points(self, card: dict, chosen) -> float:
+        """Rules-text links to the cards already chosen, weighted like the pick ranking."""
+        from arenamcp.draft_playbook import BROAD_MECHANICS, family
+
+        total = 0.0
+        for other in chosen:
+            best = 0.0
+            for edge in synergy_evidence(card, other):
+                strength = BROAD_MECHANICS.get(family(edge["mechanic"]), (0, 1.0))[1]
+                if edge.get("indirect"):
+                    strength *= 0.5
+                payoff = card if edge["payoff_id"] == card.get("grp_id") else other
+                tags = self.tags(payoff)
+                if tags is not None:
+                    strength *= tags.payoff_strength
+                best = max(best, strength)
+            total += best
+        return min(LINK_POINTS_CAP, LINK_POINTS * total) * self.playable(card)
+
+    def engine_points(self, card: dict, colors: tuple[str, ...], chosen) -> float:
+        """A payoff wants enablers already in the deck; an enabler wants something to feed."""
+        from arenamcp.draft_playbook import BROAD_MECHANICS
+
+        plan, tags = self.archetype(colors), self.tags(card)
+        if plan is None or tags is None or tags.land:
+            return 0.0
+        held = [self.tags(other) for other in chosen]
+        held = [t for t in held if t is not None]
+        best = 0.0
+        for engine in plan.engine:
+            enablers = sum(engine in t.engine_enables() for t in held) + 0.5 * sum(
+                engine in t.engine_indirect() for t in held
+            )
+            payoffs = sum(engine in t.engine_payoffs() for t in held)
+            if engine in tags.engine_payoffs():
+                value = PAYOFF_POINTS * tags.payoff_strength * min(1.0, enablers / 4.0)
+            elif engine in tags.engine_enables() or engine in tags.engine_indirect():
+                factor = BROAD_MECHANICS.get(engine, (0, 1.0))[1]
+                room = 1.0 if enablers < 3 * max(1, payoffs) + 2 else 0.3
+                value = ENABLER_POINTS * factor * min(1.0, payoffs) * room
+            else:
+                continue
+            best = max(best, value)
+        return best * self.playable(card)
+
+    def coherence(self, chosen, colors: tuple[str, ...]) -> tuple[float, dict]:
+        """Whole-deck engine balance for the archetype these colors play, and the drafted lane."""
+        plan = self.archetype(colors)
+        if plan is None:
+            return 0.0, {}
+        held = [t for t in (self.tags(card) for card in chosen) if t is not None]
+        points, engines = 0.0, {}
+        for engine in plan.engine:
+            enablers = sum(engine in t.engine_enables() for t in held)
+            payoffs = sum(engine in t.engine_payoffs() for t in held)
+            engines[engine] = {"enablers": enablers, "payoffs": payoffs}
+            points += COHERENCE_POINTS * min(payoffs, enablers / 3.0)
+            points -= ORPHAN_PAYOFF_POINTS * max(0.0, payoffs - enablers / 2.0)
+        main = "".join(c for c in "WUBRG" if c in colors)
+        if self.plan_lane and main == self.plan_lane:
+            points += PLAN_BONUS
+        return points, {"archetype": plan.name, "engine": engines, "drafted_lane": main == self.plan_lane}
+
+
+# Strategy terms in the builder's GIH-point units (a card's value is its GIH
+# above 50 plus role bonuses of 2-4): archetype fit up to ~4.5, engine balance,
+# weighted rules-text links, and the drafted lane's bonus. Card quality keeps
+# its full weight in the build (QUALITY_SCALE 1.0): the build picks the best 23
+# of cards we already own, and at 0.75 the cheap-body bonuses let 47-50% cards
+# replace Verdant Kraken (58.7%) and Icy Reception (2026-10-13 live build).
+QUALITY_SCALE = 1.0
+ARCHETYPE_POINTS = 6.0
+PAYOFF_POINTS = 4.0
+ENABLER_POINTS = 2.5
+LINK_POINTS = 1.5
+LINK_POINTS_CAP = 6.0
+COHERENCE_POINTS = 1.5
+ORPHAN_PAYOFF_POINTS = 2.0
+PLAN_BONUS = 8.0
 
 
 def _is_legendary(card: dict) -> bool:
@@ -291,7 +433,9 @@ def _color_roles(chosen: list[dict]) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return main, tuple(sorted(ranked[2:], key="WUBRG".index))
 
 
-def _build_for_colors(spells: list[dict], colors: tuple[str, ...], preset: tuple = ()) -> list[dict]:
+def _build_for_colors(
+    spells: list[dict], colors: tuple[str, ...], preset: tuple = (), strategy: DeckStrategy | None = None
+) -> list[dict]:
     candidates = [
         card for card in spells if card.get("type_line") and _castable(card, colors) and card not in preset
     ]
@@ -307,7 +451,7 @@ def _build_for_colors(spells: list[dict], colors: tuple[str, ...], preset: tuple
         def fit(card, bodies=bodies, early=early, expensive=expensive, chosen=tuple(chosen), legends=legends):
             profile = rules_profile(card)
             cost = normalize_card(card).cmc
-            value = _card_value(card)
+            value = _card_value(card, QUALITY_SCALE if strategy is not None else 1.0)
             if profile["unconditional_body"]:
                 value += 5 if bodies < 14 else 0
                 value += 4 if early < 6 and cost <= 3 else 0
@@ -315,7 +459,12 @@ def _build_for_colors(spells: list[dict], colors: tuple[str, ...], preset: tuple
                 value -= 6
             if legends[card["name"]]:
                 value -= 10  # a second copy of a legendary card is dead while the first is in play
-            value += min(4, sum(bool(synergy_evidence(card, other)) for other in chosen))
+            if strategy is not None:
+                value += strategy.fit_points(card, colors)
+                value += strategy.engine_points(card, colors, chosen)
+                value += strategy.link_points(card, chosen)
+            else:
+                value += min(4, sum(bool(synergy_evidence(card, other)) for other in chosen))
             return value
 
         picked = max(candidates, key=fit)
@@ -332,10 +481,15 @@ def deck_quality(
     fmt: str = "draft",
     splash: tuple[str, ...] = (),
     fixing: int = 0,
+    strategy: DeckStrategy | None = None,
 ) -> dict:
-    """Whole-deck evaluation: card quality, bombs, removal, bodies, curve, archetype data, splash cost."""
+    """Whole-deck evaluation: card quality, bombs, removal, bodies, curve, archetype data, splash cost.
+
+    With a ``strategy``: card quality is scaled down, and the archetype fit of
+    every card, the engine's enabler/payoff balance and the drafted lane count.
+    """
     weights = FORMAT_WEIGHTS.get(fmt, FORMAT_WEIGHTS["draft"])
-    values = [_card_value(card) for card in chosen]
+    values = [_card_value(card, QUALITY_SCALE if strategy is not None else 1.0) for card in chosen]
     gihs = [g for g in (_gih(card) for card in chosen) if g is not None]
     creatures = sum(rules_profile(card)["unconditional_body"] for card in chosen)
     removal = sum(_builder_removal(card) for card in chosen)
@@ -364,7 +518,14 @@ def deck_quality(
     if pair_win_rates and key in pair_win_rates:
         rates = list(pair_win_rates.values())
         score += 50 * (pair_win_rates[key] - sum(rates) / len(rates))
+    plan_info: dict = {}
+    if strategy is not None:
+        main = tuple(key)
+        score += sum(strategy.fit_points(card, main) for card in chosen)
+        coherence, plan_info = strategy.coherence(chosen, main)
+        score += coherence
     return {
+        **plan_info,
         "colors": key,
         "score": round(score, 2),
         "avg_gih": round(sum(gihs) / len(gihs), 1) if gihs else None,
@@ -381,7 +542,12 @@ def deck_quality(
 
 
 def candidate_decks(
-    pool: list[dict], pair_win_rates: dict | None = None, top: int = 3, *, fmt: str = "draft"
+    pool: list[dict],
+    pair_win_rates: dict | None = None,
+    top: int = 3,
+    *,
+    fmt: str = "draft",
+    strategy: DeckStrategy | None = None,
 ) -> list[dict]:
     """The best few two-color builds, plus supported splashes, each scored as a whole deck."""
     weights = FORMAT_WEIGHTS.get(fmt, FORMAT_WEIGHTS["draft"])
@@ -390,7 +556,7 @@ def candidate_decks(
     lands = [card for card in nonbasics if "land" in card.get("type_line", "").lower()]
     ranked = []
     for colors in combinations("WUBRG", 2):
-        base = _build_for_colors(spells, colors)
+        base = _build_for_colors(spells, colors, strategy=strategy)
         if len(base) < 21:
             continue
         ranked.append(
@@ -398,7 +564,7 @@ def candidate_decks(
                 "colors": colors,
                 "splash": (),
                 "chosen": base,
-                "quality": deck_quality(base, colors, pair_win_rates, fmt=fmt),
+                "quality": deck_quality(base, colors, pair_win_rates, fmt=fmt, strategy=strategy),
             }
         )
         weakest = min(_card_value(card) for card in base)
@@ -427,7 +593,7 @@ def candidate_decks(
                 fmt == "draft" and not fixing and not any((_gih(c) or 0) >= BOMB_GIH for c in unique)
             ):
                 continue
-            chosen = _build_for_colors(spells, colors, preset=tuple(unique))
+            chosen = _build_for_colors(spells, colors, preset=tuple(unique), strategy=strategy)
             if len(chosen) < 21:
                 continue
             ranked.append(
@@ -436,7 +602,13 @@ def candidate_decks(
                     "splash": (color,),
                     "chosen": chosen,
                     "quality": deck_quality(
-                        chosen, colors + (color,), pair_win_rates, fmt=fmt, splash=(color,), fixing=fixing
+                        chosen,
+                        colors + (color,),
+                        pair_win_rates,
+                        fmt=fmt,
+                        splash=(color,),
+                        fixing=fixing,
+                        strategy=strategy,
                     ),
                 }
             )
@@ -445,9 +617,13 @@ def candidate_decks(
 
 
 def fallback_deck(
-    pool: list[dict], pair_win_rates: dict | None = None, *, fmt: str = "draft"
+    pool: list[dict],
+    pair_win_rates: dict | None = None,
+    *,
+    fmt: str = "draft",
+    strategy: DeckStrategy | None = None,
 ) -> dict[str, Any]:
-    candidates = candidate_decks(pool, pair_win_rates, top=12, fmt=fmt)
+    candidates = candidate_decks(pool, pair_win_rates, top=12, fmt=fmt, strategy=strategy)
     if not candidates:
         return {
             "spoken_advice": "I don't yet have enough castable spells to verify a balanced 40-card build. Check that the full draft pool is available.",
@@ -557,7 +733,8 @@ def _plan_text(colors: tuple[str, ...], quality: dict, splash: tuple[str, ...] =
     names = "/".join(COLOR_NAMES[color] for color in colors)
     if splash and quality.get("splash_cards"):
         names += f" splashing {COLOR_NAMES[splash[0]]} for {', '.join(quality['splash_cards'][:3])}"
-    parts = [f"{names}: avg GIH {quality['avg_gih']}%" if quality.get("avg_gih") else names]
+    head = f"{names} {quality['archetype']}" if quality.get("archetype") else names
+    parts = [f"{head}: avg GIH {quality['avg_gih']}%" if quality.get("avg_gih") else head]
     parts.append(f"{quality['creatures']} creatures, {quality['removal']} removal")
     if quality.get("bombs"):
         parts.append("bombs " + ", ".join(quality["bombs"][:3]))
@@ -565,7 +742,12 @@ def _plan_text(colors: tuple[str, ...], quality: dict, splash: tuple[str, ...] =
 
 
 def score_deck(
-    main_deck: list[dict], pool: list[dict], pair_win_rates: dict | None = None, *, fmt: str = "draft"
+    main_deck: list[dict],
+    pool: list[dict],
+    pair_win_rates: dict | None = None,
+    *,
+    fmt: str = "draft",
+    strategy: DeckStrategy | None = None,
 ) -> dict:
     """deck_quality for a validated deck given as [{grp_id, count}], splash included."""
     by_id = {card["grp_id"]: card for card in _nonbasics(pool)}
@@ -577,7 +759,9 @@ def score_deck(
             target += [card] * int(entry.get("count") or 1)
     main, splash = _color_roles(chosen)
     fixing = sum(bool(_produces(card) & set(splash)) for card in lands + chosen)
-    return deck_quality(chosen, main + splash, pair_win_rates, fmt=fmt, splash=splash, fixing=fixing)
+    return deck_quality(
+        chosen, main + splash, pair_win_rates, fmt=fmt, splash=splash, fixing=fixing, strategy=strategy
+    )
 
 
 # Whether the builder's valuation counts rules-text removal (shrink, edict,
